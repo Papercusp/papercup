@@ -32,7 +32,7 @@ import {
   scrubExecEnv,
   type BuildSandboxOpts,
 } from './exec-sandbox';
-import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
+import { resolveAgentMcpBaseUrl, resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import {
   composeStreamingRedactors,
   createStreamingPatternRedactor,
@@ -685,11 +685,15 @@ function spawnShell(
 
 function normalizeInheritedOperatorUrl(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const raw = env.PAPERCUSP_OPERATOR_URL?.trim();
-  if (!raw) return env;
-  const hadMcpSuffix = /\/api\/mcp\/?$/.test(raw);
-  const base = raw.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
+  const hadMcpSuffix = raw ? /\/api\/mcp\/?$/.test(raw) : false;
+  // capability:bash runs inside this operator, not the caller's CLI process.
+  // `.env.local` commonly leaves PAPERCUSP_OPERATOR_URL pinned to green :3070
+  // even when this handler is served by staging :3170. Resolve the host identity
+  // first so ptool and other child CLIs call the same runtime that dispatched
+  // their parent tool request; then apply only a same-runtime proxy.
+  const base = resolveSpawnHostOperatorBaseUrl(process.env);
   const routedBase = resolveAgentMcpBaseUrl(base);
-  if (routedBase === base) return env;
+  if (raw === routedBase || raw === `${routedBase}/api/mcp`) return env;
   return {
     ...env,
     PAPERCUSP_OPERATOR_URL: hadMcpSuffix ? `${routedBase}/api/mcp` : routedBase,

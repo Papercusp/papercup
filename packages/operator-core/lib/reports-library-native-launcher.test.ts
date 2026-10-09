@@ -93,4 +93,12 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     expect(seams.reportRuntime).not.toHaveBeenCalled();
     expect(seams.execute).not.toHaveBeenCalled();
   });
+
+  it('refuses an unconfigured shared ledger before bridge authentication or runtime writes', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', '');
+    await expect(runNativeE2e()).rejects.toThrow('Keep native results in the shared test ledger');
+    expect(seams.authenticate).not.toHaveBeenCalled();
+    expect(seams.reportRuntime).not.toHaveBeenCalled();
+    expect(seams.execute).not.toHaveBeenCalled();
+  });
 });

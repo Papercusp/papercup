@@ -23,12 +23,16 @@
  *
  * stripe-subscription-signup-2026-10-01 P-005; receipts WI-10004802.
  */
+import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
 import { withHostedServiceContext } from '@papercusp/db-org/tenant-context';
 import type { Sql } from 'postgres';
 import { Hono } from 'hono';
 import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
+import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
+import type { OpenRouterRequestCapture, OpenRouterRequestContext } from '../agent-loop/model-port';
+import type { HostedBudgetRequest, PostgresHostedBudgetStore } from '../auth/hosted/billing/budget-store';
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
 import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
 import { createOpenRouterHostedUsageCollector } from '../auth/hosted/billing/openrouter-usage';
@@ -157,6 +161,17 @@ export function readHostedBillingRuntimeConfiguration(
   };
 }
 
+/** One fresh server-authorized request. The reader must verify current model,
+ * key ownership/privacy policy and a provider-enforced maximum independently
+ * of token estimates; the budget store verifies funding/liability separately.
+ * An opaque reference, local account label or this type is not that evidence. */
+export interface HostedOpenRouterAuthorization {
+  readonly request: HostedBudgetRequest;
+  readonly credentialRef: string;
+  readonly isByok: boolean;
+  readonly evidenceRef: string;
+}
+
 export interface HostedBillingRuntimeDependencies {
   /** The hosted-auth runtime's resolver — billing never re-implements session authority. */
   readonly resolvePrincipal: HostedPrincipalResolver;
@@ -175,7 +190,17 @@ export interface HostedBillingRuntimeDependencies {
   readonly receipts?: HostedBillingReceiptSource;
   /** Trusted server source overrides and collectors; no request can install a collector. */
   readonly usage?: HostedBillingUsageSource;
-  readonly usageStore?: Pick<PostgresHostedUsageStore, 'append' | 'readRecords' | 'readOpenRouterBindings'>;
+  readonly usageStore?: Pick<PostgresHostedUsageStore, 'append' | 'readRecords' | 'readOpenRouterBindings'>
+    & Partial<Pick<PostgresHostedUsageStore, 'createOpenRouterRequestCapture'>>;
+  /** Optional authenticated native-host composition. No reader = no admission.
+   * Every stream (including retries/compaction) needs fresh authorization and
+   * a distinct reservation. Inject bounded readers; no production default. */
+  readonly openRouterAdmission?: {
+    readonly budget: Pick<PostgresHostedBudgetStore, 'executeOnce'>;
+    readonly authorize: (input: Readonly<{ principal: HostedPrincipal;
+      context: Readonly<OpenRouterRequestContext> }>) => Promise<HostedOpenRouterAuthorization | null>;
+    readonly now: () => number;
+  };
   readonly usageCollectors?: readonly HostedUsageCollector[];
   /** Workspace-scoped transaction runner for the default receipts source. */
   readonly runWorkspace?: HostedBillingWorkspaceRunner;
@@ -187,6 +212,74 @@ export interface HostedBillingRuntime {
   readonly mounted: readonly HostedBillingRoute[];
   readonly configured: boolean;
   readonly unavailableReason: string | null;
+  /** Private router seam. Reuses the hosted session resolver per request;
+   * never promotes a local loop principal/ownerId into customer authority. */
+  readonly openRouterRequestCapture: (headers: Headers, signal?: AbortSignal) =>
+    (context: Readonly<OpenRouterRequestContext>) => OpenRouterRequestCapture;
+}
+
+function hostedOpenRouterCapture(
+  dependencies: HostedBillingRuntimeDependencies,
+  store: NonNullable<HostedBillingRuntimeDependencies['usageStore']>,
+): HostedBillingRuntime['openRouterRequestCapture'] {
+  const resolvePrincipal = dependencies.resolvePrincipal;
+  const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
+  const authorize = dependencies.openRouterAdmission?.authorize;
+  const now = dependencies.openRouterAdmission?.now;
+  const sourceBudget = dependencies.openRouterAdmission?.budget;
+  const budget = sourceBudget ? { executeOnce: sourceBudget.executeOnce.bind(sourceBudget) } : undefined;
+  const createCapture = store.createOpenRouterRequestCapture?.bind(store);
+  return (headers, signal) => {
+    const sessionHeaders = new Headers(headers);
+    return selected => {
+      const context = Object.freeze({ modelId: selected.modelId, servedAccount: selected.servedAccount,
+        credentialSha256: selected.credentialSha256 });
+      let capture: OpenRouterRequestCapture | undefined;
+      let running = false;
+      let failed = false;
+      return async observation => {
+        if (running || failed) { failed = true; throw new Error('Hosted OpenRouter capture is not resumable'); }
+        running = true;
+        try {
+          if (signal?.aborted) throw new Error('aborted');
+          if (!capture) {
+            if (!authorize || !now || !budget || !createCapture
+              || observation.provider !== 'openrouter' || observation.modelId !== context.modelId
+              || observation.response || observation.identityUncertain
+              || !/^[a-f0-9]{64}$/.test(context.credentialSha256)) throw new Error('admission unavailable');
+            const resolution = await resolvePrincipal(new Headers(sessionHeaders));
+            if (!resolution.ok || !isHostedPrincipal(resolution.principal)
+              || !resolution.principal.permissions.has('workspace:operate')
+              || !resolution.principal.selectedWorkspaceId || signal?.aborted || failed) throw new Error('tenant denied');
+            const principal = resolution.principal;
+            // Derive scope before calling any other reader. Its result cannot
+            // substitute another tenant even if it mutates its input principal.
+            const scope = Object.freeze({ controlWorkspaceId: principal.workspaceId,
+              organizationId: principal.activeOrganizationId, customerWorkspaceId: principal.selectedWorkspaceId! });
+            const authority = await authorize(Object.freeze({ principal, context }));
+            if (!authority || signal?.aborted || failed) throw new Error('authority denied');
+            const { credentialRef, isByok, evidenceRef } = authority;
+            const request = Object.freeze({ ...authority.request, scope: Object.freeze({ ...authority.request.scope }) });
+            if (request.scope.controlWorkspaceId !== scope.controlWorkspaceId
+              || request.scope.organizationId !== scope.organizationId
+              || request.scope.customerWorkspaceId !== scope.customerWorkspaceId
+              || !/^(?:env:[A-Za-z_][A-Za-z0-9_]*|file:\/[A-Za-z0-9._/-]+)$/.test(credentialRef)) throw new Error('authority mismatch');
+            const key = (await resolveSecret(credentialRef)).trim();
+            if (!key || createHash('sha256').update(key).digest('hex') !== context.credentialSha256
+              || signal?.aborted || failed) throw new Error('credential mismatch');
+            capture = createCapture({ budget, request, context, credentialRef, isByok, evidenceRef, now });
+          }
+          await capture(observation);
+        } catch {
+          failed = true;
+          // Neither upstream error text, credential refs nor tenant/authority
+          // records may cross the native event/SSE boundary. Never retry a
+          // failed capture or assume its durable reservation was rolled back.
+          throw new Error('Hosted OpenRouter authorization or capture failed; reservation remains unresolved');
+        } finally { running = false; }
+      };
+    };
+  };
 }
 
 async function resolveStripe(
@@ -316,5 +409,6 @@ export async function createHostedBillingRuntime(
       return route.handler(context.req.raw, { principal: resolution.principal });
     });
   }
-  return { app, mounted: routes, configured: stripe !== null, unavailableReason: reason };
+  return { app, mounted: routes, configured: stripe !== null, unavailableReason: reason,
+    openRouterRequestCapture: hostedOpenRouterCapture(dependencies, usageStore) };
 }

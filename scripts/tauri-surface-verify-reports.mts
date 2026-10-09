@@ -1,4 +1,5 @@
 /** Reports Library: real publish tool -> SSE list -> exact native Markdown/Mermaid reader. */
+// VERIFY_TAURI_ASSERTION_REQUIRED_ENV=PAPERCUSP_TEST_RUNS_DB_URL
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';

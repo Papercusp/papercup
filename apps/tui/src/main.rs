@@ -1433,13 +1433,13 @@ mod doctor_session_tests {
 /// A wide terminal shows the whole thing; a narrow one still shows the part
 /// that says where to look, and `pui doctor` prints it in full.
 fn operator_failure_status_line(endpoint_label: &str, error: &anyhow::Error) -> String {
-    eprintln!(
-        "PUI_OPERATOR_RENDEZVOUS {}",
-        operator_failure_diagnostic(endpoint_label, error)
-    );
+    // The renderer owns the terminal, including stderr on a PTY. Printing
+    // diagnostics here races its cursor-jump diffs and corrupts the screen;
+    // the classified failure is displayed through BackendIdentity instead.
     http::RendezvousError::classify(endpoint_label, error).status_line()
 }
 
+#[cfg(test)]
 fn operator_failure_diagnostic(endpoint_label: &str, error: &anyhow::Error) -> serde_json::Value {
     let failure = http::RendezvousError::classify(endpoint_label, error);
     serde_json::json!({

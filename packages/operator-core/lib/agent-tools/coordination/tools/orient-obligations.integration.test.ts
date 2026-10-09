@@ -101,6 +101,51 @@ async function readOrientation(overrides: Record<string, unknown> = {}) {
 }
 
 describe('GOAL-holder complete agenda recovery through coord:orient', () => {
+  it('keeps proceed advice and retained requester history out of the reporting agenda', async () => {
+    const ids = [`consult-proceed-${RUN}`, `consult-history-${RUN}`];
+    const history = {
+      answer: 'Reuse the existing routing seam.',
+      reconciliation: { by: OWNER, at: new Date().toISOString(), disposition: 'confirmed' },
+    };
+    try {
+      await fx.admin`
+        INSERT INTO harness_shared.consult_state
+          (workspace_id, conversation_id, requester_id, responder_id, state,
+           question, latency_contract, outcome, expires_at)
+        VALUES
+          (${WS}, ${ids[0]}, ${OWNER}, 'isolated-expert', 'active',
+           'Which existing routing seam applies?', 'proceed', NULL, now() + interval '1 hour'),
+          (${WS}, ${ids[1]}, ${OWNER}, 'isolated-expert', 'closed_answered',
+           'Which existing routing seam applies?', 'proceed', ${fx.admin.json(history)}, now())
+      `;
+      const before = await fx.admin`
+        SELECT conversation_id, requester_id, state, outcome FROM harness_shared.consult_state
+        WHERE workspace_id = ${WS} AND conversation_id = ANY(${ids}) ORDER BY conversation_id
+      `;
+      expect(before).toHaveLength(2);
+      expect(before.find(row => row.conversation_id === ids[1])?.outcome).toEqual(history);
+
+      const read = await readOrientation();
+
+      // A real goal and its normal placement obligation are the positive
+      // control: an empty or disconnected agenda must not prove retirement.
+      expect(read.goalPortfolio?.goal.id).toBe(GOAL);
+      expect(read.obligations.evaluations.map(entry => entry.ruleId)).toContain('goal-plan-placement');
+      expect(read.obligations.evaluations.map(entry => entry.family)).not.toContain('consult-reconciliation');
+      expect(JSON.stringify(read.obligations)).not.toContain('consult:reconcile');
+      const after = await fx.admin`
+        SELECT conversation_id, requester_id, state, outcome FROM harness_shared.consult_state
+        WHERE workspace_id = ${WS} AND conversation_id = ANY(${ids}) ORDER BY conversation_id
+      `;
+      expect(after).toEqual(before);
+    } finally {
+      await fx.admin`
+        DELETE FROM harness_shared.consult_state
+        WHERE workspace_id = ${WS} AND conversation_id = ANY(${ids})
+      `;
+    }
+  }, 90_000);
+
   it.each(['paused', 'achieved', 'killed'])(
     'does not deliver a pre-stop reporting receipt after the canonical goal becomes %s',
     async (status) => {

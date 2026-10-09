@@ -1,9 +1,11 @@
 /** Operator-facing LSP facade: closed contract and transport only. */
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { activeWorkspaceId } from '../workspace-registry.ts';
 import { queryLspDaemon } from './lsp-daemon-client.ts';
-import { DEFAULT_RESOURCE_BUDGET, type BackendHealth, type CodeIntelAnswer, type CodeIntelIntent } from './contracts.ts';
+import { DEFAULT_RESOURCE_BUDGET, unmeasuredSourceEvidence, type BackendHealth, type CodeIntelAnswer, type CodeIntelIntent } from './contracts.ts';
 import type { LspLanguage } from './lsp-adapter.ts';
 
 export type LspFacadeOp = 'symbol' | 'references' | 'implementations' | 'diagnostics' | 'workspace_symbols' | 'refactor_preview' | 'health';
@@ -40,14 +42,24 @@ export async function lspFacade(
   caller: { workspaceId?: string; actorId?: string; priority?: number; deadlineAtMs?: number } = {},
 ): Promise<CodeIntelAnswer> {
   const started = Date.now();
-  if (!LSP_FACADE_OPS.includes(op)) return refusal('health', String(op), `unknown lsp op '${op}'. The op set is closed: ${LSP_FACADE_OPS.join(', ')}`, 'unknown', started);
+  const rootPath = args.rootPath ?? process.cwd();
+  let repositoryId: string | null = null;
+  try { repositoryId = `local-root:${createHash('sha256').update(realpathSync(rootPath)).digest('hex')}`; }
+  catch { /* An inaccessible root is explicitly unmeasured. */ }
+  const scoped = (answer: CodeIntelAnswer): CodeIntelAnswer => answer.evidence ? answer : { ...answer,
+    evidence: unmeasuredSourceEvidence(answer, { repositoryId,
+      identityKind: repositoryId ? 'local-root' : 'unknown', paths: ['.'], basis: 'compiler-project', language: args.language }, [
+      'The LSP producer has not supplied document snapshot hashes; source versions remain unknown. Later disk reads cannot establish which bytes the server used.',
+      'Loaded project scope does not establish exhaustive source coverage or runtime execution.',
+    ]) };
+  if (!LSP_FACADE_OPS.includes(op)) return scoped(refusal('health', String(op), `unknown lsp op '${op}'. The op set is closed: ${LSP_FACADE_OPS.join(', ')}`, 'unknown', started));
   const enabled = await getFlag(FLAGS.CODE_INTEL_LSP, 'system').catch(() => false);
-  if (!enabled) return refusal(op, args.file ?? args.name ?? '', `code-intelligence LSP facade is disabled (flag ${FLAGS.CODE_INTEL_LSP}). This is a DISABLED answer, not an empty one — do not read it as "no results".`, 'unknown', started);
-  return queryLspDaemon({
-    op, args: { ...args, rootPath: args.rootPath ?? process.cwd() },
+  if (!enabled) return scoped(refusal(op, args.file ?? args.name ?? '', `code-intelligence LSP facade is disabled (flag ${FLAGS.CODE_INTEL_LSP}). This is a DISABLED answer, not an empty one — do not read it as "no results".`, 'unknown', started));
+  return scoped(await queryLspDaemon({
+    op, args: { ...args, rootPath },
     workspaceId: caller.workspaceId ?? activeWorkspaceId(), actorId: caller.actorId,
     priority: caller.priority, deadlineAtMs: caller.deadlineAtMs ?? started + 90_000,
-  });
+  }));
 }
 export function lspFacadeOpSpec(): Array<{ op: LspFacadeOp; requires: string[]; reads: true; writes: false }> {
   return [

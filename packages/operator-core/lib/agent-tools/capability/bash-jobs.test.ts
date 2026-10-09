@@ -1291,8 +1291,12 @@ describe('PAPERCUSP_OPERATOR_URL inheritance', () => {
   it('rewrites an inherited direct operator URL through the resilient proxy when configured', async () => {
     const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;
     const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
+    const prevHonoPort = process.env.PAPERCUSP_HONO_PORT;
+    const prevOperatorDevPort = process.env.OPERATOR_DEV_PORT;
     process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
     process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    process.env.PAPERCUSP_HONO_PORT = '3070';
+    delete process.env.OPERATOR_DEV_PORT;
     try {
       const r = await runForeground(
         {
@@ -1310,6 +1314,45 @@ describe('PAPERCUSP_OPERATOR_URL inheritance', () => {
       else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
       if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
       else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
+      if (prevHonoPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = prevHonoPort;
+      if (prevOperatorDevPort === undefined) delete process.env.OPERATOR_DEV_PORT;
+      else process.env.OPERATOR_DEV_PORT = prevOperatorDevPort;
+    }
+  });
+
+  it('routes a shell from staging back to staging despite the inherited green .env pin', async () => {
+    const prior = {
+      PAPERCUSP_OPERATOR_URL: process.env.PAPERCUSP_OPERATOR_URL,
+      PAPERCUSP_HONO_PORT: process.env.PAPERCUSP_HONO_PORT,
+      PAPERCUSP_MCP_PROXY_BASE: process.env.PAPERCUSP_MCP_PROXY_BASE,
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: process.env.PAPERCUSP_MCP_STAGING_PROXY_PORT,
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT,
+      OPERATOR_DEV_PORT: process.env.OPERATOR_DEV_PORT,
+    };
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
+    process.env.PAPERCUSP_HONO_PORT = '3170';
+    process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT = '3070';
+    process.env.PAPERCUSP_MCP_STAGING_PROXY_PORT = '9171';
+    delete process.env.OPERATOR_DEV_PORT;
+    try {
+      const r = await runForeground(
+        {
+          command: 'printf "%s" "$PAPERCUSP_OPERATOR_URL"',
+          cwd: STATE,
+          stateDir: STATE,
+        },
+        never,
+        10_000,
+      );
+      expect(r.status).toBe('completed');
+      expect(r.output).toBe('http://127.0.0.1:9171/api/mcp');
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 

@@ -246,8 +246,8 @@ function tryGetPg(): Promise<PgHandle> {
       const mod = (await import('postgres')) as { default?: unknown };
       const pg = (mod.default ?? mod) as (url: string, opts: Record<string, unknown>) => PgSql;
       const url =
-        process.env.HARNESS_ADMIN_DATABASE_URL ??
         process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
+        process.env.HARNESS_ADMIN_DATABASE_URL ??
         'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
       // Tiny long-lived pool (≤2 conns) reused for the run. 1s connect timeout
       // per D-007 fail-soft. No idle/lifetime churn — closed explicitly at end.

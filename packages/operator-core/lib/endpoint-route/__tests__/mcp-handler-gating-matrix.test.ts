@@ -3644,11 +3644,36 @@ describe('scoped-superuser hive clamp', () => {
   });
 
   it.each([
+    ['installSlug', { installSlug: '@singleton' }],
+    ['the harness alias', { harness: '@singleton' }],
+  ])('flag ON: allows routines:fire for one exact reserved harness-less routine via %s', async (_case, target) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'routines:fire',
+      { ...target, name: 'bp-singleton-memory-precision-0' },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
     ['a broad reserved-host read', { installSlug: '@singleton' }],
     ['a reserved-host rollup', { installSlug: '@singleton', name: 'bp-singleton-scout-0', rollup: true }],
   ])('flag ON: still rejects non-exact reserved-host routines:list targets (%s)', async (_case, args) => {
     h.scopedClampFlag.value = true;
     const res = await callTool('routines:list', args, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['an id-only fire', { id: 'routine-id', installSlug: '@singleton' }],
+    ['a wildcard fire', { name: '*', installSlug: '@singleton' }],
+    ['a catch-all fire', { name: 'ALL', installSlug: '@singleton' }],
+    ['a sibling-hive routine', { name: 'bp-singleton-memory-precision-0', installSlug: 'hiveB-home' }],
+  ])('flag ON: still rejects routines:fire without a safe exact target (%s)', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('routines:fire', args, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
   });
@@ -5116,11 +5141,36 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
   });
 
   it.each([
+    ['installSlug', { installSlug: '@singleton' }],
+    ['the harness alias', { harness: '@singleton' }],
+  ])('flag ON: allows nested routines:fire for one exact reserved harness-less routine via %s', async (_case, target) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'routines:fire', args: { ...target, name: 'bp-singleton-memory-precision-0' } },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
+  it.each([
     ['a broad reserved-host read', { installSlug: '@singleton' }],
     ['a reserved-host rollup', { installSlug: '@singleton', name: 'bp-singleton-scout-0', rollup: true }],
   ])('flag ON: nested routines:list still rejects non-exact reserved-host targets (%s)', async (_case, args) => {
     h.scopedClampFlag.value = true;
     const res = await callTool('tools:invoke', { name: 'routines:list', args }, hiveScoped());
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it.each([
+    ['an id-only fire', { id: 'routine-id', installSlug: '@singleton' }],
+    ['a wildcard fire', { name: '*', installSlug: '@singleton' }],
+    ['a catch-all fire', { name: 'ALL', installSlug: '@singleton' }],
+    ['a sibling-hive routine', { name: 'bp-singleton-memory-precision-0', installSlug: 'hiveB-home' }],
+  ])('flag ON: nested routines:fire still rejects unsafe targets (%s)', async (_case, args) => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool('tools:invoke', { name: 'routines:fire', args }, hiveScoped());
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
   });

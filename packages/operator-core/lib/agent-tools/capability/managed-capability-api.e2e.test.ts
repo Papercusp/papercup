@@ -24,6 +24,11 @@ describe('managed capability acceptance over the production HTTP route', () => {
       child.once('exit', code => { clearTimeout(timer); log?.end(); resolveResult({ code, output }); });
     });
     expect(result.code, result.output).toBe(0);
+    const cleanup = result.output.split('\n').find(row => row.startsWith('MANAGED_API_CLEANUP='));
+    expect(cleanup, result.output).toBeDefined();
+    expect(JSON.parse(cleanup!.slice('MANAGED_API_CLEANUP='.length))).toMatchObject({
+      rows: 2, processes: 'gone', browserRoots: 'gone', terminalRecorded: true,
+    });
     const line = result.output.split('\n').find(row => row.startsWith('MANAGED_API_PROOF='));
     expect(line, result.output).toBeDefined();
     expect(JSON.parse(line!.slice('MANAGED_API_PROOF='.length))).toMatchObject({

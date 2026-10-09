@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createAdaptorServer } from '@hono/node-server';
@@ -14,6 +15,13 @@ assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
 assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
 assert(process.env.PAPERCUSP_EMBED_SIDECAR_URL, 'Maintained operator-api preflight required');
 const stage = (name: string) => console.log('MANAGED_API_STAGE=' + name);
+// This command needs no database/host boot. The canonical test uses it to
+// measure the OS prerequisite with the same private session-bus boundary.
+if (process.argv.includes('--scope-preflight')) {
+  const { probeScopeSupport } = await import('../../../task-manager/managed-spawn.ts');
+  console.log('MANAGED_SCOPE_PROOF=' + JSON.stringify(await probeScopeSupport()));
+  process.exit(0);
+}
 stage('host-import');
 const { handler } = await import('../../../../../../apps/operator/bin/host-handler.ts');
 const { superuserTokenPath } = await import('../../../superuser-token.ts');
@@ -26,19 +34,27 @@ await writeFile(superuserTokenPath(), token, { mode: 0o600, flag: 'wx' });
 const server = createAdaptorServer({ fetch: handler });
 await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
 const address = server.address(); assert(address && typeof address !== 'string');
+const port = address.port;
 const clients: Client[] = [];
 const owner = 'managed-private-parity-owner';
+const verifiedOwners = new Map<string, string>();
 async function client(owner: string) {
   stage('client-connect:' + owner);
-  const url = new URL(`http://127.0.0.1:${address.port}/api/mcp`);
+  const url = new URL(`http://127.0.0.1:${port}/api/mcp`);
   for (const [key, value] of Object.entries({ superuser: '1', workspace, harness: workspace,
-    client: owner, format: 'json' })) url.searchParams.set(key, value);
+    client: owner, format: 'json', structured: '1' })) url.searchParams.set(key, value);
   const current = new Client({ name: 'managed-parity-private-client', version: '1' });
   clients.push(current);
   await current.connect(new StreamableHTTPClientTransport(url, { requestInit: {
     headers: { Authorization: `Bearer ${token}` },
   } }));
   await current.listTools(); // Establish the current catalog contract on each fresh transport.
+  const identity = (await invoke(current, 'coord:whoami', {})).body;
+  assert.equal(identity.workspaceId, workspace);
+  assert(identity.ownerId, 'Resolved owner required for ledger cleanup');
+  const previous = verifiedOwners.get(owner);
+  if (previous) assert.equal(identity.ownerId, previous, 'Fresh transports must retain owner identity');
+  verifiedOwners.set(owner, identity.ownerId);
   return current;
 }
 async function invoke(current: Client, name: string, args: Record<string, unknown>, expectSuccess = true) {
@@ -72,7 +88,8 @@ async function invoke(current: Client, name: string, args: Record<string, unknow
     text = result.content.find((part: any) => part.type === 'text' && part.text.trim().startsWith('{'))?.text;
     body = text ? JSON.parse(text) : null;
   }
-  if (expectSuccess) assert(!result.isError, JSON.stringify({ name, body }));
+  if (expectSuccess) assert(!result.isError, JSON.stringify({ name, body, content: result.content,
+    structuredContent: result.structuredContent, meta: result._meta }));
   stage('settled:' + name);
   return { result, body };
 }
@@ -84,9 +101,13 @@ await new Promise<void>(resolve => pageServer.listen(0, '127.0.0.1', resolve));
 const pageAddress = pageServer.address(); assert(pageAddress && typeof pageAddress !== 'string');
 const pageUrl = `http://127.0.0.1:${pageAddress.port}/`;
 let kernelId: string | undefined; let browserId: string | undefined; let ptyId: string | undefined;
-let current: Client | undefined;
+let current: Client | undefined; let proof: Record<string, unknown> | undefined;
 try {
   current = await client(owner);
+  const { probeScopeSupport } = await import('../../../task-manager/managed-spawn.ts');
+  const scope = await probeScopeSupport();
+  stage('scope-preflight:' + JSON.stringify(scope));
+  assert.equal(scope.ok, true, 'Actual PTY confinement prerequisite: ' + JSON.stringify(scope));
   const opened = (await invoke(current, 'code:run', { kernel: { op: 'open' } })).body;
   assert.equal(opened.ok, true, JSON.stringify(opened)); kernelId = opened.kernel.id;
   await invoke(current, 'code:run', { kernel: { op: 'run', id: kernelId }, script: 'globalThis.count = 2; return ++count;' });
@@ -119,12 +140,14 @@ try {
     const { body } = await invoke(foreign, name, args, false);
     assert.equal(body?.ok, false, `Foreign handle accepted by ${name}`);
   }
-  assert.equal((await invoke(current, 'capability:fetch', { browser: { op: 'close', id: browserId } })).body.browser.state, 'closed'); browserId = undefined;
+  // Deliberately discard the browser handle: teardown must recover it from the
+  // real private ledger, as it must when an opened handle's reply is lost.
+  browserId = undefined;
   assert.equal((await invoke(current, 'code:run', { kernel: { op: 'close', id: kernelId } })).body.kernel.state, 'closed'); kernelId = undefined;
   assert.equal((await invoke(current, 'capability:pty_kill', { task_id: ptyId })).body.ok, true); ptyId = undefined;
-  console.log('MANAGED_API_PROOF=' + JSON.stringify({ transport: 'http', workspace,
+  proof = { transport: 'http', workspace,
     kernel: 'retained-across-clients', browser: 'retained-across-clients', pty: 'retained-across-clients',
-    foreignHandles: 'refused' }));
+    foreignHandles: 'refused' };
 } finally {
   if (current) {
     if (browserId) await invoke(current, 'capability:fetch', { browser: { op: 'close', id: browserId } }).catch(() => {});
@@ -134,22 +157,41 @@ try {
   // A lost reply can hide a successfully opened handle. Drain the exact private
   // owner's ledger rows before PostgreSQL goes away, rather than losing receipts.
   const { getTask } = await import('../../../task-manager/store.ts');
-  const { killTask } = await import('../../../task-manager/control.ts');
-  const { cleanupEndedBrowserDirectory } = await import('../../../task-manager/reconcile-tick.ts');
   const { readProcessIdentity } = await import('../../../process-identity.ts');
+  const { taskTerminalEventKey } = await import('../../../task-manager/task-terminal-events.ts');
   const rows = await getOrgPg().sql`SELECT task_id FROM harness_shared.task_ledger
-    WHERE workspace_id = ${workspace} AND launched_by = ${owner} AND class IN ('browser', 'pty')`;
+    WHERE workspace_id = ${workspace} AND class IN ('browser', 'pty')`;
+  const cleanupErrors: unknown[] = [];
   for (const entry of rows) {
-    const row = await getTask(entry.task_id);
-    if (!row) continue;
-    if (row.pid && readProcessIdentity(row.pid) === row.processIdentity) {
-      const killed = await killTask(row.taskId); assert(killed.ok, JSON.stringify(killed));
+    try {
+      const row = await getTask(entry.task_id); assert(row);
+      assert.equal(row.workspaceId, workspace);
+      assert.equal(row.launchedBy, verifiedOwners.get(owner), 'Never clean a foreign owner row');
+      assert(current, 'Opened handles require an authenticated cleanup client');
+      if (row.class === 'browser') {
+        assert.equal(typeof row.detail?.browserSessionId, 'string');
+        const closed = await invoke(current, 'capability:fetch', { browser: { op: 'close', id: row.detail!.browserSessionId } });
+        assert(['closed', 'lost'].includes(closed.body.browser.state));
+        assert.equal(existsSync(row.cwd!), false, 'Browser root must be gone before PG shutdown');
+        const [fire] = await getOrgPg().sql`SELECT fire_count FROM harness_shared.event_key_fires
+          WHERE event_key = ${taskTerminalEventKey(row.taskId)}`;
+        assert.equal(Number(fire?.fire_count), 1, 'Terminal recording must finish before PG shutdown');
+      } else if (row.pid && readProcessIdentity(row.pid) === row.processIdentity) {
+        await invoke(current, 'capability:pty_kill', { task_id: row.taskId });
+      }
+      if (row.pid) assert.notEqual(readProcessIdentity(row.pid), row.processIdentity, 'Owned process still live');
+    } catch (error) {
+      cleanupErrors.push(error);
     }
-    await cleanupEndedBrowserDirectory(row);
   }
   for (const entry of clients) await entry.close().catch(() => {});
-  server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+  if ('closeAllConnections' in server) server.closeAllConnections();
+  await new Promise<void>(resolve => server.close(() => resolve()));
   await new Promise<void>(resolve => pageServer.close(() => resolve()));
   await getOrgPg().sql.end({ timeout: 2 });
+  assert.equal(cleanupErrors.length, 0, String(new AggregateError(cleanupErrors, 'Owned resource cleanup failed')));
+  console.log('MANAGED_API_CLEANUP=' + JSON.stringify({ workspace, rows: rows.length,
+    ownedIdentity: verifiedOwners.get(owner), processes: 'gone', browserRoots: 'gone', terminalRecorded: true }));
 }
+if (proof) console.log('MANAGED_API_PROOF=' + JSON.stringify(proof));
 process.exit(0);

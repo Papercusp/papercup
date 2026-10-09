@@ -15,6 +15,11 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { HostedUsageRecord } from '../auth/hosted/billing/usage-statement';
+import type { HostedOpenRouterRequestCaptureOptions } from '../auth/hosted/billing/usage-store';
+import { PostgresHostedBudgetStore } from '../auth/hosted/billing/budget-store';
+import { createRoutedModelPort } from '../agent-loop/provider-router';
+import { runLoopChatTurn } from '../agent-loop/chat-engine';
+import type { LanguageModelV3 } from '@ai-sdk/provider';
 import { createHostedPrincipal, type HostedPermission } from '../auth/hosted-principal';
 import type { HostedPrincipalResolution, HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import type {
@@ -37,6 +42,7 @@ import {
   readHostedBillingRuntimeConfiguration,
   type HostedBillingRuntimeConfiguration,
   type HostedBillingRuntimeDependencies,
+  type HostedOpenRouterAuthorization,
 } from './hosted-billing-runtime';
 
 const ORG = '11111111-2222-4333-8444-555555555555';
@@ -172,6 +178,161 @@ async function runtime(options: {
   );
   return { ...built, store, stripe };
 }
+
+describe('hosted native OpenRouter authorization', () => {
+  const context = { modelId: 'vendor/model', servedAccount: 'local-label',
+    credentialSha256: createHash('sha256').update('selected-key').digest('hex') };
+  const intent = { provider: 'openrouter', modelId: context.modelId };
+  const authorized = (): HostedOpenRouterAuthorization => ({
+    request: { scope: { controlWorkspaceId: 'control-plane', organizationId: ORG,
+      customerWorkspaceId: 'customer-workspace' }, reservationId: 'reservation-1',
+    month: '2026-10', budgetKey: 'consumption.usd_cents', maximumCostMicros: 100,
+    providerLimitRef: 'fixture:not-commercial-authority', asOfMs: NOW.getTime() },
+    credentialRef: 'env:SELECTED_KEY', isByok: true, evidenceRef: 'fixture:authority',
+  });
+  const resolution = () => {
+    const r = principalFor(['workspace:operate']);
+    if (r.ok) return { ...r, principal: createHostedPrincipal({ ...r.principal,
+      selectedWorkspaceId: 'customer-workspace', permissions: ['workspace:operate'] }) };
+    throw new Error('unreachable');
+  };
+  async function prepared() {
+    const principal = vi.fn<HostedPrincipalResolver>(async () => resolution());
+    const authorize = vi.fn(async () => authorized());
+    const secret = vi.fn(async () => ' selected-key ');
+    const observations: unknown[] = [];
+    const capture = vi.fn(async (value: unknown) => { observations.push(value); });
+    const createCapture = vi.fn((_options: HostedOpenRouterRequestCaptureOptions) => capture);
+    const r = await runtime({ config: { stripeSecretKeyRef: null, stripeWebhookSecretRef: null }, deps: {
+      resolvePrincipal: principal, resolveSecret: secret,
+      usageStore: { append: async () => 'recorded', readRecords: async () => [],
+        readOpenRouterBindings: async () => [], createOpenRouterRequestCapture: createCapture },
+      openRouterAdmission: { budget: new PostgresHostedBudgetStore(), authorize, now: () => NOW.getTime() },
+    } });
+    const headers = new Headers({ cookie: 'session=original' });
+    return { r, principal, authorize, secret, capture, createCapture, observations, headers };
+  }
+
+  it('uses the real native router and chat loop, awaits host authority before wire, and captures early identity privately', async () => {
+    const p = await prepared(); let wire = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    p.authorize.mockImplementation(async () => { await gate; return authorized(); });
+    const sdkModel: LanguageModelV3 = { specificationVersion: 'v3', provider: 'fixture', modelId: context.modelId,
+      supportedUrls: {}, async doGenerate() { throw new Error('unused'); }, async doStream() {
+        wire++; expect(p.capture).toHaveBeenCalledExactlyOnceWith(intent);
+        return { stream: new ReadableStream({ start(controller) {
+          controller.enqueue({ type: 'response-metadata', id: 'gen-hosted-test', modelId: context.modelId });
+          controller.enqueue({ type: 'error', error: 'upstream failed' }); controller.close();
+        } }) };
+      } };
+    const port = createRoutedModelPort({ catalog: null, createLanguageModel: async () => sdkModel,
+      openRouterAccounts: { active: () => ({ accountId: context.servedAccount, authMode: 'api-key',
+        token: async () => 'selected-key' }), onExhausted: () => null },
+      openRouterRequestCapture: p.r.openRouterRequestCapture(p.headers) });
+    p.headers.set('cookie', 'session=changed');
+    const events: unknown[] = [];
+    const pending = runLoopChatTurn({ chatId: 'chat', workspaceId: 'untrusted-caller-label',
+      ownerId: 'another-untrusted-label', system: '', model: 'openrouter/vendor/model', port,
+      transcript: [{ role: 'user', content: 'hello', ts: NOW.toISOString() }],
+      sink: { event(_name, data) { events.push(data); } } });
+    await vi.waitFor(() => expect(p.authorize).toHaveBeenCalledTimes(1));
+    expect(wire).toBe(0); expect(p.createCapture).not.toHaveBeenCalled(); release();
+    const result = await pending;
+    expect(wire).toBe(1); expect(result.stopReason).toBe('error');
+    expect(p.principal.mock.calls[0]![0].get('cookie')).toBe('session=original');
+    expect(p.secret).toHaveBeenCalledExactlyOnceWith('env:SELECTED_KEY');
+    expect(p.createCapture.mock.calls[0]![0]).toMatchObject({ request: authorized().request,
+      context, credentialRef: 'env:SELECTED_KEY', isByok: true });
+    expect(p.observations).toEqual([intent, { ...intent, response: { id: 'gen-hosted-test', modelId: context.modelId } }]);
+    expect(JSON.stringify(events)).not.toMatch(/credentialSha256|SELECTED_KEY|selected-key|reservation-1|customer-workspace/);
+  });
+
+  it.each(['controlWorkspaceId', 'organizationId', 'customerWorkspaceId'] as const)('refuses a foreign %s before resolving secrets or reserving', async field => {
+    const p = await prepared(); const a = authorized();
+    p.authorize.mockResolvedValue({ ...a, request: { ...a.request, scope: { ...a.request.scope, [field]: 'foreign' } } });
+    await expect(p.r.openRouterRequestCapture(p.headers)(context)(intent)).rejects.toThrow('authorization or capture failed');
+    expect(p.secret).not.toHaveBeenCalled(); expect(p.createCapture).not.toHaveBeenCalled();
+  });
+
+  it.each(['revoked', 'permission', 'selection', 'local'] as const)('denies %s session authority before the commercial reader', async mode => {
+    const p = await prepared(); const resolved = resolution();
+    if (mode === 'revoked') p.principal.mockResolvedValue({ ok: false, reason: 'membership_not_active' });
+    else {
+      const principal = mode === 'permission' ? createHostedPrincipal({ ...resolved.principal, permissions: ['workspace:view'] })
+        : mode === 'selection' ? createHostedPrincipal({ ...resolved.principal, selectedWorkspaceId: undefined })
+          : { ...resolved.principal, profile: 'local' };
+      p.principal.mockResolvedValue({ ...resolved, principal } as HostedPrincipalResolution);
+    }
+    await expect(p.r.openRouterRequestCapture(p.headers)(context)(intent)).rejects.toThrow('authorization or capture failed');
+    expect(p.authorize).not.toHaveBeenCalled(); expect(p.createCapture).not.toHaveBeenCalled();
+  });
+
+  it.each(['different-key', 'unavailable-key', 'null-authority', 'reader-error'] as const)('denies %s without exposing private errors or retrying', async mode => {
+    const p = await prepared();
+    if (mode === 'different-key') p.secret.mockResolvedValue('different-key');
+    if (mode === 'unavailable-key') p.secret.mockRejectedValue(new Error('secret=private credentialRef=env:SELECTED_KEY'));
+    if (mode === 'null-authority') p.authorize.mockResolvedValue(null as never);
+    if (mode === 'reader-error') p.authorize.mockRejectedValue(new Error('secret=private tenant=private'));
+    const handler = p.r.openRouterRequestCapture(p.headers)(context);
+    await expect(handler(intent)).rejects.toThrow(/^Hosted OpenRouter authorization or capture failed; reservation remains unresolved$/);
+    await expect(handler(intent)).rejects.toThrow('not resumable');
+    expect(p.authorize).toHaveBeenCalledTimes(1); expect(p.createCapture).not.toHaveBeenCalled();
+  });
+
+  it('re-resolves membership and requests a new reservation for every stream; a revocation stops the next request', async () => {
+    const p = await prepared(); let id = 0;
+    p.authorize.mockImplementation(async () => { const a = authorized(); return { ...a,
+      request: { ...a.request, reservationId: 'reservation-' + ++id } }; });
+    const factory = p.r.openRouterRequestCapture(p.headers);
+    await factory(context)(intent); await factory(context)(intent);
+    expect(p.principal).toHaveBeenCalledTimes(2); expect(p.authorize).toHaveBeenCalledTimes(2);
+    expect(p.createCapture.mock.calls.map(([o]) => o.request.reservationId)).toEqual(['reservation-1', 'reservation-2']);
+    p.principal.mockResolvedValue({ ok: false, reason: 'membership_not_active' });
+    await expect(factory(context)(intent)).rejects.toThrow('authorization or capture failed');
+    expect(p.createCapture).toHaveBeenCalledTimes(2);
+  });
+
+  it('snapshots tenant and authority before asynchronous secret resolution', async () => {
+    const p = await prepared(); const a = authorized(); p.authorize.mockResolvedValue(a);
+    p.secret.mockImplementation(async () => {
+      (a.request.scope as { organizationId: string }).organizationId = 'mutated';
+      (a as { credentialRef: string }).credentialRef = 'env:CHANGED_KEY';
+      return 'selected-key';
+    });
+    await p.r.openRouterRequestCapture(p.headers)(context)(intent);
+    expect(p.createCapture.mock.calls[0]![0]).toMatchObject({ request: { scope: { organizationId: ORG } },
+      credentialRef: 'env:SELECTED_KEY' });
+  });
+
+  it.each(['abort', 'concurrent'] as const)('does not reserve after an overlapping %s during authority lookup', async mode => {
+    const p = await prepared(); const controller = new AbortController(); let release!: () => void;
+    p.authorize.mockImplementation(() => new Promise(resolve => { release = () => resolve(authorized()); }));
+    const handler = p.r.openRouterRequestCapture(p.headers, controller.signal)(context);
+    const pending = handler(intent); const rejected = expect(pending).rejects.toThrow('authorization or capture failed');
+    await vi.waitFor(() => expect(p.authorize).toHaveBeenCalledTimes(1));
+    if (mode === 'abort') controller.abort();
+    else await expect(handler(intent)).rejects.toThrow('not resumable');
+    release(); await rejected; expect(p.createCapture).not.toHaveBeenCalled();
+  });
+
+  it('retains a capture failure and never recreates authorization or the durable handler', async () => {
+    const p = await prepared(); p.capture.mockRejectedValue(new Error('private SQL failure'));
+    const handler = p.r.openRouterRequestCapture(p.headers)(context);
+    await expect(handler(intent)).rejects.toThrow('reservation remains unresolved');
+    await expect(handler(intent)).rejects.toThrow('not resumable');
+    expect(p.authorize).toHaveBeenCalledTimes(1); expect(p.createCapture).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an unconfigured host and an identity frame without dispatch intent', async () => {
+    const r = await runtime({ config: { stripeSecretKeyRef: null, stripeWebhookSecretRef: null } });
+    await expect(r.openRouterRequestCapture(new Headers())(context)(intent)).rejects.toThrow('authorization or capture failed');
+    const p = await prepared();
+    await expect(p.r.openRouterRequestCapture(p.headers)(context)({ ...intent, response: { id: 'gen-too-early' } }))
+      .rejects.toThrow('authorization or capture failed');
+    expect(p.principal).not.toHaveBeenCalled(); expect(p.createCapture).not.toHaveBeenCalled();
+  });
+});
 
 const post = (init: { cookie?: string; origin?: string | null; body?: unknown } = {}) => {
   const headers = new Headers({ 'content-type': 'application/json' });

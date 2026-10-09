@@ -68,6 +68,25 @@ describe('native baseline exposed semantic and packing handlers', () => {
 });
 
 describe('native baseline against the exposed graph handler', () => {
+  it('reports unknown indexed versions without assigning current-source identities', async () => {
+    calls.indexed.mockResolvedValue({ backend: 'gitnexus', intent: 'callees', sites: [{ path: 'src/old.ts', line1: 2, kind: 'function' }],
+      error: null, freshness: { health: 'healthy', indexedAt: null, indexedCommit: 'older-index', staleVsDisk: true } });
+    const out = await graphQuery.handler(graphQuery.args.parse({ op: 'callees', name: 'target' }),
+      { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer };
+    expect(out.data.evidence!.sourceScope).toMatchObject({ repositoryId: null, identityKind: 'unknown', sourceFingerprint: null, supportingFiles: [] });
+    expect(out.data.evidence!.siteIdentities).toEqual([{ siteIndex: 0, sourcePath: 'src/old.ts', contentHash: null, versionedSymbolId: null }]);
+    expect(out.data.evidence!.relationships[0]).toMatchObject({ knowledge: 'unknown', runtimeExecution: 'unknown' });
+    expect(out.data.freshness.indexedCommit).toBe('older-index');
+  });
+
+  it('labels LSP source versions as unknown when the daemon supplies no snapshots', async () => {
+    const out = await lspQuery.handler(lspQuery.args.parse({ op: 'references', file: 'src/target.ts', line1: 1, character: 0 }),
+      { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer };
+    expect(out.data.evidence!.sourceScope.sourceFingerprint).toBeNull();
+    expect(out.data.evidence!.siteIdentities.every(site => site.contentHash === null && site.versionedSymbolId === null)).toBe(true);
+    expect(out.data.evidence!.graphScope.sourceCompleteness).toBe('unverified');
+  });
+
   it.each(graphOperations)('$op selects the recorded $backend backend', async ({ op, backend }) => {
     const args = graphQuery.args.parse({ op, name: 'baselineTarget' });
     const out = await graphQuery.handler(args, { projectDir: '/baseline-repo' } as never) as {

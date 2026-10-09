@@ -2,7 +2,7 @@
 // Pure preflight for a file-backed verifier assertion. Read its declared
 // assignments; never source the assertion before the owned Tauri rig exists.
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const [assertionPath, manifestPath] = process.argv.slice(2);
@@ -10,6 +10,38 @@ const fail = (reason) => {
   console.error(`VERIFY_TAURI_ASSERTION_ENV_INVALID ${reason}`);
   process.exit(2);
 };
+
+// File-backed assertions can declare inherited prerequisites without sourcing
+// shell code or embedding credentials in an immutable diagnostic manifest.
+// Inspect command arguments too: `node --import tsx driver.mts` is not a shell
+// assertion, but its prerequisites must be checked before native preparation.
+if (assertionPath === '--command') {
+  const required = new Set();
+  for (const argument of process.argv.slice(3)) {
+    let header;
+    let descriptor;
+    try {
+      if (!statSync(argument).isFile()) continue;
+      // Commands include executables and data files; read only a bounded header.
+      descriptor = openSync(argument, 'r');
+      const bytes = Buffer.alloc(8192);
+      const length = readSync(descriptor, bytes, 0, bytes.length, 0);
+      header = bytes.subarray(0, length).toString('utf8').split(/\r?\n/).slice(0, 12);
+    } catch { continue; }
+    finally { if (descriptor !== undefined) closeSync(descriptor); }
+    for (const line of header) {
+      const declaration = line.match(/^(?:#|\/\/) VERIFY_TAURI_ASSERTION_REQUIRED_ENV=(.*)$/);
+      if (!declaration) continue;
+      for (const key of declaration[1].split(',')) {
+        if (!/^[A-Z][A-Z0-9_]*$/.test(key)) fail('invalid required environment name');
+        if (!process.env[key]?.trim()) fail(`${key} is required before verifier preparation`);
+        required.add(key);
+      }
+    }
+  }
+  if (required.size) console.log(`VERIFY_TAURI_ASSERTION_ENV_OK ${required.size} prerequisite(s)`);
+  process.exit(0);
+}
 
 if (!assertionPath || !manifestPath) fail('assertion and manifest paths are required');
 let source;

@@ -229,6 +229,26 @@ describe('planGoalPackageUpdate modes', () => {
 });
 
 describe('applyGoalPackageUpdate', () => {
+  it.each(['paused', 'killed'])('preserves paused/killed started lifecycle status without resurrection (%s)', async (status) => {
+    const row = mkRow({ status, metadata: { goalPackageRef: 'work-on-everything',
+      packageVersion: '0.1.0', agentOwnerId: 'prior-holder' } });
+    const before = row.status;
+    const { deps, writes } = mkDeps({ row });
+    const plan = await planGoalPackageUpdate(sql, { workspaceId: 'w', goalId: 'g-1' }, deps);
+    const applied = await applyGoalPackageUpdate(sql, { workspaceId: 'w', goalId: 'g-1' }, deps);
+    if (status === 'killed') {
+      expect(plan).toMatchObject({ ok: false, reason: 'terminal-instance' });
+      expect(applied).toMatchObject({ ok: false, reason: 'terminal-instance' });
+      expect(writes).toEqual([]);
+    } else {
+      expect(plan).toMatchObject({ ok: true, mode: 'live-contract' });
+      expect(applied).toMatchObject({ ok: true, mode: 'live-contract' });
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).not.toHaveProperty('status');
+    }
+    expect(row.status).toBe(before);
+  });
+
   it.each(['active', 'paused'])('merges package declarations without losing instance keys or owner policy (%s)', async (status) => {
     const worklist = { datatype: 'plan-ref-list', default: [], editable_by: 'both' };
     const instanceOnly = { datatype: 'string', editable_by: 'owner' };

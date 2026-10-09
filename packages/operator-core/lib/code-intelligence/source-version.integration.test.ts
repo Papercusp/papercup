@@ -33,6 +33,42 @@ describe('source-version evidence at the compiler seam', () => {
     expect(sourceIdentityContinuity(oldId, fresh.evidence!.siteIdentities[0]!.versionedSymbolId)).toBe('needs-resolution');
     expect(original.evidence!.siteIdentities[0]!.contentHash).toBe(hash(source));
     rmSync(join(root, 'src/control.ts'));
-    expect((await query()).sites).toEqual([]);
+    const deleted = await query();
+    expect(deleted.sites).toEqual([]);
+    expect(deleted.evidence!.sourceScope).toMatchObject({ repositoryId: 'fixture-repository-a',
+      sourceFingerprint: null, supportingFiles: [] });
+    expect(deleted.evidence!.siteIdentities).toEqual([]);
+    expect(deleted.evidence!.relationships).toEqual([]);
+    expect(deleted.evidence!.graphScope.sourceCompleteness).toBe('unverified');
+  }, 60_000);
+
+  it('retains the requested repository and search boundary for an empty candidate set', async () => {
+    writeFileSync(join(root, 'src/control.ts'), source);
+    const answer = await firstPartyCallersOffthread({ root, repositoryId: 'fixture-repository-a',
+      name: 'absentTarget', paths: ['src'], vendorDir: LSP_VENDOR_DIR });
+    expect(answer.error).toBeNull();
+    expect(answer.sites).toEqual([]);
+    expect(answer.evidence!.sourceScope).toEqual({ repositoryId: 'fixture-repository-a',
+      identityKind: 'registry', paths: ['src'], sourceFingerprint: null, supportingFiles: [] });
+    expect(answer.evidence!.languageCapabilities.every(capability => capability.status === 'unknown')).toBe(true);
+    expect(answer.evidence!.graphScope.limitations.join(' ')).toMatch(/no compiler snapshot/i);
+  }, 60_000);
+
+  it('preserves the scope on compiler and worker failures without fabricating source hashes', async () => {
+    const failedCompiler = await firstPartyCallersOffthread({ root, repositoryId: 'fixture-repository-a',
+      name: 'not an identifier', vendorDir: LSP_VENDOR_DIR });
+    expect(failedCompiler.error).toMatch(/one identifier/);
+    expect(failedCompiler.evidence!.sourceScope).toMatchObject({ repositoryId: 'fixture-repository-a',
+      sourceFingerprint: null, supportingFiles: [] });
+    expect(failedCompiler.evidence!.relationships).toEqual([]);
+    const workerPath = join(root, 'failed-worker.mjs');
+    writeFileSync(workerPath, 'process.on("message", () => process.exit(3));\n');
+    const failedWorker = await firstPartyCallersOffthread({ root, repositoryId: 'fixture-repository-a',
+      name: 'target', vendorDir: LSP_VENDOR_DIR }, { workerPath });
+    expect(failedWorker.error).toMatch(/exited/);
+    expect(failedWorker.evidence!.sourceScope).toMatchObject({ repositoryId: 'fixture-repository-a',
+      sourceFingerprint: null, supportingFiles: [] });
+    expect(failedWorker.evidence!.siteIdentities).toEqual([]);
+    expect(failedWorker.freshness.health).toBe('unhealthy');
   }, 60_000);
 });

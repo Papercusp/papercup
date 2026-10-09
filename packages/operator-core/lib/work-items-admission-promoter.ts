@@ -2417,10 +2417,11 @@ export async function judgedPairsMissingAdjudication(
   return judgedPairs.filter((pair) => !present.has(pair.pairKey)).map((pair) => pair.pairKey);
 }
 
-async function beginRun(
+/** Capture the boot witness for the process starting an admission run. */
+export async function captureAdmissionProducingRuntime(
   sql: OrgSql,
-  input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode },
-): Promise<void> {
+  workspaceId: string,
+): Promise<Record<string, unknown>> {
   const host = hostname();
   const identity = readProcessIdentity(process.pid);
   const producingRuntime: Record<string, unknown> = {
@@ -2441,7 +2442,7 @@ async function beginRun(
   };
   if (identity) {
     try {
-      const rows = (await listRuntimeVintage(input.workspaceId, sql))
+      const rows = (await listRuntimeVintage(workspaceId, sql))
         .filter(row => row.host === host && row.pid === process.pid);
       producingRuntime.buildIdentityReason = rows.length === 0 ? 'boot-record-absent' : 'boot-record-ambiguous';
       if (rows.length === 1) {
@@ -2462,6 +2463,14 @@ async function beginRun(
       producingRuntime.buildIdentityReason = 'boot-record-unavailable';
     }
   }
+  return producingRuntime;
+}
+
+async function beginRun(
+  sql: OrgSql,
+  input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode },
+): Promise<void> {
+  const producingRuntime = await captureAdmissionProducingRuntime(sql, input.workspaceId);
   const detail = JSON.stringify({
     status: 'running',
     mode: input.mode,

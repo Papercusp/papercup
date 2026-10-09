@@ -7,6 +7,7 @@
  */
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -23,7 +24,7 @@ const ROOT = resolve(__dirname, '../../..');
 const SCRIPT = resolve(ROOT, 'scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
 
-function runAssertion(assertionSource: string, useBashC = false) {
+function runAssertion(assertionSource: string, useBashC = false, command?: string[], env: NodeJS.ProcessEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-assertion-preflight.'));
   const assertion = join(dir, 'assertion.sh');
   const tool = join(dir, 'tauri-agent-tools');
@@ -31,6 +32,17 @@ function runAssertion(assertionSource: string, useBashC = false) {
   const invocations = join(dir, 'invocations');
   writeFileSync(assertion, assertionSource);
   writeFileSync(invocations, '');
+  // This test measures argv rejection, not shared dependency installation or
+  // restricted-hold census. Keep those preceding seams inside the fixture;
+  // their real behavior is covered by their own canonical suites/native rig.
+  mkdirSync(join(dir, 'scripts/lib'), { recursive: true });
+  mkdirSync(join(dir, 'papercusp-desktop/bin/lib'), { recursive: true });
+  writeFileSync(join(dir, 'scripts/lib/committed-source-loader.mjs'), '');
+  writeFileSync(join(dir, 'scripts/restricted-hold-tree-gate.mjs'), 'process.exit(0);\n');
+  writeFileSync(join(dir, 'scripts/lib/spa-require-built.sh'), '');
+  writeFileSync(join(dir, 'papercusp-desktop/bin/lib/federation-asserts.sh'), '');
+  writeFileSync(join(dir, 'scripts/lib/verify-tauri-assertion-env.mjs'),
+    readFileSync(join(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs')));
   writeFileSync(
     tool,
     '#!/usr/bin/env bash\nprintf "tool invoked\\n" >> "$VERIFY_TEST_INVOCATIONS"\nexit 0\n',
@@ -42,20 +54,23 @@ function runAssertion(assertionSource: string, useBashC = false) {
   chmodSync(tool, 0o755);
   chmodSync(cargo, 0o755);
 
-  const args = useBashC ? ['bash', '-c', assertionSource] : [assertion];
+  const args = command ?? (useBashC ? ['bash', '-c', assertionSource] : [assertion]);
   const result = spawnSync('bash', [SCRIPT, '--', ...args], {
     cwd: ROOT,
     env: {
       ...process.env,
-      PAPERCUSP_REPO_DIR: ROOT,
+      PAPERCUSP_REPO_DIR: dir,
       PAPERCUSP_SID: 'test-assertion-preflight',
       PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
       TMPDIR: dir,
       VERIFY_TEST_INVOCATIONS: invocations,
       VERIFY_TAURI_AGENT_TOOLS_BIN: tool,
       VERIFY_TAURI_CARGO_BIN: cargo,
+      ...env,
     },
     encoding: 'utf8',
+    timeout: 15_000,
+    killSignal: 'SIGKILL',
   });
 
   return { dir, invocations, result };
@@ -73,8 +88,10 @@ function runAssertionPreflightOnly(assertionSource: string) {
     'ASSERTION_ARGS=(bash -c "$VERIFY_TEST_ASSERTION_SOURCE")',
     'validate_assertion_command_preflight',
   ].join('\n')], {
-    env: { ...process.env, VERIFY_TEST_ASSERTION_SOURCE: assertionSource },
+    env: { ...process.env, REPO_DIR: ROOT, VERIFY_TEST_ASSERTION_SOURCE: assertionSource },
     encoding: 'utf8',
+    timeout: 15_000,
+    killSignal: 'SIGKILL',
   });
 }
 
@@ -110,12 +127,55 @@ function runManifestPreflight(actual: string, claimed: string, claimedRoot?: str
       VERIFY_TEST_ASSERTION_PATH: assertion,
     },
     encoding: 'utf8',
+    timeout: 15_000,
+    killSignal: 'SIGKILL',
   });
   rmSync(dir, { recursive: true, force: true });
   return result;
 }
 
 describe('EI-21974634479405756 — assertion command preflight', () => {
+  it('rejects a missing native Reports ledger before cargo, bridge or resource allocation', () => {
+    const { dir, invocations, result } = runAssertion('', false,
+      [process.execPath, '--import', 'tsx', resolve(ROOT, 'scripts/tauri-surface-verify-reports.mts'), '--e2e'],
+      { PAPERCUSP_TEST_RUNS_DB_URL: '' });
+    try {
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('PAPERCUSP_TEST_RUNS_DB_URL is required before verifier preparation');
+      expect(readFileSync(invocations, 'utf8')).toBe('');
+      expect(readdirSync(dir).filter(entry => entry.startsWith('verify-tauri-headless.'))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['', '   '])('rejects empty inherited prerequisites without leaking other values (%j)', value => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-required-env.'));
+    const assertion = join(dir, 'driver.mts');
+    writeFileSync(assertion, '// VERIFY_TAURI_ASSERTION_REQUIRED_ENV=PAPERCUSP_TEST_RUNS_DB_URL,VERIFY_TEST_SECOND\n');
+    try {
+      const result = spawnSync(process.execPath,
+        [resolve(ROOT, 'scripts/lib/verify-tauri-assertion-env.mjs'), '--command', 'node', '--import', 'tsx', assertion],
+        { encoding: 'utf8', env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db',
+          VERIFY_TEST_SECOND: value }, timeout: 15_000, killSignal: 'SIGKILL' });
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('VERIFY_TEST_SECOND is required before verifier preparation');
+      expect(`${result.stdout}${result.stderr}`).not.toContain('fixture-secret');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('accepts the configured Reports command without starting its assertion or exposing credentials', () => {
+    const start = src.indexOf('validate_assertion_command_preflight() {');
+    const end = src.indexOf('\n\nvalidate_assertion_command_preflight || exit $?', start);
+    const result = spawnSync('bash', ['-c', [src.slice(start, end),
+      'ASSERTION_MODE=1',
+      'ASSERTION_ARGS=(node --import tsx "$REPO_DIR/scripts/tauri-surface-verify-reports.mts" --e2e)',
+      'validate_assertion_command_preflight',
+    ].join('\n')], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: { ...process.env, REPO_DIR: ROOT,
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db' } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('1 prerequisite(s)');
+    expect(`${result.stdout}${result.stderr}`).not.toContain('fixture-secret');
+  });
+
   it('runs before workdir/resource allocation and checks shell syntax', () => {
     const preflight = src.indexOf('validate_assertion_command_preflight || exit $?');
     const work = src.indexOf('WORK="$(mktemp -d');

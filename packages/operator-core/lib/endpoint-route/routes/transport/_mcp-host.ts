@@ -56,6 +56,7 @@ import {
   papercuspGateBypass,
   sanitizeToolSchema,
   sanitizeToolSchemaCached,
+  negotiatedMcpOutputSchema,
   serializeToolResponse,
   formatOptsFromCtx,
   isSlashPromptName,
@@ -989,7 +990,8 @@ function isExplicitPlatformPotGitSyncTarget(toolName: string, arg: string, slug:
  * workspace id). They are not tenant harnesses, so the hive clamp must not
  * mistake an exact, one-row routine operation for a cross-hive escape. Keep
  * this exception narrower than a general reserved-slug allowlist: only the
- * documented routine control/read tools, only their install-slug spellings,
+ * documented routine control/read/fire tools, only their installSlug/harness
+ * spellings,
  * and only an exact routine name are admitted. Broad reads, rollups, and all
  * other tools remain behind the ordinary hive boundary.
  */
@@ -1008,6 +1010,7 @@ function isExplicitReservedHarnesslessRoutineTarget(
   const routineName = typeof routineArgs.name === 'string' ? routineArgs.name.trim() : '';
   if (!routineName || routineName === '*' || routineName.toLowerCase() === 'all') return false;
   if (toolName === 'routines:set') return arg === 'installSlug';
+  if (toolName === 'routines:fire') return true;
   return toolName === 'routines:list' && routineArgs.rollup !== true;
 }
 
@@ -3902,10 +3905,15 @@ export function registerMcpHost(server: McpServer): void {
         // REAL return value, so it must NOT force `type: 'object'` onto a
         // z.unknown()/z.any() result field whose actual value is a string, number,
         // array, or boolean — see tool-schema-sanitize.ts's `SanitizePosition` doc.
-        if (tt.outputSchema) {
+        const outputSchema = negotiatedMcpOutputSchema(tt.outputSchema,
+          urlFromExtra(extra)?.searchParams.get('structured') === '1');
+        // The registry also serves in-process consumers. Its schema is not a
+        // promise of structured MCP output until this connection requests it.
+        delete out.outputSchema;
+        if (outputSchema) {
           out.outputSchema = sanitizeToolSchemaCached(
             `${registryRevision}:${tt.name ?? '(anonymous)'}:output`,
-            tt.outputSchema,
+            outputSchema,
             'output',
           );
         }

@@ -37,7 +37,7 @@ import {
   gitnexusRefusal,
   type GitnexusFacadeOp,
 } from '../../code-intelligence/gitnexus-facade';
-import type { CodeIntelIntent } from '../../code-intelligence/contracts';
+import { unmeasuredSourceEvidence, type CodeIntelAnswer, type CodeIntelIntent } from '../../code-intelligence/contracts';
 import { FIRST_PARTY_CALLERS_DEFAULT_LIMIT } from '../../code-intelligence/first-party-callers';
 import { firstPartyCallersOffthread } from '../../code-intelligence/first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from '../../code-intelligence/lsp-adapter';
@@ -152,14 +152,21 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const op = args.op as string;
+    const scoped = (answer: CodeIntelAnswer) => answer.evidence ? answer : { ...answer,
+      evidence: unmeasuredSourceEvidence(answer, { repositoryId: null, identityKind: 'unknown',
+        paths: op === 'callers' ? args.paths ?? ['.'] : [],
+        basis: op === 'callers' ? 'compiler-project' : 'indexed-code' }, [
+        'The producer supplied no measured repository/content snapshot. Resolve source versions before treating these sites as source-backed relationships.',
+        'A repository selector and current disk contents do not identify the indexed source snapshot.',
+      ]) };
     if (!GITNEXUS_FACADE_OPS.includes(op as GitnexusFacadeOp)) {
       // OP_VALUES admits these intentionally so the refusal map is reachable
       // through the actual agent-facing tool, not just through unit imports.
       const refusal = gitnexusRefusal(op as CodeIntelIntent, args.name ?? '');
-      if (refusal) return { data: refusal };
+      if (refusal) return { data: scoped(refusal) };
     }
 
-    if (op === 'callers') return { data: await firstPartyCallersAnswer(args, ctx) };
+    if (op === 'callers') return { data: scoped(await firstPartyCallersAnswer(args, ctx)) };
 
     // The dispatcher is passed PER CALL rather than installed into the module
     // global by this handler. It closes over `ctx` — which carries the calling
@@ -197,6 +204,6 @@ export default defineTool({
       },
       dispatch,
     );
-    return { data: answer };
+    return { data: scoped(answer) };
   },
 });

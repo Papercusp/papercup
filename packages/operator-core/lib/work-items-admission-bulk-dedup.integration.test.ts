@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hostname } from 'node:os';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { readProcessIdentity } from './process-identity';
+import {
+  configureRuntimeVintageStore, InMemoryRuntimeVintageStore,
+  reportRuntimeVintage, resetRuntimeVintageStore,
+} from './runtime-vintage';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -192,10 +198,12 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
+  resetRuntimeVintageStore();
   await db?.cleanup();
 });
 
 beforeEach(async () => {
+  configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.scout_routed_ideas,
     harness_shared.work_item_occurrences,
     harness_shared.dedup_edges, harness_shared.dedup_adjudications,
@@ -282,6 +290,85 @@ async function runBlockedMergeQualityGate(
 }
 
 describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
+  it.each(['complete', 'failed'] as const)('retains the original bulk producing runtime through %s and replay', async (outcome) => {
+    await seed();
+    await reportRuntimeVintage({
+      workspaceId: WS, unit: 'bulk-fixture-producer', pid: process.pid,
+      treeSha: 'a'.repeat(40), bundleVersion: 'original-bulk-runtime',
+    });
+    const runId = `bulk-runtime-${outcome}`;
+    let original: Record<string, unknown> | undefined;
+    const options: BulkOptions = {
+      workspaceId: WS, harnessSlug: HARNESS, runId, sql: db.sql, maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      batchRetryBackoffsMs: [], transportRetryBackoffsMs: [],
+      llmCall: async () => {
+        const [running] = await db.sql`
+          SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+        original = running.detail.producingRuntime;
+        expect(original).toMatchObject({
+          host: hostname(), pid: process.pid, processIdentity: readProcessIdentity(process.pid),
+          buildSha: 'a'.repeat(40), version: 'original-bulk-runtime',
+          buildIdentityStatus: 'matched-boot-record',
+        });
+        await reportRuntimeVintage({
+          workspaceId: WS, unit: 'bulk-fixture-producer', pid: process.pid,
+          treeSha: 'b'.repeat(40), bundleVersion: 'later-bulk-runtime',
+        });
+        if (outcome === 'failed') throw new Error('bulk runtime witness failure');
+        return {
+          text: '', json: { judgements: [{ pairKey: 'a::b', verdict: 'r-remedy-keep', reason: 'Separate remedy' }] },
+          inputTokens: 25, outputTokens: 10,
+        };
+      },
+    };
+    if (outcome === 'failed') await expect(runBulk(options)).rejects.toThrow('bulk runtime witness failure');
+    else await runBulk(options);
+    const [finished] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+    expect(finished.detail.status).toBe(outcome);
+    expect(finished.detail.producingRuntime).toEqual(original);
+    await runBulk({
+      ...options,
+      llmCall: async () => ({
+        text: '', json: { judgements: [{ pairKey: 'a::b', verdict: 'r-remedy-keep', reason: 'Separate remedy' }] },
+        inputTokens: 25, outputTokens: 10,
+      }),
+    });
+    const [replayed] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+    expect(replayed.detail.producingRuntime).toEqual(original);
+  }, 60_000);
+
+  it('keeps bulk runtime identity unknown when no boot witness exists and does not backfill legacy stages', async () => {
+    await seed();
+    const options: BulkOptions = {
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'bulk-runtime-unknown', sql: db.sql, maxStages: 1,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => ({
+        text: '', json: { judgements: [{ pairKey: 'a::b', verdict: 'r-remedy-keep', reason: 'Separate remedy' }] },
+        inputTokens: 25, outputTokens: 10,
+      }),
+    };
+    await runBulk(options);
+    const [run] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'bulk-runtime-unknown-stage-1'`;
+    expect(run.detail.producingRuntime).toMatchObject({
+      buildSha: null, buildIdentityStatus: 'unknown', buildIdentityReason: 'boot-record-absent',
+    });
+    await db.sql`
+      UPDATE harness_shared.admission_runs SET detail = detail - 'producingRuntime'
+       WHERE id = 'bulk-runtime-unknown-stage-1'`;
+    await reportRuntimeVintage({
+      workspaceId: WS, unit: 'bulk-fixture-producer', pid: process.pid,
+      treeSha: 'b'.repeat(40), bundleVersion: 'later-bulk-runtime',
+    });
+    await runBulk(options);
+    const [legacy] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'bulk-runtime-unknown-stage-1'`;
+    expect(legacy.detail).not.toHaveProperty('producingRuntime');
+  }, 60_000);
+
   it.each([
     { requested: undefined, expected: 512 },
     { requested: 20_000, expected: 10_000 },

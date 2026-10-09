@@ -62,7 +62,7 @@ export async function firstPartyCallersOffthread(
   options: FirstPartyCallersRunOptions = {},
 ): Promise<FirstPartyCallersAnswer> {
   const started = Date.now();
-  const fail = (why: string): FirstPartyCallersAnswer => failedCallersAnswer(job.name, why, started);
+  const fail = (why: string): FirstPartyCallersAnswer => failedCallersAnswer(job.name, why, started, Date.now(), job);
   const budgetMs = options.budgetMs ?? FIRST_PARTY_CALLERS_BUDGET_MS;
   const workerPath = options.workerPath ?? defaultFirstPartyCallersWorker();
   const detached = process.platform !== 'win32';
