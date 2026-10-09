@@ -247,3 +247,37 @@ It proves disposable MCP retrieval invalidation with zero chat sends, with
 the recorded source-provenance limitation. Canonical/model-cache coverage,
 runtime journeys, real novices, independent acceptance and exact shipment
 remain open. No tests or model calls were repeated for this reconciliation.
+
+## Current-build maintenance baseline, 2026-10-08 23:56Z
+
+The current staging reader at `http://127.0.0.1:3170` resolves
+`public-manual/faq.mdx` with `bodyMissing: false`. The older release reader's
+`bodyMissing: true` remains historical evidence about that reader. It is not
+a missing canonical FAQ.
+
+The FAQ SHA-256 remains
+`908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a`,
+and each of the seven source files in the reconciliation table above still
+has the exact listed SHA-256. This author maintenance check reuses that
+recorded semantic reconciliation and the existing independent approval at
+`thread-post:1160798`; it creates no new independent approval of the changed
+guides or runtime behavior.
+
+After those comparisons, this session used the existing
+`harness_docs:verify` through staging. Its receipt stamped the FAQ baseline
+to `2270e06a88608ef987d3ae8bd0f7f1cce12eded0`. The authoritative read-back
+reports `status: fresh`, `statusDetail: null`, `bodyMissing: false`, the same
+seven anchors and that exact `lastVerifiedSha`. The receipts are
+`/tmp/su73-faq-current-review-0002.json` and
+`/tmp/su73-faq-current-review-0002-readback.json`.
+
+This is an accountable author review and maintenance-baseline renewal.
+Future source drift still requires review; future FAQ edits still require
+renewed exact-hash sensitive-source approval. The existing post-sync
+integration proof (`test-run:20940593`) remains separate and was not rerun.
+All fifteen current canonical public pages match their packaged
+`apps/operator/public/manual-source` bytes, but that comparison alone does
+not prove fresh installed execution or a refreshed Pagefind answer.
+Installed worker/index/retriever propagation, sensitive-guide review,
+real novice observations, independent final acceptance and exact shipment
+remain open.
