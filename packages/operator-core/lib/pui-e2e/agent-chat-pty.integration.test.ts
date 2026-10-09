@@ -8568,7 +8568,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }
       };
       try {
-        await pane.waitFor(`${backendLabel} · ${visibleLaunchDir}`, { timeoutMs: 60_000 });
+        // --model names the chosen model in the footer. The composer names
+        // the backend independently, just as it does after a resume.
+        await pane.waitFor(`Message ${backendLabel}`, { timeoutMs: 60_000 });
+        await pane.waitFor(visibleLaunchDir, { timeoutMs: 60_000 });
         frame('00-ready', pane.screen());
         const greeting = await turn('01-greeting', 'hi');
         expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().identity.backend,
