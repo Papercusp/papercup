@@ -2859,7 +2859,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   }
   const qualificationAttemptId = scheduled.transaction.attemptId;
   const runner = scheduled.transaction.currentPhysicalRunner;
-  const runnerLiveness = probeRunnerLiveness(runner);
+  const runnerLiveness = await probeRunnerLiveness(runner);
   const join = classifyScheduledQualificationJoin(scheduled.transaction, runnerLiveness);
   if (join !== 'launch') {
     await appendPipelineEvent({

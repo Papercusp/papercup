@@ -32,6 +32,7 @@ import {
   probeRunnerLiveness,
   projectCheckpointQualificationState,
   type CheckpointQualificationTransaction,
+  type RunnerLivenessProber,
 } from './checkpoint-qualification-transaction';
 import {
   describeAbandonedInFlightCandidate,
@@ -191,7 +192,7 @@ export interface LostRunSweepDeps {
   nowMs?: number;
   selfPid?: number;
   pidAlive?: (pid: number) => boolean | null;
-  probeQualificationRunner?: typeof probeRunnerLiveness;
+  probeQualificationRunner?: RunnerLivenessProber;
   hostFleetSlug?: string | null;
   claim?: typeof claimLostRunAlarm;
   readHolder?: (installSlug: string) => Promise<string | null>;
@@ -259,7 +260,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     // so the old marker's dedup stamp cannot hide a successor's missing heartbeat.
     const transaction = parseCheckpointQualificationTransaction(row.qualification);
     const runner = transaction?.currentPhysicalRunner;
-    const liveness = runner ? (deps.probeQualificationRunner ?? probeRunnerLiveness)(runner, nowMs) : 'unknown';
+    const liveness = runner ? await (deps.probeQualificationRunner ?? probeRunnerLiveness)(runner, nowMs) : 'unknown';
     const qualification = transaction && transaction.phase !== 'terminal' && runner
       ? projectCheckpointQualificationState(transaction, nowMs, liveness)
       : null;

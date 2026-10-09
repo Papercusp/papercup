@@ -7,9 +7,10 @@
  * authorities. This record makes the logical attempt, retry policy, current
  * physical runner, blockers, and evidence machine-readable across processes.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
+import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
@@ -50,7 +51,7 @@ export function checkpointPidIdentity(pid: number): string | null {
  * degrades to the old lease-only behaviour instead of handing one candidate to two runners.
  */
 export type RunnerLiveness = 'live' | 'dead' | 'unknown';
-export type RunnerLivenessProber = (runner: QualificationPhysicalRunner) => RunnerLiveness;
+export type RunnerLivenessProber = (runner: QualificationPhysicalRunner) => RunnerLiveness | Promise<RunnerLiveness>;
 
 /**
  * How long an attempt with NO physical runner may sit untouched before it is treated as abandoned.
@@ -70,7 +71,7 @@ function launchReservationInGrace(runner: QualificationPhysicalRunner | null | u
   return !!runner && runner.phase === 'launching' && nowMs - runner.reservedAtMs < QUALIFICATION_LAUNCH_GRACE_MS;
 }
 
-const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
+const systemdRunnerLiveness: RunnerLivenessProber = async (runner) => {
   if (runner.pid != null) {
     try {
       process.kill(runner.pid, 0);
@@ -92,14 +93,11 @@ const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
     return null;
   };
   try {
-    return (
-      read(
-        execFileSync('systemctl', ['--user', 'is-active', unit], {
-          encoding: 'utf8',
-          timeout: 5_000,
-        }),
-      ) ?? 'unknown'
-    );
+    const { stdout } = await promisify(execFile)('systemctl', ['--user', 'is-active', unit], {
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    return read(stdout) ?? 'unknown';
   } catch (error) {
     // A non-active unit makes `is-active` exit non-zero WITH the state on stdout, so the throw is
     // the normal path for a dead unit, not an error.
@@ -127,10 +125,13 @@ function unboundReservationOutlivedCeiling(runner: QualificationPhysicalRunner, 
   return nowMs - lastSign > QUALIFICATION_OWNER_ABANDONED_MS;
 }
 
-export function probeRunnerLiveness(runner: QualificationPhysicalRunner | null | undefined, nowMs = Date.now()): RunnerLiveness {
+export async function probeRunnerLiveness(
+  runner: QualificationPhysicalRunner | null | undefined,
+  nowMs = Date.now(),
+): Promise<RunnerLiveness> {
   if (!runner) return 'unknown';
   if (unboundReservationOutlivedCeiling(runner, nowMs)) return 'dead';
-  const observed = runnerLivenessProber(runner);
+  const observed = await runnerLivenessProber(runner);
   // A scope name is reserved in the DB before systemd-run creates it. Its temporary absence
   // cannot authorize a second physical run during that launch interval.
   return observed === 'dead' && launchReservationInGrace(runner, nowMs) ? 'unknown' : observed;
@@ -1758,7 +1759,7 @@ async function mutateStoredQualification(
   change: (
     current: CheckpointQualificationTransaction | null,
     context: StoredQualificationRowContext,
-  ) => StoredQualificationMutation,
+  ) => StoredQualificationMutation | Promise<StoredQualificationMutation>,
   options: StoredQualificationMutationOptions = {},
 ): Promise<StoredQualificationMutation> {
   try {
@@ -1782,7 +1783,9 @@ async function mutateStoredQualification(
       if (current?.pendingRepairHead && queueHead && current.pendingRepairHead !== queueHead) {
         return { status: 'conflict' as const, transaction: current };
       }
-      const transition = change(current, rowContext);
+      // Keep async probes under this row lock. Moving the probe outside the mutation would let
+      // it describe one runner while the following decision acts on a replacement.
+      const transition = await change(current, rowContext);
       if (transition.status !== 'updated') return transition;
       const persistTerminalEvent = async (): Promise<void> => {
         if (!options.terminalEvent || !isTerminalQualificationOutcome(transition.transaction.outcome)) return;
@@ -1923,10 +1926,10 @@ export function beginStoredQualification(
     // Probe INSIDE the mutation so the liveness verdict is taken against the same `current` the
     // transition decides on. Probing outside would race: the incumbent can die, or a fresh runner
     // can take the lease, between the read and the write.
-    (current, context) => {
+    async (current, context) => {
       const queue = parseFrozenCandidateRepairQueue(context.rawRepairQueue);
       const incumbentLiveness =
-        input.incumbentLiveness ?? probeRunnerLiveness(current?.currentPhysicalRunner);
+        input.incumbentLiveness ?? await probeRunnerLiveness(current?.currentPhysicalRunner);
       const queueOwnsUntestedRepairHead = Boolean(
         current &&
         queue?.phase === 'ready-to-verify' &&
@@ -2047,11 +2050,11 @@ export function reserveStoredQualificationRunner(
   target: GateVerdictTarget,
   input: Parameters<typeof reserveQualificationRunner>[1],
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, (current, context) =>
+  return mutateStoredQualification(target, async (current, context) =>
     current
       ? reserveQualificationRunner(retargetPreSuiteAttemptToOwningRepairHead(current, input, context.rawRepairQueue), {
           ...input,
-          incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current.currentPhysicalRunner),
+          incumbentLiveness: input.incumbentLiveness ?? await probeRunnerLiveness(current.currentPhysicalRunner),
         })
       : { status: 'unreadable', error: 'missing attempt' },
   );
