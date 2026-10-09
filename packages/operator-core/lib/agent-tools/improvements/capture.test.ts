@@ -854,6 +854,48 @@ describe('improvements:capture tool envelope', () => {
     );
   });
 
+  it('separates incomplete ptool bootstrap causes using the reported field path', async () => {
+    const prefix = 'SDK bootstrap failed before operator connection: ';
+    await callTool({
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'ptool',
+        errorCode: 'sdk_bootstrap_failed',
+        message: `${prefix}repoLockName is not a function`,
+      },
+    });
+    await callTool({
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'ptool',
+        status: 'ENOSPC',
+        fieldPath: '/tmp/pcv/fs-mutex-locks',
+        message: `${prefix}ENOSPC while mkdir of a lock in /tmp/pcv/fs-mutex-locks.`,
+      },
+    });
+    await callTool({
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'ptool',
+        status: 'ENOSPC',
+        fieldPath: '/tmp/pcv/fs-mutex-locks',
+        message: `${prefix}ENOSPC while mkdir of a lock in /tmp/pcv/fs-mutex-locks.`,
+      },
+    });
+
+    const rowKeys = mockCapture.mock.calls.map(([input]) => input.watchdogKey);
+    expect(rowKeys[0]).toBe('repeated-tool-error:ptool:structural:sdk-bootstrap-failed-before-operator-connection');
+    expect(rowKeys[1]).toBe('tool-failure-signature:ptool:structural:enospc:tmp-pcv-fs-mutex-locks');
+    expect(rowKeys[1]).not.toBe(rowKeys[0]);
+    expect(rowKeys[2]).toBe(rowKeys[1]);
+    const firstProbation = (mockCapture.mock.calls[0]?.[0].payloadExtra as Record<string, unknown>)
+      ?.toolFailureProbation as Record<string, unknown>;
+    const enospcProbation = (mockCapture.mock.calls[1]?.[0].payloadExtra as Record<string, unknown>)
+      ?.toolFailureProbation as Record<string, unknown>;
+    expect(firstProbation.watchdogKey).toBe(rowKeys[0]);
+    expect(enospcProbation.watchdogKey).toBe(rowKeys[0]);
+  });
+
   it('routes output-spill failures through the signature-aware subsystem writer (EI-25309649835141283)', async () => {
     mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-spill-filer'));
     mockCaptureToolInvocationFriction

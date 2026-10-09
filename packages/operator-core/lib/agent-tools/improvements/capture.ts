@@ -53,6 +53,7 @@ import { coerceCaptureArgs } from './capture-coerce';
 import {
   normalizeSuspectedToolFailure,
   toolFailureSubsystemForCode,
+  toolFailureSignatureKey,
   TOOL_FAILURE_DIRECT_EVIDENCE_KINDS,
   type SuspectedToolFailure,
 } from '../../harness/improvements/tool-error-classifier';
@@ -1384,17 +1385,28 @@ export default defineTool({
       !args.checkDuplicatesOnly &&
       effectiveLane !== 'observation' &&
       (effectiveKind === 'change' || effectiveKind === 'feature');
-    // A caller-supplied conditionKey is the stable correlation identity. Keep it
-    // ahead of the tool-failure message key: the latter intentionally includes a
-    // message fingerprint, so changing only the error wording must not fork one
-    // condition into multiple rows (EI-22722288208033107).
+    // A caller-supplied conditionKey is the stable correlation identity. A
+    // partial tool-failure report with a concrete field path also has a stable
+    // D-010 row identity; use it when errorCode is absent so a generic wrapper
+    // prefix cannot fold distinct causes together. The probation payload keeps
+    // the original watchdog message key for exact invocation correlation.
+    const hasConcreteFieldPath = typeof reportedToolFailure?.fieldPath === 'string' &&
+      reportedToolFailure.fieldPath.trim() !== '' &&
+      reportedToolFailure.fieldPath.trim().toLowerCase() !== 'field-unknown';
+    const hasExplicitErrorCode = typeof reportedToolFailure?.errorCode === 'string' &&
+      reportedToolFailure.errorCode.trim() !== '';
+    const toolFailureRowKey = normalizedToolFailure && reportedToolFailure
+      ? !hasExplicitErrorCode && hasConcreteFieldPath
+        ? toolFailureSignatureKey(
+            { ...reportedToolFailure, errorCode: reportedToolFailure.status },
+            normalizedToolFailure.class,
+          )
+        : normalizedToolFailure.watchdogKey
+      : undefined;
     const captureWatchdogKey =
       args.conditionKey ??
-      (normalizedToolFailure
-        ? normalizedToolFailure.watchdogKey
-        : effectiveLane === 'observation'
-          ? defaultScorecardConditionKey(observation)
-          : undefined);
+      toolFailureRowKey ??
+      (effectiveLane === 'observation' ? defaultScorecardConditionKey(observation) : undefined);
     // work-queue-admission-and-bulk-dedup P-008: a successful unkeyed
     // observation filing is DONE from the caller's perspective. Whether the
     // server minted a row, HARD-folded onto a survivor, or SOFT-linked a fresh
