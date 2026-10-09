@@ -255,4 +255,27 @@ describe('producer-derived state census', () => {
     expect(census.ok).toBe(true);
     expect(() => assertStateCensusComplete(census)).not.toThrow();
   });
+
+  it.each(['database', 'unit', 'secret'] as const)(
+    'rejects an unclassified %s without hiding declared catalog entries', kind => {
+      const owned: CensusDeclaration = {
+        kind, root: 'host', name: 'owned',
+        classification: kind === 'secret' ? 'secret' : 'state', producer: 'fixture',
+      };
+      const baseline = generateStateCensus([owned], [owned]);
+      expect(baseline.ok).toBe(true);
+      expect(baseline.inventory).toHaveLength(1);
+      expect(baseline.inventory[0].classification).toBe(owned.classification);
+      expect(() => assertStateCensusComplete(baseline)).not.toThrow();
+
+      const changed = generateStateCensus([
+        owned, { kind, root: 'host', name: 'unowned' },
+      ], [owned]);
+      expect(changed.ok).toBe(false);
+      expect(changed.inventory).toHaveLength(2);
+      expect(changed.residue.map(entry => entry.name)).toEqual(['unowned']);
+      expect(() => assertStateCensusComplete(changed))
+        .toThrow(`unclassified:${kind}:host:unowned`);
+    },
+  );
 });
