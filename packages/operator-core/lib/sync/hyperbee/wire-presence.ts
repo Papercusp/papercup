@@ -372,18 +372,18 @@ export async function wirePresenceAnnounceForHarness(
   });
 
   // ── P-005: the SESSION-GRAIN announcer (gossip-only). Every tick reads this
-  // machine's LOCAL live-session roster and broadcasts it as one signed
-  // 'sessions' frame (full-set semantics — receivers replace our previous set).
+  // machine's LOCAL live-session roster and broadcasts this topic's pot-scoped
+  // sessions as one signed 'sessions' frame (full-set semantics within that pot).
   // A change-hash short-circuits identical sets so a quiet machine costs one
   // frame per SESSION_ANNOUNCE_REFRESH_MS keep-alive, not one per tick.
   // Gossip-writer-gated: no flag, no frames (log-path behavior byte-identical).
   //
-  // WI-10002534: the roster is WORKSPACE-wide, so the announcer is shared by
-  // every handle on the same (workspace, topic) — refcounted, never one per
-  // handle. The tower wired 39 harnesses onto one topic, sent ~39 duplicate
-  // full-set frames per change, and the receiver rewrote every row per frame.
-  if (gossipWriterOn && gossipTopicHex) {
-    acquireSessionAnnouncer(handle, gossipTopicHex, opts);
+  // WI-10002534: the source roster is WORKSPACE-wide, so the announcer is shared
+  // by every handle on the same (workspace, topic) — refcounted, never one per
+  // handle. Each topic sends only sessions homed in its registered pot; otherwise
+  // the same workspace session is repeatedly re-scoped by unrelated topics.
+  if (gossipWriterOn && gossipTopicHex && potSlug) {
+    acquireSessionAnnouncer(handle, gossipTopicHex, potSlug, opts);
   }
 
   return loop;
@@ -413,13 +413,17 @@ export function __resetSessionAnnouncersForTests(): void {
 function acquireSessionAnnouncer(
   handle: PresenceWireHandle,
   gossipTopicHex: string,
+  potSlug: string,
   opts: WirePresenceOpts,
 ): void {
   const key = `${handle.workspaceId}::${gossipTopicHex}`;
   let announcer = announcerState.sessionsByTopic.get(key);
   if (!announcer) {
     const members = new Set<PresenceWireHandle>();
-    announcer = { members, stop: startSessionAnnouncer(handle.workspaceId, gossipTopicHex, members, opts) };
+    announcer = {
+      members,
+      stop: startSessionAnnouncer(handle.workspaceId, gossipTopicHex, potSlug, members, opts),
+    };
     announcerState.sessionsByTopic.set(key, announcer);
   }
   const shared = announcer;
@@ -438,6 +442,7 @@ function acquireSessionAnnouncer(
 function startSessionAnnouncer(
   workspaceId: string,
   gossipTopicHex: string,
+  potSlug: string,
   members: ReadonlySet<PresenceWireHandle>,
   opts: WirePresenceOpts,
 ): () => void {
@@ -454,8 +459,11 @@ function startSessionAnnouncer(
         // WI-10005271: the roster is workspace-wide, so every topic's announcer
         // reads ONE shared snapshot instead of its own listPresence + fleet read.
         const roster = await readSessionRosterSnapshot(workspaceId, nowMs);
-        // Fresh objects per topic: the snapshot is shared and must stay unmutated.
-        const sessions: SessionPresenceEntry[] = roster.entries.map((s) => ({
+        // Each topic carries only its pot's rows. Fresh objects keep the shared
+        // snapshot unmutated and prevent a receiver's global owner key from being
+        // re-scoped by the same session arriving from another pot topic.
+        const topicEntries = roster.entries.filter((s) => s.pot_slug === potSlug);
+        const sessions: SessionPresenceEntry[] = topicEntries.map((s) => ({
           owner_id: s.owner_id,
           kind: s.kind,
           intent: s.intent,
@@ -465,7 +473,7 @@ function startSessionAnnouncer(
           fleet_slug: s.fleet_slug,
           fleet_role: s.fleet_role,
         }));
-        const hash = roster.hash;
+        const hash = hashSessionRoster(topicEntries);
         if (hash === lastHash && nowMs - lastSentMs < SESSION_ANNOUNCE_REFRESH_MS) return;
         const { broadcastSessions } = await import('./presence-gossip-wiring');
         if (await broadcastSessions(gossipTopicHex, sessions)) {
@@ -507,17 +515,17 @@ const SESSION_ANNOUNCE_REFRESH_MS =
  *  roster change reaches the wire at most half a tick later than before. */
 const SESSION_ROSTER_SNAPSHOT_TTL_MS = Math.floor(SESSION_ANNOUNCE_TICK_MS / 2);
 
-/** The topic-independent part of an announced session (harness_slug and the
- *  liveness beat are stamped per topic, per tick). */
+/** The topic-independent part of an announced session. The pot scope comes from
+ *  the local presence row; harness_slug and the liveness beat are stamped per
+ *  topic, per tick. */
 type SessionRosterEntry = Omit<SessionPresenceEntry, 'harness_slug' | 'last_active_ms'> & {
+  pot_slug: string | null;
   fleet_slug: string | null;
   fleet_role: string | null;
 };
 
 interface SessionRosterSnapshot {
   entries: readonly SessionRosterEntry[];
-  /** Change-detection key: owner, intent, plan and fleet per session. */
-  hash: string;
 }
 
 /** WI-10005271: one in-flight/recent roster read per workspace, shared by every
@@ -563,6 +571,7 @@ async function buildSessionRosterSnapshot(workspaceId: string): Promise<SessionR
       kind: r.ownerId.startsWith('su-') ? 'su' : r.ownerId.startsWith('s-') ? 'cup' : 'agent',
       intent: r.intent ?? null,
       plan_slug: (r as { currentPlanSlug?: string | null }).currentPlanSlug ?? null,
+      pot_slug: r.potSlug ?? null,
       fleet_slug: null,
       fleet_role: null,
     }));
@@ -583,10 +592,12 @@ async function buildSessionRosterSnapshot(workspaceId: string): Promise<SessionR
   } catch {
     /* membership enrichment is best-effort — never fails an announce */
   }
-  const hash = JSON.stringify(
-    entries.map((s) => [s.owner_id, s.intent, s.plan_slug, s.fleet_slug, s.fleet_role]),
-  );
-  return { entries, hash };
+  return { entries };
+}
+
+/** Change-detection key scoped to one topic's pot. */
+function hashSessionRoster(entries: readonly SessionRosterEntry[]): string {
+  return JSON.stringify(entries.map((s) => [s.owner_id, s.intent, s.plan_slug, s.fleet_slug, s.fleet_role]));
 }
 
 /** Build the gossip WRITER half for this booted handle (P-004): the device
@@ -650,10 +661,10 @@ async function buildGossipWriter(
       },
       getOwnSessions: async () => {
         // Reuse the workspace snapshot the periodic sessions announcer reads;
-        // a short-lived channel must carry the full current set at pair time.
+        // a short-lived channel must carry this topic's pot-scoped set at pair time.
         const nowMs = now();
         const roster = await readSessionRosterSnapshot(handle.workspaceId, nowMs);
-        return roster.entries.map((session) => ({
+        return roster.entries.filter((session) => session.pot_slug === potSlug).map((session) => ({
           ...session,
           harness_slug: handle.harnessSlug,
           last_active_ms: nowMs,
