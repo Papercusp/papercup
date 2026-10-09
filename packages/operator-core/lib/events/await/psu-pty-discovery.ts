@@ -86,6 +86,11 @@ export interface PsuPtyHost {
     lastProgressAt: number | null;
     pendingTools: number;
     observedAt: number;
+    ownerId?: string;
+    hostPid?: number;
+    childPid?: number | null;
+    childGeneration?: number;
+    receivedAtMs?: number;
   };
   /** Host-observed quota banner. Absence means an older host with no reading,
    * not a healthy quota state. Cleared on detector recovery and child recycle. */
