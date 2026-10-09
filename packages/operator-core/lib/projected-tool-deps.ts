@@ -1467,21 +1467,27 @@ export async function backfillResultDoorOutputRef(input: {
   }
 }
 
-/**
- * Backfill late handler metadata onto the exact invocation that produced it.
- * The dispatcher's `dispatchCallId` is copied into schedulerTimeout metadata before the
- * handler returns; unlike the result-door recency join above, this selector never falls back
- * to a neighboring call from the same spawn/tool.
- */
-export async function backfillToolInvocationMetadataByCallId(input: {
+type ExactToolInvocationMetadataSelector =
+  | { kind: 'dispatch-call-id'; value: string | null | undefined }
+  | { kind: 'mcp-request-trace-id'; value: string | null | undefined };
+
+/** Merge late handler metadata onto the exact invocation selected by a stable request key. */
+async function backfillToolInvocationMetadataByExactSelector(input: {
   workspaceId: string | null | undefined;
   toolName: string;
-  dispatchCallId: string | null | undefined;
+  selector: ExactToolInvocationMetadataSelector;
   metadataJson: Record<string, unknown>;
 }): Promise<void> {
   const workspaceId = input.workspaceId;
-  const dispatchCallId = input.dispatchCallId;
-  if (!workspaceId || !dispatchCallId || Object.keys(input.metadataJson).length === 0) return;
+  const selectorValue = input.selector.value;
+  if (!workspaceId || !selectorValue || Object.keys(input.metadataJson).length === 0) return;
+
+  // Keep selector SQL closed over these two fixed JSON paths. Both keys are
+  // recorded before handler settlement and avoid the recency join used by the
+  // older result-door output-ref backfill.
+  const selectorSql = input.selector.kind === 'dispatch-call-id'
+    ? "metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4"
+    : "metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4";
   try {
     await flushPendingTelemetry();
     const { sql } = getOrgPg();
@@ -1490,17 +1496,52 @@ export async function backfillToolInvocationMetadataByCallId(input: {
       await tx.unsafe(
         `UPDATE harness_shared.tool_invocations
             SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $1::jsonb
-          WHERE workspace_id = $2
-            AND tool_name = $3
-            AND metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4`,
-        [jsonbSafeStringify(input.metadataJson), workspaceId, input.toolName, dispatchCallId],
+          WHERE id = (
+            SELECT id FROM harness_shared.tool_invocations
+             WHERE workspace_id = $2
+               AND tool_name = $3
+               AND ${selectorSql}
+             ORDER BY invoked_at DESC
+             LIMIT 1
+          )`,
+        [jsonbSafeStringify(input.metadataJson), workspaceId, input.toolName, selectorValue],
       );
     });
   } catch (err) {
     console.warn(
-      `[projected-tool-deps] backfillToolInvocationMetadataByCallId failed for ${input.toolName}: ${err instanceof Error ? err.message : String(err)}`,
+      `[projected-tool-deps] backfillToolInvocationMetadataByExactSelector failed for ${input.toolName}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/** Backfill late scheduler metadata by the dispatcher's stable call id. */
+export async function backfillToolInvocationMetadataByCallId(input: {
+  workspaceId: string | null | undefined;
+  toolName: string;
+  dispatchCallId: string | null | undefined;
+  metadataJson: Record<string, unknown>;
+}): Promise<void> {
+  return backfillToolInvocationMetadataByExactSelector({
+    workspaceId: input.workspaceId,
+    toolName: input.toolName,
+    selector: { kind: 'dispatch-call-id', value: input.dispatchCallId },
+    metadataJson: input.metadataJson,
+  });
+}
+
+/** Backfill late MCP settlement metadata by the exact request trace id. */
+export async function backfillToolInvocationMetadataByMcpRequestTraceId(input: {
+  workspaceId: string | null | undefined;
+  toolName: string;
+  mcpRequestTraceId: string | null | undefined;
+  metadataJson: Record<string, unknown>;
+}): Promise<void> {
+  return backfillToolInvocationMetadataByExactSelector({
+    workspaceId: input.workspaceId,
+    toolName: input.toolName,
+    selector: { kind: 'mcp-request-trace-id', value: input.mcpRequestTraceId },
+    metadataJson: input.metadataJson,
+  });
 }
 
 /**

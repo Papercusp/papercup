@@ -46,8 +46,15 @@ import { parseScratchReference } from '../../scratch-reference';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
 const h = vi.hoisted(() => {
+  const unsafeCalls: Array<{ sql: string; params: unknown[] }> = [];
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
-    unsafe: async (..._a: unknown[]) => [] as unknown[],
+    unsafe: async (...args: unknown[]) => {
+      const [sql, params] = args;
+      if (typeof sql === 'string') {
+        unsafeCalls.push({ sql, params: Array.isArray(params) ? params : [] });
+      }
+      return [] as unknown[];
+    },
   });
   const fakeSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
     unsafe: async (..._a: unknown[]) => [] as unknown[],
@@ -56,6 +63,7 @@ const h = vi.hoisted(() => {
   return {
     fakeTx,
     fakeSql,
+    unsafeCalls,
     withWorkspaceCalls: [] as string[],
     withWorkspaceDelayMs: 0,
     commitFailure: null as Error | null,
@@ -357,6 +365,7 @@ beforeEach(() => {
   h.replayStores.length = 0;
   h.storedReplay = null;
   h.invocations.length = 0;
+  h.unsafeCalls.length = 0;
   h.resultDoorDelayMs = 0;
   h.scratchWriteTimings = [];
   h.realScratchWriteTimings = [];
@@ -492,6 +501,29 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect((settled?.phaseTimingsMs as { resultDoor?: number } | undefined)?.resultDoor)
         .toBeGreaterThanOrEqual(resultDoorDelayMs);
       expect(Number(settled?.elapsedMs)).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
+
+      let persistedSettlement: { sql: string; params: unknown[] } | undefined;
+      await vi.waitFor(() => {
+        persistedSettlement = h.unsafeCalls.find((call) =>
+          call.sql.includes('UPDATE harness_shared.tool_invocations') &&
+          call.sql.includes("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4"),
+        );
+        expect(persistedSettlement).toBeDefined();
+      });
+      expect(persistedSettlement?.params.slice(1)).toEqual(['ws-test', 'deadlinetest:slow', traceId]);
+      const settlementMetadata = JSON.parse(String(persistedSettlement?.params[0])).mcpRequestSettlement;
+      expect(settlementMetadata).toEqual(expect.objectContaining({
+        traceId,
+        stage: 'inner_dispatch_settled',
+        outcome: 'success',
+        afterDeadline: true,
+        elapsedMs: expect.any(Number),
+        settledAt: expect.any(String),
+        phaseTimingsMs: expect.objectContaining({
+          resultDoor: expect.any(Number),
+          scratchWrites: expect.objectContaining({ count: 2, totalMs: 44 }),
+        }),
+      }));
     } finally {
       info.mockRestore();
     }

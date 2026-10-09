@@ -65,6 +65,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 import {
   backfillResultDoorOutputRef,
   backfillToolInvocationMetadataByCallId,
+  backfillToolInvocationMetadataByMcpRequestTraceId,
   flushPendingTelemetry,
 } from './projected-tool-deps';
 
@@ -240,6 +241,49 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
       'scheduler:get_next',
       'dispatch-call-42',
     ]);
+  });
+
+  it('backfills late MCP settlement metadata by exact request trace id, never by recency', async () => {
+    const traceId = '640b0562-af01-4850-88e9-8ed54f9a032a';
+    const metadataJson = {
+      mcpRequestSettlement: {
+        traceId,
+        outcome: 'success',
+        afterDeadline: true,
+        elapsedMs: 56_894,
+        phaseTimingsMs: { resultDoor: 30_662, scratchWrites: { count: 1, totalMs: 12_000 } },
+      },
+    };
+    await backfillToolInvocationMetadataByMcpRequestTraceId({
+      workspaceId: 'ws-test',
+      toolName: 'plans:get-spec-evidence',
+      mcpRequestTraceId: traceId,
+      metadataJson,
+    });
+
+    expect(unsafeCalls).toHaveLength(2);
+    expect(unsafeCalls[0].params).toEqual(['ws-test']);
+    expect(unsafeCalls[1].sql).toContain('UPDATE harness_shared.tool_invocations');
+    expect(unsafeCalls[1].sql).toContain("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4");
+    expect(unsafeCalls[1].sql).toContain('ORDER BY invoked_at DESC');
+    expect(unsafeCalls[1].sql).not.toContain('invoked_at >= now()');
+    expect(unsafeCalls[1].params).toEqual([
+      JSON.stringify(metadataJson),
+      'ws-test',
+      'plans:get-spec-evidence',
+      traceId,
+    ]);
+  });
+
+  it('does not guess a late MCP invocation when the request trace id is absent', async () => {
+    await backfillToolInvocationMetadataByMcpRequestTraceId({
+      workspaceId: 'ws-test',
+      toolName: 'plans:get-spec-evidence',
+      mcpRequestTraceId: null,
+      metadataJson: { mcpRequestSettlement: { outcome: 'success' } },
+    });
+
+    expect(unsafeCalls).toHaveLength(0);
   });
 
   it('swallows a PG failure and logs a warning instead of throwing', async () => {
