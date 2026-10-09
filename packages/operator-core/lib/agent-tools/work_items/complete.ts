@@ -5310,7 +5310,7 @@ async function completeOne(
     Boolean(completionEvidenceToPersist?.settlementManifest),
   );
   const authorityWarning =
-    stampedAuthority === 'proposed'
+    stampedAuthority === 'proposed' && !isAbandonedClose
       ? `${it.id} is CLOSED but its completion landed authority:'proposed' — recorded and out of the ` +
         `claimable pool, but NOT counted toward burn-down, and it stays owned by you until it is settled. ` +
         (contentIdentityDowngrade

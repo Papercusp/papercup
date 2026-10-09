@@ -7078,6 +7078,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.completionAuthority).toBe('proposed');
       expect(stateOpts().completionAuthority).toBe('proposed');
       expect(r.countsTowardBurnDown).toBe(true);
+      expect(r.authorityWarning).toBeUndefined();
     });
 
     // P-002 measured this exact shape on the live store: 4.2% of evidence-bearing rows
