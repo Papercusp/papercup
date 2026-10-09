@@ -25,8 +25,17 @@ const REQUEST_CONTEXT = pinModuleState(
 );
 
 /** The route passes only a registry-confirmed name, or null for an unknown operation. */
-export function withNamedQueryDiagnosticContext<T>(operation: string | null, fn: (requestId: string) => T): T {
-  const requestId = randomUUID();
+export function withNamedQueryDiagnosticContext<T>(
+  operation: string | null,
+  fn: (requestId: string) => T,
+  requestIdOverride?: string | null,
+): T {
+  // The MCP proxy trace is already validated at the transport boundary. Keep
+  // the seam strict too, so an arbitrary caller cannot turn request metadata
+  // into a retained correlation token.
+  const requestId = typeof requestIdOverride === 'string' && /^[a-f0-9-]{36}$/i.test(requestIdOverride)
+    ? requestIdOverride
+    : randomUUID();
   return REQUEST_CONTEXT.run(Object.freeze({
     ...pgDiagnosticIdentity(),
     rowId: null,

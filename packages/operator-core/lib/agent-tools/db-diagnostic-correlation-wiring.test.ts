@@ -50,6 +50,34 @@ describe('db diagnostic correlation wiring', () => {
     expect(hooks.onquerycontext()).toEqual({ state: 'unobserved' });
   });
 
+  it('uses the validated MCP request trace ID for the native-session verifier operation', async () => {
+    installDbDiagnosticCorrelationWiring();
+    const requestId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
+    const hooks = createPgDiagnosticHooks('org-admin');
+    let receivedRequestId = '';
+
+    await withNamedQueryDiagnosticContext('mcp.nativeSessionVerifier', async id => {
+      receivedRequestId = id;
+      hooks.onresult({
+        connectionId: 1,
+        queryId: 2,
+        backendPid: null,
+        query: 'select 1',
+        rowCount: 0,
+        wireBytes: 0,
+        status: 'error',
+        errorCode: '57014',
+        context: hooks.onquerycontext(),
+      });
+    }, requestId);
+
+    expect(receivedRequestId).toBe(requestId);
+    expect(pgResultDiagnosticSnapshot('org-admin').results[0].correlation).toMatchObject({
+      requestId,
+      operation: 'mcp.nativeSessionVerifier',
+    });
+  });
+
   it('preserves an inner stage attempt and the outer request, including rejection cleanup', async () => {
     installDbDiagnosticCorrelationWiring();
     const attempt = createStageAttempt({ rowId: 42, onEvent: () => {} });
