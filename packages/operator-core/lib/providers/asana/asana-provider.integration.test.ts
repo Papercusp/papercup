@@ -39,6 +39,7 @@ import { dispatchPendingTriggerRuns } from '../../external-triggers/binding-engi
 import { upsertOwnedExternalTriggerSource } from '../../external-triggers/source-store';
 import { ensureSlackBugClassificationBinding, recordSlackBugClassification, type SlackBugClassification } from '../../external-triggers/slack-bug-classification';
 import { fileSlackBugInAsana } from '../../external-triggers/slack-asana-filing';
+import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { VAULT_DATATYPES } from '../../personal-vault/live-sink';
 import { DATATYPE_FOR_APP } from '../../app-data-producer/app-rows';
 import { dataSourceRecordId } from '../../data-sources/datatype-destination-sink';
@@ -394,9 +395,9 @@ async function syncOne(sourceId: string, opts: { maxPagesPerSource?: number } = 
 async function createSource(): Promise<string> {
   const [row] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.data_sources
-      (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope,
+      (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config, scope,
        destination_policy, permission_mapping)
-    VALUES (${WS}, ${KIND}, ${alice}, ${`asana-user-${Date.now()}`}, 'connected',
+    VALUES (${WS}, ${KIND}, ${alice}, ${`asana-user-${Date.now()}`}, 'asana:fixture', 'connected',
             ${sql.json(SOURCE_CONFIG)}, 'personal',
             ${sql.json(DESTINATIONS)}, ${sql.json({ mode: 'owner' })})
     RETURNING id::text`;
@@ -909,6 +910,9 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
 
   it('composes Slack filing and direct Asana reports into stable persisted investigations across replay and reconnect', async () => {
     const sourceId = await createSource();
+    const [source] = await sql<Array<{ credential_ref: string }>>`
+      SELECT credential_ref FROM harness_shared.data_sources WHERE id = ${sourceId}::uuid`;
+    expect(source?.credential_ref).toBe('asana:fixture');
     await syncOne(sourceId);
     const { rule, backfill } = await setAdmissionRuleAndBackfill({
       workspaceId: WS, dataSourceId: sourceId, title: 'Composed new bug reports',
@@ -931,6 +935,8 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
       credentialRef: 'slack:fixture', status: 'connected', config: { botUserId: 'UBOT', channels: ['C-DRILL'],
         asanaBugDestination: { sourceId, projectGid: ENG.gid } } });
     const binding = await ensureSlackBugClassificationBinding(sql, WS, slack);
+    expect(await readAndEvaluateAcceptanceBarLifecycle(binding.binding.planSlug, 'pre-start',
+      { harnessSlug: HARNESS, expectedApplicable: true })).toMatchObject({ satisfied: true });
     await sql`UPDATE harness_shared.trigger_bindings SET armed = TRUE WHERE id = ${binding.binding.id}::uuid`;
     let sequence = 0;
     async function report(classification: SlackBugClassification) {
