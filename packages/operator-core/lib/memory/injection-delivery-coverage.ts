@@ -113,6 +113,7 @@ export function assessDeliveredContext(attempts: readonly DeliveredContextAttemp
   const results = attempts.map((attempt) => {
     const failures: string[] = [], unknown: string[] = [];
     const delivered = new Set<string>();
+    let contentChars = 0, observedFragments = 0;
     let remaining = attempt.block ?? '';
     if (attempt.block === null) unknown.push('final-block-unobserved');
     for (const fragment of attempt.fragments) {
@@ -120,6 +121,8 @@ export function assessDeliveredContext(attempts: readonly DeliveredContextAttemp
         unknown.push(`fragment-not-observed:${fragment.sourceRef}`); continue;
       }
       remaining = remaining.replace(fragment.text, '');
+      contentChars += fragment.text.length;
+      observedFragments++;
       delivered.add(fragment.factKey);
       const identity = JSON.stringify([attempt.sessionId, attempt.epoch, fragment.factKey]);
       const prior = seen.get(identity);
@@ -135,7 +138,7 @@ export function assessDeliveredContext(attempts: readonly DeliveredContextAttemp
         if (!fragment.text.includes(qualifier)) failures.push(`condition-lost:${fragment.sourceRef}:${qualifier}`);
       }
     }
-    const missing = [...new Set(attempt.requiredFactKeys ?? [])]
+    const missing = [...new Set(attempt.block === null ? [] : attempt.requiredFactKeys ?? [])]
       .filter((key) => !delivered.has(key) && !attempt.alreadyInContext?.includes(key))
       .map((factKey) => ({ factKey, stage: attempt.retrievedFactKeys === undefined ? 'unknown'
         : !attempt.retrievedFactKeys.includes(factKey) ? 'retrieval'
@@ -146,13 +149,12 @@ export function assessDeliveredContext(attempts: readonly DeliveredContextAttemp
     else if (attempt.requiredFactKeys.length === 0 && delivered.size > 0) failures.push('unneeded-context');
     for (const framing of attempt.framingText ?? []) remaining = remaining.replace(framing, '');
     if (remaining.trim()) unknown.push('block-content-unlabelled');
-    const contentChars = attempt.fragments.reduce((n, fragment) => n + fragment.text.length, 0);
     if (attempt.contentBudgetChars !== undefined && contentChars > attempt.contentBudgetChars &&
-      !(attempt.firstEntryException === true && attempt.fragments.length === 1)) failures.push('content-budget-exceeded');
+      !(attempt.firstEntryException === true && observedFragments === 1)) failures.push('content-budget-exceeded');
     if (attempt.harmfulTaskEffect === true) failures.push('harmful-task-effect');
     return { attemptId: attempt.attemptId, failures, unknown, missing, contentChars,
       finalBlockChars: attempt.block?.length ?? null,
-      usefulFactsPerToken: attempt.deliveredTokens && attempt.requiredFactKeys !== undefined
+      usefulFactsPerToken: attempt.block !== null && attempt.deliveredTokens && attempt.requiredFactKeys !== undefined
         ? [...delivered].filter((key) => attempt.requiredFactKeys!.includes(key)).length / attempt.deliveredTokens : null,
       usefulSuccess: failures.length ? false : unknown.length ? null : true,
       verdict: failures.length ? 'broken' : unknown.length ? 'unknown' : 'healthy' };
