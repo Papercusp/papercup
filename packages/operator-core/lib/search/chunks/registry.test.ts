@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { resolveChunkSurface, splitterVersionOf } from '@papercusp/search';
+// Deliberately unmocked: a duplicate live source must fail this guard.
+import { SEARCH_SOURCES } from '../../agent-tools/search/sources';
 import {
   CHUNK_SURFACES,
   CONSULT_QUESTIONS_CHUNK_SURFACE,
@@ -14,6 +18,47 @@ import {
 import { runChunkSyncTick } from './tick';
 
 describe('chunk surface registry', () => {
+  it('has exactly one live search source for each canonical knowledge family, with a duplicate negative control', () => {
+    const names = SEARCH_SOURCES.map(source => source.name);
+    const duplicates = (input: string[]) => input.filter((name, index) => input.indexOf(name) !== index);
+    expect(duplicates(names)).toEqual([]);
+    for (const family of ['plan', 'doc', 'report']) {
+      expect(names.filter(name => name === family), family).toEqual([family]);
+      expect(duplicates([...names, family])).toContain(family);
+    }
+  });
+
+  it('keeps knowledge ingestion on the existing periodic and publication paths, detecting a second schedule', () => {
+    const calls = (body: string) => {
+      const file = ts.createSourceFile('fixture.ts', body, ts.ScriptTarget.Latest, true);
+      const out: Array<{ callee: string; first: string }> = [];
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node)) out.push({ callee: node.expression.getText(file), first: node.arguments[0]?.getText(file) ?? '' });
+        ts.forEachChild(node, visit);
+      };
+      visit(file);
+      return out;
+    };
+    const source = (relative: string) => readFileSync(new URL(relative, import.meta.url), 'utf8');
+    const periodic = source('../../dbos/periodic-workflows.ts');
+    const knowledgeSchedules = (body: string) => calls(body).filter(call => call.callee === 'DBOS.registerScheduled'
+      && /embedBackfill|planIndex|docIndex|reportIndex/i.test(call.first));
+    expect(knowledgeSchedules(periodic).map(call => call.first)).toEqual(['embedBackfillWorkflow']);
+    expect(knowledgeSchedules(periodic + '\nDBOS.registerScheduled(reportIndexWorkflow, { name: "parallelReportIndex" });'))
+      .toHaveLength(2);
+    const backfillCalls = calls(source('../embed-backfill.ts')).map(call => call.callee);
+    for (const child of ['runDocSectionsSyncOnce', 'runHarnessDocSectionsSweep', 'runChunkSyncTick']) {
+      expect(backfillCalls, child).toContain(child);
+    }
+    expect(calls(source('../../report-publication.ts')).filter(call => call.callee === 'indexReport')).toHaveLength(1);
+    const schedulers = new Set(['setInterval', 'managedSetInterval', 'DBOS.registerScheduled', 'registerSystemAction']);
+    for (const child of ['../doc-embed-sync.ts', './tick.ts', '../report-index.ts']) {
+      expect(calls(source(child)).filter(call => schedulers.has(call.callee)), child).toEqual([]);
+      expect(calls(source(child) + '\nsetInterval(runDuplicateKnowledgeIndex, 1000);').filter(call => schedulers.has(call.callee)))
+        .toHaveLength(1);
+    }
+  });
+
   it('every entry is valid, so a registry mistake fails here instead of at sync time', () => {
     for (const s of CHUNK_SURFACES) expect(() => resolveChunkSurface(s), s.surface).not.toThrow();
   });
