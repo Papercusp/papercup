@@ -1,0 +1,166 @@
+import { z } from 'zod';
+import { parsePlan } from './parser';
+import { splitPlanSections } from './plan-sections';
+import { parseBarMappings, parseRequirementBars } from '../../acceptance-bar-seed';
+
+const text = z.string().trim().max(2000);
+const sourceRef = z.string().trim().max(500).regex(/^session_turn:(claude|codex|omp|agent_chat):[^\s:]+:\d+$/);
+
+/** Authoring data lives in the canonical plan body, alongside its requirements. */
+export const productShapingSchema = z.object({
+  audience: text,
+  problem: text,
+  outcome: text,
+  nonGoals: z.array(text).max(20),
+  sourceRefs: z.array(sourceRef).max(20),
+  context: z.array(z.object({
+    kind: z.enum(['owner-request', 'observed-fact', 'assumption', 'product-choice']),
+    text,
+    sourceRefs: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+    decisionRef: z.string().regex(/^D-\d{3,}$/).optional(),
+    material: z.boolean().optional(),
+    resolved: z.boolean().optional(),
+    recommendation: text.optional(),
+  }).strict()).max(40),
+  scenarios: z.array(z.object({
+    id: z.string().max(20).regex(/^SC-\d{3,}$/),
+    title: text,
+    kind: z.enum(['normal', 'failure', 'boundary', 'authorization', 'concurrency', 'recovery']),
+    trigger: text,
+    action: text,
+    outcome: text,
+    requirementIds: z.array(z.string().regex(/^R-\d+$/)).max(20),
+  }).strict()).max(40),
+  considerations: z.array(z.object({
+    category: text,
+    disposition: z.enum(['covered', 'not-applicable', 'open']),
+    reason: text,
+    scenarioIds: z.array(z.string().regex(/^SC-\d{3,}$/)).max(20),
+  }).strict()).max(20),
+}).strict();
+
+export type ProductShaping = z.infer<typeof productShapingSchema>;
+
+export const PRODUCT_SHAPING_GUIDANCE =
+  'Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only about consequential product choices, never engineering methodology. Map scenarios to R-N requirements and their existing Design BAR-to-work map. Use plans:audit phase:shaping for advisory gaps and the original-intent reviewer brief; save edits with plans:set-content. Full verification remains unchanged.';
+
+export function productShapingScaffold(): string {
+  const draft: ProductShaping = {
+    audience: '', problem: '', outcome: '', nonGoals: [], sourceRefs: [], context: [],
+    scenarios: [{ id: 'SC-001', title: '', kind: 'normal', trigger: '', action: '', outcome: '', requirementIds: [] }],
+    considerations: [],
+  };
+  return '## Product shaping\n\n' + PRODUCT_SHAPING_GUIDANCE +
+    '\n\n```product-shaping\n' + JSON.stringify(draft, null, 2) + '\n```';
+}
+
+export interface ShapingDiagnostic { code: string; ref: string; message: string }
+
+/** Structural advice, never a verdict that the author's interpretation is correct. */
+export function previewProductShaping(planContent: string) {
+  const diagnostics: ShapingDiagnostic[] = [];
+  const add = (code: string, ref: string, message: string) => diagnostics.push({ code, ref, message });
+  const sections = splitPlanSections(planContent).filter(section => section.heading === 'Product shaping');
+  let brief: ProductShaping | null = null;
+  let status: 'missing' | 'invalid' | 'incomplete' | 'ready-for-review' = 'missing';
+  if (sections.length === 0) {
+    add('shaping_missing', 'section:Product shaping', 'Develop the product brief and user scenarios before formal requirements.');
+  } else if (sections.length !== 1) {
+    status = 'invalid';
+    add('shaping_ambiguous', 'section:Product shaping', 'Keep one canonical Product shaping section.');
+  } else {
+    const blocks = [...sections[0]!.body.matchAll(/^```product-shaping\s*\n([\s\S]*?)\n```\s*$/gm)];
+    status = 'invalid';
+    if (blocks.length !== 1) {
+      add('shaping_block_missing_or_ambiguous', 'section:Product shaping', 'Author exactly one product-shaping JSON fence using the scaffold.');
+    } else {
+      try {
+        const parsed = productShapingSchema.safeParse(JSON.parse(blocks[0]![1]!));
+        if (parsed.success) { brief = parsed.data; status = 'ready-for-review'; }
+        else for (const issue of parsed.error.issues.slice(0, 20)) add('shaping_invalid', issue.path.join('.'), issue.message);
+      } catch {
+        add('shaping_invalid_json', 'section:Product shaping', 'Repair malformed product-shaping JSON; partial data is not a complete brief.');
+      }
+    }
+  }
+
+  const requirements = parseRequirementBars(planContent);
+  const requirementIds = requirements.ok ? new Set(requirements.bars.map(bar => bar.barKey)) : new Set<string>();
+  const parsedItems = parsePlan(planContent).items.filter(item => item.storedStatus !== 'dropped');
+  const itemIds = new Set(parsedItems.map(item => item.id));
+  const map = requirements.ok ? parseBarMappings(planContent, requirementIds) : null;
+  const mappings = map?.ok ? map.mappings : [];
+  const trace: Array<{ scenarioId: string; requirementIds: string[]; planItemIds: string[] }> = [];
+  if (brief) {
+    if (!requirements.ok) for (const problem of requirements.problems) add(problem.code, problem.barKey ?? 'Requirements', problem.detail);
+    if (map && !map.ok) for (const problem of map.problems) add(problem.code, problem.barKey ?? 'Design', problem.detail);
+    for (const key of ['audience', 'problem', 'outcome'] as const) if (!brief[key]) add('brief_field_missing', key, `Describe ${key} in product terms.`);
+    if (!brief.sourceRefs.length) add('original_sources_missing', 'sourceRefs', 'Cite the original request; generated specs alone cannot establish intent.');
+    if (!brief.nonGoals.length || brief.nonGoals.some(value => !value)) add('non_goals_missing', 'nonGoals', 'State explicit scope boundaries.');
+    if (!brief.scenarios.some(scenario => scenario.kind === 'normal')) add('normal_journey_missing', 'scenarios', 'Walk through the normal user journey from trigger to outcome.');
+    const scenarioIds = new Set<string>();
+    const decisions = new Set(parsePlan(planContent).decisions.map(decision => decision.id));
+    for (const scenario of brief.scenarios) {
+      if (scenarioIds.has(scenario.id)) add('scenario_duplicate', scenario.id, 'Use unique scenario identities.');
+      scenarioIds.add(scenario.id);
+      for (const key of ['title', 'trigger', 'action', 'outcome'] as const) if (!scenario[key]) add('scenario_field_missing', scenario.id, `Describe the scenario ${key}.`);
+      if (!scenario.requirementIds.length) add('scenario_unmapped', scenario.id, 'Derive observable requirements from this scenario before tasks.');
+      for (const id of scenario.requirementIds) if (!requirementIds.has(id)) add('scenario_requirement_missing', scenario.id, `${id} is not a canonical requirement in this plan.`);
+      const linkedItems = [...new Set(mappings.filter(mapping => scenario.requirementIds.includes(mapping.barKey)).flatMap(mapping => mapping.planItemIds))];
+      trace.push({ scenarioId: scenario.id, requirementIds: scenario.requirementIds, planItemIds: linkedItems });
+      for (const id of linkedItems) if (!itemIds.has(id)) add('scenario_item_missing', scenario.id, `${id} is absent or dropped.`);
+      if (scenario.requirementIds.length && !linkedItems.length) add('scenario_work_unmapped', scenario.id, 'Map scenario requirements through the existing Design BAR-to-work map.');
+    }
+    for (const id of requirementIds) if (!brief.scenarios.some(scenario => scenario.requirementIds.includes(id))) add('requirement_untraced', id, 'Explain which user scenario motivates this requirement; check for unsupported scope.');
+    for (const [index, entry] of brief.context.entries()) {
+      const ref = `context.${index}`;
+      if (!entry.text) add('context_empty', ref, 'State the fact, assumption or choice explicitly.');
+      if ((entry.kind === 'owner-request' || entry.kind === 'observed-fact') && !entry.sourceRefs?.length) add('context_source_missing', ref, 'Cite evidence; do not present an assumption as an owner request or observed fact.');
+      if (entry.kind === 'owner-request' && entry.sourceRefs?.some(value => !sourceRef.safeParse(value).success)) add('owner_source_invalid', ref, 'An owner request must cite an original session_turn reference, not an agent-authored artifact.');
+      if (entry.kind === 'product-choice' && entry.material && !entry.resolved) add('material_choice_open', ref, `Resolve this consequential product choice with a recommendation: ${entry.recommendation || 'recommendation missing'}`);
+      if (entry.decisionRef && !decisions.has(entry.decisionRef)) add('context_decision_missing', ref, `${entry.decisionRef} is absent from Decisions.`);
+    }
+    for (const consideration of brief.considerations) {
+      if (!consideration.category || !consideration.reason) add('consideration_reason_missing', consideration.category, 'Explain applicability instead of mechanically requiring every category.');
+      if (consideration.disposition === 'open') add('consideration_open', consideration.category, consideration.reason);
+      if (consideration.disposition === 'covered' && !consideration.scenarioIds.length) add('consideration_unmapped', consideration.category, 'Link the scenarios that cover this concern.');
+      for (const id of consideration.scenarioIds) if (!scenarioIds.has(id)) add('consideration_scenario_missing', consideration.category, `${id} is absent from scenarios.`);
+    }
+    if (diagnostics.length) status = 'incomplete';
+  }
+  const reviewerBrief = {
+    sourceRefs: brief?.sourceRefs ?? [],
+    planSection: 'Product shaping',
+    readFullContext: 'plans:get { slug, heading:"Product shaping" }; read each original source via sessions:read before reviewing requirements.',
+    instructions: [
+      'Read the original source turns and relevant current-product context BEFORE reading generated requirements. Source syntax is checked here; source content and authorship are not verified by this preview.',
+      'Reconstruct the intended experience independently. Compare it with the brief, concrete scenarios and requirements; report omissions, contradictions, unsupported additions and material ambiguous choices with exact references.',
+      'Keep assumptions distinct from owner requests. Investigate routine technical choices yourself; ask only material product questions with a recommended answer.',
+      'Use the existing independent review route. These structural diagnostics do not prove semantic completeness or owner approval; full verification remains unchanged.',
+    ],
+  };
+  const preview = {
+    status, advisory: true as const, semanticCompleteness: 'not-measured' as const,
+    sourceContentVerified: false as const, brief, trace, diagnostics: diagnostics.slice(0, 20),
+    diagnosticsOmitted: Math.max(0, diagnostics.length - 20),
+    overflowRead: diagnostics.length > 20 ? 'Read the canonical Product shaping section and repair these diagnostics first, then repeat the shaping preview.' : null,
+    reviewerBrief, scaffold: status === 'missing' || status === 'invalid' ? productShapingScaffold() : null,
+    next: PRODUCT_SHAPING_GUIDANCE,
+  };
+  // A large brief remains in the canonical plan; never duplicate it into a
+  // tool-result spill that conceals the diagnostic or review instructions.
+  if (JSON.stringify(preview).length > 6000) {
+    return { ...preview, brief: brief ? { audience: brief.audience.slice(0, 240),
+      problem: brief.problem.slice(0, 240), outcome: brief.outcome.slice(0, 240) } : null,
+      reviewerBrief: { ...reviewerBrief, sourceRefs: reviewerBrief.sourceRefs.slice(0, 3),
+        sourceRefsOmitted: Math.max(0, reviewerBrief.sourceRefs.length - 3) },
+      briefIsExcerpt: true, trace: trace.slice(0, 3).map(row => ({ ...row,
+        requirementIds: row.requirementIds.slice(0, 5), planItemIds: row.planItemIds.slice(0, 5),
+        linksAreExcerpt: row.requirementIds.length > 5 || row.planItemIds.length > 5 })),
+      traceOmitted: Math.max(0, trace.length - 3),
+      diagnostics: diagnostics.slice(0, 5).map(row => ({ ...row, message: row.message.slice(0, 160) })),
+      diagnosticsOmitted: Math.max(0, diagnostics.length - 5),
+      overflowRead: 'Read the full canonical Product shaping section with plans:get; the brief, trace and diagnostics here are excerpts.' };
+  }
+  return { ...preview, briefIsExcerpt: false, traceOmitted: 0 };
+}

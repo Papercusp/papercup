@@ -1241,6 +1241,7 @@ export function injectIntoHostWithConfirmation(
      *  can NEVER waive the two human guards — those are evaluated by the host from
      *  its own process state and are not caller-influenced. */
     force?: boolean;
+    expectedStartedAt?: number;
     focus?: string;
     systemPromptAddendum?: string;
     /** Exact requesting Codex rollout. The host validates it within CODEX_HOME
@@ -1571,6 +1572,8 @@ export type ShutdownViaPtyResult =
   | 'refused-not-agent-launched'
   | 'refused-human-attended'
   | 'refused-agent-busy';
+// A stale host incarnation is separate from a host refusing its own shutdown.
+export type BoundShutdownViaPtyResult = ShutdownViaPtyResult | 'refused-stale-host';
 
 /**
  * Ask a live psu-hosted session to WIND DOWN AND EXIT — closing its own terminal tab
@@ -1598,16 +1601,21 @@ export type ShutdownViaPtyResult =
  */
 export async function shutdownViaPty(
   ownerId: string,
-  opts: { reason?: string; force?: boolean; verifyIdentity?: VerifyPidIdentity } = {},
-): Promise<ShutdownViaPtyResult> {
+  opts: { reason?: string; force?: boolean; verifyIdentity?: VerifyPidIdentity; expectedHost?: { startedAt: number; advSessionId: string } } = {},
+): Promise<BoundShutdownViaPtyResult> {
   const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
   if (!host) return 'no-host';
   if (!hostSupports(host, 'shutdown')) return 'no-cap';
+  if (opts.expectedHost) {
+    if (!hostSupports(host, 'shutdown-identity')) return 'no-cap';
+    if (host.startedAt !== opts.expectedHost.startedAt || host.advSessionId !== opts.expectedHost.advSessionId) return 'refused-stale-host';
+  }
   const res = await injectIntoHostWithConfirmation(host.sock, {
     mode: 'shutdown',
     data: String(opts.reason ?? '').slice(0, 500),
     force: opts.force === true,
     ownerId,
+    ...(opts.expectedHost ? { expectedStartedAt: opts.expectedHost.startedAt } : {}),
   });
   if (res.ok) return 'sent';
   const reason = String(res.reason ?? '');
@@ -1616,6 +1624,7 @@ export async function shutdownViaPty(
     if (which === 'not-agent-launched') return 'refused-not-agent-launched';
     if (which === 'human-attended') return 'refused-human-attended';
     if (which === 'agent-busy') return 'refused-agent-busy';
+    if (which === 'stale-host') return 'refused-stale-host';
   }
   return 'send-failed';
 }

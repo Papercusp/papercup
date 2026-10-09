@@ -7963,6 +7963,19 @@ async fn refetch_loop(
         }
     };
 
+    // Restore before the serial initial reads: slow or unavailable tab data
+    // must not leave the owner in the default harness. The reducer preserves
+    // saved selections until their lists arrive and cancels a late restore
+    // after owner input.
+    match client.get_view_state(&workbench::workbench_owner()).await {
+        Ok(vs) => {
+            let _ = tx.send(Event::ViewStateLoaded(vs));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("view-state: {e}")));
+        }
+    }
+
     // Initial load.
     refetch_all(
         &client,
@@ -7988,17 +8001,6 @@ async fn refetch_loop(
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("toast-log: {e}")));
-        }
-    }
-
-    // Restore the persisted workbench view-state once, after the initial data
-    // load so selections land against populated lists (P12 / D-002).
-    match client.get_view_state(&workbench::workbench_owner()).await {
-        Ok(vs) => {
-            let _ = tx.send(Event::ViewStateLoaded(vs));
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("view-state: {e}")));
         }
     }
 

@@ -32,7 +32,7 @@ describe('work-item source read projection', () => {
     expect(projected).toContain("CASE WHEN jsonb_typeof(payload) = 'object'");
     expect(projected).toContain('ELSE payload END) AS payload');
     for (const key of FLEET_METRIC_ARCHIVE_KEYS) expect(projected).toContain(`'${key}'`);
-    for (const key of ['agentReview', 'implementationReadiness', '_claimHold', 'externalBlockers',
+    for (const key of ['agentReview', 'admissionReview', 'implementationReadiness', '_claimHold', 'externalBlockers',
       'claim_hold_release', 'plan_item', 'ideaLifecycle', 'paths', 'tags']) {
       expect(FLEET_METRIC_ARCHIVE_KEYS as readonly string[]).not.toContain(key);
     }

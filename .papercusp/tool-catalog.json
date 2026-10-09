@@ -22188,7 +22188,7 @@
           "POST"
         ]
       },
-      "description": "Record a plan audit. Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing; map resolved conditions in `mappings`/`summary` instead. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs and previews readiness. BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or fenced `requirement` JSON plus Design map.",
+      "description": "Audit a plan: shaping previews product intent and scenario gaps without writes; activation records source coverage; completion resolves code/test citations. Activation refuses unresolved blockers. BAR seeding requires executable requirement JSON and a Design map.",
       "capabilities": [
         "plans:write"
       ],
@@ -22249,9 +22249,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Before ready/active, read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions. Author `## Requirements` with exact `**R-N — Title.** outcome` records (or a fenced `requirement` JSON block), map each R-N in Design's Bar-to-work table (`tree|deployed|live`); ordinary bullet lists do not satisfy the BAR parser. Use `activation`; before shipped use `completion` against ACTUAL CODE.",
-        "notWhen": "Not mid-implementation; grade rubrics with scorecards:emit, decisions with plans:add-decision, and repair open activation mappings first.",
-        "chaining": "Activation: sessions:search/read → repair omissions → audit → ready. Later edits preserve audit and return audited/current revision id/seq/contentHash. Re-audit after requirements, scope, constraints, decisions, dependencies, sequencing, acceptance criteria, open questions, promised follow-ups; spelling, formatting, cosmetic-only wording need no re-audit. Completion: audit → rubric/scorecard → shipped."
+        "when": "Before specs/tasks use shaping: product brief, scenarios, assumptions, original-intent reviewer context. Before activation read the full conversation and map requirements/decisions/items; before shipment cite actual code. Requirements need executable requirement JSON and a Design BAR-to-work map.",
+        "notWhen": "Grade rubrics with scorecards:emit and decisions with plans:add-decision; repair open activation mappings first.",
+        "chaining": "Author Product shaping JSON using the plans:new scaffold; shaping preview → repair with plans:set-content → existing independent review. Activation: source read → audit → start. Re-audit semantic edits, not cosmetics. Completion: audit → rubric/scorecard → shipped."
       }
     },
     {
@@ -23610,9 +23610,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Starting a plan: plans:new { slug, title, content }. Pass markdown with ## Requirements and ## Design; Requirements need canonical R-N rows plus a Design ### Bar-to-work map for this plan mapping each to P-NNN and evidence plane tree, deployed, or live. The tool validates this before writing. See /internal/docs/spec/plan-format.",
+        "when": "Starting a plan: plans:new { slug, title, content }. Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only about consequential product choices, never engineering methodology. Map scenarios to R-N requirements and their existing Design BAR-to-work map. Use plans:audit phase:shaping for advisory gaps and the original-intent reviewer brief; save edits with plans:set-content. Full verification remains unchanged. Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and a Design BAR-to-work map. See /internal/docs/spec/plan-format.",
         "notWhen": "Editing an existing plan? Use plans:set-content / set-now / add-decision / add-item. Never create one by writing docs/plans/*.md; use this tool.",
-        "chaining": "One-shot: plans:new { slug, title, content } writes the body. Include ### Bar-to-work map for this plan with | bar | implementing plan items | evidence plane | and canonical P-NNN item lines. A startable plan needs Requirements + complete BAR map + items, then plans:start. Incremental: plans:new → plans:set-now/add-item → plans:set-content → plans:start."
+        "chaining": "Shape the product → requirement JSON + Design BAR map + P-NNN items → activation audit/spec quality → plans:start. Incremental edits use plans:set-content or structured item/decision verbs."
       }
     },
     {

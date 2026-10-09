@@ -241,6 +241,56 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     expect(out.data.read).toMatchObject({ requested: ids.length, available: ids.length, unavailable: 0 });
   });
 
+  it('keeps operationalBrief completion evidence under outer field projections for one and many ids', async () => {
+    const ids = [
+      'WI-brief-projection-1',
+      'WI-brief-projection-2',
+      'WI-brief-projection-3',
+      'WI-brief-projection-4',
+      'WI-brief-projection-5',
+    ];
+    const evidence = { summary: 'verified completion', verifiedHow: 'focused regression guard' };
+    getWorkItem.mockImplementation(async (id: string, _harness?: string, options?: { payloadProjection?: string }) => ({
+      id,
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercup',
+      state: 'done',
+      title: id,
+      closedAt: '2026-10-09T17:00:00.000Z',
+      updatedAt: '2026-10-09T17:00:00.000Z',
+      ...(options === undefined || options.payloadProjection === 'completionEvidence'
+        ? { terminalCompletionEvidence: evidence }
+        : {}),
+    }));
+    const projectedCtx = {
+      ...ctx,
+      sourceProjection: {
+        pick: ['results[].id', 'results[].operationalBrief.lastVerified', 'read'],
+      },
+    };
+
+    const single = await get.handler(
+      { id: ids[0], operationalBrief: true } as never,
+      projectedCtx as never,
+    ) as Out;
+    const batch = await get.handler(
+      { ids, operationalBrief: true } as never,
+      projectedCtx as never,
+    ) as Out;
+
+    for (const row of [...single.data.results, ...batch.data.results]) {
+      expect(row.operationalBrief).toMatchObject({
+        lastVerified: {
+          status: 'known',
+          value: { ref: `${row.id}#completion`, summary: 'focused regression guard' },
+        },
+      });
+    }
+    expect(getWorkItem.mock.calls.every(([, , options]) => options === undefined)).toBe(true);
+    expect(getWorkItemsByIds).not.toHaveBeenCalled();
+  });
+
   it('runs detail=true with threadLimit in the bounded pool instead of serializing the batch', async () => {
     const ids = ['WI-detail-1', 'WI-detail-2', 'WI-detail-3', 'WI-detail-4'];
     let active = 0;

@@ -404,6 +404,15 @@ describe('default fleet reports over the real current-spec queue', () => {
     const archives = Object.fromEntries(FLEET_METRIC_ARCHIVE_KEYS.map(key => [key, { receipt: 'x'.repeat(8192) }]));
     await sql`UPDATE harness_shared.work_items SET payload = payload || ${sql.json(archives)}::jsonb
       WHERE workspace_id = 'default' AND feature_id = ANY(${ids}::text[])`;
+    // Admission clocks are live metric inputs. Seed real pending/terminal
+    // transitions after the archival envelopes so a misclassified archive key
+    // cannot overwrite this independent control and make both readers agree.
+    await sql`UPDATE harness_shared.work_items SET payload = payload || ${sql.json({
+      admissionReview: { state: 'pending', enteredAt },
+    })}::jsonb WHERE workspace_id = 'default' AND feature_id = ${ids[0]}`;
+    await sql`UPDATE harness_shared.work_items SET payload = payload || ${sql.json({
+      admissionReview: { state: 'terminal', enteredAt, terminalAt: '2026-08-12T00:00:01.000Z' },
+    })}::jsonb WHERE workspace_id = 'default' AND feature_id = ${ids[3]}`;
     const resolution = await resolveFleetMetricScope({ workspaceId: 'default', harness: HARNESS,
       fleet: FLEET, flowMode: 'current-spec' });
     if (!resolution.ok) throw new Error(resolution.reason);
@@ -422,8 +431,16 @@ describe('default fleet reports over the real current-spec queue', () => {
     const occurrenceCounts = await readIssueOccurrenceCounts({ workspaceId: 'default', harnessSlug: HARNESS,
       since: resolution.scope.window.startAt });
     const options = { workspaceId: 'default', sourceCapExhausted: false, issueOccurrences: occurrenceCounts };
-    expect(await buildFleetMetricsResult(resolution, projected, options))
-      .toEqual(await buildFleetMetricsResult(resolution, full, options));
+    const metrics = await buildFleetMetricsResult(resolution, projected, options);
+    expect(metrics).toEqual(await buildFleetMetricsResult(resolution, full, options));
+    if (!metrics.ok) throw new Error(metrics.reason);
+    expect(metrics.snapshot.queueHealth.waiting.admissionWait).toMatchObject({
+      population: 1, known: 1, unknown: 0,
+      oldestMs: Date.parse(resolution.scope.window.endAt) - Date.parse(enteredAt),
+    });
+    expect(metrics.snapshot.queueHealth.waiting.admissionDelay).toMatchObject({
+      population: 1, known: 1, unknown: 0, oldestMs: 1000,
+    });
 
     // Both physical families honor the policy, preserving future control keys.
     for (const kind of ['feature', 'bug'] as const) {

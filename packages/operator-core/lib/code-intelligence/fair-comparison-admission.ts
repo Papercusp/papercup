@@ -26,6 +26,11 @@ export interface ArmAdmission {
   readonly telemetryDefault: string;
   /** Environment that disables it; applied to EVERY process the arm spawns. */
   readonly telemetryOffEnv: Readonly<Record<string, string>>;
+  /** Comparison admission never grants product distribution. Missing means unreviewed. */
+  readonly distribution?: {
+    readonly decision: 'approved' | 'excluded' | 'unreviewed';
+    readonly evidenceRef: string;
+  };
 }
 
 export const ARM_ADMISSIONS: readonly ArmAdmission[] = Object.freeze<ArmAdmission[]>([
@@ -64,6 +69,10 @@ export const ARM_ADMISSIONS: readonly ArmAdmission[] = Object.freeze<ArmAdmissio
     licenceSha256Prefix: 'b3e617e5e5eea01b',
     telemetryDefault: 'not verified in this pass; run offline-only like the 2026-10-02 bench',
     telemetryOffEnv: {},
+    distribution: {
+      decision: 'excluded',
+      evidenceRef: 'gitnexus-deterministic-integration-2026-10-05#D-004',
+    },
   },
   {
     armId: 'codebase-memory',
@@ -121,9 +130,21 @@ export const INCUMBENT_ARM_ID = 'gitnexus';
 export function admitArm(
   armId: string,
   admissions: readonly ArmAdmission[] = ARM_ADMISSIONS,
+  purpose: 'comparison' | 'distribution' = 'comparison',
 ): { admission: ArmAdmission; env: Readonly<Record<string, string>> } {
   const admission = admissions.find((a) => a.armId === baseId(armId));
   if (!admission) throw new Error(`arm ${armId} has no admission record: read its LICENSE and telemetry defaults first (D-011)`);
+  // P-001 native ecosystem baseline: an incumbent exception is local to the
+  // comparison. Reuse this admission door when preparing shipped integrations,
+  // rather than accidentally treating a bench receipt as distribution consent.
+  if (purpose === 'distribution') {
+    if (admission.licence !== 'permissive' && admission.licence !== 'first-party') {
+      throw new Error(`arm ${armId}: ${admission.spdx} is excluded from product distribution; the incumbent exception is comparison-only`);
+    }
+    if (admission.distribution?.decision !== 'approved' || !admission.distribution.evidenceRef.trim()) {
+      throw new Error(`arm ${armId}: product distribution has no explicit approved decision and evidence reference`);
+    }
+  }
   if (admission.licence !== 'permissive' && admission.licence !== 'first-party' && admission.armId !== INCUMBENT_ARM_ID) {
     throw new Error(
       `arm ${armId}: ${admission.spdx} is not a permissive licence; only the incumbent (${INCUMBENT_ARM_ID}) may run under one (SPEC-P-017)`,

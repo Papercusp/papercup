@@ -13,6 +13,7 @@
 
 import os from 'node:os';
 import { createHash } from 'node:crypto';
+import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
 import type { TranscriptTurnHit } from '../../../adv-session-search';
@@ -25,6 +26,7 @@ import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   getAdvSessionInWorkspace,
+  getLatestActiveAdvSessionByOwner,
   listAdvSessions,
   listEndedAdvSessions,
   listPendingWorkbenchLaunches,
@@ -610,8 +612,34 @@ const closeWindow = defineTool({
   method: 'POST',
   path: '/adv/sessions/close-window',
   auth: 'loopback',
-  async handler(req) {
-    const body = await parseControlBody(req);
+  async handler(req, ctx) {
+    const parsed = await parseJsonBody(req);
+    if ('ownerId' in parsed || 'managedSessionId' in parsed) {
+      const csrf = requireAllowedOriginOr403(req);
+      if (csrf) return csrf;
+      const { activeWorkspaceId } = await import('../../../workspace-registry');
+      const { findLiveHostAsync, hostSupports, shutdownViaPty } = await import('../../../events/await/psu-pty-discovery');
+      const ownerId = typeof parsed.ownerId === 'string' ? parsed.ownerId.trim() : '';
+      const id = parsed.managedSessionId;
+      if (parsed.confirmed !== true || !ownerId || typeof id !== 'number' || !Number.isInteger(id) || id <= 0 || 'pid' in parsed || 'windowId' in parsed) {
+        return json({ ok: false, error: 'confirmed owner and managed session identity are required' }, 400);
+      }
+      const workspaceId = ctx.principal?.workspaceId ?? activeWorkspaceId();
+      const row = await getAdvSessionInWorkspace(Number(id), workspaceId);
+      if (!row || row.coordOwnerId !== ownerId || row.endedAt != null) return json({ ok: false, error: 'stale or foreign session' }, 403);
+      const latest = await getLatestActiveAdvSessionByOwner(ownerId);
+      if (latest?.id !== row.id) return json({ ok: false, error: 'stale session selection' }, 409);
+      const host = await findLiveHostAsync(ownerId);
+      if (!host || host.advSessionId !== String(row.id)) return json({ ok: false, error: 'managed session host unavailable' }, 409);
+      if (!hostSupports(host, 'shutdown-identity')) return json({ ok: false, error: 'this session does not support a confirmed stop' }, 422);
+      const outcome = await shutdownViaPty(ownerId, {
+        reason: 'Confirmed stop from the portal roster',
+        expectedHost: { startedAt: host.startedAt, advSessionId: String(row.id) },
+      });
+      if (outcome !== 'sent') return json({ ok: false, ownerId, error: outcome }, outcome === 'refused-stale-host' ? 409 : 422);
+      return json({ ok: true, ownerId, managedSessionId: row.id, status: 'stop-requested' });
+    }
+    const body = parsed as { id?: number; pid?: number; windowId?: string | null };
     const latestRow =
       typeof body.id === 'number' && body.id > 0 ? await getAdvSession(body.id) : null;
     const wid = await resolveSessionWindowId(body, latestRow);

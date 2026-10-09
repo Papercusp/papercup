@@ -16,7 +16,7 @@ export type WorkItemPayloadProjection = 'full' | 'none' | 'completionEvidence' |
  */
 export const FLEET_METRIC_ARCHIVE_KEYS = [
   '_completionEvidence', 'toolFailureProbation', 'freshnessEnvelope',
-  'admissionIdentity', '_claimSubjectBaseline', 'admissionReview',
+  'admissionIdentity', '_claimSubjectBaseline',
   '_assumptions', 'toolFailureSignature',
 ] as const;
 

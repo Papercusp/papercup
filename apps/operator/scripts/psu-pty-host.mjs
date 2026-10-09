@@ -5593,6 +5593,7 @@ export function decodeControl(payload) {
           mode: 'shutdown',
           data: String(o.data ?? ''),
           force: o.force === true,
+          ...('expectedStartedAt' in o ? { expectedStartedAt: o.expectedStartedAt } : {}),
           gated: false,
           ...decodeOwnerIdentity(o),
         };
@@ -9345,7 +9346,7 @@ export function hostThroughPty(o) {
     // convert one durable, headless account:auto wake into the existing recycle
     // path and then verify pickup by delivery id. Older hosts lack the cap and
     // therefore retain the old defer-only behavior.
-    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'quota-recovery'],
+    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery'],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -11906,6 +11907,11 @@ export function hostThroughPty(o) {
       // guard is consulted. A system reaper may not kill these; only the session
       // itself may exit. This signals nothing but our OWN child.
       if (msg.mode === 'shutdown') {
+        // A socket name is owner-stable and can be reused by a replacement host.
+        // Check its incarnation here, before any accepted shutdown side effect.
+        if (msg.expectedStartedAt !== undefined && msg.expectedStartedAt !== baseMeta.startedAt) {
+          return { ok: false, reason: 'shutdown-refused:stale-host' };
+        }
         if (shuttingDown) return { ok: true, reason: 'already-shutting-down' };
         const refusal = shutdownRefusalReason({
           launchedBy: env.PAPERCUSP_LAUNCHED_BY,

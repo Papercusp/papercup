@@ -29,8 +29,6 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import {
   AUDIT_VERDICTS,
-  ACTIVATION_REAUDIT_COSMETIC_CHANGES,
-  ACTIVATION_REAUDIT_MATERIAL_CHANGES,
   CITATION_KINDS,
   citationBlobSha,
   citationBlobShaAt,
@@ -83,6 +81,7 @@ import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { previewPlanStartConsult } from './get-activation-readiness';
+import { previewProductShaping } from './product-shaping';
 import {
   recoverHarnessFromSlugs,
   requireUnambiguousSlugScope,
@@ -195,8 +194,8 @@ const itemProvenanceSchema = z.discriminatedUnion('kind', [
 const argsSchema = refineEvenWithShapeIssues(z.object({
   slug: z.string().min(1).describe('The plan being audited.'),
   harness: harnessArg,
-  phase: z.enum(['completion', 'activation']).default('completion').describe(
-    '`completion` (default) audits implemented code. `activation` audits the source conversation before ready/active and records the exact current plan revision.',
+  phase: z.enum(['completion', 'activation', 'shaping']).default('completion').describe(
+    '`shaping` previews the product brief/scenario gaps and original-intent reviewer context without writes. `completion` (default) audits implemented code. `activation` records the source-conversation audit.',
   ),
   dryRun: z.boolean().default(false).describe(
     'Validate and preview the audit without recording an audit row, repair filing, derived spec clause, or plan event.',
@@ -244,6 +243,10 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is completion-phase only` });
       }
     }
+  } else if (args.phase === 'shaping') {
+    for (const field of ['items', 'findings', 'auditedSha', 'sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef'] as const) {
+      if (args[field] !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is not used by the read-only shaping preview` });
+    }
   } else {
     if (!args.items) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['items'], message: 'items is required for phase:completion' });
@@ -256,7 +259,7 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
   }
 }).meta({
   'x-papercusp-call-constraint':
-    'phase=activation => classRef required; items, findings, auditedSha forbidden. phase=completion (including omitted phase) => items required; classRef, sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
+    'phase=shaping => read-only preview; audit payload fields forbidden. phase=activation => classRef required; items, findings, auditedSha forbidden. phase=completion (including omitted phase) => items required; classRef, sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
 });
 
 interface Problem {
@@ -318,14 +321,14 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a plan audit. Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing; map resolved conditions in `mappings`/`summary` instead. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs and previews readiness. BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or fenced `requirement` JSON plus Design map.",
+    "Audit a plan: shaping previews product intent and scenario gaps without writes; activation records source coverage; completion resolves code/test citations. Activation refuses unresolved blockers. BAR seeding requires executable requirement JSON and a Design map.",
   guidance: {
-    when: "Before ready/active, read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions. Author `## Requirements` with exact `**R-N — Title.** outcome` records (or a fenced `requirement` JSON block), map each R-N in Design's Bar-to-work table (`tree|deployed|live`); ordinary bullet lists do not satisfy the BAR parser. Use `activation`; before shipped use `completion` against ACTUAL CODE.",
+    when: "Before specs/tasks use shaping: product brief, scenarios, assumptions, original-intent reviewer context. Before activation read the full conversation and map requirements/decisions/items; before shipment cite actual code. Requirements need executable requirement JSON and a Design BAR-to-work map.",
     returns:
-      "Activation returns { auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance { enforced, counts, unresolved }, barSeed, activationReadiness }. An item no owner-typed turn backs, and not declared in itemProvenance, refuses item_provenance_missing; a bad declaration refuses item_provenance_invalid; both name each item and record nothing. A plan whose earlier audits predate provenance records enforced:false instead, until every item resolves. Pending amendment/repair preserves the audit and requires rubrics:amend. Completion returns auditSeq, counts, coverage, and uncoveredItems; mixed errors return partial/problems/rejectedItemIds; batch-wide errors record nothing.",
-    notWhen: "Not mid-implementation; grade rubrics with scorecards:emit, decisions with plans:add-decision, and repair open activation mappings first.",
+      "Shaping: {productShaping} advisory gaps, trace and reviewerBrief, never semantic proof. Activation: {auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance, barSeed, activationReadiness}. Missing provenance refuses; pending BAR amendment needs rubrics:amend. Completion: {auditSeq, coverage, uncoveredItems, partial, problems, rejectedItemIds}.",
+    notWhen: "Grade rubrics with scorecards:emit and decisions with plans:add-decision; repair open activation mappings first.",
     chaining:
-      `Activation: sessions:search/read → repair omissions → audit → ready. Later edits preserve audit and return audited/current revision id/seq/contentHash. Re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} need no re-audit. Completion: audit → rubric/scorecard → shipped.`,
+      'Author Product shaping JSON using the plans:new scaffold; shaping preview → repair with plans:set-content → existing independent review. Activation: source read → audit → start. Re-audit semantic edits, not cosmetics. Completion: audit → rubric/scorecard → shipped.',
     seeAlso: [
       'plans:set-status (drop an item you intentionally departed from, with a reason)',
       'plans:set-plan-status (the completion gate that reads this audit)',
@@ -344,7 +347,8 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
-      phase: z.enum(['activation', 'completion']).optional(),
+      phase: z.enum(['activation', 'completion', 'shaping']).optional(),
+      productShaping: z.unknown().optional(),
       dryRun: z.boolean().optional(),
       preview: z.boolean().optional(),
       auditSeq: z.number().int().nonnegative().optional(),
@@ -402,6 +406,13 @@ export default defineTool({
     }
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const dryRun = args.dryRun === true;
+
+    if (args.phase === 'shaping') {
+      const plan = await getPlanRow(args.slug, { harnessSlug });
+      if (!plan) return { data: { ok: false, slug: args.slug, phase: 'shaping', error: 'plan_not_found' } };
+      return { data: { ok: true, slug: args.slug, phase: 'shaping', dryRun: true, preview: true,
+        productShaping: previewProductShaping(plan.content) } };
+    }
 
     if (args.phase === 'activation') {
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();

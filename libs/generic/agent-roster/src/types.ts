@@ -89,6 +89,8 @@ export interface RosterAgent {
    *  whose windowId wasn't pre-resolved is still focusable. pid alone is NOT
    *  sufficient — sibling terminals commonly share one server pid. */
   advSessionId?: number | null;
+  /** Server-owned session record, used by a browser's confirmed stop. Never an OS handle. */
+  managedSessionId?: number | null;
   windowId?: string | null;
   pid?: number | null;
 }

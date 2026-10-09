@@ -77,6 +77,10 @@ const server = createAdaptorServer({
         : null;
     const configStep = pathname === '/api/tui/identity'
       ? 'operator-identity'
+      : pathname === '/api/tui/view-state'
+        ? 'view-state'
+        : pathname.startsWith('/api/tui/')
+          ? 'tui-snapshot'
       : pathname === '/api/agent-config'
       ? 'agent-config'
       : pathname === '/api/agent-tools/operator/credentials_status'

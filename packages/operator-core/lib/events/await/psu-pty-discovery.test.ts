@@ -886,12 +886,12 @@ describe('mcpReconnectViaPty (mcp-transport-resilience P-004 — the in-place /m
       conn.on('end', () => recv.push(Buffer.concat(chunks).toString('utf8')));
     });
     await new Promise<void>((r) => server.listen(sock, r));
-    const writeMeta = (caps: string[] | undefined) =>
+    const writeMeta = (caps: string[] | undefined, advSessionId: string | null = null) =>
       writeFileSync(
         meta,
         JSON.stringify({
           ownerId,
-          advSessionId: null,
+          advSessionId,
           pid: process.pid,
           ptyPid: process.pid,
           sock,
@@ -1016,6 +1016,7 @@ describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its 
       ['shutdown-refused:not-agent-launched', 'refused-not-agent-launched'],
       ['shutdown-refused:human-attended', 'refused-human-attended'],
       ['shutdown-refused:agent-busy', 'refused-agent-busy'],
+      ['shutdown-refused:stale-host', 'refused-stale-host'],
     ] as const) {
       ack = { v: 1, ok: false, reason: hostReason };
       expect(await shutdownViaPty(ownerId, { verifyIdentity: () => true })).toBe(expected);

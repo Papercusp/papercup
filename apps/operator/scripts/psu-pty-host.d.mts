@@ -2080,16 +2080,18 @@ export function decodeQuotaRecovery(o: any): {
  *  a legacy idle-gated turn. Pure — exported for tests. */
 export function decodeControl(payload: any): {
     ownerId: any;
+    gated: boolean;
+    expectedStartedAt?: any;
     mode: string;
     data: string;
     force: boolean;
-    gated: boolean;
 } | {
     ownerId?: undefined;
+    gated: boolean;
+    expectedStartedAt?: any;
     mode: string;
     data: string;
     force: boolean;
-    gated: boolean;
 } | {
     ownerId: any;
     mode: string;

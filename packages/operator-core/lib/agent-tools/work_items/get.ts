@@ -830,7 +830,9 @@ export default defineTool({
     const readDetail = !args.resume && !checksOnly && args.detail === true && !hasThreadLimit && needsWorkItemDetail;
     const sourceReadOptions = checksOnly
       ? { includeBody: false, payloadProjection: 'none' as const }
-      : args.resume ? undefined : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
+      : args.resume || args.operationalBrief
+        ? undefined
+        : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
     const canBatchProjectedBaseRead =
       ids.length > 1 &&
       sourceSelection !== null &&
