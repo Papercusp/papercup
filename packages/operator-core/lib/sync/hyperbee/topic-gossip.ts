@@ -483,7 +483,7 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           }
           sendOurs();
         },
-        onclose: () => {
+        onclose: (isRemote: boolean) => {
           if (message) st.channels.delete(message);
           // Lost the topic's last peer → re-arm the FAST refresh window so
           // rediscovery/reconnection is snappy again.
@@ -533,7 +533,9 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
                       `(${st.consecutiveFlapCloses} consecutive channels closed after <${minUsefulChannelMs}ms; ` +
                       `this one lasted ${aliveMs}ms) — fast-discovery window decayed to ` +
                       `${st.fastWindowGrantedMs}ms` +
-                      `${st.fastWindowGrantedMs === 0 ? ' (slow keepalive only)' : ''} (EI-18808621019872598).`,
+                      `${st.fastWindowGrantedMs === 0 ? ' (slow keepalive only)' : ''}; ` +
+                      `closeSource=${isRemote ? 'remote-or-stream' : 'local-channel-close'} ` +
+                      `(Protomux isRemote=${isRemote}) (EI-18808621019872598).`,
                   );
                 }
               }
