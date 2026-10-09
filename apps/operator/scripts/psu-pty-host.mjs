@@ -1528,6 +1528,10 @@ function readIsolatedNativeTranscriptForward({
  * any-row match, because no codex copy written after the turn is measured. */
 export function kickoffMarkerPromptRow(agent, row, markerText) {
   if (!markerText) return false;
+  if (agent === 'omp') {
+    return row?.type === 'message' && row?.message?.role === 'user'
+      && nativeUserPromptText(row.message.content).includes(markerText);
+  }
   if (agent === 'claude') {
     if (row?.type !== 'user' || row.isMeta) return false;
     const content = row.message?.content;
@@ -1548,6 +1552,7 @@ function kickoffModelActivityRow(agent, row) {
     }
     return row?.type === 'response_item' && row.payload?.type === 'message' && row.payload?.role === 'assistant';
   }
+  if (agent === 'omp') return row?.type === 'message' && row?.message?.role === 'assistant';
   return row?.type === 'assistant';
 }
 
@@ -1588,7 +1593,7 @@ export function nativeKickoffTurnActivityAfterMarker({
   maxScanBytes = NATIVE_KICKOFF_SCAN_BYTES,
 }) {
   const unavailable = { available: false, started: false };
-  if (!['codex', 'claude'].includes(agent) || !marker) return unavailable;
+  if (!['codex', 'claude', 'omp'].includes(agent) || !marker) return unavailable;
   const markerText = markerLostChars > 0 ? marker.slice(markerLostChars) : marker;
   // The nonce tail is ASCII, so it prefilters raw lines no matter how the
   // backend escaped the brackets; the parsed row is then checked exactly.
@@ -1707,7 +1712,9 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
           && ['error', 'aborted'].includes(String(message.stopReason).toLowerCase());
     if (failed || verdict === 'turn-completed') {
       phase = failed ? 'failed' : 'settled';
-      pendingTools.clear();
+      // An aborted model does not prove its external tool effects stopped.
+      // Keep unmatched calls visible until their results arrive.
+      if (!failed) pendingTools.clear();
       lastProgressAt = at;
       continue;
     }
@@ -1745,6 +1752,30 @@ export function nativeLatestExecution({ agent, env = process.env, receivedAtMs =
       : { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 }),
     observedAt: nowMs,
   };
+}
+
+/** Positive native work always vetoes a quiet-PTY inject. Unknown evidence
+ * retains the existing bounded prompt gate; it is never certified as idle.
+ * @param {{phase?: string, pendingTools?: number} | null | undefined} execution
+ */
+export function nativeExecutionBlocksInjection(execution) {
+  return execution?.phase === 'running' || Number(execution?.pendingTools) > 0;
+}
+
+/** A native prompt row proves acceptance only. Reuse the anchored forward
+ * reader to require actual model activity, and fence every poll to its child.
+ * @param {{probe: () => {available: boolean, started: boolean}, isCurrent: () => boolean,
+ *   timeoutMs?: number, pollMs?: number}} options
+ */
+export async function waitForNativeTurnStart({ probe, isCurrent, timeoutMs = 10_000, pollMs = 50 }) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (!isCurrent()) return { started: false, reason: 'superseded-child' };
+    if (probe().started && isCurrent()) return { started: true, reason: 'native-turn-started' };
+    if (Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+  } while (true);
+  return { started: false, reason: 'native-turn-start-unverified' };
 }
 
 /** Return the newest regular native transcript beneath this session's ISOLATED
@@ -4281,12 +4312,14 @@ export function shutdownRefusalReason({
  * @param {number} [opts.quietMs]
  * @param {number} [opts.capMs]
  * @param {() => number} [opts.now]
+ * @param {() => {phase?: string, pendingTools?: number} | null} [opts.nativeExecution]
  */
 export function makeAgentBusyGate({
   lastOutputAt,
   quietMs = OUTPUT_QUIET_MS,
   capMs = TURN_INJECT_BUSY_CAP_MS,
   now = Date.now,
+  nativeExecution = () => null,
 } = {}) {
   const getLast = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
   return {
@@ -4323,13 +4356,16 @@ export function makeAgentBusyGate({
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
-        if (verifiedBoundary?.()) {
+        const nativeBusy = nativeExecutionBlocksInjection(nativeExecution());
+        if (!nativeBusy && verifiedBoundary?.()) {
           await new Promise((resolve) => setImmediate(resolve));
-          if (verifiedBoundary()) return { deferred: false, boundary: 'native-turn-complete' };
+          if (!nativeExecutionBlocksInjection(nativeExecution()) && verifiedBoundary()) {
+            return { deferred: false, boundary: 'native-turn-complete' };
+          }
         }
         const quietFor = this.quietForMs();
         if (quietFor > maxQuietForMs) maxQuietForMs = quietFor;
-        if (quietFor >= quietMs) {
+        if (!nativeBusy && quietFor >= quietMs) {
           // EI-22806311344295685: an expired timer can run before libuv's poll
           // phase drains an already-buffered node-pty onData callback. Yield to
           // the check phase once, then re-read the output timestamp; otherwise
@@ -4351,7 +4387,9 @@ export function makeAgentBusyGate({
           await new Promise((resolve) => setImmediate(resolve));
           const confirmedQuietFor = this.quietForMs();
           if (confirmedQuietFor > maxQuietForMs) maxQuietForMs = confirmedQuietFor;
-          if (confirmedQuietFor >= quietMs) return { deferred: false };
+          if (confirmedQuietFor >= quietMs && !nativeExecutionBlocksInjection(nativeExecution())) {
+            return { deferred: false };
+          }
         }
         if (now() >= deadline) return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs };
         // P-004 (the part that IS a real defect): recompute the sleep from the
@@ -4363,7 +4401,7 @@ export function makeAgentBusyGate({
         // the cap — the next pass reads the fresh value and sleeps properly
         // (10, 1490, 1500, 1500, …). So this is a micro-correction, NOT the
         // false-defer fix; see D-005 for the retraction of that claim.
-        const need = Math.max(0, quietMs - this.quietForMs());
+        const need = nativeBusy ? 100 : Math.max(0, quietMs - this.quietForMs());
         const wait = Math.min(need, Math.max(0, deadline - now()));
         await new Promise((r) => setTimeout(r, Math.max(10, wait)));
       }
@@ -5832,6 +5870,8 @@ export function decodeControl(payload) {
         ...decodeDeliveryId(o),
         ...decodeProvenanceIssueTime(o),
         ...decodeInboxWakeCancellation(o),
+        ...(o.requireNativeTurnStart === true ? { requireNativeTurnStart: true,
+          expectedChildGeneration: o.expectedChildGeneration, expectedHostStartedAt: o.expectedHostStartedAt } : {}),
       };
     }
   } catch {
@@ -8027,6 +8067,7 @@ export function deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery = fal
     return 'completed';
   }
   if (deliveryOutcome?.reason === 'deferred-busy-gate' && rearmOwnsDelivery) return 'pending';
+  if (deliveryOutcome?.reason === 'native-turn-start-unverified') return 'pending';
   return 'clear';
 }
 
@@ -9198,6 +9239,13 @@ export function hostThroughPty(o) {
   // argv (every respawn mints from it), so it cannot say whether the current
   // child carries a persona flag; coldResetModeForAgent needs exactly that.
   let liveChildArgs = args;
+  let childGeneration = 0;
+  let childStartedAtMs = 0;
+  // Reset on every successful spawn; a predecessor's completion cannot
+  // certify a newly resumed child before that child has executed a turn.
+  let lastMachineTurnSubmittedAtMs = 0;
+  let ownerComposerGate;
+  let ownerStopRequested = false;
   // WI-10005178: the child's PTY size, so its cursor-positioned output can be
   // replayed onto the same grid (renderTerminalScreen). onResize keeps the child
   // at these dims too.
@@ -9221,6 +9269,9 @@ export function hostThroughPty(o) {
     // Only a child that actually started owns the live argv: a failed spawn
     // must not rewrite what the next park/recycle mint reads.
     liveChildArgs = spawnArgs;
+    childGeneration++;
+    childStartedAtMs = Date.now();
+    lastMachineTurnSubmittedAtMs = 0;
     return spawned;
   };
   let child;
@@ -9497,7 +9548,7 @@ export function hostThroughPty(o) {
     // convert one durable, headless account:auto wake into the existing recycle
     // path and then verify pickup by delivery id. Older hosts lack the cap and
     // therefore retain the old defer-only behavior.
-    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery'],
+    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'native-turn-start'],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -9529,7 +9580,7 @@ export function hostThroughPty(o) {
       // corrupt each other's staging file.
       const tmp = `${metaPath}.${process.pid}.tmp`;
       writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
-        execution: nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env }),
+        execution: currentNativeExecution(),
       }));
       renameSync(tmp, metaPath);
     } catch {
@@ -9624,7 +9675,7 @@ export function hostThroughPty(o) {
   // A quiet terminal line can still contain unsubmitted owner text. Keep that
   // state separate from the mid-keystroke clock so a wake never appends its
   // provenance envelope to a staged human line.
-  const ownerComposerGate = makeOwnerComposerGate({
+  ownerComposerGate = makeOwnerComposerGate({
     capMs: positiveNumber(env.PAPERCUSP_PSU_PTY_IDLE_CAP_MS, DEFAULT_IDLE_WAIT_CAP_MS),
   });
   // Separate scanner over the SAME stdin stream (WI-38156). It must be fed every
@@ -9742,7 +9793,6 @@ export function hostThroughPty(o) {
   // Latest owner-visible machine submit into THIS child. The ordinary Codex
   // native-boundary probe rejects any older task_complete record, preventing a
   // previous turn from certifying a new turn that has only just been submitted.
-  let lastMachineTurnSubmittedAtMs = 0;
   // WI-10004943: when the first machine turn write into THIS child STARTED.
   // backend-session-frame-observed reports the gap to it, which separates a
   // Codex that became ready on its own (frame long after any write, or before
@@ -9777,7 +9827,22 @@ export function hostThroughPty(o) {
     lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
     quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
     capMs: turnInjectBusyCapMs,
+    nativeExecution: currentNativeExecution,
   });
+  // A machine submit and real owner input both advance the observation floor.
+  // The host/process and child generation travel with the snapshot so readers
+  // can reject predecessor observations after a resume or host replacement.
+  function currentNativeExecution() {
+    const receivedAtMs = Math.max(childStartedAtMs,
+      Number(activity.snapshot().lastInputAt ?? 0), lastMachineTurnSubmittedAtMs);
+    return {
+      ...nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs }),
+      ownerId, hostPid: process.pid, childPid: child.pid ?? null,
+      childGeneration, receivedAtMs,
+      ownerInputPending: Boolean(ownerComposerGate?.hasPending()),
+      ownerStopRequested,
+    };
+  }
   // WI-1941: recycle carry-inject retry budget + backoff (per-session tunable,
   // like the busy cap above). The fresh cold child gets this long to reach its
   // prompt across retried waitAtPrompt() attempts before the carry is dropped.
@@ -10448,7 +10513,7 @@ export function hostThroughPty(o) {
             dropReason = markerEchoFailureReason;
             break;
           }
-          lastMachineTurnSubmittedAtMs = Date.now();
+          lastMachineTurnSubmittedAtMs = turnWriteStartedAt;
           // The submit CR has reached this child. Do not answer a model menu
           // painted during the asynchronous proof wait as a startup choice.
           activeHeadlessCodexModelChoice?.complete();
@@ -11143,6 +11208,15 @@ export function hostThroughPty(o) {
   // pipeline is pending and after it commits, so a retry cannot inject a second
   // real turn while an early ACK is still only acceptance.
   const deliveryDedup = makeDeliveryDedup();
+  const nativeStartPending = new Map();
+  const nativeStartProof = (pending) => {
+    if (pending.child !== child) return { available: false, started: false };
+    const markerProof = findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
+      marker: pending.marker, sinceMs: pending.submittedAtMs });
+    return markerProof ? nativeKickoffTurnActivityAfterMarker({ agent: env.PAPERCUSP_AGENT, env,
+      transcriptPath: markerProof.nativeRef, marker: pending.marker, anchor: pending.anchor })
+      : { available: false, started: false };
+  };
   // EI-8822: serialize the gated-inject critical section so a wake `turn` and a
   // session:request-compaction `/compact` freed at the SAME clean boundary can't
   // both pass the at-prompt gate and interleave their bytes into one pty input
@@ -11270,6 +11344,7 @@ export function hostThroughPty(o) {
         agent,
         env,
         completedAtOrAfterMs: Math.max(
+          childStartedAtMs,
           Number(activity.snapshot().lastInputAt ?? 0),
           lastMachineTurnSubmittedAtMs,
         ),
@@ -12004,6 +12079,13 @@ export function hostThroughPty(o) {
       // pre-fix sender) makes this a no-op — unchanged behavior.
       const duplicateState = deliveryDedup.state(msg.deliveryId);
       if (duplicateState) {
+        const pendingStart = nativeStartPending.get(msg.deliveryId);
+        if (duplicateState === 'pending' && pendingStart && nativeStartProof(pendingStart).started) {
+          deliveryDedup.markCompleted(msg.deliveryId);
+          nativeStartPending.delete(msg.deliveryId);
+          appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: msg.deliveryId, childGeneration });
+          return { ok: true, reason: 'duplicate-delivery-id' };
+        }
         if (duplicateState === 'cancelled') {
           appendHostEvent(ownerId, 'duplicate-cancelled-delivery-id', { deliveryId: msg.deliveryId });
           return { ok: true, reason: 'cancelled-before-write' };
@@ -12731,6 +12813,20 @@ export function hostThroughPty(o) {
         if (preWriteProvenanceRejection) {
           return { ok: false, reason: preWriteProvenanceRejection };
         }
+        if (msg.mode === 'turn') {
+          if (ownerStopRequested) return { ok: false, reason: 'deferred-owner-stop' };
+          for (const [id, pending] of nativeStartPending) {
+            if (pending.child !== child || nativeStartProof(pending).started) {
+              if (pending.child === child) deliveryDedup.markCompleted(id);
+              nativeStartPending.delete(id);
+            }
+          }
+          if (nativeStartPending.size > 0) return { ok: false, reason: 'deferred-native-turn-start' };
+          if (deliver.requireNativeTurnStart &&
+            (deliver.expectedHostStartedAt !== baseMeta.startedAt || deliver.expectedChildGeneration !== childGeneration)) {
+            return { ok: false, reason: 'stale-execution-generation' };
+          }
+        }
         // WI-5510: commit the latest coalesced fire only after the provenance
         // fence, immediately before the pty write. An expired text cannot move
         // the high-water mark and block its fresh retry.
@@ -12802,7 +12898,7 @@ export function hostThroughPty(o) {
             }
           }
           if (msg.mode === 'turn' || msg.mode === 'reset') {
-            lastMachineTurnSubmittedAtMs = Date.now();
+            lastMachineTurnSubmittedAtMs = turnWriteStartedAt;
             activeHeadlessCodexModelChoice?.complete();
             activeManagedCodexStartupUpdateDialog?.complete();
           }
@@ -12828,6 +12924,25 @@ export function hostThroughPty(o) {
         // verified like the compact writes above (raw = control bytes and osc =
         // display bytes have no submit to verify).
         if (msg.mode === 'turn' || msg.mode === 'reset') {
+          if (deliver.requireNativeTurnStart) {
+            const marker = leadingTurnOriginMarker(deliver.data);
+            if (!marker || !nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported) {
+              return { ok: false, reason: 'native-turn-start-unavailable' };
+            }
+            const target = child;
+            const pending = { child: target, marker, submittedAtMs: turnWriteStartedAt,
+              anchor: { fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null } };
+            nativeStartPending.set(deliver.deliveryId, pending);
+            const proof = await waitForNativeTurnStart({ probe: () => nativeStartProof(pending),
+              isCurrent: () => child === target && !ownerStopRequested,
+              timeoutMs: positiveNumber(env.PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS, 10_000) });
+            appendHostEvent(ownerId, proof.started ? 'native-turn-start-confirmed' : 'native-turn-start-unverified', {
+              deliveryId: deliver.deliveryId, childGeneration, reason: proof.reason,
+            });
+            if (!proof.started) return { ok: false, reason: 'native-turn-start-unverified' };
+            nativeStartPending.delete(deliver.deliveryId);
+            return { ok: true, reason: 'delivered' };
+          }
           // EI-18679050054551625 / WI-5872 follow-up: verifySubmitted()'s poll
           // loop sleeps a FULL pollMs (default 5000ms, env
           // PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS) before its very first
@@ -13372,6 +13487,8 @@ export function hostThroughPty(o) {
         return;
       }
       ownerComposerGate.observe(input);
+      if (input.includes('\x03') || input === '\x1b') ownerStopRequested = true;
+      else if (input.includes('\r') || input.includes('\n')) ownerStopRequested = false;
     }
     if (input.includes('\r') || input.includes('\n')) activeManagedCodexStartupUpdateDialog?.complete();
     try {

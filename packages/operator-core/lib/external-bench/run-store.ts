@@ -29,7 +29,6 @@ import { resolveDb, type DbScope } from './reproducibility/db';
 import {
   defaultBenchResultsDir,
   listPreservedRuns,
-  readPreservedRun,
   inspectPreservedRun,
   summarizePreservedRun,
   preservedExecutionTimes,

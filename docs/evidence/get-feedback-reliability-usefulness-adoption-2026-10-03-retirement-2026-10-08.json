@@ -1,5 +1,47 @@
 {
-  "schemaVersion": "get-feedback-retirement-evidence-v1",
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "retirementEvidenceSchemaVersion": "get-feedback-retirement-evidence-v1",
+  "name": "Scoped served consult catalog retirement and retained requester history",
+  "framework": "operational",
+  "command": [
+    "ptool agent_tools:list --url=http://127.0.0.1:3170 --json -; stdin JSON = currentBuild.catalog.args",
+    "ptool dev:pg_query --url=http://127.0.0.1:3170 --json -; stdin JSON = history.args"
+  ],
+  "startedAt": "2026-10-09T19:10:36Z",
+  "finishedAt": "2026-10-09T19:10:39Z",
+  "exitCode": 0,
+  "summary": "Current staging catalog omits consult:reconcile and retains an allowed consult:get_feedback positive control. All four named requester history records retain the exact hashes captured on October 8. These scoped reads do not prove all-row immutability, lifecycle transitions, complete feature acceptance or shipment.",
+  "assertions": [
+    {
+      "id": "retired-consult-registration-absent",
+      "passed": true,
+      "evidence": "Authenticated staging agent_tools:list filter consult: returned five entries and none named consult:reconcile."
+    },
+    {
+      "id": "active-consult-positive-control",
+      "passed": true,
+      "evidence": "The same catalog read returned consult:get_feedback with allowed:true."
+    },
+    {
+      "id": "exact-four-historical-records-retained",
+      "passed": true,
+      "evidence": "Current scoped SQL returned all four history.rows identities, authors, timestamps, dispositions, decision references and MD5 JSONB hashes unchanged from the October 8 capture."
+    },
+    {
+      "id": "history-reader-positive-control",
+      "passed": true,
+      "evidence": "The same scoped SQL transaction returned conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574 as its positive control."
+    }
+  ],
+  "operationalReadback": {
+    "endpoint": "http://127.0.0.1:3170",
+    "runtime": "staging-operator",
+    "buildShaPrefix": "42ead3e6b0",
+    "catalogMatchesOriginalCapture": true,
+    "historyMatchesOriginalCapture": true,
+    "scope": "Catalog absence with positive control and exact four preserved historical records; no native consultation matrix credit."
+  },
   "status": "scoped current-build evidence; independent acceptance and exact shipment pending",
   "recordedAt": "2026-10-08T23:38:25Z",
   "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",

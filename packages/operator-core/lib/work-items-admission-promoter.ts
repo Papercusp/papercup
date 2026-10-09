@@ -14,6 +14,7 @@
  * `unreviewed` and measures the promoter's successful-run watermark.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
 import { z } from 'zod';
@@ -57,6 +58,8 @@ import {
 } from './work-scope-policy';
 import type { OrgSql } from './work-items';
 import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
+import { getBuildInfo } from './build-info';
+import { readProcessIdentity } from './process-identity';
 
 /** Announce the pending→admitted edge only after its write commits. The lifecycle
  * emitter applies the same state, claim-hold, observation and plan-lane floors as
@@ -2418,9 +2421,23 @@ async function beginRun(
   sql: OrgSql,
   input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode },
 ): Promise<void> {
+  const build = getBuildInfo();
   const detail = JSON.stringify({
     status: 'running',
     mode: input.mode,
+    // Capture the producing process at admission, never from a later boot row
+    // or checkout HEAD. An identity-less bundle remains explicitly unknown.
+    producingRuntime: {
+      schemaVersion: 1,
+      observedAt: new Date().toISOString(),
+      host: hostname(),
+      pid: process.pid,
+      processIdentity: readProcessIdentity(process.pid),
+      buildSha: build.sha,
+      version: build.version,
+      buildIdentityStatus: build.sha ? 'reported' : 'unknown',
+      buildIdentitySource: 'process-build-info',
+    },
     outcome: {
       unit: 'items',
       attempted: null,
@@ -2486,7 +2503,10 @@ async function finishRun(
            tokens_in = ${input.tokensIn},
            tokens_out = ${input.tokensOut},
            latency_ms = ${input.latencyMs},
-           detail = ${detail}::text::jsonb
+           detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'producingRuntime'
+               THEN jsonb_build_object('producingRuntime', detail->'producingRuntime')
+               ELSE '{}'::jsonb END
      WHERE id = ${input.runId}`;
 }
 
@@ -2522,7 +2542,10 @@ async function failRun(
            tokens_in = ${usage?.tokensIn ?? 0},
            tokens_out = ${usage?.tokensOut ?? 0},
            latency_ms = ${latencyMs},
-           detail = ${detail}::text::jsonb
+           detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'producingRuntime'
+               THEN jsonb_build_object('producingRuntime', detail->'producingRuntime')
+               ELSE '{}'::jsonb END
      WHERE id = ${runId}`.catch(() => null);
 }
 

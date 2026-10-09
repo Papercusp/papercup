@@ -557,7 +557,7 @@ export function carryNativeOwnerInputFreshness({ agent, env, transcriptPath, sys
  * behind a running turn. Binding to a queued copy would count the PREVIOUS
  * turn's assistant row as this kickoff's activity. Codex keeps the original
  * any-row match, because no codex copy written after the turn is measured. */
-export function kickoffMarkerPromptRow(agent: any, row: any, markerText: any): boolean;
+export function kickoffMarkerPromptRow(agent: any, row: any, markerText: any): any;
 /** A plain launch's marker proves submission. A native task-start or assistant
  * row AFTER that exact marker proves model activity, including a short turn
  * that completed before the marker scan returned. PTY output is not used as
@@ -648,6 +648,31 @@ export function nativeLatestExecution({ agent, env, receivedAtMs, nowMs }: {
     lastProgressAt: number | null;
     pendingTools: number;
 };
+/** Positive native work always vetoes a quiet-PTY inject. Unknown evidence
+ * retains the existing bounded prompt gate; it is never certified as idle.
+ * @param {{phase?: string, pendingTools?: number} | null | undefined} execution
+ */
+export function nativeExecutionBlocksInjection(execution: {
+    phase?: string;
+    pendingTools?: number;
+} | null | undefined): boolean;
+/** A native prompt row proves acceptance only. Reuse the anchored forward
+ * reader to require actual model activity, and fence every poll to its child.
+ * @param {{probe: () => {available: boolean, started: boolean}, isCurrent: () => boolean,
+ *   timeoutMs?: number, pollMs?: number}} options
+ */
+export function waitForNativeTurnStart({ probe, isCurrent, timeoutMs, pollMs }: {
+    probe: () => {
+        available: boolean;
+        started: boolean;
+    };
+    isCurrent: () => boolean;
+    timeoutMs?: number;
+    pollMs?: number;
+}): Promise<{
+    started: boolean;
+    reason: string;
+}>;
 /** An ordinary warm Codex wake may use the CURRENT native turn's settled state
  * as its prompt boundary when idle TUI repaint prevents OUTPUT_QUIET_MS from
  * ever elapsing. Unlike the carry-specific probe above, this follows the newest
@@ -1663,12 +1688,17 @@ export function shutdownRefusalReason({ launchedBy, headless, fleetSlug, lastInp
  * @param {number} [opts.quietMs]
  * @param {number} [opts.capMs]
  * @param {() => number} [opts.now]
+ * @param {() => {phase?: string, pendingTools?: number} | null} [opts.nativeExecution]
  */
-export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, }?: {
+export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExecution, }?: {
     lastOutputAt?: (() => number) | undefined;
     quietMs?: number | undefined;
     capMs?: number | undefined;
     now?: (() => number) | undefined;
+    nativeExecution?: (() => {
+        phase?: string;
+        pendingTools?: number;
+    } | null) | undefined;
 }): {
     /** ms the agent output has been quiet (huge when never seen ⇒ at-prompt).
      *  Pure helper, exported for tests. */
@@ -2650,6 +2680,9 @@ export function decodeControl(payload: any): {
     focus: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2663,6 +2696,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2676,6 +2712,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -2689,6 +2728,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2702,6 +2744,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2715,6 +2760,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -2728,6 +2776,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2741,6 +2792,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2754,6 +2808,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -2767,6 +2824,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2780,6 +2840,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2793,6 +2856,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -2806,6 +2872,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2819,6 +2888,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2832,6 +2904,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -2845,6 +2920,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2858,6 +2936,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2871,6 +2952,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -2884,6 +2968,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2897,6 +2984,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2910,6 +3000,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -2923,6 +3016,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2936,6 +3032,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2949,6 +3048,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -2962,6 +3064,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2975,6 +3080,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -2988,6 +3096,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -3001,6 +3112,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -3014,6 +3128,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -3027,6 +3144,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -3040,6 +3160,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -3053,6 +3176,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -3066,6 +3192,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;
@@ -3079,6 +3208,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid?: undefined;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -3092,6 +3224,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelEnvelopeInvalid: boolean;
     cancelDeliveryIds?: undefined;
     handledMsgIds?: undefined;
@@ -3105,6 +3240,9 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    requireNativeTurnStart?: boolean | undefined;
+    expectedChildGeneration?: any;
+    expectedHostStartedAt?: any;
     cancelDeliveryIds: any;
     handledMsgIds: any;
     cancelEnvelopeInvalid?: undefined;

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { nativeExecutionFromRows, nativeTurnVerifierSupport } from '../scripts/psu-pty-host.mjs';
+import { makeAgentBusyGate, nativeExecutionBlocksInjection, nativeExecutionFromRows, nativeTurnVerifierSupport } from '../scripts/psu-pty-host.mjs';
 
 const timestamp = new Date(1000).toISOString();
 const ctx = { receivedAtMs: 900, nowMs: 2000 };
@@ -33,7 +33,7 @@ describe('native execution observations', () => {
       content: [{ type: 'toolCall', id: 'call' }] } };
     expect(nativeExecutionFromRows([user, tool], { agent: 'omp', ...ctx })).toMatchObject({ phase: 'running', pendingTools: 1 });
     const failed = { type: 'message', id: 'b', timestamp, message: { role: 'assistant', stopReason: 'error', errorMessage: 'unseen failure' } };
-    expect(nativeExecutionFromRows([user, tool, failed], { agent: 'omp', ...ctx })).toMatchObject({ phase: 'failed', pendingTools: 0 });
+    expect(nativeExecutionFromRows([user, tool, failed], { agent: 'omp', ...ctx })).toMatchObject({ phase: 'failed', pendingTools: 1 });
   });
 
   it('does not certify older, future, or shared-home evidence', () => {
@@ -53,5 +53,39 @@ describe('native execution observations', () => {
     expect(nativeExecutionFromRows(rows, { agent: 'claude', ...ctx })).toMatchObject({ phase: 'running', pendingTools: 0 });
     rows.push({ type: 'assistant', timestamp, isApiErrorMessage: true, message: { role: 'assistant' } } as never);
     expect(nativeExecutionFromRows(rows, { agent: 'claude', ...ctx }).phase).toBe('failed');
+  });
+
+  it.each(['codex', 'claude', 'omp'])('does not inject into a silent native %s turn', async agent => {
+    const start = agent === 'codex'
+      ? { type: 'event_msg', timestamp, payload: { type: 'task_started' } }
+      : agent === 'claude' ? { type: 'user', timestamp, message: { role: 'user', content: 'start' } }
+        : { type: 'message', timestamp, message: { role: 'user' } };
+    const execution = nativeExecutionFromRows([start], { agent, ...ctx });
+    const gate = makeAgentBusyGate({ lastOutputAt: () => 0, quietMs: 1, capMs: 1,
+      nativeExecution: () => execution });
+    expect(await gate.waitAtPrompt(undefined, () => true)).toMatchObject({ deferred: true, reason: 'agent-busy' });
+  });
+
+  it('rechecks execution after the poll phase before releasing a silent prompt', async () => {
+    let reads = 0;
+    const gate = makeAgentBusyGate({ lastOutputAt: () => 0, quietMs: 1, capMs: 1,
+      nativeExecution: () => ({ phase: ++reads === 1 ? 'settled' : 'running' }) });
+    expect(await gate.waitAtPrompt()).toMatchObject({ deferred: true });
+  });
+
+  it('preserves unresolved tool effects after an aborted turn until a matching result', () => {
+    const rows = [
+      { type: 'event_msg', timestamp, payload: { type: 'task_started' } },
+      { type: 'response_item', timestamp, payload: { type: 'function_call', call_id: 'effect' } },
+      { type: 'event_msg', timestamp, payload: { type: 'turn_aborted' } },
+    ];
+    expect(nativeExecutionBlocksInjection(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx }))).toBe(true);
+    rows.push({ type: 'response_item', timestamp, payload: { type: 'function_call_output', call_id: 'effect' } });
+    expect(nativeExecutionBlocksInjection(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx }))).toBe(false);
+  });
+
+  it('excludes a predecessor running turn after a new child/submission floor', () => {
+    const row = { type: 'event_msg', timestamp, payload: { type: 'task_started' } };
+    expect(nativeExecutionFromRows([row], { agent: 'codex', receivedAtMs: 1001, nowMs: 2000 }).phase).toBe('unknown');
   });
 });

@@ -63,6 +63,7 @@ const { explainIssueClaimFloors, listWorkItems, listAllWorkItemsForFileExport,
 const { FLEET_METRIC_ARCHIVE_KEYS, projectWorkItemColumns } = await import('../../work-item-read-projection');
 const { readIssueOccurrenceCounts } = await import('../../issue-occurrence-ledger');
 const { DEFAULT_CLAIM_SPEC } = await import('../../scheduler/claim-spec');
+import type { FilterNode } from '../../scheduler/claim-spec';
 const { fleetSpecBeeKey, setClaimSpec } = await import('../../scheduler/claim-spec-store');
 
 const CTX = { isSuperuser: true, uiClientId: 'burn-down-integration', workspaceId: 'default' } as never;
@@ -93,6 +94,7 @@ beforeEach(async () => {
                          harness_shared.work_item_occurrences,
                          harness_shared.agent_fleets,
                          harness_shared.cup_claim_specs,
+                         harness_shared.cup_claim_spec_revisions,
                          harness_shared.scout_routed_ideas,
                          harness_shared.tool_invocations,
                          harness_shared.work_item_deps,
@@ -201,7 +203,8 @@ describe('default fleet reports over the real current-spec queue', () => {
   const enteredAt = '2026-08-12T00:00:00.000Z';
   const createdAt = epoch('2026-08-11T00:00:00.000Z');
 
-  async function seedFleet(lane: 'implementation' | 'verification' = 'implementation') {
+  async function seedFleet(lane: 'implementation' | 'verification' = 'implementation',
+    filter: FilterNode = { field: 'id', op: 'in', value: ids }) {
     await sql`
       INSERT INTO harness_shared.agent_fleets
         (workspace_id, fleet_slug, created_at, updated_at)
@@ -210,7 +213,7 @@ describe('default fleet reports over the real current-spec queue', () => {
       ...DEFAULT_CLAIM_SPEC,
       specId: 'real-health-current-spec',
       lane,
-      view: { ...DEFAULT_CLAIM_SPEC.view, filter: { field: 'id', op: 'in', value: ids } },
+      view: { ...DEFAULT_CLAIM_SPEC.view, filter },
     };
     expect(await setClaimSpec({ cupId: fleetSpecBeeKey(FLEET), workspaceId: 'default',
       potSlug: HARNESS, spec }, sql)).toMatchObject({ ok: true });
@@ -294,6 +297,57 @@ describe('default fleet reports over the real current-spec queue', () => {
       expect(shaped.fleetMetrics.snapshot.queueHealth).toEqual(snapshot.queueHealth);
       expect(shaped.summary.claimable_now.value).toBe(1);
     }
+  }, 30_000);
+
+  it('skips an impossible feature hydration without losing full issue stock or historical kinds', async () => {
+    await seedFleet('implementation', { field: 'kind', op: '=', value: 'bug' });
+    await seedQueue();
+    const oldAt = createdAt - 86_400_000;
+    await sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
+       created_ts, updated_ts, closed_ts)
+      VALUES ('default', ${HARNESS}, 'WI-kind-old-bug', 'old bug', 'retained body', 'done', 'bug',
+              ${oldAt}, ${oldAt}, ${oldAt}),
+             ('default', ${HARNESS}, 'WI-kind-feature', 'feature control', 'feature body', 'open', 'feature',
+              ${oldAt}, ${oldAt}, NULL),
+             ('default', ${HARNESS}, 'WI-kind-task', 'task control', 'task body', 'open', 'task',
+              ${oldAt}, ${oldAt}, NULL)`;
+    const read = async (flowMode: 'current-spec' | 'at-event-spec' = 'current-spec') => {
+      const scope = await resolveFleetMetricScope({ workspaceId: 'default', harness: HARNESS,
+        fleet: FLEET, flowMode });
+      if (!scope.ok) throw new Error(scope.reason);
+      if (flowMode === 'at-event-spec') {
+        expect(scope.claimSpec.segments.some(segment => segment.source === 'history')).toBe(true);
+      }
+      const queries: string[] = [];
+      const originalDebug = sql.options.debug;
+      sql.options.debug = (connection, query, parameters, types, queryId) => {
+        if (typeof originalDebug === 'function') originalDebug(connection, query, parameters, types, queryId);
+        queries.push(query);
+      };
+      try { return { source: await readFleetMetricSourceItems(scope), queries }; }
+      finally { sql.options.debug = originalDebug; }
+    };
+    const current = await read();
+    expect(current.queries).toHaveLength(1);
+    expect(current.queries[0]).toContain('FROM harness_shared.engineer_issues');
+    expect(current.source).toHaveLength(2006);
+    expect(current.source.find(item => item.id === 'WI-kind-old-bug'))
+      .toMatchObject({ state: 'done', summary: 'retained body' });
+    const full = await listAllWorkItemsForFileExport({ harness: HARNESS, kind: 'bug',
+      includeObservations: true, payloadProjection: 'fleetMetrics' });
+    const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+    expect(current.source.sort(byId)).toEqual(full.sort(byId));
+
+    expect(await setClaimSpec({ cupId: fleetSpecBeeKey(FLEET), workspaceId: 'default',
+      potSlug: HARNESS, spec: { ...DEFAULT_CLAIM_SPEC, revision: 2, specId: 'task-kind-current',
+        view: { ...DEFAULT_CLAIM_SPEC.view, filter: { field: 'kind', op: '=', value: 'task' } },
+      } }, sql)).toMatchObject({ ok: true });
+    const historical = await read('at-event-spec');
+    expect(historical.queries).toHaveLength(2);
+    expect(new Set(historical.source.map(item => item.id)))
+      .toEqual(new Set([...full.map(item => item.id), 'WI-kind-task']));
+    expect(historical.source.find(item => item.id === 'WI-kind-feature')).toBeUndefined();
   }, 30_000);
 
   it('hydrates only current-spec identities while preserving uncapped source and empty-set semantics', async () => {
@@ -434,6 +488,7 @@ describe('default fleet reports over the real current-spec queue', () => {
     const metrics = await buildFleetMetricsResult(resolution, projected, options);
     expect(metrics).toEqual(await buildFleetMetricsResult(resolution, full, options));
     if (!metrics.ok) throw new Error(metrics.reason);
+    if (!metrics.snapshot.queueHealth) throw new Error('required queue health is missing');
     expect(metrics.snapshot.queueHealth.waiting.admissionWait).toMatchObject({
       population: 1, known: 1, unknown: 0,
       oldestMs: Date.parse(resolution.scope.window.endAt) - Date.parse(enteredAt),

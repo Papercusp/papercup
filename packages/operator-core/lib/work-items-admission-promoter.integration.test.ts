@@ -1,11 +1,17 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { createImplementationReadiness, sealImplementationAcceptance, countWorkItemPresentationStages } from './harness/improvements/agent-review-policy';
+import { getBuildInfo } from './build-info';
+import { readProcessIdentity } from './process-identity';
+import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
+  buildInfo: { sha: 'a'.repeat(40) as string | null, version: 'runtime-fixture' },
+  actualBuildInfo: false,
   // undefined ⇒ the real policy (none under VITEST). A test sets it to exercise the work-scope hold.
   scopeTerms: undefined as {
     exact: string[];
@@ -23,6 +29,10 @@ const h = vi.hoisted(() => ({
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('./build-info', async (orig) => {
+  const actual = await orig<typeof import('./build-info')>();
+  return { ...actual, getBuildInfo: () => h.actualBuildInfo ? actual.getBuildInfo() : h.buildInfo };
 });
 // Exercise the actual routine action against this file's disposable PG; registering it
 // must not start the host's routine engine or announce fixtures to live agents.
@@ -246,6 +256,8 @@ beforeEach(async () => {
     harness_shared.work_item_occurrences, harness_shared.routines RESTART IDENTITY`;
   h.scopeTerms = undefined;
   h.scopeDecisions.length = 0;
+  h.buildInfo = { sha: 'a'.repeat(40), version: 'runtime-fixture' };
+  h.actualBuildInfo = false;
 });
 
 it('renews request authorization after model work and before any admission mutation', async () => {
@@ -322,6 +334,125 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
 }
 
 describe('work-item admission promoter (real Postgres)', () => {
+  it('records the actual producing runtime process and preserves it during stranded recovery', async () => {
+    h.actualBuildInfo = true;
+    const build = getBuildInfo();
+    const identity = readProcessIdentity(process.pid);
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-actual', sql: db.sql,
+      llmCall: vi.fn(), now: () => NOW,
+    });
+    const [run] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-actual'`;
+    expect(run.detail.producingRuntime).toMatchObject({
+      host: hostname(), pid: process.pid, processIdentity: identity,
+      buildSha: build.sha, version: build.version,
+      buildIdentityStatus: build.sha ? 'reported' : 'unknown',
+    });
+    if (process.platform === 'linux' || process.platform === 'darwin') expect(identity).toEqual(expect.any(String));
+    // Simulate a producer dying with its original run-start detail still stored.
+    await db.sql`
+      UPDATE harness_shared.admission_runs
+         SET started_at = to_timestamp(${NOW - 3 * 60 * 60_000} / 1000.0), finished_at = NULL,
+             detail = jsonb_set(detail, '{status}', '"running"'::jsonb)
+       WHERE id = 'runtime-actual'`;
+    const reaped = await reapStrandedAdmissionRuns(db.sql, {
+      workspaceId: WS, reaperRunId: 'runtime-reaper', nowMs: NOW,
+    });
+    expect(reaped.map(row => row.id)).toEqual(['runtime-actual']);
+    const [recovered] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-actual'`;
+    expect(recovered.detail.status).toBe('failed');
+    expect(recovered.detail.producingRuntime).toEqual(run.detail.producingRuntime);
+  });
+
+  it('retains the producing runtime through completion and same-run replay', async () => {
+    await seedItem({ id: 'WI-runtime-a' });
+    await seedItem({ id: 'WI-runtime-b' });
+    const model = judgementCall('r-finding-merge');
+    let original: Record<string, unknown> | undefined;
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-complete', sql: db.sql, now: () => NOW,
+      llmCall: async (input) => {
+        const [running] = await db.sql`
+          SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-complete'`;
+        expect(running.detail.status).toBe('running');
+        original = running.detail.producingRuntime;
+        expect(original).toMatchObject({
+          schemaVersion: 1, host: hostname(), pid: process.pid,
+          buildSha: 'a'.repeat(40), version: 'runtime-fixture',
+          buildIdentityStatus: 'reported', buildIdentitySource: 'process-build-info',
+        });
+        expect(original!.observedAt).toEqual(expect.any(String));
+        // A later process/build must never re-label the original run.
+        h.buildInfo = { sha: 'b'.repeat(40), version: 'later-runtime' };
+        return model(input);
+      },
+    });
+    expect(original).toBeDefined();
+    const [complete] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-complete'`;
+    expect(complete.detail.status).toBe('complete');
+    expect(complete.detail.producingRuntime).toEqual(original);
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-complete', sql: db.sql,
+      llmCall: vi.fn(), now: () => NOW,
+    });
+    const [replayed] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-complete'`;
+    expect(replayed.detail.producingRuntime).toEqual(original);
+  });
+
+  it('retains the producing runtime when the model fails', async () => {
+    await seedItem({ id: 'WI-runtime-fail-a' });
+    await seedItem({ id: 'WI-runtime-fail-b' });
+    let original: Record<string, unknown> | undefined;
+    await expect(runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-failed', sql: db.sql, now: () => NOW,
+      llmCall: async () => {
+        const [running] = await db.sql`
+          SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-failed'`;
+        original = running.detail.producingRuntime;
+        h.buildInfo = { sha: 'b'.repeat(40), version: 'later-runtime' };
+        throw new Error('runtime witness model failure');
+      },
+    })).rejects.toThrow('runtime witness model failure');
+    expect(original).toBeDefined();
+    const [failed] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-failed'`;
+    expect(failed.detail.status).toBe('failed');
+    expect(failed.detail.producingRuntime).toEqual(original);
+  });
+
+  it('records unknown build identity and preserves it through fail-open completion', async () => {
+    h.buildInfo = { sha: null, version: 'identity-less-bundle' };
+    await runWorkItemAdmissionFailOpen({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-unknown', sql: db.sql, now: () => NOW,
+    });
+    const [run] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-unknown'`;
+    expect(run.detail.status).toBe('complete');
+    expect(run.detail.mode).toBe('fail-open');
+    expect(run.detail.producingRuntime).toMatchObject({
+      buildSha: null, buildIdentityStatus: 'unknown', version: 'identity-less-bundle',
+      host: hostname(), pid: process.pid,
+    });
+  });
+
+  it('does not backfill a legacy run with the replaying runtime identity', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs (id, workspace_id, harness_slug, run_kind, started_at, detail)
+      VALUES ('runtime-legacy', ${WS}, ${HARNESS}, 'promoter-tick', now(), '{"status":"running"}'::jsonb)`;
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-legacy', sql: db.sql,
+      llmCall: vi.fn(), now: () => NOW,
+    });
+    const [run] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-legacy'`;
+    expect(run.detail.status).toBe('complete');
+    expect(run.detail).not.toHaveProperty('producingRuntime');
+  });
+
   it('does not compare equal-mode rows whose exact stored profiles differ', async () => {
     await seedItem({
       id: 'WI-gemma',

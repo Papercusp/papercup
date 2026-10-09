@@ -161,7 +161,8 @@ AWS publication receipts are retained at
 `/mnt/backup/p012-bake-fire105/aws-a-p012r69-20261007t125744z/publish.A-r62b.json`
 and
 `/mnt/backup/p012-bake-fire105/aws-b-p012r70-20261007t125744z/publish.B-contained.json`.
-They prove publication in the clean account. On October 8, `su-ee96d6e7` held
+They prove accepted publication from account `413781344298`, with embedded
+clean-account canary proof in `497149484242`. On October 8, `su-ee96d6e7` held
 the separate P-012 real-account lifecycle, soak, teardown and shipment lane.
 The October 9 authoritative read of `WI-10005036` is blocked and unassigned,
 with an unresolved canonical v4 scope answer and missing execution/acceptance
@@ -222,6 +223,16 @@ verdict or adequacy claim is made at this checkpoint. Log:
 `P-003` is blocked by `P-002`. A current GCP-compatible artifact and complete
 hosted/provider task, reconnect and teardown receipts remain required. The
 retained AWS A/B publication receipts are not substitutes for those receipts.
+Direct readback confirms accepted A `0.0.21-p012r69` /
+`ami-08b30abb33126e2e5`, manifest
+`sha256:54b09574c51539808b9c945426c808406e80d9290266166488c0a5d33d870305`,
+and B `0.0.21-p012r70` / `ami-05a8be4f5e5e553f3`, manifest
+`sha256:73420c6303698a4b33a0670b942b295d451142d68a6a7f0a2d34ff6304a23402`.
+Their clean-account proof records report healthy services, terminated canaries
+and empty residual-resource lists as observed on October 8. No fresh provider
+absence query or full lifecycle/task/soak acceptance was performed in this
+continuation.
+
 No current-campaign cloud resources were created in this continuation, and no
 shipment was claimed. The next native attempt requires a pre-run audit of the
 source-lock and byte-matched input admission failures already observed; it must

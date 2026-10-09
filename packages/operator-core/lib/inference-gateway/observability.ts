@@ -156,6 +156,31 @@ export async function fetchGatewayHeadroom(
   }
 }
 
+/** Live operation evidence from the existing owner report. Missing fields on
+ * an older gateway, an outage, or an owner mismatch are unknown, never zero. */
+export async function fetchGatewayOwnerExecution(ownerId: string, opts: {
+  port?: number; fetchImpl?: typeof fetch; timeoutMs?: number;
+} = {}): Promise<{ active: number | null; observedAt: number | null }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 1000);
+  try {
+    const res = await (opts.fetchImpl ?? fetch)(
+      `http://127.0.0.1:${opts.port ?? gatewayPort()}/admin/owner-report?owner=${encodeURIComponent(ownerId)}`,
+      { signal: ctrl.signal });
+    if (!res.ok) return { active: null, observedAt: null };
+    const body = await res.json() as { owner?: string; now?: number; stageTelemetry?: { active?: number } };
+    const active = body.stageTelemetry?.active;
+    if (body.owner !== ownerId || !Number.isInteger(active) || Number(active) < 0 || !Number.isFinite(body.now)) {
+      return { active: null, observedAt: null };
+    }
+    return { active: Number(active), observedAt: Number(body.now) };
+  } catch {
+    return { active: null, observedAt: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Pure predicate: does an ALREADY-FETCHED headroom read show the gateway
  * WHOLESALE-throttled — the bound account paused, or its unified window hard-rejected
