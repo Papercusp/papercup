@@ -27,6 +27,7 @@ test('background summary completes through a real managed task and the normal do
   let sequence = 0;
   let taskId: string | undefined;
   let terminal = false;
+  const observations: Record<string, unknown> = { workspace, client, workItem, origin: origin.origin };
   const invoke = async (name: string, args: unknown) => {
     const payload = join(state, `call-${sequence++}.json`);
     writeFileSync(payload, JSON.stringify(args));
@@ -42,6 +43,7 @@ test('background summary completes through a real managed task and the normal do
   try {
     const healthBefore = await (await request.get(origin.origin + '/api/health')).json();
     expect(healthBefore.ok).toBe(true);
+    observations.buildBefore = healthBefore.sha;
     const claim = await invoke('work_items:get', { id: workItem, harness: 'papercusp', payloadTier: 'full',
       projection: { pick: ['results[].workItem.id', 'results[].workItem.assignee', 'results[].workItem.state'] } });
     expect(claim.results).toHaveLength(1);
@@ -52,6 +54,7 @@ test('background summary completes through a real managed task and the normal do
       .flatMap((backend: { models: string[] }) => backend.models);
     test.skip(models.length === 0, 'The live local-model fixture is unavailable; no cloud substitute is permitted.');
     const model = models.includes('ornith:fast') ? 'ornith:fast' : models[0];
+    observations.model = model;
     const source = 'Public fixture: North reports 12 units and South reports 34 units.';
     const args = { operation: 'summarize', content: { kind: 'text', text: source, ref: 'fixture:background-public-report' },
       summary: { model, allowCloud: false, cache: false, maxCalls: 1, maxOutputTokens: 128,
@@ -62,6 +65,7 @@ test('background summary completes through a real managed task and the normal do
     const launch = await invoke('capability:bash', { command, cwd: root, work_item_id: workItem,
       run_in_background: true, timeout: 180_000 });
     taskId = launch.task_id;
+    observations.launch = launch;
     expect(taskId).toBeTruthy();
     expect(launch.bash_id).toBeTruthy();
     let output = String(launch.output ?? '');
@@ -73,6 +77,8 @@ test('background summary completes through a real managed task and the normal do
       output += String(final.output ?? '');
     }
     terminal = final.status !== 'running';
+    observations.final = final;
+    observations.output = output;
     expect(final.status, output).toBe('completed');
     expect(final.exit_code, output).toBe(0);
     // Parse the child CLI's real JSON result, independently of the task's exit.
@@ -89,6 +95,7 @@ test('background summary completes through a real managed task and the normal do
     await testInfo.attach('managed-summary-receipt', { contentType: 'application/json',
       body: JSON.stringify({ buildSha: healthBefore.sha, taskId, bashId: launch.bash_id, final, receipt }) });
   } finally {
+    await testInfo.attach('managed-summary-execution', { contentType: 'application/json', body: JSON.stringify(observations) });
     if (taskId && !terminal) await invoke('processes:kill', { taskId }).catch(() => {});
     rmSync(state, { recursive: true, force: true });
   }

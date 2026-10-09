@@ -207,6 +207,49 @@ test('summary uses the real SDK and local gateway, then fails closed after a reg
   }
 });
 
+test.each([false, true])('summary distinguishes withheld HTTP headers from a stalled response body (headers=%s)', async headers => {
+  // Warm only fixture modules before the short transport deadline so this
+  // comparison measures HTTP progress rather than cold module loading.
+  await Promise.all([import('@ai-sdk/openai'), import('../agent-loop/ai-sdk-port'), import('../agent-chat-stream')]);
+  const backend = await startFakeBackend('stalled-summary', (_req, res) => {
+    if (headers) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.flushHeaders();
+    }
+  });
+  backends = [backend];
+  const previousPort = process.env.PAPERCUSP_GATEWAY_PORT;
+  process.env.PAPERCUSP_GATEWAY_PORT = new URL(backend.baseUrl).port;
+  const phases: string[] = [];
+  const deps: SummaryDeps = {
+    async *run() { throw new Error('cloud runner forbidden'); },
+    async *runLocal(options) {
+      yield* runLocalSummary({ ...options, onSummaryPhase: stage => {
+        phases.push(stage);
+        options.onSummaryPhase?.(stage);
+      } });
+    },
+    isLocalModel: async () => true, checkBudget: async () => ({ exceeded: false }),
+    recordSpend: async () => {}, reuse: async (_workspace, _key, factory) => factory(),
+  };
+  try {
+    const source = await readContent({ kind: 'text', text: 'Public transport fixture.' },
+      { workspaceId: 'ws-test', readerId: 'reader-test' }, { authorize: async () => true });
+    await assert.rejects(summarizeContent(source, { model: 'fixture-local', cache: false, timeoutMs: 500 }, undefined, deps),
+      (error: unknown) => {
+        const failure = error as { code: string; diagnostics: { stage: string } };
+        assert.equal(failure.code, 'budget-exceeded');
+        assert.equal(failure.diagnostics.stage, headers ? 'http-body-wait' : 'http-wait');
+        return true;
+      });
+    assert.equal(backend.requests.length, 1);
+    assert.equal(phases.includes('http-body-wait'), headers);
+  } finally {
+    if (previousPort === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT;
+    else process.env.PAPERCUSP_GATEWAY_PORT = previousPort;
+  }
+});
+
 test('a non-JSON / model-less body 400s', async () => {
   await boot([]);
   const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'not json' });

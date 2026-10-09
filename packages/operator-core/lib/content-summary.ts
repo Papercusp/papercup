@@ -20,7 +20,7 @@ export const summaryOptionsSchema = z.object({
   timeoutMs: z.number().int().min(100).max(180_000).default(120_000),
 });
 export type SummaryOptions = z.input<typeof summaryOptionsSchema>;
-type SummaryStage = 'budget-check' | 'adapter-import' | 'model-wait' | 'http-wait' | 'model-stream' | 'spend-recording';
+type SummaryStage = 'budget-check' | 'adapter-import' | 'model-wait' | 'http-wait' | 'http-body-wait' | 'model-stream' | 'spend-recording';
 /** Timings and counters only; never source text, refs, prompts or model output. */
 export interface SummaryFailureDiagnostics {
   stage: SummaryStage; phase: string; calls: number; elapsedMs: number; stageElapsedMs: number;
@@ -62,7 +62,7 @@ export async function* runLocalSummary(options: SummaryRunOptions): AsyncIterabl
   const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535 ? configuredPort : 8788;
   const model = options.model!;
   const provider = createOpenAI({ baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'local-gateway',
-    fetch: (url, init) => {
+    fetch: async (url, init) => {
       options.onSummaryPhase?.('http-wait');
       // Local chat templates can spend the entire bounded output on reasoning.
       // Request a visible answer through their existing llama-server/vLLM seam;
@@ -70,7 +70,11 @@ export async function* runLocalSummary(options: SummaryRunOptions): AsyncIterabl
       const body = typeof init?.body === 'string'
         ? JSON.stringify({ ...JSON.parse(init.body), chat_template_kwargs: { enable_thinking: false } })
         : init?.body;
-      return fetch(url, { ...init, body, redirect: 'error' });
+      const response = await fetch(url, { ...init, body, redirect: 'error' });
+      // Headers arriving is distinct from the first decoded model event.
+      // Preserve that boundary when a response body stalls before any output.
+      options.onSummaryPhase?.('http-body-wait');
+      return response;
     } });
   const adapter = createAiSdkPort({ resolveModel: () => ({ model: provider.chat(model), provider: 'openai', modelId: model,
     headers: { ...ownerHeaders(options.ownerId), ...priorityTierHeaders(options.priority) } }) });

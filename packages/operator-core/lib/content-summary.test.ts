@@ -175,12 +175,12 @@ describe('explicit authorized content summaries', () => {
     await expect(summarizeContent(await source(), { allowCloud: true, timeoutMs: 100 }, undefined, h.deps)).rejects.toMatchObject({ code: 'budget-exceeded' });
     expect(h.requests).toHaveLength(0);
   });
-  it.each(['budget-check', 'adapter-import', 'http-wait', 'model-wait', 'model-stream', 'spend-recording'] as const)('identifies a stalled %s without exposing source content', async stage => {
+  it.each(['budget-check', 'adapter-import', 'http-wait', 'http-body-wait', 'model-wait', 'model-stream', 'spend-recording'] as const)('identifies a stalled %s without exposing source content', async stage => {
     const h = harness();
     const stalled = () => new Promise<never>(() => {});
     if (stage === 'budget-check') h.deps.checkBudget = stalled;
     else h.deps.run = async function* (request) {
-      if (stage === 'adapter-import' || stage === 'http-wait') request.onSummaryPhase?.(stage);
+      if (stage === 'adapter-import' || stage === 'http-wait' || stage === 'http-body-wait') request.onSummaryPhase?.(stage);
       if (stage === 'model-stream') yield { type: 'delta', text: 'private output' };
       if (stage === 'spend-recording') yield { type: 'result', finalText: 'private output', costUsd: 0, tokensIn: 1, tokensOut: 1 };
       else await stalled();
