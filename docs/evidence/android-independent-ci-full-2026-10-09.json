@@ -208,43 +208,53 @@
   "assertions": [
     {
       "id": "host",
-      "passed": true
+      "passed": true,
+      "evidence": "Actual host phase exit0; retained host.log SHA2565c5afefc13dfd8fa7cbfe034e3c4d9787cd9f708a8c5c938fcc1fe7a76e5788b."
     },
     {
       "id": "31-connected-no-failure-error-skip",
-      "passed": true
+      "passed": true,
+      "evidence": "Retained unpaired JUnit contains31 testcase nodes,0 failure/error/skip and no suite problems; reportSHA256aca6ca405e7b04dcb0597d3216b2dc33e7eb68cd65f70b3f8268976f2e33c1b1."
     },
     {
       "id": "paired-six-feature-JNI",
-      "passed": true
+      "passed": true,
+      "evidence": "Exact selected sixFeatureJourneysMatchOwnedOperatorState passed; paired JUnit1 testcase,0 failure/error/skip; reportSHA256f575c3d0b72cd75204fe3944daa021010d9e3ffbf7663fac427eb56720990b1f. Native journey completed in matching run/workspace; all six state witnesses passed."
     },
     {
       "id": "authenticated-two-turn-readback",
-      "passed": true
+      "passed": true,
+      "evidence": "Native receipt featureChatFixtureBasis has deviceReadbackPassedtrue and turnCount2 in owned workspace; native chatStatePassedtrue and featureExpectedState.chatTurns2. Authenticated pre-native guard validates both exact seeded roles/texts."
     },
     {
       "id": "exact-source-counterpart-APK-JUnit-proof",
-      "passed": true
+      "passed": true,
+      "evidence": "Maintained verify-paired phase exit0 verifies source fingerprints, prepared operatorf4002b0d health/bundle, retained app/test APK digests, exact selected JUnit and complete owned journey/cleanup; verifier logSHA2561af66d046fbc0def56a8e30437bf8571c1a1a372d3cdc62cc09a8eeea63e26c1."
     },
     {
       "id": "162-retained-artifact-hashes",
-      "passed": true
+      "passed": true,
+      "evidence": "Recomputed SHA256 for every162 artifact record in exact144934Z result.json and observed zero mismatches; receiptSHA2567f013eee008e507983b578a1fde29333b43c497e936f8b6d60af85cac1d32f36."
     },
     {
       "id": "CI-admission-current-source",
-      "passed": true
+      "passed": true,
+      "evidence": "ci-admission phase exit0 and admission JSON resultpass/sourceCommit21ac990c2ae804ac031d4fafb457595d59e64bb3/sourceDirtyfalse; final source identity exactly matches the initial committed source/fingerprint."
     },
     {
       "id": "exact-week-success-cache",
-      "passed": true
+      "passed": true,
+      "evidence": "success.json equals the exact full run receipt; maintained cached_proof with measured current source identity and counterpart returned that exact receipt. Maintained controls reject changed source/counterpart, missing/failed phases and changed/missing artifacts."
     },
     {
       "id": "owned-cleanup",
-      "passed": true
+      "passed": true,
+      "evidence": "emulatorCleanupVerified, owned fixture cleanupVerified, credentialsCleared, hostCleanupVerified and nativeProcessCleanupVerified all true; private port43707 is closed and no owned android-ci-avd directories remain."
     },
     {
       "id": "existing-timer-enabled-active-waiting",
-      "passed": true
+      "passed": true,
+      "evidence": "After full pass, systemctl start activated the existing papercusp-android-ci.timer; fresh systemctl show reports UnitFileStateenabled/ActiveStateactive/SubStatewaiting and finite next elapse. No running service was restarted."
     }
   ],
   "rootCause": {
