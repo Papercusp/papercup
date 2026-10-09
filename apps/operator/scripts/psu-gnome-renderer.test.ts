@@ -1,0 +1,45 @@
+// @vitest-environment node
+import { execFile, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { describe, expect, it } from 'vitest';
+
+const fixture = fileURLToPath(new URL('./fixtures/gnome-reflow-probe.py', import.meta.url));
+const run = promisify(execFile);
+const nativeAvailable = process.platform === 'linux'
+  && existsSync('/usr/libexec/gnome-terminal-server')
+  && spawnSync('/usr/bin/python3', ['-c', 'from gi.repository import Gio'], { timeout: 2_000 }).status === 0
+  && ['xvfb-run', 'dbus-run-session', 'xdotool', 'openbox', 'xprop'].every((command) =>
+    spawnSync('which', [command], { timeout: 2_000 }).status === 0);
+
+describe.skipIf(!nativeAvailable)('isolated GNOME renderer reproduction', () => {
+  it('rejects invalid workload sizes before creating a GUI or settings backend', async () => {
+    await expect(run('/usr/bin/python3', [fixture, '--lines=999'], { timeout: 5_000 }))
+      .rejects.toMatchObject({ code: 2 });
+  });
+
+  it('measures visible windows, changed PTY geometry and genuinely different retained history', async () => {
+    const { stdout } = await run('/usr/bin/python3', [fixture, '--lines=10000', '--limit=2000'], {
+      timeout: 45_000, maxBuffer: 128 * 1024,
+    });
+    const rows = stdout.trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.unlimited)).toEqual([false, true]);
+    expect(rows[1].history_bytes).toBeGreaterThan(rows[0].history_bytes * 3);
+    for (const row of rows) {
+      // A hidden GtkWindow answers pings but never changes the visible VTE grid.
+      // Refuse to treat such samples as renderer latency evidence again.
+      const columns = row.columns_after_resize.map((title: string) => {
+        expect(title).toMatch(/^REFLOW_COLS_\d+$/);
+        return Number(title.slice('REFLOW_COLS_'.length));
+      });
+      expect(columns[0]).toBeLessThan(columns[1]);
+      expect(columns[2]).toBeLessThan(columns[3]);
+      expect(columns[2]).toBeGreaterThan(columns[0]);
+      expect(row.baseline_ping_ms).toHaveLength(5);
+      expect(row.sibling_ping_after_resize_ms).toHaveLength(4);
+      expect(row.sibling_ping_after_resize_ms.every((ms: number) => Number.isFinite(ms) && ms >= 0)).toBe(true);
+    }
+  }, 50_000);
+});

@@ -50,6 +50,19 @@ function fixture(opts = options) {
   return { row, ports, lifecycle, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
 describe('current native benchmark execution', () => {
+  it.each(['data', 'structuredContent'])('reads the maintained launcher receipt from %s.launch', async field => {
+    const f = fixture();
+    vi.mocked(f.ports.launch).mockResolvedValue({
+      content: [{ type: 'text', text: 'Opened one headless native solver.' }],
+      [field]: { launch: { agentStarted: true, tasks: [{ taskId: f.row.taskId }] } },
+    });
+    const result = await f.run();
+    expect(result.telemetry.stopReason).toBe('done');
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
+      launchReceipt: { agentStarted: true, tasks: [{ taskId: f.row.taskId }] },
+      terminalReceipt: { taskId: f.row.taskId }, retiredTaskIds: [f.row.taskId],
+    });
+  });
   it('uses the maintained native su request, pins explicit controls and excludes hidden grader inputs', async () => {
     const f = fixture();
     const result = await f.run();

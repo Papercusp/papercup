@@ -66,10 +66,17 @@ export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: B
 function payload(reply: unknown): Record<string, unknown> {
   if (!reply || typeof reply !== 'object') throw new Error('Native launch returned no receipt.');
   const obj = reply as Record<string, unknown>;
+  // The native handler returns prose in content and its receipt in data.launch;
+  // MCP clients expose that same data under structuredContent.
+  for (const envelope of [obj.data, obj.structuredContent]) {
+    if (!envelope || typeof envelope !== 'object') continue;
+    const launch = (envelope as Record<string, unknown>).launch;
+    if (launch && typeof launch === 'object' && !Array.isArray(launch)) return launch as Record<string, unknown>;
+  }
   if (!Array.isArray(obj.content)) return obj;
   for (const part of obj.content) {
     if (part?.type !== 'text' || typeof part.text !== 'string') continue;
-    try { return JSON.parse(part.text); } catch { /* advisory block */ }
+    try { return payload(JSON.parse(part.text)); } catch { /* advisory block */ }
   }
   throw new Error('Native launch returned no structured receipt.');
 }
