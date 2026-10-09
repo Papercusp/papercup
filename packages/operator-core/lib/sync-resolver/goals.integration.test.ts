@@ -208,6 +208,14 @@ describe('goal rubric stewardship SQL', () => {
        WHERE workspace_id = ${WS} AND issue_id = ANY(${['EI-owned-baseline', 'EI-owned-regrade', 'EI-owned-unsettled']})`;
     expect(seeded).toHaveLength(3);
     expect(seeded.every(row => row.created_by === 'independent-grader')).toBe(true);
+    const { getWorkItemsByIds } = await import('../work-items');
+    const repaired = await getWorkItemsByIds(['WI-12']);
+    expect(repaired, 'The canonical repair read must preserve terminal proof before cycle classification').toEqual([
+      expect.objectContaining({ id: 'WI-12', state: 'done', completionAuthority: 'committed',
+        closedAt: new Date(repairedAt).toISOString(), terminalCompletionEvidence: expect.objectContaining({
+          testsRun: 'Canonical fixture repair suite', testResult: 'passed',
+        }) }),
+    ]);
     const reading = await readGoalRubricStewardship({ workspaceId: WS, goalId: GOAL, nowMs: now }, { sql });
     expect(reading.error).toBeNull();
     expect(reading.complete).toBe(true);
