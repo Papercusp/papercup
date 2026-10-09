@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseCLI, resolveConfig } from 'vitest/node';
 import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
@@ -87,6 +87,52 @@ describe('release acceptance checkout filesystem preflight', () => {
       }
     },
   );
+});
+
+describe('release acceptance checkout helper snapshot', () => {
+  it('keeps the admitted helper stable when the shared source changes during checkout', async () => {
+    const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');
+    const invocation = wrapper.match(/bash "\$ROOT\/apps\/operator\/scripts\/systemd\/papercusp-script-snapshot\.sh"[\s\S]*?(?=\nlanded=)/)?.[0];
+    expect(invocation).toBeDefined();
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-helper-snapshot-'));
+    const helper = path.join(root, 'apps/operator/bin/release/setup-release-checkout.sh');
+    const snapshot = path.join(root, 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh');
+    const started = path.join(root, 'started');
+    const resume = path.join(root, 'resume');
+    mkdirSync(path.dirname(helper), { recursive: true });
+    mkdirSync(path.dirname(snapshot), { recursive: true });
+    writeFileSync(snapshot, readFileSync(path.join(REPO_ROOT, 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh')));
+    // Put the completion beyond Bash's read-ahead buffer. The wait lets the
+    // test replace the original only after the admitted program has started.
+    writeFileSync(helper, `printf '%s' "$0" > "$PUI_SNAPSHOT_STARTED"\nwhile [ ! -f "$PUI_SNAPSHOT_RESUME" ]; do sleep 0.01; done\n`
+      + '# padding beyond lazy shell read buffer\n'.repeat(2048)
+      + 'printf "CHECKOUT_HELPER_COMPLETED\\n"\n');
+    const child = spawn('bash', ['-c', `fail() { exit 2; }\n${invocation}`], {
+      env: { ...process.env, ROOT: root, checkout: path.join(root, 'checkout'), sha: 'a'.repeat(40),
+        node_modules_copy: 'hardlink', PUI_SNAPSHOT_STARTED: started, PUI_SNAPSHOT_RESUME: resume },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', chunk => { output += String(chunk); });
+    child.stderr.on('data', chunk => { output += String(chunk); });
+    const exit = new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+    try {
+      await vi.waitFor(() => expect(existsSync(started)).toBe(true), { timeout: 5_000, interval: 10 });
+      expect(readFileSync(started, 'utf8')).not.toBe(helper);
+      writeFileSync(helper, 'this is an invalid concurrent edit (\n');
+      writeFileSync(resume, 'continue');
+      expect(await exit).toBe(0);
+      expect(output).toContain('CHECKOUT_HELPER_COMPLETED');
+    } finally {
+      child.kill();
+      writeFileSync(resume, 'continue');
+      await exit;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Docker create/start release preflight', () => {

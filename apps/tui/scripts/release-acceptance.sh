@@ -84,7 +84,11 @@ while (!fs.existsSync(ancestor)) ancestor = path.dirname(ancestor);
 process.stdout.write(fs.statSync(source).dev === fs.statSync(ancestor).dev ? 'hardlink' : 'copy');
 NODE
 )" || fail "could not determine checkout filesystem for $checkout"
-bash "$ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
+# Freeze the shared helper and its adjacent sidecars before its long checkout
+# work. Bash reads scripts lazily; a peer edit during materialization must not
+# change the program this invocation is executing.
+bash "$ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh" \
+  "$ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
   --ref "$sha" --integration "$ROOT" --release "$checkout" \
   --node-modules force --node-modules-copy "$node_modules_copy" --node-modules-generation off \
   --source-integrity object-sourced >&2 \
