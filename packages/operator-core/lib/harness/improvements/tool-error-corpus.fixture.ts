@@ -176,6 +176,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'The server-side native-session authority verifier could not complete; the caller did not cause this pre-dispatch failure (EI-25473774715739107)',
   },
   {
+    n: 1, errorCode: 'superuser_native_session_verifier_unavailable', status: 'request_rejected',
+    message: 'At 2026-10-08T13:52Z, valid exact-event events:await and bounded work_items:get were rejected with superuser_native_session_verifier_unavailable.',
+    expectedClass: 'transient',
+    note: 'Captured verifier failures retain an incident-context message, so classification must use the stable error code as well as the legacy exact-message form (EI-25419607893124365)',
+  },
+  {
     n: 1, errorCode: 'native_tool_owner_unsupported_capability', status: 'error',
     message: 'native_tool_owner_unsupported_capability',
     expectedClass: 'caller',

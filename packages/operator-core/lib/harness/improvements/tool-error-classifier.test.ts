@@ -310,6 +310,13 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
     expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_native_session_verifier_unavailable')).toBe('transient');
     expect(classifyToolError('handler_error', 'error', 'superuser_native_session_verifier_unavailable')).toBe('transient');
+    expect(
+      classifyToolError(
+        'superuser_native_session_verifier_unavailable',
+        'request_rejected',
+        'At 2026-10-08T13:52Z, two valid requests were rejected with superuser_native_session_verifier_unavailable.',
+      ),
+    ).toBe('transient');
   });
 
   it('classifies the intentional native-owner transport capability refusal as caller-side', () => {
