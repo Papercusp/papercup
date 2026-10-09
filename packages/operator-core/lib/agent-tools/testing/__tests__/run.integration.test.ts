@@ -597,31 +597,29 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
 
     const out = await runTestFilesCore({ root: roots[0]!, files, timeoutMs: 5_000 });
 
-    expect(out.error, JSON.stringify(out)).toBe('timeout');
-    if (out.error !== 'timeout') return;
-    expect(out.completedGroups, JSON.stringify(out)).toHaveLength(1);
-    expect(out.completedGroups?.[0]).toMatchObject({
-      root: roots[0],
-      files: [files[0]],
-      ok: false,
-      result: {
-        passed: 1,
-        failed: 1,
-        files: 1,
-        failures: [expect.objectContaining({ test: 'schema width' })],
-      },
-    });
-    expect(out.completedGroups?.[0]?.result.byFile).toMatchObject({
-      'operator-core.test.ts': { passed: 1, failed: 1 },
-    });
-    expect(out.completedGroups?.[0]?.result.failures.length).toBeLessThanOrEqual(5);
-    expect(out.completedGroups?.[0]?.result.failuresTruncated).toBe(false);
-
-    const detachedRunId = out.detachedRunId;
-    expect(typeof detachedRunId).toBe('string');
-    if (typeof detachedRunId === 'string') {
-      expect(cancelRun(detachedRunId)).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, 250));
+    try {
+      expect(out.error, JSON.stringify(out)).toBe('timeout');
+      if (out.error !== 'timeout') return;
+      expect(out.completedGroups, JSON.stringify(out)).toHaveLength(1);
+      expect(out.completedGroups?.[0]).toMatchObject({
+        root: roots[0],
+        files: [files[0]],
+        ok: false,
+        result: {
+          passed: 1,
+          failed: 1,
+          files: 1,
+          failures: [expect.objectContaining({ test: 'schema width' })],
+        },
+      });
+      expect(out.completedGroups?.[0]?.result.byFile).toMatchObject({
+        'operator-core.test.ts': { passed: 1, failed: 1 },
+      });
+      expect(out.completedGroups?.[0]?.result.failures.length).toBeLessThanOrEqual(5);
+      expect(out.completedGroups?.[0]?.result.failuresTruncated).toBe(false);
+      expect(typeof out.detachedRunId).toBe('string');
+    } finally {
+      if (out.detachedRunId) await cancelFixtureRecovery(out.detachedRunId);
     }
   }, 30_000);
 });
