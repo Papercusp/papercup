@@ -32,7 +32,7 @@ import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
 
 /** Canonical datatypes the shared outbound verbs write. */
-export type OutboundDatatype = 'email-message' | 'calendar-event';
+export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket';
 
 /**
  * The outbound capability vocabulary (D-014.2). Each is passed to `invoke` as
@@ -120,7 +120,7 @@ function connectedSuffix(pool: readonly Candidate[]): string {
  * to send is still not the one they chose.
  */
 export async function resolveCapabilitySource(
-  sql: postgres.Sql,
+  sql: postgres.Sql | postgres.TransactionSql,
   params: {
     workspaceId: string;
     userId: string;
@@ -217,7 +217,7 @@ export async function invokeOutboundProvider(
     });
   const services = await resolveProviderServices(provider.entry.descriptor.serviceCredentials);
   const result = await provider.entry.adapter.invoke(
-    { source: target.source.id, capability, args, ...(services ? { services } : {}) },
+    { source: target.source.id, capability, args, config: target.source.config, ...(services ? { services } : {}) },
     { fetch },
   );
   if (!result || typeof result !== 'object' || Array.isArray(result)) {

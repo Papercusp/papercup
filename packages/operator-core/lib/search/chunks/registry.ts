@@ -292,6 +292,14 @@ export function chunkStoreVectorColumns(
  * each of its `searchSources`; the shared store's column goes to every source
  * a registered entry names. Order is preserved and duplicates are dropped.
  */
+/** Shared-store health is measured per collection; sibling vectors cannot fill its deficit. */
+export function chunkCoverageKey(surface: PapercuspChunkSurface,
+  stores: readonly ChunkStoreRegistration[] = CHUNK_STORES): string {
+  const store = stores.find(s => s.table === surfaceStoreTable(surface));
+  if (!store) throw new Error(`no coverage store for ${surface.surface}`);
+  return `${store.table}.${store.embedCol}${surface.store ? '' : `:${surface.surface}`}`;
+}
+
 export function withChunkSearchColumns(
   base: Readonly<Record<string, readonly string[]>>,
   stores: readonly ChunkStoreRegistration[] = CHUNK_STORES,
@@ -308,7 +316,7 @@ export function withChunkSearchColumns(
   for (const surface of surfaces) {
     if (!surface.searchSource) continue;
     const store = byTable.get(surfaceStoreTable(surface));
-    if (store) add(surface.searchSource, `${store.table}.${store.embedCol}`);
+    if (store) add(surface.searchSource, chunkCoverageKey(surface, stores));
   }
   return out;
 }

@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
-import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { boundedSource, createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
+import { runFullTextSearch } from '@papercusp/search';
 import { splitDocSections } from '../../search/doc-embed-sync';
 import { runChunkSyncTick } from '../../search/chunks/tick';
 import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
@@ -55,13 +56,24 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
 
   it('retrieves a plan body beyond the old 32-window cap with its heading and prerequisite', async () => {
     const source = createPlanSearchSource({ harnessSlugs: ['pot-a'], automatic: true });
-    for (const leg of [source.lexical!,source.embedding!]) {
-      const rows = await leg(params());
+    for (const [leg,query] of [[source.lexical!,'zephyrquartz'],[source.embedding!,'restore diagnostic state']] as const) {
+      const rows = await leg({ ...params(),query });
       expect(rows.map(r=>r.row.source_id)).toEqual(['pot-a:late-plan']);
       expect(rows[0].row.excerpt).toContain('retain the snapshot');
       expect(rows[0].row.excerpt).toContain('zephyrquartz');
       expect(rows[0].row.meta?.section).toBe('Late repair');
     }
+  });
+
+  it('returns healthy source results when a sibling SQL leg exceeds its deadline', async () => {
+    const stalled = boundedSource({ name: 'stalled',lexical: async p => {
+      await p.sql`SELECT pg_sleep(10)`;
+      return [];
+    } });
+    const result = await runFullTextSearch([stalled,createDocSearchSource({ harnessSlugs: ['pot-a'] })],params());
+    expect(result.results.map(r=>r.source_id)).toContain('harness:pot-a:late-doc');
+    expect(result.legs.lexical.callsFailed).toBe(1);
+    expect(result.legs.degraded).toBe(true);
   });
 
   it('retrieves a deep doc section and excludes foreign/crowding harnesses before the limit', async () => {

@@ -156,7 +156,7 @@ describe('the Asana package declares an Asana ticket provider', () => {
       id: 'asana',
       contractVersion: 1,
       datatypes: ['ticket', 'ticket-status-change', 'ticket-comment'],
-      capabilities: ['ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers', 'push.subscribe', 'push.unsubscribe'],
+      capabilities: ['ticket.read', 'ticket.create', 'ticket.comment', 'ticket.transition', 'ticket.containers', 'push.subscribe', 'push.unsubscribe'],
       // D-016: Asana's webhook handshake and signature, verified by the host.
       push: {
         handshake: { header: 'x-hook-secret' },
@@ -605,6 +605,32 @@ describe('writes: ticket.read, ticket.comment, ticket.transition', () => {
       expect(headers.accept).toBe('application/json');
       expect(headers['content-type']).toBe(call.body === undefined ? undefined : 'application/json');
     }
+  });
+});
+
+describe('ticket.create uses OAuth correlation and the configured project', () => {
+  const createArgs = { correlationId: 'slack-source-event', projectGid: 'proj-eng', title: 'Export fails', body: 'Original report' };
+  it('creates through host.fetch after an absent correlation lookup', async () => {
+    const fake = fakeHost((call) => call.method === 'GET' ? json(404, {}) : json(201, { data: { gid: 'new-task', permalink_url: 'https://app.asana.com/0/proj-eng/new-task' } }));
+    expect(await adapter.invoke(invokeReq('ticket.create', createArgs), fake.host)).toMatchObject({ externalRef: 'new-task', recovered: false });
+    expect(fake.calls.map((c) => c.method)).toEqual(['GET', 'POST']);
+    expect(fake.calls[1].body).toEqual({ data: { name: 'Export fails', notes: 'Original report', projects: ['proj-eng'], external: { gid: 'slack-source-event' } } });
+  });
+  it('recovers the original task, or leaves an absent uncertain attempt pending, without POST', async () => {
+    const fake = fakeHost(() => json(200, { data: { gid: 'original', memberships: [{ project: ENG }] } }));
+    expect(await adapter.invoke(invokeReq('ticket.create', { ...createArgs, recoveryOnly: true }), fake.host)).toMatchObject({ externalRef: 'original', recovered: true });
+    expect(fake.named('POST', '/tasks')).toHaveLength(0);
+    const absent = fakeHost(() => json(404, {}));
+    expect(await adapter.invoke(invokeReq('ticket.create', { ...createArgs, recoveryOnly: true }), absent.host)).toEqual({ pendingReconciliation: true });
+    expect(absent.calls).toHaveLength(1);
+  });
+  it('refuses unconfigured projects and missing correlations before HTTP, and refuses a recovered foreign project', async () => {
+    const fake = fakeHost(() => json(200, { data: { gid: 'foreign', memberships: [{ project: OPS }] } }));
+    await expect(adapter.invoke(invokeReq('ticket.create', { ...createArgs, projectGid: 'unconfigured' }), fake.host)).rejects.toThrow('project_out_of_scope');
+    await expect(adapter.invoke(invokeReq('ticket.create', { ...createArgs, correlationId: '' }), fake.host)).rejects.toThrow('correlation_required');
+    expect(fake.calls).toHaveLength(0);
+    await expect(adapter.invoke(invokeReq('ticket.create', createArgs), fake.host)).rejects.toThrow('recovery_scope_invalid');
+    expect(fake.named('POST', '/tasks')).toHaveLength(0);
   });
 });
 

@@ -9,6 +9,7 @@ import { SEARCH_SOURCES } from './sources';
 import { scopeArg } from './scope';
 import { assessSourceCoverage, SEARCH_SOURCE_SURFACES, type CoverageSnapshot } from '../../search/coverage-gate';
 import { stampEmbedderMode } from '../../search/embedder-mode-registry';
+import { buildCoverageQuery,coverageTargets,surfaceKey } from '../../search/embed-coverage';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { resolveNamedQueryV2 } from '../../sync-resolver';
 
@@ -20,7 +21,8 @@ vi.mock('@papercusp/db-org', async actual => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => ui.workspaceId }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => flag.enabled }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: async () => ({}) }));
-vi.mock('../../search/embed-backfill', () => ({
+vi.mock('../../search/embed-backfill', async actual => ({
+  ...await actual<typeof import('../../search/embed-backfill')>(),
   resolveBackfillEmbedder: async () => ({ mode: 'gemma', embed, profile: { profileId } }),
 }));
 const vector = (text: string) => [1, /zephyrquartz|restore the diagnostic snapshot/.test(text) ? 10 : 0, ...Array(766).fill(0)];
@@ -49,7 +51,7 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
   it('registers report scope and derives its sweep coverage mapping', () => {
     expect(SEARCH_SOURCES.some(s => s.name === 'report')).toBe(true);
     expect(scopeArg().parse(['reports'])).toEqual(['report']);
-    expect(SEARCH_SOURCE_SURFACES.report).toContain('harness_shared.text_chunks.embedding');
+    expect(SEARCH_SOURCE_SURFACES.report).toContain('harness_shared.text_chunks.embedding:report');
   });
 
   it('embeds the complete published and superseding bodies through the publication effects', async () => {
@@ -80,18 +82,25 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
   it('reports measured missing report embeddings through the existing coverage gate', async () => {
     await publish('workspace');
     const assess = async () => {
-      const [row] = await db.adminSql`SELECT count(*)::int AS eligible,
-        count(*) FILTER (WHERE embedding IS NOT NULL)::int AS embedded
-        FROM harness_shared.text_chunks WHERE surface = 'report'
-          AND parent_key[1] = ${workspaceId}`;
-      const surface = 'harness_shared.text_chunks.embedding';
+      const surface = 'harness_shared.text_chunks.embedding:report';
+      const target = coverageTargets().find(t=>surfaceKey(t) === surface)!;
+      const q = buildCoverageQuery(target,true,'gemma');
+      const [row] = await db.adminSql.unsafe(q.sql,q.params);
+      const eligible = Number(row.eligible_rows),embedded = Number(row.embedded_rows);
       const snapshot: CoverageSnapshot = new Map([[surface, {
-        surface, observedAt: new Date(), eligibleRows: row.eligible, embeddedRows: row.embedded,
-        pct: row.embedded / row.eligible, recentPct: null, stale: false, ageMs: 0,
+        surface, observedAt: new Date(), eligibleRows: eligible, embeddedRows: embedded,
+        pct: eligible === 0 ? 1 : embedded / eligible, recentPct: null, stale: false, ageMs: 0,
       }]]);
       return assessSourceCoverage('report', snapshot);
     };
     expect((await assess()).verdict).toBe('healthy');
+    // A healthy sibling in the same physical table must not cover missing report vectors.
+    await db.adminSql`INSERT INTO harness_shared.text_chunks
+      (surface,parent_key,chunk_idx,content,parent_sha,chunk_sha,splitter_version,embedding,embedding_mode,embedding_profile)
+      SELECT 'plans',ARRAY[${workspaceId},'coverage-decoy','coverage-decoy'],chunk_idx,content,
+        parent_sha,chunk_sha,splitter_version,embedding,embedding_mode,embedding_profile
+      FROM harness_shared.text_chunks WHERE surface = 'report' AND parent_key[1] = ${workspaceId}
+      LIMIT 1 ON CONFLICT DO NOTHING`;
     await db.adminSql`UPDATE harness_shared.text_chunks SET embedding = NULL
       WHERE surface = 'report' AND parent_key[1] = ${workspaceId}`;
     expect(await assess()).toMatchObject({ verdict: 'degraded', coverage: 0 });

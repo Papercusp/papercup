@@ -71,7 +71,7 @@ classification, not proof of reproduction and not permission to implement a fix.
 
 ## Phase 1 — Classify
 
-- **P-001** \`todo\` Read triggers:read-payload with planRunId=payload.plan_run.runId. Classify the quoted message: bug requires a concrete observed failure and expected behavior; chatter, feature requests and instructions without a product failure are non-bug; a plausible report missing essential details is needs-information. Call slack:record-classification with that same planRunId and the typed classification. Only a recorded bug may use the configured source-bound Asana filing capability; do not choose a destination from the message. Complete after recorded:true or alreadyRecorded:true, retaining the triggerRunId and verdict as evidence. Never fix the report here.
+- **P-001** \`todo\` Read triggers:read-payload with planRunId=payload.plan_run.runId. Classify the quoted message: bug requires a concrete observed failure and expected behavior; chatter, feature requests and instructions without a product failure are non-bug; a plausible report missing essential details is needs-information. Call slack:record-classification with that same planRunId and the typed classification. If the returned immutable verdict is bug, call slack:file-asana-bug with the same planRunId; do not choose a destination from the message. A bug completes only after created:true or alreadyCreated:true; pendingReconciliation is incomplete. Other verdicts complete after recorded:true or alreadyRecorded:true. Retain triggerRunId, verdict and any task receipt as evidence. Never fix the report here.
 `;
 
 /** The destination is existing source/binding configuration, never message text. */

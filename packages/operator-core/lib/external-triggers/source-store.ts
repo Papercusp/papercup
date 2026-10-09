@@ -323,7 +323,7 @@ export async function listPollableExternalTriggerSources(
 
 /** Read every source owned by one authenticated local principal, including disabled/error rows. */
 export async function listOwnedExternalTriggerSources(
-  sql: postgres.Sql,
+  sql: postgres.Sql | postgres.TransactionSql,
   workspaceId: string,
   ownerUserId: string,
 ): Promise<OwnedExternalTriggerSourceRow[]> {

@@ -56,7 +56,7 @@ function breach(name: string, kind: CoverageBreach['kind']): CoverageBreach {
 /** A pass in which everything injection reads is healthy. */
 const HEALTHY: SurfaceCoverage[] = [surface(PARENT), surface(CHUNKS), surface(WORK_ITEM_VEC),
   surface('harness_shared.harness_plans.embedding'), surface('harness_shared.doc_sections.embedding'),
-  surface('harness_shared.text_chunks.embedding')];
+  surface('harness_shared.text_chunks.embedding:plans'), surface('harness_shared.text_chunks.embedding:report')];
 
 describe('injection source list stays pinned to the real corpus leg', () => {
   it('matches CORPUS_SOURCE_NAMES exactly', () => {

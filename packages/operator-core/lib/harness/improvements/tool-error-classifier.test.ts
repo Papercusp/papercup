@@ -269,6 +269,19 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
   });
 
+  it('classifies the intentional native-owner transport capability refusal as caller-side', () => {
+    const code = 'native_tool_owner_unsupported_capability';
+    expect(classifyToolError(code, 'error', code)).toBe('caller');
+    // The rule is code-specific; similar handler prose remains a real failure.
+    expect(classifyToolError('handler_error', 'error', code)).toBe('structural');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'mcp__papercusp_su__tools_find',
+      errorCode: code,
+      status: 'error',
+      message: code,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies missing UI-client context as caller input, not a structural UI defect', () => {
     const missingRow = 'client_not_found: no ui_clients row for client_id="su-cli-owner". The tab may have closed or never registered.';
     const missingId = 'client_id_required: no client_id passed and ctx.uiClientId is unset.';

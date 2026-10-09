@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 958,
+  "count": 959,
   "tools": [
     {
       "name": "ablation:report",
@@ -31233,6 +31233,39 @@
       "guidance": {
         "when": "Onboarding/tutorial flows: read BEFORE offering a setup step (skip what is already ok) and RE-READ after acting — never tell the user a step is configured without this re-read.",
         "notWhen": "Per-provider sign-in token detail (expiry, refresh) — that lives on the /desktop/agent-auth-status route, not here."
+      }
+    },
+    {
+      "name": "slack:file-asana-bug",
+      "http": {
+        "path": "/api/agent-tools/slack/file-asana-bug",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "File the durable bug verdict from a Slack classifier run in its configured Asana destination. Accepts only planRunId; pins source and correlation before HTTP. Replays recover an existing task and never repeat an uncertain create.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "After slack:record-classification returned a bug verdict, with the same planRunId.",
+        "notWhen": "Arbitrary task creation, non-bugs or choosing a destination from message text.",
+        "chaining": "Retain externalRef as proof; pendingReconciliation is incomplete and requires recovery with the same run."
       }
     },
     {
