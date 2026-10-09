@@ -10,6 +10,26 @@ function nativeCollectionDocumentReady(editor: string) {
   return `window.__nativeCollectionPreviousDocument !== true && document.readyState === 'complete' && !!document.querySelector(${JSON.stringify(editor)}) && document.querySelector(${JSON.stringify(editor)})?.getBoundingClientRect().height > 0`;
 }
 
+function nativeWorklistKeyReceived(key: string, target: string) {
+  return `window.__nativeWorklistKeys.some(e => e.key === ${JSON.stringify(key)} && e.trusted === true && e.target === ${JSON.stringify(target)})`;
+}
+
+test('native keyboard receipt rejects unidentified, untrusted and wrong-target keys', () => {
+  const target = 'Move Design search reliability up';
+  const window = { __nativeWorklistKeys: [{ key: 'Unidentified', trusted: true, target }] };
+  const script = nativeWorklistKeyReceived('Shift', target);
+  expect(runInNewContext(script, { window })).toBe(false);
+  window.__nativeWorklistKeys = [{ key: 'Shift', trusted: false, target }];
+  expect(runInNewContext(script, { window })).toBe(false);
+  window.__nativeWorklistKeys = [{ key: 'Shift', trusted: true, target: 'Other control' }];
+  expect(runInNewContext(script, { window })).toBe(false);
+  window.__nativeWorklistKeys = [{ key: 'Shift', trusted: true, target }];
+  expect(runInNewContext(script, { window })).toBe(true);
+  expect(runInNewContext(nativeWorklistKeyReceived(' ', target), { window })).toBe(false);
+  window.__nativeWorklistKeys = [{ key: ' ', trusted: true, target }];
+  expect(runInNewContext(nativeWorklistKeyReceived(' ', target), { window })).toBe(true);
+});
+
 test('native reload readiness rejects a still-visible previous document', () => {
   const window: { __nativeCollectionPreviousDocument?: boolean } = { __nativeCollectionPreviousDocument: true };
   let height = 20;
@@ -151,7 +171,7 @@ test('legacy Work on Everything progress table stays readable and draft controls
     await native('eval', `(() => {
       window.__nativeWorklistKeys = [];
       document.addEventListener('keydown', e => window.__nativeWorklistKeys.push({
-        key: e.key, altKey: e.altKey, trusted: e.isTrusted,
+        key: e.key, code: e.code, altKey: e.altKey, trusted: e.isTrusted,
         target: e.target?.getAttribute?.('aria-label'),
       }), true);
       return true;
@@ -159,10 +179,12 @@ test('legacy Work on Everything progress table stays readable and draft controls
     try {
       // Without --window, xdotool uses XTest delivery to the verified focus;
       // --window uses XSendEvent, which is not an equivalent WebKit input path.
-      await run('xdotool', ['key', '--clearmodifiers', 'F23'], { timeout: 10_000, env: xEnv });
-      await ready(`window.__nativeWorklistKeys.some(e => e.key === 'F23' && e.trusted)`);
+      // This WebKit runtime maps F23 to a trusted Unidentified key. A neutral
+      // modifier has a named DOM key and leaves the offered control unchanged.
+      await run('xdotool', ['key', '--clearmodifiers', 'Shift_L'], { timeout: 10_000, env: xEnv });
+      await ready(nativeWorklistKeyReceived('Shift', 'Move Design search reliability up'));
       await run('xdotool', ['key', '--clearmodifiers', 'space'], { timeout: 10_000, env: xEnv });
-      await ready(`window.__nativeWorklistKeys.some(e => e.key === ' ' && e.trusted)`);
+      await ready(nativeWorklistKeyReceived(' ', 'Move Design search reliability up'));
       await ready(`document.querySelector('${panel} [data-testid="ongoing-worklist-row"] td:nth-child(2)')?.textContent?.trim().startsWith(${JSON.stringify(labels[1])})`);
     } catch (error) {
       await info.attach('native-key-delivery', { body: JSON.stringify(await measure(`({
@@ -189,6 +211,7 @@ test('legacy Work on Everything progress table stays readable and draft controls
     const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${workspaceId} AND id=${goalId}`;
     expect(saved.properties?.worklist_policy).toBeUndefined();
     await info.attach('native-design-layout', { body: JSON.stringify({ layout, sourceReceipt,
+      nativeKeys: await measure('window.__nativeWorklistKeys'),
       fixture: { goalId, labels }, legacyWithoutPackage: true, nativeKeyboardReorder: true,
       globalHudTabRetained: true, scopeStaged: true, reviewOpened: true, discardRestored: true,
       applyClicked: false }), contentType: 'application/json' });
