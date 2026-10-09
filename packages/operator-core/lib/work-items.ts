@@ -1151,6 +1151,8 @@ export interface ListWorkItemsFilter {
    * for backwards-compatible internal/detail reads (WI-42508).
    */
   includePayload?: boolean;
+  /** Internal source policy; fleetMetrics retains controls but excludes archival envelopes. */
+  payloadProjection?: WorkItemReadOptions['payloadProjection'];
   /**
    * Omit the issue-family body/summary from returned rows.  Feature summaries are
    * unaffected by this flag.  The agent-facing list sets both body and payload
@@ -1376,7 +1378,8 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
   if (wantFeature) {
     const ws = activeWorkspaceId();
     const rows = await sql<FeatureRowDb[]>`
-      SELECT ${sql.unsafe(filter.includePayload === false ? FEATURE_COLS_PAYLOADLESS : FEATURE_COLS)}
+      SELECT ${sql.unsafe(projectWorkItemColumns(FEATURE_COLS,
+        filter.includePayload === false ? 'none' : filter.payloadProjection))}
         FROM harness_shared.harness_features_consolidated
          WHERE ${featureFamilyKindClause(sql, ws, {
            includeDeprecatedChunk: filter.kind === 'chunk' || Boolean(filter.parent) || filter.includeChildren === true,
@@ -1471,6 +1474,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
       // callers retain the full projection by default.
       includeBody: filter.includeBody,
       includePayload: filter.includePayload,
+      payloadProjection: filter.payloadProjection,
       audit: filter.audit,
       completionAuthority: filter.completionAuthority,
     };

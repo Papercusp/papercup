@@ -859,19 +859,19 @@ export const ISSUE_COLS_WATCHDOG_KEY_ONLY = ISSUE_COLS.replace(/(^|,\s*)payload(
 
 /** Select the smallest issue row projection requested by a list caller. */
 export function issueListColumns(
-  filter: Pick<ListIssuesFilter, 'includeBody' | 'includePayload' | 'includeWatchdogKey'>,
+  filter: Pick<ListIssuesFilter, 'includeBody' | 'includePayload' | 'includeWatchdogKey' | 'payloadProjection'>,
 ): string {
   if (filter.includeBody === false && filter.includePayload === false) {
     return filter.includeWatchdogKey === true ? ISSUE_COLS_BODYLESS_WATCHDOG_KEY_ONLY : ISSUE_COLS_BODYLESS_PAYLOADLESS;
   }
-  if (filter.includeBody === false) return ISSUE_COLS_BODYLESS;
+  if (filter.includeBody === false) return projectWorkItemColumns(ISSUE_COLS_BODYLESS, filter.payloadProjection);
   // Honoured on BOTH payload-less branches on purpose: a caller that keeps `body`
   // but drops payload would otherwise set the flag and silently still get no key —
   // the same silent-degradation shape `includePayload` itself is documented for.
   if (filter.includePayload === false) {
     return filter.includeWatchdogKey === true ? ISSUE_COLS_WATCHDOG_KEY_ONLY : ISSUE_COLS_PAYLOADLESS;
   }
-  return ISSUE_COLS;
+  return projectWorkItemColumns(ISSUE_COLS, filter.payloadProjection);
 }
 
 /**
@@ -1441,6 +1441,8 @@ export interface ListIssuesFilter {
    * backwards compatibility and explicit/detail reads (WI-42508).
    */
   includePayload?: boolean;
+  /** Shared internal source policy. Explicit includePayload:false takes precedence. */
+  payloadProjection?: WorkItemReadOptions['payloadProjection'];
   /**
    * Keep `payload.watchdogKey` alive across an `includePayload: false` read, as a
    * rebuilt one-field payload (see {@link ISSUE_COLS_BODYLESS_WATCHDOG_KEY_ONLY}).
