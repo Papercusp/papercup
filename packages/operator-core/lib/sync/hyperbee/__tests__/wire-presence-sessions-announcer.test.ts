@@ -18,9 +18,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const broadcastSessions = vi.fn(async () => true);
+type TopicRegistration = {
+  topicHex: string;
+  workspaceId: string;
+  potHomeSlug: string;
+  writer?: {
+    getOwnSessions: () => Promise<Array<{ owner_id: string; harness_slug: string; last_active_ms: number }>>;
+  };
+};
+const registerPresenceGossipTopic = vi.fn(async (_input: TopicRegistration) => true);
 
 vi.mock('../presence-gossip-wiring', () => ({
-  registerPresenceGossipTopic: async () => {},
+  registerPresenceGossipTopic: (...a: unknown[]) => registerPresenceGossipTopic(...(a as [TopicRegistration])),
   broadcastPresencePut: async () => true,
   broadcastPresenceDel: async () => true,
   broadcastSessions: (...a: unknown[]) => broadcastSessions(...(a as [])),
@@ -41,7 +50,7 @@ vi.mock('../../../federated-pot-scope', () => ({
   listHiveMembersForLocalPot: async () => [],
 }));
 
-let roster: Array<{ ownerId: string; intent: string | null }> = [];
+let roster: Array<{ ownerId: string; intent: string | null; potSlug?: string | null }> = [];
 const listPresence = vi.fn(async (_args: { workspaceId: string }) => roster);
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   listPresence: (...a: unknown[]) => listPresence(...(a as [{ workspaceId: string }])),
@@ -99,11 +108,11 @@ function handle(harnessSlug: string, topicHex: string, workspaceId = 'ws') {
   };
 }
 
-function wire(h: PresenceWireHandle, t: ReturnType<typeof timers>) {
+function wire(h: PresenceWireHandle, t: ReturnType<typeof timers>, potSlug = 'pot') {
   return wirePresenceAnnounceForHarness(h, {
     presenceGossip: true,
     intervalMs: PRESENCE_TICK_MS,
-    resolvePotSlug: async () => 'pot',
+    resolvePotSlug: async () => potSlug,
     resolveRunsRoutines: async () => null,
     resolveActiveRoutines: async () => null,
     setIntervalFn: t.setIntervalFn,
@@ -135,13 +144,14 @@ async function tickAll(t: ReturnType<typeof timers>) {
 
 beforeEach(() => {
   broadcastSessions.mockClear();
+  registerPresenceGossipTopic.mockClear();
   listPresence.mockClear();
   fetchPresenceFleet.mockClear();
   clock = 1_000_000;
   tickErrors.length = 0;
   roster = [
-    { ownerId: 'su-a', intent: 'x' },
-    { ownerId: 'su-b', intent: 'y' },
+    { ownerId: 'su-a', intent: 'x', potSlug: 'pot' },
+    { ownerId: 'su-b', intent: 'y', potSlug: 'pot' },
   ];
   // Guarded so the same file measures the pre-fix code too (the distinguishing run).
   if (typeof __resetSessionAnnouncersForTests === 'function') __resetSessionAnnouncersForTests();
@@ -178,6 +188,47 @@ describe('sessions announcer is one per (workspace, topic) — WI-10002534', () 
     await tickAll(t);
     const topics = broadcastSessions.mock.calls.map((c) => (c as unknown as [string])[0]).sort();
     expect(topics).toEqual(['topic-1', 'topic-2']);
+  });
+
+  it('each topic announces only sessions homed in its pot', async () => {
+    const t = timers();
+    roster = [
+      { ownerId: 'su-pot-a', intent: 'a', potSlug: 'pot-a' },
+      { ownerId: 'su-pot-b', intent: 'b', potSlug: 'pot-b' },
+    ];
+    await wire(handle('repo-a', 'topic-a').h, t, 'pot-a');
+    await wire(handle('repo-b', 'topic-b').h, t, 'pot-b');
+
+    await tickAll(t);
+
+    const byTopic = new Map(
+      broadcastSessions.mock.calls.map((call) => {
+        const [topic, sessions] = call as unknown as [string, Array<{ owner_id: string }>];
+        return [topic, sessions.map((session) => session.owner_id)] as const;
+      }),
+    );
+    expect([...byTopic.entries()].sort(([a], [b]) => a.localeCompare(b))).toEqual([
+      ['topic-a', ['su-pot-a']],
+      ['topic-b', ['su-pot-b']],
+    ]);
+  });
+
+  it('pair-time snapshots use the same pot filter as periodic announcements', async () => {
+    const t = timers();
+    roster = [
+      { ownerId: 'su-pot-a', intent: 'a', potSlug: 'pot-a' },
+      { ownerId: 'su-pot-b', intent: 'b', potSlug: 'pot-b' },
+    ];
+    await wire(handle('repo-a', 'topic-a').h, t, 'pot-a');
+
+    const registration = registerPresenceGossipTopic.mock.calls[0]?.[0];
+    expect(registration?.potHomeSlug).toBe('pot-a');
+    const sessions = await registration?.writer?.getOwnSessions();
+    expect(sessions?.map((session) => session.owner_id)).toEqual(['su-pot-a']);
+    expect(sessions?.[0]).toMatchObject({
+      harness_slug: 'repo-a',
+      last_active_ms: clock,
+    });
   });
 
   it('closing one of two sharing handles keeps announcing; closing the last stops it', async () => {
@@ -243,7 +294,7 @@ describe('one roster read per workspace per tick — WI-10005271', () => {
     for (const [i, topic] of TOPICS.entries()) await wire(handle(`repo-${i}`, topic).h, t);
     await tickAll(t);
     expect(listPresence).toHaveBeenCalledTimes(1);
-    roster = [...roster, { ownerId: 'su-c', intent: 'z' }];
+    roster = [...roster, { ownerId: 'su-c', intent: 'z', potSlug: 'pot' }];
     clock += SESSION_TICK_MS;
     await tickAll(t);
     expect(listPresence).toHaveBeenCalledTimes(2);

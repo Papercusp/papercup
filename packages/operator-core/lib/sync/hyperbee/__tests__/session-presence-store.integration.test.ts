@@ -174,7 +174,7 @@ describe('shared_session_presence (real PG, mig 434)', () => {
 
   it('full-set deletes stay within the frame pot when a device announces multiple pots', async () => {
     const devicePubkey = 'dev-multi-pot';
-    const apply = (potSlug: string, sessions: SessionPresenceEntry[], frameTs: number) =>
+    const apply = (potSlug: string | null, sessions: SessionPresenceEntry[], frameTs: number) =>
       applySessionPresenceSet(
         {
           workspaceId: WS,
@@ -190,17 +190,21 @@ describe('shared_session_presence (real PG, mig 434)', () => {
 
     await apply('pot-a', [entry('su-pot-a1'), entry('su-pot-a2')], T0 + 40_000);
     await apply('pot-b', [entry('su-pot-b1')], T0 + 50_000);
+    await apply(null, [entry('su-pot-null')], T0 + 55_000);
     // The non-empty replace deletes only pot-a's absent row; pot-b remains.
     await apply('pot-a', [entry('su-pot-a2')], T0 + 60_000);
     expect((await rowsFor(devicePubkey)).map(({ owner_id, pot_slug }) => [owner_id, pot_slug])).toEqual([
       ['su-pot-a2', 'pot-a'],
       ['su-pot-b1', 'pot-b'],
+      ['su-pot-null', null],
     ]);
 
-    // An empty pot-a frame clears that pot's final row without evicting pot-b.
+    // An empty pot-a frame clears that pot's final row without evicting pot-b
+    // or the NULL-scoped row.
     await apply('pot-a', [], T0 + 70_000);
     expect((await rowsFor(devicePubkey)).map(({ owner_id, pot_slug }) => [owner_id, pot_slug])).toEqual([
       ['su-pot-b1', 'pot-b'],
+      ['su-pot-null', null],
     ]);
   });
 
