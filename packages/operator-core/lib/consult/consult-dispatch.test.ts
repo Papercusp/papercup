@@ -1210,6 +1210,18 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
     expect(reason).not.toContain('older than the recent-session window');
   });
 
+  it('preserves an unrecoverable transcript graph refusal instead of only its exit status', () => {
+    const refusal = 'psu: POST /api/adv/sessions/port/inspect (HTTP 409) — ' +
+      'unrecoverable Claude transcript graph: cycle detected at cede960f-af9d-49c8-96e8-9d6b3f845536';
+    const log = '\x1b]0;consult-convert\x07psu: inspecting Claude transcript graph\r\n' +
+      `\x1b[31m${refusal}\x1b[0m\r\n` +
+      '[papercusp] initial terminal command exited with status 1; headless launch exiting.\r\n';
+    expect(launchLogFailureReason(log)).toBe(
+      `${refusal} · [papercusp] initial terminal command exited with status 1`,
+    );
+    expect(launchLogFailureReason('psu: inspecting Claude transcript graph\n')).toBeNull();
+  });
+
   it('extracts an account wall drawn mid-line, never the brief text it is drawn beside', () => {
     // Keeping the whole rendered line would clip to its START — the consult
     // brief — which is exactly what the first version of this parser reported.

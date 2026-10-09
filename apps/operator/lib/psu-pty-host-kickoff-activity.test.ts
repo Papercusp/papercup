@@ -103,6 +103,19 @@ const freshAnchor = () => ({
 });
 
 describe('nativeKickoffTurnActivityAfterMarker (WI-10004982)', () => {
+  it('never attributes a later owner turn to a pending anchored kickoff', () => {
+    const { file, env } = claudeTranscript();
+    writeFileSync(file, line(userPrompt()));
+    const anchor = freshAnchor();
+    const call = () => nativeKickoffTurnActivityAfterMarker({
+      agent: 'claude', env, transcriptPath: file, marker: MARKER, anchor,
+    });
+    expect(call()).toEqual({ available: true, started: false });
+    appendFileSync(file, line(userPrompt('new owner request')) + line(assistant('later-turn')));
+    expect(call()).toEqual({ available: false, started: false });
+    expect(call()).toEqual({ available: false, started: false });
+  });
+
   it('sees the reply when large attachment rows follow it (the measured 98404f60 layout)', () => {
     const { file, env } = claudeTranscript();
     const rows = measuredLayout();

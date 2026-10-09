@@ -1619,7 +1619,12 @@ export function nativeKickoffTurnActivityAfterMarker({
       const rest = readIsolatedNativeTranscriptForward({ ...readOptions, fromOffset: from, maxBytes: maxScanBytes });
       if (!rest || rest.fileIdentity !== anchor.fileIdentity) return unavailable;
       for (const line of rest.lines) {
-        if (kickoffModelActivityRow(agent, JSON.parse(line.text))) return { available: true, started: true };
+        const row = JSON.parse(line.text);
+        const userContent = nativeUserPromptContent(row);
+        if (userContent != null && !row.isMeta && !isNativeLaunchContextPrompt(nativeUserPromptText(userContent), agent)) {
+          return unavailable;
+        }
+        if (kickoffModelActivityRow(agent, row)) return { available: true, started: true };
       }
       anchor.scannedEndOffset = rest.nextOffset;
       return { available: true, started: false };
@@ -11224,10 +11229,10 @@ export function hostThroughPty(o) {
   const nativeStartPending = new Map();
   const nativeStartProof = (pending) => {
     if (pending.child !== child) return { available: false, started: false };
-    const markerProof = findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
+    const nativeRef = findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
       marker: pending.marker, sinceMs: pending.submittedAtMs });
-    return markerProof ? nativeKickoffTurnActivityAfterMarker({ agent: env.PAPERCUSP_AGENT, env,
-      transcriptPath: markerProof.nativeRef, marker: pending.marker, anchor: pending.anchor })
+    return nativeRef ? nativeKickoffTurnActivityAfterMarker({ agent: env.PAPERCUSP_AGENT, env,
+      transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor })
       : { available: false, started: false };
   };
   // EI-8822: serialize the gated-inject critical section so a wake `turn` and a

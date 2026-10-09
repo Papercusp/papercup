@@ -69,7 +69,8 @@ describe('aggregateArm', () => {
     expect(r.cappedRuns).toBe(0);
     // pass@k[0] is k=1 and must equal pass@1 exactly (consistency)
     expect(r.passAtK[0].k).toBe(1);
-    expect(r.passAtK[0].value).toBeCloseTo(r.passAt1, 10);
+    expect(r.passAt1).not.toBeNull();
+    expect(r.passAtK[0].value).toBeCloseTo(r.passAt1!, 10);
     expect(r.passAtK[1].k).toBe(3);
     // cost counts ALL 7 rows (incl. the crashed one): 7 × $5 (1M Opus input)
     expect(r.cost.tokensTotal).toBe(7_000_000);

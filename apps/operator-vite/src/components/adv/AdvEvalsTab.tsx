@@ -137,7 +137,7 @@ interface EvalSuiteSummary {
 }
 interface EvalArmAggregate {
   arm: ArmId;
-  passAt1: number;
+  passAt1: number | null;
   ci?: [number, number];
   // null (not just absent) is a real value: an ablation arm can report "no cost
   // measured". The frontier filter already guards `costUsd != null` (line ~311),
@@ -315,8 +315,8 @@ const pctLabel = (v: number | null | undefined): string => (v == null ? '—' : 
 export function toFrontierPoints(report: EvalReport | undefined): FrontierPoint[] {
   if (!report) return [];
   return report.byArm
-    .filter((a) => a.costUsd != null)
-    .map((a) => ({ label: armLabel(a.arm), cost: a.costUsd as number, score: a.passAt1, arm: a.arm }));
+    .filter((a) => a.costUsd != null && a.passAt1 != null)
+    .map((a) => ({ label: armLabel(a.arm), cost: a.costUsd as number, score: a.passAt1!, arm: a.arm }));
 }
 
 /** Per-task pass@1 pivot for the A/B table: mean(resolved over seeds) per (task,
