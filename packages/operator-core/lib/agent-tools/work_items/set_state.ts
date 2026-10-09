@@ -380,9 +380,59 @@ const blockedMany = z
 const itemsBatch = z
   .object({
     harness: z.string().max(80).optional().describe('default harness for items that omit one'),
+    reason: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('apply to every row: terminal rows use it as completion evidence, progress rows record it as a comment; blocked rows require a typed blocker and refuse free text'),
+    note: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('same as batch `reason` — apply to every eligible row; pass only one'),
     items: z.array(itemSpec).min(1).max(200),
   })
-  .strict();
+  .strict()
+  .superRefine((batch, ctx) => {
+    const batchAlias = suppliedAlias(batch);
+    if (!batchAlias) return;
+    const otherBatchAlias = batchAlias.key === 'reason' ? batch.note : batch.reason;
+    if (typeof otherBatchAlias === 'string' && otherBatchAlias !== batchAlias.value) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [batchAlias.key],
+        message: '`reason` and `note` cannot carry different values; pass one value for the whole batch.',
+      });
+      return;
+    }
+
+    for (const [index, item] of batch.items.entries()) {
+      if (foldsToBlocked(item.state)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index, batchAlias.key],
+          message:
+            `batch \`${batchAlias.key}\` is not accepted for a blocked row — a blocked item's reason must be a TYPED ` +
+            'blocker so the scheduler can act on it. Record it with work_items:set_blocker (external event, gate, ' +
+            'runtime or human capability), or work_items:link { rel:"blocks" } for a dependency on another work-item.',
+        });
+        continue;
+      }
+
+      const rowAliases = [item.completionRef, item.reason, item.note].filter(
+        (value): value is string => typeof value === 'string',
+      );
+      if (rowAliases.some((value) => value !== batchAlias.value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', index],
+          message: `the row's completionRef/reason/note conflicts with the batch ${batchAlias.key}; pass the same value or omit the row field.`,
+        });
+      }
+    }
+  });
 
 const setStateArgs = z.union(
   [itemsBatch, terminalSingle, terminalMany, progressSingle, progressMany, blockedSingle, blockedMany],
@@ -446,9 +496,11 @@ export default defineTool({
     // P-005: itemSpec is now a UNION (terminal carries a required completionRef;
     // non-terminal has no such field at all), so flatten to one uniform shape here
     // — every downstream reader keeps its single `it.completionRef` access.
+    const batchAlias = 'items' in input ? suppliedAlias(input as CompletionRefAliasBearing) : undefined;
     const list = 'items' in input
       ? input.items.map((it) => {
           const terminalEvidence = inlineTerminalEvidence(it);
+          const isTerminal = isTerminalStateInput(it.state);
           return {
             id: it.id,
             state: it.state as string,
@@ -462,12 +514,12 @@ export default defineTool({
             // and `note` PAST this point, leaving two live spellings of a field that has
             // already been resolved, and it made this branch's shape diverge from the
             // ids[] / inline ones below.
-            completionRef: terminalEvidence.completionRef,
+            completionRef: terminalEvidence.completionRef ?? (isTerminal ? batchAlias?.value : undefined),
             // P-008 (d): flattened exactly like `completionRef` above — the union's
             // terminal arm carries it, the non-terminal arm has no such field.
             assumptions: terminalEvidence.assumptions,
             // EI-24917736184136483: a non-terminal row's reason, recorded as a comment.
-            transitionNote: terminalEvidence.transitionNote,
+            transitionNote: terminalEvidence.transitionNote ?? (!isTerminal ? batchAlias?.value : undefined),
           };
         })
       : 'ids' in input

@@ -842,7 +842,7 @@ describe('work_items:set_state — reason/note alias for completionRef (EI-19961
  * `completionRef` (which the writer ignores on a non-terminal branch — a silent drop).
  */
 describe('work_items:set_state — non-terminal reason is recorded as a comment (EI-24917736184136483)', () => {
-  type Parsed = { success: boolean };
+  type Parsed = { success: boolean; error?: { issues: ReadonlyArray<{ message: string }> } };
   const parse = (args: unknown): Parsed =>
     (tool.args as { safeParse: (v: unknown) => Parsed }).safeParse(args);
   const commentM = vi.mocked(commentWorkItem);
@@ -879,6 +879,41 @@ describe('work_items:set_state — non-terminal reason is recorded as a comment 
     await body({ ids: ['WI-1', 'WI-2'], state: 'wip', note: REASON });
     await body({ items: [{ id: 'WI-3', state: 'open', reason: REASON }, { id: 'WI-4', state: 'wip' }] });
     expect(commentM.mock.calls.map((c) => c[0])).toEqual(['WI-1', 'WI-2', 'WI-3']);
+  });
+
+  it('applies a batch-level reason to each eligible items[] row', async () => {
+    await body({
+      reason: REASON,
+      items: [{ id: 'WI-5', state: 'wip' }, { id: 'WI-6', state: 'open' }],
+    });
+
+    expect(commentM.mock.calls.map((call) => call[0])).toEqual(['WI-5', 'WI-6']);
+    expect(commentM.mock.calls.every((call) => String(call[1]).includes(REASON))).toBe(true);
+  });
+
+  it('routes a batch-level reason by each row state in a mixed batch', async () => {
+    await body({
+      reason: REASON,
+      items: [
+        { id: 'WI-9', state: 'done', assumptions: 'none' },
+        { id: 'WI-10', state: 'wip' },
+      ],
+    });
+
+    expect(setM).toHaveBeenCalledWith('WI-9', 'done', expect.objectContaining({ completionRef: REASON }));
+    expect(commentM).toHaveBeenCalledWith('WI-10', expect.stringContaining(REASON), 'me', expect.any(Object));
+  });
+
+  it('refuses a batch-level reason for blocked rows with typed-blocker guidance', () => {
+    const result = parse({ reason: REASON, items: [{ id: 'WI-7', state: 'blocked' }] });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.message).join(' | ')).toContain('work_items:set_blocker');
+  });
+
+  it('refuses conflicting batch and per-row reason values', () => {
+    expect(
+      parse({ reason: REASON, items: [{ id: 'WI-8', state: 'wip', reason: 'different explanation' }] }).success,
+    ).toBe(false);
   });
 
   it('posts no comment when no reason was given', async () => {
