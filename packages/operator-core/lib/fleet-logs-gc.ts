@@ -21,7 +21,7 @@
  *   1. AGE — delete any file whose mtime is older than `retentionMs`.
  *   2. TOTAL-BYTES CEILING — after the age pass, if a directory is still over
  *      `maxTotalBytes`, delete additional files OLDEST-mtime-first until
- *      under it. The safety net against a burst of spawns outrunning the age
+ *      under it when idle files permit. The safety net against a burst of spawns outrunning the age
  *      window between sweeps.
  *
  * Deliberately NOT scoped here: a per-file size cap / truncation of an
@@ -33,13 +33,16 @@
  * produces it (WI-224710 thread comment 78848's decomposition item (b), "the
  * actual disk drivers" — not gate-owned, needs its own lane).
  *
+ * Both passes require a complete process census and skip open files. An idle
+ * open log can have an old mtime, and ceiling pressure can include fresh logs.
+ * File and parent-directory identity are checked again immediately before
+ * unlink. This bounds the scan race; it is not an atomic exclusion of new opens.
+ *
  * Best-effort, never throws: a vanished/locked file is skipped, one
  * unreadable directory doesn't abort the sweep (readdir failure → treated as
  * an empty directory), and every deletion failure is collected in the result
- * rather than raised. Purely mtime-based (matches the existing
- * `pruneOldLogs` used for checkpoint-logs retention, apps/operator's
- * green-checkpoint.ts): a live, actively-written log's mtime keeps advancing,
- * so a genuinely in-use file is never caught by the age bound.
+ * rather than raised. Logical bytes unlinked and the last-link allocation
+ * estimate are reported separately; neither proves filesystem space reclaimed.
  */
 import { readdirSync, readFileSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, type Dirent, type Stats } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
@@ -56,10 +59,10 @@ import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-comm
 
 const execFileAsync = promisify(execFile);
 
-/** Complete read-only process evidence for destructive lint retention. An ordinary
+/** Complete read-only process evidence for destructive log/lint retention. An ordinary
  * host cannot read other users' /proc entries; sudo is used only for the census,
  * never for removal. Missing privilege/runtime or partial evidence defers GC. */
-async function scanLintWorkRootHolders(paths: string[]): Promise<OpenWriterScan> {
+async function scanGcPathHolders(paths: string[]): Promise<OpenWriterScan> {
   const options = { descendants: true, includeCwd: true, failClosed: true,
     deadlineMs: 3 * NATIVE_BG_SCAN_DEADLINE_MS };
   if (process.getuid?.() === 0) return openWriterPidsMany(paths, options);
@@ -115,7 +118,7 @@ export async function runLintWorkRootGc(opts: LintWorkRootGcOptions = {}): Promi
   let scan: OpenWriterScan = { complete: identities.size === 0, byPath: new Map() };
   let scanError: string | undefined;
   if (identities.size) {
-    try { scan = await (opts.scanOpenPaths ?? scanLintWorkRootHolders)([...identities.keys()]); }
+    try { scan = await (opts.scanOpenPaths ?? scanGcPathHolders)([...identities.keys()]); }
     catch (error) { scanError = error instanceof Error ? error.message : String(error); }
   }
   const wouldRemove: Array<{ name: string; reason: string }> = [];
@@ -149,6 +152,8 @@ export interface FleetLogsGcOptions {
   /** Injectable for tests: sweep exactly these directories instead of
    *  discovering them from the on-disk workspace registry. */
   dirs?: string[];
+  /** The same fail-closed, privileged read-only census used by lint retention. */
+  scanOpenPaths?: (paths: string[]) => Promise<OpenWriterScan>;
 }
 
 export interface FleetLogsGcDirResult {
@@ -156,14 +161,22 @@ export interface FleetLogsGcDirResult {
   scanned: number;
   removedByAge: number;
   removedByCeiling: number;
-  bytesFreed: number;
+  /** Logical bytes actually unlinked (zero for a dry run). */
+  bytesUnlinked: number;
+  /** Pre-unlink st_blocks * 512 for last links; estimate, not measured reclaim. */
+  allocatedBytesUnlinked: number;
+  wouldUnlinkBytes: number;
   bytesRemaining: number;
+  skippedOpen: number;
+  skippedRaced: number;
   errors: Array<{ path: string; error: string }>;
 }
 
 export interface FleetLogsGcResult {
   dirs: FleetLogsGcDirResult[];
   dryRun: boolean;
+  scanComplete: boolean;
+  scanError?: string;
 }
 
 /** Every `fleet-logs` directory that plausibly exists on this host: one per
@@ -190,20 +203,22 @@ function discoverFleetLogsDirs(): string[] {
   return [...dirs];
 }
 
-function listFilesWithStat(dir: string): Array<{ path: string; mtimeMs: number; size: number }> {
+interface FleetLogFile { path: string; mtimeMs: number; size: number; stat: Stats }
+
+function listFilesWithStat(dir: string): FleetLogFile[] {
   let entries: Dirent[];
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return [];
   }
-  const out: Array<{ path: string; mtimeMs: number; size: number }> = [];
+  const out: FleetLogFile[] = [];
   for (const entry of entries) {
     if (!entry.isFile()) continue; // fleet-logs is a flat directory of *.log files
     const p = join(dir, entry.name);
     try {
-      const st = statSync(p);
-      out.push({ path: p, mtimeMs: st.mtimeMs, size: st.size });
+      const st = lstatSync(p);
+      if (st.isFile()) out.push({ path: p, mtimeMs: st.mtimeMs, size: st.size, stat: st });
     } catch {
       /* vanished between readdir and stat — skip, not an error */
     }
@@ -213,35 +228,57 @@ function listFilesWithStat(dir: string): Array<{ path: string; mtimeMs: number; 
 
 function gcOneDir(
   dir: string,
+  identity: Stats | null,
+  files: FleetLogFile[],
+  scan: OpenWriterScan,
   retentionMs: number,
   maxTotalBytes: number,
   dryRun: boolean,
 ): FleetLogsGcDirResult {
-  const files = listFilesWithStat(dir);
   const errors: Array<{ path: string; error: string }> = [];
   const cutoff = Date.now() - retentionMs;
   let removedByAge = 0;
   let removedByCeiling = 0;
-  let bytesFreed = 0;
+  let bytesUnlinked = 0;
+  let allocatedBytesUnlinked = 0;
+  let wouldUnlinkBytes = 0;
+  const open = new Set<string>();
+  const raced = new Set<string>();
+  const unlink = (f: FleetLogFile): boolean => {
+    if (!scan.complete) return false;
+    if (scan.byPath.get(f.path)?.length) { open.add(f.path); return false; }
+    // No async gap between this identity check and unlink. Reject replacements,
+    // symlinks, new writes and parent swaps since the holder scan's snapshot.
+    try {
+      const parent = lstatSync(dir);
+      const st = lstatSync(f.path);
+      const old = f.stat;
+      if (!identity || !parent.isDirectory() || parent.dev !== identity.dev || parent.ino !== identity.ino
+        || !st.isFile() || st.dev !== old.dev || st.ino !== old.ino || st.size !== old.size
+        || st.mtimeMs !== old.mtimeMs || st.ctimeMs !== old.ctimeMs || st.nlink !== old.nlink
+        || st.blocks !== old.blocks) { raced.add(f.path); return false; }
+      if (dryRun) wouldUnlinkBytes += st.size;
+      else {
+        unlinkSync(f.path);
+        bytesUnlinked += st.size;
+        if (st.nlink === 1) allocatedBytesUnlinked += st.blocks * 512;
+      }
+      return true;
+    } catch (e) {
+      errors.push({ path: f.path, error: (e as Error)?.message ?? String(e) });
+      return false;
+    }
+  };
 
   // Pass 1: age. Whatever survives goes into `remaining` for the ceiling pass.
-  const remaining: Array<{ path: string; mtimeMs: number; size: number }> = [];
+  const remaining: FleetLogFile[] = [];
   for (const f of files) {
     if (f.mtimeMs >= cutoff) {
       remaining.push(f);
       continue;
     }
-    if (!dryRun) {
-      try {
-        unlinkSync(f.path);
-      } catch (e) {
-        errors.push({ path: f.path, error: (e as Error)?.message ?? String(e) });
-        remaining.push(f); // failed to remove — still occupies bytes
-        continue;
-      }
-    }
-    removedByAge++;
-    bytesFreed += f.size;
+    if (unlink(f)) removedByAge++;
+    else remaining.push(f);
   }
 
   // Pass 2: total-bytes ceiling, oldest-mtime-first, over whatever the age
@@ -253,16 +290,8 @@ function gcOneDir(
   let total = remaining.reduce((s, f) => s + f.size, 0);
   for (const f of remaining) {
     if (total <= maxTotalBytes) break;
-    if (!dryRun) {
-      try {
-        unlinkSync(f.path);
-      } catch (e) {
-        errors.push({ path: f.path, error: (e as Error)?.message ?? String(e) });
-        continue; // still occupies bytes — leave it in `total`
-      }
-    }
+    if (!unlink(f)) continue;
     total -= f.size;
-    bytesFreed += f.size;
     removedByCeiling++;
   }
 
@@ -271,8 +300,12 @@ function gcOneDir(
     scanned: files.length,
     removedByAge,
     removedByCeiling,
-    bytesFreed,
+    bytesUnlinked,
+    allocatedBytesUnlinked,
+    wouldUnlinkBytes,
     bytesRemaining: total,
+    skippedOpen: open.size,
+    skippedRaced: raced.size,
     errors,
   };
 }
@@ -280,14 +313,28 @@ function gcOneDir(
 /** Run one sweep. Pure w.r.t. its inputs (`dirs` overrides discovery), so a
  *  test never has to mock the workspace registry — it just points at a tmp
  *  dir. Never throws. */
-export function runFleetLogsGc(opts: FleetLogsGcOptions = {}): FleetLogsGcResult {
+export async function runFleetLogsGc(opts: FleetLogsGcOptions = {}): Promise<FleetLogsGcResult> {
   const retentionMs = opts.retentionMs ?? FLEET_LOGS_GC_DEFAULT_RETENTION_MS;
   const maxTotalBytes = opts.maxTotalBytes ?? FLEET_LOGS_GC_DEFAULT_MAX_TOTAL_BYTES;
   const dryRun = opts.dryRun === true;
-  const dirs = opts.dirs ?? discoverFleetLogsDirs();
+  const dirs = [...new Set((opts.dirs ?? discoverFleetLogsDirs()).map((dir) => resolve(dir)))];
+  const snapshots = dirs.map((dir) => {
+    let identity: Stats | null = null;
+    try { const st = lstatSync(dir); if (st.isDirectory()) identity = st; } catch { /* missing */ }
+    return { dir, identity, files: identity ? listFilesWithStat(dir) : [] };
+  });
+  const paths = snapshots.flatMap(({ files }) => files.map((f) => f.path));
+  let scan: OpenWriterScan = { complete: paths.length === 0, byPath: new Map() };
+  let scanError: string | undefined;
+  if (paths.length) {
+    try { scan = await (opts.scanOpenPaths ?? scanGcPathHolders)(paths); }
+    catch (error) { scanError = error instanceof Error ? error.message : String(error); }
+  }
   return {
-    dirs: dirs.map((d) => gcOneDir(d, retentionMs, maxTotalBytes, dryRun)),
+    dirs: snapshots.map(({ dir, identity, files }) => gcOneDir(dir, identity, files, scan, retentionMs, maxTotalBytes, dryRun)),
     dryRun,
+    scanComplete: scan.complete,
+    ...(scanError ? { scanError } : {}),
   };
 }
 
@@ -300,10 +347,8 @@ export function runFleetLogsGc(opts: FleetLogsGcOptions = {}): FleetLogsGcResult
 // tooling, which have no owner and no retention at all. Measured 2026-09-20 on
 // this host: 188 top-level directories, several multi-GB, the oldest 100+ days.
 //
-// ⚠ THE FILE-BASED SAFETY ARGUMENT ABOVE DOES NOT TRANSFER, and assuming it
-// does destroys live work. That argument is "a live, actively-written log's
-// mtime keeps advancing, so a genuinely in-use file is never caught by the age
-// bound". For a DIRECTORY that is false: only creating/deleting/renaming an
+// ⚠ FILE MTIME ALONE DOES NOT ESTABLISH IDLENESS. For a directory,
+// only creating/deleting/renaming an
 // entry touches a directory's mtime, so appending to a nested file leaves every
 // ancestor directory's mtime frozen — measured 2026-09-20, a pure append left
 // the top dir, the intermediate dir AND the file's own immediate parent all

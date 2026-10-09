@@ -3,7 +3,7 @@
  * the never-throws / best-effort contract.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync, openSync, closeSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync, openSync, closeSync, renameSync, linkSync, ftruncateSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { openWriterPidsMany } from './native-bg-task-ledger';
 import { tmpdir } from 'node:os';
@@ -49,18 +49,20 @@ function writeAged(dir: string, name: string, bytes: number, ageMs: number): str
 }
 
 describe('runFleetLogsGc', () => {
+  const scanIdlePaths = async () => ({ complete: true, byPath: new Map<string, string[]>() });
   it('defaults are sane: 3-day age window, 10 GiB ceiling', () => {
     expect(FLEET_LOGS_GC_DEFAULT_RETENTION_MS).toBe(3 * 24 * 60 * 60 * 1000);
     expect(FLEET_LOGS_GC_DEFAULT_MAX_TOTAL_BYTES).toBe(10 * 1024 * 1024 * 1024);
   });
 
-  it('deletes files older than retentionMs and keeps fresh ones', () => {
+  it('deletes files older than retentionMs and keeps fresh ones', async () => {
     const dir = join(sandbox, 'fleet-logs');
     mkdirSync(dir, { recursive: true });
     const stale = writeAged(dir, 'stale.log', 1000, 5 * 24 * 60 * 60 * 1000); // 5d old
     const fresh = writeAged(dir, 'fresh.log', 1000, 1 * 60 * 60 * 1000); // 1h old
 
-    const result = runFleetLogsGc({
+    const result = await runFleetLogsGc({
+      scanOpenPaths: scanIdlePaths,
       dirs: [dir],
       retentionMs: 3 * 24 * 60 * 60 * 1000,
       maxTotalBytes: 1024 * 1024 * 1024, // large — ceiling never engages here
@@ -71,12 +73,12 @@ describe('runFleetLogsGc', () => {
     expect(d.scanned).toBe(2);
     expect(d.removedByAge).toBe(1);
     expect(d.removedByCeiling).toBe(0);
-    expect(d.bytesFreed).toBe(1000);
+    expect(d.bytesUnlinked).toBe(1000);
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
   });
 
-  it('enforces the total-bytes ceiling oldest-first even within the retention window', () => {
+  it('enforces the total-bytes ceiling oldest-first even within the retention window', async () => {
     const dir = join(sandbox, 'fleet-logs');
     mkdirSync(dir, { recursive: true });
     // All three are within the age retention window, but the directory
@@ -85,7 +87,8 @@ describe('runFleetLogsGc', () => {
     const middle = writeAged(dir, 'b.log', 100, 2 * 60 * 60 * 1000);
     const newest = writeAged(dir, 'c.log', 100, 1 * 60 * 60 * 1000);
 
-    const result = runFleetLogsGc({
+    const result = await runFleetLogsGc({
+      scanOpenPaths: scanIdlePaths,
       dirs: [dir],
       retentionMs: 30 * 24 * 60 * 60 * 1000, // nothing ages out
       maxTotalBytes: 250,
@@ -100,7 +103,7 @@ describe('runFleetLogsGc', () => {
     expect(existsSync(newest)).toBe(true);
   });
 
-  it('a live/fresh file is never caught by the age bound regardless of ceiling pressure ordering', () => {
+  it('age removal leaves a fresh idle file below the ceiling', async () => {
     const dir = join(sandbox, 'fleet-logs');
     mkdirSync(dir, { recursive: true });
     // One huge stale file, one small fresh file. Both bounds should agree:
@@ -109,7 +112,8 @@ describe('runFleetLogsGc', () => {
     const stale = writeAged(dir, 'huge-stale.log', 5000, 10 * 24 * 60 * 60 * 1000);
     const fresh = writeAged(dir, 'small-fresh.log', 10, 0);
 
-    const result = runFleetLogsGc({
+    const result = await runFleetLogsGc({
+      scanOpenPaths: scanIdlePaths,
       dirs: [dir],
       retentionMs: 3 * 24 * 60 * 60 * 1000,
       maxTotalBytes: 1000,
@@ -121,12 +125,13 @@ describe('runFleetLogsGc', () => {
     expect(d.bytesRemaining).toBe(10);
   });
 
-  it('dryRun deletes nothing but reports what would be freed', () => {
+  it('dryRun deletes nothing and separates proposed bytes from actual unlink', async () => {
     const dir = join(sandbox, 'fleet-logs');
     mkdirSync(dir, { recursive: true });
     const stale = writeAged(dir, 'stale.log', 500, 5 * 24 * 60 * 60 * 1000);
 
-    const result = runFleetLogsGc({
+    const result = await runFleetLogsGc({
+      scanOpenPaths: scanIdlePaths,
       dirs: [dir],
       retentionMs: 3 * 24 * 60 * 60 * 1000,
       maxTotalBytes: 1024 * 1024 * 1024,
@@ -135,18 +140,20 @@ describe('runFleetLogsGc', () => {
 
     expect(result.dryRun).toBe(true);
     expect(result.dirs[0].removedByAge).toBe(1);
-    expect(result.dirs[0].bytesFreed).toBe(500);
+    expect(result.dirs[0].wouldUnlinkBytes).toBe(500);
+    expect(result.dirs[0].bytesUnlinked).toBe(0);
+    expect(result.dirs[0].allocatedBytesUnlinked).toBe(0);
     expect(existsSync(stale)).toBe(true); // nothing actually deleted
   });
 
-  it('a missing directory is a no-op, not an error', () => {
+  it('a missing directory is a no-op, not an error', async () => {
     const dir = join(sandbox, 'does-not-exist');
-    const result = runFleetLogsGc({ dirs: [dir] });
+    const result = await runFleetLogsGc({ dirs: [dir] });
     expect(result.dirs[0].scanned).toBe(0);
     expect(result.dirs[0].errors).toHaveLength(0);
   });
 
-  it('sweeps multiple directories independently', () => {
+  it('sweeps multiple directories independently', async () => {
     const dirA = join(sandbox, 'ws-a', 'fleet-logs');
     const dirB = join(sandbox, 'ws-b', 'fleet-logs');
     mkdirSync(dirA, { recursive: true });
@@ -154,7 +161,7 @@ describe('runFleetLogsGc', () => {
     writeAged(dirA, 'old.log', 100, 5 * 24 * 60 * 60 * 1000);
     writeAged(dirB, 'new.log', 100, 0);
 
-    const result = runFleetLogsGc({ dirs: [dirA, dirB], retentionMs: 3 * 24 * 60 * 60 * 1000 });
+    const result = await runFleetLogsGc({ dirs: [dirA, dirB], retentionMs: 3 * 24 * 60 * 60 * 1000, scanOpenPaths: scanIdlePaths });
     expect(result.dirs).toHaveLength(2);
     const a = result.dirs.find((d) => d.dir === dirA)!;
     const b = result.dirs.find((d) => d.dir === dirB)!;
@@ -162,7 +169,7 @@ describe('runFleetLogsGc', () => {
     expect(b.removedByAge).toBe(0);
   });
 
-  it('a stale file it cannot delete is reported as an error and still counted in bytesRemaining', () => {
+  it('a stale file it cannot delete is reported as an error and still counted in bytesRemaining', async () => {
     const dir = join(sandbox, 'fleet-logs');
     mkdirSync(dir, { recursive: true });
     const locked = writeAged(dir, 'locked.log', 200, 5 * 24 * 60 * 60 * 1000);
@@ -171,7 +178,7 @@ describe('runFleetLogsGc', () => {
     // otherwise unlink a chmod-000 file with no error).
     chmodSync(dir, 0o500);
 
-    const result = runFleetLogsGc({ dirs: [dir], retentionMs: 3 * 24 * 60 * 60 * 1000 });
+    const result = await runFleetLogsGc({ dirs: [dir], retentionMs: 3 * 24 * 60 * 60 * 1000, scanOpenPaths: scanIdlePaths });
 
     chmodSync(dir, 0o700); // restore before assertions / afterEach cleanup
     const [d] = result.dirs;
@@ -181,6 +188,86 @@ describe('runFleetLogsGc', () => {
       expect(d.errors[0].path).toBe(locked);
       expect(existsSync(locked)).toBe(true);
     }
+  });
+
+  it.each(['age', 'ceiling'])('keeps a genuinely open log under %s pressure and removes idle files', async (pass) => {
+    const dir = join(sandbox, 'fleet-logs');
+    mkdirSync(dir);
+    const busy = writeAged(dir, 'busy.log', 500, pass === 'age' ? 5 * 24 * 60 * 60 * 1000 : 60_000);
+    const idle = writeAged(dir, 'idle.log', 100, 5 * 24 * 60 * 60 * 1000);
+    const fd = openSync(busy, 'a');
+    const proc = join(sandbox, 'proc');
+    mkdirSync(proc);
+    symlinkSync(`/proc/${process.pid}`, join(proc, String(process.pid)));
+    try {
+      const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes: 50,
+        scanOpenPaths: (paths) => openWriterPidsMany(paths, { procRoot: proc, failClosed: true }),
+      });
+      expect(result.scanComplete).toBe(true);
+      expect(result.dirs[0].skippedOpen).toBe(1);
+      expect(result.dirs[0].bytesRemaining).toBe(500); // unresolved pressure is honest
+      expect(result.dirs[0].bytesUnlinked).toBe(100);
+      expect(existsSync(busy)).toBe(true);
+      expect(existsSync(idle)).toBe(false);
+    } finally { closeSync(fd); }
+  });
+
+  it.each(['incomplete', 'throws'])('defers both eviction passes when the census %s', async (mode) => {
+    const dir = join(sandbox, 'fleet-logs');
+    mkdirSync(dir);
+    const old = writeAged(dir, 'old.log', 500, 5 * 24 * 60 * 60 * 1000);
+    const fresh = writeAged(dir, 'fresh.log', 500, 0);
+    const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes: 50, scanOpenPaths: async () => {
+      if (mode === 'throws') throw new Error('permission denied');
+      return { complete: false, byPath: new Map() };
+    } });
+    expect(result.scanComplete).toBe(false);
+    expect(result.dirs[0]).toMatchObject({ removedByAge: 0, removedByCeiling: 0, bytesUnlinked: 0, bytesRemaining: 1000 });
+    expect(existsSync(old) && existsSync(fresh)).toBe(true);
+    if (mode === 'throws') expect(result.scanError).toBe('permission denied');
+  });
+
+  it.each(['replacement', 'symlink', 'write', 'parent'])('preserves a %s race during the holder census', async (race) => {
+    const dir = join(sandbox, 'fleet-logs');
+    mkdirSync(dir);
+    const log = writeAged(dir, 'old.log', 100, 5 * 24 * 60 * 60 * 1000);
+    const outside = writeAged(sandbox, 'protected.log', 100, 5 * 24 * 60 * 60 * 1000);
+    const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes: 0, scanOpenPaths: async () => {
+      if (race === 'parent') { renameSync(dir, dir + '-original'); mkdirSync(dir); writeFileSync(log, 'new'); }
+      else if (race === 'write') writeFileSync(log, 'new');
+      else {
+        renameSync(log, log + '-original');
+        if (race === 'symlink') symlinkSync(outside, log);
+        else writeFileSync(log, 'new');
+      }
+      return scanIdlePaths();
+    } });
+    expect(result.dirs[0]).toMatchObject({ bytesUnlinked: 0, removedByAge: 0, removedByCeiling: 0, skippedRaced: 1 });
+    expect(existsSync(log) && existsSync(outside)).toBe(true);
+  });
+
+  it('counts sparse-file allocation separately from logical unlink bytes', async () => {
+    const dir = join(sandbox, 'fleet-logs');
+    mkdirSync(dir);
+    const log = writeAged(dir, 'sparse.log', 1, 0);
+    const fd = openSync(log, 'r+');
+    try { ftruncateSync(fd, 1024 * 1024); } finally { closeSync(fd); }
+    const st = statSync(log);
+    const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes: 0, scanOpenPaths: scanIdlePaths });
+    expect(result.dirs[0].bytesUnlinked).toBe(st.size);
+    expect(result.dirs[0].allocatedBytesUnlinked).toBe(st.blocks * 512);
+    expect(st.blocks * 512).toBeLessThan(st.size);
+  });
+
+  it('does not count allocation reclaimed when another hard link remains', async () => {
+    const dir = join(sandbox, 'fleet-logs');
+    mkdirSync(dir);
+    const log = writeAged(dir, 'linked.log', 100, 5 * 24 * 60 * 60 * 1000);
+    const retained = join(sandbox, 'retained.log');
+    linkSync(log, retained);
+    const result = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths });
+    expect(result.dirs[0]).toMatchObject({ bytesUnlinked: 100, allocatedBytesUnlinked: 0 });
+    expect(readFileSync(retained)).toHaveLength(100);
   });
 });
 

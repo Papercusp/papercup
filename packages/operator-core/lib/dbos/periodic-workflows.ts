@@ -624,16 +624,22 @@ DBOS.registerScheduled(triggerDeliveryRetentionWorkflow, {
 async function fleetLogsGcTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
-      const result = runFleetLogsGc();
+      const result = await runFleetLogsGc();
       const totalScanned = result.dirs.reduce((s, d) => s + d.scanned, 0);
       const totalRemovedAge = result.dirs.reduce((s, d) => s + d.removedByAge, 0);
       const totalRemovedCeiling = result.dirs.reduce((s, d) => s + d.removedByCeiling, 0);
-      const totalBytesFreed = result.dirs.reduce((s, d) => s + d.bytesFreed, 0);
+      const totalBytesUnlinked = result.dirs.reduce((s, d) => s + d.bytesUnlinked, 0);
+      const totalAllocatedBytesUnlinked = result.dirs.reduce((s, d) => s + d.allocatedBytesUnlinked, 0);
+      const totalSkippedOpen = result.dirs.reduce((s, d) => s + d.skippedOpen, 0);
+      const totalSkippedRaced = result.dirs.reduce((s, d) => s + d.skippedRaced, 0);
       const totalErrors = result.dirs.reduce((s, d) => s + d.errors.length, 0);
       console.log(
         `[fleet-logs-gc] scanned ${totalScanned} file(s) across ${result.dirs.length} dir(s) → ` +
-          `removed ${totalRemovedAge} by age + ${totalRemovedCeiling} by ceiling, freed ` +
-          `${Math.round(totalBytesFreed / (1024 * 1024))}MB` +
+          `removed ${totalRemovedAge} by age + ${totalRemovedCeiling} by ceiling, unlinked ` +
+          `${Math.round(totalBytesUnlinked / (1024 * 1024))}MB logical ` +
+          `(${Math.round(totalAllocatedBytesUnlinked / (1024 * 1024))}MB allocation estimate), ` +
+          `kept ${totalSkippedOpen} open + ${totalSkippedRaced} changed` +
+          (!result.scanComplete ? `, deferred: incomplete holder census${result.scanError ? ` (${result.scanError})` : ''}` : '') +
           (totalErrors ? `, ${totalErrors} error(s)` : ''),
       );
 
