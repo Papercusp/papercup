@@ -273,6 +273,23 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'code:run exceeded timeout after 45 seconds')).toBe('transient');
   });
 
+  it('classifies the captured whole-call-deadline summary as transient when capture omits call_timeout metadata', () => {
+    const message =
+      'did not complete within 8000ms of its whole-call deadline (5000ms query budget plus 3000ms setup allowance). ' +
+      'Tenant checks, SQL execution, and result advisories share this deadline.';
+    expect(classifyToolError(null, 'error', message)).toBe('transient');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'dev:pg_query',
+      status: 'error',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        actual: 'handler_error call_timeout after the 8000ms deadline.',
+        expected: 'Describe harness_shared.tool_invocations returns relation metadata within dev:pg_query\'s whole-call deadline.',
+      },
+    }).class).toBe('transient');
+  });
+
   it('classifies a parent-signal abort as caller control flow, not a structural tool defect', () => {
     const message = 'tool "coord:declare-intent" was aborted by its parent signal after the handler returned';
     expect(classifyToolError('aborted', 'error', message)).toBe('caller');

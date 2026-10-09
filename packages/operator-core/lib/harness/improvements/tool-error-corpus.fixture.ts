@@ -73,6 +73,22 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'transient',
     note: 'interactive tool timeout',
   },
+  {
+    n: 1,
+    errorCode: 'dev:pg_query did not complete within 8000ms of its whole-call deadline (5000ms q',
+    status: 'refused',
+    message: '{"error":"dev:pg_query did not complete within 8000ms of its whole-call deadline (5000ms query budget plus 3000ms setup allowance). Tenant checks, SQL execution, and result advisories share this deadline.","reason":"call_timeout"}',
+    expectedClass: 'transient',
+    note: 'invocation 34570272: persisted call_timeout diagnostic is transient despite status=refused and a truncated deadline error_code',
+  },
+  {
+    n: 1,
+    errorCode: null,
+    status: 'error',
+    message: 'did not complete within 8000ms of its whole-call deadline (5000ms query budget plus 3000ms setup allowance). Tenant checks, SQL execution, and result advisories share this deadline.',
+    expectedClass: 'transient',
+    note: 'captured toolFailure prose retained the whole-call deadline but omitted the persisted call_timeout code/message envelope',
+  },
 
   // ── transient: shared-infra exhaustion (PG-wedge collateral) ───────────────
   {
