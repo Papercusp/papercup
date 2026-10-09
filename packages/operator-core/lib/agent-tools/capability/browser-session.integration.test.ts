@@ -1,6 +1,6 @@
 /** Real Chromium + real task ledger, isolated PostgreSQL; no operator or fleet mutation. */
 import { createServer, type Server } from 'node:http';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readlinkSync } from 'node:fs';
 import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
@@ -14,19 +14,23 @@ vi.mock('../../capability-envelope/session-confinement-store', () => ({
   ensureSessionConfinementsReady: async () => {}, sessionConfinementFor: () => null,
 }));
 // Trusted flag defaults are fixture-local. The real policy still forces confined callers on.
-vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => false }));
+vi.mock('@papercusp/flags/server', async (original) => ({
+  ...await original<typeof import('@papercusp/flags/server')>(), getFlag: async () => false,
+}));
 
 import { runBrowserSession } from './browser-session';
 import { capabilityBwrapWorks } from './exec-sandbox';
 import { getTask } from '../../task-manager/store';
 import { readProcessIdentity } from '../../process-identity';
+import { setAutoPumpEnabledForTests } from '../../events/await/engine';
+import { taskTerminalEventKey } from '../../task-manager/task-terminal-events';
 
 describe('managed browser process enrollment and loss (real PG/Chromium)', () => {
   let db: OrgTestDb; let server: Server; let base = '';
   const handles: Array<{ id: string; ctx: UnifiedToolContext }> = [];
   const context = (suffix: string, confined = false) => ({
     workspaceId: 'browser-ledger-workspace', uiClientId: `browser-ledger-${suffix}`,
-    harnessSlug: 'papercusp', role: 'operator', isSuperuser: !confined,
+    harnessSlug: 'papercusp', role: 'operator', isSuperuser: !confined, sigVerifiedSpawn: confined,
     signal: new AbortController().signal, log: vi.fn(),
   }) as unknown as UnifiedToolContext;
   async function call(args: Parameters<typeof runBrowserSession>[0], ctx: UnifiedToolContext, url?: string) {
@@ -40,6 +44,9 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
   }
   beforeAll(async () => {
     db = await createOrgTestDb(); h.sql = db.adminSql;
+    // Preserve real terminal-event persistence; host delivery is outside this
+    // private fixture and must not race database teardown.
+    setAutoPumpEnabledForTests(false);
     server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end('<html><head><title>enrolled browser</title></head><body><p id="ready">real managed page</p></body></html>');
@@ -66,6 +73,10 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
     expect((await call({ op: 'close', id: body.browser.id }, context('foreign'))).body.ok).toBe(false);
     expect((await getTask(row.taskId))!.state).toBe('running');
     expect((await call({ op: 'close', id: body.browser.id }, ctx)).body.browser.state).toBe('closed');
+    // The reply must await closeTask's terminal bridge, not merely its earlier UPDATE.
+    const [fire] = await h.sql`SELECT fire_count FROM harness_shared.event_key_fires
+      WHERE event_key = ${taskTerminalEventKey(row.taskId)}`;
+    expect(Number(fire?.fire_count)).toBe(1);
     await vi.waitFor(async () => expect((await getTask(row.taskId))!.state).toBe('exited'), { timeout: 5000 });
     expect(existsSync(row.cwd!)).toBe(false); expect(readProcessIdentity(row.pid!)).toBeNull();
   }, 30_000);
@@ -83,8 +94,13 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
     expect((await call({ op: 'close', id: body.browser.id }, ctx)).body.browser.state).toBe('lost');
     expect(readProcessIdentity(row.pid!)).toBeNull();
   }, 30_000);
-  it('forces real execution confinement for autonomous callers or refuses before enrollment', async () => {
-    const ctx = context('confined', true); const { body } = await open(ctx);
+  it(capabilityBwrapWorks()
+    ? 'forces real bwrap network confinement for verified autonomous callers'
+    : 'refuses unavailable OS confinement before autonomous process enrollment', async () => {
+    // Confined HTTP intentionally refuses loopback targets. Open about:blank to
+    // measure OS containment independently of the fixture server's trusted URL.
+    const ctx = context('confined', true); const { body } = await call({ op: 'open' }, ctx);
+    if (body.ok) handles.push({ id: body.browser.id, ctx });
     if (!capabilityBwrapWorks()) {
       expect(body).toMatchObject({ ok: false, error: 'capability_exec_confinement_unavailable' });
       const rows = await h.sql`SELECT task_id FROM harness_shared.task_ledger WHERE launched_by = ${ctx.uiClientId!}`;
@@ -95,11 +111,26 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
     const row = (await getTask(body.browser.task_id))!;
     const args = row.argv as string[];
     expect(args).toContain('--unshare-net'); expect(args).toContain('--ro-bind');
+    // launchServer.process() is bwrap's host-side supervisor, whose namespace
+    // is not Chromium's. Follow only this freshly enrolled child's descendants.
+    const pending = [row.pid!]; let browserPid: number | undefined;
+    while (pending.length) {
+      const pid = pending.pop()!;
+      try {
+        const executable = readlinkSync(`/proc/${pid}/exe`);
+        const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+        if (/\/(chrome|chrome-headless-shell)$/.test(executable) && !argv.includes('--type=')) {
+          browserPid = pid; break;
+        }
+        pending.push(...readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim().split(/\s+/).filter(Boolean).map(Number));
+      } catch { /* A short-lived intermediate child may have exited. */ }
+    }
+    expect(browserPid, 'live Chromium must exist under the enrolled supervisor').toBeDefined();
     const hostNet = readFileSync('/proc/self/net/dev', 'utf8');
-    const childNet = readFileSync(`/proc/${row.pid}/net/dev`, 'utf8');
+    const childNet = readFileSync(`/proc/${browserPid}/net/dev`, 'utf8');
     expect(childNet.trim().split('\n')).toHaveLength(3);
     expect(hostNet.trim().split('\n').length).toBeGreaterThan(3);
-    expect(body.observation.text).toBe('real managed page');
+    expect(body.observation.url).toBe('about:blank');
     expect((await call({ op: 'close', id: body.browser.id }, ctx)).body.browser.state).toBe('closed');
     await vi.waitFor(async () => expect((await getTask(row.taskId))!.state).toBe('exited'), { timeout: 5000 });
   }, 30_000);

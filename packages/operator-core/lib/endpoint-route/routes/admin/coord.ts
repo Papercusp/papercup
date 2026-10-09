@@ -36,6 +36,8 @@ import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
 import { applyOwnerMessageDefaults } from '../../../agent-tools/coordination/owner-message';
+import { knownOwnerIdSet } from '../../../agent-tools/coordination/recipient-resolve';
+import { activeWorkspaceId } from '../../../workspace-registry';
 
 // Shared with the Planning inbox's ack-dismiss filter (plans/attention.ts) so
 // "Acknowledge" actually dismisses: the human acks AS this owner here, and the
@@ -101,6 +103,26 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       { error: { code: 'read_only_verb', message: 'coord:wake-mode is read-only through this admin route' } },
       { status: 405 },
     );
+  }
+  if (verb === 'send') {
+    const targets = typeof body.to === 'string' ? [body.to] : body.to;
+    if (!Array.isArray(targets) || targets.length === 0 || targets.some(target => typeof target !== 'string')) {
+      return Response.json({ ok: false, error: 'recipient identities are required' }, { status: 400 });
+    }
+    // GUI concrete targets are exact identities from this window's workspace.
+    // The agent tool's best-effort alias/federation fallback is unsuitable here:
+    // a missing roster must not turn a stale/foreign selection into a write.
+    const concrete = targets.filter(target => target !== '*' && target !== 'human' && !target.startsWith('@'));
+    if (concrete.length) {
+      const workspaceId = ctx.principal?.workspaceId ?? activeWorkspaceId();
+      const known = await knownOwnerIdSet(workspaceId);
+      if (!known) {
+        return Response.json({ ok: false, error: 'recipient inventory unavailable' }, { status: 503 });
+      }
+      if (concrete.some(target => !known.has(target))) {
+        return Response.json({ ok: false, error: 'recipient is no longer available in this workspace' }, { status: 403 });
+      }
+    }
   }
   // P-033: a GUI sender is not an agent and cannot author the protocol fields
   // coord:send now requires — D-048 made `expects` REQUIRED with no default, and
