@@ -2954,18 +2954,18 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // Some callers (including Codex functions.exec) have no base64 codec.
               // The cursor points to a manifest-bearing scratch file, not the JSON body;
               // offer plaintext line windows and retain the validated byte-page path.
-              `Use capability:read with cursor.args (byte_offset+byte_limit; omit raw). ` +
-              `For plaintext, use raw:true with offset/limit line windows. ` +
-              `file_path-only truncates long lines. Scratch ref, not JSON; ` +
-              `response.data canonical base64; runtime codec, check decoded.length===byte_length, ` +
+              `Use capability:read cursor.args (byte_offset+byte_limit; no raw). ` +
+              `Plaintext: raw:true+offset/limit lines. ` +
+              `file_path-only truncates long lines; Scratch ref, not JSON; ` +
+              `response.data canonical base64; runtime codec; decoded.length===byte_length; ` +
               `follow next_cursor; ` +
-              `parse JSON only at eof:true + next_cursor:null. ` +
+              `parse only at eof:true+next_cursor:null. ` +
               (partialJsonBody
                 ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The source is already ` +
                   `partial (${partialJsonSource}); this JSON is partial (bodyComplete:false) and ` +
                   `paging cannot recover omitted fields. ${partialJsonReRead}`
                 : parsedJsonBody
-                  ? `JSON starts after cursor.bodyOffsetInPayload in response.data.`
+                  ? `JSON at response.data[cursor.bodyOffsetInPayload].`
                   : `the spill opens with a text header.`) +
               // Keep the JSON recovery pointer compact. The payload projector budgets
               // the pointer together with the retained JSON preview; page-integrity

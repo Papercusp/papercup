@@ -196,7 +196,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // EI-21349944846228401: the path is a self-describing scratch reference,
     // not the raw JSON payload. Say that at the recovery decision point so a
     // caller does not feed the manifest-bearing file to jq/JSON.parse directly.
-    expect(next).toContain('Use capability:read with cursor.args');
+    expect(next).toContain('Use capability:read cursor.args');
     expect(next).toContain('byte_offset+byte_limit');
     expect(next).toContain('file_path-only truncates long lines');
     expect(next).toContain('Scratch ref, not JSON');
@@ -267,8 +267,8 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(cursor.args).toHaveProperty('byte_offset');
     expect(cursor.args).toHaveProperty('byte_limit');
     expect(cursor.args).not.toHaveProperty('raw');
-    expect(next).toContain('byte_offset+byte_limit; omit raw');
-    expect(next).toContain('raw:true with offset/limit line windows');
+    expect(next).toContain('byte_offset+byte_limit; no raw');
+    expect(next).toContain('Plaintext: raw:true+offset/limit lines');
     expect(next).not.toContain('raw:true plaintext');
     expect(next).toContain('runtime codec');
 
@@ -289,7 +289,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(next).toContain('canonical');
     expect(next).toContain('base64');
     expect(next).toContain('decoded.length===byte_length');
-    expect(next).toContain('parse JSON only at eof:true + next_cursor:null');
+    expect(next).toContain('parse only at eof:true+next_cursor:null');
   });
 
   it("surfaces capability:read's schema byte-page ceiling in the cursor", () => {
@@ -345,7 +345,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // precisely the defect, so asserting only one would not catch it.
     expect(cursor.bodyOffsetInPayload).toEqual(expect.any(Number));
     expect(cursor.bodyOffsetInFile).toEqual(expect.any(Number));
-    expect(next).toContain('JSON starts after cursor.bodyOffsetInPayload in response.data.');
+    expect(next).toContain('JSON at response.data[cursor.bodyOffsetInPayload].');
 
     // A complete body must NOT carry the incompleteness marker.
     expect(cursor.bodyComplete).toBeUndefined();
