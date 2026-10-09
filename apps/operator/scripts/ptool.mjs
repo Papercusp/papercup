@@ -205,6 +205,17 @@ export function ptoolConnectionRetryOptions(args = {}, env = process.env) {
 
 /* ─── arg parsing (pure — exported for tests) ─────────────────────────── */
 
+function missingValueFlagMessage(flag) {
+  if (flag === '--json' || flag === '--args') {
+    return [
+      `${flag} requires a value;`,
+      `use ${flag} '{}' for an empty arguments object,`,
+      `or ${flag} - to read JSON from stdin`,
+    ].join(' ');
+  }
+  return `${flag} requires a value`;
+}
+
 /**
  * Parse argv into the ptool invocation shape. The first non-flag positional
  * is the tool name (`group:verb`); everything else is a flag. Pure.
@@ -269,7 +280,7 @@ export function parseArgs(argv = []) {
     // is present.
     if (valueFlags[a]) {
       if (i + 1 >= argv.length) {
-        throw new Error(`--${a.slice(2)} requires a value`);
+        throw new Error(missingValueFlagMessage(a));
       }
       const next = argv[i + 1];
       const nextLooksLikeFlag = next !== '-'
@@ -287,7 +298,7 @@ export function parseArgs(argv = []) {
           pendingStdinCapableValueFlag = a;
           continue;
         }
-        throw new Error(`--${a.slice(2)} requires a value`);
+        throw new Error(missingValueFlagMessage(a));
       }
       out[valueFlags[a]] = argv[++i];
       continue;
@@ -311,7 +322,7 @@ export function parseArgs(argv = []) {
     }
   }
   if (pendingStdinCapableValueFlag) {
-    throw new Error(`--${pendingStdinCapableValueFlag.slice(2)} requires a value`);
+    throw new Error(missingValueFlagMessage(pendingStdinCapableValueFlag));
   }
   if (out.allWorkspaces && out.workspace) {
     throw new Error('--all-workspaces cannot be combined with --workspace');

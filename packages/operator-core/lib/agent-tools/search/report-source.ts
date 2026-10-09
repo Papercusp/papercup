@@ -2,32 +2,51 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 import { visibleTo, type ReportViewer } from '../../report-library';
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 import { reportsLibraryDisabled } from '../reports/_shared';
+import { boundedSource, sectionExcerpt, type KnowledgeAudience } from './knowledge-sources';
+import { lastMarkdownHeading } from '../plans/semantic-leg';
 
 type HitRow = { report_id: string; title: string; summary: string; origin_harness_slug: string | null;
-  published_at: string; rank: number; highlight: string };
+  published_at: string; rank: number; highlight: string; body_md?: string;
+  match_content?: string; section_prefix?: string | null; lineage_id?: string };
 function hits(rows: HitRow[], ranker: string): Listing {
-  return rows.map(r => ({ key: `report:${r.report_id}`, score: Number(r.rank), row: {
+  return rows.map(r => {
+    const matched = sectionExcerpt(r.body_md ?? '', r.highlight);
+    const content = r.match_content ?? matched.content;
+    const section = r.match_content != null ? lastMarkdownHeading(content)
+      ?? (r.section_prefix ? lastMarkdownHeading(r.section_prefix) : null) : matched.section;
+    return { key: `report:${r.report_id}`, score: Number(r.rank), row: {
     source: 'report', source_id: r.report_id, ...(r.origin_harness_slug ? { scope: r.origin_harness_slug } : {}),
-    ts: r.published_at, excerpt: `${r.title}\n${r.summary}`.slice(0, 400), highlight: r.highlight,
-    score: Number(r.rank), rankers: [ranker], meta: { path: `/reports?sel=${encodeURIComponent(r.report_id)}` },
-  } }));
+    ts: r.published_at, excerpt: `${r.title}${section ? ` › ${section}` : ''}\n${content || r.summary}`.slice(0, 1500),
+    highlight: ranker === 'embeddings' ? content : r.highlight,
+    score: Number(r.rank), rankers: [ranker], meta: {
+      path: `/reports?sel=${encodeURIComponent(r.report_id)}`, section, title: r.title,
+      currentness: 'dated-evidence', lineageId: r.lineage_id ?? null,
+    },
+  } }; });
 }
 
 /** Viewer is captured by the server. Author/session filters never confer read access. */
-export function createReportSearchSource(viewer: ReportViewer = {}): SearchSource {
+export function createReportSearchSource(viewer: ReportViewer = {}, audience: KnowledgeAudience = {}): SearchSource {
   const latest = (p: SearchSourceParams) => p.sql`
     SELECT DISTINCT ON (lineage_id) report_id FROM harness_shared.report_library
     WHERE workspace_id = ${p.workspaceId} AND retired_at IS NULL AND ${visibleTo(p.sql, viewer)}
       AND (${p.scopeFilter}::text IS NULL OR origin_harness_slug = ${p.scopeFilter})
+      AND (${audience.harnessSlugs?.length ? [...audience.harnessSlugs] : null}::text[] IS NULL
+        OR origin_harness_slug = ANY(${audience.harnessSlugs?.length ? [...audience.harnessSlugs] : null}::text[]))
+      AND NOT (('report:' || report_id) = ANY(${[...(audience.excludedRefs ?? [])]}::text[]))
+      ${audience.automatic ? p.sql`AND NOT EXISTS (SELECT 1 FROM harness_shared.report_library newer
+        WHERE newer.workspace_id = ${p.workspaceId} AND newer.lineage_id = report_library.lineage_id
+          AND newer.retired_at IS NULL
+          AND (newer.published_at,newer.report_id) > (report_library.published_at,report_library.report_id))` : p.sql``}
       AND (${p.filters?.owners ?? null}::text[] IS NULL OR author_owner_id = ANY(${p.filters?.owners ?? null}::text[]))
       AND (${p.filters?.since ?? null}::timestamptz IS NULL OR published_at >= ${p.filters?.since ?? null}::timestamptz)
       AND (${p.filters?.until ?? null}::timestamptz IS NULL OR published_at < ${p.filters?.until ?? null}::timestamptz)
     ORDER BY lineage_id, published_at DESC, report_id DESC`;
-  return {
+  return boundedSource({
     name: 'report',
     async lexical(p) {
       if (await reportsLibraryDisabled()) return [];
-      const rows = await p.sql`SELECT report_id, title, summary, origin_harness_slug, published_at,
+      const rows = await p.sql`SELECT report_id, title, summary, body_md, lineage_id, origin_harness_slug, published_at,
         ts_rank_cd(search_tsv, plainto_tsquery('english', ${p.query})) AS rank,
         ts_headline('english', body_md, plainto_tsquery('english', ${p.query}),
           'StartSel=<mark>,StopSel=</mark>,MaxWords=35,MinWords=15,MaxFragments=2') AS highlight
@@ -47,13 +66,18 @@ export function createReportSearchSource(viewer: ReportViewer = {}): SearchSourc
           AND c.embedding IS NOT NULL
           AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 'c.embedding_profile', 'c.embedding_mode')}
         GROUP BY r.workspace_id, r.report_id ORDER BY distance, r.report_id LIMIT ${p.limit}
-      ) SELECT r.report_id, r.title, r.summary, r.origin_harness_slug, r.published_at,
-        1 - b.distance AS rank,
-        ts_headline('english', r.body_md, plainto_tsquery('english', ${p.query}),
-          'StartSel=<mark>,StopSel=</mark>,MaxWords=35,MinWords=15,MaxFragments=2') AS highlight
+      ) SELECT r.report_id, r.title, r.summary, r.lineage_id, r.origin_harness_slug, r.published_at,
+        1 - b.distance AS rank, c.content AS match_content, c.content AS highlight,
+        left(concat_ws(E'\n',r.title,nullif(r.summary,''),r.body_md), c.chunk_idx * 1250 + 750) AS section_prefix
         FROM best b JOIN harness_shared.report_library r
-          ON r.workspace_id = b.workspace_id AND r.report_id = b.report_id ORDER BY b.distance, r.report_id`;
+          ON r.workspace_id = b.workspace_id AND r.report_id = b.report_id
+        JOIN LATERAL (SELECT c.content,c.chunk_idx FROM harness_shared.text_chunks c
+          WHERE c.surface = 'report' AND c.parent_key = ARRAY[r.workspace_id,r.report_id]
+            AND c.embedding IS NOT NULL
+            AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p,'c.embedding_profile','c.embedding_mode')}
+          ORDER BY c.embedding <=> ${p.qVec}::vector,c.chunk_idx LIMIT 1) c ON true
+        ORDER BY b.distance, r.report_id`;
       return hits(rows as unknown as HitRow[], 'embeddings');
     },
-  };
+  });
 }

@@ -85,6 +85,8 @@ const EPHEMERAL_SLUG_RE =
  */
 
 export interface MemoryInjectionInput {
+  /** Reader authority supplied by a server-owned port, never by prompt text. */
+  reportViewer?: import('../report-library').ReportViewer;
   /** Shared with prompt preparation and both recall legs; phases cannot reset it. */
   deadline?: MemoryWorkDeadline;
   /**
@@ -744,6 +746,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         queryText,
         workspaceId: input.workspaceId,
         harnessSlugs: input.harnessSlugs ?? [],
+        reportViewer: input.reportViewer,
         declaredWorkItemId,
         ambientExcludedRefs,
         // ⚠ This value is the caller's coord ownerId (`su-xxxx…`), NOT a native

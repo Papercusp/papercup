@@ -115,8 +115,6 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
       invalidations.push({ before, after: version });
       await sync.invalidate('goals.detail');
     });
-    await openHud(page, `/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`, page.getByTestId('goal-data'));
-    await sync.waitForServed(['goals.detail']);
     const editor = page.getByTestId('goal-data');
     async function saveWithReadback(action: () => Promise<void>) {
       const expectedVersion = version + 1;
@@ -169,7 +167,11 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
       await page.reload({ waitUntil: 'domcontentloaded' });
       await waitForHud(editor);
     }
-    return async () => {
+    return {
+      path: `/adv?tab=hud&scope=all&hudtab=goals&hudgoal=${goal.id}&welcome=0`,
+      editor,
+      sync,
+      run: async () => {
     await expect(editor.getByText('Waiting for dependency')).toBeVisible();
     if (journey === 'priority') {
       await saveWithReadback(() => editor.getByRole('button', { name: 'Move Second choice up' }).click());
@@ -216,22 +218,40 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
     if (kind === 'plans') await expect(editor.getByRole('checkbox', { name: 'Include Maintained rubric' })).toBeChecked();
     await page.screenshot({ path: test.info().outputPath(`collection-${kind}-${journey}.png`) });
     sync.assertServed('goals.list', 'goals.detail');
+      },
     };
 }
 
-// A cold document mount is setup, with its existing 30s readiness bound.
-// Keep it outside the unchanged 60s contract budget: the contract still drives
-// real reloads, persisted readback, writes and refusal inside that budget.
+// Navigation and editor readiness each have their existing 30s bound. They
+// need separate fixture clocks: a 19s navigation must not reduce the editor's
+// readiness bound to 11s. Real reloads, writes and refusal still share the
+// unchanged 60s contract budget.
+type DeclaredCollection = Awaited<ReturnType<typeof prepareDeclaredCollection>>;
 const collectionTest = test.extend<{
   collectionKind: CollectionKind;
   collectionJourney: CollectionJourney;
+  collectionFixture: DeclaredCollection;
+  collectionNavigation: DeclaredCollection;
+  collectionReady: DeclaredCollection;
   runCollection: () => Promise<void>;
 }>({
   collectionKind: ['plans', { option: true }],
   collectionJourney: ['priority', { option: true }],
-  runCollection: [async ({ page, collectionKind, collectionJourney }, use) => {
+  collectionFixture: [async ({ page, collectionKind, collectionJourney }, use) => {
     await use(await prepareDeclaredCollection(page, collectionKind, collectionJourney));
   }, { timeout: 30_000 }],
+  collectionNavigation: [async ({ page, collectionFixture }, use) => {
+    await page.goto(collectionFixture.path, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await use(collectionFixture);
+  }, { timeout: 30_000 }],
+  collectionReady: [async ({ collectionNavigation }, use) => {
+    await waitForHud(collectionNavigation.editor);
+    collectionNavigation.sync.assertServed('goals.detail');
+    await use(collectionNavigation);
+  }, { timeout: 30_000 }],
+  runCollection: async ({ collectionReady }, use) => {
+    await use(collectionReady.run);
+  },
 });
 const collectionJourneys = (['plans', 'tea'] as const).flatMap((kind) =>
   (['priority', 'selection', 'refusal'] as const).map((journey) => ({ kind, journey })));

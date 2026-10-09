@@ -22,7 +22,7 @@
  */
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import type { ChildProcess } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -64,8 +64,9 @@ import runTool, {
   type TestingRunPhaseTimings,
   TEST_RUN_ID_READBACK_TIMEOUT_MS,
 } from '../run';
-import { FOREGROUND_TERMINATION_GRACE_MS } from '../../capability/foreground-transport-cap';
 import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing-run-store';
+import { listDirtyFilesRecursive, readRestrictedWindowHoldings, type HoldRunGit } from '../../../personal-vault/git-sync-hold';
+import { restrictedHoldRefusal } from '../restricted-hold-fence';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -182,14 +183,34 @@ const selectorPhantom = join(tmpdir(), 'papercusp-testing-run-selector-phantom-d
 let selectorCanonical = '';
 let selectorRequested = '';
 
+const scratchGit: HoldRunGit = (args, cwd) => new Promise((resolve) => {
+  execFile('git', args, { cwd, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    resolve({ code: error ? 1 : 0, stdout: String(stdout), stderr: String(stderr) });
+  });
+});
+
+/** Commit only generated files in this suite's disposable repositories, never the shared tree. */
+async function sealScratchTestCheckout(root: string): Promise<void> {
+  for (const args of [
+    ['init', '-q'],
+    ['add', '--all'],
+    ['-c', 'user.name=Test Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=/dev/null',
+      'commit', '-q', '--allow-empty', '-m', 'Generated testing:run fixture'],
+  ]) {
+    const result = await scratchGit(args, root);
+    if (result.code !== 0) throw new Error(`scratch checkout git ${args.join(' ')} failed: ${result.stderr}`);
+  }
+}
+
 async function makeScratchTestCheckout(prefix: string, file = 'packages/x/real.test.ts'): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   selectorRoots.push(root);
-  await mkdir(join(root, '.git'));
   await mkdir(dirname(join(root, file)), { recursive: true });
   await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
   await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
   await writeFile(join(root, file), 'export {};\n');
+  await sealScratchTestCheckout(root);
   return root;
 }
 
@@ -201,6 +222,30 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await Promise.all(selectorRoots.map((root) => rm(root, { recursive: true, force: true })));
+});
+
+describe('scratch checkout custody census (WI-10007684)', () => {
+  const activeWindowSql = (async () => [{ since: new Date(0), restricted: ['fixture-restricted'] }]) as
+    NonNullable<Parameters<typeof readRestrictedWindowHoldings>[0]['sql']>;
+  const holdings = (root: string) => readRestrictedWindowHoldings({
+    sql: activeWindowSql,
+    listDirtyFiles: () => listDirtyFilesRecursive(scratchGit, root),
+  });
+
+  it('admits a real clean fixture during an active disclosure window', async () => {
+    expect(await listDirtyFilesRecursive(scratchGit, selectorCanonical)).toEqual([]);
+    expect(await restrictedHoldRefusal(selectorCanonical, ['packages/x/real.test.ts'], { holdings })).toBeNull();
+  });
+
+  it('keeps an empty Git marker fail-closed with the actual census failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-malformed-git-'));
+    selectorRoots.push(root);
+    await mkdir(join(root, '.git'));
+    const refusal = await restrictedHoldRefusal(root, ['packages/x/real.test.ts'], { holdings });
+    expect(refusal).toMatchObject({ error: 'restricted_hold_state_unknown' });
+    expect(refusal?.hint).toContain('git submodule status failed');
+    expect(refusal?.hint).toContain('not a git repository');
+  });
 });
 
 describe('bounded router-output diagnostics (EI-23084691057182393)', () => {
@@ -356,6 +401,7 @@ describe('completed child with failed router finalization (WI-10004947)', () => 
       "console.log('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed finalizationError=true');",
       'process.exitCode = 3;',
     ].join('\n'));
+    await sealScratchTestCheckout(root);
     const out = await runTestFilesCore({ root, files: [file], timeoutMs: 10_000 });
     expect(out.error, JSON.stringify(out)).toBeUndefined();
     if (out.error !== undefined) return;
@@ -400,6 +446,7 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
         join(root, `${label}.test.ts`),
         `import { expect, it } from 'vitest'; it('${label}', () => expect(1).toBe(1));\n`,
       );
+      await sealScratchTestCheckout(root);
     }
     const siblingFile = join(sibling, 'sibling.test.ts');
 
@@ -431,6 +478,7 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
       await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
       await writeFile(join(root, 'scripts', 'test-files.mjs'), sleepingRouter);
       await writeFile(file, 'export {};\n');
+      await sealScratchTestCheckout(root);
     }
 
     const out = await runTestFilesCore({
@@ -480,6 +528,7 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
       await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
       await writeFile(join(root, 'scripts', 'test-files.mjs'), index === 0 ? redRouter : sleepingRouter);
       await writeFile(files[index]!, 'export {};\n');
+      await sealScratchTestCheckout(root);
     }
 
     const out = await runTestFilesCore({ root: roots[0]!, files, timeoutMs: 5_000 });
@@ -539,6 +588,7 @@ describe('nested router deadline (WI-10003090)', () => {
       "  assertionResults: [{ status: 'passed', fullName: 'criterion ran' }],",
       "})) }));",
     ].join('\n'));
+    await sealScratchTestCheckout(root);
 
     const previous = process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
     process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = '600000';
@@ -663,21 +713,19 @@ describe('governed test-process admission (P-003)', () => {
 
 describe('bounded foreground process termination', () => {
   it('waits no longer than the foreground termination grace and accepts a late close', async () => {
-    vi.useFakeTimers();
-    try {
-      let close!: () => void;
-      const childClosed = new Promise<void>((resolve) => {
-        close = resolve;
-      });
-      const confirmation = waitForTestProcessClose(childClosed);
+    let close!: () => void;
+    const childClosed = new Promise<void>((resolve) => {
+      close = resolve;
+    });
+    // Exercise the real scheduler with the existing bounded deadline seam.
+    // Freezing timers here also freezes this integration suite's real drivers.
+    await expect(waitForTestProcessClose(childClosed, 10)).resolves.toBe(false);
+    close();
+    await expect(childClosed).resolves.toBeUndefined();
+  });
 
-      await vi.advanceTimersByTimeAsync(FOREGROUND_TERMINATION_GRACE_MS);
-      await expect(confirmation).resolves.toBe(false);
-      close();
-      await expect(childClosed).resolves.toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
+  it('confirms a child that closes before its termination deadline', async () => {
+    await expect(waitForTestProcessClose(Promise.resolve(), 1_000)).resolves.toBe(true);
   });
 
   it('does not start a mixed-root recovery while a timed-out foreground process may still be writing', async () => {
@@ -688,6 +736,7 @@ describe('bounded foreground process termination', () => {
     for (const root of roots) {
       await mkdir(join(root, 'scripts'), { recursive: true });
       await writeFile(join(root, 'scripts', 'test-files.mjs'), 'process.exit(0);\n');
+      await sealScratchTestCheckout(root);
     }
     let close!: () => void;
     const childClosed = new Promise<void>((resolve) => {
@@ -720,7 +769,7 @@ describe('bounded foreground process termination', () => {
         { runRouterFn },
       );
 
-      expect(out).toMatchObject({
+      expect(out, JSON.stringify(out)).toMatchObject({
         ok: false,
         error: 'timeout',
         roots,
@@ -734,6 +783,7 @@ describe('bounded foreground process termination', () => {
       close();
       await vi.waitFor(() => expect(existsSync(reportDir)).toBe(false));
     } finally {
+      close();
       if (reportDir) await rm(reportDir, { recursive: true, force: true });
     }
   });

@@ -257,6 +257,25 @@ describe('resource governor enforcement lint', () => {
     ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
   });
 
+  it('bounds terminal diagnostics and the DAO verifier to their reviewed finite starts', () => {
+    const terminalPath = 'apps/operator/scripts/psu-terminal-diagnostics.mjs';
+    const terminal = readFileSync(ROOT + terminalPath, 'utf8');
+    const daoPath = 'scripts/tauri-surface-verify-dao-workbench.mts';
+    const dao = readFileSync(ROOT + daoPath, 'utf8');
+    for (const [path, source] of [[terminalPath, terminal], [daoPath, dao]]) {
+      const finding = `${path}:resource-start-outside-admission`;
+      expect(scanInventory([[path, source]])).not.toContain(finding);
+      expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
+    }
+    const terminalFinding = `${terminalPath}:resource-start-outside-admission`;
+    expect(scanInventory([[terminalPath, terminal.replace('}, 750)', '}, 0)')]])).toContain(terminalFinding);
+    expect(scanInventory([[terminalPath, terminal.replace("spawnCommand('stty'", "spawnCommand('worker'")]])).toContain(terminalFinding);
+    expect(scanInventory([[terminalPath, terminal + "\nspawnCommand('worker', []);"]])).toContain(terminalFinding);
+    const daoFinding = `${daoPath}:resource-start-outside-admission`;
+    expect(scanInventory([[daoPath, dao.replace('timeout: 65_000', 'timeout: undefined')]])).toContain(daoFinding);
+    expect(scanInventory([[daoPath, dao.replace('PAPERCUSP_VERIFY_TAURI_ISOLATED', 'UNSCOPED_RUNTIME')]])).toContain(daoFinding);
+  });
+
   it('bounds the per-use chokepoint disposition to funding admission with no process start', () => {
     const path = 'packages/operator-core/lib/agent-tools/per-use-chokepoint.ts';
     const source = readFileSync(ROOT + path, 'utf8');

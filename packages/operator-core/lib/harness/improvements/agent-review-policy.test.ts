@@ -489,13 +489,14 @@ describe('one verification stage, kind-specific checks (P-006 / D-019)', () => {
     }
   });
 
-  it('accepts a change only through proposal review (agent-review authority)', () => {
-    expect(seal(CHANGE_SOURCE, POLICY_AUTHORITY, REPRODUCTION)).toEqual({ ok: false, refusal: 'proposal-review-missing' });
-    const sealed = seal(CHANGE_SOURCE, REVIEW_AUTHORITY);
+  it.each(['change', 'feature'] as const)('accepts a %s only through proposal review (agent-review authority)', (kind) => {
+    const source: ImplementationAcceptanceSource = { ...CHANGE_SOURCE, kind };
+    expect(seal(source, POLICY_AUTHORITY, REPRODUCTION)).toEqual({ ok: false, refusal: 'proposal-review-missing' });
+    const sealed = seal(source, REVIEW_AUTHORITY);
     expect(sealed.ok).toBe(true);
     if (!sealed.ok) return;
     expect(sealed.contract.verification).toEqual({ check: 'proposal-review' });
-    expect(evaluate(sealed.contract, CHANGE_SOURCE)).toMatchObject({ state: 'qualifying' });
+    expect(evaluate(sealed.contract, source)).toMatchObject({ state: 'qualifying' });
   });
 
   it('reads a bug contract without its reproduction verification as incomplete', () => {

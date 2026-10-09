@@ -12,6 +12,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const runHybridSearch = vi.fn();
 const buildQueryEmbedder = vi.fn(async () => (async () => [0.1, 0.2]) as unknown);
 const getFlag = vi.fn(async () => true);
+const planSource = vi.fn(() => ({ name: 'plan' }));
+const docSource = vi.fn(() => ({ name: 'doc' }));
+const reportSource = vi.fn(() => ({ name: 'report' }));
+vi.mock('../agent-tools/search/knowledge-sources', () => ({ createPlanSearchSource: planSource, createDocSearchSource: docSource }));
+vi.mock('../agent-tools/search/report-source', () => ({ createReportSearchSource: reportSource }));
 
 /** The owner→own-session lookup runs through this tagged template. Default: the
  *  caller owns nothing, i.e. no exclusions. */
@@ -35,6 +40,9 @@ vi.mock('../agent-tools/search/sources', () => ({
     { name: 'work_item' },
     { name: 'session_turn' },
     { name: 'coord_message' },
+    { name: 'plan' },
+    { name: 'doc' },
+    { name: 'report' },
   ],
 }));
 vi.mock('../agent-tools/search/embedder', async () => ({
@@ -109,14 +117,32 @@ it('does not start a second corpus search after the parent prompt expired', asyn
 });
 
 describe('recallCorpusContext — the contract handed to the search engine', () => {
-  it('reads ONLY the session_turn + work_item sources', async () => {
+  it('reads the registered session/work-item and complete knowledge sources', async () => {
     runHybridSearch.mockResolvedValue(ok());
     await recallCorpusContext(base);
     const [sources] = runHybridSearch.mock.calls[0];
     expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([
+      'doc',
+      'plan',
+      'report',
       'session_turn',
       'work_item',
     ]);
+  });
+
+  it('binds agent visibility and ambient exclusions before source ranking', async () => {
+    runHybridSearch.mockResolvedValue(ok([hit({ source: 'doc', source_id: 'harness:papercusp:repair',
+      excerpt: 'http2 transport prerequisite: keep snapshot', meta: { section: 'Repair' } })]));
+    const excluded = new Set(['report:R-secret']);
+    const result = await recallCorpusContext({ ...base,harnessSlugs: ['papercusp'],
+      excludeOwnerId: 'su-me',ambientExcludedRefs: excluded });
+    expect(planSource).toHaveBeenCalledWith({ harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });
+    expect(docSource).toHaveBeenCalledWith({ harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });
+    expect(reportSource).toHaveBeenCalledWith({ ownerId: 'su-me',potSlug: 'papercusp' },
+      { harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });
+    expect(result.block).toContain('doc:');
+    expect(result.block).toContain('docs:get');
+    expect(result.block).toContain('keep snapshot');
   });
 
   it('enables the recency re-rank (P-009) with the documented tunables', async () => {
@@ -127,16 +153,20 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
     expect(recency).toEqual({
       halfLifeMs: CORPUS_RECENCY_HALF_LIFE_MS,
       weight: CORPUS_RECENCY_WEIGHT,
+      getTime: expect.any(Function),
     });
   });
 
-  it('leaves getTime at the engine default — both sources populate hit.ts', async () => {
-    // Overriding getTime here would mask the work_item projection: the leg would
-    // keep working while `ts` silently went missing from the SQL again.
+  it('preserves source timestamps and keeps current procedural/plan guidance eligible', async () => {
     runHybridSearch.mockResolvedValue(ok());
     await recallCorpusContext(base);
     const [, ctx] = runHybridSearch.mock.calls[0];
-    expect((ctx as { recency?: Record<string, unknown> }).recency).not.toHaveProperty('getTime');
+    const getTime = (ctx as { recency: { getTime: (hit: { source: string; ts: string }) => unknown } }).recency.getTime;
+    const ts = '2026-01-01T00:00:00Z';
+    expect(getTime({ source: 'work_item',ts })).toBe(ts);
+    expect(getTime({ source: 'report',ts })).toBe(ts);
+    expect(getTime({ source: 'doc',ts })).not.toBe(ts);
+    expect(getTime({ source: 'plan',ts })).not.toBe(ts);
   });
 
   it('does NOT enable the fresh-candidate window — it labels hits lexical-fresh', async () => {

@@ -3,7 +3,9 @@ import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { expect } from 'vitest';
 
-const execute = promisify(execFile);
+let executeMemo: typeof execFile.__promisify__ | null = null;
+const execute = ((...args: unknown[]) =>
+  Reflect.apply((executeMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 const root = resolve(import.meta.dirname, '../../..');
 export type Assertion = { id: string; passed: boolean; evidence: string; status?: string };
 export type Evidence = {

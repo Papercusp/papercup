@@ -154,6 +154,28 @@ describe('ptool bootstrap dependencies', () => {
   });
 });
 
+describe('ptool JSON argument flag guidance', () => {
+  it('shows valid empty-object and stdin forms when the JSON value is missing', () => {
+    const jsonMessage = [
+      "--json requires a value;",
+      "use --json '{}' for an empty arguments object,",
+      'or --json - to read JSON from stdin',
+    ].join(' ');
+    const argsMessage = [
+      "--args requires a value;",
+      "use --args '{}' for an empty arguments object,",
+      'or --args - to read JSON from stdin',
+    ].join(' ');
+
+    expect(() => parseArgs(['coord:whoami', '--json'])).toThrow(jsonMessage);
+    expect(() => parseArgs(['coord:whoami', '--json', '--workspace=papercusp-workspace']))
+      .toThrow(jsonMessage);
+    expect(() => parseArgs(['coord:whoami', '--args'])).toThrow(argsMessage);
+    expect(parseArgs(['coord:whoami', '--json', '{}']).json).toBe('{}');
+    expect(parseArgs(['coord:whoami', '--json', '-']).json).toBe('-');
+  });
+});
+
 describe('ptool MCP identity binding', () => {
   it('accepts an explicit idempotency receipt in both CLI flag forms', () => {
     expect(parseArgs(['work_items:checkpoint', '--idempotency-key', 'receipt-1']).idempotencyKey)

@@ -15634,6 +15634,9 @@ export async function runGreenCheckpoint(
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
   let suiteReplayCanary: CheckpointResult['suiteReplayCanary'];
+  const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
+  const replayProvenance = { candidateSource, ...(diagnostic ? { diagnostic } : {}),
+    ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}) };
   if (deps.readLastSuiteVerdictReplay) {
     try {
       const previous = await deps.readLastSuiteVerdictReplay();
@@ -15649,20 +15652,19 @@ export async function runGreenCheckpoint(
       if (replay && replay.canaryOk !== true) return {
         advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
         green: null, reason: 'infra-inconclusive', summary: suiteReplayCanary.detail,
-        suiteReplayCanary, ...(deps.runId ? { runId: deps.runId } : {}),
+        suiteReplayCanary, ...replayProvenance, ...(deps.runId ? { runId: deps.runId } : {}),
       };
     } catch (error) {
       suiteReplayCanary = { status: 'unreadable', detail: `measured-suite replay unavailable: ${error instanceof Error ? error.message : String(error)}` };
       deps.log(`GATE_SUITE_REPLAY status=unreadable ${suiteReplayCanary.detail}`);
       return { advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
         green: null, reason: 'infra-inconclusive', summary: suiteReplayCanary.detail, suiteReplayCanary,
-        ...(deps.runId ? { runId: deps.runId } : {}),
+        ...replayProvenance, ...(deps.runId ? { runId: deps.runId } : {}),
       };
     }
   }
   const admissionPassStartedAtMs = Date.now();
   const admissionRunStartedAtMs = opts.runStartedAtMs ?? admissionPassStartedAtMs;
-  const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
   const innerOpts: CheckpointOpts = {
     ...opts,
     candidateSource,

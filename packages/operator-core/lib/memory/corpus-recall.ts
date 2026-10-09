@@ -82,6 +82,8 @@ export interface CorpusHit {
    * today's behaviour, never silently reclassify the whole corpus.
    */
   lane?: string | null;
+  /** Canonical section, currentness and source URL from the registered adapter. */
+  meta?: Readonly<Record<string, string | null>>;
 }
 
 /** The resolvable pointer — same concept as ambient-push's QueryHandle. Never
@@ -93,7 +95,7 @@ export interface CorpusHandle {
    * a curated artifact. It is a distinct kind rather than a flag because every
    * consumer that renders or ranks a handle has to tell them apart (P-003/P-004).
    */
-  kind: 'work-item' | 'observation' | 'session';
+  kind: 'work-item' | 'observation' | 'session' | 'plan' | 'doc' | 'report';
   /** The id to resolve: a WI-/EI- id, or `<source_kind>:<session_id>`. */
   ref: string;
   /** The matched query terms — the "why", and the re-pull query. */
@@ -477,6 +479,9 @@ export function sessionIdOfHit(hit: CorpusHit): string | null {
 /** The handle ref a hit collapses to: one line per WORK-ITEM, and one per
  *  SESSION (not per turn — three turns of one session is one pointer). PURE. */
 export function handleRefOfHit(hit: CorpusHit): string | null {
+  if (hit.source === 'plan' || hit.source === 'doc' || hit.source === 'report') {
+    return hit.sourceId ? `${hit.source}:${hit.sourceId}` : null;
+  }
   if (hit.source === 'work_item') return hit.sourceId || null;
   if (hit.source === 'session_turn') {
     const parts = hit.sourceId.split(':');
@@ -492,11 +497,11 @@ export function handleRefOfHit(hit: CorpusHit): string | null {
  *  always in scope (workspace-wide by construction). Turn hits are never
  *  narrowed here — see SelectCorpusInput.harnessSlugs. PURE. */
 function inHarnessScope(hit: CorpusHit, harnessSlugs: readonly string[]): boolean {
-  if (hit.source !== 'work_item') return true;
+  if (!['work_item','plan','doc','report'].includes(hit.source)) return true;
   if (harnessSlugs.length === 0) return true;
   const scope = hit.scope ?? '';
   if (scope === 'operator' || scope === '') return true;
-  return harnessSlugs.some((slug) => scope === `harness:${slug}`);
+  return harnessSlugs.some((slug) => scope === `harness:${slug}` || (hit.source === 'report' && scope === slug));
 }
 
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
@@ -508,6 +513,8 @@ const unmark = (s: string): string => s.replace(/<\/?mark>/g, '');
 /** The text a hit is JUDGED and TEASED on: the highlighted match fragment when
  *  the source produced one, else the body lead. PURE. */
 export function hitText(hit: CorpusHit): string {
+  // Knowledge adapters already return the matching section with nearby prerequisites.
+  if (['plan','doc','report'].includes(hit.source) && hit.excerpt) return unmark(hit.excerpt);
   const h = unmark(hit.highlight ?? '').trim();
   return h || hit.excerpt || '';
 }
@@ -519,6 +526,18 @@ function resolveCall(kind: CorpusHandle['kind'], ref: string, terms: string[]): 
   // relation with the same id space. Only what it IS differs, which is the label's
   // job, not the resolver's.
   if (kind === 'work-item' || kind === 'observation') return `work_items:get { id: '${ref}' }`;
+  if (kind === 'report') return `reports:get ${JSON.stringify({ id: ref.slice(7) })}`;
+  if (kind === 'plan') {
+    const [,harness,...slug] = ref.split(':');
+    return `plans:get ${JSON.stringify({ slug: slug.join(':'), harness })}`;
+  }
+  if (kind === 'doc') {
+    const source = ref.slice(4);
+    const harnessDoc = source.startsWith('harness:');
+    const parts = source.split(':');
+    return `docs:get ${JSON.stringify({ ref: parts.slice(harnessDoc ? 2 : 1).join(':'),
+      ...(harnessDoc ? { harness: parts[1] } : {}) })}`;
+  }
   const sid = ref.includes(':') ? ref.slice(ref.indexOf(':') + 1) : ref;
   const q = terms.slice(0, 4).join(' ');
   return `sessions:search { session: '${sid}', query: '${q}' }`;
@@ -648,6 +667,9 @@ function retrievalAgreement(hit: CorpusHit): number {
  * whole work-item population.
  */
 function corpusHitKindRank(hit: CorpusHit): number {
+  if (hit.source === 'doc') return -2;
+  if (hit.source === 'plan') return -1;
+  if (hit.source === 'report') return 0;
   if (hit.source !== 'work_item') return 1;
   return isObservationHit(hit) ? 1 : 0;
 }
@@ -734,6 +756,10 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
   // that does not depend on an absolute scale), and the engine's fused order —
   // which since P-009 is recency-blended — orders within each agreement tier.
   const ordered = [...byRef.entries()].sort((a, b) => {
+    // Guidance uses maintained procedures ahead of dated evidence, even if
+    // the report happens to agree with more retrieval rankers.
+    if (a[1].hit.source === 'doc' && b[1].hit.source !== 'doc') return -1;
+    if (a[1].hit.source !== 'doc' && b[1].hit.source === 'doc') return 1;
     const agree = retrievalAgreement(b[1].hit) - retrievalAgreement(a[1].hit);
     if (agree !== 0) return agree;
     const kind = corpusHitKindRank(a[1].hit) - corpusHitKindRank(b[1].hit);
@@ -749,8 +775,8 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
       dropped.push({ ref, reason: 'cap-exhausted' });
       continue;
     }
-    const kind: CorpusHandle['kind'] =
-      hit.source !== 'work_item' ? 'session' : isObservationHit(hit) ? 'observation' : 'work-item';
+    const kind: CorpusHandle['kind'] = hit.source === 'plan' || hit.source === 'doc' || hit.source === 'report'
+      ? hit.source : hit.source !== 'work_item' ? 'session' : isObservationHit(hit) ? 'observation' : 'work-item';
     const handle: CorpusHandle = {
       kind,
       ref,
@@ -767,9 +793,12 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
         ? `work-item ${ref}${workItemContextLabel(ref, declaredWorkItemId)}`
         : kind === 'observation'
         ? `observation ${ref} · one agent's turn-end reflection, not a filed work-item`
-        : `session ${ref}`;
-    const teaser = oneLine(hitText(hit)).slice(0, CORPUS_TEASER_MAX_CHARS);
-    const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${teaser}`;
+        : kind === 'session' ? `session ${ref}`
+        : `${kind} ${ref}${hit.meta?.section ? ` › ${hit.meta.section}` : ''}${kind === 'report' ? ' · dated evidence' : ''}`;
+    const knowledge = kind === 'plan' || kind === 'doc' || kind === 'report';
+    const teaser = oneLine(hitText(hit)).slice(0, knowledge ? 700 : CORPUS_TEASER_MAX_CHARS);
+    const citation = knowledge ? ` — ${handle.resolve}` : '';
+    const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${teaser}${citation}`;
     // WI-6870: no first-entry exemption — the teaser already caps hitText, but the
     // label/date wrapper around it can still push a single line over budget
     // (measured 945 chars against a 900 budget); the exemption let that first entry

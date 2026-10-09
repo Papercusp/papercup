@@ -23,7 +23,7 @@ vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: async () => ({})
 vi.mock('../../search/embed-backfill', () => ({
   resolveBackfillEmbedder: async () => ({ mode: 'gemma', embed, profile: { profileId } }),
 }));
-const vector = (text: string) => [1, text.includes('zephyrquartz') ? 10 : 0, ...Array(766).fill(0)];
+const vector = (text: string) => [1, /zephyrquartz|restore the diagnostic snapshot/.test(text) ? 10 : 0, ...Array(766).fill(0)];
 const embed = async (text: string) => vector(text);
 const profileId = EMBEDDER_DIM_SPECS.gemma.profileId;
 const documentEmbedder = { embed, profileId, mode: 'gemma' };
@@ -188,5 +188,42 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     expect(await source.embedding!({ ...context(), qVec: JSON.stringify(vector('zephyrquartz')) })).toEqual([]);
     flag.enabled = true;
     expect(await source.embedding!({ ...context(), qVec: JSON.stringify(vector('zephyrquartz')) })).toEqual([]);
+  });
+
+  it('returns the semantic matching body section for a paraphrase without keyword overlap', async () => {
+    const report = await publish('workspace', 'ordinary filler '.repeat(300)
+      + '\n## Diagnostic repair\nPrerequisite: keep the snapshot. zephyrquartz recovery.');
+    const rows = await runHybridSearch([createReportSearchSource()], { ...context(),
+      query: 'restore the diagnostic snapshot', embedder: embed, mode: 'embeddings' });
+    const match = rows.results.find(r=>r.source_id === report.reportId);
+    expect(match?.rankers).toContain('embeddings');
+    expect(match?.excerpt).toContain('zephyrquartz');
+    expect(match?.excerpt).toContain('keep the snapshot');
+    expect(match?.meta?.section).toBe('Diagnostic repair');
+    expect(await createReportSearchSource().lexical!({ ...context(), query: 'restore the diagnostic snapshot' }))
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ row: expect.objectContaining({ source_id: report.reportId }) })]));
+  });
+
+  it('fences automatic report candidates before their limit and never revives a superseded visible edition', async () => {
+    const old = await publish('workspace');
+    const correction = await publishReport(db.adminSql, { workspaceId, title: 'Private correction',
+      bodyMd: 'zephyrquartz', visibility: 'owner', supersedes: old.reportId },author);
+    await indexReport(db.adminSql,correction,documentEmbedder);
+    const excluded = await publish('workspace');
+    const source = createReportSearchSource({ ownerId: 'stranger', potSlug: 'pot-a' }, {
+      automatic: true, harnessSlugs: ['pot-a'], excludedRefs: new Set([`report:${excluded.reportId}`]),
+    });
+    for (const leg of [source.lexical!,source.embedding!]) {
+      const rows = await leg({ ...context(), limit: 1, qVec: JSON.stringify(vector('zephyrquartz')),
+        embeddingProfile: { profileId,legacyMode: 'gemma' } });
+      const ids = rows.map(r=>r.row.source_id);
+      expect(ids).not.toContain(old.reportId);
+      expect(ids).not.toContain(correction.reportId);
+      expect(ids).not.toContain(excluded.reportId);
+    }
+    const wrongHarness = createReportSearchSource({ isOwner: true }, { automatic: true,harnessSlugs: ['pot-unrelated'] });
+    expect(await wrongHarness.lexical!(context())).toEqual([]);
+    expect(await wrongHarness.embedding!({ ...context(),qVec: JSON.stringify(vector('zephyrquartz')),
+      embeddingProfile: { profileId,legacyMode: 'gemma' } })).toEqual([]);
   });
 });

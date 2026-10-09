@@ -18,14 +18,17 @@ import { describe, it, expect, vi } from 'vitest';
 import { usesEagerExecFilePromisify } from '../../../../scripts/check-no-eager-execfile-promisify.mjs';
 
 describe.each([
-  ['pot-integration-mode', 'execFileAsync'],
-  ['standing-pr-merge-deps', 'execFileP'],
-  ['standing-pr-merge-live', 'execFileP'],
+  ['../harness/git-sync/pot-integration-mode.ts', 'execFileAsync'],
+  ['../harness/git-sync/standing-pr-merge-deps.ts', 'execFileP'],
+  ['../harness/git-sync/standing-pr-merge-live.ts', 'execFileP'],
+  ['../backup/state-census-producers.ts', 'execFileAsync'],
+  ['../goal-brief-live-probe.test-helper.ts', 'execute'],
+  ['../../../../papercusp-desktop/bin/lib/server-container.mjs', 'execFileAsync'],
 ])('%s subprocess wrapper', (module, binding) => {
   function loadWrapper(execFile: unknown,
     wrap: (fn: Parameters<typeof promisify>[0]) => ReturnType<typeof promisify> = promisify) {
-    const source = readFileSync(new URL(`../harness/git-sync/${module}.ts`, import.meta.url), 'utf8');
-    const tree = ts.createSourceFile(`${module}.ts`, source, ts.ScriptTarget.Latest, true);
+    const source = readFileSync(new URL(module, import.meta.url), 'utf8');
+    const tree = ts.createSourceFile(module, source, ts.ScriptTarget.Latest, true);
     const declarations = tree.statements.filter((statement) =>
       ts.isVariableStatement(statement) && statement.declarationList.declarations.some((declaration) =>
         ts.isIdentifier(declaration.name) && declaration.name.text.startsWith(binding),

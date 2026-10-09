@@ -250,6 +250,17 @@ describe('P-014 replay before gate mutation', () => {
     expect(calls).toEqual([]);
   });
 
+  it('keeps pinned provenance and the owning fire identity on an early replay rejection', async () => {
+    const snapshot = prior(); snapshot.expected.disposition = 'green';
+    const { deps, calls } = stubDeps(true);
+    deps.readLastSuiteVerdictReplay = async () => snapshot;
+    deps.gateFireId = 'replay-fixture-fire';
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate: 'b'.repeat(40), candidateSource: 'pinned' });
+    expect(result).toMatchObject({ candidateSource: 'pinned', gateFireId: 'replay-fixture-fire',
+      advanced: false, green: null, suiteReplayCanary: { status: 'mismatch' } });
+    expect(calls).toEqual([]);
+  });
+
   it('a matched replay permits the ordinary gate and captures its new observations', async () => {
     await commit('candidate.txt', 'candidate', 'candidate');
     const { deps, calls } = stubDeps(true);

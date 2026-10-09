@@ -30,6 +30,9 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch, type SearchHit, type SearchLegs } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
+import { createDocSearchSource, createPlanSearchSource } from '../agent-tools/search/knowledge-sources';
+import { createReportSearchSource } from '../agent-tools/search/report-source';
+import type { ReportViewer } from '../report-library';
 import {
   buildQueryEmbedder,
   embedderModeOf,
@@ -62,7 +65,7 @@ import {
 // (`injection-coverage.test.ts`) instead of drifting from it. Exported for the
 // assertion only — the alarm deliberately does not import it at runtime, which would
 // drag the whole live retrieval stack into the DBOS alarm process.
-export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
+export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item', 'plan', 'doc', 'report'] as const;
 
 /**
  * P-009 — the corpus leg's recency decay half-life.
@@ -175,6 +178,8 @@ export function corpusRerankTimeoutMs(): number {
 }
 
 export interface CorpusRecallInput {
+  /** Server-resolved reader. Omitted on agent ports: use their author identity and bound pot. */
+  reportViewer?: ReportViewer;
   /** Parent prompt lifetime, shared with memory retrieval and preparation. */
   signal?: AbortSignal;
   /** The retrieval query — the same effective text the mem0 leg searched with. */
@@ -450,6 +455,7 @@ function toCorpusHits(fused: { results: readonly SearchHit[] }): CorpusHit[] {
     // and the observation lane (56.7% of that relation). Absent ⇒ null ⇒ read as a
     // work-item downstream. See WORK_ITEM_LANE_NOTE in agent-tools/search/sources.ts.
     lane: r.meta?.lane ?? null,
+    meta: r.meta,
   }));
 }
 
@@ -563,9 +569,14 @@ async function recallCorpusContextInner(
 
   const maxItems = input.maxItems ?? CORPUS_MAX_ITEMS;
   const gradedMaxTerms = input.gradedMaxTerms ?? CORPUS_GRADED_QUERY_MAX_TERMS;
+  const audience = { harnessSlugs: input.harnessSlugs, automatic: true, excludedRefs: input.ambientExcludedRefs };
   const sources = SEARCH_SOURCES.filter((s) =>
     (CORPUS_SOURCE_NAMES as readonly string[]).includes(s.name),
-  );
+  ).map(s => s.name === 'plan' ? createPlanSearchSource(audience)
+    : s.name === 'doc' ? createDocSearchSource(audience)
+    : s.name === 'report' ? createReportSearchSource(input.reportViewer ?? {
+      ownerId: input.excludeOwnerId, potSlug: input.harnessSlugs?.length === 1 ? input.harnessSlugs[0] : null,
+    }, audience) : s);
   // Nothing registered to read — the leg is off by configuration, not empty.
   if (sources.length === 0) return empty('disabled');
 
@@ -712,7 +723,9 @@ async function recallCorpusContextInner(
           // over a time window, which both widens the query cost on a path with
           // a hard latency budget and labels its hits `lexical-fresh` — one
           // ranker counted twice by any agreement measure. Revisit separately.
-          recency: { halfLifeMs: CORPUS_RECENCY_HALF_LIFE_MS, weight: CORPUS_RECENCY_WEIGHT },
+          recency: { halfLifeMs: CORPUS_RECENCY_HALF_LIFE_MS, weight: CORPUS_RECENCY_WEIGHT,
+            // Maintained procedures and active plans remain useful until their canonical state changes.
+            getTime: hit => hit.source === 'plan' || hit.source === 'doc' ? renderNow : hit.ts },
           lexicalMode,
           // Only when the caller set it — 0 is meaningful (argmin-only), so the
           // test is against undefined, not truthiness.

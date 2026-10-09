@@ -725,9 +725,20 @@ function isDisposableManualFixture(seedDir: string, roots = [tmpdir(), ...PAPERC
 
 async function ownFixtureOperator(seedDir: string,
   launch?: (root: string, port: number, logFd: number) => ReturnType<typeof spawn>,
-  layout: 'source' | 'standalone' = 'source') {
+  layout: 'source' | 'standalone' = 'source',
+  role: 'request' | 'background' = 'request') {
   const seed = realpathSync(seedDir);
   expect(isDisposableManualFixture(seed), 'Fixture seed must be disposable').toBe(true);
+  if (role === 'background') {
+    const isolatedRoot = dirname(realpathSync(tmpdir()));
+    expect(isolatedRoot).toMatch(/\/papercusp-test-runtime-[^/]+$/);
+    expect(realpathSync(process.env.HOME!)).toBe(join(isolatedRoot, 'home'));
+    expect(realpathSync(workspacesRoot())).toBe(join(isolatedRoot, 'workspaces'));
+    expect(process.env.PAPERCUSP_WORKSPACE).toMatch(/^test-runtime-/);
+    expect(process.env.PAPERCUSP_BACKGROUND_WORKERS).toBe('1');
+    expect(process.env.PAPERCUSP_DBOS_ROUTINES).toBe('0');
+    expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBeTruthy();
+  }
   // Validate before starting anything; a missing seed is not a reason to serve
   // the canonical manual and accidentally pass the public/private controls.
   await createPublicManualSource(seed).revision();
@@ -764,16 +775,21 @@ async function ownFixtureOperator(seedDir: string,
       const bundleDir = join(root, 'operator');
       cpSync(realpathSync(prepared), bundleDir, { recursive: true });
       symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
-      const config = parseEnvFile(readFileSync(join(repoRoot, 'apps/operator/.env.local'), 'utf8'));
+      // Background acceptance uses only the maintained isolated-runtime env;
+      // importing the installation's secrets would defeat its egress isolation.
+      const config = role === 'background' ? {} : parseEnvFile(readFileSync(join(repoRoot, 'apps/operator/.env.local'), 'utf8'));
       const env: NodeJS.ProcessEnv = { ...config, ...process.env,
         PAPERCUSP_PG_SQL_DIR: join(repoRoot, 'libs/papercusp/libs/db/sql'),
         PAPERCUSP_INTEGRATION_ROOT: repoRoot, PAPERCUSP_HONO_PORT: String(port),
-        PAPERCUSP_BIND_HOST: '127.0.0.1', PAPERCUSP_BACKGROUND_WORKERS: '0',
+        PAPERCUSP_BIND_HOST: '127.0.0.1', PAPERCUSP_BACKGROUND_WORKERS: role === 'background' ? '1' : '0',
         PAPERCUSP_UTILITY_HOST: '1', PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_API_CLUSTER_WORKERS: '1',
         PAPERCUSP_OPERATOR_URL: origin, MALLOC_ARENA_MAX: '2' };
       // This is a real request host, not a Vitest worker. Keep its maintained
       // shutdown/watchdog behavior and suppress only the test-worker markers.
       for (const key of Object.keys(env)) if (/^VITEST(?:_|$)/.test(key)) delete env[key];
+      if (role === 'background') {
+        for (const key of Object.keys(env)) if (/^(OPENAI_|ANTHROPIC_|AWS_|AZURE_|GOOGLE_|GCP_|GITHUB_|GH_|POSTHOG_)/i.test(key)) delete env[key];
+      }
       const entry = pathToFileURL(join(bundleDir, 'hono-host.mjs')).href;
       // Record only non-secret startup controls. The first marker executes before
       // the operator import graph, so a silent readiness failure has a measured
@@ -782,6 +798,7 @@ async function ownFixtureOperator(seedDir: string,
         pid: process.pid, root, origin, entry,
         bundleSha256: createHash('sha256').update(readFileSync(join(bundleDir, 'hono-host.mjs'))).digest('hex'),
         controls: Object.fromEntries(['NODE_OPTIONS', 'NODE_ENV', 'TMPDIR', 'TSX_TSCONFIG_PATH',
+          'PAPERCUSP_BACKGROUND_WORKERS', 'PAPERCUSP_DBOS_ROUTINES',
           'PAPERCUSP_CLUSTER_WORKERS', 'PAPERCUSP_API_CLUSTER_WORKERS',
           'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'].map(key => [key, env[key] ?? null])),
       }, null, 2), { mode: 0o600 });

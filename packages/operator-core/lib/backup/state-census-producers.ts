@@ -258,7 +258,9 @@ export async function templateDatabaseCensusDeclarations(sql: Sql, clusterIdenti
     .map(row => ({ kind: 'database', root: clusterIdentity, name: row.datname, classification: 'dev-only', producer: 'pg-migrate-template-ready' }));
 }
 
-const execFileAsync = promisify(execFile);
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 /** Read literal migration arrays without importing or executing application code. */
 export function migrationProducerTables(source: string): string[] {
   const file = ts.createSourceFile('migrations.ts', source, ts.ScriptTarget.Latest, true);

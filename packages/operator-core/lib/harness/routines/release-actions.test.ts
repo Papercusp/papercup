@@ -3079,8 +3079,12 @@ describe('P-014 durable replay history', () => {
   });
 
   it('reports failed history reads rather than inventing a missing baseline', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     fakeSql.unsafe.mockRejectedValueOnce(new Error('read failed'));
-    await expect(readLastGateSuiteVerdictReplay(target)).rejects.toThrow(/unavailable/);
+    try {
+      await expect(readLastGateSuiteVerdictReplay(target)).rejects.toThrow(/unavailable/);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('gate-suite-replay-history failed: read failed'));
+    } finally { warning.mockRestore(); }
   });
 });
 

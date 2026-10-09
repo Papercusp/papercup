@@ -383,6 +383,23 @@ function resourceStartCallCount(source) {
 
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   {
+    path: "scripts/tauri-surface-verify-dao-workbench.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-dao-workbench.mts (EI-25462239328125754): an isolated native DAO Workbench acceptance driver, matching the existing reviewed native surface verifiers. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a verifier workspace/PG scope. Its single execFileSync primitive invokes the native bridge against an explicit target PID, waits for each call, and has a 65s deadline. It creates no detached worker or resident queue; the serving Tauri runtime is owned by the enclosing isolated verifier.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1')") &&
+        source.includes("assert.match(ws, /^verify-tauri-isolated-") &&
+        source.includes("'--pid', process.env.VERIFY_TAURI_PID!") &&
+        source.includes("timeout: 65_000") &&
+        !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "scripts/workspace-host/reconcile-hosted-gcp-roles.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -2135,6 +2152,21 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  ["apps/operator/scripts/psu-terminal-diagnostics.mjs::resource-start-outside-admission", {
+    disposition: "bypass",
+    reason:
+      "EI-25462239328125754: one call-local stty -a read of the interactive launcher terminal. It must work before an operator or admission service exists. The child is killed after 750ms or 8192 output characters, and its promise settles on close/error/timeout. It creates no application worker or resident queue. This disposition covers that single bounded terminal read, not arbitrary spawnCommand calls.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 0 &&
+        [...code.matchAll(/\bspawnCommand\s*\(/g)].length === 1 &&
+        source.includes("spawnCommand('stty', ['-a']") &&
+        source.includes("platform === 'win32' || !interactive") &&
+        source.includes("child.kill(); finish(null); }, 750)") &&
+        source.includes("text.length > 8192") &&
+        !/\bdetached\s*:\s*true/.test(code) && !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code);
+    },
+  }],
   [
     "packages/operator-core/lib/agent-tools/per-use-chokepoint.ts::resource-start-outside-admission",
     {
