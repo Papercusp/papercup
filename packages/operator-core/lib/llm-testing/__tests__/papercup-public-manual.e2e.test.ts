@@ -298,6 +298,72 @@ function serializePortalEvidence(record: Record<string, unknown>, failure?: unkn
   return serializeIdentitySafeJson(JSON.parse(credentialSafe));
 }
 
+async function finishManualFixture(options: {
+  failure?: { error: unknown };
+  cleanup: { name: string; run: () => unknown | Promise<unknown> }[];
+  writeEvidence: (failures: { step: string; error: unknown }[]) => void;
+}) {
+  const failures: { step: string; error: unknown }[] = [];
+  for (const step of options.cleanup) {
+    try { await step.run(); }
+    catch (error) { failures.push({ step: step.name, error }); }
+  }
+  try { options.writeEvidence(failures); }
+  catch (error) { failures.push({ step: 'write-evidence', error }); }
+  if (options.failure) throw options.failure.error;
+  if (failures.length) throw new AggregateError(failures.map(({ error }) => error),
+    `manual_fixture_cleanup_failed: ${failures.map(({ step }) => step).join(', ')}`);
+}
+
+function manualCleanupEvidence(failures: { step: string; error: unknown }[]) {
+  return failures.map(({ step, error }) => ({ step, error: error instanceof Error
+    ? { name: error.name, message: error.message, stack: error.stack }
+    : { message: String(error) } }));
+}
+
+describe('public manual fixture cleanup evidence', () => {
+  it('attempts every cleanup and saves rejected cleanup evidence before failing', async () => {
+    const steps: string[] = [];
+    let saved: unknown;
+    const rejected = new Error('private registry refused removal');
+    await expect(finishManualFixture({
+      cleanup: [
+        { name: 'registry', run: () => { steps.push('registry'); throw rejected; } },
+        { name: 'host', run: () => { steps.push('host'); } },
+        { name: 'seed', run: () => { steps.push('seed'); } },
+      ],
+      writeEvidence: failures => { steps.push('evidence'); saved = JSON.parse(serializePortalEvidence({
+        stage: 'source-sync', cleanupFailures: manualCleanupEvidence(failures),
+      })); },
+    })).rejects.toThrow('manual_fixture_cleanup_failed: registry');
+    expect(steps).toEqual(['registry', 'host', 'seed', 'evidence']);
+    expect(saved).toMatchObject({ stage: 'source-sync', cleanupFailures: [{
+      step: 'registry', error: { message: rejected.message },
+    }] });
+  });
+
+  it('retains the primary assertion and redacts credentials even when cleanup and evidence writing reject', async () => {
+    const credential = 'disposable-cleanup-credential';
+    const primary = new Error(`original assertion ${credential}`);
+    let saved = '';
+    const later = vi.fn();
+    await expect(finishManualFixture({ failure: { error: primary },
+      cleanup: [
+        { name: 'client', run: () => { throw new Error(`cleanup ${credential}`); } },
+        { name: 'host', run: later },
+      ],
+      writeEvidence: failures => {
+        saved = serializePortalEvidence({ cleanupFailures: manualCleanupEvidence(failures) }, primary, credential);
+        throw new Error('reporter failed');
+      },
+    })).rejects.toBe(primary);
+    expect(later).toHaveBeenCalledTimes(1);
+    expect(saved).not.toContain(credential);
+    expect(JSON.parse(saved)).toMatchObject({ error: { message: 'original assertion [REDACTED]' },
+      cleanupFailures: [{ step: 'client', error: { message: 'cleanup [REDACTED]' } }] });
+  });
+});
+
 function safeHostedErrorCode(body: unknown): string | null {
   if (!body || typeof body !== 'object') return null;
   const error = (body as { error?: unknown }).error;
@@ -1091,6 +1157,7 @@ describe.runIf(enabled && Boolean(process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUN
     const observations: Record<string, unknown> = {};
     let host: Awaited<ReturnType<typeof ownFixtureOperator>> | undefined;
     let stage = 'prepare';
+    let failure: { error: unknown } | undefined;
     try {
       principalSessionId = `standalone-manual-${randomUUID()}`;
       const principal = await startPiSession({ workspaceId, sessionId: principalSessionId,
@@ -1143,20 +1210,27 @@ describe.runIf(enabled && Boolean(process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUN
         expect(JSON.stringify(result)).not.toContain('STANDALONE-RED-5831');
       }
       stage = 'passed';
+    } catch (error) {
+      failure = { error };
     } finally {
       const ownedRoot = host?.root;
-      await host?.close();
-      if (principalSessionId) await endPiSession(workspaceId, principalSessionId);
-      principalSessionId = undefined;
-      principalBearer = undefined;
-      rmSync(seed, { recursive: true, force: true });
-      writeFileSync(join(evidenceDir, 'case.json'), JSON.stringify({
-        id: 'standalone-manual-revision', stage, runtimeBuild, observedAt: new Date().toISOString(),
-        modelTargetOpenCount: opened.mock.calls.length, modelSendCount: 0, pages, observations,
-        ownedRootRemoved: ownedRoot ? !existsSync(ownedRoot) : null,
-      }, null, 2));
-      expect(opened).not.toHaveBeenCalled();
-      opened.mockRestore();
+      const credentials = principalBearer;
+      const modelTargetOpenCount = opened.mock.calls.length;
+      await finishManualFixture({ failure, cleanup: [
+        { name: 'host', run: () => host?.close() },
+        { name: 'principal', run: async () => {
+          try { if (principalSessionId) await endPiSession(workspaceId, principalSessionId); }
+          finally { principalSessionId = undefined; principalBearer = undefined; }
+        } },
+        { name: 'seed', run: () => rmSync(seed, { recursive: true, force: true }) },
+        { name: 'model-guard', run: () => expect(opened).not.toHaveBeenCalled() },
+        { name: 'restore-spy', run: () => opened.mockRestore() },
+      ], writeEvidence: failures => writeFileSync(join(evidenceDir, 'case.json'), serializePortalEvidence({
+          id: 'standalone-manual-revision', stage, runtimeBuild, observedAt: new Date().toISOString(),
+          modelTargetOpenCount, modelSendCount: 0, pages, observations,
+          cleanupFailures: manualCleanupEvidence(failures),
+          ownedRootRemoved: ownedRoot ? !existsSync(ownedRoot) : null,
+        }, failure?.error, credentials), { mode: 0o600 }) });
     }
   }, 90_000);
 });
@@ -1180,7 +1254,15 @@ describe.runIf(Boolean(process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR))('
     let client: Client | undefined;
     let registered = false;
     let stage = 'prepare';
+    let failure: { error: unknown } | undefined;
+    const readSpawnedAgents = () => getOrgPg().sql`SELECT spawn_id FROM harness_shared.spawned_agents
+      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness}`;
     try {
+      expect(workspaceId).toMatch(/^test-runtime-/);
+      expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBeTruthy();
+      // Exercise the production ledger schema before expensive host startup.
+      observations.spawnedAgentsBefore = (await readSpawnedAgents()).length;
+      expect(observations.spawnedAgentsBefore).toBe(0);
       cpSync(join(repoRoot, 'apps/papercusp-docs/src/content/docs'), seed, { recursive: true });
       host = await ownFixtureOperator(seed, undefined, 'source', 'background');
       observations.health = await (await fetch(new URL('/api/health', host.baseUrl))).json();
@@ -1246,36 +1328,52 @@ describe.runIf(Boolean(process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR))('
       const head = (await runPtool('git', ['-C', host.root, 'rev-parse', 'HEAD'])).stdout.trim();
       expect(head).not.toBe(baseline);
       observations.head = head;
-      // The real post-sync follow-up is detached. Wait for its persisted result
-      // rather than treating the foreground commit receipt as sweep completion.
-      await expect.poll(async () => (await getDocRecord(harness, 'manual/faq.mdx', workspaceId))?.status,
-        { timeout: 20_000, interval: 100 }).toBe('review');
-      for (const page of ['faq', 'quickstart']) {
-        const record = await getDocRecord(harness, `manual/${page}.mdx`, workspaceId);
+      // The detached sweep persists each candidate separately. One page's
+      // transition cannot establish completion for the other affected page.
+      const affectedPages = ['faq', 'quickstart'];
+      await expect.poll(async () => {
+        const records = await Promise.all(affectedPages.map(async page => {
+          const record = await getDocRecord(harness, `manual/${page}.mdx`, workspaceId);
+          observations[page] = record;
+          return record;
+        }));
+        return records.map(record => record?.status);
+      }, { timeout: 20_000, interval: 100 }).toEqual(['review', 'review']);
+      for (const page of affectedPages) {
+        const record = observations[page];
         expect(record).toMatchObject({ source: 'manual', status: 'review', lastVerifiedSha: baseline, reverifyAttempts: 0 });
-        observations[page] = record;
       }
       observations.unrelated = await getDocRecord(harness, 'manual/harness-templates.mdx', workspaceId);
       expect(observations.unrelated).toMatchObject({ status: 'fresh', lastVerifiedSha: baseline });
-      const agents = await getOrgPg().sql`SELECT id FROM harness_shared.spawned_agents
-        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness}`;
-      expect(agents).toHaveLength(0);
+      const agents = await readSpawnedAgents();
       observations.spawnedAgents = agents.length;
+      expect(agents).toHaveLength(0);
       stage = 'passed';
+    } catch (error) {
+      failure = { error };
     } finally {
-      await client?.close();
       const ownedRoot = host?.root;
-      await host?.close();
-      if (registered) await mutateHarnessRegistry(r => ({ ...r, projects: r.projects.filter(p => p.slug !== harness) }), workspaceId);
-      rmSync(seed, { recursive: true, force: true });
-      writeFileSync(join(evidenceDir, 'case.json'), serializeIdentitySafeJson({
-        id: 'background-manual-review', stage, observations, observedAt: new Date().toISOString(),
-        modelTargetOpenCount: opened.mock.calls.length, modelSendCount: 0,
-        ownedRootRemoved: ownedRoot ? !existsSync(ownedRoot) : null,
-      }));
-      expect(opened).not.toHaveBeenCalled();
-      opened.mockRestore();
-      if (ownedRoot) expect(existsSync(ownedRoot)).toBe(false);
+      const modelTargetOpenCount = opened.mock.calls.length;
+      await finishManualFixture({ failure, cleanup: [
+        { name: 'client', run: () => client?.close() },
+        { name: 'host', run: () => host?.close() },
+        { name: 'registry', run: async () => {
+          if (!registered) return;
+          expect(workspaceId).toMatch(/^test-runtime-/);
+          await mutateHarnessRegistry(r => {
+            expect(r.projects.find(p => p.slug === harness)?.path).toBe(ownedRoot);
+            return { ...r, projects: r.projects.filter(p => p.slug !== harness) };
+          }, workspaceId, { allowEmpty: true });
+        } },
+        { name: 'seed', run: () => rmSync(seed, { recursive: true, force: true }) },
+        { name: 'model-guard', run: () => expect(opened).not.toHaveBeenCalled() },
+        { name: 'restore-spy', run: () => opened.mockRestore() },
+        { name: 'owned-root', run: () => { if (ownedRoot) expect(existsSync(ownedRoot)).toBe(false); } },
+      ], writeEvidence: failures => writeFileSync(join(evidenceDir, 'case.json'), serializePortalEvidence({
+          id: 'background-manual-review', stage, observations, observedAt: new Date().toISOString(),
+          modelTargetOpenCount, modelSendCount: 0, cleanupFailures: manualCleanupEvidence(failures),
+          ownedRootRemoved: ownedRoot ? !existsSync(ownedRoot) : null,
+        }, failure?.error), { mode: 0o600 }) });
     }
   }, 180_000);
 });
