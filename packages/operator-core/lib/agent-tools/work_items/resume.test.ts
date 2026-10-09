@@ -45,6 +45,23 @@ describe('bounded work-item resume', () => {
     expect(packet.nextAction.text).toBe('The wiring is complete. Review the saved acceptance evidence.');
   });
 
+  it('keeps the checkpoint next action when the latest update only records an insight', () => {
+    const previousNext = 'Resume the review after the independent reproduction receipt arrives.';
+    const previous = renderCarryNote({ next: previousNext });
+    const latest = renderCarryNote({ insight: 'Recorded an evidence attestation for the prior review.' });
+    const text = `${previous}\n\n---\n${latest}`;
+    const packet = build({ checkpoint: { checkpoint: text, updatedAtMs: 1,
+      latestUpdate: { status: 'available', text: latest } } as any });
+    expect(packet.nextAction).toEqual({ status: 'available', text: previousNext, source: 'checkpoint' });
+  });
+
+  it('does not promote latest-update prose to an action when neither update has a next field', () => {
+    const latest = renderCarryNote({ insight: 'The evidence is still inconclusive.' });
+    const packet = build({ checkpoint: { checkpoint: latest, updatedAtMs: 1,
+      latestUpdate: { status: 'available', text: latest } } as any });
+    expect(packet.nextAction).toEqual({ status: 'missing', text: null });
+  });
+
   it('does not guess which unmarked historical segment is current', () => {
     const packet = build({ checkpoint: { checkpoint: `${renderCarryNote({ next: 'Old action' })}\n\n---\nNew progress`, updatedAtMs: 1 } });
     expect(packet.nextAction).toMatchObject({ status: 'unknown', text: null });

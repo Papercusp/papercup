@@ -33,7 +33,9 @@ export function buildWorkItemResume(input: {
   const ambiguous = latest?.status === 'unknown'
     || (!latest && /^---\s*$/m.test(checkpoint.checkpoint ?? ''));
   const latestFields = latest?.text ? parseCarryNote(latest.text) : fields;
-  const next = ambiguous ? null : latestFields.next?.trim() || latest?.text?.trim() || null;
+  const latestNext = latest?.status === 'available' ? latestFields.next?.trim() || null : null;
+  const checkpointNext = fields.next?.split(/\n\n---(?:\n|$)/)[0].trim() || null;
+  const next = ambiguous ? null : latestNext ?? checkpointNext;
   const resume = {
     schemaVersion: 'work-item-resume-v1',
     claim: { id: item.id, assignee: item.assignee ?? null, state: item.state ?? null },
@@ -41,7 +43,9 @@ export function buildWorkItemResume(input: {
     nextAction: {
       status: checkpoint.readFailed || ambiguous ? 'unknown' : next === null ? 'missing' : 'available',
       text: next,
-      ...(latest?.status === 'available' ? { source: latestFields.next ? 'next-action' : 'latest-update' } : {}),
+      ...(latest?.status === 'available' && next !== null
+        ? { source: latestNext ? 'next-action' : 'checkpoint' }
+        : {}),
     },
     checkpoint: {
       status: checkpoint.readFailed ? 'unknown' : checkpoint.checkpoint === null ? 'absent' : 'available',
