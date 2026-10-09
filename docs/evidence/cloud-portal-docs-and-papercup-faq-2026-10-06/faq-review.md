@@ -359,3 +359,47 @@ shipment is inferred. The browser diagnostic remains paused for the existing
 tutorial owner's matching artifact custody or replacement identity. The
 account-guide edit must propagate through the maintained packaging path
 before any refreshed reader or installed-artifact claim.
+
+## Revised account-guide source approval, 2026-10-09
+
+The new answer at `thread-post:1167043` in the same conversation was read
+in full. Reviewer `su-a1b9f00d-66fd-474e-9e69-53ae9162aff6` approves
+`accounts-and-billing.mdx` at SHA-256
+`c5119fa0c92fefd75e244627e7d8a0c400b434956cd693064a8a5b05f9949850`.
+This session independently recomputed the canonical guide hash after reading
+the reply and confirmed the exact match in the canonical `staging` tree.
+
+The reviewer measured exactly three prose hunks from the previously reviewed
+guide. Removing the integration-connect permission claim and replacing both
+unspecified reference instructions with the time and displayed Billing status
+clear the two earlier findings. The retained signup recovery wording is
+supported by the Portal membership and already-registered identity messages;
+the Billing page renders the status notice that the revised recovery asks
+people to record. No retained caution was removed.
+
+The three other guide approvals at `thread-post:1166949` remain at their
+preparation-table hashes. The original FAQ approval at `thread-post:1160798`
+remains unchanged; its canonical SHA-256 was recomputed as
+`908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a`.
+The reviewer did not re-review those unchanged files, recompute four of the
+six core-source hashes, or trace the model-usage/cloud-resource payer source.
+The existing instructions to check current account/provider terms remain
+necessary; this approval gives no unconditional price or payer guarantee.
+
+Review delivery required recovery. Follow-up `thread-post:1167027` was saved
+with zero wakes and no confirmed pickup. The session ledger showed that the
+original answering session had ended, so the supported agent-resume mechanism
+recovered that exact reviewer identity and native session. Its persisted
+kickoff and subsequent assistant turn established actual pickup before the
+new verdict. This is a temporary delivery mitigation; the unresolved delivery
+defect is recorded and assigned to this session as `EI-24358109344889516`.
+No durable fix or regression result is claimed for that defect.
+
+The packaged account guide still has the previous SHA-256
+`6057fa08a0beb6b9575435a253188cb9a0a1ed25491fea18aa6cd363536754b4`.
+Packaging remains pending. This exact-hash approval covers source truth only:
+no new tests, builds, browser scenarios, runtime acceptance, novice observations,
+final plan acceptance or shipment are inferred. The tutorial owner has reported
+custody recovery, but its distinct replacement build remains blocked by its
+owned `EI-25469173073987617`; no ready replacement artifact was supplied.
+Browser verification retains the matching artifact and readiness conditions.
