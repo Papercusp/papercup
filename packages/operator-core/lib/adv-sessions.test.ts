@@ -94,6 +94,72 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     expect(acquireRetries).toEqual([0]);
   });
 
+  it('coalesces identical in-flight verifier reads but does not cache settled authority', async () => {
+    let releaseRead!: () => void;
+    let markReadStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => { markReadStarted = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let rowReadCount = 0;
+    advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      if (!query.includes('FROM harness_shared.adv_sessions')) return [];
+      rowReadCount += 1;
+      if (rowReadCount === 1) {
+        markReadStarted();
+        await readGate;
+      }
+      return [{ id: 541, session_id: nativeId, active: true }];
+    });
+
+    const first = classifyOwnerNativeSession({ ownerId, sessionId: nativeId });
+    const second = classifyOwnerNativeSession({ ownerId, sessionId: nativeId });
+    await readStarted;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      expect(advSessionBeginMock).toHaveBeenCalledTimes(1);
+      expect(rowReadCount).toBe(1);
+    } finally {
+      releaseRead();
+    }
+
+    const expected = { binding: 'bound', boundSessionId: nativeId, advSessionId: 541 };
+    await expect(Promise.all([first, second])).resolves.toEqual([expected, expected]);
+
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId })).resolves.toEqual(expected);
+    expect(advSessionBeginMock).toHaveBeenCalledTimes(2);
+    expect(rowReadCount).toBe(2);
+  });
+
+  it('does not coalesce in-flight verifications for distinct explicit adv-session ids', async () => {
+    let releaseReads!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseReads = resolve; });
+    let rowReadCount = 0;
+    advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      if (!query.includes('FROM harness_shared.adv_sessions')) return [];
+      rowReadCount += 1;
+      await readGate;
+      return [{ id: Number(args[1]), session_id: nativeId, active: true }];
+    });
+
+    const first = classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId: 541 });
+    const second = classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId: 542 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      expect(advSessionBeginMock).toHaveBeenCalledTimes(2);
+      expect(rowReadCount).toBe(2);
+    } finally {
+      releaseReads();
+    }
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { binding: 'bound', boundSessionId: nativeId, advSessionId: 541 },
+      { binding: 'bound', boundSessionId: nativeId, advSessionId: 542 },
+    ]);
+  });
+
   it('fails closed after one retryable acquisition timeout without retrying a queued begin', async () => {
     const timeout = new DbCallDeadlineError('boundedOrgTxn:begin(admin)', 7_500, 7_500, 'org-admin');
     Object.defineProperty(timeout, 'retryable', { value: true });

@@ -1882,6 +1882,18 @@ const NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS = 1_000;
 // a normal queue delay look like a failed session binding.
 const NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS = 7_500;
 
+type OwnerNativeSessionClassification = {
+  binding: OwnerNativeSessionBinding;
+  boundSessionId: string | null;
+  advSessionId: number | null;
+};
+
+// MCP clients may dispatch several tools from the same native session at once.
+// Share only an identical lookup while it is in flight; never cache a settled
+// authority result, so the next request still observes session re-anchoring or
+// revocation.
+const ownerNativeSessionLookupsInFlight = new Map<string, Promise<OwnerNativeSessionClassification>>();
+
 /**
  * Is `sessionId` the native session the owner's adv_sessions row is bound to?
  * With `advSessionId` (the launcher-exported PAPERCUSP_ADV_SESSION_ID) only that
@@ -1899,6 +1911,26 @@ export async function classifyOwnerNativeSession(opts: {
   if (opts.advSessionId != null && (!Number.isSafeInteger(opts.advSessionId) || opts.advSessionId <= 0)) {
     return { binding: 'foreign', boundSessionId: null, advSessionId: null };
   }
+
+  const key = JSON.stringify([opts.ownerId, opts.sessionId, opts.advSessionId ?? null]);
+  const existing = ownerNativeSessionLookupsInFlight.get(key);
+  if (existing) return existing;
+
+  let shared!: Promise<OwnerNativeSessionClassification>;
+  shared = classifyOwnerNativeSessionUnshared(opts).finally(() => {
+    if (ownerNativeSessionLookupsInFlight.get(key) === shared) {
+      ownerNativeSessionLookupsInFlight.delete(key);
+    }
+  });
+  ownerNativeSessionLookupsInFlight.set(key, shared);
+  return shared;
+}
+
+async function classifyOwnerNativeSessionUnshared(opts: {
+  ownerId: string;
+  sessionId: string;
+  advSessionId?: number | null;
+}): Promise<OwnerNativeSessionClassification> {
 
   let phase: NativeSessionVerificationPhase = 'transaction_setup';
   try {
