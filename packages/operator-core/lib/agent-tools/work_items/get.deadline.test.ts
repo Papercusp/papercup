@@ -16,6 +16,11 @@ const getWorkItemThreadWindow = vi.fn();
 const getWorkItemCheckpointWithMeta = vi.fn();
 const getWorkItemCheckpointFreshness = vi.fn();
 const listSpecEvidence = vi.fn();
+const getClaimTimePriorWorkHint = vi.fn();
+const planItemLaneBlockReason = vi.fn();
+const planItemClaimCollision = vi.fn();
+const planItemTextDriftForWorkItem = vi.fn();
+const readCorroborationSummary = vi.fn();
 
 vi.mock('../../work-items', () => ({
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
@@ -28,6 +33,31 @@ vi.mock('../../work-items', () => ({
 vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...args: unknown[]) => getWorkItemCheckpointWithMeta(...args),
   getWorkItemCheckpointFreshness: (...args: unknown[]) => getWorkItemCheckpointFreshness(...args),
+}));
+
+vi.mock('../../work-item-prior-work', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-item-prior-work')>()),
+  getClaimTimePriorWorkHint: (...args: unknown[]) => getClaimTimePriorWorkHint(...args),
+}));
+
+vi.mock('../../scheduler/plan-item-lane-guard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/plan-item-lane-guard')>()),
+  planItemLaneBlockReason: (...args: unknown[]) => planItemLaneBlockReason(...args),
+}));
+
+vi.mock('../../scheduler/plan-item-claim-collision', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/plan-item-claim-collision')>()),
+  planItemClaimCollision: (...args: unknown[]) => planItemClaimCollision(...args),
+}));
+
+vi.mock('../../plan-items/text-drift-report', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../plan-items/text-drift-report')>()),
+  planItemTextDriftForWorkItem: (...args: unknown[]) => planItemTextDriftForWorkItem(...args),
+}));
+
+vi.mock('../../harness/improvements/corroboration', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/improvements/corroboration')>()),
+  readCorroborationSummary: (...args: unknown[]) => readCorroborationSummary(...args),
 }));
 
 vi.mock('../plans/spec-evidence-store', async (original) => ({
@@ -44,6 +74,24 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    // operationalBrief requests a complete source row and therefore reads the checkpoint.
+    // clearAllMocks preserves implementations, so reset the hanging implementation from
+    // the timeout case before the next test exercises that complete-read path.
+    getWorkItemCheckpointWithMeta.mockResolvedValue({
+      checkpoint: null,
+      updatedAtMs: null,
+      checkpointChecks: null,
+      checkpointBody: null,
+      checkpointContentHash: null,
+      latestUpdate: undefined,
+      subjectFingerprint: undefined,
+      readFailed: false,
+    });
+    getClaimTimePriorWorkHint.mockResolvedValue(null);
+    planItemLaneBlockReason.mockResolvedValue(null);
+    planItemClaimCollision.mockResolvedValue(null);
+    planItemTextDriftForWorkItem.mockResolvedValue(null);
+    readCorroborationSummary.mockResolvedValue(null);
   });
 
   afterEach(() => {
