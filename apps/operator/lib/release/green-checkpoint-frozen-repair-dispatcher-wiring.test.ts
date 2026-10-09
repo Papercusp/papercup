@@ -86,6 +86,17 @@ const FIXER_DEPS = [
   "classifyDeadFrozenRepairFixer",
 ] as const;
 
+/**
+ * The half-wiring this file exists to catch: the reservation trio is supplied but a fixer dep
+ * is not. Returns the missing fixer deps (empty when the wiring is whole, or when the trio is
+ * itself absent — that case is pinned separately below).
+ */
+function halfWiredFixerDeps(deps: Record<string, unknown>): string[] {
+  const trioPresent = RESERVATION_TRIO.every((key) => typeof deps[key] === "function");
+  if (!trioPresent) return [];
+  return FIXER_DEPS.filter((key) => typeof deps[key] !== "function");
+}
+
 describe("WI-10000758: realCheckpointDeps wires the frozen-repair dispatcher", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -102,9 +113,33 @@ describe("WI-10000758: realCheckpointDeps wires the frozen-repair dispatcher", (
       expect(typeof deps[key], key).toBe("function");
     }
     // The regressions this file exists for: trio present, a fixer dep absent.
-    for (const key of FIXER_DEPS) {
-      expect(typeof deps[key], key).toBe("function");
-    }
+    expect(halfWiredFixerDeps(deps as unknown as Record<string, unknown>)).toEqual([]);
+  });
+
+  it("control: the half-wiring check flags the exact shape sweep c076b0dd95 shipped (trio present, fixer deps gone)", () => {
+    const fn = async () => null;
+    // The 2026-09-04 shape: reservation trio wired, dispatcher + liveness probe + classifier
+    // deleted. The real wiring must not look like this; the check must say so.
+    const sweptShape: Record<string, unknown> = {
+      reserveFrozenRepairFixer: fn,
+      renewFrozenRepairFixerReservation: fn,
+      finalizeFrozenRepairFixer: fn,
+    };
+    expect(halfWiredFixerDeps(sweptShape)).toEqual([...FIXER_DEPS]);
+    // The intermediate shape after WI-10000758 restored only the dispatcher (WI-10007408).
+    expect(halfWiredFixerDeps({ ...sweptShape, dispatchFrozenRepairFixer: fn })).toEqual([
+      "frozenRepairFixerAlive",
+      "classifyDeadFrozenRepairFixer",
+    ]);
+    // Calibration: a whole wiring passes.
+    expect(
+      halfWiredFixerDeps({
+        ...sweptShape,
+        dispatchFrozenRepairFixer: fn,
+        frozenRepairFixerAlive: fn,
+        classifyDeadFrozenRepairFixer: fn,
+      }),
+    ).toEqual([]);
   });
 
   it("answers fixer liveness through releaseFixerSpawnAlive, so a dead fixer reads false (not undefined)", async () => {
@@ -147,11 +182,14 @@ describe("WI-10000758: realCheckpointDeps wires the frozen-repair dispatcher", (
 
     expect(fired).toEqual({ spawnId: "s-wiring-test", runId: "r-wiring-test" });
     expect(dispatchReleaseFixer).toHaveBeenCalledTimes(1);
+    // The 5th argument is the checkpoint evidence the dispatcher forwards when the gate has
+    // one; this call supplies none, so it is forwarded as undefined.
     expect(dispatchReleaseFixer).toHaveBeenCalledWith(
       { workspaceId: "papercusp-workspace", installSlug: "papercusp" },
       queue.repairHead,
       queue.failingTests,
       queue,
+      undefined,
     );
   });
 
