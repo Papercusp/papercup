@@ -384,6 +384,14 @@ const NON_WORKSPACE_VITEST_ROUTES = [
 // Keep this route explicit, like the templates route above, so a path cannot be silently sent to
 // an arbitrary package's runner just because it happens to end in `.test.js`.
 const NON_WORKSPACE_NODE_ROUTES = [
+  // The CLI package owns TypeScript Node:test files, not Vitest suites. Preserve
+  // its package test script's host preflight when selecting one exact file.
+  {
+    prefix: 'libs/papercusp/packages/cli/src/',
+    pathPattern: /\.node-test\.ts$/,
+    cwd: 'libs/papercusp/packages/cli',
+    nodeArgs: ['--test-global-setup=monorepo-host-preflight.mjs'],
+  },
   // Root maintenance scripts use Node's built-in runner directly. Without this
   // route the repository-root Vitest config imports them, their node:test cases
   // pass, and Vitest then reports the same file red as "No test suite found".
@@ -418,7 +426,8 @@ function nonWorkspaceNodeRoute(rootRelative, absolute, root) {
   if (!match) return null;
   const cwd = resolve(root, match.cwd);
   if (!existsSync(resolve(cwd, 'package.json'))) return null;
-  return { runner: 'node', cwd, config: null, absolute, requested: relative(cwd, absolute) };
+  return { runner: 'node', cwd, config: null, absolute, requested: relative(cwd, absolute),
+    ...(match.nodeArgs ? { nodeArgs: match.nodeArgs } : {}) };
 }
 
 export function discoverVitestRoute(file, root = REPO_ROOT) {
@@ -500,7 +509,7 @@ export function discoverTestRoute(file, root = REPO_ROOT) {
 // `test:file` accepts exact test files, not the production modules those tests import. Keep this
 // check filename-based and runner-neutral so a source path is filtered before route discovery (a
 // source file under a config-less tree may not have any test runner route at all).
-const TEST_FILE_SUFFIX_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/i;
+const TEST_FILE_SUFFIX_RE = /\.(?:test|spec|node-test)\.[cm]?[jt]sx?$/i;
 
 export function isTestFilePath(file) {
   return typeof file === 'string' && TEST_FILE_SUFFIX_RE.test(file.replaceAll('\\', '/'));
@@ -520,8 +529,9 @@ export function groupRoutes(routes) {
   const groups = new Map();
   for (const route of routes) {
     const runner = route.runner ?? 'vitest';
-    const key = `${runner}\0${route.cwd}\0${route.config}`;
-    const group = groups.get(key) ?? { runner, cwd: route.cwd, config: route.config, routes: [] };
+    const key = `${runner}\0${route.cwd}\0${route.config}\0${(route.nodeArgs ?? []).join('\0')}`;
+    const group = groups.get(key) ?? { runner, cwd: route.cwd, config: route.config, routes: [],
+      ...(route.nodeArgs ? { nodeArgs: route.nodeArgs } : {}) };
     group.routes.push(route);
     groups.set(key, group);
   }
@@ -2965,7 +2975,7 @@ export async function main(
         env: process.env,
         settle: classifyGovernedTestProcessOutcome,
       }, async (_admissionContext, governedEnv) => {
-        const child = spawnSync(process.execPath, ['--test', ...(nodeLedger?.reporterArgs ?? []), ...exact, ...vitestArgs], {
+        const child = spawnSync(process.execPath, ['--test', ...(group.nodeArgs ?? []), ...(nodeLedger?.reporterArgs ?? []), ...exact, ...vitestArgs], {
           cwd: group.cwd,
           env: governedEnv,
           encoding: 'utf8',

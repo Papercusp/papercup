@@ -104,6 +104,16 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('accepts and routes conventional CLI Node:test files with their package preflight', () => {
+    const file = 'libs/papercusp/packages/cli/src/install-atomic.node-test.ts';
+    expect(isTestFilePath(file)).toBe(true);
+    const route = discoverTestRoute(file);
+    expect(route).toMatchObject({ runner: 'node', config: null,
+      cwd: resolve(REPO_ROOT, 'libs/papercusp/packages/cli'),
+      requested: 'src/install-atomic.node-test.ts',
+      nodeArgs: ['--test-global-setup=monorepo-host-preflight.mjs'] });
+    expect(groupRoutes([route])[0].nodeArgs).toEqual(route.nodeArgs);
+  });
   it('supports a bounded CLI watchdog override for slow-but-progressing files', () => {
     expect(testFileRunTimeoutMs({})).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
     expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' })).toBe(540_000);
