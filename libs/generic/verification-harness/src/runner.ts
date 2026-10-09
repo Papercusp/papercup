@@ -8,7 +8,8 @@
  * subdir per phase, `result.json` rewritten after every phase so a killed run still leaves
  * its partial result) and repoints `<evidenceRoot>/latest` at it when it ends.
  */
-import { lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { link, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {
@@ -156,8 +157,39 @@ export async function loadRunResult(runDir: string): Promise<HarnessRunResult> {
 export async function writeRunResult(result: HarnessRunResult): Promise<void> {
   await mkdir(result.evidenceDir, { recursive: true });
   const file = path.join(result.evidenceDir, 'result.json');
-  await writeFile(`${file}.tmp`, `${JSON.stringify(result, null, 2)}\n`);
+  const bytes = Buffer.from(`${JSON.stringify(result, null, 2)}\n`);
+  await writeFile(`${file}.tmp`, bytes);
   await rename(`${file}.tmp`, file);
+  // Late proof binding may happen after count retention removes the run. Both the
+  // shell CLI and TypeScript runner finalize here, before either invokes pruning.
+  // Preserve only the small authentic completion receipt in the existing archive.
+  if (result.verdict !== 'pass' || !result.endedAt) return;
+  const root = await realpath(path.dirname(result.evidenceDir));
+  if (path.basename(result.evidenceDir) !== result.runId) throw new Error('invalid retained harness run id');
+  const insideRoot = (target: string) => {
+    const relative = path.relative(root, target);
+    return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+  };
+  const retainedRoot = path.join(root, 'retained');
+  await mkdir(retainedRoot, { recursive: true });
+  if (!insideRoot(await realpath(retainedRoot))) throw new Error('retained harness result outside evidence root');
+  const parent = path.join(retainedRoot, result.runId);
+  await mkdir(parent, { recursive: true });
+  if (!insideRoot(await realpath(parent))) throw new Error('retained harness result outside evidence root');
+  const destination = path.join(parent, 'result.json');
+  const temporary = path.join(parent, `.result-${randomUUID()}.tmp`);
+  await writeFile(temporary, bytes, { flag: 'wx' });
+  try {
+    // Link a fully written file without replacing an earlier original receipt.
+    try { await link(temporary, destination); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const existing = await lstat(destination);
+      if (!existing.isFile() || !(await readFile(destination)).equals(bytes)) {
+        throw new Error('retained harness result changed');
+      }
+    }
+  } finally { await rm(temporary, { force: true }); }
 }
 
 /** Point `<evidenceRoot>/latest` at the run dir (relative link, replaced atomically). */

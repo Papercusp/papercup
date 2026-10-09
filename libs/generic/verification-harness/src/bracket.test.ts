@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -21,10 +22,13 @@ import {
   foreignMaxAgeHoursFromEnv,
   formatForeignPruneLine,
   keepRunsFromEnv,
+  linkLatest,
   pruneEvidenceRoot,
   pruneRuns,
   pruneStaleForeign,
+  runHarness,
   VH_KEEP_MARKER,
+  writeRunResult,
 } from './runner.js';
 
 /**
@@ -274,6 +278,75 @@ describe('pruneRuns (evidence retention)', () => {
     const root = tmp();
     mkRun(root, '20260101T000000Z-1');
     expect(await pruneRuns(root, 0)).toEqual([]);
+  });
+});
+
+describe('completed receipt custody (EI-25507426663280898)', () => {
+  it('retains the exact shell completion receipt before a later count sweep removes its run', async () => {
+    const r = run(`${chain}\nvh_begin prep\nvh_begin build\nvh_begin ship\nexit 0\n`);
+    try {
+      expect(r.code).toBe(0);
+      const evidenceRoot = path.join(r.root, 'ev');
+      const original = readFileSync(path.join(r.result.evidenceDir, 'result.json'));
+      const retained = path.join(evidenceRoot, 'retained', r.result.runId, 'result.json');
+      expect(readFileSync(retained)).toEqual(original);
+      const newer = '99990101T000000Z-1';
+      mkdirSync(path.join(evidenceRoot, newer));
+      writeFileSync(path.join(evidenceRoot, newer, 'result.json'), '{}');
+      await linkLatest(evidenceRoot, path.join(evidenceRoot, newer));
+      expect(await pruneRuns(evidenceRoot, 1)).toContain(r.result.runId);
+      expect(existsSync(r.result.evidenceDir)).toBe(false);
+      expect(readFileSync(retained)).toEqual(original);
+      expect(JSON.parse(original.toString()).endedAt).toBe(r.result.endedAt);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+
+  it('retains the TypeScript runner receipt and refuses to replace its original bytes', async () => {
+    const root = tmp();
+    try {
+      const result = await runHarness({
+        contract: { name: 'receipt-custody', phases: [{ id: 'assert' }] },
+        evidenceRoot: root,
+        runPhase: async () => ({ ok: true }),
+      });
+      const retained = path.join(root, 'retained', result.runId, 'result.json');
+      const original = readFileSync(path.join(result.evidenceDir, 'result.json'));
+      expect(readFileSync(retained)).toEqual(original);
+      await writeRunResult(result);
+      await expect(writeRunResult({ ...result, endedAt: '2099-01-01T00:00:00.000Z' }))
+        .rejects.toThrow('retained harness result changed');
+      expect(readFileSync(retained)).toEqual(original);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('does not pin an unfinished checkpoint as a completed receipt', async () => {
+    const root = tmp();
+    try {
+      const result = await runHarness({
+        contract: { name: 'receipt-custody', phases: [{ id: 'assert' }] },
+        evidenceRoot: root,
+        runPhase: async () => ({ ok: true }),
+      });
+      rmSync(path.join(root, 'retained'), { recursive: true, force: true });
+      await writeRunResult({ ...result, endedAt: null });
+      expect(existsSync(path.join(root, 'retained'))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses a retained-directory symlink outside the evidence root', async () => {
+    const root = tmp(), outside = tmp();
+    try {
+      symlinkSync(outside, path.join(root, 'retained'));
+      await expect(runHarness({
+        contract: { name: 'receipt-custody', phases: [{ id: 'assert' }] },
+        evidenceRoot: root,
+        runPhase: async () => ({ ok: true }),
+      })).rejects.toThrow('retained harness result outside evidence root');
+      expect(existsSync(path.join(root, 'latest'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 
