@@ -41,6 +41,28 @@ describe('Reports route', () => {
     expect(screen.getByTestId('markdown-preview').textContent).toBe(report.body_md);
     expect(screen.getByText('writer')).toBeTruthy();
   });
+  it.each([false, true])('keeps an unknown citation unavailable with an existing report and cached detail=%s', cached => {
+    fixture.list = [reportSummaryFixture];
+    fixture.detail = [report];
+    mount('?sel=edition-2');
+    expect(screen.getByRole('heading', { name: report.title, level: 2 })).toBeTruthy();
+    expect(screen.getByTestId('markdown-preview').textContent).toBe(report.body_md);
+
+    cleanup();
+    fixture.detail = cached ? [report] : [];
+    mount('?sel=unknown-edition');
+    expect(fixture.queries.filter(q => q.queryName === 'reports.get').at(-1)?.args)
+      .toEqual({ reportId: 'unknown-edition' });
+    expect(screen.getByText('This report is unavailable.')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: report.title, level: 2 })).toBeNull();
+    expect(screen.queryByTestId('markdown-preview')).toBeNull();
+
+    cleanup();
+    fixture.detail = [report];
+    mount('?sel=edition-2');
+    expect(screen.getByRole('heading', { name: report.title, level: 2 })).toBeTruthy();
+    expect(screen.getByTestId('markdown-preview').textContent).toBe(report.body_md);
+  });
   it('renders every contract field in the report metadata strip, including kind', () => {
     fixture.detail = [report];
     mount('?sel=edition-2');
