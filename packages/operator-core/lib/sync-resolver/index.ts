@@ -8590,18 +8590,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ runId: z.string(), suite: z.string().optional() }),
     resolve: async (args) => {
       const { runId, suite } = args as { runId: string; suite?: string };
-      const { listRunResults } = await import('../external-bench/reproducibility/store');
-      const { buildSuiteReport } = await import('@papercusp/bench-metrics');
-      const rows = await listRunResults({ runId, suite });
-      if (rows.length === 0) return [];
-      // buildSuiteReport is single-suite — group rows per suite, one report each.
-      const bySuite = new Map<string, typeof rows>();
-      for (const r of rows) {
-        const list = bySuite.get(r.suite) ?? [];
-        list.push(r);
-        bySuite.set(r.suite, list);
-      }
-      return [...bySuite.values()].map((suiteRows) => buildSuiteReport(suiteRows));
+      const { getRunReports } = await import('../external-bench/reproducibility/store');
+      return getRunReports(runId, { suite });
     },
   },
   // L2 Hive layer (Phase 5 / D-010). evals.fleet = FleetRunSummary[] (P-030

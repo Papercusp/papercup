@@ -294,6 +294,15 @@ export interface ParetoPoint {
 export interface SuiteReport {
   runId: string;
   suite: BenchSuite;
+  /** Explicitly distinguish a frozen population from legacy observed-only evidence. */
+  assignment?: {
+    basis: 'frozen' | 'observed';
+    taskIds: string[];
+    seeds: number[] | null;
+    arms: ArmId[];
+    preregHash?: string;
+    protocolCommitted?: boolean;
+  };
   arms: ArmReport[];
   /** Cost/accuracy frontier across arms; `onFrontier` flags the non-dominated set. */
   frontier: ParetoPoint[];

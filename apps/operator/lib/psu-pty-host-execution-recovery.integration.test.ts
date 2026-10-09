@@ -45,6 +45,12 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
       timestamp: new Date().toISOString()})+'\\n'); }
     function start() {
       if (!pending) return; pending = false;
+      if (${failInitially} && count === 1) {
+        append(agent === 'codex' ? {type:'event_msg',payload:{type:'turn_aborted'}} :
+          agent === 'claude' ? {type:'system',subtype:'api_error'} :
+          {type:'message',message:{role:'assistant',stopReason:'aborted',content:[]}});
+        process.stdout.write('NATIVE_FAILED\\n'); return;
+      }
       append(agent === 'codex' ? {type:'event_msg',payload:{type:'task_started'}} :
         agent === 'claude' ? {type:'assistant',message:{role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:'working'}]}} :
         {type:'message',message:{role:'assistant',stopReason:'stop',content:[{type:'text',text:'working'}]}});
@@ -64,9 +70,6 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
       } else line += c;
     }});
     process.stdout.write('READY\\n');
-    if (${failInitially}) append(agent === 'codex' ? {type:'event_msg',payload:{type:'turn_aborted'}} :
-      agent === 'claude' ? {type:'system',subtype:'api_error'} :
-      {type:'message',message:{role:'assistant',stopReason:'aborted',content:[]}});
     setTimeout(()=>process.exit(0),${failInitially ? 90000 : 15000});
   `;
   const env = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: agent,
@@ -154,13 +157,24 @@ describe('failed native turn → durable routine retry → native wake', () => {
     const routineId = `routine-${owner}`;
     const workspaceId = 'ws-composed-native-recovery';
     try {
-      await until(() => f.readHost().execution?.phase === 'failed');
-      const failedAt = f.readHost().execution!.lastProgressAt!;
+      const fireAt = Date.now();
       await sql`INSERT INTO harness_shared.routines
         (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id,
          last_fired_at, next_fire_at, reschedule_interval_sec, target_owner_id)
         VALUES (${routineId}, 'papercusp', ${routineId}, 'cron', '{}'::jsonb, 'su', TRUE, ${workspaceId},
-          ${new Date(failedAt - 1000).toISOString()}::timestamptz, 'infinity'::timestamptz, 60, ${owner})`;
+          ${new Date(fireAt).toISOString()}::timestamptz, 'infinity'::timestamptz, 60, ${owner})`;
+      await injectIntoHostWithConfirmation(f.sock, { ...f.message, deliveryId: `failed-${owner}`,
+        requireNativeTurnStart: false });
+      // Native failure can arrive before the host finishes the ordered submit
+      // keystrokes. Wait for that commit clock as well as the transcript row.
+      await until(() => {
+        const execution = f.readHost().execution;
+        return f.output().includes('NATIVE_FAILED') && execution?.phase === 'failed'
+          && Number(execution.receivedAtMs) >= fireAt;
+      });
+      const failure = f.readHost().execution!;
+      expect(failure.receivedAtMs, 'failure observation must belong to this actual fire').toBeGreaterThanOrEqual(fireAt);
+      const failedAt = failure.lastProgressAt!;
       // Exercise the real failed-turn grace and retry deadline, with no clock override.
       await until(() => Date.now() - failedAt >= 30_000, 35_000);
       const arm = vi.fn(async () => ({ awaitId: 1, eventKey: 'fixture-inbox', handleNote: 'fixture', minSleepSec: 60 }));
@@ -168,7 +182,8 @@ describe('failed native turn → durable routine retry → native wake', () => {
         findHost: () => f.readHost(), arm,
         inference: async () => ({ active: 0, observedAt: Date.now() }),
       });
-      expect(recovery).toMatchObject({ handled: true, rearmed: true, state: { status: 'recovering', attempts: 1 } });
+      expect(recovery, JSON.stringify({ recovery, host: f.readHost().execution })).toMatchObject({
+        handled: true, rearmed: true, state: { status: 'recovering', attempts: 1 } });
       expect(arm).toHaveBeenCalledTimes(1);
       const stored = (await sql<Array<{ next_ms: string; metadata: any }>>`
         SELECT (extract(epoch FROM next_fire_at) * 1000)::bigint::text AS next_ms, metadata
@@ -191,7 +206,6 @@ describe('failed native turn → durable routine retry → native wake', () => {
         findPsuHost: () => f.readHost(), injectPsuHostWithConfirmation: injectIntoHostWithConfirmation,
         resolveWakeModeFn: async () => 'auto', stageManualWakeFn: async () => undefined,
         getLatestSessionForOwner: async () => null, coldAutoEnabled: async () => false,
-        tagTurn: () => ({ text: f.message.data, provenanceIssuedAtMs: Date.now(), ledgerWritten: true }),
         presence: async () => null,
       };
       expect(await executeWake(delivery, wakeDeps)).toMatchObject({ kind: 'park', hostCommitPending: true });
@@ -203,7 +217,7 @@ describe('failed native turn → durable routine retry → native wake', () => {
         if (!delivered) await delay(30);
       }
       expect(delivered).toBe(true);
-      expect(f.output().match(/SUBMIT:/g)).toHaveLength(1);
+      expect(f.output().match(/SUBMIT:/g)).toHaveLength(2);
     } finally { await f.close(); }
   }, 85_000);
 });

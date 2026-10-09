@@ -127,6 +127,10 @@ async function verifyReports(evidenceDir: string) {
     poll(`Array.from(document.querySelectorAll('.reports-list-item')).some(n => n.textContent.includes(${JSON.stringify(title)}))`);
     const transportAfter = transportSnapshot();
     save('transport-after-publish.json', transportAfter);
+    const originalReadback = runTool('reports:get', { id: original.report_id });
+    assert.equal(originalReadback.results?.[0]?.ok, true, 'The published citation must resolve');
+    assert.equal(originalReadback.results?.[0]?.report?.body_md, body, 'Readback preserves complete Markdown');
+    assert.equal(originalReadback.results?.[0]?.report?.visibility, 'owner');
     assert.ok((transportAfter.sync?.invalidations?.bySseName?.['reports.list'] ?? 0)
       > (transportBefore.sync?.invalidations?.bySseName?.['reports.list'] ?? 0),
     'Reports arrival must have a measured reports.list SSE invalidation');
@@ -142,6 +146,15 @@ async function verifyReports(evidenceDir: string) {
       value:{ writeText:async text => { window.__reportsCopied = text; } } });
       Array.from(document.querySelectorAll('.reports-actions button')).find(b => b.textContent === 'Copy as Markdown').click()`);
     poll(`window.__reportsCopied === ${JSON.stringify(`# ${title}\n\n${body}`)}`);
+    const missingReportId = 'rpt_00000000-0000-4000-8000-000000000000';
+    native('navigate', `/reports?sel=${missingReportId}&ws=${encodeURIComponent(workspace)}`, '--json');
+    poll(`new URL(location.href).searchParams.get('sel') === ${JSON.stringify(missingReportId)}
+      && document.querySelector('.reports-reader')?.textContent.includes('This report is unavailable.')
+      && !document.querySelector('.reports-reader h2')`);
+    native('screenshot', '--output', join(evidenceDir, 'reports-unknown-citation.png'));
+    native('navigate', `${original.path}&ws=${encodeURIComponent(workspace)}`, '--json');
+    poll(`new URL(location.href).searchParams.get('sel') === ${JSON.stringify(original.report_id)}
+      && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}`);
     const correctedTitle = `${title} corrected`;
     const correction = publish({ title: correctedTitle, body_md: body + '\nA correction.\n', supersedes: original.report_id,
       kind: 'audit', subject, request_key: 'reports-native-correction', tags: ['native-fixture'] });
@@ -271,7 +284,8 @@ async function verifyReports(evidenceDir: string) {
       privatePeer: privatePeer.reportId, retired: correction.report_id, sourceFingerprints: before, assertions: step,
       sse: { before: transportBefore.sync, afterPublish: transportAfter.sync,
         beforeRetire: transportBeforeRetire.sync, afterRetire: transportAfterRetire.sync },
-      checked: ['publish-tool', 'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render', 'copy-exact-Markdown',
+      checked: ['publish-tool', 'publish-exact-readback', 'unknown-citation-isolation',
+        'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render', 'copy-exact-Markdown',
         'lineage-collapse', 'immutable-citation', 'previous-version', 'history-URL', 'history-navigation',
         'filter-restoration', 'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
         'filter-negative-control', 'clear-filters-preserves-citation', 'reader-width', 'human-owner-private-read',

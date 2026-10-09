@@ -46,6 +46,26 @@ function attempt(taskId: string, arm: ArmId, resolved: boolean, tokensIn: number
   });
 }
 
+describe('frozen report population', () => {
+  it('includes a wholly absent assigned arm without assigning it a free-cost frontier point', () => {
+    const report = buildSuiteReport([mk({ seed: 0, resolved: true, graderStatus: 'passed' })], {
+      assignedTaskIds: ['t1', 't2'], assignedSeeds: [0, 1, 2], assignedArms: ['papercusp', 'baseline-b-native'],
+    });
+    expect(report.arms[0].passAt1).toBeCloseTo(1 / 6);
+    expect(report.arms[1]).toMatchObject({ arm: 'baseline-b-native', passAt1: 0, attempts: 0, tasks: 2 });
+    expect(report.frontier.map(p => p.arm)).toEqual(['papercusp']);
+    expect(report.deltas).toEqual([]);
+  });
+  it('requires explicit identity and a complete frozen roster for an empty report', () => {
+    expect(() => buildSuiteReport([])).toThrow('no rows');
+    const report = buildSuiteReport([], {
+      runId: 'empty', suite: 'swe-bench-pro', assignedTaskIds: ['t1'], assignedSeeds: [0], assignedArms: ['papercusp'],
+    });
+    expect(report.runId).toBe('empty');
+    expect(report.arms[0]).toMatchObject({ passAt1: 0, absentTasks: 1, attempts: 0 });
+  });
+});
+
 describe('aggregateArm', () => {
   it('computes pass@1 as the task-weighted mean of per-seed resolved rates', () => {
     const rows = [

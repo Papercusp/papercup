@@ -35,6 +35,10 @@ export interface AggregateOpts {
   /** Frozen task/seed assignment; tasks absent from every arm still count. */
   assignedTaskIds?: readonly string[];
   assignedSeeds?: readonly number[];
+  assignedArms?: readonly ArmId[];
+  /** Identity for a frozen run whose attempts are all absent. */
+  runId?: string;
+  suite?: BenchSuite;
   priceTable?: PriceTable;
   /** The k's the pass@k / pass^k protocol reports (same for every arm). Default [1, 3]. */
   protocolKs?: number[];
@@ -180,14 +184,21 @@ const PAPERCUSP: ArmId = 'papercusp';
  * invariant check. `rows` is every run-result for the suite (all arms × seeds).
  */
 export function buildSuiteReport(rows: readonly TaskRunResult[], opts: AggregateOpts = {}): SuiteReport {
-  if (rows.length === 0) {
+  if (rows.length === 0 && (!opts.runId || !opts.suite || !opts.assignedTaskIds?.length ||
+      !opts.assignedSeeds?.length || !opts.assignedArms?.length)) {
     throw new Error('buildSuiteReport: no rows');
   }
-  const suite = rows[0].suite;
-  const runId = rows[0].runId;
+  const suite = opts.suite ?? rows[0].suite;
+  const runId = opts.runId ?? rows[0].runId;
+  if (rows.some(row => row.suite !== suite || row.runId !== runId)) {
+    throw new Error('buildSuiteReport: mixed run or suite identity');
+  }
   const ks = opts.protocolKs ?? DEFAULT_KS;
 
-  const armIds = [...new Set(rows.map((r) => r.arm))];
+  const armIds = [...new Set(opts.assignedArms ?? rows.map((r) => r.arm))];
+  if (rows.some(row => !armIds.includes(row.arm))) {
+    throw new Error('buildSuiteReport: result outside frozen arm assignment');
+  }
   const assignedTaskIds = opts.assignedTaskIds ?? [...new Set(rows.map(row => row.taskId))];
   const arms = armIds.map((arm) =>
     aggregateArm(
@@ -199,7 +210,7 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   );
 
   // Cost/accuracy Pareto: accuracy = pass@1, cost = mean $ per task-attempt.
-  const rawPoints = arms.filter((a) => a.passAt1 != null).map((a) => ({
+  const rawPoints = arms.filter((a) => a.passAt1 != null && a.attempts > 0).map((a) => ({
     arm: a.arm,
     accuracy: a.passAt1!,
     cost: a.attempts === 0 ? 0 : a.cost.costUsd / a.attempts,
@@ -214,11 +225,11 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   const byArm = new Map(arms.map((a) => [a.arm, a]));
   const treatment = byArm.get(treatmentArm);
   const deltas: ArmDelta[] = [];
-  if (treatment && treatment.passAt1 != null) {
+  if (treatment && treatment.passAt1 != null && treatment.attempts > 0) {
     const tPoint = rawPoints.find((p) => p.arm === treatmentArm)!;
     for (const a of arms) {
       if (a.arm === treatmentArm) continue;
-      if (a.passAt1 == null) continue;
+      if (a.passAt1 == null || a.attempts === 0) continue;
       const bPoint = rawPoints.find((p) => p.arm === a.arm)!;
       deltas.push({
         suite,
@@ -240,6 +251,12 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   return {
     runId,
     suite,
+    assignment: {
+      basis: opts.assignedTaskIds && opts.assignedSeeds && opts.assignedArms ? 'frozen' : 'observed',
+      taskIds: [...assignedTaskIds],
+      seeds: opts.assignedSeeds ? [...opts.assignedSeeds] : null,
+      arms: armIds,
+    },
     arms,
     frontier,
     deltas,

@@ -4,7 +4,7 @@
  * Evaluation UI consume one type with no per-caller mapping. Also reads the
  * rollout cards + prereg rows (P-010-owned artifacts).
  */
-import type { TaskRunResult, TestOutcome } from '@papercusp/bench-metrics';
+import { buildSuiteReport, type AggregateOpts, type SuiteReport, type TaskRunResult, type TestOutcome } from '@papercusp/bench-metrics';
 import type { PreregRecord, RolloutRecord } from './schema';
 import { resolveDb, type DbScope } from './db';
 
@@ -124,6 +124,56 @@ export async function listRunResults(
      ORDER BY suite, task_id, arm, seed
   `;
   return rows.map(rowToTaskRunResult);
+}
+
+/** Use the existing immutable preregistration, never an observed-row task roster. */
+export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | null): SuiteReport[] {
+  const bySuite = new Map<string, TaskRunResult[]>();
+  for (const row of rows) {
+    const group = bySuite.get(row.suite) ?? [];
+    group.push(row);
+    bySuite.set(row.suite, group);
+  }
+  let assignment: AggregateOpts = {};
+  if (prereg?.config.taskIds !== undefined) {
+    const { taskIds, seeds, arms, arm } = prereg.config;
+    const stringRoster = (value: unknown, label: string): string[] => {
+      if (!Array.isArray(value) || value.length === 0 ||
+          value.some(v => typeof v !== 'string' || !v.trim()) || new Set(value).size !== value.length) {
+        throw new Error(`benchmark report: invalid frozen ${label} roster`);
+      }
+      return value as string[];
+    };
+    const assignedTaskIds = stringRoster(taskIds, 'task');
+    const assignedArms = stringRoster(arms ?? (typeof arm === 'string' ? [arm] : undefined), 'arm');
+    const assignedSeeds = typeof seeds === 'number' && Number.isSafeInteger(seeds) && seeds > 0 && seeds <= 10000
+      ? Array.from({ length: seeds }, (_, i) => i) : seeds;
+    if (!Array.isArray(assignedSeeds) || assignedSeeds.length === 0 ||
+        assignedSeeds.some(seed => !Number.isSafeInteger(seed) || seed < 0) ||
+        new Set(assignedSeeds).size !== assignedSeeds.length) {
+      throw new Error('benchmark report: invalid frozen seed roster');
+    }
+    // Existing taskIds is a flat roster; it cannot truthfully describe multiple suites.
+    if (prereg.suites.length !== 1 || rows.some(row => row.runId !== prereg.runId || row.suite !== prereg.suites[0])) {
+      throw new Error('benchmark report: frozen assignment has ambiguous run or suite identity');
+    }
+    assignment = { assignedTaskIds, assignedArms, assignedSeeds, runId: prereg.runId, suite: prereg.suites[0] };
+    if (!bySuite.has(prereg.suites[0])) bySuite.set(prereg.suites[0], []);
+  }
+  return [...bySuite.values()].map(group => {
+    const report = buildSuiteReport(group, assignment);
+    if (prereg) report.assignment = {
+      ...report.assignment!, preregHash: prereg.preregHash, protocolCommitted: prereg.gitCommitted,
+    };
+    return report;
+  });
+}
+
+export async function getRunReports(runId: string, opts: { suite?: string } & DbScope = {}): Promise<SuiteReport[]> {
+  const [rows, prereg] = await Promise.all([
+    listRunResults({ ...opts, runId, suite: undefined }), getPrereg({ runId }, opts),
+  ]);
+  return buildRunReports(rows, prereg).filter(report => !opts.suite || report.suite === opts.suite);
 }
 
 export interface SuiteSummary {

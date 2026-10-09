@@ -75,7 +75,8 @@ describe.skipIf(!isolated)('Reports library in the isolated native desktop', () 
     expect(manifest.sse.afterRetire.invalidations.bySseName['reports.list'])
       .toBeGreaterThan(manifest.sse.beforeRetire.invalidations.bySseName['reports.list'] ?? 0);
     expect(manifest.checked).toEqual(expect.arrayContaining([
-      'publish-tool', 'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render',
+      'publish-tool', 'publish-exact-readback', 'unknown-citation-isolation',
+      'SSE-arrival', 'deep-link', 'metadata', 'Mermaid-render',
       'copy-exact-Markdown', 'immutable-citation', 'history-navigation',
       'agent-tools-filter-state-roundtrip', 'agent-tools-reader-close-reopen',
       'filter-negative-control', 'reader-width', 'human-owner-private-read',

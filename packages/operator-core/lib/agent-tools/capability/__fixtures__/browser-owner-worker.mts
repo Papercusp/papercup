@@ -20,6 +20,13 @@ process.on('message', async (message: any) => {
     const ctx = { workspaceId: message.workspace ?? 'browser-workspace', uiClientId: message.owner ?? 'browser-owner',
       harnessSlug: message.harness ?? 'papercusp', role: 'operator', isSuperuser: true, authenticatedPrincipal: principal,
       signal: controller.signal, log: () => {} } as unknown as UnifiedToolContext;
+    if (message.enrolled) {
+      const { setAutoPumpEnabledForTests } = await import('../../../events/await/engine.ts');
+      setAutoPumpEnabledForTests(false);
+      const result = await runManagedBrowserSession(message.args, message.url, ctx,
+        { timeoutMs: 20_000, maxText: 500 });
+      controllers.delete(seq); process.send!({ type: 'fixture:result', seq, result }); return;
+    }
     const profile = message.confined ? { kind: 'confined', reason: 'autonomous-caller' } as const : { kind: 'trusted', reason: 'superuser' } as const;
     const deps: BrowserDeps = {
       profile: async (actual) => {
