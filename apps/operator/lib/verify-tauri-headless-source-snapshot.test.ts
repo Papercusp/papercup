@@ -13,6 +13,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -59,7 +60,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'VERIFY_TAURI_SOURCE_REF=commit; unset VERIFY_TAURI_SOURCE_INPUTS',
         'VERIFY_TAURI_SOURCE_INPUTS_FILE="$TEST_INPUTS_FILE"',
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
-        'node() { printf "%s\\n" "$@" >> "$WORK/order"; }',
+        'node() { printf "%s\\n" "$@" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; }',
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
         src.slice(start, end),
         'snapshot_committed_operator_source',
@@ -85,7 +86,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
         'VERIFY_TAURI_SOURCE_REF=commit; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
-        'node() { printf "%s\\n" "$*" >> "$WORK/order"; if [[ "$*" == *verifier-verify* ]] && [ "$TEST_TAMPER" = 1 ]; then return 2; fi; }',
+        'node() { printf "%s\\n" "$*" >> "$WORK/order"; [[ "$*" != *verifier-measure* ]] || echo 4096; if [[ "$*" == *verifier-verify* ]] && [ "$TEST_TAMPER" = 1 ]; then return 2; fi; }',
         'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo "deps:$1:$2" >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
         committed,
         'snapshot_committed_operator_source',
@@ -101,12 +102,41 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
         'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
         'VERIFY_TAURI_SOURCE_REF=commit; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
-        'node() { [[ "$*" != *verifier-verify* ]]; }',
+        'node() { [[ "$*" != *verifier-measure* ]] || echo 4096; [[ "$*" != *verifier-verify* ]]; }',
         'cp() { echo mutation-after-refusal >&2; return 99; }',
         committed, 'snapshot_committed_operator_source',
       ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture } });
       expect(refused.status).toBe(1);
       expect(refused.stderr).not.toContain('mutation-after-refusal');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it.each(['admit', 'capacity-refusal', 'unmeasured', 'empty'])('admits measured committed source before creating or exporting it: %s', mode => {
+    const start = src.indexOf('snapshot_committed_operator_source() {');
+    const end = src.indexOf('snapshot_operator_source || {', start);
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-size-contract-'));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
+        'VERIFY_TAURI_SOURCE_REF=commit; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
+        'write_run_marker() { :; }; log() { :; }',
+        'node() { echo "$*" >> "$WORK/order"; if [[ "$*" == *verifier-measure* ]]; then case "$TEST_MODE" in unmeasured) echo unknown ;; empty) echo 0 ;; *) echo 5242880 ;; esac; fi; }',
+        'reserve_verifier_disk() { echo "reserve:$1" >> "$WORK/order"; test "$1" = 5242880; test "$TEST_MODE" != capacity-refusal || return 7; }',
+        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        src.slice(start, end), 'snapshot_committed_operator_source',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_MODE: mode } });
+      const order = readFileSync(resolve(fixture, 'order'), 'utf8');
+      if (mode === 'admit') {
+        expect(result.status, result.stderr).toBe(0);
+        expect(order.indexOf('reserve:5242880')).toBeGreaterThan(order.indexOf('verifier-measure'));
+        expect(order.indexOf('verifier-prepare')).toBeGreaterThan(order.indexOf('reserve:5242880'));
+      } else {
+        expect(result.status).toBe(mode === 'capacity-refusal' ? 7 : 1);
+        expect(order).not.toContain('verifier-prepare');
+        expect(order).not.toContain('deps');
+        expect(readdirSync(fixture).some(name => name.startsWith('verify-tauri-headless.'))).toBe(false);
+      }
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 
