@@ -41,14 +41,99 @@
  * green-checkpoint.ts): a live, actively-written log's mtime keeps advancing,
  * so a genuinely in-use file is never caught by the age bound.
  */
-import { readdirSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, type Dirent, type Stats } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { readdirSync, readFileSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, type Dirent, type Stats } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path';
-import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { homedir, tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { workspacesRoot } from './workspace-registry';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
+import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
+// @ts-expect-error The maintained CLI policy is JavaScript without declarations.
+import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-committed.mjs';
+
+const execFileAsync = promisify(execFile);
+
+/** Complete read-only process evidence for destructive lint retention. An ordinary
+ * host cannot read other users' /proc entries; sudo is used only for the census,
+ * never for removal. Missing privilege/runtime or partial evidence defers GC. */
+async function scanLintWorkRootHolders(paths: string[]): Promise<OpenWriterScan> {
+  const options = { descendants: true, includeCwd: true, failClosed: true,
+    deadlineMs: 3 * NATIVE_BG_SCAN_DEADLINE_MS };
+  if (process.getuid?.() === 0) return openWriterPidsMany(paths, options);
+  const appRoot = resolveOperatorAppRootFromModuleDir(dirname(fileURLToPath(import.meta.url)));
+  const repoRoot = resolve(appRoot, '../..');
+  const moduleUrl = pathToFileURL(join(repoRoot, 'packages/operator-core/lib/native-bg-task-ledger.ts')).href;
+  const script = `import { openWriterPidsMany } from ${JSON.stringify(moduleUrl)};
+const result = await openWriterPidsMany(${JSON.stringify(paths)}, ${JSON.stringify(options)});
+console.log(JSON.stringify({ complete: result.complete, byPath: [...result.byPath] }));`;
+  const { stdout } = await execFileAsync('sudo', ['-n', '--', process.execPath,
+    '--import', join(repoRoot, 'node_modules/tsx/dist/loader.mjs'), '--input-type=module', '-e', script],
+  { timeout: options.deadlineMs + 10_000, maxBuffer: 1024 * 1024 });
+  const result = JSON.parse(stdout) as { complete: unknown; byPath: unknown };
+  if (typeof result.complete !== 'boolean' || !Array.isArray(result.byPath)) throw new Error('invalid process census');
+  const byPath = new Map<string, string[]>();
+  for (const entry of result.byPath) {
+    if (!Array.isArray(entry) || entry.length !== 2 || !paths.includes(entry[0])
+      || !Array.isArray(entry[1]) || !entry[1].every((pid: unknown) => typeof pid === 'string' && /^\d+$/.test(pid))) {
+      throw new Error('invalid process census holder');
+    }
+    byPath.set(entry[0], entry[1]);
+  }
+  return { complete: result.complete, byPath };
+}
+
+export interface LintWorkRootGcOptions {
+  root?: string;
+  now?: number;
+  dryRun?: boolean;
+  scanOpenPaths?: (paths: string[]) => Promise<OpenWriterScan>;
+}
+
+/** EI-25532904902420844: use the CLI's existing expiry/artifact/cap policy on
+ * the hourly storage tick, even when no subsequent lint command starts. */
+export async function runLintWorkRootGc(opts: LintWorkRootGcOptions = {}): Promise<{
+  root: string; dryRun: boolean; scanComplete: boolean; scanError?: string;
+  removed: Array<{ name: string; reason: string }>;
+  kept: Array<{ name: string; reason: string }>;
+  wouldRemove: Array<{ name: string; reason: string }>;
+}> {
+  const root = opts.root ?? tmpdir();
+  const dryRun = opts.dryRun !== false;
+  const nowMs = opts.now ?? Date.now();
+  const identities = new Map<string, { ino: number; dev: number; marker: string | null }>();
+  const markerAt = (path: string): string | null => {
+    try { return readFileSync(join(path, OWNER_MARKER), 'utf8'); } catch { return null; }
+  };
+  // Preview uses the maintained policy; removal merely records candidate identity.
+  sweepStaleWorkRoots({ root, nowMs, cwds: [], remove: (path: string) => {
+    const st = lstatSync(path);
+    identities.set(path, { ino: st.ino, dev: st.dev, marker: markerAt(path) });
+  } });
+  let scan: OpenWriterScan = { complete: identities.size === 0, byPath: new Map() };
+  let scanError: string | undefined;
+  if (identities.size) {
+    try { scan = await (opts.scanOpenPaths ?? scanLintWorkRootHolders)([...identities.keys()]); }
+    catch (error) { scanError = error instanceof Error ? error.message : String(error); }
+  }
+  const wouldRemove: Array<{ name: string; reason: string }> = [];
+  const result = sweepStaleWorkRoots({ root, nowMs,
+    cwds: [...scan.byPath].filter(([, holders]) => holders.length).map(([path]) => path),
+    beforeRemove: (path: string) => {
+      if (!scan.complete) return 'process-scan-incomplete';
+      const identity = identities.get(path);
+      const current = lstatSync(path);
+      if (!identity || !current.isDirectory() || current.ino !== identity.ino || current.dev !== identity.dev
+        || markerAt(path) !== identity.marker) return 'raced';
+      return null;
+    },
+    remove: (path: string) => { if (!dryRun) rmSync(path, { recursive: true, force: true }); },
+  }) as { removed: Array<{ name: string; reason: string }>; kept: Array<{ name: string; reason: string }> };
+  if (dryRun) wouldRemove.push(...result.removed.splice(0));
+  return { root, dryRun, scanComplete: scan.complete, ...(scanError ? { scanError } : {}), ...result, wouldRemove };
+}
 
 /** 3 days: long enough to debug a recent spawn, short enough to keep the
  *  steady-state footprint well clear of the disk-headroom floor. */

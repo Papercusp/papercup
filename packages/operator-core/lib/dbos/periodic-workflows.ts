@@ -40,6 +40,7 @@ import { gcOldOperatorTurns } from '../operator-turns-gc';
 import {
   runFleetLogsGc,
   runLaunchContextGc,
+  runLintWorkRootGc,
   runPapercuspWorkdirGc,
   runWindowsBuildScratchGc,
 } from '../fleet-logs-gc';
@@ -656,6 +657,15 @@ async function fleetLogsGcTick(): Promise<void> {
           (skipped.length
             ? `, kept ${skipped.length} (${skipped.map((c) => c.skipped ?? 'unknown').join(',')})`
             : ''),
+      );
+
+      // Lint snapshots live under tmpdir, outside the ~/.papercusp sweep. Their
+      // six-hour retention must run even if no new lint invocation arrives.
+      const lintRoots = await runLintWorkRootGc({ dryRun: false });
+      console.log(
+        `[lint-work-root-gc] removed ${lintRoots.removed.length} snapshot(s), kept ${lintRoots.kept.length}` +
+          (!lintRoots.scanComplete ? ', deferred: process census incomplete' : '') +
+          (lintRoots.scanError ? ` (${lintRoots.scanError})` : ''),
       );
 
       // Third and last of the ~/.papercusp accumulations (WI-10002015). The two

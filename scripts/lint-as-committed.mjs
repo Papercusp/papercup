@@ -307,12 +307,19 @@ function liveProcessCwds() {
  * Without /proc it cannot prove a tree is idle, so it only removes trees whose marker
  * names a dead non-keep owner — the one verdict that needs no cwd scan.
  */
-export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
+export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds = liveProcessCwds(), isAlive = pidAlive, remove = (p) => rmSync(p, { recursive: true, force: true }), beforeRemove = () => null, maxIdleKept = MAX_IDLE_KEPT_TREES } = {}) {
   const removed = [];
   const kept = [];
   const idleKept = [];
   const tryRemove = (name, path, reason) => {
     try {
+      // Scheduled callers require a complete fd/cwd census and unchanged identity.
+      // Keep the same TTL/artifact/cap policy for both scheduled and CLI sweeps.
+      const refusal = beforeRemove(path);
+      if (refusal) {
+        kept.push({ name, reason: refusal });
+        return;
+      }
       remove(path);
       removed.push({ name, reason });
     } catch {

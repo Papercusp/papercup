@@ -3,7 +3,7 @@
  * the never-throws / best-effort contract.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync, openSync, closeSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, utimesSync, chmodSync, symlinkSync, statSync, openSync, closeSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { openWriterPidsMany } from './native-bg-task-ledger';
 import { tmpdir } from 'node:os';
@@ -13,6 +13,7 @@ import {
   FLEET_LOGS_GC_DEFAULT_RETENTION_MS,
   FLEET_LOGS_GC_DEFAULT_MAX_TOTAL_BYTES,
   runPapercuspWorkdirGc,
+  runLintWorkRootGc,
   PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS,
   PAPERCUSP_WORKDIR_GC_PROTECTED_BASENAMES,
   WINDOWS_BUILD_SCRATCH_GC_DEFAULT_RETENTION_MS,
@@ -239,6 +240,91 @@ function makeWindowsBuildScratch(root: string): {
   });
   return { repoRoot, container, buildRoot };
 }
+
+describe('runLintWorkRootGc', () => {
+  const HOUR = 3600_000;
+  const now = 20 * HOUR;
+  const makeRoot = (name: string, ageHours: number, extra: Record<string, unknown> = {}) => {
+    const path = join(sandbox, `papercusp-lint-as-committed-${name}`);
+    mkdirSync(join(path, '.git'), { recursive: true });
+    writeFileSync(join(path, '.git/lint-as-committed-owner.json'), JSON.stringify({
+      pid: 2147483647, keep: true, sha: 'a'.repeat(40), createdAtMs: now - ageHours * HOUR, ...extra,
+    }));
+    writeFileSync(join(path, 'source.txt'), 'retained source');
+    return path;
+  };
+  const scanOpenPaths = async () => ({ byPath: new Map<string, string[]>(), complete: true });
+
+  it('expires an idle snapshot without starting another lint, preserving young roots and dependent artifacts', async () => {
+    const expired = makeRoot('expired', 7);
+    const young = makeRoot('young', 1);
+    const artifact = join(sandbox, 'release-artifact');
+    mkdirSync(artifact);
+    const dependent = makeRoot('dependent', 1000, { retainedFor: [{ path: artifact, sha: 'a'.repeat(40) }] });
+    const result = await runLintWorkRootGc({ root: sandbox, now, dryRun: false, scanOpenPaths });
+    expect(result.removed).toEqual([{ name: 'papercusp-lint-as-committed-expired', reason: 'keep-expired' }]);
+    expect(existsSync(expired)).toBe(false);
+    expect(existsSync(young)).toBe(true);
+    expect(existsSync(dependent)).toBe(true);
+  });
+
+  it('holds a snapshot with a genuinely open descendant fd', async () => {
+    const busy = makeRoot('busy', 7);
+    const fd = openSync(join(busy, 'source.txt'), 'r');
+    const proc = join(sandbox, 'proc');
+    mkdirSync(proc);
+    symlinkSync(`/proc/${process.pid}`, join(proc, String(process.pid)));
+    try {
+      const result = await runLintWorkRootGc({ root: sandbox, now, dryRun: false,
+        scanOpenPaths: (paths) => openWriterPidsMany(paths, {
+          procRoot: proc, descendants: true, includeCwd: true, failClosed: true,
+        }),
+      });
+      expect(result.kept).toContainEqual({ name: 'papercusp-lint-as-committed-busy', reason: 'in-use' });
+      expect(existsSync(busy)).toBe(true);
+    } finally { closeSync(fd); }
+  });
+
+  it.each(['incomplete', 'throws'])('defers every removal when the process census %s, including dead owners', async (mode) => {
+    const expired = makeRoot('expired', 7);
+    const dead = makeRoot('dead', 1, { keep: false });
+    const result = await runLintWorkRootGc({ root: sandbox, now, dryRun: false, scanOpenPaths: async () => {
+      if (mode === 'throws') throw new Error('permission denied');
+      return { byPath: new Map(), complete: false };
+    } });
+    expect(result.scanComplete).toBe(false);
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toHaveLength(2);
+    expect(result.kept.every((entry) => entry.reason === 'process-scan-incomplete')).toBe(true);
+    expect(existsSync(expired) && existsSync(dead)).toBe(true);
+  });
+
+  it('does not delete a root whose custody marker changes during the census', async () => {
+    const path = makeRoot('raced', 7);
+    const result = await runLintWorkRootGc({ root: sandbox, now, dryRun: false, scanOpenPaths: async () => {
+      writeFileSync(join(path, '.git/lint-as-committed-owner.json'), JSON.stringify({ pid: process.pid, keep: true, createdAtMs: 0 }));
+      return scanOpenPaths();
+    } });
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toContainEqual({ name: 'papercusp-lint-as-committed-raced', reason: 'raced' });
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('previews expiry without deleting source', async () => {
+    const path = makeRoot('expired', 7);
+    const result = await runLintWorkRootGc({ root: sandbox, now, scanOpenPaths });
+    expect(result.removed).toEqual([]);
+    expect(result.wouldRemove).toHaveLength(1);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('runs on the existing hourly storage workflow', () => {
+    const source = readFileSync(new URL('./dbos/periodic-workflows.ts', import.meta.url), 'utf8');
+    const tick = source.slice(source.indexOf('async function fleetLogsGcTick'), source.indexOf('const fleetLogsGcWorkflow'));
+    expect(tick).toContain('await runLintWorkRootGc({ dryRun: false })');
+    expect(source).toContain("DBOS.registerScheduled(fleetLogsGcWorkflow, { name: 'fleetLogsGc', crontab: '0 5 * * * *' })");
+  });
+});
 
 describe('runPapercuspWorkdirGc', () => {
   it('keeps a genuinely open nested file even when its mtime is old', async () => {
