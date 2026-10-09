@@ -424,9 +424,6 @@ export function AgentRoster({
           >
             Clear
           </button>
-          {bulkNote ? (
-            <span className="pc-agents-roster__bulk-note" data-testid="agents-bulk-note">{bulkNote}</span>
-          ) : null}
           {composing ? (
             <div className="pc-agents-roster__compose" data-testid="agents-bulk-compose">
               <textarea
@@ -458,6 +455,11 @@ export function AgentRoster({
               </div>
             </div>
           ) : null}
+        </div>
+      ) : null}
+      {bulkNote ? (
+        <div className="pc-agents-roster__bulkbar" role="status">
+          <span className="pc-agents-roster__bulk-note" data-testid="agents-bulk-note">{bulkNote}</span>
         </div>
       ) : null}
       <div className="pc-agents-roster__scroll" data-testid="agents-roster-scroll">
