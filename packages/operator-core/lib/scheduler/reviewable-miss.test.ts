@@ -49,6 +49,10 @@ describe('reviewableMiss (WI-10004358)', () => {
     const r = reviewableMiss({ pendingAgentReview: 3 });
     expect(r!.message).toMatch(/never self-clears/);
     expect(r!.advice).toMatch(/claimed:false/);
+    expect(r!.advice).toContain("reason 'agent-review-not-pending'");
+    expect(r!.advice).toMatch(/read-only snapshot, not a reservation/);
+    expect(r!.advice).toMatch(/refresh the scoped claimability sample/);
+    expect(r!.advice).toMatch(/does not establish a selector defect/);
     expect(r!.advice).toMatch(/no review is available from this bounded sample/);
     expect(r!.advice).toMatch(/Do not use claim-next/);
     expect(r!.advice).not.toContain("mode:'claim-next'");

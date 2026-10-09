@@ -122,6 +122,7 @@ export function reviewableMiss(
     'A grade of 4+ approves only after its gates pass: bugs need an accepted current-build reproduction receipt. ' +
     'Without one, a 4+ grade leaves the bug revision-requested/not-ready; record and verify the receipt before treating it as approved. ' +
     'A grade of 3 or lower sends it back for revision. Then pull again. ' +
+    "If a claim returns claimed:false with reason 'agent-review-not-pending', discard that id and refresh the scoped claimability sample before trying another. The earlier list was a read-only snapshot, not a reservation; this refusal alone does not establish a selector defect. " +
     `If improvements:agent-review returns claimed:false for every id in that scoped read, no review is available ` +
     `from this bounded sample. Do not use claim-next: it scopes only to a harness and can claim review work outside ` +
     `this fleet spec. The sample is capped at ${REVIEWABLE_MISS_SAMPLE} ids per floor, so it does not prove the full ` +
