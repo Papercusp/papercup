@@ -334,6 +334,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'synthetic parity fixture for the reason-coded positive-control tenant-scope refusal',
   },
   {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: '{"ok":false,"reason":"mixed_window_modes","message":"raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes."}',
+    expectedClass: 'caller',
+    note: 'synthetic parity fixture for the nested capability:read mixed-window refusal observed in invocation 34619865',
+  },
+  {
     n: 3, errorCode: 'handler_error', status: 'error',
     message: 'acceptance BAR contract is not ready for vetting — 7 of 7 BAR(s) blocking, 0 clean: R-1: bar_snapshot_role_invalid; R-2: bar_snapshot_role_invalid; R-3: bar_snapshot_role_invalid; R-4: bar_snapshot_role_invalid; R-5: bar_snapshot_role_invalid; R-6: bar_snapshot_role_invalid; R-7: bar_snapshot_role_invalid',
     expectedClass: 'caller',
