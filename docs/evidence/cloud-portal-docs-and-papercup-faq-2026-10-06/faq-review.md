@@ -448,3 +448,40 @@ test summaries and installation proof are in
 Portal/browser acceptance, novice observations, final plan acceptance or
 shipment. The existing tutorial replacement and browser-readiness conditions
 remain unchanged; no LIVE_GATE operations were performed.
+
+## Maintenance evidence reconciliation, 2026-10-09 continuation
+
+WI-10006921 / P-007 remains the accountable maintenance lane. The canonical
+FAQ and packaged manual-source copy still match the independently approved
+FAQ hash above. The approved account guide and its packaged copy still match
+`c5119fa0c92fefd75e244627e7d8a0c400b434956cd693064a8a5b05f9949850`.
+All seven FAQ anchors were hashed again and match the source-comparison table
+above. This comparison preserves the recorded source approvals; it is not a
+new semantic review or runtime test.
+
+| Maintenance requirement | Retained evidence | Limit |
+| --- | --- | --- |
+| Accountable source-linked review | This lane, the seven anchored paths, the author baseline renewal, and exact-hash independent FAQ/guide verdicts above. | A fresh drift status does not grant semantic approval or a permanent human maintainer assignment. |
+| Relevant product changes request review for FAQ and guide together | `installed-background-review-20261009.json`: the installed background Git-sync path leaves FAQ and quickstart in review, preserves their verification baseline, and leaves the unrelated guide fresh. | Disposable installed fixture; no production worker or agent dispatch is claimed. |
+| Public retrieval observes revised canonical content | `standalone-manual-revision-20261009.json`: fifteen canonical public pages served from installed manual-source, with warmed docs-only retrieval over two revisions and zero model sends. | This establishes the public reader, not an actual Papercup model answer or installed source provenance outside the recorded bundle. |
+| Search observes revised content at the same URL | `pagefind-manual-revision-20261009.json`: private canonical Astro/Starlight packaging, production reader and warmed Chromium Pagefind search. | Private copied build; no final release observation. |
+| Approved guide and FAQ remain discoverable after packaging | `approved-manual-browser-20261009.json`: four maintained browser cases passed, zero failed/skipped, exit 0. Cases cover account-guide reload/mobile reading, account distinctions, new-guide Pagefind indexing and alternate FAQ wording. | Four selected cases only; Portal journeys and full R-1/R-2 remain open. |
+
+The latest browser artifact records the served account HTML hash
+`42d5f01e23a292d39c75f758fb345fb4dec32470a992ffe4cc0026083e3414c1`
+and its explicit source/provenance limits. The results were read from retained
+evidence; no unchanged test, build or browser scenario was rerun here.
+
+The historical installed-background artifact's remaining-work list predates
+the guide approvals and browser proof above. Its incidental sentinel issue
+`EI-25465494437288816` is now closed with committed completion evidence: the
+real inline-host regressions identify inherited `--input-type` as the worker
+launch failure, and the fixed maintained sentinel suites passed 49 tests with
+zero skips. That local fix does not establish a deployed sentinel runtime.
+
+Full R-7 acceptance remains open. The recorded results do not establish the
+replacement Portal's imported-source provenance or actual Papercup runtime
+cohort. The existing tutorial implementer has not supplied a ready replacement
+artifact. Real three-person/four-task observations, independent acceptance and
+exact production shipment also remain open. Historical evidence keeps its
+original scope; missing observations stay unknown.
