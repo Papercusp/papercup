@@ -261,10 +261,15 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     );
   });
 
-  it('offers plaintext recovery for runtimes without atob and names the byte field', () => {
-    const { next } = doorOversizedResult();
+  it('distinguishes byte-page and plaintext-line recovery modes without atob', () => {
+    const { cursor, next } = doorOversizedResult();
 
-    expect(next).toContain('raw:true plaintext');
+    expect(cursor.args).toHaveProperty('byte_offset');
+    expect(cursor.args).toHaveProperty('byte_limit');
+    expect(cursor.args).not.toHaveProperty('raw');
+    expect(next).toContain('byte_offset+byte_limit; omit raw');
+    expect(next).toContain('raw:true with offset/limit line windows');
+    expect(next).not.toContain('raw:true plaintext');
     expect(next).toContain('runtime codec');
 
     // A bare "base64-decode data" is what left the reporter decoding the file.
