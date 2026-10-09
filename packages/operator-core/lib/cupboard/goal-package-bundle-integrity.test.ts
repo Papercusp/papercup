@@ -171,6 +171,8 @@ describe('goal-package bundle integrity — the bundled floor a release ships', 
     expect(body).toContain('Maintain rubric coverage');
     expect(body).toContain('Improve rubric quality');
     expect(body).toContain('Drive grading through verified improvement');
+    expect(body).toContain('Launch bounded GRADE-mode agents through capability:launch-agent');
+    expect(body).toContain('exact target, pinned rubric revision, scope, budget, cadence and exit criterion');
     expect(body).toContain('baseline before repair');
     expect(body).toContain('baselineRef pointing to the preserved baseline');
     expect(body).toContain('supersedes only corrects a reading');
