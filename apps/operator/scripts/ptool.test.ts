@@ -744,6 +744,17 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('logs:read')).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
+  it('lets docs:get reach the MCP transport deadline on direct and deferred routes', () => {
+    const args = {
+      slugs: ['agent-insights/ptool-client-timeout-must-outlive-tool-server-clamp'],
+      harness: 'engineering',
+    };
+    expect(timeoutForTool('docs:get', args)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'docs:get', args }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('docs:get', args)).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('keeps the client alive for bounded read-only repair previews, but not confirmed writes', () => {
     expect(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS).toBe(305_000);
     expect(timeoutForTool('release:repair-queue', { op: 'admit' }))

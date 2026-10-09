@@ -460,6 +460,29 @@ describe('coord:orient args', () => {
     }
   });
 
+  it('passes the effective parent response deadline to the aggregate work callback', async () => {
+    vi.useFakeTimers();
+    const startedAtMs = Date.now();
+    const callerDeadlineAtMs = startedAtMs + 20_000;
+    let observedDeadlineAtMs: number | undefined;
+    try {
+      const value = await withOrientAggregateTimeout(
+        async (deadlineAtMs) => {
+          observedDeadlineAtMs = deadlineAtMs;
+          return 'complete';
+        },
+        'fallback',
+        undefined,
+        callerDeadlineAtMs,
+      );
+
+      expect(value).toBe('complete');
+      expect(observedDeadlineAtMs).toBe(callerDeadlineAtMs - 1_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('marks the aggregate fallback partial and preserves the latest snapshot', () => {
     const fallback = createOrientAggregateFallback();
     const snapshot = {
@@ -1170,9 +1193,15 @@ describe('coord:orient args', () => {
     const recoveryStart = source.indexOf('const compactionRecoveryPromise =');
     const composeStart = source.indexOf("const result = await phaseTracker.track('composeOrient', () => composeOrient(");
     const recoveryAwait = source.indexOf('const recovery = compactionRecoveryPromise');
+    const composeDeadline = source.indexOf(
+      'const composeDeadlineAtMs = aggregateResponseDeadlineAtMs - ORIENT_PARENT_DEADLINE_HEADROOM_MS;',
+    );
 
     expect(recoveryStart).toBeGreaterThanOrEqual(0);
     expect(composeStart).toBeGreaterThan(recoveryStart);
+    expect(composeDeadline).toBeGreaterThanOrEqual(0);
+    expect(composeDeadline).toBeLessThan(composeStart);
+    expect(source.slice(composeStart, recoveryAwait)).toContain('composeDeadlineAtMs,');
     expect(source.slice(recoveryStart, composeStart)).toContain('withBoundedTimeout');
     expect(recoveryAwait).toBeGreaterThan(composeStart);
   });
@@ -1499,6 +1528,23 @@ function composeGoalOrient(
     undefined,
     fold,
     obligationsFold,
+  );
+}
+
+function composeOrientWithDeadline(
+  args: Parameters<typeof composeOrient>[0],
+  call: InnerCall,
+  deadlineAtMs: number,
+): ReturnType<typeof composeOrient> {
+  return composeOrient(
+    args,
+    call,
+    'me',
+    undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined,
+    deadlineAtMs,
   );
 }
 
@@ -4660,6 +4706,47 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+  });
+
+  it('caps the final declare-intent wait to the remaining aggregate budget after sequential folds', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const startedAtMs = Date.now();
+    const deadlineAtMs = startedAtMs + 17_500;
+    const delay = <T>(value: T, ms: number): Promise<T> =>
+      new Promise((resolve) => setTimeout(() => resolve(value), ms));
+    let declareStartedAtMs: number | undefined;
+    const { call } = fakeCall({
+      ...CORE,
+      // These individually healthy legs consume 15s in composeOrient's sequential
+      // backlog → inbox fold, leaving less than the final leg's normal 8s budget.
+      'work_items:claimable': () => delay({ claimable: [] }, 7_500),
+      'coord:inbox': () => delay({ summary: { total: 0 }, entries: [] }, 7_500),
+      'memory:search': () => ({ hits: [] }),
+      'coord:declare-intent': () => {
+        declareStartedAtMs = Date.now();
+        return new Promise(() => {});
+      },
+    });
+    const resultPromise = composeOrientWithDeadline(
+      { harness: 'h', intent: 'sequential bootstrap', includePlanEvents: false },
+      call,
+      deadlineAtMs,
+    ).then((result) => ({ result, resolvedAtMs: Date.now() }));
+
+    try {
+      await vi.advanceTimersByTimeAsync(deadlineAtMs - startedAtMs);
+      const { result, resolvedAtMs } = await resultPromise;
+
+      expect(declareStartedAtMs).toBeGreaterThanOrEqual(startedAtMs + 15_000);
+      expect(deadlineAtMs - declareStartedAtMs!).toBeLessThan(8_000);
+      expect(resolvedAtMs).toBeLessThanOrEqual(deadlineAtMs);
+      expect(result.intentDeclared).toBe(false);
+    } finally {
+      await vi.runAllTimersAsync();
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 

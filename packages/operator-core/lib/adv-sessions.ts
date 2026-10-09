@@ -1888,6 +1888,11 @@ export async function classifyOwnerNativeSession(opts: {
   }, {
     readOnly: true,
     acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+    // postgres-js cannot cancel a begin that is still queued when the local
+    // acquisition deadline wins. This verifier runs before every MCP call, so
+    // retrying would add another pending org-admin acquisition per request.
+    // Fail closed on the first measured timeout instead of amplifying that queue.
+    acquireRetries: 0,
     // This verifier runs before every MCP tool call, so an overly short global
     // override can turn normal org-admin pool queuing into an auth failure.
     // Keep query and lock budgets narrow after a connection has been acquired.

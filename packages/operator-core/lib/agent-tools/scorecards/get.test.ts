@@ -514,6 +514,90 @@ describe('scorecards:get evidence-first projection', () => {
     expect(criterionPage.scorecard.rerunRecipe).toEqual(rerunRecipe);
   });
 
+  it('preserves oversized scorecard metadata for the result door on index, criterion, and recipe reads', async () => {
+    const largeMetadata = {
+      ...scorecard,
+      issueId: 'EI-large-scorecard-metadata',
+      subject: { kind: 'scorecard' as const, ref: `subject:${'s'.repeat(18_000)}` },
+      criteria: [{ key: 'criterion-1', rating: 'pass', evidence: 'exact evidence' }],
+    };
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: largeMetadata });
+    const smallDoors = { ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 3_200 };
+    doorConstantsMock.mockReturnValue(smallDoors);
+    const scratchRoot = mkdtempSync(join(tmpdir(), 'scorecards-get-large-metadata-'));
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousDoorOff = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(scratchRoot, 'scratch');
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    try {
+      const index = await getTool.handler(
+        { issueId: largeMetadata.issueId, indexOffset: 0 } as never,
+        makeDispatchContext(),
+      ) as { data: { ok: boolean; scorecard?: { issueId: string; subject?: { ref: string } }; evidenceRead?: { scope?: string } } };
+      expect(index.data.ok).toBe(true);
+      expect(index.data.scorecard?.issueId).toBe(largeMetadata.issueId);
+      expect(index.data.scorecard?.subject?.ref).toBe(largeMetadata.subject.ref);
+      expect(index.data.evidenceRead?.scope).toBe('criterion-index');
+
+      const indexText = JSON.stringify(index.data);
+      expect(indexText.length).toBeGreaterThan(
+        computeTurnDoors(0, smallDoors).resultEach * CHARS_PER_TOKEN_ESTIMATE,
+      );
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: indexText }], _meta: {} as Record<string, unknown> },
+        { toolName: 'scorecards:get', workspaceId: 'scorecards-get-test' },
+      );
+      const resultDoor = doored._meta?.resultDoor as {
+        truncated?: boolean;
+        spillUri?: string | null;
+        spillFailed?: boolean;
+        recoveryCursor?: { tool?: string };
+      } | undefined;
+      expect(resultDoor?.truncated).toBe(true);
+      expect(resultDoor?.spillUri).toBeTruthy();
+      expect(resultDoor?.spillFailed).toBe(false);
+      expect(resultDoor?.recoveryCursor?.tool).toBe('capability:read');
+
+      let args: Record<string, unknown> | undefined = {
+        issueId: largeMetadata.issueId,
+        criterionKey: 'criterion-1',
+      };
+      let recovered = '';
+      let pages = 0;
+      while (args) {
+        expect(++pages).toBeLessThan(30);
+        const page = await getTool.handler(args as never, makeDispatchContext()) as {
+          data: {
+            ok: boolean;
+            scorecard: { subject?: { ref: string }; criteria: Array<{ key: string; evidence: string }> };
+            evidenceRead: { complete: boolean; next?: { args: Record<string, unknown> } };
+          };
+        };
+        expect(page.data.ok).toBe(true);
+        expect(page.data.scorecard.subject?.ref).toBe(largeMetadata.subject.ref);
+        expect(page.data.scorecard.criteria[0]?.key).toBe('criterion-1');
+        recovered += page.data.scorecard.criteria[0]?.evidence ?? '';
+        args = page.data.evidenceRead.complete ? undefined : page.data.evidenceRead.next?.args;
+      }
+      expect(pages).toBeGreaterThan(1);
+      expect(recovered).toBe(largeMetadata.criteria[0]?.evidence);
+
+      const recipe = await getTool.handler(
+        { issueId: largeMetadata.issueId, rerunRecipeOffset: 0 } as never,
+        makeDispatchContext(),
+      ) as { data: { ok: boolean; scorecard?: { subject?: { ref: string } }; rerunRecipeRead?: { chunk?: string } } };
+      expect(recipe.data.ok).toBe(true);
+      expect(recipe.data.scorecard?.subject?.ref).toBe(largeMetadata.subject.ref);
+      expect(recipe.data.rerunRecipeRead?.chunk).toBeTruthy();
+    } finally {
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      if (previousDoorOff === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousDoorOff;
+      rmSync(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
   it('recovers an oversized replay recipe without hiding audit metadata or criterion evidence', async () => {
     const gradingAudit = {
       state: 'pending' as const,

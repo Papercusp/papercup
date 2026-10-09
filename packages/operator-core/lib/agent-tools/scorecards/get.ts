@@ -306,9 +306,9 @@ function boundedEvidenceRead(
       count = Math.max(1, Math.floor(count / 2));
       result = page();
     }
-    if (!fitsInlineResult(result, inlineBudgetChars)) {
-      return { ok: false as const, error: 'scorecard_metadata_exceeds_inline_budget' };
-    }
+    // Metadata can itself exceed this owner's inline allowance even after the
+    // recipe is removed. Preserve the complete page for the shared result door
+    // to spill with a recovery cursor instead of discarding it as an error.
     return result;
   }
   const pageRecipe = encodedRecipe !== undefined && encodedRecipe.length > inlineBudgetChars / 3;
@@ -361,13 +361,9 @@ function boundedEvidenceRead(
       count = Math.max(1, Math.floor(count / 2));
       index = page(count);
     }
-    if (!fitsInlineResult(index, inlineBudgetChars)) {
-      return {
-        ok: false as const,
-        error: 'scorecard_metadata_exceeds_inline_budget',
-        message: 'Scorecard metadata and one criterion index entry exceed the inline budget.',
-      };
-    }
+    // The result door owns the final transport budget and can spill this whole
+    // page. A local inline-budget refusal here would discard the only index or
+    // criterion cursor for an otherwise readable scorecard.
     return index;
   }
   const criterion = scorecard.criteria.find(({ key }) => key === args.criterionKey);
@@ -399,9 +395,8 @@ function boundedEvidenceRead(
     count = Math.max(1, Math.floor(count / 2));
     result = page();
   }
-  if (!fitsInlineResult(result, inlineBudgetChars)) {
-    return { ok: false as const, error: 'scorecard_metadata_exceeds_inline_budget' };
-  }
+  // Keep the complete page when non-evidence metadata is the part that cannot
+  // fit inline; the shared result door can expose it through a recoverable ref.
   return result;
 }
 
@@ -409,13 +404,13 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read ONE rubric scorecard by issue id using an evidence-first projection. Pass issueId (preferred) or id (compatibility alias); issueId wins. Stored evidenceFingerprint identifies the evidence scope. A validated rerunRecipe is included when it fits; oversized recipes expose rerunRecipeRead.read. Follow its next cursors, concatenate the exact JSON chunks and parse only when complete. Audit metadata stays present on every page. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index; follow evidenceRead.next until the index is assembled, then read each criterion and concatenate its pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; indexOffset resumes an index page; evidenceOffset resumes a criterion page; rerunRecipeOffset resumes a recipe page. History-only payload is omitted.',
+    'Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted.',
   guidance: {
-    when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation; generic id-based callers may use id as a compatibility alias.',
+    when: 'Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias.',
     notWhen:
-      'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
+      'Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.',
     chaining:
-      'When rerunRecipeRead is present, follow read and next sequentially, concatenate JSON chunks and parse only when complete. Page evidenceRead.next until the criterion index is complete, then fetch each criterion’s evidence pages in small Promise.all groups; read one criterion’s pages sequentially. Resolve papercusp.output-envelope/v1 envelopes with capability:read before reading scorecard.criteria. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
+      'Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last.',
     returns:
       'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],

@@ -1,16 +1,26 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 
-const { advSessionRowsMock, advSessionBeginMock, acquireTimeouts } = vi.hoisted(() => {
+const { advSessionRowsMock, advSessionBeginMock, acquireTimeouts, acquireRetries } = vi.hoisted(() => {
   const sql = vi.fn(async () => [] as unknown[]);
   const begin = vi.fn(async (fn: (tx: typeof sql) => unknown) => fn(sql));
-  return { advSessionRowsMock: sql, advSessionBeginMock: begin, acquireTimeouts: [] as number[] };
+  return {
+    advSessionRowsMock: sql,
+    advSessionBeginMock: begin,
+    acquireTimeouts: [] as number[],
+    acquireRetries: [] as Array<number | undefined>,
+  };
 });
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
     getOrgPg: () => ({ sql: Object.assign(advSessionRowsMock, { begin: advSessionBeginMock }) }),
+    retryOnRetryableDbDeadline: ((...args: Parameters<typeof actual.retryOnRetryableDbDeadline>) => {
+      acquireRetries.push(args[1]?.retries);
+      return actual.retryOnRetryableDbDeadline(...args);
+    }) as typeof actual.retryOnRetryableDbDeadline,
     withAcquisitionDeadline: ((...args: Parameters<typeof actual.withAcquisitionDeadline>) => {
       acquireTimeouts.push(args[1].ms);
       return actual.withAcquisitionDeadline(...args);
@@ -47,6 +57,7 @@ beforeEach(() => {
   advSessionBeginMock.mockReset();
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
   acquireTimeouts.length = 0;
+  acquireRetries.length = 0;
 });
 
 function advSessionTableReads(): unknown[][] {
@@ -80,6 +91,19 @@ describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', ()
     expect(statements[2]).toContain('FROM harness_shared.adv_sessions');
     expect(acquireTimeouts).toContain(7_500);
     expect(acquireTimeouts).not.toContain(1_000);
+    expect(acquireRetries).toEqual([0]);
+  });
+
+  it('fails closed after one retryable acquisition timeout without retrying a queued begin', async () => {
+    const timeout = new DbCallDeadlineError('boundedOrgTxn:begin(admin)', 7_500, 7_500, 'org-admin');
+    Object.defineProperty(timeout, 'retryable', { value: true });
+    advSessionBeginMock.mockRejectedValue(timeout);
+
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId })).rejects.toBe(timeout);
+
+    expect(advSessionBeginMock).toHaveBeenCalledTimes(1);
+    expect(advSessionRowsMock).not.toHaveBeenCalled();
+    expect(acquireRetries).toEqual([0]);
   });
 
   it.each(['missing', 'owned by another session'])('does not replace an explicit %s row with another matching owner row', async () => {

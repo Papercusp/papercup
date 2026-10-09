@@ -62,7 +62,20 @@ const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
     unsafe: async (..._a: unknown[]) => [] as unknown[],
   });
-  const fakeSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
+  const kernelAuthority = {
+    rows: null as Array<Record<string, unknown>> | null,
+    launchRecord: null as { launch_spec: unknown; launch_spec_xmin: string } | null,
+  };
+  const fakeSql = Object.assign(async (...args: unknown[]) => {
+    const template = args[0];
+    const query = Array.isArray(template) ? template.join(' ') : typeof template === 'string' ? template : '';
+    if (kernelAuthority.launchRecord && query.includes('AS launch_spec, n.launch_spec_xmin')) {
+      return [kernelAuthority.launchRecord];
+    }
+    if (kernelAuthority.rows && query.includes('FROM harness_shared.session_briefs') &&
+        query.includes('FROM harness_shared.adv_sessions s')) return kernelAuthority.rows;
+    return [] as unknown[];
+  }, {
     unsafe: async (..._a: unknown[]) => [] as unknown[],
     begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
   });
@@ -71,6 +84,7 @@ const h = vi.hoisted(() => {
     signingRows: null as null | Array<{ value_b64: string; rotated_at: string }>,
     fakeTx,
     fakeSql,
+    kernelAuthority,
     nativeSessionBinding: 'unbound' as 'bound' | 'unbound' | 'foreign',
     nativeSessionRows: null as Map<string, Array<{ id: number; session_id: string | null; active: boolean }>> | null,
     nativeSessionVerifierFailure: null as { sessionId: string; error: Error } | null,
@@ -2015,6 +2029,8 @@ beforeEach(() => {
   _resetBatchNudgeState();
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
   h.getSessionBrief.mockResolvedValue(null);
+  h.kernelAuthority.rows = null;
+  h.kernelAuthority.launchRecord = null;
   seen.length = 0;
   h.resourceReads.length = 0;
   deltaRequested.length = 0;
@@ -5613,6 +5629,26 @@ describe('successful native-session audit (get-feedback D-006)', () => {
   it('retains exact native call correlation only with a bound per-call thread', async () => {
     const native = 'native-owner-session', callId = 'call_exact-native-item';
     h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+    // A concrete workspace requires the persisted adv_sessions authority row.
+    // Keep this row deliberately ungoverned: the case tests correlation binding,
+    // not the identity-grant policy attached to a launched agent.
+    h.kernelAuthority.rows = [{
+      control_state: null,
+      control_generation: null,
+      workspace_id: 'ws-test',
+      adv_session_id: 541,
+      adv_session_xmin: 'native-test-row-version',
+      launch_header_known: false,
+      launch_spec_type: 'object',
+      launch_spec_workspace_id: 'ws-test',
+      launch_spec_harness_slug: 'papercup',
+      launch_spec_has_accepted_operation: false,
+      launch_spec_accepted_operation: null,
+    }];
+    h.kernelAuthority.launchRecord = {
+      launch_spec: { workspaceId: 'ws-test', harnessSlug: 'papercup' },
+      launch_spec_xmin: 'native-test-row-version',
+    };
     const meta = { threadId: native, callId };
     const extra = { ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>), _meta: meta };
     const res = await callTool('gatingtest:scoped', {}, extra, meta);

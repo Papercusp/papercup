@@ -259,17 +259,18 @@ function createOrientPhaseTracker() {
 }
 
 export function withOrientAggregateTimeout<T>(
-  work: Promise<T> | (() => Promise<T>),
+  work: Promise<T> | ((aggregateDeadlineAtMs: number) => Promise<T>),
   fallback: T,
   onTimeout?: (elapsedMs: number) => void,
   callerDeadlineAtMs?: number,
 ): Promise<T> {
+  const startedAtMs = Date.now();
   // A nested code:run may have only 30s (or a reduced post-preflight budget). Its worker
   // cannot consume our flat 45s fallback after it dies. Honor the remaining absolute budget
   // without widening either deadline, preserving the same honest unknown/partial snapshot.
   const timeoutMs = typeof callerDeadlineAtMs === 'number' && Number.isFinite(callerDeadlineAtMs)
     ? Math.max(0, Math.min(ORIENT_AGGREGATE_TIMEOUT_MS,
-      callerDeadlineAtMs - Date.now() - ORIENT_PARENT_DEADLINE_HEADROOM_MS))
+      callerDeadlineAtMs - startedAtMs - ORIENT_PARENT_DEADLINE_HEADROOM_MS))
     : ORIENT_AGGREGATE_TIMEOUT_MS;
   if (timeoutMs === 0) {
     try {
@@ -279,7 +280,9 @@ export function withOrientAggregateTimeout<T>(
     }
     return Promise.resolve(fallback);
   }
-  return withBoundedTimeout(work, {
+  const aggregateDeadlineAtMs = startedAtMs + timeoutMs;
+  const boundedWork = typeof work === 'function' ? () => work(aggregateDeadlineAtMs) : work;
+  return withBoundedTimeout(boundedWork, {
     fallback,
     timeoutMs,
     label: 'orient:aggregate',
@@ -1149,6 +1152,10 @@ export async function composeOrient(
    *  starts the canonical reader beside the portfolio read and injects this
    *  closure so composition remains IO-free and the two waits overlap. */
   obligationsFold?: OrientObligationsFold,
+  /** Absolute deadline for the composed response, with handler serialization
+   *  headroom already reserved. The final declaration leg must not claim a fresh
+   *  full 8s after preceding sequential folds consumed most of the response budget. */
+  aggregateDeadlineAtMs?: number,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   const reportProgress = (snapshot: OrientResult): void => {
@@ -2725,24 +2732,34 @@ export async function composeOrient(
     // timeout degrades identically to the pre-existing catch-based failure contract
     // (`intentDeclared: false`), so a caller must still re-verify the lane rather than
     // assume the write landed.
-    const declareResult = await withBoundedTimeout(
-      call('coord:declare-intent', {
-        intent: args.intent,
-        ...(args.planSlug ? { current_plan_slug: args.planSlug } : {}),
-        ...(planItemsForDeclaration !== undefined &&
-        (planItemsForDeclaration.length > 0 || args.planItems?.length === 0)
-          ? { items: planItemsForDeclaration }
-          : {}),
-        ...(args.harness ? { harness: args.harness } : {}),
-        ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
-      }),
-      { fallback: undefined, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label: 'orient:coord:declare-intent' },
-    );
-    if (declareResult.degraded) {
+    const remainingAggregateMs = Number.isFinite(aggregateDeadlineAtMs)
+      ? aggregateDeadlineAtMs! - Date.now()
+      : ORIENT_CORE_LEG_TIMEOUT_MS;
+    const declareTimeoutMs = Math.min(ORIENT_CORE_LEG_TIMEOUT_MS, remainingAggregateMs);
+    if (declareTimeoutMs <= 0) {
+      // The parent response fence is closer than this final best-effort write's
+      // ordinary leg budget. Do not start a write that cannot be observed in time.
       result.intentDeclared = false;
     } else {
-      declared = declareResult.value as { claims?: unknown } | undefined;
-      result.intentDeclared = true;
+      const declareResult = await withBoundedTimeout(
+        call('coord:declare-intent', {
+          intent: args.intent,
+          ...(args.planSlug ? { current_plan_slug: args.planSlug } : {}),
+          ...(planItemsForDeclaration !== undefined &&
+          (planItemsForDeclaration.length > 0 || args.planItems?.length === 0)
+            ? { items: planItemsForDeclaration }
+            : {}),
+          ...(args.harness ? { harness: args.harness } : {}),
+          ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
+        }),
+        { fallback: undefined, timeoutMs: declareTimeoutMs, label: 'orient:coord:declare-intent' },
+      );
+      if (declareResult.degraded) {
+        result.intentDeclared = false;
+      } else {
+        declared = declareResult.value as { claims?: unknown } | undefined;
+        result.intentDeclared = true;
+      }
     }
     // EI-20013545515660920: surface the lane-claim OUTCOME instead of dropping it.
     // declare-intent already computed it; discarding it here is what made a failed
@@ -3443,13 +3460,17 @@ export default defineTool({
   // Deleting them to "finish" the uncapping would remove the degradation path
   // and re-open the 2026-07-01 43k-token incident (P-012).
   ignoreSessionPayloadTier: true,
-  // Keep the existing handler body byte-stable; the aggregate fence is the only wrapper change.
+  // The outer response fence and compose deadline share one clock so late best-effort
+  // writes cannot silently consume a fresh leg budget at the end of the call.
   // prettier-ignore
   async handler(args, ctx) {
     const aggregateFallback = createOrientAggregateFallback();
     const phaseTracker = createOrientPhaseTracker();
     const aggregate = await withOrientAggregateTimeout(
-      async () => {
+      async (aggregateResponseDeadlineAtMs) => {
+    // Leave one more second between composition and the stable aggregate fallback
+    // so the handler can serialize an honest partial result if another fold uses the window.
+    const composeDeadlineAtMs = aggregateResponseDeadlineAtMs - ORIENT_PARENT_DEADLINE_HEADROOM_MS;
     // Soft identity resolve — orient is a READ; a bare loopback caller without an
     // attributable coord identity still gets a (fleet-wide) orientation.
     let ownerId: string | undefined;
@@ -3947,6 +3968,7 @@ export default defineTool({
       (snapshot) => snapshotOrientAggregate(aggregateFallback, snapshot),
       goalPortfolioPromise ? () => goalPortfolioPromise : undefined,
       goalObligationsPromise ? () => goalObligationsPromise : undefined,
+      composeDeadlineAtMs,
     ));
     // Await the already-running recovery only after composeOrient completes;
     // this preserves the existing fold output while keeping the two budgets
