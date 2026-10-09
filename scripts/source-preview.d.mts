@@ -92,26 +92,28 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
 }[];
 /** Internal verification export: no public selection, scrub, publish or working-tree overlay.
  * The caller retains this receipt outside the export, then verifies it before execution.
- * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string}} options
+ * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
  */
-export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile }: {
+export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout }: {
     repo: string;
     ref: string;
     dest: string;
     inputs?: string[];
     inputsFile?: string;
+    gitCheckout?: boolean;
 }): Promise<{
-    schemaVersion: string;
-    sourceCommit: string;
-    submodules: {
-        path: string;
-        sha: string;
-    }[];
     testedInputs: {
         path: string;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
+    gitCheckout?: {
+        parentCommit: string;
+        trackedFilesHash: string;
+    } | undefined;
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: any[];
 }>;
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
@@ -122,17 +124,18 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile }: {
 export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
     runtimeArtifacts?: boolean;
 }): Promise<{
-    schemaVersion: string;
-    sourceCommit: string;
-    submodules: {
-        path: string;
-        sha: string;
-    }[];
     testedInputs: {
         path: string;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
+    gitCheckout?: {
+        parentCommit: string;
+        trackedFilesHash: string;
+    } | undefined;
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: any[];
 }>;
 /** Synchronous boundary for hooks such as Playwright onBegin, whose return
  * value is not awaited. Uses the same source population and receipt checks.
@@ -143,17 +146,18 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
 export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
     runtimeArtifacts?: boolean;
 }): {
-    schemaVersion: string;
-    sourceCommit: string;
-    submodules: {
-        path: string;
-        sha: string;
-    }[];
     testedInputs: {
         path: string;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
+    gitCheckout?: {
+        parentCommit: string;
+        trackedFilesHash: string;
+    } | undefined;
+    schemaVersion: string;
+    sourceCommit: string;
+    submodules: any[];
 };
 export function noticeText(manifest: any): string;
 /**

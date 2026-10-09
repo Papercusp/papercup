@@ -42,8 +42,9 @@ beforeEach(() => {
   let revision = 0;
   vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
     const patch = init?.body ? JSON.parse(init.body) : null;
+    const version = String(_url).includes("version=2") ? 2 : CLOUD_TUTORIAL_VERSION;
     return new Response(JSON.stringify({ record: { revision: patch ? ++revision : revision, mutationId: patch?.mutationId ?? null,
-      progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version: CLOUD_TUTORIAL_VERSION, disposition: patch?.disposition ?? "active" } } }));
+      progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version, disposition: patch?.disposition ?? "active" } } }));
   }));
 });
 afterEach(() => {
@@ -53,8 +54,8 @@ afterEach(() => {
   expect(routeError).toBeUndefined();
 });
 describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
-  it("selects only an authorized healthy prepared workspace without provisioning or asking for credentials", async () => {
-    data.rows = [connection, { ...workspace, health: { status: "healthy", checks: [] }, estimatedMonthlyUsd: 18.5 },
+  it.each(["gcp", "aws"])("selects an authorized healthy %s prepared workspace with provider-neutral cost guidance and no provisioning", async target => {
+    data.rows = [{ ...connection, id: target, target }, { ...workspace, target, connectionId: target, health: { status: "healthy", checks: [] }, estimatedMonthlyUsd: 18.5 },
       { ...workspace, id: "stopped", name: "Stopped", desiredState: "stopped" },
       { ...workspace, id: "unhealthy", name: "Unhealthy", health: { status: "unhealthy", checks: [] } }];
     const { router } = mount();
@@ -64,6 +65,13 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     expect(within(entry).queryAllByRole("button", { name: /Use prepared workspace/ })).toHaveLength(1);
     fireEvent.click(within(entry).getByRole("button", { name: "Use prepared workspace My workspace" }));
     await waitFor(() => expect(router.state.location.search).toMatchObject({ host: "customer", step: "operate", tab: "cost" }));
+    const guide = await screen.findByRole("region", { name: "First agent guide" });
+    await within(guide).findByRole("heading", { name: "Review configuration and cost" });
+    expect(within(guide).getByText(/Your cloud provider bills for provisioned resources, including retained disks/)).toBeTruthy();
+    expect(guide.textContent).not.toContain("Google Cloud bills");
+    const cost = document.querySelector<HTMLElement>('[data-tutorial-target="cloud-configuration"]')!;
+    expect(within(cost).getByText(/Your cloud provider bills for provisioned resources and retained disks/)).toBeTruthy();
+    expect(cost.textContent).not.toContain("Google Cloud bills");
     expect(screen.queryByRole("textbox", { name: "Connection label" })).toBeNull();
     expect(data.mutate).not.toHaveBeenCalled();
   });

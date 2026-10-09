@@ -52,7 +52,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { verifierSourceFiles, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError } from '@papercusp/operator-core/lib/verifier-source';
+import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -388,9 +388,9 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
 
 /** Internal verification export: no public selection, scrub, publish or working-tree overlay.
  * The caller retains this receipt outside the export, then verifies it before execution.
- * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string}} options
+ * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
  */
-export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile }) {
+export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false }) {
   if (inputsFile !== undefined) {
     const listed = JSON.parse(await fs.readFile(inputsFile, 'utf8'));
     if (!Array.isArray(listed) || !listed.length || listed.some((path) => typeof path !== 'string')) {
@@ -408,11 +408,24 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
   }
   if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
   const sha = resolveCommit(repo, ref);
-  await fs.mkdir(dest, { recursive: true });
+  if (gitCheckout) {
+    // Reuse the guarded local clone: detached exact ref, borrowed objects, local
+    // submodule pins, no origins, and cleanup only of its own new destination.
+    const { createScratchClone } = await import('@papercusp/operator-core/lib/scratch-git-clone');
+    await createScratchClone({ source: repo, ref: sha, destination: dest, includeSubmodules: true });
+  } else await fs.mkdir(dest, { recursive: true });
   try {
     // Unlike the public export, verification includes desktop/helper gitlinks too.
     const allow = new Set(git(repo, ['ls-tree', '--name-only', sha]).trim().split('\n'));
-    const submodules = materializeCommit({ repo, sha, dest, allow });
+    const submodules = gitCheckout
+      ? [...function* collect(source, commit, prefix = '') {
+        for (const link of listGitlinks(source, commit)) {
+          const path = prefix ? `${prefix}/${link.path}` : link.path;
+          yield { path, sha: link.sha };
+          yield* collect(join(source, link.path), link.sha, path);
+        }
+      }(repo, sha)]
+      : materializeCommit({ repo, sha, dest, allow });
     const testedInputs = [];
     for (const path of paths) {
       const archived = join(dest, path);
@@ -426,8 +439,10 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
       }
       testedInputs.push({ path, sha256: digest });
     }
+    const checkout = gitCheckout ? verifierGitCheckoutSync(dest, sha, submodules) : undefined;
+    const gitMetadataPaths = checkout ? ['.git', ...submodules.map(row => `${row.path}/.git`)] : [];
     const manifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
-      testedInputs, files: verifierSourceFiles(dest) };
+      ...(checkout ? { gitCheckout: checkout } : {}), testedInputs, files: verifierSourceFiles(dest, { gitMetadataPaths }) };
     await fs.writeFile(join(dest, '.verifier-source.json'), `${JSON.stringify(manifest)}\n`, { flag: 'wx' });
     return manifest;
   } catch (error) {
@@ -1337,6 +1352,7 @@ function parseArgs(argv) {
     const a = rest[i];
     if (a === '--confirm') opts.confirm = true;
     else if (a === '--runtime-artifacts') opts.runtimeArtifacts = true;
+    else if (a === '--git-checkout') opts.gitCheckout = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
     else if (a === '--inputs-file') {
       const path = rest[++i];
@@ -1367,7 +1383,7 @@ async function main(argv) {
         throw new PreviewError('verifier preparation requires explicit --repo, --ref and --inputs or --inputs-file', 2);
       }
       const receipt = await prepareVerifierSource({ repo: opts.repo, ref: opts.ref, dest: opts.out,
-        inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'] });
+        inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], gitCheckout: opts.gitCheckout === true });
       await fs.writeFile(opts.receipt, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
     }
     await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')),

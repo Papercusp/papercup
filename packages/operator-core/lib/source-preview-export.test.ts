@@ -226,6 +226,70 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow(`tampered verification source archive: changed ${input}`);
   });
 
+  it('prepares real Git parent and recursive index semantics without changing the exported source population', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-checkout-fixture'));
+    git(fixture.repo, ['commit', '--allow-empty', '-m', 'second verifier revision']);
+    const head = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const dest = join(tmp, 'verifier-checkout');
+    const archive = await prepareVerifierSource({ repo: fixture.repo, ref: head,
+      dest: join(tmp, 'verifier-checkout-archive'), inputs: [input] });
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: head, dest, inputs: [input], gitCheckout: true });
+    expect(receipt.files).toEqual(archive.files);
+    expect(receipt.testedInputs).toEqual(archive.testedInputs);
+    expect(receipt.gitCheckout?.parentCommit).toBe(fixture.commit);
+    expect(git(dest, ['rev-parse', 'HEAD^'])).toBe(fixture.commit);
+    expect(git(dest, ['ls-files', '--recurse-submodules'])).toContain('libs/papercusp/package.json');
+    expect(git(dest, ['remote'])).toBe('');
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+
+    // Source-byte identity alone cannot detect a changed index.
+    git(dest, ['rm', '--cached', '--', input]);
+    expect(readFileSync(join(dest, input))).toEqual(readFileSync(join(fixture.repo, input)));
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification Git checkout');
+  });
+
+  it('preserves unlisted gitlinks and original named mappings in a real verifier checkout', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-unlisted-fixture'));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const unlisted = 'apps/unlisted';
+    git(fixture.repo, ['clone', '--quiet', '--shared', '--', fixture.subSrc, unlisted]);
+    git(fixture.repo, ['update-index', '--add', '--cacheinfo', `160000,${fixture.subCommit},${unlisted}`]);
+    git(fixture.repo, ['commit', '-m', 'unlisted verifier gitlink']);
+    const mappings = readFileSync(join(fixture.repo, '.gitmodules'));
+    const head = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const archive = await prepareVerifierSource({ repo: fixture.repo, ref: head,
+      dest: join(tmp, 'verifier-unlisted-archive'), inputs: [input] });
+    const dest = join(tmp, 'verifier-unlisted-checkout');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: head,
+      dest, inputs: [input], gitCheckout: true });
+    expect(receipt.files).toEqual(archive.files);
+    expect(receipt.submodules).toEqual(archive.submodules);
+    expect(readFileSync(join(dest, '.gitmodules'))).toEqual(mappings);
+    expect(git(join(dest, unlisted), ['rev-parse', 'HEAD'])).toBe(fixture.subCommit);
+    expect(git(dest, ['ls-files', '--recurse-submodules'])).toContain('libs/papercusp/package.json');
+    expect(git(dest, ['config', '--get-regexp', '^submodule\\..*\\.url$'])).not.toContain(unlisted);
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+    git(join(dest, unlisted), ['rm', '--cached', '--', 'package.json']);
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification Git checkout');
+  });
+
+  it('refuses an unreadable parent or submodule checkout before verification runs', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-checkout-parent-fixture'));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const noParent = join(tmp, 'verifier-checkout-no-parent');
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest: noParent,
+      inputs: [input], gitCheckout: true })).rejects.toThrow('HEAD^');
+    expect(existsSync(noParent)).toBe(false);
+
+    git(fixture.repo, ['commit', '--allow-empty', '-m', 'with parent']);
+    const dest = join(tmp, 'verifier-checkout-submodule');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [input], gitCheckout: true });
+    const submodule = receipt.submodules[0];
+    writeFileSync(join(dest, submodule.path, '.git', 'HEAD'), 'invalid checkout identity\n');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('verification Git');
+  });
+
   it('refuses an older committed tested input and cleans the incomplete export', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-dirty-fixture'));
     const dest = join(tmp, 'verifier-dirty-export');

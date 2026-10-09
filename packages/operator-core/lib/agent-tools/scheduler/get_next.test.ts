@@ -1337,6 +1337,18 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     await expectPreflightTimeout('fleet-pause-state');
   });
 
+  it('bounds the fleet-leader liveness roster read before any claim attempt', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev1', revision: 1 } },
+    };
+    reconcileFleetScopeClaimsM.mockResolvedValue({ scope: scopeState.scope, quarantinedIds: [] });
+    reconcileFleetScopeLeaderSuccessionM.mockImplementation(() => new Promise(() => {}));
+    await expectPreflightTimeout('fleet-leader-liveness');
+  });
+
   it('identifies the context-pressure flag when its preflight read stalls', async () => {
     reconcileFleetScopeClaimsM.mockResolvedValue({ scope: null, quarantinedIds: [] });
     getFlagM.mockImplementation(() => new Promise(() => {}));
