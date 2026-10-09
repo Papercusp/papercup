@@ -8,7 +8,7 @@ const { advSessionRowsMock, advSessionBeginMock, acquireTimeouts, acquireRetries
   return {
     advSessionRowsMock: sql,
     advSessionBeginMock: begin,
-    acquireTimeouts: [] as number[],
+    acquireTimeouts: [] as Array<number | undefined>,
     acquireRetries: [] as Array<number | undefined>,
   };
 });
