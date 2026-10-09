@@ -680,7 +680,7 @@ function stripTerminalControl(text: string): string {
 
 /** psu prints its own refusals as whole `psu: …` lines, so the whole line is the reason. */
 const PSU_FAILURE_LINE =
-  /^psu(?:-pty-host)?: .*(?:refus|requires|must|could not|cannot|can only|failed|no session|not found|not all present|unavailable|DROPPED|still in progress)/i;
+  /^psu(?:-pty-host)?: .*(?:refus|requires|must|could not|cannot|can only|failed|no session|not found|not all present|unavailable|unrecoverable|DROPPED|still in progress)/i;
 /**
  * The CLI's own failures arrive inside TUI output drawn with cursor-movement
  * escapes, not newlines, so they sit mid-way through one long rendered "line"
