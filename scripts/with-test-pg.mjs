@@ -35,6 +35,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -76,6 +77,11 @@ const { startEmbeddedPostgresServer } = await import(
   '../libs/papercusp/packages/embedded-postgres-server/src/index.js'
 );
 
+// Reuse the test launcher's capacity policy before initdb or migration writes.
+ensurePapercuspTmpdir();
+if (!tmpdirHasCriticalHeadroom(tmpdir())) {
+  throw new Error('private Postgres storage preflight failed: no temporary volume has critical headroom');
+}
 const dataDir = await mkdtemp(join(tmpdir(), 'papercusp-test-pg-'));
 const runtimeRoot = isolatedRuntime ? await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-')) : null;
 const runtimeId = isolatedRuntime ? `test-runtime-${randomUUID().slice(0, 12)}` : null;
@@ -434,6 +440,15 @@ if (observedRuntime && resolve(cmd[0]) !== process.execPath) {
 }
 const childArgs = observedRuntime
   ? ['--import', join(ROOT, 'scripts/lib/isolated-runtime-start.mjs'), ...cmd.slice(1)] : cmd.slice(1);
+// Integration setup has its own admin resolver. Pin it to this supervisor's
+// actual private cluster in every mode, without changing the product's
+// HARNESS_* env-resolution cases in the ordinary wrapper.
+const testAdminUrl = new URL(pg.urls.admin);
+if (!['postgres:', 'postgresql:'].includes(testAdminUrl.protocol) ||
+    !['localhost', '127.0.0.1', '[::1]'].includes(testAdminUrl.hostname) || testAdminUrl.port !== String(port) ||
+    !testAdminUrl.username || !testAdminUrl.pathname.slice(1)) {
+  throw new Error('private integration admin preflight failed: URL does not identify the owned Postgres');
+}
 child = spawn(cmd[0], childArgs, {
   cwd: ROOT,
   stdio: observedRuntime ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit',
@@ -455,6 +470,7 @@ child = spawn(cmd[0], childArgs, {
     // a CLI) must also never resolve the *product's* live embedded PG.
     PAPERCUSP_SKIP_PG_DISCOVERY: '1',
     ...runtimeEnv,
+    PAPERCUSP_TEST_PG_ADMIN_URL: testAdminUrl.toString(),
     ...(observedRuntime ? { PC_ISOLATED_RUNTIME_START_TOKEN: startToken } : {}),
   },
   detached: isolatedRuntime,
