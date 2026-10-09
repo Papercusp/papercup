@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { Browser, BrowserContext, BrowserServer, Page, Route } from 'playwright-core';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -34,6 +35,7 @@ const MAX_REQUESTS = 100;
 interface ActiveOperation {
   controller: AbortController;
   ctx?: UnifiedToolContext;
+  deps?: BrowserDeps;
   profile: OperationBoundaryProfile;
   bytes: number;
   requests: number;
@@ -47,8 +49,9 @@ interface Session {
   closing?: Promise<void>;
   state: 'live' | 'closing' | 'closed' | 'lost'; reason?: string; endedAt?: number; processEnded: boolean;
 }
-const sessions = new Map<string, Session>();
-const openings = new Map<string, number>();
+const { sessions, openings } = pinModuleState('@papercusp/operator-core.browser-sessions', () => ({
+  sessions: new Map<string, Session>(), openings: new Map<string, number>(),
+}));
 
 export function browserScope(ctx: UnifiedToolContext): string {
   if (!ctx.workspaceId?.trim()) throw new Error('browser_workspace_required');
@@ -103,7 +106,7 @@ export interface BrowserDeps {
   profile: (ctx: UnifiedToolContext) => Promise<OperationBoundaryProfile>;
   fetch: typeof fetchWithCapabilityPolicy;
 }
-const defaultDeps: BrowserDeps = {
+export const defaultBrowserDeps: BrowserDeps = {
   launch: launchBrowserProcess,
   profile: async (ctx) => (await capabilityExecSandboxPolicy(ctx)).profile,
   fetch: fetchWithCapabilityPolicy,
@@ -151,9 +154,10 @@ function armIdle(session: Session): void {
   session.idle.unref?.();
 }
 
-async function relay(session: Session, route: Route, deps: BrowserDeps): Promise<void> {
+async function relay(session: Session, route: Route): Promise<void> {
   const active = session.active;
-  if (!active || active.controller.signal.aborted) { await route.abort('blockedbyclient').catch(() => {}); return; }
+  if (!active?.deps || active.controller.signal.aborted) { await route.abort('blockedbyclient').catch(() => {}); return; }
+  const deps = active.deps;
   let release: (() => Promise<void>) | undefined;
   try {
     if (active.ctx) {
@@ -183,6 +187,7 @@ async function relay(session: Session, route: Route, deps: BrowserDeps): Promise
     });
     await route.fulfill({ status: response.response.status, headers: outputHeaders, body: bytes });
   } catch (error) {
+    if (String(error).includes('browser_authority_changed')) active.controller.abort();
     if (active.failures.length < 10) active.failures.push(error instanceof Error ? error.message : String(error));
     await route.abort('blockedbyclient').catch(() => {});
   } finally { await release?.(); }
@@ -191,11 +196,14 @@ async function relay(session: Session, route: Route, deps: BrowserDeps): Promise
 /** Current transport authority is required on every operation; no caller-supplied scope or profile. */
 export async function runBrowserSession(
   args: BrowserSessionArgs, url: string | undefined, ctx: UnifiedToolContext,
-  opts: { timeoutMs: number; maxText: number }, deps: BrowserDeps = defaultDeps,
+  opts: { timeoutMs: number; maxText: number }, deps: BrowserDeps = defaultBrowserDeps,
+  // Internal owner-RPC route has already resolved the actual transport identity.
+  // This is never part of the tool schema or model-authored arguments.
+  resolvedScope?: string,
 ) {
   const deadline = Date.now() + opts.timeoutMs;
   const remaining = () => { const ms = deadline - Date.now(); if (ms <= 0 || ctx.signal?.aborted) throw new Error('browser_operation_aborted'); return ms; };
-  const scope = browserScope(ctx);
+  const scope = resolvedScope ?? browserScope(ctx);
   const reply = (payload: unknown, image?: Buffer) => ({ content: [
     { type: 'text' as const, text: JSON.stringify(payload) },
     ...(image ? [{ type: 'image' as const, data: image.toString('base64'), mimeType: 'image/png' }] : []),
@@ -238,7 +246,7 @@ export async function runBrowserSession(
       } finally { clearTimeout(setupTimer); ctx.signal?.removeEventListener('abort', stopSetup); }
       session = { ...launched, id, root, scope, authority, context, page, state: 'live', busy: false, processEnded: false };
       const current = session;
-      await context.route('**/*', (route) => relay(current, route, deps));
+      await context.route('**/*', (route) => relay(current, route));
       context.on('page', (extra) => { if (extra !== page) void extra.close(); });
       launched.server.on('close', () => { current.processEnded = true; if (current.state === 'live') { current.state = 'lost'; current.reason = 'browser-process-ended'; current.endedAt = Date.now(); current.active?.controller.abort(); } });
       sessions.set(id, session);
@@ -253,7 +261,7 @@ export async function runBrowserSession(
   }
   if (!session) return reply({ ok: false, error: 'browser_unrecoverable' });
   session.busy = true; if (session.idle) clearTimeout(session.idle);
-  const active: ActiveOperation = { controller: new AbortController(), ctx, profile, requests: 0, bytes: 0, failures: [] };
+  const active: ActiveOperation = { controller: new AbortController(), ctx, deps, profile, requests: 0, bytes: 0, failures: [] };
   session.active = active;
   const abort = () => active.controller.abort();
   if (ctx.signal?.aborted) abort(); else ctx.signal?.addEventListener('abort', abort, { once: true });

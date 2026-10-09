@@ -377,14 +377,14 @@ export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope
   const filter: FilterNode | undefined = filters.some(value => value === undefined)
     ? undefined : uniqueFilters.length === 1 ? uniqueFilters[0] : { any: uniqueFilters as FilterNode[] };
   const issueWorkspace = issuesScopeWorkspace();
-  const rows = await sql<Array<{ feature_id: string }>>`
+  const identities = sql`
     SELECT wi.feature_id FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ANY(${[activeWorkspaceId(), issueWorkspace]}::text[])
        AND wi.harness_slug = ANY(${[scope.scope.harness, `operator:${issueWorkspace}`]}::text[])
        AND (${compileFilter(sql, filter)})`;
   return listAllWorkItemsForFileExport({
     harness: scope.scope.harness, includeObservations: true,
-    ids: rows.map(row => row.feature_id),
+    ids: identities,
     payloadProjection: 'fleetMetrics',
   });
 }

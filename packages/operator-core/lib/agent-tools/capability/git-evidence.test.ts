@@ -118,6 +118,76 @@ describe('capability:git-evidence', () => {
     expect(confirmedNotRepository).toMatchObject({ ok: false, reason: 'not_git_repository' });
   });
 
+  it('distinguishes cancellation during pinned reads from a genuine Git failure', async () => {
+    const commitSha = 'a'.repeat(40);
+    const args = {
+      op: 'readFileAtCommit' as const,
+      commitSha,
+      path: 'large.txt',
+      rootHarnessSlug: 'portal',
+    };
+    const stages = ['commit', 'type', 'size', 'blob', 'size-failure'] as const;
+
+    for (const stage of stages) {
+      const controller = new AbortController();
+      const calls: string[][] = [];
+      const runner = async (argv: string[]) => {
+        calls.push(argv);
+        const interrupted =
+          stage === 'commit'
+            ? argv[0] === 'rev-parse' && argv[1] === '--verify'
+            : stage === 'type'
+              ? argv[0] === 'cat-file' && argv[1] === '-t'
+              : stage === 'size'
+                ? argv[0] === 'cat-file' && argv[1] === '-s'
+                : stage === 'blob'
+                  ? argv[0] === 'cat-file' && argv[1] === 'blob'
+                  : false;
+        if (interrupted) {
+          controller.abort();
+          return { code: null, output: '' };
+        }
+        if (argv[0] === 'rev-parse' && argv[1] === '--show-toplevel') {
+          return { code: 0, output: '/registered/portal\n' };
+        }
+        if (argv[0] === 'rev-parse' && argv[1] === '--verify') return { code: 0, output: `${commitSha}\n` };
+        if (argv[0] === 'cat-file' && argv[1] === '-t') return { code: 0, output: 'blob\n' };
+        if (argv[0] === 'cat-file' && argv[1] === '-s') {
+          return stage === 'size-failure'
+            ? { code: 128, output: 'fatal: simulated size probe failure' }
+            : { code: 0, output: '100\n' };
+        }
+        if (argv[0] === 'cat-file' && argv[1] === 'blob') return { code: 0, output: 'x'.repeat(100) };
+        throw new Error(`Unexpected Git invocation: ${argv.join(' ')}`);
+      };
+
+      const result = await runJudgeGitEvidence(args, {
+        repositoryDir: '/active',
+        workspaceId: 'test-workspace',
+        loadRegistry: async () => ({ projects: [{ slug: 'portal', path: '/registered/portal' }] }) as HarnessRegistry,
+        signal: controller.signal,
+        runner,
+      });
+
+      expect(result).toMatchObject(
+        stage === 'size-failure'
+          ? { ok: false, reason: 'file_size_unavailable', message: 'fatal: simulated size probe failure' }
+          : { ok: false, reason: 'git_command_interrupted' },
+      );
+      expect(calls[calls.length - 1]).toEqual(
+        expect.arrayContaining(
+          stage === 'commit'
+            ? ['rev-parse', '--verify']
+            : stage === 'type'
+              ? ['cat-file', '-t']
+              : stage === 'size' || stage === 'size-failure'
+                ? ['cat-file', '-s']
+                : ['cat-file', 'blob'],
+        ),
+      );
+    }
+  });
+
   it('reads external evidence from the registered workspace repository without substituting HEAD', async () => {
     const activeRoot = repository();
     const externalRoot = repository();

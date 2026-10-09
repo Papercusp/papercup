@@ -58,7 +58,8 @@ const { default: burnDownTool, buildFleetMetricsResult } = await import('./burn_
 const { default: leaderBriefTool, readLeaderBriefFleetMetrics } = await import('../fleet/leader-brief');
 const { resolveFleetMetricScope, readFleetMetricSourceItems } = await import('../fleet/fleet-metrics-scope');
 const { shapeLeaderBrief } = await import('../fleet/leader-brief-shape');
-const { explainIssueClaimFloors, listWorkItems, listAllWorkItemsForFileExport } = await import('../../work-items');
+const { explainIssueClaimFloors, listWorkItems, listAllWorkItemsForFileExport,
+  countWorkItems, countWorkItemsByState } = await import('../../work-items');
 const { FLEET_METRIC_ARCHIVE_KEYS, projectWorkItemColumns } = await import('../../work-item-read-projection');
 const { readIssueOccurrenceCounts } = await import('../../issue-occurrence-ledger');
 const { DEFAULT_CLAIM_SPEC } = await import('../../scheduler/claim-spec');
@@ -326,6 +327,20 @@ describe('default fleet reports over the real current-spec queue', () => {
               ${olderAt}, ${olderAt}, NULL),
              ('default', ${HARNESS}, 'WI-old-source-terminal', 'matched source stock', 'done', 'bug',
               ${olderAt}, ${olderAt}, ${olderAt})`;
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, parent_id,
+         created_ts, updated_ts, closed_ts)
+      VALUES ('default', ${HARNESS}, 'WI-source-feature', 'matched source stock', 'done', 'feature', NULL,
+              ${olderAt}, ${olderAt}, ${olderAt}),
+             ('default', ${HARNESS}, 'WI-source-task', 'matched source stock', 'open', 'task', NULL,
+              ${olderAt}, ${olderAt}, NULL),
+             ('default', ${HARNESS}, 'WI-source-child', 'matched source stock', 'open', 'bug', 'WI-source-task',
+              ${olderAt}, ${olderAt}, NULL),
+             ('foreign-workspace', ${HARNESS}, 'WI-source-foreign', 'matched source stock', 'open', 'bug', NULL,
+              ${olderAt}, ${olderAt}, NULL),
+             ('default', 'foreign-harness', 'WI-source-other-harness', 'matched source stock', 'open', 'bug', NULL,
+              ${olderAt}, ${olderAt}, NULL)`;
     const priorSpecs = await sql`SELECT revision, spec FROM harness_shared.cup_claim_specs
       WHERE workspace_id = 'default' AND bee_id = ${fleetSpecBeeKey(FLEET)}`;
     expect(priorSpecs).toHaveLength(1);
@@ -344,14 +359,32 @@ describe('default fleet reports over the real current-spec queue', () => {
     expect(resolution.ok).toBe(true);
     if (!resolution.ok) throw new Error(resolution.reason);
     expect(resolution.claimSpec.segments.some(segment => segment.source === 'history')).toBe(true);
-    const source = await readFleetMetricSourceItems(resolution);
+    // Capture the actual SQL boundary: two family hydration reads, with no
+    // standalone identity download followed by a large ID-array upload.
+    const queries: string[] = [];
+    const originalDebug = sql.options.debug;
+    sql.options.debug = (connection, query, parameters, types, queryId) => {
+      if (typeof originalDebug === 'function') originalDebug(connection, query, parameters, types, queryId);
+      queries.push(query);
+    };
+    let source: Awaited<ReturnType<typeof readFleetMetricSourceItems>>;
+    try { source = await readFleetMetricSourceItems(resolution); }
+    finally { sql.options.debug = originalDebug; }
+    expect(queries).toHaveLength(2);
     const selectedIds = new Set(source.map(item => item.id));
     const expectedIds = [
       ...ids, ...Array.from({ length: 2101 }, (_, index) => `WI-large-source-${index + 1}`),
-      'WI-old-source-stock', 'WI-old-source-terminal',
+      'WI-old-source-stock', 'WI-old-source-terminal', 'WI-source-feature', 'WI-source-task',
     ];
     expect(selectedIds).toEqual(new Set(expectedIds));
     expect(source).toHaveLength(expectedIds.length);
+    const selected = sql`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id = 'default' AND feature_id = ANY(${expectedIds}::text[])`;
+    const selectedFilter = { harness: HARNESS, includeObservations: true, ids: selected };
+    expect(await countWorkItems(selectedFilter)).toBe(expectedIds.length);
+    expect(await countWorkItemsByState(selectedFilter)).toEqual(await countWorkItemsByState({
+      harness: HARNESS, includeObservations: true, ids: expectedIds,
+    }));
     expect(source.find(item => item.id === 'WI-old-source-terminal')).toMatchObject({ state: 'done' });
     for (const id of ['WI-old-source-stock', 'WI-old-source-terminal']) {
       expect(Date.parse(source.find(item => item.id === id)!.createdAt!))

@@ -98,6 +98,18 @@ describe('managed browser authority and lifecycle', () => {
     resume(); expect((await first).result.content[1].type).toBe('image');
     expect((await f.call({ op: 'observe', id })).result.content).toHaveLength(1);
   });
+  it('uses the current operation callbacks rather than those that opened the browser', async () => {
+    const f = fixture(); const id = await f.open();
+    const current = { ...f.deps, profile: vi.fn(async () => trusted),
+      fetch: vi.fn(async () => ({ response: new Response('current'), release: vi.fn(async () => {}) })) } as unknown as BrowserDeps;
+    f.page.goto.mockImplementationOnce(async () => {
+      const route = request(); await f.relay()(route); expect(route.fulfill).toHaveBeenCalled();
+    });
+    const result = await runBrowserSession({ op: 'navigate', id }, 'https://example.com/', ctx(), { timeoutMs: 1000, maxText: 500 }, current);
+    expect(JSON.parse(result.content[0].text!).ok).toBe(true);
+    expect(current.fetch).toHaveBeenCalledOnce(); expect(f.deps.fetch).not.toHaveBeenCalled();
+    expect(current.profile).toHaveBeenCalledTimes(2);
+  });
   it('fails closed on launch/confinement failure and releases pending capacity', async () => {
     const f = fixture(); vi.mocked(f.deps.launch).mockRejectedValueOnce(new Error('capability_exec_confinement_unavailable'));
     expect((await f.call({ op: 'open' })).payload).toMatchObject({ ok: false, launchAttempted: true });
@@ -141,6 +153,14 @@ describe('managed browser authority and lifecycle', () => {
     const closed = await f.call({ op: 'close', id });
     expect(closed.payload.browser).toMatchObject({ state: 'closed', reason: 'idle-expired', restartRecovery: 'unrecoverable' });
     expect(f.server.close).toHaveBeenCalledOnce();
+  });
+  it('retains one browser registry when the module is evaluated again', async () => {
+    const f = fixture(); const id = await f.open();
+    vi.resetModules();
+    const reloaded = await import('./browser-session');
+    const result = await reloaded.runBrowserSession({ op: 'observe', id }, undefined, ctx(), { timeoutMs: 1000, maxText: 500 }, f.deps);
+    expect(JSON.parse(result.content[0].text!).ok).toBe(true);
+    expect(f.deps.launch).toHaveBeenCalledOnce();
   });
   it('preserves binary resources and cancels oversized or aggregate-exhausting streams', async () => {
     const active = () => ({ controller: new AbortController(), profile: trusted, requests: 0, bytes: 0, failures: [] as string[] });

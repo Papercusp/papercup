@@ -17,7 +17,8 @@ import { mcpEndpointHint } from './fetch-mcp-hint';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 import { heuristicScreener, labelExternalContent } from '../../external-content';
 import { resolveOperationBoundaryProfile } from './boundary-profile';
-import { browserSessionArg, runBrowserSession } from './browser-session';
+import { browserSessionArg } from './browser-session';
+import { runManagedBrowserSession } from './browser-owner';
 import {
   CapabilityFetchPolicyError,
   DEFAULT_MAX_REDIRECTS,
@@ -173,7 +174,7 @@ export default defineTool({
     if (args.browser && ['observe', 'close'].includes(args.browser.op) && args.url) ctx.addIssue({ code: 'custom', path: ['url'], message: 'url only accepted for open/navigation' });
   }),
   async handler(args, ctx) {
-    if (args.browser) return runBrowserSession(args.browser, args.url, ctx, {
+    if (args.browser) return runManagedBrowserSession(args.browser, args.url, ctx, {
       timeoutMs: Math.min(args.timeout_ms ?? DEFAULT_TIMEOUT_MS, 30_000), maxText: args.browser.max_text_chars ?? 10_000,
     });
     const maxDownloadBytes = args.max_download_bytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
