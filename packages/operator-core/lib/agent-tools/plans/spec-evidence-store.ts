@@ -9,7 +9,11 @@ import { z } from 'zod';
 import ts from 'typescript';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
-import { parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
+import {
+  MAX_RECORDED_PASSED_CASES,
+  parseTestRunExecutionDetails,
+  stableRecordedRuntimeEnvironment,
+} from '@papercusp/test-config/execution-details';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import { pgTimestampToIso } from '../../pg-timestamp';
@@ -53,6 +57,25 @@ export const SPEC_EVIDENCE_KINDS = [
   'operational',
 ] as const;
 export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
+
+/** Same full Vitest title when only its generated ` > ` hierarchy joiner was authored as a space. */
+export function hasSameCaseTitleIdentity(declaredCaseTitle: string, measuredCaseTitle: string): boolean {
+  if (declaredCaseTitle === measuredCaseTitle) return true;
+  return declaredCaseTitle.split(' > ').join(' ') === measuredCaseTitle.split(' > ').join(' ');
+}
+
+/** Match a complete title or a complete suffix at a Vitest hierarchy boundary. */
+export function hasMatchingDeclaredCaseTitle(
+  declaredCaseTitle: string,
+  executedCaseTitles: readonly string[],
+): boolean {
+  return executedCaseTitles.some((executedCaseTitle) => {
+    const hierarchy = executedCaseTitle.split(' > ');
+    return hierarchy.some((_part, start) =>
+      hasSameCaseTitleIdentity(declaredCaseTitle, hierarchy.slice(start).join(' > ')),
+    );
+  });
+}
 
 const MAX_REPO_MEASUREMENT_SOURCE_GLOBS = 16;
 const MAX_REPO_MEASUREMENT_GLOB_MATCHES = 128;
@@ -1016,6 +1039,13 @@ export type BindSpecEvidenceResult =
   | { status: 'spec_not_found'; specId?: string; sourceValId?: string; message?: string }
   | { status: 'spec_revision_not_found'; specId: string; specRevision: number }
   | { status: 'coverage_evidence_not_found'; coverageEvidenceRef: number }
+  | {
+      status: 'test_cases_not_in_run';
+      testRunId: number;
+      declaredCaseCount: number;
+      passedCaseTitleCount: number;
+      message: string;
+    }
   // The test-run lookup is tenant-scoped, so a row that EXISTS but carries a
   // different (or NULL) harness_slug is indistinguishable from a fabricated id
   // — both surface as a bare `test_run_not_found`, which reads as "you invented
@@ -1164,8 +1194,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     const runtimeRecipe = measurementFromDetails(input.details ?? {});
     const runtimeUnits = runtimeRecipe?.runtimeUnits;
     if (input.testRunId != null) {
-      const rows = await tx<{ id: number; execution_details?: unknown }[]>`
-        SELECT id, execution_details FROM harness_shared.test_runs
+      const rows = await tx<{ id: number; status: string | null; execution_details?: unknown }[]>`
+        SELECT id, status, execution_details FROM harness_shared.test_runs
          WHERE id = ${input.testRunId}
            AND workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}`;
@@ -1195,8 +1225,48 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           },
         };
       }
+      const parsedRunExecution = parseTestRunExecutionDetails(rows[0].execution_details);
+      const passedCaseTitles = parsedRunExecution?.passedCaseTitles;
+      const rawAdequacy = input.details?.adequacy;
+      const rawTestCases =
+        rawAdequacy !== null && typeof rawAdequacy === 'object' && !Array.isArray(rawAdequacy)
+          ? (rawAdequacy as Record<string, unknown>).testCases
+          : undefined;
+      const declaredTestCases = Array.isArray(rawTestCases)
+        ? rawTestCases
+            .filter((title): title is string => typeof title === 'string' && title.trim().length > 0)
+            .map((title) => title.trim())
+        : [];
+      if (
+        input.evidenceKind === 'test' &&
+        declaredTestCases.length > 0 &&
+        rows[0].status === 'pass' &&
+        parsedRunExecution !== undefined &&
+        parsedRunExecution.testLayer !== 'llm' &&
+        parsedRunExecution.collectionFailed === false &&
+        parsedRunExecution.failed === 0 &&
+        parsedRunExecution.skipped === 0 &&
+        parsedRunExecution.passed > 0 &&
+        passedCaseTitles !== undefined &&
+        passedCaseTitles.length === parsedRunExecution.passed &&
+        passedCaseTitles.length < MAX_RECORDED_PASSED_CASES &&
+        !declaredTestCases.some((title) => hasMatchingDeclaredCaseTitle(title, passedCaseTitles))
+      ) {
+        return {
+          status: 'test_cases_not_in_run',
+          testRunId: input.testRunId,
+          declaredCaseCount: declaredTestCases.length,
+          passedCaseTitleCount: passedCaseTitles.length,
+          message:
+            'none of the ' + declaredTestCases.length +
+            ' declared details.adequacy.testCases entries matched any of the ' +
+            passedCaseTitles.length + ' recorded passedCaseTitles in test-run ' + input.testRunId +
+            '. Bind a run that executed at least one claimed case or correct the case labels; ' +
+            "titles match exactly or by bare-case suffix after ' > '.",
+        };
+      }
       if (runtimeUnits) {
-        const execution = parseTestRunExecutionDetails(rows[0].execution_details);
+        const execution = parsedRunExecution;
         const witness = stableRecordedRuntimeEnvironment(
           execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
         if (witness && JSON.stringify([...witness.units].sort()) === JSON.stringify([...runtimeUnits].sort())) {
@@ -2220,7 +2290,7 @@ async function onlyStaticToolGuidanceChanged(root: string, original: MeasuredRep
   return beforeRuntime !== null && beforeRuntime === agentToolRuntimeSourceWithoutStaticGuidance(after.toString('utf8'));
 }
 
-/** These four bounded receipts outlive the disposable runtime and the harness's run-count pruning. */
+/** Bounded original receipts outlive the disposable runtime and run-count pruning. */
 function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMeasurement['completedRuntime']>) {
   if (selector.kind === 'isolated-integration') return selector.runIds.flatMap(runId => [
     ['isolated-integration', runId, 'result.json'],
@@ -2231,24 +2301,39 @@ function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMea
     ['verify-tauri-headless', selector.verifierRunId, 'result.json'],
     ['verify-tauri-headless', selector.verifierRunId, 'phases/prepare/verifier-source-receipt.json'],
     [selector.journeyHarness, selector.journeyRunId, 'result.json'],
-    [selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'],
+    ...(selector.journeyHarness === 'operator-e2e-isolated' ? [] : [
+      [selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'] as const,
+    ]),
   ] as const : [];
 }
 
 async function readCompletedRuntimeArtifact(harness: string, runId: string, file: string) {
-  const base = await realpath(defaultEvidenceRoot(harness));
-  let path: string;
-  try { path = await realpath(join(base, runId, file)); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    path = await realpath(join(base, 'retained', runId, file));
+  // EI-25420516419064831: reuse the maintained driver's existing root contract;
+  // measurement selectors still cannot supply an arbitrary filesystem path.
+  const roots = [defaultEvidenceRoot(harness)];
+  if (harness === 'operator-e2e-isolated') roots.push(
+    process.env.OPERATOR_E2E_HARNESS_EVIDENCE_ROOT?.trim() || '/tmp/pcv/operator-e2e-isolated');
+  for (const root of [...new Set(roots)]) {
+    let base: string, path: string;
+    try {
+      base = await realpath(root);
+      try { path = await realpath(join(base, runId, file)); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        path = await realpath(join(base, 'retained', runId, file));
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      continue;
+    }
+    if (relative(base, path).startsWith('..') || isAbsolute(relative(base, path))) throw new Error('artifact outside harness');
+    const info = await stat(path);
+    if (!info.isFile() || info.size > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
+    const bytes = await readFile(path);
+    if (bytes.length > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
+    return { base, bytes, data: JSON.parse(bytes.toString('utf8')) };
   }
-  if (relative(base, path).startsWith('..') || isAbsolute(relative(base, path))) throw new Error('artifact outside harness');
-  const info = await stat(path);
-  if (!info.isFile() || info.size > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
-  const bytes = await readFile(path);
-  if (bytes.length > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
-  return { base, bytes, data: JSON.parse(bytes.toString('utf8')) };
+  throw new Error('completed runtime artifact missing');
 }
 
 /** Extend existing proof pinning; retain receipt bytes, rather than whole multi-GB verifier runs. */
@@ -2345,6 +2430,7 @@ export async function measureCompletedTestRuntime(
     } catch { return null; }
   }
   try {
+    const operatorE2e = selector.journeyHarness === 'operator-e2e-isolated';
     const [verifier, receipt, journey, manifest] = await Promise.all(
       completedRuntimeArtifactRefs(selector).map(async ([harness, runId, file]) =>
         (await readCompletedRuntimeArtifact(harness, runId, file)).data));
@@ -2357,8 +2443,8 @@ export async function measureCompletedTestRuntime(
       || receipt?.schemaVersion !== 'verifier-source-v1' || receipt.sourceCommit !== execution.commitSha
       || !Array.isArray(receipt.files) || !Array.isArray(receipt.testedInputs)
       || !receipt.testedInputs.some((file: any) => file.path === execution.filePath)
-      || manifest?.result !== 'pass' || !Array.isArray(manifest.sourceFingerprints)
-      || manifest.sourceFingerprints.length === 0) return null;
+      || (!operatorE2e && (manifest?.result !== 'pass' || !Array.isArray(manifest.sourceFingerprints)
+        || manifest.sourceFingerprints.length === 0))) return null;
     const phase = (name: string) => {
       const matches = verifier.phases.filter((entry: any) => entry.phase === name);
       return matches.length === 1 ? matches[0] : null;
@@ -2372,20 +2458,36 @@ export async function measureCompletedTestRuntime(
     if (!prepare || !boot || !assertions
       || !(instant(prepare.endedAt) <= instant(boot.startedAt)
         && instant(boot.endedAt) <= before && instant(assertions.startedAt) <= before
-        && instant(assertions.endedAt) >= after
-        && before <= journeyStart && journeyStart <= journeyEnd && journeyEnd <= after)) return null;
+        && instant(assertions.endedAt) >= after)) return null;
+    if (operatorE2e) {
+      // This driver wraps preparation, boot, assertions and teardown. Its
+      // interval encloses the verifier, while the original paired observations
+      // bracket the test inside that verifier's assertion phase.
+      const phases = (name: string) => journey.phases.filter((entry: any) => entry.phase === name);
+      const preflight = phases('preflight'), suite = phases('isolated-suite');
+      if (preflight.length !== 1 || suite.length !== 1
+        || !(journeyStart <= instant(preflight[0].startedAt)
+          && instant(preflight[0].startedAt) <= instant(preflight[0].endedAt)
+          && instant(preflight[0].endedAt) <= instant(suite[0].startedAt)
+          && instant(suite[0].startedAt) <= instant(verifier.startedAt)
+          && instant(verifier.startedAt) <= instant(prepare.startedAt)
+          && instant(assertions.endedAt) <= instant(verifier.endedAt)
+          && instant(verifier.endedAt) <= instant(suite[0].endedAt)
+          && instant(suite[0].endedAt) <= journeyEnd)) return null;
+    } else if (!(before <= journeyStart && journeyStart <= journeyEnd && journeyEnd <= after)) return null;
     // A retained JSON receipt alone is not code identity. Read the immutable Git
     // objects too, then compare each current source/test/fixture byte measurement.
     const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
     const recordedFiles = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file]));
     const receiptFiles = new Map(receipt.files.map((file: any) => [file.path, file.sha256]));
-    const journeyFiles = new Map(manifest.sourceFingerprints.map((file: any) => [file.path, file.sha256]));
+    const journeyFiles = new Map((operatorE2e ? receipt.testedInputs : manifest.sourceFingerprints)
+      .map((file: any) => [file.path, file.sha256]));
     const guidanceChanged: string[] = [];
     if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length) return null;
     for (const file of currentFiles) {
       const original = recordedFiles.get(`${file.dimension}:${file.path}`);
       if (!original || receiptFiles.get(file.path) !== original.sha256
-        || (file.dimension === 'source' && !file.path.startsWith('scripts/')
+        || ((operatorE2e || file.dimension === 'source' && !file.path.startsWith('scripts/'))
           && journeyFiles.get(file.path) !== original.sha256)) return null;
       if (file.sha256 !== original.sha256 && !(file.dimension === 'source'
         && selector.guidanceOnlySourcePaths?.includes(file.path)
@@ -2410,12 +2512,18 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
   currentFiles: readonly MeasuredRepoFile[], scope: { workspaceId: string; harnessSlug: string }, root: string): Promise<string | null> {
   const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
   const selector = recipe.completedRuntime;
+  // The scoped ledger lookup proves any adoption into this harness. Preserve
+  // the original NULL in the hashed receipt, and never adopt CI/admin evidence.
+  const isolatedHarnessMatches = execution?.harnessSlug === scope.harnessSlug
+    || (execution?.harnessSlug === null && row.test_run_present
+      && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
   if (selector?.kind !== 'isolated-integration' || !execution?.isolatedRuntimeReceipts || !recipe.runtimeUnits
+    || !row.test_run_present
     || row.evidence_kind !== 'test' || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
     || row.test_run_framework !== 'vitest' || execution.testLayer !== 'integration'
     || row.test_run_worktree_dirty !== false || execution.worktreeDirty || execution.collectionFailed
     || execution.failed !== 0 || execution.skipped !== 0 || execution.passed !== selector.runIds.length
-    || execution.workspaceId !== scope.workspaceId || execution.harnessSlug !== scope.harnessSlug
+    || execution.workspaceId !== scope.workspaceId || !isolatedHarnessMatches
     || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
     || execution.commitSha !== row.test_run_commit_sha || !recipe.testPaths?.includes(execution.filePath)
     || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug
