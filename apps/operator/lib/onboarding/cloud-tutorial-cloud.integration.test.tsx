@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { NuqsAdapter } from "../../../operator-vite/src/lib/nuqs-tanstack-router-adapter";
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { hostedBrowserApiMarker } from "../hosted-browser-api";
 import CloudWorkspacesPage from "@/app/cloud-workspaces/page";
@@ -20,7 +21,13 @@ vi.mock("@papercusp/sync", async importOriginal => ({
 const scope = { tenantId: "tenant", userId: "user", workspaceId: "customer" };
 const connection: CloudWorkspacesControlRow = { kind: "connection", id: "gcp", target: "gcp", label: "My GCP", status: "connected", credentialRef: "env:CREDENTIAL", scopes: [], regions: [], sizes: [], images: [], networks: [] };
 const workspace: CloudWorkspacesControlRow = { kind: "workspace", id: "customer", name: "My workspace", connectionId: "gcp", target: "gcp", scopeLabel: "project", region: "us-central1", size: "small", image: "ubuntu", diskGiB: 100, network: "private", desiredState: "running", observedState: "running", recoverability: { kind: "none", label: "No backup" }, capabilities: { stop: true, repair: true, snapshot: true, destroy: true } };
+function resetNuqsUpdateQueue() {
+  // nuqs keeps its throttle queue at module scope; clear pending work before
+  // mounting an independent router in this integration-test fixture.
+  render(<NuqsTestingAdapter />).unmount();
+}
 function mount(initial = "/cloud-workspaces") {
+  resetNuqsUpdateQueue();
   const root = createRootRoute({
     component: () => <NuqsAdapter><main><Outlet /></main></NuqsAdapter>,
     errorComponent: ({ error }) => <pre data-testid="cloud-route-error">{error.stack ?? error.message}</pre>,
