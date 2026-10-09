@@ -4741,6 +4741,7 @@ export function planPredicatePartition(rawSql: string): PredicatePartitionPlan |
   const relation = tables[0]!;
 
   const filters = extractFilterPredicates(rawSql, masked);
+  const whereClauseInfo = locateWhereClause(masked);
   const whereClause = extractWhereClause(rawSql, masked);
   const whereConjuncts = extractWhereConjuncts(rawSql, masked);
   // FILTER buckets ARE the caller's dimensions when present; the surrounding
@@ -4773,8 +4774,8 @@ export function planPredicatePartition(rawSql: string): PredicatePartitionPlan |
   // FILTER predicates may be the only WHERE clauses, but their source is still
   // the query's top-level FROM. Otherwise pair the source with the selected
   // shallowest WHERE (for example the FROM inside an EXISTS subquery).
-  const fromBase = filters.length ? 0 : (whereClause?.base ?? 0);
-  const fromBefore = whereClause?.base === fromBase ? whereClause.start : masked.length;
+  const fromBase = filters.length ? 0 : (whereClauseInfo?.base ?? 0);
+  const fromBefore = whereClauseInfo?.base === fromBase ? whereClauseInfo.start : masked.length;
   const fromRange = locateFromClause(masked, fromBase, fromBefore);
   if (!fromRange) return null;
   const fromClause = rawSql.slice(fromRange.start, fromRange.end).replace(/;\s*$/, '').trim();
