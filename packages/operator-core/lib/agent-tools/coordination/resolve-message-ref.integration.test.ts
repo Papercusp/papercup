@@ -18,6 +18,7 @@ import type { AgentIdentity } from './identity';
 import { sendMessage, resolveMessageRef, getMessageById } from './messages';
 import { openHandoff } from './handoffs';
 import { openEscalation, reopenEscalation, resolveEscalation } from './escalations';
+import { readCoordFeed } from './feed';
 import { coordHasPgFastPath, coordWorkspaceId } from './log';
 import ackTool from './tools/ack';
 import readTool from './tools/read';
@@ -203,6 +204,58 @@ describe('resolveMessageRef (WI-6725)', () => {
     expect(res.msgId).toBe(handoff.msg_id);
     expect(res.message.kind).toBe('handoff');
     expect(res.message.summary).toBe('take over this work');
+  });
+
+  it('EI-25503280746355318: coord:read resolves an idempotent coord:send id returned by coord:feed', async () => {
+    expect(coordHasPgFastPath()).toBe(true);
+    const fullId = `coord-send-${'a'.repeat(64)}`;
+    const sent = await sendMessage(ASKER, {
+      to: [READER.ownerId],
+      msgId: fullId,
+      summary: 'idempotent coord send',
+    });
+
+    const feed = await readCoordFeed({ from: ASKER.ownerId, limit: 20 });
+    const row = feed.rows.find((entry) => entry.msg_id === sent.msg_id);
+    expect(row).toBeDefined();
+    if (!row) return;
+
+    const result = await readTool.handler({ msg_id: row.msg_id }, {} as never);
+    const payload = (result as { data?: unknown }).data as {
+      found: boolean;
+      msg_id: string;
+      message: { msg_id: string; summary?: string } | null;
+    };
+    expect(payload).toMatchObject({
+      found: true,
+      msg_id: fullId,
+      message: { msg_id: fullId, summary: 'idempotent coord send' },
+    });
+  });
+
+  it('does not call a missing idempotent coord:send ID truncated', async () => {
+    const fullId = `coord-send-${'b'.repeat(64)}`;
+    const resolution = await resolveMessageRef(fullId);
+    expect(resolution).toEqual({ status: 'not-found', msgId: fullId, looksTruncated: false });
+
+    const result = await readTool.handler({ msg_id: fullId }, {} as never);
+    const payload = (result as { data?: unknown }).data as {
+      found: boolean;
+      msg_id: string;
+      detail?: string;
+    };
+    expect(payload).toMatchObject({ found: false, msg_id: fullId });
+    expect(payload.detail).toBeUndefined();
+
+    const partialId = fullId.slice(0, -8);
+    const partialResult = await readTool.handler({ msg_id: partialId }, {} as never);
+    const partialPayload = (partialResult as { data?: unknown }).data as {
+      found: boolean;
+      msg_id: string;
+      detail?: string;
+    };
+    expect(partialPayload).toMatchObject({ found: false, msg_id: partialId });
+    expect(partialPayload.detail).toContain("'<short>-0000-<32 hex>' or 'coord-send-<64 hex>'");
   });
 
   it('resolves a unique truncated handoff id without confusing it with a miss', async () => {

@@ -75,7 +75,7 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
         expect(gap.falsifier.length, gap.id).toBeGreaterThan(30);
         expect(gap.owningPlanItems.length, gap.id).toBeGreaterThan(0);
         expect(gap.owningPlanItems, gap.id).not.toContain('P-001');
-        for (const item of gap.owningPlanItems) expect(item).toMatch(/^P-00[2-8]$/);
+        for (const item of gap.owningPlanItems) expect(item).toMatch(/^P-(?:015|016|017|018|019|020)$/);
       }
     }
   });
@@ -176,14 +176,14 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
     expect(jobs.gaps.map((gap) => gap.id)).not.toContain('pty-resize-completion-reattach');
     expect(jobs.gaps).toContainEqual(expect.objectContaining({
       id: 'pty-real-client-restart-acceptance',
-      owningPlanItems: ['P-007', 'P-008'],
+      owningPlanItems: ['P-019', 'P-020', 'P-015'],
     }));
 
     expect(scripts.boundary).toContain('explicit replay state');
     expect(scripts.boundary).toContain('uncertain-write reporting');
     expect(scripts.gaps).toContainEqual(expect.objectContaining({
       id: 'persistent-kernel-lifecycle',
-      owningPlanItems: ['P-006', 'P-008'],
+      owningPlanItems: ['P-017', 'P-020', 'P-015'],
     }));
     expect([...jobs.gaps, ...scripts.gaps].flatMap((gap) => gap.owningPlanItems)).not.toContain('P-003');
     expect(jobs.cutoverReady).toBe(false);
@@ -208,7 +208,7 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
       expect.objectContaining({
         id: 'patch-notebook-real-client-acceptance',
         kind: 'evidence',
-        owningPlanItems: ['P-007', 'P-008'],
+        owningPlanItems: ['P-019', 'P-020', 'P-015'],
       }),
     );
 
@@ -223,6 +223,25 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
     expect(mutation.cutoverReady).toBe(false);
     expect(mutation.cutoverReason).not.toContain('P-006');
     expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
+  });
+
+  it('assigns remaining implementation and evidence gaps to current Phase 4 lanes', () => {
+    const gap = (family: Parameters<typeof managedCapabilityDisposition>[0], id: string) =>
+      managedCapabilityDisposition(family).gaps.find((candidate) => candidate.id === id);
+
+    expect(gap('script-orchestration-kernels', 'persistent-kernel-lifecycle')?.owningPlanItems).toContain('P-017');
+    expect(gap('http-search-browser-computer', 'browser-provider-contract')?.owningPlanItems).toContain('P-018');
+    expect(gap('jobs-output-stop-pty', 'pty-real-client-restart-acceptance')?.owningPlanItems).toContain('P-019');
+    for (const entry of MANAGED_CAPABILITY_DISPOSITIONS) {
+      expect(entry.gaps.flatMap((candidate) => candidate.owningPlanItems)).toContain('P-015');
+    }
+
+    const exclusion = gap('memory-checkpoint-resume-rewind', 'offline-bounded-recovery');
+    expect(exclusion?.description).toContain('DELIBERATELY EXCLUDED');
+    expect(exclusion?.owningPlanItems).toEqual(['P-016']);
+    expect(exclusion?.owningPlanItems).not.toContain('P-004');
+    expect(managedCapabilityDisposition('memory-checkpoint-resume-rewind').cutoverReason)
+      .toContain('without rebuilding it');
   });
 
   it('keeps R-7 HTTP fetch distinct from search and browser/DOM instead of equating them', () => {

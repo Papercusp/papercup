@@ -19,6 +19,7 @@ import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { notifyAgents } from '../coordination/notify-agents';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from '../work_items/unresolved-refs';
+import { reportDedupCoverageDegraded } from '../work_items/semantic-dedup-probe-alarm';
 import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import {
   captureImprovement,
@@ -1613,6 +1614,22 @@ export default defineTool({
         };
       }
       const result = gated ? gated.value : await timing.measure('wrapper.persist', () => persist());
+      const resultCoverage = (result as {
+        ok?: boolean;
+        dedupCoverage?: { lexical?: string; semantic?: string; degraded?: boolean };
+      }).dedupCoverage;
+      if (
+        !args.checkDuplicatesOnly &&
+        effectiveLane !== 'observation' &&
+        (result as { ok?: boolean }).ok !== false &&
+        resultCoverage?.degraded === true
+      ) {
+        void reportDedupCoverageDegraded({
+          source: 'improvements:capture',
+          ...(drainHarness ? { harnessSlug: drainHarness } : {}),
+          coverage: resultCoverage,
+        }).catch(() => {});
+      }
       // Directed @-mention — only when we actually CREATED a claimable item (not a
       // checkDuplicatesOnly probe / coalesced row / observation-lane reflection).
       const captured = result as { created?: boolean; issue?: { id: string; title?: string } };

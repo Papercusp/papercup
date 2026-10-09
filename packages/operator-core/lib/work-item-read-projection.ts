@@ -37,7 +37,7 @@ export interface WorkItemReadOptions {
 const PAYLOAD_COLUMN = /(^|,\s*)payload(\s*,)/;
 
 /**
- * Replace only the returned payload column in a canonical column allowlist.
+ * Project returned columns in a canonical column allowlist.
  * WHERE predicates may still read the physical payload; this helper changes
  * the SELECT projection and keeps the original row arity/key.
  */
@@ -48,6 +48,12 @@ export function projectWorkItemColumns(
   if (projection === 'full') return columns;
   if (projection === 'fleetMetrics') {
     const keys = FLEET_METRIC_ARCHIVE_KEYS.map(key => `'${key}'`).join(', ');
+    // These issue-only metadata fields are not mapped into WorkItem. Reading
+    // them would repeatedly detoast the original payload for no metric input.
+    // Full/detail readers retain them; this policy is for the metric source only.
+    for (const key of ['source', 'signal_origin', 'found_during', 'linked_feature_id']) {
+      columns = columns.replace(new RegExp(`(^|,\\s*)${key}(\\s*,)`), `$1NULL::text AS ${key}$2`);
+    }
     // Scalar/array/JSON-null payloads retain their exact legacy shape. Subtracting
     // object keys from a scalar can throw, and silently normalizing it hides bugs.
     return columns.replace(PAYLOAD_COLUMN,

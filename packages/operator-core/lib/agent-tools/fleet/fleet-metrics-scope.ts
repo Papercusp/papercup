@@ -385,6 +385,7 @@ export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope
   return listAllWorkItemsForFileExport({
     harness: scope.scope.harness, includeObservations: true,
     ids: rows.map(row => row.feature_id),
+    payloadProjection: 'fleetMetrics',
   });
 }
 

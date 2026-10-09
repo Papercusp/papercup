@@ -54,11 +54,13 @@ vi.mock('../../bounded-timeout', async (orig) => {
   };
 });
 
-const { default: burnDownTool } = await import('./burn_down');
+const { default: burnDownTool, buildFleetMetricsResult } = await import('./burn_down');
 const { default: leaderBriefTool, readLeaderBriefFleetMetrics } = await import('../fleet/leader-brief');
 const { resolveFleetMetricScope, readFleetMetricSourceItems } = await import('../fleet/fleet-metrics-scope');
 const { shapeLeaderBrief } = await import('../fleet/leader-brief-shape');
-const { explainIssueClaimFloors, listWorkItems } = await import('../../work-items');
+const { explainIssueClaimFloors, listWorkItems, listAllWorkItemsForFileExport } = await import('../../work-items');
+const { FLEET_METRIC_ARCHIVE_KEYS, projectWorkItemColumns } = await import('../../work-item-read-projection');
+const { readIssueOccurrenceCounts } = await import('../../issue-occurrence-ledger');
 const { DEFAULT_CLAIM_SPEC } = await import('../../scheduler/claim-spec');
 const { fleetSpecBeeKey, setClaimSpec } = await import('../../scheduler/claim-spec-store');
 
@@ -354,6 +356,59 @@ describe('default fleet reports over the real current-spec queue', () => {
     for (const id of ['WI-old-source-stock', 'WI-old-source-terminal']) {
       expect(Date.parse(source.find(item => item.id === id)!.createdAt!))
         .toBeLessThan(Date.parse(resolution.scope.window.startAt));
+    }
+  }, 30_000);
+
+  it('keeps complete fleet snapshot semantics when archival payloads are projected at the source', async () => {
+    await seedFleet();
+    await seedQueue();
+    // Equal update times exercise the issue reader's created-time secondary
+    // order. Distinct creation times avoid relying on unspecified SQL tie order.
+    for (const [index, id] of ids.entries()) {
+      await sql`UPDATE harness_shared.work_items SET created_ts = ${createdAt + index * 1000}
+        WHERE workspace_id = 'default' AND feature_id = ${id}`;
+    }
+    const archives = Object.fromEntries(FLEET_METRIC_ARCHIVE_KEYS.map(key => [key, { receipt: 'x'.repeat(8192) }]));
+    await sql`UPDATE harness_shared.work_items SET payload = payload || ${sql.json(archives)}::jsonb
+      WHERE workspace_id = 'default' AND feature_id = ANY(${ids}::text[])`;
+    const resolution = await resolveFleetMetricScope({ workspaceId: 'default', harness: HARNESS,
+      fleet: FLEET, flowMode: 'current-spec' });
+    if (!resolution.ok) throw new Error(resolution.reason);
+    const full = await listAllWorkItemsForFileExport({ harness: HARNESS, includeObservations: true, ids });
+    const projected = await readFleetMetricSourceItems(resolution);
+    expect(projected.map(item => item.id)).toEqual(full.map(item => item.id));
+    expect(projected.map(item => item.id)).toEqual([...ids].reverse());
+    for (const item of projected) {
+      const original = full.find(row => row.id === item.id)!;
+      const retained = { ...(original.payload as Record<string, unknown>) };
+      for (const key of FLEET_METRIC_ARCHIVE_KEYS) delete retained[key];
+      // Guard the entire mapper output, not just today's metric inputs. If a
+      // future mapper starts consuming an omitted field, this comparison fails.
+      expect(item).toEqual({ ...original, payload: retained, terminalCompletionEvidence: null });
+    }
+    const occurrenceCounts = await readIssueOccurrenceCounts({ workspaceId: 'default', harnessSlug: HARNESS,
+      since: resolution.scope.window.startAt });
+    const options = { workspaceId: 'default', sourceCapExhausted: false, issueOccurrences: occurrenceCounts };
+    expect(await buildFleetMetricsResult(resolution, projected, options))
+      .toEqual(await buildFleetMetricsResult(resolution, full, options));
+
+    // Both physical families honor the policy, preserving future control keys.
+    for (const kind of ['feature', 'bug'] as const) {
+      const value = { tags: ['kept'], futureControl: { active: true }, ...archives };
+      const id = `WI-projection-${kind}`;
+      await sql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, payload)
+        VALUES ('default', ${HARNESS}, ${id}, 'projection shape', 'open', ${kind}, ${sql.json(value)}::jsonb)`;
+      const read = await listAllWorkItemsForFileExport({ harness: HARNESS, ids: [id], payloadProjection: 'fleetMetrics' });
+      expect(read).toHaveLength(1);
+      expect(read[0]!.payload).toEqual({ tags: ['kept'], futureControl: { active: true } });
+    }
+    // The maintained table rejects malformed payloads. Test the SQL policy on
+    // VALUES instead of weakening that constraint just to seed legacy shapes.
+    for (const value of [['legacy-array'], 'legacy-scalar', null]) {
+      const rows = await sql`SELECT ${sql.unsafe(projectWorkItemColumns('payload, marker', 'fleetMetrics'))}
+        FROM (SELECT ${sql.json(value)}::jsonb AS payload, 1 AS marker) fixture`;
+      expect(rows[0]!.payload).toEqual(value);
     }
   }, 30_000);
 

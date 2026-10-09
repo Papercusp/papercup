@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // WI-10007029: request/response controls for the existing isolated Tauri verifier.
 // Responses may contain credentials. Log labels/statuses only; keep the QR private.
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, existsSync, lstatSync, realpathSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs';
+import { resolve, isAbsolute, relative } from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
@@ -169,27 +170,95 @@ function invokeIsolated(env, name, args) {
   console.log(`REVIEWER: sanitized seed accepted tool=${name}`);
 }
 
-const MOBILE_REPO = 'Papercusp/papercup-rust-mobile';
-function ghChecked(args, input) {
-  const child = spawnSync('gh', args, { input, encoding: 'utf8', maxBuffer: 2_000_000,
-    timeout: args[0] === 'run' && args[1] === 'watch' ? 65 * 60_000 : 60_000 });
-  if (child.error || child.status !== 0) throw new Error(`Native capture command failed: ${args[0]} ${args[1]}`);
+// Adapt the maintained executor, including its shared state lock, rather than
+// duplicating its build/test/signing pipeline. The QR travels only on stdin.
+const NATIVE_BRIDGE = `import contextlib, datetime, importlib.util, json, os, sys, tempfile, uuid
+from pathlib import Path
+request = json.load(sys.stdin)
+root = Path(request['root']).resolve()
+state = Path(os.environ.get('PAPERCUP_IOS_CI_STATE', str(Path.home() / '.local/state/papercusp/ios-ci'))).resolve()
+os.umask(0o077)
+state.mkdir(parents=True, exist_ok=True)
+log = state / ('reviewer-' + uuid.uuid4().hex + '.log')
+pair_path = None
+reply = {'status': 'failed', 'log': str(log)}
+try:
+    if state.is_relative_to(root):
+        raise ValueError('Native evidence state must be outside source')
+    spec = importlib.util.spec_from_file_location('reviewer_ios_ci', root / 'tools/ios-ci.py')
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    source = runner.source_identity(root)
+    if source['commit'] != request['sha'] or source['dirty']:
+        raise ValueError('Native source is not the exact clean candidate')
+    started = datetime.datetime.now(datetime.timezone.utc)
+    sys.argv = [str(root / 'tools/ios-ci.py'), '--mode', 'check', '--force']
+    if request['preflight']:
+        sys.argv += ['--preflight']
+    else:
+        with tempfile.NamedTemporaryFile(mode='w', dir=state, prefix='reviewer-pair-', delete=False) as private:
+            pair_path = Path(private.name)
+            json.dump(request['payload'], private)
+        sys.argv += ['--paired-ui', '--pair-payload-file', str(pair_path)]
+    with log.open('x') as stream, contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+        code = runner.main()
+    proof = json.loads((state / 'latest.json').read_text())
+    expected = 'preflight' if request['preflight'] else 'passed'
+    if (code != 0 or proof['status'] != expected or proof['source'] != source
+            or datetime.datetime.fromisoformat(proof['startedAt']) < started):
+        raise ValueError('Native runner did not produce fresh accepted evidence')
+    reply.update({key: proof[key] for key in ('status', 'source', 'toolchain', 'attempt', 'executor', 'mode', 'pairedUI')})
+except Exception:
+    reply['status'] = 'failed'
+finally:
+    if pair_path is not None:
+        pair_path.unlink(missing_ok=True)
+    reply['pairPayloadRemoved'] = pair_path is None or not pair_path.exists()
+print(json.dumps(reply))
+`;
+
+function nativeChecked(args, input) {
+  const child = spawnSync(args[0], args.slice(1), { input, encoding: 'utf8', maxBuffer: 2_000_000,
+    timeout: 65 * 60_000 });
+  // Native failures can include credentials. Retain the runner's private log,
+  // but never copy arbitrary stdout/stderr into an error or terminal message.
+  if (child.error || child.status !== 0) throw new Error(`Native capture transport failed: ${args[0]}`);
   return child.stdout;
 }
 
+function nativeConfig(env) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.@-]*$/.test(env.REVIEWER_NATIVE_HOST ?? '') ||
+      !env.REVIEWER_MOBILE_ROOT || !isAbsolute(env.REVIEWER_MOBILE_ROOT) ||
+      !/^[a-f0-9]{40}$/.test(env.REVIEWER_MOBILE_SHA ?? '')) {
+    throw new Error('Native capture requires an explicit SSH host, absolute mobile root and exact candidate SHA');
+  }
+  return { host: env.REVIEWER_NATIVE_HOST, root: env.REVIEWER_MOBILE_ROOT, sha: env.REVIEWER_MOBILE_SHA };
+}
+
+function invokeNative(env, run, preflight, payload = undefined) {
+  const config = nativeConfig(env);
+  // SSH joins remote argv through a shell; quote the static Python program.
+  const quoted = "'" + NATIVE_BRIDGE.replaceAll("'", "'\\''") + "'";
+  const raw = run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20', '--', config.host,
+    `python3 -c ${quoted}`], JSON.stringify({ root: config.root, sha: config.sha, preflight, payload }));
+  let proof;
+  try { proof = JSON.parse(raw); } catch { throw new Error('Invalid native capture receipt'); }
+  if (proof?.status !== (preflight ? 'preflight' : 'passed') || proof?.executor !== 'native-mac' ||
+      proof?.mode !== 'check' || proof?.source?.commit !== config.sha || proof?.source?.dirty !== false ||
+      !/^[a-f0-9]{64}$/.test(proof?.source?.fingerprint ?? '') || proof?.pairPayloadRemoved !== true ||
+      !/^\d+(?:\.\d+)*$/.test(proof?.toolchain?.iosSDK ?? '') ||
+      Number.parseInt(proof?.toolchain?.iosSDK ?? '', 10) < 26 ||
+      !/^Xcode (?:2[6-9]|[3-9]\d)\./.test(proof?.toolchain?.xcode ?? '') ||
+      (!preflight && proof?.pairedUI !== true)) {
+    throw new Error('Native capture refused the exact clean candidate or its fresh paired evidence');
+  }
+  return proof;
+}
+
 /** @param {ReviewerEnvironment} env @param {NativeRunner} [run] */
-export function nativeCapturePreflight(env, run = ghChecked) {
-  if (!env.REVIEWER_MOBILE_REF || !/^[a-f0-9]{40}$/.test(env.REVIEWER_MOBILE_SHA ?? '')) {
-    throw new Error('Native capture requires an explicit mobile ref and exact candidate SHA');
-  }
-  const secrets = JSON.parse(run(['secret', 'list', '-R', MOBILE_REPO, '--json', 'name']));
-  if (secrets.some(s => s.name === 'PAPERCUP_PAIR_PAYLOAD')) {
-    throw new Error('Existing pairing secret belongs to another attempt; refusing to overwrite it');
-  }
-  const sha = run(['api', `repos/${MOBILE_REPO}/commits/${encodeURIComponent(env.REVIEWER_MOBILE_REF)}`,
-    '--jq', '.sha']).trim();
-  if (sha !== env.REVIEWER_MOBILE_SHA) throw new Error('Native capture ref does not match the exact candidate SHA');
-  return sha;
+export function nativeCapturePreflight(env, run = nativeChecked) {
+  invokeNative(env, run, true);
+  return env.REVIEWER_MOBILE_SHA;
 }
 
 /** @param {PairedSummary | null | undefined} summary */
@@ -199,62 +268,83 @@ export function validatePairedSummary(summary) {
   }
 }
 
-function readPairedSummary(root) {
-  const found = [];
-  const visit = dir => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = resolve(dir, entry.name);
-      if (entry.isDirectory()) visit(path);
-      else if (entry.name === 'ci-paired-ui-summary.json') found.push(path);
+/** @param {string} root @param {string} sha */
+export function verifyNativeArtifact(root, sha) {
+  if (!lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink() ||
+      !lstatSync(resolve(root, 'result.json')).isFile() || lstatSync(resolve(root, 'result.json')).isSymbolicLink()) {
+    throw new Error('Native receipt must be a regular file in its own artifact directory');
+  }
+  const canonicalRoot = realpathSync(root);
+  const proof = JSON.parse(readFileSync(resolve(root, 'result.json'), 'utf8'));
+  if (proof?.status !== 'passed' || proof?.executor !== 'native-mac' || proof?.mode !== 'check' ||
+      proof?.pairedUI !== true || proof?.source?.commit !== sha || proof?.source?.dirty !== false ||
+      !Array.isArray(proof?.artifacts) || !Array.isArray(proof?.phases)) {
+    throw new Error('Downloaded native receipt does not identify the admitted paired candidate');
+  }
+  const paths = new Set();
+  for (const entry of proof.artifacts) {
+    if (typeof entry.path !== 'string' || isAbsolute(entry.path) ||
+        entry.path.split('/').some(part => part === '..' || !part) || paths.has(entry.path)) {
+      throw new Error('Invalid native artifact path');
     }
-  };
-  visit(root);
-  if (found.length !== 1) throw new Error('Native artifact must contain exactly one paired UI summary');
-  return JSON.parse(readFileSync(found[0], 'utf8'));
+    paths.add(entry.path);
+    const path = resolve(root, entry.path);
+    const stat = lstatSync(path);
+    const resolved = relative(canonicalRoot, realpathSync(path));
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== entry.size ||
+        resolved.startsWith('..') || isAbsolute(resolved)) {
+      throw new Error('Native artifact size or hash mismatch');
+    }
+    // Archives can exceed Node's whole-file buffer ceiling. Hash bounded chunks.
+    const hash = createHash('sha256'), buffer = Buffer.alloc(1024 * 1024);
+    const fd = openSync(path, 'r');
+    try {
+      let length;
+      while ((length = readSync(fd, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, length));
+    } finally { closeSync(fd); }
+    if (hash.digest('hex') !== entry.sha256) throw new Error('Native artifact size or hash mismatch');
+  }
+  if (!paths.has('paired-ui-summary.json') ||
+      ![...paths].some(path => path.startsWith('paired-ui-attachments/') && path.endsWith('.png')) ||
+      ![...paths].some(path => path.startsWith('paired-ui.xcresult/')) ||
+      ['paired-ui', 'paired-ui-guard', 'paired-ui-screenshots'].some(name =>
+        !proof.phases.some(phase => phase.name === name && phase.exitCode === 0))) {
+    throw new Error('Native paired result, executed phases or screenshots are absent');
+  }
+  validatePairedSummary(JSON.parse(readFileSync(resolve(root, 'paired-ui-summary.json'), 'utf8')));
+  return proof;
 }
 
 /**
- * @param {{ env: ReviewerEnvironment, payload: PairingPayload, run?: NativeRunner, readSummary?: (root: string) => PairedSummary, now?: () => number, delay?: (ms: number) => Promise<unknown> }} options
+ * @param {{ env: ReviewerEnvironment, payload: PairingPayload, run?: NativeRunner }} options
  */
-export async function captureNative({ env, payload, run = ghChecked, readSummary = readPairedSummary,
-  now = () => Date.now(), delay = ms => new Promise(ok => setTimeout(ok, ms)) }) {
+export async function captureNative({ env, payload, run = nativeChecked }) {
   const ctx = reviewerContext(env);
-  if (payload?.qrPayload?.workspaceId !== ctx.workspaceId) throw new Error('Capture payload is outside the isolated workspace');
-  const sha = nativeCapturePreflight(env, run);
+  if (payload?.qrPayload?.workspaceId !== ctx.workspaceId || payload?.qrPayload?.server !== ctx.publicOrigin ||
+      !payload?.qrPayload?.pairToken || Date.parse(payload?.expiresAt) <= Date.now() ||
+      !Number.isFinite(Date.parse(payload?.expiresAt))) throw new Error('Capture payload is outside the isolated workspace or expired');
   const output = env.REVIEWER_OUTPUT_DIR;
-  if (!output) throw new Error('Native capture requires its private evidence directory');
-  const requestedAt = now();
-  let installed = false, runId = null, completed = false;
-  try {
-    // The token travels on stdin, never argv, terminal text or a tracked file.
-    run(['secret', 'set', 'PAPERCUP_PAIR_PAYLOAD', '-R', MOBILE_REPO], JSON.stringify(payload.qrPayload));
-    installed = true;
-    run(['workflow', 'run', 'ci.yml', '-R', MOBILE_REPO, '--ref', env.REVIEWER_MOBILE_REF, '-f', 'paired_ui=true']);
-    const deadline = requestedAt + 120_000;
-    while (!runId && now() < deadline) {
-      const runs = JSON.parse(run(['run', 'list', '-R', MOBILE_REPO, '--workflow', 'ci.yml',
-        '--event', 'workflow_dispatch', '--limit', '20', '--json', 'databaseId,createdAt,headSha']));
-      const matching = runs.filter(r => r.headSha === sha && Date.parse(r.createdAt) >= Math.floor(requestedAt / 1000) * 1000);
-      if (matching.length > 1) throw new Error('Ambiguous native dispatch: multiple matching runs');
-      if (matching.length === 1) runId = matching[0].databaseId;
-      else await delay(5000);
-    }
-    if (!runId) throw new Error('Native workflow did not produce a traceable run');
-    console.log(`REVIEWER: native capture run=${runId} candidate=${sha}`);
-    run(['run', 'watch', String(runId), '-R', MOBILE_REPO, '--exit-status', '--interval', '30']);
-    const artifactRoot = resolve(output, 'native');
-    run(['run', 'download', String(runId), '-R', MOBILE_REPO,
-      '-n', `iphone-native-candidate-${sha}`, '-D', artifactRoot]);
-    validatePairedSummary(readSummary(artifactRoot));
-    writeFileSync(resolve(output, 'native-capture-receipt.json'), JSON.stringify({ runId, candidateSha: sha,
-      artifact: `iphone-native-candidate-${sha}`, pairedPassed: 1, pairedFailed: 0, pairedSkipped: 0 }), { mode: 0o600 });
-    completed = true;
-  } finally {
-    // Cancel only the exact run we observed if its artifact was not accepted.
-    // Deletion follows even if cancellation itself fails.
-    try { if (runId && !completed) run(['run', 'cancel', String(runId), '-R', MOBILE_REPO]); }
-    finally { if (installed) run(['secret', 'delete', 'PAPERCUP_PAIR_PAYLOAD', '-R', MOBILE_REPO]); }
+  if (!output || !isAbsolute(output)) throw new Error('Native capture requires its private evidence directory');
+  const artifactRoot = resolve(output, 'native');
+  if (existsSync(artifactRoot) || existsSync(resolve(output, 'native-capture-receipt.json'))) {
+    throw new Error('Native capture refuses to overwrite an existing attempt');
   }
+  const sha = nativeCapturePreflight(env, run);
+  const proof = invokeNative(env, run, false, payload.qrPayload);
+  if (!/^\/[a-zA-Z0-9_./-]+$/.test(proof.attempt ?? '') ||
+      proof.attempt.split('/').includes('..')) {
+    throw new Error('Invalid remote native evidence path');
+  }
+  run(['scp', '-r', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20', '--',
+    `${nativeConfig(env).host}:${proof.attempt}`, artifactRoot]);
+  const downloaded = verifyNativeArtifact(artifactRoot, sha);
+  if (downloaded.attempt !== proof.attempt || downloaded.source.fingerprint !== proof.source.fingerprint) {
+    throw new Error('Downloaded native source receipt differs from this attempt');
+  }
+  writeFileSync(resolve(output, 'native-capture-receipt.json'), JSON.stringify({ executor: 'native-mac',
+    host: nativeConfig(env).host, attempt: proof.attempt, candidateSha: sha,
+    sourceFingerprint: proof.source.fingerprint, pairedPassed: 1, pairedFailed: 0, pairedSkipped: 0,
+    pairPayloadRemoved: true, artifactRoot: relative(output, artifactRoot) }), { mode: 0o600, flag: 'wx' });
 }
 
 async function main() {

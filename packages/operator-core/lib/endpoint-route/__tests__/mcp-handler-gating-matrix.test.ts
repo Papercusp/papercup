@@ -52,6 +52,7 @@ import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { parseScratchReference } from '../../scratch-reference';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
 import { PLATFORM_POT_SLUG } from '../../platform-pot-slug';
+import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
 import type { BuiltSpawnContext } from '../routes/transport/_mcp-host';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 import { bindAdmissionAuthority, admissionCredentialDigest } from '../../work-item-admission-authority';
@@ -89,6 +90,7 @@ const h = vi.hoisted(() => {
     nativeSessionRows: null as Map<string, Array<{ id: number; session_id: string | null; active: boolean }>> | null,
     nativeSessionVerifierFailure: null as { sessionId: string; error: Error } | null,
     nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
+    nativeSessionDiagnosticContexts: [] as unknown[],
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
     /** EI-22390450916579377: plugin-host warm seam for late projected-tool registration. */
@@ -411,6 +413,8 @@ vi.mock('../../adv-sessions', async (importOriginal) => {
     workspaceForCoordOwner: h.workspaceForCoordOwner,
     classifyOwnerNativeSession: async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
       h.nativeSessionCalls.push({ ownerId, sessionId });
+      const { capturePgDiagnosticContext } = await import('@papercusp/db-org');
+      h.nativeSessionDiagnosticContexts.push(capturePgDiagnosticContext());
       if (h.nativeSessionVerifierFailure?.sessionId === sessionId) throw h.nativeSessionVerifierFailure.error;
       if (h.nativeSessionRows) {
         return actual.classifyOwnerNativeSessionRows(h.nativeSessionRows.get(ownerId) ?? [], sessionId);
@@ -2039,6 +2043,7 @@ beforeEach(() => {
   h.nativeSessionRows = null;
   h.nativeSessionVerifierFailure = null;
   h.nativeSessionCalls.length = 0;
+  h.nativeSessionDiagnosticContexts.length = 0;
   h.workspaceAcquireError = null;
   h.getPresence.mockResolvedValue(null);
   h.assemblePresenceSnapshot.mockResolvedValue({
@@ -5378,19 +5383,27 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
   it.each(['acquire', 'begin', 'setup-read-only', 'setup-timeouts'])(
     'retains typed %s deadline diagnostics when native verification fails closed', async (phase) => {
     const { DbCallDeadlineError, beginAcquire, recordPoolMax, resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    const { withNamedQueryDiagnosticContext } = await import('../../agent-tools/db-diagnostic-correlation-wiring');
     resetAcquireRegistryForTest();
     recordPoolMax('org-admin', 19);
     const waitingTicket = beginAcquire('org-admin');
     const heldTicket = beginAcquire('org-admin');
     heldTicket.acquired();
+    const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
     const nativeThread = 'native-deadline-session';
     const label = `boundedOrgTxn:${phase}(admin)`;
-    const deadline = new DbCallDeadlineError(label, 1_000, 1_771, 'org-admin');
+    const deadline = withNamedQueryDiagnosticContext('mcp.nativeSessionVerifier', () => {
+      const verifierTicket = beginAcquire('org-admin');
+      const error = new DbCallDeadlineError(label, 1_000, 1_771, 'org-admin');
+      verifierTicket.release();
+      return error;
+    }, traceId);
     h.nativeSessionVerifierFailure = { sessionId: nativeThread, error: deadline };
     const meta = { threadId: nativeThread };
     const extra = {
       ...(superuserExtra('&workspace=ws-test&client=su-owner', {
         'x-papercusp-native-session': 'native-inherited-session',
+        [MCP_REQUEST_TRACE_HEADER]: traceId,
       }) as Record<string, unknown>),
       _meta: meta,
     };
@@ -5419,10 +5432,26 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
               lastAcquiredAgoMs: expect.any(Number),
               totalAcquired: 1,
             },
+            ticketSample: {
+              capacity: 8,
+              active: 3,
+              omitted: 0,
+              tickets: expect.arrayContaining([
+                expect.objectContaining({
+                  state: 'waiting',
+                  requestId: traceId,
+                  operation: 'mcp.nativeSessionVerifier',
+                }),
+              ]),
+            },
           },
         } } } },
       });
       expect(JSON.stringify(h.invocations[0]?.metadataJson)).not.toContain(nativeThread);
+      expect(h.nativeSessionDiagnosticContexts[0]).toMatchObject({
+        state: 'linked',
+        correlation: { requestId: traceId, operation: 'mcp.nativeSessionVerifier' },
+      });
     } finally {
       waitingTicket.release();
       heldTicket.release();

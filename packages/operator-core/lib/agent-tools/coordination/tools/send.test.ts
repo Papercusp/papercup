@@ -2992,6 +2992,29 @@ describe('coord:send `expects` gate (P-017 b#1 — required-with-explicit-none, 
 });
 
 describe('report card payload (agent-report-cards-2026-07-17 P-001)', () => {
+  it('advertises the ReportBlock shape inline for both send forms', () => {
+    type JsonSchemaNode = {
+      $ref?: string;
+      type?: string;
+      items?: JsonSchemaNode;
+      properties?: Record<string, JsonSchemaNode>;
+    };
+    const argsOut = (tool.args as unknown as { out: z.ZodType }).out;
+    const schema = z.toJSONSchema(argsOut) as JsonSchemaNode;
+    const report = schema.properties?.report;
+    const itemReport = schema.properties?.items?.items?.properties?.report;
+
+    for (const field of [report, itemReport]) {
+      expect(field?.$ref).toBeUndefined();
+      expect(field).toMatchObject({
+        type: 'object',
+        properties: {
+          plans: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' } } } },
+        },
+      });
+    }
+  });
+
   it('a valid report is normalized and stamped on the envelope (extra.report)', async () => {
     const b = await body({
       to: ['human'],

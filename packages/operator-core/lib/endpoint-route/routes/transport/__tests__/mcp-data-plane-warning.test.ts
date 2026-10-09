@@ -63,6 +63,55 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn for successful capability:git-evidence result envelopes', () => {
+    const bodies = [
+      {
+        ok: true,
+        op: 'readFileAtCommit',
+        commitSha: 'a'.repeat(40),
+        path: 'empty.txt',
+        bytes: 0,
+        content: '',
+      },
+      {
+        ok: true,
+        op: 'readFileAtCommit',
+        commitSha: 'b'.repeat(40),
+        path: 'large.txt',
+        encoding: 'base64',
+        byte_offset: 0,
+        byte_length: 1,
+        total_bytes: 2,
+        eof: false,
+        data: 'YQ==',
+        next_cursor: {
+          tool: 'capability:git-evidence',
+          args: { op: 'readFileAtCommit', commitSha: 'b'.repeat(40), path: 'large.txt', byte_offset: 1, byte_limit: 1 },
+        },
+      },
+      {
+        ok: true,
+        op: 'isAncestor',
+        ancestorSha: 'c'.repeat(40),
+        descendantSha: 'd'.repeat(40),
+        isAncestor: false,
+      },
+    ];
+
+    for (const body of bodies) {
+      const result: McpCallResult = {
+        content: [{ type: 'text', text: JSON.stringify(body) }],
+      };
+      const annotated = withMcpDiagnosticWarnings(
+        result,
+        context({ dataPlaneDegradedAtMs: Date.parse('2026-10-09T12:09:30.235Z') }),
+      );
+
+      expect(annotated).toBe(result);
+      expect(annotated._meta).toBeUndefined();
+    }
+  });
+
   it('does not warn for a populated coord:await-inbox watch result', () => {
     const body = {
       ok: true,

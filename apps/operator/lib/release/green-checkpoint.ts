@@ -3755,9 +3755,14 @@ export async function emitTerminalCheckpointResult(
   },
 ): Promise<void> {
   const recorded = deps.record ? await deps.record(result) : false;
-  const terminal = recorded ? { ...result, recorded: true } : result;
+  const terminal = deps.record ? { ...result, recorded } : result;
   await deps.writeHuman(terminal);
   await deps.writeMarker(checkpointResultMarkerLine(terminal));
+  // A rejected self-record is a physical diagnostic, not authority over the current
+  // qualification. Keep its marker for the wrapper's identity-checked reconciliation,
+  // but do not cancel incumbent waiters or clear its in-flight candidate. Render-only
+  // callers without a recorder retain the legacy wrapper-owned notification path.
+  if (deps.record && !recorded) return;
   await deps.emitTerminalEvents?.(terminal, recorded);
   if (
     terminal.green === null &&
@@ -22138,11 +22143,11 @@ if (require.main === module) {
       // WI-10000288: recording belongs inside the one terminal seam, before the marker/event.
       // The pre-lock crash path also calls emitResult; keeping the recorder here prevents an
       // emitted inconclusive wake from leaving its logical qualification falsely `running`.
-      record: async (result) => {
+      record: gateVerdictTargetFromEnv() ? async (result) => {
         const recorded = await recordOwnVerdict(result);
         verdictRecordedAtMs = recorded ? Date.now() : null;
         return recorded;
-      },
+      } : undefined,
       // WI-10005994: flush-awaited writes, so the stderr dump is fully in the shared `2>&1`
       // pipe before the first marker byte is written (an unawaited dump tore the marker).
       writeHuman: (result) => writeStdioFlushed(process.stderr, `${JSON.stringify(result, null, 2)}\n`),

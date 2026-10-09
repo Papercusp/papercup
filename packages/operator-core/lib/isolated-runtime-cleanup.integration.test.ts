@@ -1,7 +1,7 @@
 /** EI-25449368540823559: exercise teardown without rerunning security journeys. */
 import { fork } from 'node:child_process';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -79,6 +79,63 @@ it('cleans owned state when cancelled during real initdb before runtime-start', 
       const exited = new Promise(resolve => child.once('exit', resolve));
       process.kill(-child.pid!, 'SIGKILL');
       await exited;
+    }
+    await rm(evidenceDir, { recursive: true, force: true });
+  }
+}, 180_000);
+
+it.each(['SIGINT', 'SIGTERM'] as const)('waits for cleanup on %s when the supervisor shares its caller process group', async signal => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-shared-group-cancel-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', TMPDIR: evidenceDir };
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
+    '--isolated-runtime', '--', process.execPath, '-e', 'setInterval(() => {}, 1000);',
+  ], { cwd: root, detached: false, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  const messages: Array<Record<string, unknown>> = [];
+  let runtimeRoot: string | undefined;
+  let dataDir: string | undefined;
+  let workerPid: number | undefined;
+  child.on('message', value => {
+    if (!value || typeof value !== 'object') return;
+    const message = value as Record<string, unknown>;
+    messages.push(message);
+    if (message.kind === 'isolated-runtime-start') {
+      runtimeRoot = String(message.runtimeRoot);
+      dataDir = String(message.dataDir);
+      workerPid = Number(message.childPid);
+      // Signal only this supervisor. Its caller's group must remain untouched.
+      child.kill(signal);
+    }
+  });
+  try {
+    const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 120_000, killGraceMs: 45_000 });
+    expect(result, result.output.slice(-8000)).toMatchObject({ code: null, signal, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'isolated-runtime-cleanup', stage: 'complete', runtimeRemoved: true, pgDataRemoved: true }),
+    ]));
+    expect(runtimeRoot).toBeDefined();
+    expect(dataDir).toBeDefined();
+    expect(existsSync(runtimeRoot!)).toBe(false);
+    expect(existsSync(dataDir!)).toBe(false);
+    expect(() => process.kill(workerPid!, 0)).toThrow();
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise(resolve => child.once('exit', resolve));
+      child.kill('SIGKILL');
+      await exited;
+    }
+    // A failed negative control can leave its private PG alive. Its pid file
+    // must still name this exact fixture before cleanup may signal it.
+    if (dataDir && existsSync(join(dataDir, 'postmaster.pid'))) {
+      const [pid, ownedDir] = readFileSync(join(dataDir, 'postmaster.pid'), 'utf8').split('\n');
+      if (ownedDir === dataDir) {
+        try { process.kill(Number(pid), 'SIGINT'); } catch { /* already stopped */ }
+        for (let n = 0; n < 100 && existsSync(join(dataDir, 'postmaster.pid')); n++) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
     }
     await rm(evidenceDir, { recursive: true, force: true });
   }

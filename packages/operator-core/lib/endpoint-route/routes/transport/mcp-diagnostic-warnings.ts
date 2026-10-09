@@ -68,6 +68,45 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   return false;
 }
 
+function isPopulatedGitEvidenceResult(body: Record<string, unknown>): boolean {
+  if (body.ok !== true) return false;
+
+  if (body.op === 'isAncestor') {
+    return typeof body.ancestorSha === 'string' &&
+      body.ancestorSha.trim().length > 0 &&
+      typeof body.descendantSha === 'string' &&
+      body.descendantSha.trim().length > 0 &&
+      typeof body.isAncestor === 'boolean';
+  }
+
+  if (
+    body.op !== 'readFileAtCommit' ||
+    typeof body.commitSha !== 'string' ||
+    body.commitSha.trim().length === 0 ||
+    typeof body.path !== 'string' ||
+    body.path.trim().length === 0
+  ) {
+    return false;
+  }
+
+  if (
+    typeof body.bytes === 'number' &&
+    Number.isSafeInteger(body.bytes) &&
+    body.bytes >= 0 &&
+    typeof body.content === 'string'
+  ) {
+    return true;
+  }
+
+  return body.encoding === 'base64' &&
+    typeof body.byte_offset === 'number' && Number.isSafeInteger(body.byte_offset) && body.byte_offset >= 0 &&
+    typeof body.byte_length === 'number' && Number.isSafeInteger(body.byte_length) && body.byte_length >= 0 &&
+    typeof body.total_bytes === 'number' && Number.isSafeInteger(body.total_bytes) && body.total_bytes >= 0 &&
+    typeof body.eof === 'boolean' &&
+    typeof body.data === 'string' &&
+    'next_cursor' in body;
+}
+
 function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   if (Array.isArray(parsed)) return parsed.length > 0;
   if (!parsed || typeof parsed !== 'object') return false;
@@ -77,6 +116,9 @@ function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   if (body.notFound === true || body.not_found === true || body.missing === true) return false;
   if (typeof body.status === 'string' && body.status.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') return false;
   if (typeof body.code === 'string' && body.code.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') return false;
+  // capability:git-evidence reports authoritative values in operation-specific fields;
+  // empty files and a negative ancestry result are still successful, populated reads.
+  if (isPopulatedGitEvidenceResult(body)) return true;
   // code:run wraps the script's returned summary with orchestration metadata instead of a
   // conventional `results` field. Only recognize this distinctive successful envelope, then
   // classify the summary itself so an empty script result still keeps the warning.

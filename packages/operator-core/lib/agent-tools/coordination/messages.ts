@@ -1602,11 +1602,12 @@ export async function markSuperseded(msgId: string, correctionMsgId: string): Pr
 }
 
 /**
- * A full coord msg_id looks like `msas1j6h-0000-<32 hex>`. The LEADING SHORT
- * FORM is what actually circulates: agents cite ids in prose, summaries and
- * carry-notes constantly ("still waiting on msas1j6h"), and `getMessageById`
- * matches EXACTLY — so anyone who copied an id out of prose and looked it up
- * was told, confidently, that a real message did not exist.
+ * A standard full coord msg_id looks like `msas1j6h-0000-<32 hex>`;
+ * coord:send's idempotency path also emits `coord-send-<64 hex>`. The LEADING
+ * SHORT FORM is what actually circulates: agents cite ids in prose, summaries
+ * and carry-notes constantly ("still waiting on msas1j6h"), and
+ * `getMessageById` matches EXACTLY — so anyone who copied an id out of prose
+ * and looked it up was told, confidently, that a real message did not exist.
  *
  * WI-6725: that silent empty is a WRONG ANSWER, not a missing feature — it is
  * indistinguishable from a true negative. It cost a real commitment on
@@ -1621,7 +1622,11 @@ export async function markSuperseded(msgId: string, correctionMsgId: string): Pr
  * without saying so. Exact match is tried first and always wins, so a full id
  * keeps its indexed fast path and its existing behavior exactly.
  */
-const FULL_MSG_ID_SHAPE = /^[^-\s]+-\d+-[0-9a-f]{32}$/i;
+// coord:send's idempotency path also emits `coord-send-<sha256>` IDs. They
+// are full message IDs even though they do not use newMsgId()'s three-part
+// format; recognize both so a missing row is not misdiagnosed as a truncated
+// reference.
+const FULL_MSG_ID_SHAPE = /^(?:[^-\s]+-\d+-[0-9a-f]{32}|coord-send-[0-9a-f]{64})$/i;
 /** Ambiguity is reported with candidates, capped so a 2-char ref can't flood. */
 const REF_CANDIDATE_CAP = 10;
 

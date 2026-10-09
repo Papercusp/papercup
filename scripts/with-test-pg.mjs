@@ -173,11 +173,13 @@ async function cleanupOwnedState() {
 // Maintained integration callers fork a dedicated process group. That group
 // includes initdb, whose dependency does not expose a process handle. Verify
 // ownership before signalling it; an ordinary CLI never targets its parent's
-// group. Replace the dependency's ten-second signal-exit hook only here: it
-// otherwise exits while our startup/cleanup is still pending.
+// group. Every isolated CLI owns its private cleanup, even when it shares the
+// caller's group. Replace the dependency's signal-exit hook for both routes:
+// it otherwise exits while startup/cleanup is still pending. Group ownership
+// controls only whether we may signal the supervisor's entire process group.
 const ownProcessGroup = isolatedRuntime && process.platform === 'linux' &&
   Number(readFileSync('/proc/self/stat', 'utf8').split(')').slice(1).join(')').trim().split(/\s+/)[2]) === process.pid;
-if (ownProcessGroup) {
+if (isolatedRuntime) {
   for (const sig of ['SIGINT', 'SIGTERM']) AsyncExitHook.unhookEvent(sig);
 }
 for (const sig of ['SIGINT', 'SIGTERM']) {

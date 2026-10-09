@@ -2,10 +2,10 @@
 # WI-10007029: dedicated disposable operator for reviewer controls/screenshots.
 # Reuses the maintained Tauri verifier, ready seed and immutable source census.
 # --controls-only: seed synthetic content, prove local200/remote403, then tear down.
-# --capture-native: additionally upload the one-use QR as an Actions secret,
-# dispatch ci.yml paired_ui=true, retain the exact native artifact, and delete
-# the secret. Requires REVIEWER_MOBILE_REF and REVIEWER_MOBILE_SHA (40 hex).
-# The fixture stays online for the entire CI run. Evidence lives outside the
+# --capture-native: send the one-use QR on SSH stdin to the maintained ios-ci.py
+# runner, retain its exact paired artifacts, and delete its private input.
+# Requires REVIEWER_NATIVE_HOST, REVIEWER_MOBILE_ROOT and REVIEWER_MOBILE_SHA.
+# The fixture stays online for the entire native run. Evidence lives outside the
 # repo; no token is printed. This is a short-lived screenshot fixture, not the
 # durable cloud review environment (D-014/D-016 remain pending live relay proof).
 set -euo pipefail
@@ -20,7 +20,9 @@ for dependency in node python3 cloudflared socat; do
   command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 2; }
 done
 if [ "$REVIEWER_CAPTURE_NATIVE" = 1 ]; then
-  command -v gh >/dev/null || { echo 'GitHub CLI is required for native capture' >&2; exit 2; }
+  command -v ssh >/dev/null && command -v scp >/dev/null || {
+    echo 'SSH and SCP are required for native capture' >&2; exit 2;
+  }
   node "$ROOT/scripts/reviewer-operator-assert.mjs" --native-preflight
 fi
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"

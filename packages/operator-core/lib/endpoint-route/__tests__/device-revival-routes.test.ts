@@ -22,8 +22,9 @@ import { harnessScopedCtx } from '../../agent-tools/_harness-scope';
  * factories below can reference them without the "cannot access before
  * initialization" hoisting trap. */
 const m = vi.hoisted(() => ({
+  dispatchProjectedToolStream: vi.fn(async function* (..._args: unknown[]) {}),
   upsertPushToken: vi.fn(async (_o: unknown) => {}),
-  getOrCreateActiveConversation: vi.fn(async () => ({
+  getOrCreateActiveConversation: vi.fn(async (_workspaceId?: string) => ({
     id: 'conv-1', workspaceId: 'ws-e4', harnessSlug: null, title: null,
     status: 'active' as const, startedAt: 1, endedAt: null, elConversationIds: [], hasAudio: false,
   })),
@@ -88,6 +89,7 @@ vi.mock('../../operator-conversations', () => ({
   appendTurn: m.appendTurn,
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+vi.mock('../../voice-prefs', () => ({ loadVoicePrefs: vi.fn(async () => ({ humanFacingRole: 'operator' })) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-e4' }));
 vi.mock('../../agent-tools/plans/source', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-tools/plans/source')>()),
@@ -134,6 +136,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
   return {
     ...actual,
     dispatchProjectedTool: m.dispatchProjectedTool,
+    dispatchProjectedToolStream: m.dispatchProjectedToolStream,
     lookupByMcpName: (name: string) => ({ name }),
   };
 });
@@ -231,6 +234,37 @@ describe('device/operator/conversation', () => {
     expect(res.status).toBe(400);
   });
 
+  it('GET conversation reads the paired workspace when the desktop workspace differs', async () => {
+    let selectedWorkspace: string | undefined;
+    m.getOrCreateActiveConversation.mockImplementationOnce(async (workspaceId?: string) => {
+      selectedWorkspace = workspaceId ?? 'desktop-home';
+      return {
+        id: `conv-${selectedWorkspace}`, workspaceId: selectedWorkspace, harnessSlug: null,
+        title: null, status: 'active' as const, startedAt: 1, endedAt: null,
+        elConversationIds: [], hasAudio: false,
+      };
+    });
+    m.listTurnsRecent.mockImplementationOnce(async () => ({
+      turns: selectedWorkspace === 'ws-e4'
+        ? ['user', 'assistant'].map((role, seq) => ({
+            id: `owned-${seq}`, conversationId: 'conv-ws-e4', seq, role,
+            text: `owned ${role}`, source: 'text_typed', elConvId: null,
+            audioUrl: null, createdAt: 1, tools: null,
+          }))
+        : [],
+      hasMoreEarlier: false,
+    }));
+    const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'GET', '/device/operator/conversation');
+    const res = await def.handler(new Request('http://x.test/api/device/operator/conversation', {
+      headers: { 'x-papercusp-workspace': 'foreign-header' },
+    }), ctx());
+    const body = await res.json();
+    expect(body.turns).toHaveLength(2);
+    expect(body.conversation.workspaceId).toBe('ws-e4');
+    expect(m.getOrCreateActiveConversation).toHaveBeenCalledWith('ws-e4');
+    expect(m.listTurnsRecent).toHaveBeenCalledWith({ conversationId: 'conv-ws-e4', limit: 50 });
+  });
+
   it('POST converse rejects an empty message', async () => {
     const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'POST', '/device/operator/converse');
     const res = await def.handler(
@@ -242,6 +276,24 @@ describe('device/operator/conversation', () => {
       ctx(),
     );
     expect(res.status).toBe(400);
+  });
+
+  it('POST converse persists and dispatches in the verified device workspace', async () => {
+    const def = routeByPath(deviceConverse as RouteDefinition<any>[], 'POST', '/device/operator/converse');
+    const res = await def.handler(new Request('http://x.test/api/device/operator/converse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-workspace': 'foreign-header' },
+      body: JSON.stringify({ text: 'paired workspace message' }),
+    }), ctx({ principal: { ...MOBILE_PRINCIPAL, workspaceId: 'paired-workspace' } }));
+    await res.text();
+    expect(m.getOrCreateActiveConversation).toHaveBeenCalledWith('paired-workspace');
+    expect(m.appendTurn).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'conv-1', role: 'user', text: 'paired workspace message',
+    }));
+    expect(m.dispatchProjectedToolStream).toHaveBeenCalledWith(
+      expect.anything(), expect.any(String), expect.anything(),
+      expect.objectContaining({ workspaceId: 'paired-workspace' }), {},
+    );
   });
 });
 

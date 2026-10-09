@@ -24,6 +24,7 @@ vi.mock('../../issue-occurrence-ledger', () => ({ readIssueOccurrenceCounts: vi.
 vi.mock('../fleet/fleet-metrics-scope', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   resolveFleetMetricScope: vi.fn(),
+  readFleetMetricSourceItems: vi.fn(),
 }));
 
 import { explainIssueClaimFloors, getWorkItem, listWorkItems, listAllWorkItemsForFileExport, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
@@ -51,6 +52,7 @@ import {
 } from '../fleet/fleet-metrics-contract';
 import {
   resolveFleetMetricScope,
+  readFleetMetricSourceItems,
   type FleetMetricFlowMode,
   type ResolvedFleetMetricScope,
 } from '../fleet/fleet-metrics-scope';
@@ -66,6 +68,7 @@ const mockGetModes = vi.mocked(getModes);
 const mockReadDrainFlow = vi.mocked(readDrainFlow);
 const mockReadIssueOccurrenceCounts = vi.mocked(readIssueOccurrenceCounts);
 const mockResolveFleetMetricScope = vi.mocked(resolveFleetMetricScope);
+const mockReadFleetMetricSourceItems = vi.mocked(readFleetMetricSourceItems);
 const tool = (await import('./burn_down')).default;
 
 const FLEET_START = '2026-08-20T12:00:00.000Z';
@@ -1123,7 +1126,8 @@ describe('work_items:burn_down', () => {
     // The ordinary display census cannot see the last matching row. Fleet metrics
     // must still include it through the uncapped internal reader.
     mockListWorkItems.mockResolvedValue(sourceRows.slice(0, WORK_ITEMS_MAX_LIMIT));
-    mockListAllWorkItems.mockResolvedValue(sourceRows);
+    mockListAllWorkItems.mockRejectedValue(new Error('whole-harness metric hydration is forbidden'));
+    mockReadFleetMetricSourceItems.mockResolvedValue(sourceRows);
     mockListPresence.mockResolvedValue([]);
     mockResolveFleetMetricScope.mockResolvedValue(fleetResolution('current-spec'));
 
@@ -1141,10 +1145,7 @@ describe('work_items:burn_down', () => {
       fleet: 'fleet-a',
       flowMode: 'current-spec',
     });
-    expect(mockListAllWorkItems).toHaveBeenCalledWith({
-      harness: 'papercusp',
-      includeObservations: true,
-    });
+    expect(mockReadFleetMetricSourceItems).toHaveBeenCalledWith(fleetResolution('current-spec'));
     expect(data.fleetMetrics.ok).toBe(true);
     if (!data.fleetMetrics.ok) return;
     expect(data.fleetMetrics.snapshot.flow).toMatchObject({ opened: 1, terminalLifecycle: 1 });
@@ -1158,6 +1159,28 @@ describe('work_items:burn_down', () => {
         },
       },
     });
+  });
+
+  it('returns an explicit unavailable metric block without hydrating an unresolved population', async () => {
+    mockListWorkItems.mockResolvedValue([]);
+    mockListPresence.mockResolvedValue([]);
+    mockResolveFleetMetricScope.mockResolvedValue({
+      ok: false,
+      schemaVersion: FLEET_METRICS_SCHEMA_VERSION,
+      error: 'fleet_metrics_unavailable',
+      reason: 'claim-spec history unavailable',
+      recoverVia: 'restore the canonical historical revision',
+      requested: { fleet: 'fleet-a', harness: 'papercusp', flowMode: 'current-spec', window: 'fleet-lifetime' },
+    });
+    const res = await callTool(
+      { harness: 'papercusp', fleet: 'fleet-a', window: 'fleet-lifetime' },
+      { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-leader' },
+    );
+    expect(res.data).toMatchObject({ fleetMetrics: {
+      ok: false, error: 'fleet_metrics_unavailable', reason: 'claim-spec history unavailable',
+    } });
+    expect(mockReadFleetMetricSourceItems).not.toHaveBeenCalled();
+    expect(mockListAllWorkItems).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------------

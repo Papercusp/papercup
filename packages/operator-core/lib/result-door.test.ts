@@ -2441,6 +2441,54 @@ describe('applyResultDoor', () => {
       expect(readSpill('ws-1', 'plans:get', RUN_ID)).toContain('m'.repeat(100));
     });
 
+    it('keeps scratch-reference byte pages readable after the aggregate cohort is exhausted', () => {
+      const scope = beginResultDoorAggregate({ sessionKey: 'owner-read-recovery', outputGroupId: 'turn-recovery' });
+      const normalOpts = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope };
+      applyResultDoor(medium(), normalOpts);
+      applyResultDoor(medium(), normalOpts);
+      applyResultDoor(medium(), normalOpts);
+
+      const pageContent = (reference?: Record<string, unknown>): DoorableResult => ({
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            file_path: '/scratch/result-door.spill',
+            encoding: 'base64',
+            byte_offset: 0,
+            byte_length: 1_024,
+            total_bytes: 2_048,
+            ...(reference ? { reference } : {}),
+            eof: false,
+            data: Buffer.alloc(1_024).toString('base64'),
+            next_cursor: { tool: 'capability:read', args: { byte_offset: 1_024, byte_limit: 1_024 } },
+          }),
+        }],
+      });
+
+      const recoveryPage = applyResultDoor(pageContent({ uri: 'papercusp://scratch/ws-1/plans:get/page' }), {
+        toolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      expect(JSON.parse((recoveryPage.content[0] as { text: string }).text)).toMatchObject({
+        ok: true,
+        encoding: 'base64',
+        byte_length: 1_024,
+      });
+      expect((recoveryPage._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+
+      const ordinaryPage = applyResultDoor(pageContent(), {
+        toolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      const ordinaryEnvelope = JSON.parse((ordinaryPage.content[0] as { text: string }).text);
+      expect(ordinaryEnvelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
+    });
+
     // EI-21954450841272611, and independently EI-21733745031882912 /
     // EI-21573289806322713 against two other tools: all three read
     // `omittedItems: N` on an aggregate spill and concluded N rows had been
@@ -3527,14 +3575,14 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     // in the SAME text item as the payload, so `classifyProjectionBody` misses
     // on both the join and the per-item pass. The spill writer still recovers
     // the payload via `findJsonPrefixSlice` — and the footer used to re-derive
-    // the shape with only the weaker half, so ONE string claimed both "JSON
-    // starts after cursor.bodyOffsetInPayload" and "`pick` does not apply here".
+    // the shape with only the weaker half, so ONE string claimed both "JSON at
+    // response.data[cursor.bodyOffsetInPayload]" and "`pick` does not apply here".
     // That sent the reader to `pipe`, which on a JSON body is the all-or-nothing
     // trap this very hint exists to warn about.
     const footer = footerFor([
       { type: 'text', text: `${longJson(BUDGET_CHARS * 2)}\n\nSee also: work_items:claimable (the claim floors as a tool)` },
     ]);
-    expect(footer).toContain('JSON starts after cursor.bodyOffsetInPayload');
+    expect(footer).toContain('JSON at response.data[cursor.bodyOffsetInPayload]');
     expect(footer).toContain('`pick` is what reduces it');
     expect(footer).not.toContain('lines of non-JSON text');
     expect(footer).not.toContain('`pick` does not apply');

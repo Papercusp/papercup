@@ -114,6 +114,41 @@ describe('EI-21462448110688084: process-level fatal errors await terminal finali
     });
   });
 
+  it('keeps a rejected qualification diagnostic local without waking or retiring the incumbent run', async () => {
+    const result = {
+      ...buildTerminalFailureCheckpointResult({
+        candidate: 'repair-head',
+        error: new Error('scheduled qualification runner activation refused: conflict'),
+        runId: 'rejected-run',
+      }),
+      recorded: true,
+    };
+    const markers: string[] = [];
+    const emitInconclusive = vi.fn(async () => {});
+    const emitTerminalEvents = vi.fn(async () => {});
+    const retire = vi.fn(async () => {});
+
+    await emitTerminalCheckpointResult(result, {
+      record: async () => false,
+      writeHuman: () => {},
+      writeMarker: (line) => markers.push(line),
+      emitInconclusive,
+      emitTerminalEvents,
+      retire,
+    });
+
+    expect(markers).toHaveLength(1);
+    expect(JSON.parse(markers[0]!.slice(markers[0]!.indexOf('{')))).toMatchObject({
+      candidate: 'repair-head',
+      runId: 'rejected-run',
+      green: null,
+      recorded: false,
+    });
+    expect(emitInconclusive).not.toHaveBeenCalled();
+    expect(emitTerminalEvents).not.toHaveBeenCalled();
+    expect(retire).not.toHaveBeenCalled();
+  });
+
   it('does not exit until the typed-result finalizer completes', async () => {
     let finish!: (owned: boolean) => void;
     const finalize = vi.fn(

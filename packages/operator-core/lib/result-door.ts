@@ -2434,6 +2434,24 @@ function repairScorecardsGetProjection(sourceValue: unknown, projected: Record<s
   }
 }
 
+function isScratchReferenceBytePageResult(result: DoorableResult, toolName: string): boolean {
+  if (toolName !== 'capability:read' || result.content.length !== 1) return false;
+  const item = result.content[0];
+  if (!isTextItem(item)) return false;
+
+  try {
+    const page = recordAt(JSON.parse(item.text));
+    return page?.ok === true &&
+      page.encoding === 'base64' &&
+      Number.isSafeInteger(page.byte_offset) &&
+      Number.isSafeInteger(page.byte_length) &&
+      Number.isSafeInteger(page.total_bytes) &&
+      recordAt(page.reference) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Apply both model-facing output rails: the existing per-result door and, when
  * the transport supplied a cohort, one aggregate budget across the fan-out.
@@ -2503,7 +2521,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       } else nonTextChars += nonTextSize(it);
     }
     const sourceBytes = textBytes + nonTextChars;
-    const aggregate = opts.aggregateScope
+    // A scratch-reference byte page is itself the recovery transport for a
+    // result-door spill. Re-spilling it only creates another reference and
+    // forces capability:read to recurse. The page is already sized to fit the
+    // per-result door by capability:read; ordinary reads still consume the
+    // aggregate fan-out budget.
+    const recoveryBytePage = isScratchReferenceBytePageResult(result, opts.toolName);
+    const aggregate = opts.aggregateScope && !recoveryBytePage
       ? reserveAggregateBytes(
           opts.aggregateScope,
           sourceBytes,

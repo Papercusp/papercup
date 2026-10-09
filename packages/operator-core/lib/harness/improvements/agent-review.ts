@@ -946,7 +946,7 @@ export async function reconcileAgentReviewGrade(
       if (!isAcceptedReproductionStatus(result.status)) reproductionRefusal = result.detail;
     }
   }
-  const next: AgentReviewState = {
+  const next: AgentReviewState & { status: AgentReviewReconcileOutcome['status'] } = {
     ...current,
     status: reproductionRefusal ? 'revision-requested' : 'approved',
     ...(current.timing ? { timing: {

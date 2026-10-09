@@ -110,6 +110,7 @@ import {
 } from '../../../result-projection';
 import type { ProjectionSpec, ViewResolution } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
+import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import { registerSuNativeToolDispatcher, runOnSuNativeToolOwner, SuNativeToolOwnerError, type SuNativeToolAddress } from '../../../su-session-owner-routing';
 import { SCRATCH_SCHEME } from '../../../scratch-uri';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
@@ -1565,6 +1566,17 @@ type NativeSessionAuthFailureMetadata = {
       deadlineMs: number;
       elapsedMs: number;
       retryable: boolean;
+      ticketSample?: {
+        capacity: number;
+        active: number;
+        omitted: number;
+        tickets: Array<{
+          state: 'waiting' | 'held';
+          ageMs: number;
+          requestId?: string;
+          operation?: string;
+        }>;
+      };
       pressure?: {
         pid: number;
         pool: string;
@@ -1634,6 +1646,24 @@ function describeNativeSessionVerifierFailure(
       totalAcquired: pressureSnapshot.totalAcquired,
     }
     : undefined;
+  const ticketSnapshot = deadlineFailure?.acquisitionTickets;
+  const ticketSample = ticketSnapshot
+    ? {
+      capacity: Math.min(8, ticketSnapshot.capacity),
+      active: ticketSnapshot.active,
+      omitted: ticketSnapshot.omitted,
+      tickets: ticketSnapshot.tickets.slice(0, 8).map((ticket) => ({
+        state: ticket.state,
+        ageMs: Math.max(0, Math.floor(ticket.ageMs)),
+        ...(typeof ticket.requestId === 'string' && /^[a-f0-9-]{36}$/i.test(ticket.requestId)
+          ? { requestId: ticket.requestId }
+          : {}),
+        ...(typeof ticket.operation === 'string' && /^[a-z][a-z0-9_.-]{0,119}$/i.test(ticket.operation)
+          ? { operation: ticket.operation }
+          : {}),
+      })),
+    }
+    : undefined;
   const acquisition = deadlineFailure
     ? {
       label: redact(deadlineFailure.label, 120),
@@ -1642,6 +1672,7 @@ function describeNativeSessionVerifierFailure(
       elapsedMs: deadlineFailure.elapsedMs,
       retryable: deadlineFailure.retryable,
       ...(pressure ? { pressure } : {}),
+      ...(ticketSample ? { ticketSample } : {}),
     }
     : undefined;
   return {
@@ -1705,6 +1736,7 @@ export async function tryBuildSpawnContext(
   const url = urlFromExtra(extra);
   if (!url) return { kind: 'none' };
   const requestOrigin = buildMcpRequestOrigin(extra);
+  const verifierTraceId = mcpTraceIdFromExtra(extra);
   const dataPlaneDegradedAtMs = mcpDataPlaneDegradedAtFromExtra(extra);
 
   // Plan-run provenance (plan-agent-launch-2026-05-21, P-006). Folded
@@ -1808,7 +1840,11 @@ export async function tryBuildSpawnContext(
     if (suIdentity && nativeSessionId) {
       const verificationStartedAt = Date.now();
       try {
-        const binding = await classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId });
+        const binding = await withNamedQueryDiagnosticContext(
+          'mcp.nativeSessionVerifier',
+          () => classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId }),
+          verifierTraceId,
+        );
         if (binding.binding === 'foreign') {
           return {
             kind: 'failed',

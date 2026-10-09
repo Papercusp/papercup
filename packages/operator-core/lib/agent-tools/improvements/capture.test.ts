@@ -42,6 +42,7 @@ const trustedRuntime = vi.hoisted(() => ({
     filePaths: string[];
   } | null),
 }));
+const dedupAlarm = vi.hoisted(() => ({ report: vi.fn(async (_detail: unknown) => undefined) }));
 
 // PG-free unit: capture-core has its own 31-test suite; this pins the tool
 // wrapper's two jobs — (1) deriving the `source` label from the caller's
@@ -81,6 +82,9 @@ vi.mock('../../attention/intake-promotion', async (original) => ({
   }),
 }));
 vi.mock('../work_items/drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
+vi.mock('../work_items/semantic-dedup-probe-alarm', () => ({
+  reportDedupCoverageDegraded: dedupAlarm.report,
+}));
 // P-008: the novelty pre-check is PG-backed (readNoveltyCorpus) — mock it so this
 // suite stays PG-free. Default = resolved undefined ("check unavailable"), which the
 // handler renders as an ABSENT priorArt field, leaving every pre-P-008 assertion
@@ -393,6 +397,66 @@ function callTool(args: Record<string, unknown>, ctx: unknown = {}) {
     }
   ).handler(args, ctx);
 }
+
+describe('improvements:capture degraded dedup alert', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    drainAdmission.blocked = false;
+    drainAdmission.unavailable = false;
+    mockReadTrustedHarnessTestRunProvenance.mockResolvedValue(null);
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
+  });
+
+  it('publishes one advisory signal when a real capture proceeds with incomplete dedup coverage', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-42', title: 'dedup coverage test' },
+      possibleDuplicates: [],
+      dedupCoverage: { lexical: 'unavailable', semantic: 'unavailable', degraded: true },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    await callTool(
+      { title: 'dedup coverage test', kind: 'bug' },
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
+    );
+
+    expect(dedupAlarm.report).toHaveBeenCalledWith({
+      source: 'improvements:capture',
+      harnessSlug: 'papercusp',
+      coverage: { lexical: 'unavailable', semantic: 'unavailable', degraded: true },
+    });
+  });
+
+  it('does not alarm for check-only probes or complete coverage', async () => {
+    mockCapture
+      .mockResolvedValueOnce({
+        ok: true,
+        created: false,
+        reason: 'check-only',
+        possibleDuplicates: [],
+        dedupCoverage: { lexical: 'unavailable', semantic: 'unavailable', degraded: true },
+      } as unknown as Awaited<ReturnType<typeof captureImprovement>>)
+      .mockResolvedValueOnce({
+        ok: true,
+        created: true,
+        issue: { id: 'EI-43', title: 'complete dedup coverage test' },
+        possibleDuplicates: [],
+        dedupCoverage: { lexical: 'ok', semantic: 'ok', degraded: false },
+      } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    await callTool(
+      { title: 'dedup coverage check', kind: 'bug', checkDuplicatesOnly: true },
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
+    );
+    await callTool(
+      { title: 'complete dedup coverage test', kind: 'bug' },
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
+    );
+
+    expect(dedupAlarm.report).not.toHaveBeenCalled();
+  });
+});
 
 describe('improvements:capture timing diagnostics', () => {
   it('logs post-persist stage timings with the MCP trace id and no capture text', async () => {

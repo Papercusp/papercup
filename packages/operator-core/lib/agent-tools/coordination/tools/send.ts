@@ -773,33 +773,36 @@ const expectEffectArg = z
  *  `parseReportBlock` (@papercusp/chat-protocol) is the single canonical
  *  validator (loud `report_invalid` refusal in sendOne), so this zod shape is
  *  introspection/documentation only and cannot drift from it. */
-const reportArg = z
-  .object({
-    title: z.string().optional(),
-    goalReport: z.object({ schemaVersion: z.literal(1), goalId: z.string(), reportId: z.string(), bodySha256: z.string() }).optional(),
-    plans: z.array(
-      z.object({
-        slug: z.string().optional(),
-        title: z.string().optional(),
-        status: z.string().optional(),
-        summary: z.string().optional(),
-        items: z
-          .array(
-            z.object({
-              id: z.string().optional(),
-              text: z.string().optional(),
-              status: z.string().optional(),
-            }),
-          )
-          .optional(),
-      }),
-    ),
-  })
-  .optional()
-  .describe(
-    'Structured status card (ReportBlock): { title?, plans:[{ title, status?, summary?, items?:[{ id?, text, status? }] }] }. Sent to ["human"] it renders as a 📋 card in the owner\'s Inbox (fleet updates, status digests) instead of plain text. Statuses like blocked/failing surface it as an Alert; a genuine decision still goes through coord:escalate. Invalid shape → loud report_invalid refusal (nothing sent).',
-  )
-  .meta({ id: 'coord-send-report-v1' });
+// Keep each input axis' ReportBlock schema inline. The shared named schema was
+// emitted as a local $ref, which the Codex nested tool wrapper rendered as
+// unknown and hid the accepted payload shape from callers.
+const reportArg = () =>
+  z
+    .object({
+      title: z.string().optional(),
+      goalReport: z.object({ schemaVersion: z.literal(1), goalId: z.string(), reportId: z.string(), bodySha256: z.string() }).optional(),
+      plans: z.array(
+        z.object({
+          slug: z.string().optional(),
+          title: z.string().optional(),
+          status: z.string().optional(),
+          summary: z.string().optional(),
+          items: z
+            .array(
+              z.object({
+                id: z.string().optional(),
+                text: z.string().optional(),
+                status: z.string().optional(),
+              }),
+            )
+            .optional(),
+        }),
+      ),
+    })
+    .optional()
+    .describe(
+      'Structured status card (ReportBlock): { title?, plans:[{ title, status?, summary?, items?:[{ id?, text, status? }] }] }. Sent to ["human"] it renders as a 📋 card in the owner\'s Inbox (fleet updates, status digests) instead of plain text. Statuses like blocked/failing surface it as an Alert; a genuine decision still goes through coord:escalate. Invalid shape → loud report_invalid refusal (nothing sent).',
+    );
 
 /** P-033. Which fields a NON-AGENT sender (the operator GUI) derived rather than
  *  authored — so the D-070 measurement can exclude them instead of counting a
@@ -889,7 +892,7 @@ export const itemSpec = z.object({
   hive: hiveArg,
   allHive: allHiveArg,
   asAuthority: asAuthorityArg,
-  report: reportArg,
+  report: reportArg(),
   expectEffect: expectEffectArg,
   fieldProvenance: fieldProvenanceArg,
 });
@@ -3196,7 +3199,7 @@ export default defineTool({
     hive: hiveArg,
     allHive: allHiveArg,
     asAuthority: asAuthorityArg,
-    report: reportArg,
+    report: reportArg(),
     expectEffect: expectEffectArg,
     items: z
       .array(itemSpec)

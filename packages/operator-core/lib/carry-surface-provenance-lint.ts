@@ -189,19 +189,24 @@ const NEGATED_OWNER_AUTHORITY_RE = new RegExp(
  * verdict can falsify such an anchor, and a consumer holding that verdict still
  * needs to know the line was claiming owner authority in the first place.
  *
- * Deliberately BROADER than the assertion detectors above — it matches the bare
- * noun `owner` via {@link OWNER_AUTHORITY_REF}'s final alternative, so it also sees
- * shapes no detector here matches ("Owner-directed ordering", "the owner
- * checkpoint records…"). That breadth is safe ONLY because it is used in
- * CONJUNCTION with a resolved-and-falsified turn verdict: the narrowing is carried
- * by the evidence, not by the phrase match. Do not reuse it as a standalone
- * detector — on its own it would fire on any sentence containing the word.
+ * Deliberately broader than the assertion detectors above: it also sees shapes no
+ * detector here matches ("Owner-directed ordering", "the owner checkpoint records…").
+ * It excludes closed peer/technical role-owner forms ("plan owner", "another live
+ * owner's gate lane") because those name who holds a coordination role, not the human
+ * owner. Keep this distinction narrow: D-085's owner-directed and owner-checkpoint
+ * wording must still be recognized. The predicate is used in conjunction with a
+ * resolved-and-falsified turn verdict; do not reuse it as a standalone detector.
  */
-const OWNER_AUTHORITY_LINE_RE = new RegExp(OWNER_AUTHORITY_REF, 'i');
-
 export function assertsOwnerAuthority(line: string | null | undefined): boolean {
   if (!line) return false;
-  return OWNER_AUTHORITY_LINE_RE.test(line);
+  for (const match of line.matchAll(new RegExp(OWNER_AUTHORITY_REF, 'gi'))) {
+    // Explicit owner tags and noun phrases like "owner directive" remain authority
+    // references. A bare `owner` token only counts when it is not part of a peer or
+    // technical role label.
+    if (match[0].toLowerCase() !== 'owner') return true;
+    if (match.index === undefined || !isPeerRoleOwnerMention(line, match.index)) return true;
+  }
+  return false;
 }
 
 /**
@@ -273,10 +278,21 @@ function isOwnerAttributionReportedAgentMention(line: string): boolean {
  * interactive human owner whose authority this lint is meant to verify. An unqualified
  * "the owner asked ..." remains loud.
  */
-const PEER_ROLE_OWNER_PREFIX_RE = /\b(?:gate|fleet|plan|peer|root|storage|work[-\s]?item)\s*$/i;
+const PEER_ROLE_OWNER_NOUN = String.raw`(?:gate|fleet|plan|peer|root|storage|work[-\s]?item)`;
+const PEER_ROLE_OWNER_PREFIX_RE = new RegExp(String.raw`\b${PEER_ROLE_OWNER_NOUN}\s*$`, 'i');
+const PEER_ROLE_OWNER_POSSESSIVE_SUFFIX_RE = new RegExp(
+  String.raw`^['’]s\s+${PEER_ROLE_OWNER_NOUN}\b`,
+  'i',
+);
+
+function isPeerRoleOwnerMention(line: string, ownerIndex: number): boolean {
+  const beforeOwner = line.slice(0, ownerIndex);
+  const afterOwner = line.slice(ownerIndex + 'owner'.length);
+  return PEER_ROLE_OWNER_PREFIX_RE.test(beforeOwner) || PEER_ROLE_OWNER_POSSESSIVE_SUFFIX_RE.test(afterOwner);
+}
 
 function isPeerRoleOwnerAttribution(line: string, match: RegExpExecArray): boolean {
-  return match.index !== undefined && PEER_ROLE_OWNER_PREFIX_RE.test(line.slice(0, match.index));
+  return match.index !== undefined && isPeerRoleOwnerMention(line, match.index);
 }
 
 /**

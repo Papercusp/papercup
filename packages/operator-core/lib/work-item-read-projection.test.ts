@@ -37,4 +37,15 @@ describe('work-item source read projection', () => {
       expect(FLEET_METRIC_ARCHIVE_KEYS as readonly string[]).not.toContain(key);
     }
   });
+
+  it('avoids unmapped issue metadata while keeping matcher and lifecycle columns', () => {
+    const issueColumns = 'id, source, signal_origin, found_during, linked_feature_id, severity, created_by, body, payload, state';
+    expect(projectWorkItemColumns(issueColumns)).toBe(issueColumns);
+    const projected = projectWorkItemColumns(issueColumns, 'fleetMetrics');
+    for (const key of ['source', 'signal_origin', 'found_during', 'linked_feature_id']) {
+      expect(projected).toContain(`NULL::text AS ${key}`);
+    }
+    expect(projected).toContain('severity, created_by, body,');
+    expect(projected).toContain(' AS payload, state');
+  });
 });

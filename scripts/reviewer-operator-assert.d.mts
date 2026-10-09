@@ -38,19 +38,18 @@ export function verifyReviewerReadback({ env, fetchImpl, log }: {
     log?: (message: string) => void;
 }): Promise<void>;
 /** @param {ReviewerEnvironment} env @param {NativeRunner} [run] */
-export function nativeCapturePreflight(env: ReviewerEnvironment, run?: NativeRunner): string;
+export function nativeCapturePreflight(env: ReviewerEnvironment, run?: NativeRunner): string | undefined;
 /** @param {PairedSummary | null | undefined} summary */
 export function validatePairedSummary(summary: PairedSummary | null | undefined): void;
+/** @param {string} root @param {string} sha */
+export function verifyNativeArtifact(root: string, sha: string): any;
 /**
- * @param {{ env: ReviewerEnvironment, payload: PairingPayload, run?: NativeRunner, readSummary?: (root: string) => PairedSummary, now?: () => number, delay?: (ms: number) => Promise<unknown> }} options
+ * @param {{ env: ReviewerEnvironment, payload: PairingPayload, run?: NativeRunner }} options
  */
-export function captureNative({ env, payload, run, readSummary, now, delay }: {
+export function captureNative({ env, payload, run }: {
     env: ReviewerEnvironment;
     payload: PairingPayload;
     run?: NativeRunner;
-    readSummary?: (root: string) => PairedSummary;
-    now?: () => number;
-    delay?: (ms: number) => Promise<unknown>;
 }): Promise<void>;
 export type ReviewerEnvironment = Record<string, string | undefined>;
 export type PairingPayload = {

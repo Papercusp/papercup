@@ -697,11 +697,13 @@ test('credit projection records depletion immediately even when the included met
   await send();
   await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 1));
   assert.equal(recorded.mock.calls[0]![1].usageCreditsAvailable, true);
+  assert.deepEqual(recorded.mock.calls[0]![1].creditBalance, { amount: 50000, unit: 'credits', source: 'codex', unlimited: false });
   assert.equal(recorded.mock.calls[0]![1].utilization7d, 1);
   available = false;
   await send();
   await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 2));
   assert.equal(recorded.mock.calls[1]![1].usageCreditsAvailable, false);
+  assert.equal(recorded.mock.calls[1]![1].creditBalance?.amount, 0);
 });
 
 test('/admin/config exposes the live codexAccounts alongside the claude pool', async () => {

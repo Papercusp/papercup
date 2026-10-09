@@ -116,6 +116,30 @@ OUTFILE="${2:-dist-host/hono-host.mjs}"
 [[ "$ENTRY" = /* ]] || ENTRY="$OPERATOR_DIR/$ENTRY"
 [[ "$OUTFILE" = /* ]] || OUTFILE="$OPERATOR_DIR/$OUTFILE"
 OUTDIR="$(dirname "$OUTFILE")"
+# >>> custom-output runtime dependencies (EI-25510203057543967)
+# Bare ESM imports resolve beside the generated file, independently of cwd.
+# Default outputs inherit this checkout's node_modules; an explicit output
+# elsewhere needs the same maintained dependencies before it can run.
+prepare_host_runtime_dependencies() { # <repo root> <out dir>
+  local repo_root="$1" out_dir="$2" physical_out
+  mkdir -p "$out_dir" || return 1
+  physical_out="$(cd "$out_dir" && pwd -P)" || return 1
+  case "$physical_out/" in "$repo_root/"*) return 0 ;; esac
+  if [[ ! -e "$out_dir/node_modules" && ! -L "$out_dir/node_modules" ]]; then
+    [[ -d "$repo_root/node_modules" ]] || {
+      echo "ERROR: custom host output requires $repo_root/node_modules" >&2
+      return 1
+    }
+    ln -s "$repo_root/node_modules" "$out_dir/node_modules" || return 1
+  fi
+  # Preserve caller-supplied dependencies; never replace a directory or link.
+  [[ -d "$out_dir/node_modules" ]] || {
+    echo "ERROR: custom host output has unusable dependencies at $out_dir/node_modules" >&2
+    return 1
+  }
+}
+# <<< custom-output runtime dependencies
+prepare_host_runtime_dependencies "$REPO_ROOT" "$OUTDIR" || exit 1
 STALE_MARKER="$OUTDIR/.bundle-stale.json"
 FRESH_MARKER="$OUTDIR/.bundle-fresh.json"
 FRESHNESS_HELPER="$HELPER_DIR/bundle-host-freshness.mjs"

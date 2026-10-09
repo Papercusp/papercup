@@ -2058,6 +2058,10 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
 
 async function listIssuesWithLimit(filter: ListIssuesFilter, rowLimit: number | null): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
+  // Complete metric reads do not need a database sort of large text/JSON rows.
+  // Keep the same created-time ordering after mapping. Limited reads must sort
+  // before LIMIT; every ordinary full/detail caller also retains its SQL order.
+  const metricSource = rowLimit === null && filter.payloadProjection === 'fleetMetrics';
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
   // default = ISSUE_KINDS (bug|change) so `task` work-items never surface as issues.
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
@@ -2142,8 +2146,15 @@ async function listIssuesWithLimit(filter: ListIssuesFilter, rowLimit: number | 
        -- EXCLUDE can never disagree about what "the observation lane" is.
        AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
        AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
-     ORDER BY created_at DESC
+     ${metricSource ? sql`` : sql`ORDER BY created_at DESC`}
      ${rowLimit === null ? sql`` : sql`LIMIT ${rowLimit}`}`;
+  if (metricSource) {
+    // Postgres DESC places NULLs first. Preserve that legacy ordering as well
+    // as real timestamp ordering before the mapper normalizes NULL timestamps.
+    const ordered = rows.map(row => ({ row, at: row.created_at == null ? null : tsIso(row.created_at) }));
+    ordered.sort((a, b) => a.at === b.at ? 0 : a.at === null ? -1 : b.at === null ? 1 : a.at > b.at ? -1 : 1);
+    return ordered.map(({ row }) => toIssue(row));
+  }
   return rows.map(toIssue);
 }
 

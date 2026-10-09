@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,56 @@ import { join } from 'node:path';
 import { dirSizeBytes, dirSizeBytesAsync, listDiskRootChildren, listDiskRootChildrenAsync, type DiskWalkBudget } from './disk';
 
 describe('bounded disk attribution', () => {
+  it('times out an individual child without hiding a later sibling or exceeding the shared budget', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-attribution-time-'));
+    try {
+      const slow = join(root, 'a-slow');
+      mkdirSync(slow);
+      for (let i = 0; i < 8; i++) writeFileSync(join(slow, String(i)), Buffer.alloc(100));
+      const later = join(root, 'z-later.bin');
+      writeFileSync(later, Buffer.alloc(1024));
+      for (const scan of [listDiskRootChildren, listDiskRootChildrenAsync]) {
+        let clock = 1000;
+        const now = vi.spyOn(Date, 'now').mockImplementation(() => ++clock);
+        try {
+          const result = await scan({ roots: [root], maxChildScanMs: 3, budget: { deadlineMs: 10_000 } });
+          expect(result.truncated).toBe(true);
+          expect(result.entries.find((entry) => entry.path === slow)).toMatchObject({ sizeTruncated: true });
+          expect(result.entries.find((entry) => entry.path === later)).toMatchObject({ sizeBytes: 1024 });
+          expect(clock).toBeLessThan(10_000);
+        } finally { now.mockRestore(); }
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('reports a capped child as a lower bound without hiding a later large sibling', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-attribution-cap-'));
+    try {
+      const largeTree = join(root, 'a-capped');
+      mkdirSync(largeTree);
+      for (let i = 0; i < 4; i++) writeFileSync(join(largeTree, String(i)), Buffer.alloc(100));
+      const later = join(root, 'z-later.bin');
+      writeFileSync(later, Buffer.alloc(1024));
+      for (const scan of [listDiskRootChildren, listDiskRootChildrenAsync]) {
+        const result = await scan({ roots: [root], maxEntriesPerChild: 2 });
+        expect(result.truncated).toBe(true);
+        expect(result.entries.find((entry) => entry.path === largeTree)).toMatchObject({ sizeTruncated: true });
+        expect(result.entries.find((entry) => entry.path === later)).toMatchObject({ sizeBytes: 1024 });
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('does not let a broken child link hide a later sibling in the cooperative scan', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-attribution-unreadable-'));
+    try {
+      symlinkSync(join(root, 'absent'), join(root, 'a-broken'));
+      writeFileSync(join(root, 'z-later.bin'), Buffer.alloc(1024));
+      const result = await listDiskRootChildrenAsync({ roots: [root] });
+      expect(result.truncated).toBe(true);
+      expect(result.entries.find((entry) => entry.path === join(root, 'z-later.bin'))).toMatchObject({ sizeBytes: 1024 });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('does not follow sibling or nested symlinks, including cycles', async () => {
     const root = mkdtempSync(join(tmpdir(), 'disk-attribution-'));
     try {

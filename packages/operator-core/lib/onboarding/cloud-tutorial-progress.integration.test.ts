@@ -84,6 +84,20 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
       await expect(withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...patch, expectedScope: other }))).rejects.toThrow('tutorial_scope_changed');
     }
   });
+  it('explicitly starts and restarts a returning account guide with replay and stale-tab protection', async () => {
+    const account = { tenantId: tenantA, userId: randomUUID() };
+    const restart: AccountTutorialProgressUpdate = { expectedScope: account, expectedRevision: 0,
+      mutationId: randomUUID(), version: 3, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [], restart: true };
+    const started = await withAccount(account, tx => updateAccountTutorialProgress(tx, account, restart));
+    expect(started).toMatchObject({ revision: 1, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] });
+    expect(await withAccount(account, tx => updateAccountTutorialProgress(tx, account, restart))).toEqual(started);
+    const closed = await withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...restart,
+      restart: undefined, expectedRevision: 1, mutationId: randomUUID(), disposition: 'closed', currentLessonId: 'billing', reviewedLessonIds: ['welcome', 'billing'] }));
+    await expect(withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...restart, mutationId: randomUUID() }))).rejects.toBeInstanceOf(AccountTutorialProgressConflict);
+    const reopened = await withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...restart, expectedRevision: closed.revision, mutationId: randomUUID() }));
+    expect(reopened).toMatchObject({ revision: 3, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] });
+    await expect(withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...restart, expectedScope: { ...account, userId: randomUUID() } }))).rejects.toThrow('tutorial_scope_changed');
+  });
   it('serializes account tabs without changing workspace-scoped Cloud receipts', async () => {
     const account = { tenantId: tenantA, userId: randomUUID() };
     await withAccount(account, tx => enrollAccountTutorial(tx, account));

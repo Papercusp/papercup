@@ -14,7 +14,6 @@ import { listPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import {
   explainIssueClaimFloors,
   listWorkItems,
-  listAllWorkItemsForFileExport,
   getWorkItem,
   readWorkItemClaimHoldProvenance,
   WORK_ITEMS_MAX_LIMIT,
@@ -62,6 +61,7 @@ import {
 } from '../fleet/fleet-metrics-contract';
 import {
   resolveFleetMetricScope,
+  readFleetMetricSourceItems,
   selectFleetMetricCurrentItems,
   selectFleetMetricFlowEvents,
   type FleetMetricFlowMode,
@@ -2182,7 +2182,31 @@ export default defineTool({
       (ctx as { principal?: { workspaceId?: string | null } }).principal?.workspaceId,
     );
     const self = args.since || wantsFleetMetrics ? resolveSelfRef(ctx) : undefined;
-    const [items, presence, fleetMetricSourceItems] = await Promise.all([
+    const fleetMetricResolutionPromise = (async (): Promise<FleetMetricScopeResolution | null> => {
+      if (!wantsFleetMetrics) return null;
+      const flowMode = args.flowMode ?? 'current-spec';
+      if (!workspaceId) {
+        return fleetMetricsUnavailable({
+          fleet: args.fleet!,
+          harness: args.harness,
+          flowMode,
+          reason: 'workspace identity is unavailable',
+          recoverVia: 'retry from a workspace-scoped session',
+        });
+      }
+      return resolveFleetMetricScope({
+        workspaceId,
+        harness: args.harness,
+        fleet: args.fleet!,
+        flowMode,
+      });
+    })();
+    // Share the leader brief's complete current/history source selection. Only
+    // hydrate metric rows after resolving their predicate, while the ordinary
+    // display census and presence reads continue independently.
+    const fleetMetricSourceItemsPromise = fleetMetricResolutionPromise.then(resolution =>
+      resolution?.ok ? readFleetMetricSourceItems(resolution) : null);
+    const [items, presence, fleetMetricResolution, fleetMetricSourceItems] = await Promise.all([
       requestedIds
         ? Promise.all(requestedIds.map((id) => getWorkItem(id, args.harness))).then(
             (rows) => rows.filter((row): row is WorkItem => row != null),
@@ -2201,12 +2225,8 @@ export default defineTool({
             limit: WORK_ITEMS_MAX_LIMIT,
           }),
       listPresence({ workspaceId }).catch(() => []),
-      wantsFleetMetrics
-        ? listAllWorkItemsForFileExport({
-            harness: args.harness,
-            includeObservations: true,
-          })
-        : Promise.resolve(null),
+      fleetMetricResolutionPromise,
+      fleetMetricSourceItemsPromise,
     ]);
     // EI-19313376980892266 fix B: resolve the fleet whose closes count as "ours".
     // Only worth a round-trip when `since` was passed (no `since` ⇒ no delta to split).
@@ -2266,28 +2286,10 @@ export default defineTool({
       harnessSlug: args.harness,
       since: args.since ?? null,
     });
-    const fleetMetricResolution = await (async (): Promise<FleetMetricScopeResolution | null> => {
-      if (!wantsFleetMetrics) return null;
-      const flowMode = args.flowMode ?? 'current-spec';
-      if (!workspaceId) {
-        return fleetMetricsUnavailable({
-          fleet: args.fleet!,
-          harness: args.harness,
-          flowMode,
-          reason: 'workspace identity is unavailable',
-          recoverVia: 'retry from a workspace-scoped session',
-        });
-      }
-      return resolveFleetMetricScope({
-        workspaceId,
-        harness: args.harness,
-        fleet: args.fleet!,
-        flowMode,
-      });
-    })();
     const fleetMetrics = await (async (): Promise<FleetMetricsResult | null> => {
-      if (!fleetMetricResolution || !fleetMetricSourceItems) return null;
+      if (!fleetMetricResolution) return null;
       if (!fleetMetricResolution.ok) return parseFleetMetricsResult(fleetMetricResolution);
+      if (!fleetMetricSourceItems) return null;
       const metricOccurrences = readIssueOccurrenceCounts({
         workspaceId: occurrenceWorkspaceId,
         harnessSlug: args.harness,

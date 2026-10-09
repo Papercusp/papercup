@@ -480,6 +480,68 @@ and customer adoption remain unverified. Customer checkpoint absence, the live s
 attention probe, the subsequent native journey, camera and full-operation acceptance,
 and genuine BYOC acceptance remain open. No public cloud support claim is made.
 
+### Public hosted sealed attention verified — 2026-10-09
+
+The old adoption wait timed out before the leader fired generation 1 of
+`fleet:android-release:android-r69-attention-runtime-adopted` at
+2026-10-07T20:05:40.291Z, with exact source
+`f0f67adb154dee54ad59a79c5ae6f7704fa2da62` matched. That fired receipt
+supersedes the adoption-pending statements above. On 2026-10-09T13:55:51.205Z,
+the maintained `readWorkspaceHostRuntimeRelease` reader still reported avi-test
+running `0.0.21-p318r69`, schema `schema-1415`, bundle
+`81b87e9e15dd9a16734143d1409bfa718fd3d3ad90887c0cbbaa8826c60cf803`.
+The runtime row reports the bundle and version; source binding comes from the
+leader's matched adoption receipt, not a source field in that row.
+
+The existing authenticated hosted relay returned HTTP 200 for the expected
+workspace and minted a fresh public HTTPS QR. The private QR used mode 0600.
+The maintained `live_sealed_attention_preflight` then passed against
+`https://app.papercusp.com/api/workspaces/ws-3daf37098c8096b5d9e0ac72`:
+sealed pairing, attention, reconnect, workspace scope, and device revocation
+all succeeded. Cargo reported one passed, zero failed, zero ignored, and ten
+filtered out. The preflight source still matches SHA256
+`10827d512a75577030cf9f4f9efce7095250d8a73b59bf47b0fcb7dc8acaa33b`.
+The newly minted QR and private mint response were removed after the run.
+
+Durable receipt: [android-p015-sealed-attention-2026-10-09.json](android-p015-sealed-attention-2026-10-09.json).
+Original log: `/tmp/android-p015-preflight-20261009-SxZzbz/preflight.log`, SHA256
+`5a3056e20410632eb1d047096091c224eab740c4228ce36b610934fc00757905`.
+This verifies the hosted attention failure is repaired on the nominated r69
+runtime. Current native app operations, camera, and genuine BYOC acceptance
+remain open; this receipt does not close parent P-015 or prove a current APK.
+
+Recovery also found an earlier passing run completed at 13:42Z in the
+predecessor's native tool transcript and
+`/tmp/android-p015-r69-sealed-preflight-20261009.log`. The carry note omitted
+that work, so the continuation repeated the bounded probe with a fresh QR
+before recovering it. Both runs report revocation, and both sets of newly
+minted private QR/response files are now removed. The durable receipt records
+both logs and the recovery limitation. Independent customer-side proof of
+strict checkpoint absence remains outstanding; the actual live pass alone
+does not distinguish absence from a recovered configured gate reader.
+
+### Accepted r69 transport source qualified — 2026-10-09 14:20Z
+
+The maintained isolated committed-source runner passed the four D-021 transport
+suites at accepted source `f0f67adb154dee54ad59a79c5ae6f7704fa2da62`:
+104 assertions, zero skips, exit 0, and four requested/executed/matched files.
+The test ledger independently records clean, non-scratch local `papercusp`
+passes `20958702`, `20958703`, `20958704`, and `20958705` at that exact commit.
+Log `/tmp/android-d021-r69-pinned-20261009.log` has SHA256
+`64921212fed6d21c2895ad2ad0bed58da9404e7da3f0ce3cdf98b8b5734cbf77`.
+This renews the accepted-candidate source check; no native run or new pairing
+was performed in this qualification.
+
+The current avi-test VM incarnation is `7419102153377783583`. Controller IAP
+SSH succeeded with its existing incarnation-bound known-host pin. A bounded
+read of the operator journal for the preflight interval could not establish
+the strict absent-routine diagnostic: `sudo -n` requires a password, and the
+customer account's journal scope excludes system and other-user messages.
+These are unreadable evidence, not evidence of absence. The attention defect
+remains open until a maintained service-context read distinguishes absent
+checkpoint configuration from recovery of a configured reader. No privilege,
+service, or VM configuration was changed.
+
 ## Historical discovery — 2026-10-06
 
 The following sections preserve the initial analysis and agreement context. Their gap states,

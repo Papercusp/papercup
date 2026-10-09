@@ -249,7 +249,9 @@ function makeWindowProjector(
   const WRITE_MIN_MS = 30_000;
   const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number; usageCreditsAvailable?: boolean }>();
   return (headers, status, model, accountId) => {
-    const observedCredits = parseCodexRateLimitHeaders(headers).usageCreditsAvailable;
+    const parsedCredits = parseCodexRateLimitHeaders(headers);
+    const observedCredits = parsedCredits.usageCreditsAvailable;
+    const creditBalance = parsedCredits.creditBalance;
     const usageCreditsAvailable = status === 429 ? false : observedCredits;
     let w = parseUnifiedWindow(headers);
     let w7 = parseUnified7dWindow(headers);
@@ -271,7 +273,7 @@ function makeWindowProjector(
       w.windowResetAt === undefined &&
       w7.utilization7d === undefined &&
       w7.windowResetAt7d === undefined &&
-      usageCreditsAvailable === undefined
+      usageCreditsAvailable === undefined && creditBalance === undefined
     )
       return;
     const t = Date.now();
@@ -331,6 +333,7 @@ function makeWindowProjector(
             utilization7d: w7.utilization7d,
             windowResetAt7d: w7.windowResetAt7d,
             usageCreditsAvailable,
+            creditBalance,
           },
           t,
           ws,
