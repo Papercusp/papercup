@@ -66,7 +66,7 @@ afterEach(async () => {
 });
 
 function fixture(backend: 'codex' | 'omp', overrides: {
-  nativeId?: string; tools?: boolean; model?: string;
+  nativeId?: string; tools?: boolean; model?: string; contextWindow?: number;
   servedAccountReader?: (ownerId: string) => Promise<string | null>;
   request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
   resume?: boolean;
@@ -117,7 +117,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     if (frame.type === 'abort') transport.onMessage({ type: 'agent_end' });
     if (frame.type === 'get_state') return {
       sessionId: overrides.nativeId ?? 'native-omp', sessionFile: nativePath,
-      model: { provider: 'openai', id: overrides.model ?? 'omp-model' },
+      model: { provider: 'openai', id: overrides.model ?? 'omp-model', contextWindow: overrides.contextWindow },
       dumpTools: overrides.tools === false ? [] : [{ name: 'mcp__papercusp_su__coord_whoami' }],
     };
     return {};
@@ -915,6 +915,42 @@ it('enables native OMP question callbacks through the RPC UI transport', async (
   await f.engine.ready;
   const args = f.transport().args;
   expect(args[args.indexOf('--mode') + 1]).toBe('rpc-ui');
+});
+
+it('publishes the OMP native model window before the first reply and preserves it with live usage', async () => {
+  const f = fixture('omp', { contextWindow: 200_000 });
+  await f.engine.ready;
+  expect(f.engine.adapter.host.descriptor()).toMatchObject({
+    usage: { contextWindow: 200_000 },
+    capabilities: { features: { context: { state: 'supported' } } },
+  });
+  f.emit({ type: 'message_end', message: { role: 'assistant', content: [],
+    usage: { input: 100, output: 20, totalTokens: 120, cost: { total: 0.25 } },
+  } });
+  expect(f.engine.adapter.host.descriptor().usage).toEqual({
+    contextWindow: 200_000, contextTokens: 120, inputTokens: 100, outputTokens: 20, costUsd: 0.25,
+  });
+});
+
+it.each([0, -1, NaN, Infinity])('does not infer an OMP window from invalid native value %s', async (contextWindow) => {
+  const f = fixture('omp', { contextWindow });
+  await f.engine.ready;
+  expect(f.engine.adapter.host.descriptor().usage?.contextWindow).toBeUndefined();
+});
+
+it.each([100_000, undefined])('refreshes or clears the OMP window when a model switch reports %s', async (contextWindow) => {
+  const f = fixture('omp', { contextWindow: 200_000,
+    request: async (frame) => frame.type === 'set_model' ? { contextWindow } : undefined,
+  });
+  await f.engine.ready;
+  f.engine.adapter.host.updateUsage({ contextTokens: 120, costUsd: 0.25 });
+  await f.engine.adapter.host.startCommand({
+    ...command(f.engine, 'owner_turn', 'window-switch'), model: 'anthropic/claude-sonnet-4-5',
+  } as never).terminal;
+  expect(f.engine.adapter.host.descriptor().usage).toMatchObject({ contextTokens: 120, costUsd: 0.25 });
+  expect(f.engine.adapter.host.descriptor().usage?.contextWindow).toBe(contextWindow);
+  expect(f.engine.adapter.host.descriptor().capabilities.features.context?.state)
+    .toBe(contextWindow ? 'supported' : 'conditional');
 });
 
 it('refuses an OMP gateway model reported under the default account before inference', async () => {

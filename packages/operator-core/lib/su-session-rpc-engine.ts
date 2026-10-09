@@ -284,9 +284,10 @@ export function startSuRpcEngine(
           const slash = switchTo.model!.indexOf('/');
           try {
             if (slash <= 0) throw new Error(`"${nextModel}" is not a provider/model OMP spec`);
-            await peer!.request({ type: 'set_model', provider: switchTo.model!.slice(0, slash),
+            const model = await peer!.request({ type: 'set_model', provider: switchTo.model!.slice(0, slash),
               modelId: switchTo.model!.slice(slash + 1) }, options.deliveryTimeoutMs ?? 30_000);
             if (switchTo.effort) await peer!.request({ type: 'set_thinking_level', level: switchTo.effort }, options.deliveryTimeoutMs ?? 30_000);
+            updateOmpContextWindow(model);
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             acknowledged({ ok: false as const, code: 'model_switch_refused', retryable: false,
@@ -419,6 +420,25 @@ export function startSuRpcEngine(
     ? createCodexSuSessionAdapter(binding, { nativeSession: { ...native as CodexNativeSessionHandle, rolloutId: nativeId() }, rolloutPath: null }, { ...shared, host: options.host as SuSessionHost<'codex'> | undefined })
     : createOmpSuSessionAdapter(binding, { nativeSession: { ...native as OmpNativeSessionHandle, ompThreadId: nativeId() }, transcriptPath: null }, { ...shared, host: options.host as SuSessionHost<'omp'> | undefined });
   const host = adapter.host as SuSessionHost<Backend>;
+  function updateOmpContextWindow(model: unknown): void {
+    const reported = object(model).contextWindow;
+    const contextWindow = typeof reported === 'number' && Number.isFinite(reported) && reported > 0
+      ? reported : undefined;
+    const descriptor = host.descriptor();
+    if (descriptor.usage?.contextWindow === contextWindow) return;
+    // Native get_state/set_model carries the denominator that transcript
+    // usage lacks. A switch to an unmeasured model must clear the old one.
+    host.emit({ type: 'session', descriptor: { ...descriptor,
+      usage: { ...descriptor.usage, contextWindow },
+      capabilities: { ...descriptor.capabilities, features: { ...descriptor.capabilities.features,
+        context: { state: contextWindow ? 'supported' : 'conditional', implementation: 'native',
+          reason: contextWindow
+            ? 'The native model reports its context window; assistant message usage reports context tokens'
+            : 'The current native model did not report a context window; no percentage is inferred',
+        },
+      } },
+    } } as SuSessionEventInput<Backend>);
+  }
   const cards = new SuNativeCards(binding.workspaceId!, `pui-native:${binding.advSessionId}:${options.runtimeGeneration ?? 0}`, (event) => {
     if (closed) return;
     emit(event as SuSessionEventInput<Backend>);
@@ -738,6 +758,7 @@ export function startSuRpcEngine(
       await (adapter as OmpSuSessionAdapter).materializeRuntime({ nativeSession: { ...native, ompThreadId: id }, transcriptPath: nativePath });
       const model = object(state.model);
       actualModel = [string(model.provider), string(model.id)].filter(Boolean).join('/');
+      updateOmpContextWindow(model);
     }
     if (!actualModel) throw new Error('Native engine did not identify its selected model');
     if (backend === 'omp') resolveOmpSessionModel(actualModel, options.accountRoute);
