@@ -523,6 +523,47 @@ describe('WI-10006159 solo decision reservations', () => {
     expect((await wi.claimWorkItem(id, routeOwnerId, { harness: H }))?.id).toBe(id);
   });
 
+  it('extracts execution masters once for a large candidate census while preserving exact reservations', async () => {
+    await decision('Owner authorizes direct AUTO execution',
+      'Route is this session implementing directly, without a new fleet. ' +
+      'WI-200001 owns execution. WI-200002 owns execution and its successor state. ' +
+      'Preserve independent WI-200003; WI-200004 owns execution only if approved.');
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, origin,
+         created_ts, updated_ts, payload)
+      SELECT ${WS}, ${H}, 'WI-' || (200000 + n), 'task', 'open', 'candidate', 'local',
+             0, 0, NULL
+        FROM generate_series(1, 2000) n
+    `;
+    const predicate = wi.reservedPlanLaneExclusionSql(db.sql, 'generic-drainer', 'wi.payload');
+    const admitted = await db.sql<{ feature_id: string }[]>`
+      SELECT wi.feature_id FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${WS} AND ${predicate}
+       ORDER BY wi.feature_id
+    `;
+    expect(admitted).toHaveLength(1998);
+    expect(admitted.slice(0, 2).map((row) => row.feature_id)).toEqual(['WI-200003', 'WI-200004']);
+    expect(await floors('WI-200001')).toContain('reserved-plan-lane');
+    expect(await floors('WI-200002')).toContain('reserved-plan-lane');
+    expect(await floors('WI-200004')).not.toContain('reserved-plan-lane');
+
+    const plans = await db.sql`
+      EXPLAIN (ANALYZE, FORMAT JSON)
+      SELECT wi.feature_id FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${WS} AND ${predicate}
+    `;
+    type PlanNode = { 'Node Type': string; 'Function Name'?: string; 'Actual Loops': number; Plans?: PlanNode[] };
+    const nodes: PlanNode[] = [];
+    const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
+    visit(plans[0]['QUERY PLAN'][0].Plan);
+    const masterExtractions = nodes.filter((node) => node['Function Name'] === 'regexp_matches');
+    expect(masterExtractions.length).toBeGreaterThan(0);
+    expect(masterExtractions.every((node) => node['Actual Loops'] === 1)).toBe(true);
+    expect(nodes.some((node) => node['Actual Loops'] >= 2000 &&
+      node['Node Type'] === 'Bitmap Heap Scan')).toBe(false);
+  });
+
   it('does not infer solo authority from rejected routes, negated implementers or a foreign tenant', async () => {
     await decision('Direct execution route rejected',
       'su-a973d2b0 is not the single implementer. WI-10005829 owns execution only if Avi approves.');
