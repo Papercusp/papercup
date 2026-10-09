@@ -2072,6 +2072,8 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
     );
     expect(out).toContain('STALE');
     expect(out).toContain('historical, NOT your current agenda');
+    expect(out).toContain('Inactive loop @papercusp (inactive, every 900s)');
+    expect(out).not.toContain('Armed loop @');
     // The stale imperatives themselves must NOT ride the brief verbatim.
     expect(out).not.toContain('nudge the leader');
   });
@@ -2105,6 +2107,8 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
       now,
     );
     expect(inactiveFresh).toContain('finish the drill');
+    expect(inactiveFresh).toContain('Inactive loop @papercusp (inactive, every 900s)');
+    expect(inactiveFresh).not.toContain('Armed loop @');
   });
 });
 

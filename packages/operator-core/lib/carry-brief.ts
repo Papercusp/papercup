@@ -2362,7 +2362,7 @@ export function renderCarryBriefText(
   if (directivesBlock) sections.push(directivesBlock);
   if (brief.loop) {
     const iv = brief.loop.intervalSec != null ? `, every ${brief.loop.intervalSec}s` : '';
-    const head = `Armed loop @${brief.loop.harness} (${brief.loop.active ? 'active' : 'inactive'}${iv}).`;
+    const head = `${brief.loop.active ? 'Armed' : 'Inactive'} loop @${brief.loop.harness} (${brief.loop.active ? 'active' : 'inactive'}${iv}).`;
     if (brief.loop.carryNote) {
       const ageMs =
         brief.loop.carryNoteUpdatedAtMs != null
