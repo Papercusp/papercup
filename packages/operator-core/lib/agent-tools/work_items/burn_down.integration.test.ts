@@ -345,8 +345,10 @@ describe('default fleet reports over the real current-spec queue', () => {
       } }, sql)).toMatchObject({ ok: true });
     const historical = await read('at-event-spec');
     expect(historical.queries).toHaveLength(2);
+    // seedQueue's prerequisite is also a task; the historical union must keep
+    // it even though it was outside the original bug-only current population.
     expect(new Set(historical.source.map(item => item.id)))
-      .toEqual(new Set([...full.map(item => item.id), 'WI-kind-task']));
+      .toEqual(new Set([...full.map(item => item.id), 'WI-kind-task', 'WI-active-dependency']));
     expect(historical.source.find(item => item.id === 'WI-kind-feature')).toBeUndefined();
   }, 30_000);
 
