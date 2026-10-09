@@ -1001,6 +1001,8 @@ export async function guardPlanItemSiblingClaim(
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
   harness?: string;
+  /** Exact identity selection; an empty set matches nothing, across both families. */
+  ids?: readonly string[];
   /**
    * Restrict to any of these exact harness slugs. `harness` wins when both are
    * present; an explicitly empty array matches nothing. This is the set-valued
@@ -1303,6 +1305,7 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
   const states = filter.states && filter.states.length > 0 ? filter.states : null;
   return sql`
     ${states ? sql`status = ANY(${states as string[]}::text[])` : sql`TRUE`}
+    AND ${filter.ids ? sql`feature_id = ANY(${filter.ids as string[]}::text[])` : sql`TRUE`}
     AND ${filter.notTerminal ? sql`NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))` : sql`TRUE`}
     AND ${
       filter.createdSince
@@ -1334,6 +1337,7 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
  */
 function issueShapeFilterArgs(filter: ListWorkItemsFilter) {
   return {
+    issueIds: filter.ids,
     states: filter.states,
     notTerminal: filter.notTerminal,
     createdSince: filter.createdSince,
