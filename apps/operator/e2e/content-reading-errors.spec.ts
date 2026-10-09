@@ -162,3 +162,29 @@ test('summary budget failure reports its limit without creating summary text or 
     expect(turns).toEqual([]);
   } finally { await restore(); }
 });
+
+test('output mute stops active narration and refuses a new reading until unmuted', async ({ page }) => {
+  const turns: string[] = [];
+  page.on('request', request => {
+    if (request.method() === 'POST' && /\/api\/operator\/conversations\/[^/]+\/turns/.test(request.url())) turns.push(request.url());
+  });
+  const restore = await openReading(page, 'backpressure');
+  try {
+    await expect.poll(async () => (await output(page)).plays).toBe(1);
+    await page.getByRole('button', { name: 'Mute spoken voice replies', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Unmute spoken voice replies', exact: true })).toBeVisible();
+    await expect.poll(async () => (await output(page)).cancelled).toBe(true);
+    await page.getByRole('button', { name: 'Read selected text aloud' }).click();
+    const controls = page.getByRole('group', { name: 'Original reading controls' });
+    await expect(controls.getByRole('status')).toHaveText('stopped · 0%');
+    await page.evaluate(() => (window as unknown as ProbeWindow).__readingErrorOutput.finish());
+    await page.getByRole('button', { name: 'Read selection', exact: true }).click();
+    await expect(page.getByText('Spoken output is muted. Unmute the speaker to start reading.', { exact: true })).toBeVisible();
+    expect(await output(page)).toMatchObject({ created: 1, plays: 1, produced: 1, mic: 0 });
+    expect(turns).toEqual([]);
+  } finally {
+    const unmute = page.getByRole('button', { name: 'Unmute spoken voice replies', exact: true });
+    if (await unmute.isVisible()) await unmute.click();
+    await restore();
+  }
+});
