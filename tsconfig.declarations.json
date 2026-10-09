@@ -361,6 +361,8 @@
     // P-004 — plain-Node test CLIs import this bridge directly; generate its
     // declaration so TypeScript callers cannot silently fall back to TS7016.
     "scripts/lib/governed-test-process.mjs",
+    // EI-25512374287066207 — shared by the armed source and cgroup preloads.
+    "libs/test-config/src/process-termination-observer.mjs",
     // WI-41775 — the MODULE axis of check-lint-guard-reachability: which lib/release
     // detector modules no production path calls. Registered for this list's usual
     // reason: it is imported directly by module-reachability.test.ts, which would

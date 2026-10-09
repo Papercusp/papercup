@@ -19,6 +19,9 @@ import {
 import {
   CODE_RUN_REPLAY_PROOF_META_KEY,
   DEFAULT_SCRIPT_TIMEOUT_MS,
+  openOrchestrationKernel,
+  inspectOrchestrationKernel,
+  closeOrchestrationKernel,
   type AbortCompletionContext,
   type AbortCompletionReceipt,
   type FieldMiss,
@@ -50,8 +53,16 @@ import type {
 import { ORCHESTRATION_RECURSION_EXCLUSIONS } from '../orchestration/contract-preflight';
 import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
 import { canonicalJson } from '../../authority/authority-rpc-envelope';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
+
+/** Scope is derived from authenticated transport context, never from tool arguments. */
+export function codeRunKernelScope(ctx: UnifiedToolContext): string {
+  if (!ctx.workspaceId?.trim()) throw new Error('kernel_workspace_required');
+  const identity = resolveAgentIdentity(ctx);
+  return JSON.stringify([ctx.workspaceId, identity.ownerId, ctx.harnessSlug ?? null]);
+}
 
 /** SHA-256 of the complete, validated outer code:run argument body. */
 export function codeRunRequestHash(args: unknown): string {
@@ -242,10 +253,23 @@ export default defineTool({
   // recipes:run/search/list/get) and CODE_RUN_CAPABLE_ROLES (the batch-nudge audience) in lockstep.
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    kernel: z.object({
+      op: z.enum(['open', 'run', 'status', 'close']),
+      id: z.string().uuid().optional(),
+    }).strict().superRefine((kernel, refinement) => {
+      if (kernel.op !== 'open' && !kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'id required for an existing kernel' });
+      if (kernel.op === 'open' && kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'open creates a new kernel; omit id' });
+    }).optional().describe(
+      'Opt into a live JavaScript worker/VM: open creates an owner/workspace/harness-scoped id, run executes a cell, status inspects it, close cancels and cleans it up. ' +
+      'Use globalThis for cross-cell objects/functions/binary state; lexical locals remain cell-local. Each cell dispatches with CURRENT caller authority. ' +
+      'No Python kernel, implicit lexical-declaration persistence, or process-restart recovery is claimed. Timeout/cancel loses state; idle expires after 5 minutes. ' +
+      'Dry-run kernel operations are refused because VM state mutations cannot be previewed safely.',
+    ),
     script: z
       .string()
       .min(1)
       .max(20_000)
+      .optional()
       .describe(
         'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
           'On script timeout, `timeoutSettledReadRecovery.calls` returns settled read-only child results, capped at 24 KiB/20 calls; ' +
@@ -320,6 +344,24 @@ export default defineTool({
     // host-side work after the orchestration worker returns. The worker's own timeout is only one
     // leg of this response budget; it must not be followed by an unbounded trace/capture tail.
     const responseDeadlineAtMs = runStartedAtMs + FOREGROUND_TIMEOUT_CEILING_MS;
+    const kernelReply = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] }) as ToolResult;
+    let kernelScope: string | undefined;
+    if (args.kernel) {
+      if (args.dryRun) return kernelReply({ ok: false, error: 'kernel_dry_run_unsupported', executed: false });
+      try { kernelScope = codeRunKernelScope(ctx); }
+      catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
+      if (args.kernel.op === 'status' || args.kernel.op === 'close') {
+        const kernel = args.kernel.op === 'status'
+          ? inspectOrchestrationKernel(args.kernel.id!, kernelScope)
+          : closeOrchestrationKernel(args.kernel.id!, kernelScope);
+        return kernelReply({ ok: kernel.state !== 'unrecoverable', kernel, executed: false });
+      }
+      if (args.kernel.op === 'open' && !args.script) {
+        try { return kernelReply({ ok: true, kernel: await openOrchestrationKernel(kernelScope), executed: false }); }
+        catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
+      }
+    }
+    if (!args.script) return kernelReply({ ok: false, error: 'script_required', executed: false });
     const script = args.script;
     // The proof is about this exact validated request body. Compute it at the
     // server boundary; neither the script nor a caller-supplied result field
@@ -457,7 +499,17 @@ export default defineTool({
       effectiveTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
       remainingWorkerMs,
     );
+    let kernelHandle: { id: string; scope: string } | undefined;
+    if (args.kernel && kernelScope) {
+      try {
+        kernelHandle = {
+          id: args.kernel.op === 'open' ? (await openOrchestrationKernel(kernelScope)).id : args.kernel.id!,
+          scope: kernelScope,
+        };
+      } catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
+    }
     const result = await runToolOrchestration(script, {
+      ...(kernelHandle ? { kernel: kernelHandle } : {}),
       ctx,
       // Thread the host's REAL dispatch deps (B-CX-DEPS): inner tool calls route through
       // the same dispatcher pipeline as any MCP `tools/call` — so they are recordInvocation-
@@ -473,7 +525,8 @@ export default defineTool({
       // opaque transport-level request_timeout after the script's own budget was never reached.
       timeoutMs: workerTimeoutMs,
       wrapDispatch: bindCurrentCallerDispatch,
-      requestHash,
+      // A cell can mutate live VM state even with zero nested write tools. It is not replay-safe.
+      ...(args.kernel ? {} : { requestHash }),
       ...(contract ? { inputs: contract.inputs } : {}),
     });
 
@@ -551,16 +604,17 @@ export default defineTool({
     // resolved. recipes:run rejects such a recipe with authority_unresolved every
     // time, and that refusal is permanent — capturing it anyway mints a recipe that
     // can never run, then lets it accrue run/success counts that certify it.
-    if (codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
+    // A live cell depends on process-local objects; saving it as a portable recipe would lose that state.
+    if (!args.kernel && codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
       const authority = await runPostprocessing(
         'recipe authority check',
-        () => isRecipeCaptureAuthorityEligible(args.script),
+        () => isRecipeCaptureAuthorityEligible(script),
         false,
       );
       if (authority.value && !authority.degraded) {
         const capture = await runPostprocessing(
           'recipe capture',
-          () => maybeCaptureRecipe(args, ctx, all, allowed, executionTrace, contract),
+          () => maybeCaptureRecipe({ ...args, script }, ctx, all, allowed, executionTrace, contract),
           null,
         );
         recipeCapture = capture.value;

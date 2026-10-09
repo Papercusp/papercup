@@ -646,9 +646,9 @@ export function resumeKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
 export function resolveOmpInjectHookPath(agent: any, home?: string): string | undefined;
 /**
  * @param {any} session
- * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv }} [opts]
+ * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null }} [opts]
  */
-export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, env, claudeSettings, }?: {
+export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, codexMcpUrl, env, claudeSettings, }?: {
     coordExtPath?: string;
     injectHookPath?: string;
     fork?: boolean;
@@ -658,6 +658,7 @@ export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork
     model?: string | null;
     personaFile?: string | null;
     env?: NodeJS.ProcessEnv;
+    codexMcpUrl?: string | null;
 }): {
     bin: string;
     args: any[];
@@ -4087,6 +4088,16 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  * @returns {string | null}
  */
 export function codexHomeLaunchReadiness(codexHome: string | null | undefined, expectedOwner?: string | null, recordedRole?: string | null): string | null;
+/**
+ * Codex's MCP server URL is stored in CODEX_HOME/config.toml, while a fork
+ * deliberately has a fresh PAPERCUSP_SID and reuses the source CODEX_HOME to
+ * read its rollout. Return a per-process URL for that new identity; never write
+ * the shared home config, which the still-live source session continues to use.
+ * A missing Papercusp SU server means this is an unmanaged Codex home and needs
+ * no override. A present but malformed profile fails closed instead of silently
+ * sending fork tool calls under the predecessor's client id.
+ */
+export function codexForkMcpUrlForOwner(codexHome: any, ownerId: any): string | null;
 /**
  * WI-38706 — the codex twin of `ensureInteractiveConfigViaOperator`, and for the
  * same structural reason: a FRESH psu launch has its CODEX_HOME materialized

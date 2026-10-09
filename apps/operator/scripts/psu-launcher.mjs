@@ -2685,7 +2685,7 @@ export function resolveOmpInjectHookPath(agent, home = homedir()) {
 
 /**
  * @param {any} session
- * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv }} [opts]
+ * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv, codexMcpUrl?: string | null }} [opts]
  */
 export function resumeArgsFor(
   session,
@@ -2698,6 +2698,7 @@ export function resumeArgsFor(
     allowSubagents,
     model = null,
     personaFile = null,
+    codexMcpUrl = null,
     env = process.env,
     // The inherited settings a claude resume falls back to for its effort
     // (readClaudeLaunchSettings). Injected, not read here, so this stays pure.
@@ -2845,6 +2846,12 @@ export function resumeArgsFor(
     return {
       bin: "codex",
       args: [
+        ...(fork && codexMcpUrl
+          ? [
+              "-c",
+              `mcp_servers.papercusp-su.url=${JSON.stringify(codexMcpUrl)}`,
+            ]
+          : []),
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
         "--no-alt-screen",
@@ -13877,6 +13884,17 @@ async function launchResume(
           `psu: persona re-render unavailable (${persona.reason}) — resuming without --system-prompt-file; a later /clear or respawn of this process starts on the stock prompt`,
         );
     }
+    // A Codex fork shares the source CODEX_HOME to read its rollout. Its config
+    // therefore still pins Papercusp MCP to the source owner even though the
+    // fork's PAPERCUSP_SID is fresh. Override only this process's URL; editing
+    // config.toml would retarget the still-live original session as well.
+    const codexMcpUrl =
+      fork && session.agent === "codex" && (!session.role || session.role === "su")
+        ? codexForkMcpUrlForOwner(
+            env.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex"),
+            env.PAPERCUSP_SID,
+          )
+        : null;
     const { bin, args } = resumeArgsFor(session, {
       coordExtPath,
       injectHookPath,
@@ -13886,6 +13904,7 @@ async function launchResume(
       allowSubagents,
       model: resumeModel,
       personaFile,
+      codexMcpUrl,
       // WI-10005900: the effort this resume would inherit from its (isolated)
       // settings.json, so an Opus 5 `xhigh` written there is clamped to `max`.
       claudeSettings:
@@ -15538,6 +15557,44 @@ export function codexHomeLaunchReadiness(codexHome, expectedOwner = null, record
   } catch (error) {
     return `the home could not be read (${error instanceof Error ? error.message : String(error)})`;
   }
+}
+
+/**
+ * Codex's MCP server URL is stored in CODEX_HOME/config.toml, while a fork
+ * deliberately has a fresh PAPERCUSP_SID and reuses the source CODEX_HOME to
+ * read its rollout. Return a per-process URL for that new identity; never write
+ * the shared home config, which the still-live source session continues to use.
+ * A missing Papercusp SU server means this is an unmanaged Codex home and needs
+ * no override. A present but malformed profile fails closed instead of silently
+ * sending fork tool calls under the predecessor's client id.
+ */
+export function codexForkMcpUrlForOwner(codexHome, ownerId) {
+  if (!codexHome) return null;
+  if (!ownerId) throw new Error("Codex fork is missing its fresh Papercusp owner id");
+  let text;
+  try {
+    text = readFileSync(join(codexHome, "config.toml"), "utf8");
+  } catch {
+    return null;
+  }
+  const config = nativeMcpRequire("@iarna/toml").parse(text);
+  const server = config.mcp_servers?.["papercusp-su"];
+  if (!server) return null;
+  if (typeof server.url !== "string")
+    throw new Error("Codex fork Papercusp SU MCP profile has no URL");
+  let url;
+  try {
+    url = new URL(server.url);
+  } catch {
+    throw new Error("Codex fork Papercusp SU MCP profile has an invalid URL");
+  }
+  const clients = url.searchParams.getAll("client");
+  if (clients.length !== 1 || url.searchParams.get("superuser") !== "1")
+    throw new Error("Codex fork Papercusp SU MCP profile has invalid client authority");
+  url.searchParams.set("client", ownerId);
+  if (url.searchParams.get("client") !== ownerId)
+    throw new Error("Codex fork Papercusp SU MCP URL did not bind its fresh owner id");
+  return url.toString();
 }
 
 /**
