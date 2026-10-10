@@ -24,7 +24,7 @@ vi.mock('../../scheduler/plan-item-lane-guard', () => ({
   planItemNeedsHumanContradiction: (...args: unknown[]) => planItemNeedsHumanContradiction(...args),
 }));
 
-import tool from './set_blocker';
+import tool, { ownerActionFlagsReleasedByClear } from './set_blocker';
 import { activeExternalBlockers } from '../../external-blockers';
 
 const ctx = { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never;
@@ -978,6 +978,74 @@ describe('work_items:set_blocker', () => {
     // stayed `needs-human` with zero blockers — unclaimable AND unexplained.
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-1', 'open', expect.objectContaining({ by: 'su-a' }));
     expect(out.workItem.state).toBe('open');
+  });
+
+  describe('WI-10008173: owner-action flags are released with the last human blocker', () => {
+    const humanBlocker = (ref: string) => ({
+      kind: 'human',
+      capability: 'product-decision',
+      ref,
+      summary: `Decide ${ref}.`,
+      nextVerb: 'work_items:set_blocker { clear: true }',
+      status: 'active',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+    });
+    const issue = (payload: Record<string, unknown>) => ({
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'bug',
+      state: 'needs-human',
+      harness: 'papercup',
+      payload,
+    });
+    const mergeOpts = () => mergeWorkItemPayload.mock.calls[0]?.[2] as { unset?: string[] } | undefined;
+
+    it('unsets needsOwnerAction and needsHuman in the same CAS write when the last human blocker clears', async () => {
+      const item = issue({ externalBlockers: [humanBlocker('epoch-policy')], needsOwnerAction: true, needsHuman: true });
+      getWorkItem.mockResolvedValue(item);
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: { ...item.payload, ...patch } }));
+
+      const out = await one({ id: 'WI-1', kind: 'human', ref: 'epoch-policy', clear: true, evidence: 'decided' });
+
+      expect(out.ok).toBe(true);
+      expect(mergeWorkItemPayload).toHaveBeenCalledTimes(1);
+      expect(mergeOpts()?.unset).toEqual(['needsOwnerAction', 'needsHuman']);
+    });
+
+    it('keeps the owner flag while another human blocker is still active', async () => {
+      const item = issue({ externalBlockers: [humanBlocker('epoch-policy'), humanBlocker('retention-policy')], needsOwnerAction: true });
+      getWorkItem.mockResolvedValue(item);
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: { ...item.payload, ...patch } }));
+
+      const out = await one({ id: 'WI-1', kind: 'human', ref: 'epoch-policy', clear: true, evidence: 'decided' });
+
+      expect(out.ok).toBe(true);
+      expect(out.activeBlockers).toHaveLength(1);
+      expect(mergeOpts()?.unset).toBeUndefined();
+    });
+
+    it('does not drop an owner flag when the cleared blocker is not human-kind', async () => {
+      const runtime = { ...humanBlocker('dolphin:dbus'), kind: 'runtime', capability: 'live-dependency' };
+      const item = issue({ externalBlockers: [runtime], needsOwnerAction: true });
+      getWorkItem.mockResolvedValue(item);
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: { ...item.payload, ...patch } }));
+
+      const out = await one({ id: 'WI-1', kind: 'runtime', ref: 'dolphin:dbus', clear: true, evidence: 'DBus responsive' });
+
+      expect(out.ok).toBe(true);
+      expect(mergeOpts()?.unset).toBeUndefined();
+    });
+
+    it('ownerActionFlagsReleasedByClear releases only flags that are set, and only on a human clear', () => {
+      expect(ownerActionFlagsReleasedByClear({ needsOwnerAction: true }, [], { kind: 'human', cleared: true })).toEqual(['needsOwnerAction']);
+      expect(ownerActionFlagsReleasedByClear({}, [], { kind: 'human', cleared: true })).toEqual([]);
+      expect(ownerActionFlagsReleasedByClear({ needsOwnerAction: true }, [], { kind: 'human', cleared: false })).toEqual([]);
+      expect(ownerActionFlagsReleasedByClear({ needsOwnerAction: true }, [], { kind: 'event', cleared: true })).toEqual([]);
+      expect(ownerActionFlagsReleasedByClear({ needsOwnerAction: true }, [{ kind: 'human' }], { kind: 'human', cleared: true })).toEqual([]);
+      expect(ownerActionFlagsReleasedByClear(null, [], { kind: 'human', cleared: true })).toEqual([]);
+    });
   });
 
   it('WI-10005104: a FEATURE-family needs-human item is NOT reopened by the issue backstop (plan lane owns it)', async () => {
