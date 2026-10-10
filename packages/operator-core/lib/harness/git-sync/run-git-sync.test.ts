@@ -67,6 +67,7 @@ import {
   censusStrandedSubmodules,
   DEPENDENCY_GENERATION_ROOT_RECORD,
   type RunGit,
+  type GitSyncStepRunner,
 } from './run-git-sync';
 import { dependencyGenerationRootRecord } from '../../release/dependency-generation-prebuild';
 import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribution';
@@ -4208,6 +4209,37 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       expect(subOriginFiles).toContain('peer.txt');
       expect(subOriginFiles).toContain('local-sub.txt');
     });
+  });
+
+  it('EI-255862: checkpoints the root commit proof before a later HEAD replaces it', async () => {
+    const phases = new Map<string, unknown>();
+    const step: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+      if (phases.has(name)) return structuredClone(phases.get(name)) as T;
+      const result = await operation();
+      phases.set(name, structuredClone(result));
+      return result;
+    };
+    const options = { repoPath: repo, config: { push: false, pushSubmodules: false }, step };
+    writeFileSync(join(repo, 'root-proof.txt'), 'first local tick\n');
+    const first = await runGitSync('test', options);
+    const firstCommit = git(repo, 'rev-parse', 'HEAD');
+    expect(first.localCommitSha).toBe(firstCommit);
+
+    writeFileSync(join(repo, 'later-tick.txt'), 'independent later tick\n');
+    git(repo, 'add', 'later-tick.txt');
+    git(repo, 'commit', '--no-verify', '-m', 'independent later tick');
+    expect(git(repo, 'rev-parse', 'HEAD')).not.toBe(firstCommit);
+
+    const resumed = await runGitSync('test', options);
+    expect(resumed.localCommitSha).toBe(firstCommit);
+    expect(phases.get('git-sync:pointer-bump')).toMatchObject({ localCommitSha: firstCommit });
+
+    // Legacy checkpoint outputs cannot prove which root commit was created.
+    const legacyPhase = { ...phases.get('git-sync:pointer-bump') as Record<string, unknown> };
+    delete legacyPhase.localCommitSha;
+    phases.set('git-sync:pointer-bump', legacyPhase);
+    const legacyResume = await runGitSync('test', options);
+    expect(legacyResume.localCommitSha).toBeUndefined();
   });
 
   it('GAP-4: a submodule unreachable while ahead → errors + defers the superproject PUSH (no broken gitlink) but still COMMITS it locally', () => {

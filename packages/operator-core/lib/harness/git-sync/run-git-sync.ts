@@ -6967,7 +6967,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           'declaration-related path(s) while committing the unlocked remainder',
       );
     }
-    return commitOneRepo(runGit, repo, {
+    const committed = await commitOneRepo(runGit, repo, {
       ...repoO,
       scope: 'superproject',
       migrationFenceRoster: roster,
@@ -6983,8 +6983,16 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       priorityPaths: superprojectGitlinkPaths,
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
     });
+    // Persist the proof with the commit phase itself. On a durable replay the
+    // current HEAD may already belong to a different tick.
+    return {
+      ...committed,
+      localCommitSha: committed.committedLocal ? await headSha(runGit, repo) : undefined,
+    };
   });
-  const localCommitSha = commitRes.committedLocal ? await headSha(runGit, repo) : undefined;
+  // Old phase checkpoints carry only committedLocal; never manufacture their
+  // missing proof from a newer checkout HEAD.
+  const localCommitSha = 'localCommitSha' in commitRes ? commitRes.localCommitSha : undefined;
   const commitMetrics = {
     dirtyPathCount: commitRes.dirtyPathCount,
     committedCount: commitRes.committedCount,
