@@ -1,6 +1,26 @@
 /** Correlate one action to its real persisted result, never a global fixture marker. */
 import assert from 'node:assert/strict';
 
+/** Both maintained Codex routes identify the same seeded native transcript. */
+export function verifyPrivateHistoryStreams(
+  streams: readonly { url: string; status: number }[],
+  expected: {
+    selected: { ownerId: string; sessionId: number; rolloutId: string };
+    neighbor: { ownerId: string; sessionId: number; rolloutId: string };
+  },
+) {
+  const queries = streams.map(stream => ({ ...stream, query: new URL(stream.url).searchParams }));
+  const selected = queries.filter(({ query, status }) => status === 200
+    && query.get('historyOwner') === expected.selected.ownerId
+    && (query.get('codexSessionKey') === String(expected.selected.sessionId)
+      || (!query.has('codexSessionKey') && query.get('codexRolloutId') === expected.selected.rolloutId)));
+  assert.ok(selected.length, 'real stream must correlate the selected native transcript and owner');
+  assert.ok(!queries.some(({ query }) => query.get('historyOwner') === expected.neighbor.ownerId
+    || query.get('codexSessionKey') === String(expected.neighbor.sessionId)
+    || query.get('codexRolloutId') === expected.neighbor.rolloutId), 'no neighbor stream may be requested');
+  return selected.map(({ url, status }) => ({ url, status }));
+}
+
 /** A stop receipt identifies one launch, not just an owner reused over time. */
 export function verifyPrivateStopReceipt(
   receipt: { status: number; body: any },

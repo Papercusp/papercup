@@ -121,7 +121,7 @@ async function coordCanary(health: unknown) {
   const foreign = `su-coord-${process.pid}-foreign`;
   const stale = `su-coord-${process.pid}-stale`;
   const foreignWorkspace = workspace + '-foreign';
-  const historySessions = new Map<string, { id: number; marker: string }>();
+  const historySessions = new Map<string, { id: number; rolloutId: string; marker: string }>();
   for (const [owner, scope] of [[selected, workspace], [neighbor, workspace], [foreign, foreignWorkspace], [stale, workspace]]) {
     const nativeId = randomUUID();
     const id = await recordAdvSession({ workspaceId: scope, mode: 'console', agent: 'codex', role: 'su', coordOwnerId: owner,
@@ -139,7 +139,7 @@ async function coordCanary(health: unknown) {
         { type: 'event_msg', timestamp, payload: { type: 'user_message', message: 'Read the private canary transcript' } },
         { type: 'response_item', timestamp, payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: marker }] } },
       ].map(value => JSON.stringify(value)).join('\n') + '\n');
-      historySessions.set(owner, { id, marker });
+      historySessions.set(owner, { id, rolloutId: nativeId, marker });
     }
     if (owner === stale) await markAdvSessionEnded(id, 0, 'self', { throwOnError: true });
   }
@@ -168,6 +168,7 @@ async function coordCanary(health: unknown) {
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
       ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {
         selectedSessionId: historySessions.get(selected)!.id, neighborSessionId: historySessions.get(neighbor)!.id,
+        selectedRolloutId: historySessions.get(selected)!.rolloutId, neighborRolloutId: historySessions.get(neighbor)!.rolloutId,
         selectedMarker: historySessions.get(selected)!.marker, neighborMarker: historySessions.get(neighbor)!.marker,
       } } : {}),
       verifyReceipt: (value, summary, wake) => verifyReceipt(value, selected, wake, summary) });

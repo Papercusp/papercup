@@ -7,7 +7,7 @@ import { extname, join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { getMessageById, readInbox } from '../lib/agent-tools/coordination/messages';
-import { verifyPrivateStopReceipt } from './private-coord-receipt';
+import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private-coord-receipt';
 import { portalNuqsPlugin } from './private-http-workspace-preflight';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -16,7 +16,8 @@ type PortalRosterBrowserInput = {
   evidence: string; base: string; workspace: string; selected: string; neighbor: string;
   portalSourceRoot: string;
   cookieName: string; ownToken: string; foreignToken: string;
-  history?: { selectedSessionId: number; neighborSessionId: number; selectedMarker: string; neighborMarker: string };
+  history?: { selectedSessionId: number; neighborSessionId: number; selectedRolloutId: string; neighborRolloutId: string;
+    selectedMarker: string; neighborMarker: string };
   verifyReceipt?: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
   stop?: {
     selected: { id: number; startedAt: string }; neighbor: { id: number; startedAt: string };
@@ -225,8 +226,20 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
 async function runHistoryPage(page: Page, input: PortalRosterBrowserInput) {
   const history = input.history!;
   const streams: Array<{ url: string; status: number }> = [];
+  const requests: string[] = [];
+  const expected = {
+    selected: { ownerId: input.selected, sessionId: history.selectedSessionId, rolloutId: history.selectedRolloutId },
+    neighbor: { ownerId: input.neighbor, sessionId: history.neighborSessionId, rolloutId: history.neighborRolloutId },
+  };
+  const retainStreams = () => writeFileSync(join(input.evidence, 'portal-history-streams.json'),
+    JSON.stringify({ expected, requests, streams }, null, 2));
+  page.on('request', request => {
+    if (new URL(request.url()).pathname !== '/api/adv/session/thinking') return;
+    requests.push(request.url()); retainStreams();
+  });
   page.on('response', response => {
-    if (new URL(response.url()).pathname === '/api/adv/session/thinking') streams.push({ url: response.url(), status: response.status() });
+    if (new URL(response.url()).pathname !== '/api/adv/session/thinking') return;
+    streams.push({ url: response.url(), status: response.status() }); retainStreams();
   });
   await page.getByTestId('agent-row-' + input.selected).click();
   await page.waitForURL(url => url.searchParams.get('agentHistory') === input.selected && !url.searchParams.has('panel'));
@@ -246,12 +259,8 @@ async function runHistoryPage(page: Page, input: PortalRosterBrowserInput) {
   await page.reload();
   assert.equal(await page.getByTestId('private-conversation-selection').innerText(), input.selected);
   assert.equal(page.url(), conversationUrl);
-  const observed = streams.filter(value => {
-    const query = new URL(value.url).searchParams;
-    return query.get('codexSessionKey') === String(history.selectedSessionId) && query.get('historyOwner') === input.selected;
-  });
-  assert.ok(observed.some(value => value.status === 200), 'real stream must correlate the selected native row and owner');
-  assert.ok(!streams.some(value => new URL(value.url).searchParams.get('codexSessionKey') === String(history.neighborSessionId)), 'no neighbor stream may be requested');
+  retainStreams();
+  verifyPrivateHistoryStreams(streams, expected);
   return { workspace: input.workspace, selected: input.selected, neighbor: input.neighbor,
     selectedSessionId: history.selectedSessionId, authMethod: 'cookie-session', historyUrl, conversationUrl,
     historyKeptSeparate: true, historyReload: true, explicitGuiSelection: true, conversationSelectionReload: true,

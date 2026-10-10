@@ -9,10 +9,36 @@ import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
 import { portalNuqsPlugin, preparePortalBrowserSource, preparePrivateHttpWorkspaces } from '../test/private-http-workspace-preflight';
-import { verifyPrivateCoordReceipt, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
+import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
+import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
 import { retainPortalBrowserFailure } from '../test/portal-roster-browser-fixture';
+
+it.each([null, 'selected-rollout'])('correlates the production Codex stream key with native discovery %s', rolloutId => {
+  const expected = {
+    selected: { ownerId: 'selected', sessionId: 17, rolloutId: 'selected-rollout' },
+    neighbor: { ownerId: 'neighbor', sessionId: 18, rolloutId: 'neighbor-rollout' },
+  };
+  const target = sessionTargetFromRoster({ agent: 'codex', advSessionId: 17,
+    nativeSession: { backend: 'codex', source: 'adv_sessions', ownerId: 'selected', codexHome: '/private/codex',
+      rolloutId, exactResumeSupported: Boolean(rolloutId), missingReason: null } });
+  const url = 'http://private.test' + buildSessionStreamUrl('selected', target);
+  expect(verifyPrivateHistoryStreams([{ url, status: 200 }], expected)).toEqual([{ url, status: 200 }]);
+  // The old numeric-key-only oracle rejects a legitimate production rollout URL.
+  expect(new URL(url).searchParams.get('codexSessionKey') === '17').toBe(rolloutId === null);
+  for (const stream of [
+    { url: url.replace('historyOwner=selected', 'historyOwner=neighbor'), status: 200 },
+    { url: url.replace('17', '18').replace('selected-rollout', 'neighbor-rollout'), status: 200 },
+    { url, status: 403 },
+  ]) expect(() => verifyPrivateHistoryStreams([stream], expected)).toThrow();
+  expect(() => verifyPrivateHistoryStreams([{ url, status: 200 }, {
+    url: 'http://private.test/api/adv/session/thinking?codexRolloutId=neighbor-rollout&historyOwner=selected', status: 200,
+  }], expected)).toThrow('no neighbor stream');
+  expect(() => verifyPrivateHistoryStreams([{ url, status: 200 }, {
+    url: 'http://private.test/api/adv/session/thinking?codexSessionKey=18&historyOwner=selected', status: 200,
+  }], expected)).toThrow('no neighbor stream');
+});
 
 it('retains the original browser error and rendered controls when screenshot capture fails', async () => {
   const root = mkdtempSync(join(tmpdir(), 'private-browser-failure-'));
