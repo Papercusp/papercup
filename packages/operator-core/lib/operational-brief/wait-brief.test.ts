@@ -246,7 +246,7 @@ describe('projectAwaitWaitOperationalBrief — a pending one-shot wake await', (
         status: 'known',
         value: expect.stringContaining('do not treat this as proof that the key has no emitter'),
       });
-      expect(brief!.nextAction.value).not.toMatch(/^Nothing is known to fire/);
+      expect(brief!.nextAction.status === 'known' && brief!.nextAction.value).not.toMatch(/^Nothing is known to fire/);
       expect(brief!.unknowns).toEqual(['owner']);
     },
   );
@@ -261,9 +261,9 @@ describe('projectAwaitWaitOperationalBrief — a pending one-shot wake await', (
       status: 'unknown',
       reason: 'predicate_watches probe error while this await was registered; emitter presence and owner are unknown',
     });
-    expect(brief!.blockers.value).toContain('predicate_watches probe error; emitter presence is unverified');
-    expect(brief!.nextAction.value).toContain('do not treat this as proof that the key has no emitter');
-    expect(brief!.nextAction.value).not.toMatch(/^Nothing is known to fire/);
+    expect(brief!.blockers.status === 'known' && brief!.blockers.value).toContain('predicate_watches probe error; emitter presence is unverified');
+    expect(brief!.nextAction.status === 'known' && brief!.nextAction.value).toContain('do not treat this as proof that the key has no emitter');
+    expect(brief!.nextAction.status === 'known' && brief!.nextAction.value).not.toMatch(/^Nothing is known to fire/);
   });
 
   it('emitter hints keep the owner gap truthful for pattern / uncatalogued / out-of-scope keys', () => {
