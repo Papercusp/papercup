@@ -711,6 +711,80 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
   });
 
   it.each([
+    { label: 'refusal', event: 'exit', args: [1, null], diagnostic: 'exit 1' },
+    { label: 'clean exit without proof', event: 'exit', args: [0, null], diagnostic: 'exit 0' },
+    { label: 'signal', event: 'exit', args: [null, 'SIGTERM'], diagnostic: 'signal SIGTERM' },
+    { label: 'spawn error', event: 'error', args: [new Error('launcher refused')], diagnostic: 'launcher refused' },
+  ])('kickoff child exit: reports $label during proof polling rather than timeout', async ({ event, args, diagnostic }) => {
+    const child = fakeChild(7795);
+    spawnMock.mockImplementation(() => child);
+    let reads = 0;
+    let sleeps = 0;
+    let receiptPath = '';
+    const result = await spawnHeadless({
+      envelope,
+      label: 'terminal-kickoff',
+      kickoffProof: true,
+      kickoffProofProbes: {
+        windowMs: 1000,
+        pollMs: 250,
+        readReceipt: (path) => { receiptPath = path; reads++; return ''; },
+        sleep: async () => { sleeps++; child.emit(event, ...args); },
+      },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(result).toMatchObject({ status: 'error', code: 502 });
+    expect(result).toHaveProperty('error', expect.stringContaining(diagnostic));
+    expect(result).toHaveProperty('logPath', expect.any(String));
+    expect(reads).toBe(2);
+    expect(sleeps).toBe(1);
+    expect(existsSync(receiptPath)).toBe(false);
+    expect(taskControl.kill).not.toHaveBeenCalled();
+  });
+
+  it('kickoff child exit: detects a child already ended after the early boot probe', async () => {
+    const child = fakeChild(7796);
+    spawnMock.mockImplementation(() => child);
+    const result = await spawnHeadless({
+      envelope,
+      label: 'already-terminal-kickoff',
+      kickoffProof: true,
+      kickoffProofProbes: { windowMs: 0, readReceipt: () => '' },
+      bootProbes: {
+        readLog: () => { child.emit('exit', 1, null); return ''; },
+        sleep: async () => {}, windowMs: 0,
+      },
+      ...noSystemdRun,
+    });
+    expect(result).toMatchObject({ status: 'error', code: 502 });
+    expect(result).toHaveProperty('error', expect.stringContaining('exit 1'));
+  });
+
+  it('kickoff child exit: preserves a valid native receipt when the child also exits', async () => {
+    const child = fakeChild(7797);
+    spawnMock.mockImplementation(() => child);
+    const result = await spawnHeadless({
+      envelope,
+      label: 'proved-terminal-kickoff',
+      kickoffProof: true,
+      kickoffProofProbes: {
+        windowMs: 0,
+        readReceipt: (_path, token) => {
+          child.emit('exit', 0, null);
+          return JSON.stringify({ token, persisted: true, nativeRef: 'native:completed', reason: null });
+        },
+      },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(result).toMatchObject({
+      status: 'ok', kickoffProof: { persisted: true, nativeRef: 'native:completed', reason: null },
+    });
+    expect(taskControl.kill).not.toHaveBeenCalled();
+  });
+
+  it.each([
     { label: 'late proof', proof: { persisted: true, nativeRef: 'native:late', reason: null } },
     { label: 'late refusal', proof: { persisted: false, nativeRef: null, reason: 'kickoff-not-submitted:successor-reanchor-unconfirmed' } },
   ])('preserves the secure rendezvous for $label after the parent deadline', async ({ proof }) => {

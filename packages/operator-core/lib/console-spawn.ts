@@ -1499,6 +1499,7 @@ function parseKickoffProofReceipt(raw: string, token: string): KickoffProofResul
 async function waitForKickoffProof(
   request: KickoffProofRequest,
   probes?: KickoffProofProbes,
+  childExit?: Promise<SpawnChildExit>,
 ): Promise<KickoffProofResult> {
   const readReceipt = probes?.readReceipt ?? ((path: string) => {
     try { return readFileSync(path, 'utf8'); } catch { return ''; }
@@ -1508,12 +1509,27 @@ async function waitForKickoffProof(
   const windowMs = Math.max(0, probes?.windowMs ?? KICKOFF_PROOF_WINDOW_MS);
   const pollMs = Math.max(1, probes?.pollMs ?? 250);
   const attempts = Math.max(1, Math.ceil(windowMs / pollMs) + 1);
+  let terminalExit: SpawnChildExit | undefined;
+  const exited = childExit?.then((outcome) => { terminalExit = outcome; });
+  // The child may already have ended after the early boot probe. Settle its
+  // existing observer even when the proof window has zero remaining attempts.
+  await Promise.resolve();
   for (let attempt = 0; attempt < attempts; attempt++) {
     let proof: KickoffProofResult | null = null;
     try { proof = parseKickoffProofReceipt(readReceipt(request.path, request.token), request.token); }
     catch { proof = null; }
+    // A native receipt still proves delivery when the child completed quickly.
     if (proof) return proof;
-    if (attempt + 1 < attempts) await sleep(pollMs);
+    if (terminalExit) {
+      const diagnostic = terminalExit.error
+        ? `spawn error ${terminalExit.error.message}`
+        : terminalExit.signal ? `signal ${terminalExit.signal}` : `exit ${terminalExit.code ?? 'unknown'}`;
+      return { persisted: false, nativeRef: null, reason: `kickoff-child-exited:${diagnostic}` };
+    }
+    if (attempt + 1 < attempts) {
+      const poll = sleep(pollMs);
+      await (exited ? Promise.race([poll, exited]) : poll);
+    }
   }
   return { persisted: false, nativeRef: null, reason: 'kickoff-proof-timeout' };
 }
@@ -2897,7 +2913,7 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
     installLease?.release();
 
     const kickoffProof = kickoffProofRequest
-      ? await waitForKickoffProof(kickoffProofRequest, opts.kickoffProofProbes)
+      ? await waitForKickoffProof(kickoffProofRequest, opts.kickoffProofProbes, childExit)
       : undefined;
     if (kickoffProof?.reason === 'kickoff-proof-timeout' && kickoffProofRequest) {
       // The timeout bounds this caller's observation, not the live child's
@@ -2909,6 +2925,21 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       kickoffProofRequest = null;
     } else {
       cleanupKickoffProofRequest(kickoffProofRequest);
+    }
+
+    // EI-25600623966462999: a terminal launcher refusal after the boot window
+    // cannot become a delivered kickoff. Report the measured exit and retained
+    // log instead of an opened member with a misleading proof timeout.
+    if (kickoffProof?.reason?.startsWith('kickoff-child-exited:')) {
+      let logTail = '';
+      try { logTail = bootDeathLogExcerpt(readFileSync(logPath, 'utf8')); } catch { /* log unavailable */ }
+      return {
+        status: 'error',
+        error: `headless psu ended before kickoff proof (${kickoffProof.reason.slice('kickoff-child-exited:'.length)})` +
+          `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
+        code: 502,
+        logPath,
+      };
     }
 
     // A host receipt saying the kickoff was never submitted is conclusive: this
