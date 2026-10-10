@@ -577,9 +577,15 @@ describe('workspace-host provisioning DBOS admission', () => {
       checkpoints: [],
     });
 
-    await startWorkspaceHostProvisioningWorkflow(input);
+    const bootstrapReleaseOverride = {
+      manifestPath: '/var/lib/papercusp/releases/aws-canary.json',
+      migrationId: '1101',
+    } as const;
+    await startWorkspaceHostProvisioningWorkflow({ ...input, bootstrapReleaseOverride });
 
-    expect(control.runProvisioning).toHaveBeenCalledWith(expect.objectContaining({ provider: control.provider }));
+    expect(control.runProvisioning).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: control.provider, bootstrapReleaseOverride }),
+    );
   });
 
   it('routes discard destroy through the same host-scoped DBOS admission and composes the provider inside', async () => {

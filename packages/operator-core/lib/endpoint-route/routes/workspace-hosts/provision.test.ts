@@ -125,7 +125,16 @@ beforeEach(() => {
 describe('POST /workspace-hosts/provision', () => {
   it('requires pre-run economics and passes admitted evidence into the durable workflow', async () => {
     const { dependencies, startProvisioning } = harness();
-    const body = { connectionId: 'connection-1', name: 'Canary', desired, canary: { runId: 'run-1' } };
+    const body = {
+      connectionId: 'connection-1',
+      name: 'Canary',
+      desired,
+      canary: { runId: 'run-1' },
+      bootstrapReleaseOverride: {
+        manifestPath: '/caller-controlled/manifest.json',
+        migrationId: '9999',
+      },
+    };
     const refused = await post(dependencies, body);
     expect(refused.status).toBe(422);
     expect(startProvisioning).not.toHaveBeenCalled();
@@ -140,6 +149,7 @@ describe('POST /workspace-hosts/provision', () => {
     };
     expect((await post(dependencies, { ...body, canary })).status).toBe(201);
     expect(startProvisioning).toHaveBeenCalledWith(expect.objectContaining({ canary }));
+    expect(startProvisioning.mock.calls[0]?.[0]).not.toHaveProperty('bootstrapReleaseOverride');
   });
 
   it('rejects malformed request identity before reading durable state', async () => {
