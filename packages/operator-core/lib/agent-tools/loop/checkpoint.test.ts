@@ -485,6 +485,22 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
     ).toBe(false);
   });
 
+  it.each(['coalesced', 'inbox'])('EI-25610308076916440: %s is not loop execution proof', (lastWakeChannel) => {
+    const dispatch = '2026-10-10T17:04:26.638Z';
+    const wake = {
+      lastDeliveryOutcome: 'queued', lastWakeStatus: 'delivered', lastWakeChannel,
+      lastWakeCreatedAt: dispatch, lastWakeAt: '2026-10-10T17:08:43.391Z',
+      lastFiredAt: '2026-10-10T17:04:13.260Z', lastLoopTurnAt: null,
+      lastRealTurnAt: '2026-10-10T17:09:00.000Z', lastSuppressedWakeLoopTurnAt: null,
+    };
+    expect(classifyLoopNextWake(loop(wake))).toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+    // A genuine loop turn clears the failure even if delivery was settled later.
+    expect(classifyLoopNextWake(loop({ ...wake, lastSuppressedWakeLoopTurnAt: '2026-10-10T17:05:00.000Z' })))
+      .toEqual({ guaranteed: true, reason: null });
+    expect(classifyLoopNextWake(loop({ ...wake, lastSuppressedWakeLoopTurnAt: dispatch })))
+      .toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+  });
+
   it.each(['queued', 'loop-armed'])('EI-25407823334233635: %s cannot erase a suppressed loop delivery', (lastDeliveryOutcome) => {
     expect(classifyLoopNextWake(loop({
       lastDeliveryOutcome,
