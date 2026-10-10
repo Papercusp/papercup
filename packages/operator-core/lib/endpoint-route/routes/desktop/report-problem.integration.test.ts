@@ -7,7 +7,7 @@
  *  - a ticked log excerpt lands in the consented-attachment store (door 'desktop');
  *  - a payload changed after the preview is refused and files nothing.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { TableProjection } from '../../../sync/hyperbee/projection';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../../../sync/hyperbee/feature-issue-op-keys';
@@ -17,7 +17,23 @@ import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { bootPresencePeer, makeIdentity, makeTestnet, pollUntil, rigAfterEach } from '../../../sync/hyperbee/__tests__/_cross-peer-rig';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, currentBuild: 'abc1234def'.padEnd(40, '0') as string | null }));
+vi.mock('../../../attention/intake-promotion', async (orig) => {
+  const actual = await orig<typeof import('../../../attention/intake-promotion')>();
+  const currentTargetBuild = async () => h.currentBuild;
+  return {
+    ...actual,
+    currentIntakeTargetBuild: currentTargetBuild,
+    // Promotion and the execution-time recheck must observe the same fixture
+    // checkout. The server wrapper composes its own lexical default adapter.
+    verifyAcceptedWorkItemBugReproduction: (item: Parameters<typeof actual.verifyAcceptedWorkItemBugReproduction>[0]) =>
+      actual.verifyAcceptedWorkItemBugReproduction(item, {
+        currentTargetBuild,
+        ledger: actual.defaultReproductionLedgerDeps(),
+      }),
+  };
+});
+beforeEach(() => { h.currentBuild = 'abc1234def'.padEnd(40, '0'); });
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -39,7 +55,7 @@ const { runWithWorkspace } = await import('../../../workspace-als');
 const { contributeUpstream } = await import('../../../pot/contribute-upstream');
 const { buildEngineerIssuesProjection } = await import('../../../sync/hyperbee/projections/engineer-issues');
 const { errorSignatureOf } = await import('../../../harness/improvements/error-signature');
-const { currentIntakeSourceRevision, executeIntakeDecision, defaultIntakePromotionDeps } = await import('../../../attention/intake-promotion');
+const { currentIntakeSourceRevision, executeIntakeDecision, defaultIntakePromotionDeps, verifyAcceptedWorkItemBugReproduction } = await import('../../../attention/intake-promotion');
 const { parseIntakeDecision } = await import('../../../attention/bulk-dispositions');
 const { publishReporterRelease, defaultReporterReleaseDeps } = await import('../../../../../../apps/operator/lib/release/reporter-release');
 const { forwardReportAttachment, defaultReportAttachmentRpcDeps, buildReportAttachmentRpcHandler, REPORT_ATTACHMENT_RPC_KIND } = await import('../../../harness/improvements/report-attachment-rpc');
@@ -94,6 +110,13 @@ async function rowsMentioning(marker: string) {
   return db.adminSql<{ feature_id: string; title: string; payload: Record<string, unknown> }[]>`
     SELECT feature_id, title, payload FROM harness_shared.work_items
      WHERE title ILIKE ${`%${marker}%`} OR payload::text ILIKE ${`%${marker}%`}`;
+}
+
+async function reportReproduction(id: string) {
+  const [row] = await h.sql<{ item_kind: string; harness_slug: string; payload: unknown }[]>`
+    SELECT item_kind, harness_slug, payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+  if (!row) throw new Error(`report ${id} has no canonical row`);
+  return verifyAcceptedWorkItemBugReproduction({ kind: row.item_kind, harness: row.harness_slug, payload: row.payload });
 }
 
 describe('desktop Report a problem door, end to end', () => {
@@ -320,9 +343,11 @@ describe('desktop Report a problem door, end to end', () => {
       { decidedBy: 'su-upstream-verifier', sourceRevision: await currentIntakeSourceRevision(id) });
       if (!parsed.ok) throw new Error(parsed.error);
       const promoted = await executeIntakeDecision({ sourceId: id, decision: parsed.decision, runId: 'p015-upstream', itemId: `report-${s}` },
-        defaultIntakePromotionDeps({ currentTargetBuild: async () => 'abc1234def'.padEnd(40, '0') }));
+        defaultIntakePromotionDeps({ currentTargetBuild: async () => h.currentBuild }));
       expect(promoted, JSON.stringify(promoted)).toMatchObject({ ok: true, mode: 'distinct', created: true });
       if (!promoted.ok || !promoted.workItemId) throw new Error(JSON.stringify(promoted));
+      const reproduction = await reportReproduction(promoted.workItemId);
+      expect(reproduction, JSON.stringify(reproduction)).toMatchObject({ status: 'attested' });
       expect(await claimIssue(promoted.workItemId, 'su-upstream-fixer')).toMatchObject({ assignee: 'su-upstream-fixer' });
       expect(await askReporterQuestion({ id: promoted.workItemId, harness: 'papercusp', actor: 'su-other', text: 'Which file?' })).toMatchObject({ ok: false });
       const question = await askReporterQuestion({ id: promoted.workItemId, harness: 'papercusp', actor: 'su-upstream-fixer', text: 'Which CSV file triggers it?' });
@@ -510,7 +535,7 @@ describe('desktop Report a problem door, end to end', () => {
     if (!parsed.ok) throw new Error(parsed.error);
     const accepted = await executeIntakeDecision({ sourceId: id, decision: parsed.decision,
       runId: `p023-${s}`, itemId: `report-${s}` },
-    defaultIntakePromotionDeps({ currentTargetBuild: async () => 'abc1234def'.padEnd(40, '0') }));
+    defaultIntakePromotionDeps({ currentTargetBuild: async () => h.currentBuild }));
     expect(accepted).toMatchObject({ ok: true, mode: 'in-place', workItemId: id });
     const admitted = await claimable();
     const [afterAcceptance] = await db.adminSql`
@@ -522,6 +547,19 @@ describe('desktop Report a problem door, end to end', () => {
       .toEqual([id]);
     expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
       .toMatchObject({ sourceId: id, canonicalId: id, status: 'awaiting-fix' });
+    // Acceptance is not a permanent authorization to fix an older build.
+    // Exercise the real bottom writer against both stale and unknown targets.
+    h.currentBuild = 'd'.repeat(40);
+    expect(await reportReproduction(id)).toMatchObject({ status: 'refuted' });
+    expect(await claimIssue(id, 'su-p023-fixer')).toBeNull();
+    h.currentBuild = null;
+    expect(await reportReproduction(id)).toMatchObject({ status: 'unresolved' });
+    expect(await claimIssue(id, 'su-p023-fixer')).toBeNull();
+    const [unclaimed] = await db.adminSql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(unclaimed?.taken_by).toBeNull();
+    h.currentBuild = 'abc1234def'.padEnd(40, '0');
+    const reproduction = await reportReproduction(id);
+    expect(reproduction, JSON.stringify(reproduction)).toMatchObject({ status: 'attested' });
     expect(await claimIssue(id, 'su-p023-fixer')).toMatchObject({ assignee: 'su-p023-fixer' });
     expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
       .toMatchObject({ sourceId: id, canonicalId: id, status: 'being-fixed' });
