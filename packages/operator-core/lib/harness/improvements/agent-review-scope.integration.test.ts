@@ -49,13 +49,13 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
   afterAll(async () => { await db?.cleanup(); });
   beforeEach(async () => { await db.adminSql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS}`; });
 
-  async function seed(id: string, review: boolean, index: number, plan: string | null, conflict?: string) {
+  async function seed(id: string, review: boolean, index: number, plan: string | null, conflict?: string, kind = review ? 'change' : 'task') {
     const payload = review
       ? { agentReview: { status: 'pending', submittedBy: conflict ?? 'su-filer', ledgerIdeaId: id, round: 2 } }
       : { verification: { schemaVersion: 'verification-task-v1', subject: 'WI-S', check: 'completion', reporters: conflict ? [conflict] : [] } };
     await db.adminSql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, item_kind, status, payload, source_plan_slug, created_ts, feature_order)
-      VALUES (${WS}, ${HARNESS}, ${id}, 'Neutral queue item', 'Current fixture', ${review ? 'change' : 'task'},
+      VALUES (${WS}, ${HARNESS}, ${id}, 'Neutral queue item', 'Current fixture', ${kind},
         'open', ${JSON.stringify(payload)}::text::jsonb, ${plan}, ${index}, ${index})`;
   }
 
@@ -80,16 +80,27 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
     return { deps, claimWorkItem };
   }
 
-  it.each([true, false])('filters a full excluded page before pickup; review=%s', async (review) => {
-    for (let i = 0; i < 30; i++) await seed(`WI-EXCLUDED-${i}`, review, i, 'p2p-release');
-    await seed('WI-CONFLICT', review, 30, 'queue-flow', 'su-verifier');
-    await seed('WI-IN', review, 31, null);
+  it.each([
+    [true, 'change'],
+    [true, 'bug'],
+    [false, 'task'],
+  ] as const)('filters a full excluded page before independent pickup; review=%s kind=%s', async (review, kind) => {
+    for (let i = 0; i < 30; i++) await seed(`WI-EXCLUDED-${i}`, review, i, 'p2p-release', undefined, kind);
+    await seed('WI-CONFLICT', review, 30, 'queue-flow', 'su-verifier', kind);
+    // The bug has no plan approval, acceptance contract or reproduction receipt.
+    // Pickup assigns validation; it must not silently turn that into bug acceptance.
+    await seed('WI-IN', review, 31, null, undefined, kind);
     const { deps, claimWorkItem } = writer();
     const scope = { harnessSlug: HARNESS, workspaceId: WS, filter: buildP2pLaneFence() };
     const result = review
       ? await claimNextAgentReview({ ...scope, reviewer: 'su-verifier' }, deps as never)
       : await claimNextVerificationTask({ ...scope, verifier: 'su-verifier' }, deps as never);
     expect(result?.id).toBe('WI-IN');
+    expect(result?.kind).toBe(kind);
+    if (kind === 'bug') {
+      expect(result?.payload).not.toHaveProperty('intakeReproduction');
+      expect(result?.payload).not.toHaveProperty('implementationReadiness');
+    }
     expect(claimWorkItem.mock.calls.map((c) => c[0])).toEqual(['WI-IN']);
     const held = await db.adminSql`SELECT feature_id FROM harness_shared.work_items WHERE workspace_id=${WS} AND taken_by IS NOT NULL`;
     expect(held.map((row) => row.feature_id)).toEqual(['WI-IN']);
