@@ -22,11 +22,11 @@ Type=oneshot
 # somebody disables, so it runs at the bottom of both the CPU and I/O queues.
 Nice=19
 IOSchedulingClass=idle
-# Must exceed KEYPERM_DEEP_TIMEOUT_S (default 900s) plus the tier-1 sweep, or
-# systemd kills the probe before its OWN timeout can fire — and the probe's
-# timeout is what converts a truncated sweep into an INDETERMINATE verdict
-# instead of a silent clean one.
-TimeoutStartSec=2400
+# Tier 2 applies KEYPERM_DEEP_TIMEOUT_S independently to each of its three
+# default roots, so the unit cap must cover 3 × 900s, tier 1, and final EI
+# reporting. Otherwise systemd can kill the probe before its own per-root
+# timeout is handled and the INDETERMINATE result is filed.
+TimeoutStartSec=3600
 # Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
 # corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
 ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-key-permission-check.sh
