@@ -8,7 +8,7 @@
 //
 // Usage: node scripts/cpu-sample.mjs <pid> [durationMs] [inspectorPort] [--save <path>]
 import { setTimeout as sleep } from 'node:timers/promises';
-import { readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fchmodSync, openSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -184,12 +184,21 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
  * needs read access, not permission to reopen its file for writing.
  * @param {string} file
  * @param {string | Buffer} raw
+ * @param {{ mode?: 384 | 420 }} [options] Private by default; shared guest outputs opt into 0644.
  * @returns {{ created: boolean, bytes: number }}
  */
-export function persistCpuProfile(file, raw) {
+export function persistCpuProfile(file, raw, { mode = 0o600 } = {}) {
+  if (mode !== 0o600 && mode !== 0o644)
+    throw new TypeError('CPU profile creation mode must be 0600 or 0644');
   const bytes = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
   try {
-    writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 });
+    const fd = openSync(file, 'wx', mode);
+    try {
+      writeFileSync(fd, bytes);
+      // An explicit cross-UID output contract must survive a restrictive umask.
+      // Apply it only to the descriptor we created, never to an existing capture.
+      fchmodSync(fd, mode);
+    } finally { closeSync(fd); }
     return { created: true, bytes: bytes.length };
   } catch (error) {
     if (error.code !== 'EEXIST') throw error;

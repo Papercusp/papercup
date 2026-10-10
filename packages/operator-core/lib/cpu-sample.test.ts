@@ -16,12 +16,44 @@ it('creates a raw profile and verifies an existing read-only capture without rew
   try {
     expect(persistCpuProfile(file, raw)).toEqual({ created: true, bytes: raw.length });
     expect(readFileSync(file)).toEqual(raw);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
     chmodSync(file, 0o444);
     const before = statSync(file);
     expect(persistCpuProfile(file, raw)).toEqual({ created: false, bytes: raw.length });
     const after = statSync(file);
     expect([after.ino, after.uid, after.mode, after.mtimeMs, after.ctimeMs])
       .toEqual([before.ino, before.uid, before.mode, before.mtimeMs, before.ctimeMs]);
+  } finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+it('creates an explicitly shared profile despite a restrictive umask and preserves existing permissions', () => {
+  const out = mkdtempSync(join(tmpdir(), 'cpu-sample-shared-'));
+  const file = join(out, 'profile.cpuprofile');
+  const raw = Buffer.from('{"nodes":[{"id":1}],"samples":[1]}');
+  const previousUmask = process.umask(0o077);
+  try {
+    expect(persistCpuProfile(file, raw, { mode: 0o644 })).toEqual({ created: true, bytes: raw.length });
+    expect(statSync(file).mode & 0o777).toBe(0o644);
+    chmodSync(file, 0o444);
+    const before = statSync(file);
+    expect(persistCpuProfile(file, raw, { mode: 0o644 })).toEqual({ created: false, bytes: raw.length });
+    const after = statSync(file);
+    expect([after.ino, after.uid, after.mode, after.mtimeMs, after.ctimeMs])
+      .toEqual([before.ino, before.uid, before.mode, before.mtimeMs, before.ctimeMs]);
+    expect(readFileSync(file)).toEqual(raw);
+  } finally {
+    process.umask(previousUmask);
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+it('rejects unsupported profile permissions before creating an output', () => {
+  const out = mkdtempSync(join(tmpdir(), 'cpu-sample-mode-'));
+  const file = join(out, 'profile.cpuprofile');
+  try {
+    expect(() => persistCpuProfile(file, '{}', { mode: 0o666 as 420 }))
+      .toThrow('creation mode must be 0600 or 0644');
+    expect(existsSync(file)).toBe(false);
   } finally { rmSync(out, { recursive: true, force: true }); }
 });
 
