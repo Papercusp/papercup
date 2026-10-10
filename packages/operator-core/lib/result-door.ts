@@ -375,7 +375,11 @@ function innerTruncationRecoveryInstruction(
   return 'The ' + toolName + ' result already marked a field as truncated. Re-read using that field\'s documented recovery handle or narrower arguments; a wider per-field limit may not exist.';
 }
 
-function upstreamProjectionRecoveryInstruction(toolName: string, nestedTargetToolName?: string): string {
+function upstreamProjectionRecoveryInstruction(
+  toolName: string,
+  nestedTargetToolName?: string,
+  innerTruncationMarkers: readonly string[] = [],
+): string {
   const recoveryToolName = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
   if (!recoveryToolName || recoveryToolName === 'tools:invoke') {
     return (
@@ -386,9 +390,18 @@ function upstreamProjectionRecoveryInstruction(toolName: string, nestedTargetToo
   if (recoveryToolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
   const rawDispatch =
     `tools:invoke { name:'${recoveryToolName}', args:{ …original args, payloadTier:'full' } }`;
-  return (
+  const projectionRecovery =
     `Re-call ${recoveryToolName} with payloadTier:'full' (or narrower args) for the missing detail. ` +
-    `If your client validates against the target tool schema, use \`${rawDispatch}\`. `
+    `If your client validates against the target tool schema, use \`${rawDispatch}\`. `;
+  if (innerTruncationMarkers.length === 0) return projectionRecovery;
+
+  // Upstream payload shaping and tool-owned field bounds are independent loss
+  // sources. Keep both recovery routes visible: e.g. work_items:get's clipped
+  // prior-attempt text needs priorAttemptRefs, while other tier-omitted fields
+  // need a full-tier or narrower re-read.
+  return (
+    `${innerTruncationRecoveryInstruction(toolName, innerTruncationMarkers, nestedTargetToolName)} ` +
+    `For other fields omitted by the upstream payload projection, ${projectionRecovery}`
   );
 }
 
@@ -1460,7 +1473,11 @@ function spillRecoveryNote(
       referenceReader +
       'However, the tool had already applied a lossy upstream projection before this spill; omitted fields were ' +
       'never serialized and paging this reference cannot recover them. ' +
-      upstreamProjectionRecoveryInstruction(input.toolName, input.nestedTargetToolName)
+      upstreamProjectionRecoveryInstruction(
+        input.toolName,
+        input.nestedTargetToolName,
+        innerTruncationMarkers,
+      )
     );
   }
   if (innerTruncationMarkers.length > 0) {
@@ -1546,13 +1563,11 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       | { payloadProjection?: { truncated?: unknown } }
       | undefined
   )?.payloadProjection;
-  const innerTruncationMarkers = upstreamProjection
-    ? []
-    : detectInnerTruncationMarkers(
-      input.result.content.filter(isTextItem).map((item) => item.text),
-      input.opts.toolName,
-      input.opts.nestedTargetToolName,
-    );
+  const innerTruncationMarkers = detectInnerTruncationMarkers(
+    input.result.content.filter(isTextItem).map((item) => item.text),
+    input.opts.toolName,
+    input.opts.nestedTargetToolName,
+  );
   const sourceWasPartial = Boolean(upstreamProjection?.truncated) || innerTruncationMarkers.length > 0;
   const payload = JSON.stringify({
     content: input.result.content,
@@ -2719,15 +2734,15 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // A path we cannot even NAME is the store-absent case: cap, disclose, move on.
       noteSpillFailure(err);
     }
-    // EI-18745696571494110: no upstream `_meta` marker fired, but the tool may
-    // have still truncated individual FIELDS inside its own body (coord:inbox's
-    // per-entry `body_truncated`, a list's `summary_truncated`, …) — check only
-    // when upstreamProjection didn't already explain the shortfall, since that
-    // case is more severe (the WHOLE result is a partial projection) and takes
-    // priority over a field-level marker.
-    const innerTruncationMarkers = upstreamProjection
-      ? []
-      : detectInnerTruncationMarkers(textItems.map((item) => item.text), opts.toolName, opts.nestedTargetToolName);
+    // A result can carry BOTH a payload-tier projection marker and tool-owned
+    // field markers. They describe different losses and can have different
+    // recovery routes (for example work_items:get's priorAttemptRefs handle), so
+    // the broader projection must not suppress the field-level diagnosis.
+    const innerTruncationMarkers = detectInnerTruncationMarkers(
+      textItems.map((item) => item.text),
+      opts.toolName,
+      opts.nestedTargetToolName,
+    );
     const header = upstreamProjection
       ? `# result-door spill — an ALREADY-PROJECTED (partial) tool result\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
@@ -2736,7 +2751,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         `forced=${upstreamProjection.forced} originalChars=${upstreamProjection.originalChars} ` +
         `returnedChars=${upstreamProjection.returnedChars} omittedCount=${upstreamProjection.omittedCount}.\n` +
         `# The ${upstreamProjection.omittedCount} omitted field(s)/row(s) were NEVER serialized and are ` +
-        `NOT recoverable from this file — ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName)}\n` +
+        `NOT recoverable from this file — ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers)}\n` +
         `# What follows is only that already-partial projection, further capped at the ` +
         `per-result door (${doorTokens} tokens) below.\n\n`
       : innerTruncationMarkers.length > 0
@@ -2885,7 +2900,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ? 'upstream payloadProjection'
       : `the tool marked ${innerTruncationMarkers.join(', ')}`;
     const partialJsonReRead = upstreamJsonProjection
-      ? upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName)
+      ? upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers)
       : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName);
     const agentReviewClaim = fsPath == null ? agentReviewClaimReceipt(result, opts) : undefined;
     // The claim committed before the optional scratch write. Recover the item
@@ -3010,7 +3025,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                   ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
                     `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
                     `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
-                    `fields. ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName)}`
+                  `fields. ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers)}`
                   : innerTruncationMarkers.length > 0
                     ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
                       `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +

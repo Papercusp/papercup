@@ -3021,6 +3021,41 @@ describe('applyResultDoor', () => {
       expect(envelope.incomplete.note).not.toContain("name:'tools:invoke'");
     });
 
+    it('preserves work-item field recovery when upstream projection metadata is also present', () => {
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            results: [{
+              id: 'EI-1',
+              priorAttempts: {
+                attempts: [{ rawRef: 'EI-1#completion', textTruncated: true, text: 'prefix…' }],
+              },
+            }],
+          }),
+        }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'under-budget-partial-result',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).toContain('rawRef');
+      expect(envelope.incomplete.note).toContain('For other fields omitted by the upstream payload projection');
+      expect(envelope.incomplete.note).toContain("Re-call work_items:get with payloadTier:'full'");
+      expect((doored._meta as { resultDoor: { innerTruncationMarkers: string[] } }).resultDoor.innerTruncationMarkers)
+        .toContain('textTruncated');
+    });
+
     it('shows a schema-compatible dispatch path for framework-reserved payloadTier', () => {
       const result = {
         content: [{ type: 'text' as const, text: 'small partial list result' }],
