@@ -102,7 +102,7 @@ const MAX_PART_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
 /** Per-turn text cap (chars). */
 export const SESSION_TURN_TEXT_CAP = 8000;
 const TEXT_CAP = SESSION_TURN_TEXT_CAP;
-/** Skip micro-turns ("ok", "y") — noise for recall. */
+/** Short assistant acknowledgements are recall noise; short USER decisions are not. */
 const MIN_TEXT_LEN = 3;
 /**
  * Per-PART text caps (chars) — session_turn_parts, the faithful-render
@@ -190,8 +190,8 @@ export interface ParsedPart {
  * session take" when it only ever counted a filtered subset.
  */
 export interface LineSignal {
-  /** A real user-typed prompt — same filter session_turns applies for a
-   *  stored speaker='user' row (non-boilerplate, >= MIN_TEXT_LEN chars). */
+  /** A non-empty user prompt, including one-character decisions; the origin
+   *  classifier separately establishes whether its authorship is authenticated. */
   isPrompt: boolean;
   /** This line carries genuine model-response payload (real text and/or a
    *  tool call) — a candidate RESPONSE boundary, as opposed to a pure
@@ -291,13 +291,22 @@ export { CLAUDE_OWNER_DIALOG_RESULT_PREFIXES };
 export interface TurnTextParseOptions {
   /** Return all parsed turn text while retaining the normal secret redaction. */
   fullSource?: boolean;
+  /** False only while replaying a legacy prefix whose accepted turn indexes are fixed. */
+  retainShortUserTurns?: boolean;
 }
 
 export function cleanTurnText(raw: string, options: TurnTextParseOptions = {}): string | null {
   const t = raw.trim();
-  if (t.length < MIN_TEXT_LEN) return null;
+  if (t.length < (options.retainShortUserTurns ? 1 : MIN_TEXT_LEN)) return null;
   for (const p of BOILERPLATE_PREFIXES) if (t.startsWith(p)) return null;
   return redactSelfIdentifyingSecrets(options.fullSource ? t : t.slice(0, TEXT_CAP));
+}
+
+function cleanMessageText(raw: string, speaker: string, options: TurnTextParseOptions = {}): string | null {
+  return cleanTurnText(raw, {
+    ...options,
+    retainShortUserTurns: speaker === 'user' && options.retainShortUserTurns !== false,
+  });
 }
 
 /**
@@ -374,7 +383,7 @@ function parseClaudeQueuedCommand(
   ) {
     return null;
   }
-  const text = cleanTurnText(attachment.prompt, options);
+  const text = cleanMessageText(attachment.prompt, 'user', options);
   if (!text) return null;
   return {
     ts: parseTs(attachment.timestamp) ?? parseTs(obj.timestamp),
@@ -428,7 +437,7 @@ export function parseClaudeLine(line: string, options: TurnTextParseOptions = {}
       break;
     }
   }
-  const text = cleanTurnText(rawText, options);
+  const text = cleanMessageText(rawText, speaker, options);
   if (!text) return null;
   const messageId = typeof obj.uuid === 'string' ? obj.uuid : null;
   const parentMessageId = typeof obj.parentUuid === 'string' ? obj.parentUuid : null;
@@ -578,7 +587,7 @@ export function parseOmpLine(line: string, options: TurnTextParseOptions = {}): 
   const speaker = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null;
   const rawText = textFromContent(message.content);
-  const text = cleanTurnText(rawText, options);
+  const text = cleanMessageText(rawText, speaker, options);
   if (!text) return null;
   const messageId = typeof obj.id === 'string' ? obj.id : null;
   const parentMessageId = typeof obj.parentId === 'string' ? obj.parentId : null;
@@ -620,7 +629,7 @@ export function parseCodexLine(line: string, options: TurnTextParseOptions = {})
     typeof obj.text === 'string' &&
     (typeof obj.ts === 'number' || typeof obj.ts === 'string')
   ) {
-    const text = cleanTurnText(obj.text, options);
+    const text = cleanMessageText(obj.text, 'user', options);
     if (!text) return null;
     const rawTs = obj.ts;
     const ts = typeof rawTs === 'number' && rawTs < 10_000_000_000
@@ -641,7 +650,7 @@ export function parseCodexLine(line: string, options: TurnTextParseOptions = {})
   const speaker = payload.role === 'user' ? 'user' : payload.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null; // 'developer'/'system' = injected instructions, skip
   const rawText = textFromContent(payload.content);
-  const text = cleanTurnText(rawText, options);
+  const text = cleanMessageText(rawText, speaker, options);
   if (!text) return null;
   const metadata =
     payload.internal_chat_message_metadata_passthrough != null &&
@@ -815,7 +824,7 @@ export function classifyClaudeLine(line: string): LineSignal | null {
       Array.isArray(content) &&
       content.some((p) => p && typeof p === 'object' && (p as { type?: string }).type === 'tool_result');
     if (isToolResultCarrier) return NULL_SIGNAL;
-    const text = cleanTurnText(textFromContent(content));
+    const text = cleanMessageText(textFromContent(content), 'user');
     return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
 
@@ -860,7 +869,7 @@ export function classifyOmpLine(line: string): LineSignal | null {
   if (!message) return null;
 
   if (message.role === 'user') {
-    const text = cleanTurnText(textFromContent(message.content));
+    const text = cleanMessageText(textFromContent(message.content), 'user');
     return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
   if (message.role === 'toolResult') return NULL_SIGNAL;
@@ -901,7 +910,7 @@ export function classifyCodexLine(line: string): LineSignal | null {
     return null;
   }
   if (typeof obj.session_id === 'string' && typeof obj.text === 'string') {
-    return cleanTurnText(obj.text) ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
+    return cleanMessageText(obj.text, 'user') ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
   if (obj.type !== 'response_item') return null;
   const payload = obj.payload as { type?: string; role?: string; content?: unknown; id?: string } | undefined;
@@ -913,7 +922,7 @@ export function classifyCodexLine(line: string): LineSignal | null {
   if (payload.type !== 'message') return null;
 
   if (payload.role === 'user') {
-    const text = cleanTurnText(textFromContent(payload.content));
+    const text = cleanMessageText(textFromContent(payload.content), 'user');
     return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
   }
   if (payload.role === 'assistant') {
@@ -2554,6 +2563,8 @@ interface IngestState {
    * reached EOF before session_turn_parts existed or was wired. */
   parts_backfill_offset?: number;
   parts_backfilled_at?: string | null;
+  /** First byte parsed with short user decisions retained; legacy prefix indexes never move. */
+  short_user_turns_offset?: number | null;
 }
 
 const EMPTY_STATE: IngestState = {
@@ -2569,6 +2580,7 @@ const EMPTY_STATE: IngestState = {
   counts_backfilled_at: null,
   parts_backfill_offset: 0,
   parts_backfilled_at: null,
+  short_user_turns_offset: null,
 };
 
 async function readState(sql: Sql, sourceKind: string, filePath: string): Promise<IngestState> {
@@ -2578,10 +2590,11 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
     counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
     counts_backfilled_at: string | null;
     parts_backfill_offset: string | number; parts_backfilled_at: string | null;
+    short_user_turns_offset: string | number | null;
   }>>`
     SELECT byte_offset, turn_count, part_count, prompt_count, response_count, tool_call_count, last_inference_id,
            counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
-           , parts_backfill_offset, parts_backfilled_at
+           , parts_backfill_offset, parts_backfilled_at, short_user_turns_offset
       FROM harness_shared.session_ingest_state
      WHERE source_kind = ${sourceKind} AND file_path = ${filePath}
   `;
@@ -2600,6 +2613,7 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
     counts_backfilled_at: r.counts_backfilled_at ?? null,
     parts_backfill_offset: Number(r.parts_backfill_offset ?? 0),
     parts_backfilled_at: r.parts_backfilled_at ?? null,
+    short_user_turns_offset: r.short_user_turns_offset == null ? null : Number(r.short_user_turns_offset),
   };
 }
 
@@ -2609,18 +2623,18 @@ async function writeState(
   filePath: string,
   st: Pick<IngestState, 'byte_offset' | 'turn_count'> &
     Partial<Pick<IngestState, 'part_count' | 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id' | 'counts_backfill_offset' | 'counts_backfill_last_inference_id' | 'counts_backfilled_at'>> &
-    Partial<Pick<IngestState, 'parts_backfill_offset' | 'parts_backfilled_at'>> &
+    Partial<Pick<IngestState, 'parts_backfill_offset' | 'parts_backfilled_at' | 'short_user_turns_offset'>> &
     { sessionId?: string | null; mtimeMs?: number; lastError?: string | null },
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.session_ingest_state
       (source_kind, file_path, byte_offset, turn_count, part_count, prompt_count, response_count,
        tool_call_count, last_inference_id, counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at,
-       parts_backfill_offset, parts_backfilled_at, session_id, mtime_ms, last_error, updated_at)
+       parts_backfill_offset, parts_backfilled_at, short_user_turns_offset, session_id, mtime_ms, last_error, updated_at)
     VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count}, ${st.part_count ?? 0},
             ${st.prompt_count ?? 0}, ${st.response_count ?? 0}, ${st.tool_call_count ?? 0}, ${st.last_inference_id ?? null},
             ${st.counts_backfill_offset ?? st.byte_offset}, ${st.counts_backfill_last_inference_id ?? null}, ${st.counts_backfilled_at ?? null},
-            ${st.parts_backfill_offset ?? 0}, ${st.parts_backfilled_at ?? null},
+            ${st.parts_backfill_offset ?? 0}, ${st.parts_backfilled_at ?? null}, ${st.short_user_turns_offset ?? null},
             ${st.sessionId ?? null}, ${st.mtimeMs != null ? Math.round(st.mtimeMs) : null}, ${st.lastError ?? null}, now())
     ON CONFLICT (source_kind, file_path) DO UPDATE SET
       byte_offset       = EXCLUDED.byte_offset,
@@ -2642,6 +2656,7 @@ async function writeState(
       counts_backfilled_at = COALESCE(EXCLUDED.counts_backfilled_at, harness_shared.session_ingest_state.counts_backfilled_at),
       parts_backfill_offset = COALESCE(${st.parts_backfill_offset ?? null}, harness_shared.session_ingest_state.parts_backfill_offset),
       parts_backfilled_at = COALESCE(${st.parts_backfilled_at ?? null}, harness_shared.session_ingest_state.parts_backfilled_at),
+      short_user_turns_offset = COALESCE(harness_shared.session_ingest_state.short_user_turns_offset, EXCLUDED.short_user_turns_offset),
       session_id        = COALESCE(EXCLUDED.session_id, harness_shared.session_ingest_state.session_id),
       mtime_ms          = EXCLUDED.mtime_ms,
       last_error        = EXCLUDED.last_error,
@@ -3065,6 +3080,7 @@ export async function ingestFileNow(
       byte_offset: newOffset,
       turn_count: st.turn_count + turns.length,
       part_count: st.part_count + parts.length,
+      short_user_turns_offset: st.short_user_turns_offset ?? st.byte_offset,
       prompt_count: st.prompt_count + promptCount,
       response_count: st.response_count + responseCount,
       tool_call_count: st.tool_call_count + toolCallCount,
@@ -3370,9 +3386,10 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
         prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
         counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
         counts_backfilled_at: string | null;
+        short_user_turns_offset: string | number | null;
       }>>`
         SELECT file_path, byte_offset, turn_count, part_count, prompt_count, response_count, tool_call_count, last_inference_id,
-               counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
+               counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at, short_user_turns_offset
           FROM harness_shared.session_ingest_state
          WHERE source_kind = ${adapter.sourceKind}
       `);
@@ -3388,6 +3405,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           counts_backfill_offset: Number(r.counts_backfill_offset ?? r.byte_offset),
           counts_backfill_last_inference_id: r.counts_backfill_last_inference_id ?? null,
           counts_backfilled_at: r.counts_backfilled_at ?? null,
+          short_user_turns_offset: r.short_user_turns_offset == null ? null : Number(r.short_user_turns_offset),
         }]),
       );
       let filesThisAdapter = 0;
@@ -3493,6 +3511,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
             byte_offset: newOffset,
             turn_count: st.turn_count + turns.length,
             part_count: st.part_count + parts.length,
+            short_user_turns_offset: st.short_user_turns_offset ?? st.byte_offset,
             prompt_count: st.prompt_count + promptCount,
             response_count: st.response_count + responseCount,
             tool_call_count: st.tool_call_count + toolCallCount,
