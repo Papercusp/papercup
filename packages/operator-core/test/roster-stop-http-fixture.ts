@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
-import { preparePortalBrowserSource, preparePrivateHttpWorkspaces } from './private-http-workspace-preflight';
+import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -173,15 +173,16 @@ async function coordCanary(health: unknown) {
       // The actual committed repository supplies docs and HEAD read-only. Only
       // this disposable PG/registry owns the manual tracking records.
       await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects, { slug: harness, path: root }] }), workspace);
-      docs = { harness, selectedDoc: 'reports/cloud-cross-feature-e2e-2026-10-08.md',
-        neighborDoc: 'reports/desktop-design-drift-2026-09-08.md',
-        selectedHeading: 'Cloud end-to-end campaign — 2026-10-08',
-        neighborHeading: 'Desktop GUI design drift: findings, repair and prevention plan' };
+      const prepared = await preparePrivateDocsBrowserDocuments(root);
+      docs = { harness, ...prepared.selection };
       for (const docId of [docs.selectedDoc, docs.neighborDoc]) {
         const anchored = await anchorManualDoc({ harnessSlug: harness, docId, workspaceId: workspace,
           documents: ['packages/operator-core/lib/harness/docs/manual-anchor.ts'], verify: false });
         assert.equal(anchored.ok, true);
         assert.ok(anchored.ok && anchored.anchored && anchored.record.status === 'review');
+        const { buildMergedDocs } = await import('../lib/harness/docs/merged-read');
+        const merged = await buildMergedDocs(harness, { workspaceId: workspace, activePath: docId });
+        assert.equal(merged.content, prepared.bodies[docId], 'private Docs read must return the actual configured body');
       }
       writeFileSync(join(evidence, 'portal-docs-seed.json'), JSON.stringify({ ...docs, workspace,
         readonlyRepo: root, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() }, null, 2));

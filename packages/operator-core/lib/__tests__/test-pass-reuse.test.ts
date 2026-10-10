@@ -217,6 +217,7 @@ describe('P-001 (gate-test-reuse-yield-2026-10-01): nested vitest configs are pe
   });
 
   it('the proof format rides in the runner identity, identically on the selector and recorder sides', () => {
+    expect(REUSE_PROOF_FORMAT).toBe('proof-v3');
     expect(REUSE_PROOF_FORMAT).toBe(RECORDER_PROOF_FORMAT);
     expect(reuseRunnerIdentity(' v25.9.0 linux x64\n')).toBe(`${REUSE_PROOF_FORMAT} v25.9.0 linux x64`);
     expect(reuseRunnerIdentity('')).toBeNull();
@@ -236,6 +237,13 @@ describe('P-001 (gate-test-reuse-yield-2026-10-01): nested vitest configs are pe
       nowMs: NOW,
       maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
     });
+    expect(r.skip).toEqual([]);
+    expect(r.summary.otherRunner).toBe(1);
+  });
+
+  it('rejects collection-only proof-v2 even when no tracked inputs changed', () => {
+    const f = 'packages/operator-core/lib/dynamic-route.test.ts';
+    const r = run([f], new Map([[f, proof(f, { runnerIdentity: `proof-v2 ${RUNNER}` })]]), new Set());
     expect(r.skip).toEqual([]);
     expect(r.summary.otherRunner).toBe(1);
   });

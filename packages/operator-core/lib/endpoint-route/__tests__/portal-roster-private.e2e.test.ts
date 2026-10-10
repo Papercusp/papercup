@@ -3,7 +3,7 @@ import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePortalBrowserSource, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
+import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
 import { buildPortalRosterBrowser, verifyPrivateDocsBrowserMount, verifyPrivateProfileOriginControl } from '../../../test/portal-roster-browser-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
@@ -13,9 +13,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private ADV Docs selects by keyboard, retains a denied article and persists its exact anchored verification retry', async context => {
     preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    const prepared = await preparePrivateDocsBrowserDocuments(root);
     await verifyPrivateDocsBrowserMount({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor',
-      docs: { harness: 'preflight-docs', selectedDoc: 'selected.md', neighborDoc: 'neighbor.md',
-        selectedHeading: 'selected', neighborHeading: 'neighbor' } });
+      docs: { harness: 'preflight-docs', ...prepared.selection },
+      markdownPreflight: { value: prepared.bodies[prepared.selection.selectedDoc], heading: prepared.selection.selectedHeading } });
     await verifyPrivateProfileOriginControl();
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
@@ -26,7 +27,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/lib/harness/docs/doc-record.ts', 'packages/operator-core/lib/harness/docs/harness-repo.ts',
         'packages/operator-core/lib/harness-registry.ts', 'packages/operator-core/lib/harness/workspace-for-harness.ts',
         'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx', 'apps/operator/app/adv/harnesses/AdvDocsTab.tsx',
-        'docs/reports/cloud-cross-feature-e2e-2026-10-08.md', 'docs/reports/desktop-design-drift-2026-09-08.md',
+        ...prepared.sourcePaths,
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');

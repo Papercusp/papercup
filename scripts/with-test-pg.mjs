@@ -375,6 +375,10 @@ if (isolatedRuntime) {
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
     'PAPERCUSP_TEST_RUN_COMMIT', 'PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN',
     'PAPERCUSP_TEST_RUN_LOOP_LAG_P95_MS',
+    // The reporter needs the maintained probe's phase and original checkout
+    // to distinguish an expected mutant failure from an ordinary dirty run.
+    'PAPERCUSP_MUTATION_PROBE', 'PAPERCUSP_MUTATION_PHASE',
+    'PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', 'PAPERCUSP_MUTATION_PROBE_SUBJECT',
   ]);
   for (const key of Object.keys(childEnv)) {
     if (evidenceKeys.has(key)) continue;

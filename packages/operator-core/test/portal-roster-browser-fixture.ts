@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { getOrgPg } from '@papercusp/db-org';
@@ -13,6 +14,10 @@ import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private
 import { portalBrowserPackagesPlugin, portalBrowserSurfaceBuild } from './private-http-workspace-preflight';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+// Reuse the installed version that the actual MarkdownPreview imports. The
+// production SPA likewise mounts its package tree at /vditor; Vditor appends
+// /dist/js/lute/lute.min.js to that CDN root itself.
+const vditorAssets = dirname(createRequire(import.meta.url).resolve('vditor/package.json'));
 
 type PortalRosterBrowserInput = {
   evidence: string; base: string; workspace: string; selected: string; neighbor: string;
@@ -22,6 +27,7 @@ type PortalRosterBrowserInput = {
   settings?: boolean;
   prompts?: boolean;
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
+  markdownPreflight?: { value: string; heading: string };
   plans?: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string };
   inbox?: { selectedMessageId: string; neighborMessageId: string; selectedTitle: string; neighborTitle: string };
   history?: { selectedSessionId: number; neighborSessionId: number; selectedRolloutId: string; neighborRolloutId: string;
@@ -36,7 +42,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'inbox' | 'plans' | 'docs'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -54,8 +60,11 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import { NuqsAdapter } from 'nuqs/adapters/react';
     import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
     import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
+    import { MarkdownPreview } from ${JSON.stringify(join(operatorRoot, 'app/_components/MarkdownEditor.tsx'))};
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
-      React.createElement(AdvHarnessPanelPage, { panel: 'docs' })) });
+      React.createElement(React.Fragment, null,
+        React.createElement(AdvHarnessPanelPage, { panel: 'docs' }),
+        ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'})) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.plans ? `
@@ -220,14 +229,25 @@ export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof bui
   const built = await buildPortalRosterBrowser(input);
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
   const server = createServer((request, response) => {
-    if (request.url === '/docs-preflight.js') {
+    const pathname = new URL(request.url ?? '/', 'http://preflight.invalid').pathname;
+    if (pathname.startsWith('/vditor/')) {
+      const asset = resolve(vditorAssets, decodeURIComponent(pathname.slice('/vditor/'.length)));
+      if (!asset.startsWith(vditorAssets + sep) || !existsSync(asset) || !statSync(asset).isFile()) {
+        response.writeHead(404); response.end(); return;
+      }
+      response.writeHead(200, { 'content-type': asset.endsWith('.js') ? 'text/javascript' : asset.endsWith('.css') ? 'text/css' : 'application/octet-stream' });
+      response.end(readFileSync(asset));
+    } else if (pathname === '/favicon.ico') {
+      response.writeHead(204); response.end();
+    } else if (pathname === '/docs-preflight.js') {
       response.writeHead(200, { 'content-type': 'text/javascript' }); response.end(built.bundle);
-    } else if (new URL(request.url ?? '/', 'http://preflight.invalid').pathname === '/') {
+    } else if (pathname === '/') {
       response.writeHead(200, { 'content-type': 'text/html' });
       response.end('<div id="root"></div><script src="/docs-preflight.js"></script>');
     } else { response.writeHead(404); response.end(); }
   });
   const errors: string[] = [];
+  const failedRequests: string[] = [];
   try {
     await new Promise<void>((done, reject) => {
       server.once('error', reject); server.listen(0, '127.0.0.1', done);
@@ -235,11 +255,22 @@ export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof bui
     const address = server.address(); assert.ok(address && typeof address === 'object');
     const page = await browser.newPage();
     page.on('pageerror', error => errors.push(error.stack ?? error.message));
+    // This browser-only preflight has no API. Capture the renderer's handled
+    // failures, rather than treating background flag-bootstrap requests as
+    // module failures. The private workflow exercises its real API separately.
+    page.on('console', message => {
+      if (message.type() === 'error' && message.text().startsWith('[MarkdownPreview]')) errors.push(message.text());
+    });
+    page.on('response', response => { if (response.status() >= 400) failedRequests.push(`HTTP ${response.status()} ${response.url()}`); });
     // History-backed query state needs a real origin; about:blank cannot run
     // replaceState even when the component itself initialized correctly.
     await page.goto(`http://127.0.0.1:${address.port}/`);
     try { await page.getByRole('region', { name: 'ADV Docs workspace' }).waitFor({ timeout: 15_000 }); }
-    catch (error) { throw new Error(errors.join('\n') || String(error)); }
+    catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    if (input.markdownPreflight) {
+      try { await page.getByRole('heading', { name: input.markdownPreflight.heading, exact: true }).waitFor({ timeout: 15_000 }); }
+      catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
+    }
     assert.deepEqual(errors, [], 'actual Docs module initialization must be browser-safe');
     assert.match(await page.locator('body').innerText(), /Select a /);
     return { sourceCount: built.originals.size, mounted: true };
@@ -254,6 +285,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { portal, entry, bundle, css, originals } = await buildPortalRosterBrowser(input);
   const spa = join(evidence, 'portal-roster-spa');
   mkdirSync(spa, { recursive: true });
+  if (input.docs) symlinkSync(vditorAssets, join(spa, 'vditor'), 'dir');
   writeFileSync(join(spa, 'portal-roster.js'), bundle);
   writeFileSync(join(spa, 'portal-roster.css'), readFileSync(join(portal, 'app/tokens.css'), 'utf8') + '\n'
     + readFileSync(join(portal, 'app/globals.css'), 'utf8')

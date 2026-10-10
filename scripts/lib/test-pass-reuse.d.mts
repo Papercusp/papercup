@@ -412,14 +412,16 @@ export const TEST_REUSE_MAX_AGE_MS_DEFAULT: number;
 export const TEST_REUSE_AUDIT_RATE_ENV: "AFFECTED_TEST_REUSE_AUDIT_RATE";
 export const TEST_REUSE_AUDIT_RATE_DEFAULT: 0.05;
 /**
- * Proof format (gate-test-reuse-yield-2026-10-01 P-001, D-002). A `proof-v2` proof carries, in its
+ * Proof format (EI-25597096188717078). A `proof-v3` proof includes a final worker import
+ * observation; collection-only proof-v2 rows cannot establish the executed dependency radius.
+ * Like proof-v2, it carries, in its
  * readPaths, the vitest config that ran the file plus that config's bundled (relative) imports, so a
  * NESTED vitest config is an ordinary per-proof input instead of a global one (isGlobalRunnerInput).
  * It is folded into the runner identity, which rule 1 already compares exactly: an older proof
  * (no config input recorded) then reads `otherRunner` and is never judged under the narrowed rule.
  * PINNED equal to libs/test-config/src/test-pass-reuse-skip.ts REUSE_PROOF_FORMAT (the recorder).
  */
-export const REUSE_PROOF_FORMAT: "proof-v2";
+export const REUSE_PROOF_FORMAT: "proof-v3";
 /**
  * The cap on vitest's importDurations record, which is where a proof's executedModules come from.
  * A proof that lists this many modules may have been cut short, so it cannot prove it did NOT load

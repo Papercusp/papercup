@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
-import { portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot } from '../test/private-http-workspace-preflight';
+import { portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot } from '../test/private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
@@ -182,6 +182,32 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
       selected: 'preflight-selected', neighbor: 'preflight-neighbor', docs: {
         harness: 'preflight-docs', selectedDoc: 'selected.md', neighborDoc: 'neighbor.md',
         selectedHeading: 'selected', neighborHeading: 'neighbor' } })).resolves.toMatchObject({ mounted: true });
+  }, 120_000);
+
+it('validates the configured Docs corpus and rejects record-only targets before private PG', async () => {
+  const root = realpathSync(join(import.meta.dirname, '../../..'));
+  const prepared = await preparePrivateDocsBrowserDocuments(root);
+  expect(prepared.docsRoot).toBe(join(root, 'apps/operator-docs/src/content/docs'));
+  expect(prepared.bodies[prepared.selection.selectedDoc]).toContain('## Classic Identity');
+  expect(prepared.bodies[prepared.selection.neighborDoc]).toContain('## What this is');
+  await expect(preparePrivateDocsBrowserDocuments(root, {
+    selectedDoc: 'reports/cloud-cross-feature-e2e-2026-10-08.md',
+    neighborDoc: 'reports/desktop-design-drift-2026-09-08.md',
+    selectedHeading: 'Cloud end-to-end campaign — 2026-10-08',
+    neighborHeading: 'Desktop GUI design drift: findings, repair and prevention plan',
+  })).rejects.toThrow('has no body in the configured corpus');
+});
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'renders the actual standalone Docs markdown body before private PG', async () => {
+    const root = realpathSync(join(import.meta.dirname, '../../..'));
+    const prepared = await preparePrivateDocsBrowserDocuments(root);
+    const { verifyPrivateDocsBrowserMount } = await import('../test/portal-roster-browser-fixture');
+    await expect(verifyPrivateDocsBrowserMount({ portalSourceRoot: process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor',
+      docs: { harness: 'preflight-docs', ...prepared.selection },
+      markdownPreflight: { value: prepared.bodies[prepared.selection.selectedDoc], heading: prepared.selection.selectedHeading },
+    })).resolves.toMatchObject({ mounted: true });
   }, 120_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
