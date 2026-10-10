@@ -145,6 +145,27 @@ dependency_generation_host() {
   hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown-host\n'
 }
 
+# A nested checkout is a separate source tree unless each repository boundary
+# is a tracked submodule gitlink. Pruning only .git's contents still admitted
+# unrelated checkout lockfiles and dependency trees into the live generation.
+dependency_generation_is_foreign_checkout() {
+  local root="$1" path="$2" source_root repo_root parent_root rel
+  source_root="$(cd "$root" && pwd -P)" || return 1
+  # Filesystem-only fixtures and source exports retain their existing walk.
+  [ -e "$source_root/.git" ] || return 1
+  repo_root="$(git -C "$(dirname "$path")" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  while [ "$repo_root" != "$source_root" ]; do
+    case "$repo_root/" in "$source_root/"*) ;; *) return 0 ;; esac
+    parent_root="$(git -C "$(dirname "$repo_root")" rev-parse --show-toplevel 2>/dev/null)" || return 0
+    [ "$parent_root" != "$repo_root" ] || return 0
+    rel="${repo_root#"$parent_root"/}"
+    git -C "$parent_root" ls-files --stage -- "$rel" \
+      | awk '$1 == "160000" { found=1 } END { exit !found }' || return 0
+    repo_root="$parent_root"
+  done
+  return 1
+}
+
 # A small, source-controlled description of the install inputs. The immutable
 # generation itself is keyed from the much larger node_modules metadata walk;
 # this fingerprint is the cheap lookup key a later checkpoint can derive from
@@ -154,6 +175,7 @@ dependency_generation_input_manifest() {
   (
     cd "$root" || exit 1
     while IFS= read -r file; do
+      dependency_generation_is_foreign_checkout . "$file" && continue
       rel="${file#./}"
       digest="$(dependency_generation_sha256 < "$file")" || exit 1
       printf '%s\t%s\n' "$rel" "$digest"
@@ -370,7 +392,10 @@ dependency_generation_enumerate_node_modules() {
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
     [ -d "$root/node_modules" ] && printf '%s\n' "$root/node_modules"
     for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
-      [ -d "$root/$dir/node_modules" ] && printf '%s\n' "$root/$dir/node_modules"
+      if [ -d "$root/$dir/node_modules" ] \
+        && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
+        printf '%s\n' "$root/$dir/node_modules"
+      fi
     done
     return 0
   fi
@@ -383,7 +408,11 @@ dependency_generation_enumerate_node_modules() {
       -o -path "$root/papercusp-desktop/src-tauri/sidecar" \
       -o -path "$root/papercusp-desktop/src-tauri/env-sidecars" \
       -o -path "$root/papercusp-desktop/src-tauri/resources" \) -prune \) -o \
-    \( -type d -name node_modules -prune -print \)
+    \( -type d -name node_modules -prune -print \) \
+    | while IFS= read -r dir; do
+        dependency_generation_is_foreign_checkout "$root" "$dir" && continue
+        printf '%s\n' "$dir"
+      done
 }
 
 # Metadata identity deliberately avoids reading ~13 GiB of file contents. The
