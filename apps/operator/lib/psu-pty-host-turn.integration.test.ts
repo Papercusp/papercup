@@ -217,7 +217,16 @@ it.each(['gate-wait', 're-arm'] as const)(
         ...(deliveryPhase === 're-arm' ? { rearmed: true } : {}),
       }));
       if (deliveryPhase === 're-arm') {
-        expect(rows).toContainEqual(expect.objectContaining({
+        // WI-10008172: since f61d2dab1f a re-armed wake that reaches its prompt
+        // while a carry-respawn owns the next write is an ORDERING deferral, not
+        // a terminal failure: performDelivery marks it retryable and the re-arm
+        // keeps the delivery id pending for a paced retry, so the loop wake is
+        // not lost. The old contract dropped it (wake-rearm-dropped). The drop
+        // row would land within milliseconds of the pre-write deferral, so a
+        // short bounded window is enough to prove its absence.
+        await sleep(250);
+        const settled = events().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        expect(settled).not.toContainEqual(expect.objectContaining({
           kind: 'wake-rearm-dropped', reason: 'carry-respawn-pending',
         }));
       }
