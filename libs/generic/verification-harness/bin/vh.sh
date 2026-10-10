@@ -50,7 +50,12 @@
 # when stdout carries the harness's own payload). VH_DISABLE=1 turns every vh_* call into a no-op
 # that lets the phase run. VH_FAIL_OPEN=1 does the same, loudly (a VH_DISABLED line), when the
 # contract itself cannot start (no tsx, unwritable evidence root), so instrumentation can never
-# block the harness it instruments. VH_KEEP_RUNS bounds the retained run dirs (default 30).
+# block the harness it instruments. It does not override a measured release-local disk-reserve
+# refusal. VH_KEEP_RUNS bounds the run count (default 30); low disk
+# pressure can remove older valid terminal runs below that count to restore the disk alarm's
+# critical reserve. latest, live/incomplete runs, and .vh-keep runs are protected. A
+# release-local shell run stops with ENOSPC when safe retention cannot restore the measured
+# reserve, instead of starting another expensive write-heavy cut.
 # Anything else in the evidence root (a hand-named scratch or investigation dir, a stray file) is
 # removed at finalize once nothing under it changed for VH_FOREIGN_MAX_AGE_HOURS (default 72; 0
 # disables), with a VH_PRUNED_FOREIGN line on stderr. `latest`, `retained/`, dot-entries and
@@ -264,6 +269,25 @@ vh_init() {
   VH_ARGS=(${VH_ARGS_TMP[@]+"${VH_ARGS_TMP[@]}"})
   [ "$VH_DISABLED" = 1 ] && return 0
   mkdir -p "$root" 2>/dev/null || { _vh_init_failed "evidence-root-unwritable:$root"; return $?; }
+  # Reclaim completed old runs before creating this run and entering the expensive
+  # release/build phases. Disk-pressure pruning is independent of VH_KEEP_RUNS and
+  # refuses to remove latest, live, unfinished, or .vh-keep-protected evidence.
+  local retention_line=""
+  if retention_line="$("$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" retain --evidence-root "$root")"; then
+    [ -z "$retention_line" ] || _vh_say "$retention_line"
+  else
+    local retention_rc=$?
+    if [ "$retention_rc" -eq 28 ]; then
+      if [ "$name" = "release-local" ]; then
+        echo "VH_RETENTION_BLOCKED reason=disk-headroom-unresolved evidence=$root" >&2
+        return 28
+      fi
+      echo "VH_RETENTION_UNRESOLVED harness=$name evidence=$root" >&2
+    else
+      _vh_init_failed "retention-command-failed"
+      return $?
+    fi
+  fi
   # Claim the run dir EXCLUSIVELY (R-5): a plain mkdir fails when the dir exists, so a second
   # run from the same process in the same second takes a .N suffix instead of writing into
   # another run's evidence (runner.ts claimRunDir is the TS twin).

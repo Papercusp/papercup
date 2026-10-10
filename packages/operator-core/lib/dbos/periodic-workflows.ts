@@ -71,6 +71,12 @@ import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
+import {
+  defaultEvidenceRoot,
+  formatForeignPruneLine,
+  formatRunRetentionLine,
+  pruneEvidenceRoot,
+} from '@papercusp/verification-harness';
 import { emitCoverageToast, runEmbedCoverageAlarmOnce } from '../search/embed-coverage';
 import { assessInjectionReach, formatInjectionReachToast } from '../memory/injection-coverage';
 import { runWalCheckpointGuard } from '../storage/localstorage-wal-guard';
@@ -714,6 +720,25 @@ async function fleetLogsGcTick(): Promise<void> {
           (buildScratchSkipped.length
             ? `, kept ${buildScratchSkipped.length} (${buildScratchSkipped.map((candidate) => candidate.skipped ?? 'unknown').join(',')})`
             : ''),
+      );
+      // Keep release-local verification evidence bounded even when no new release
+      // cut starts. The runner also does this before each run so a cut does not
+      // wait for this hourly sweep when root write headroom is already low.
+      await DBOS.runStep(
+        async () => {
+          const evidenceRoot =
+            process.env.PAPERCUSP_RELEASE_EVIDENCE_ROOT?.trim() || defaultEvidenceRoot('release-local');
+          const retention = await pruneEvidenceRoot(evidenceRoot);
+          const runLine = formatRunRetentionLine(retention.runRetention);
+          const foreignLine = formatForeignPruneLine(retention.foreign);
+          console.log(
+            '[verification-harness-retention] ' +
+              (runLine ?? 'runs unchanged') +
+              '; ' +
+              (foreignLine ?? 'foreign entries unchanged'),
+          );
+        },
+        { name: 'verification-harness-release-local-retention' },
       );
     },
     { name: 'fleet-logs-gc' },

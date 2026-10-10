@@ -25,9 +25,11 @@ import {
   linkLatest,
   pruneEvidenceRoot,
   pruneRuns,
+  pruneRunsWithReport,
   pruneStaleForeign,
   runHarness,
   VH_KEEP_MARKER,
+  vhDiskReserveBytes,
   writeRunResult,
 } from './runner.js';
 
@@ -250,7 +252,16 @@ vh_finish
 describe('pruneRuns (evidence retention)', () => {
   const mkRun = (root: string, name: string, finished = true) => {
     mkdirSync(path.join(root, name), { recursive: true });
-    if (finished) writeFileSync(path.join(root, name, 'result.json'), '{}');
+    if (finished) {
+      writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({
+        schemaVersion: 1,
+        runId: name,
+        startedAt: '2026-01-01T00:00:00.000Z',
+        endedAt: '2026-01-01T00:01:00.000Z',
+        verdict: 'fail',
+        phases: [],
+      }));
+    }
   };
 
   it('keeps the newest runs, never the one latest points at, never one still in progress', async () => {
@@ -264,7 +275,10 @@ describe('pruneRuns (evidence retention)', () => {
     mkdirSync(path.join(root, 'not-a-run'));
     symlinkSync('20260101T000000Z-1', path.join(root, 'latest'));
 
-    const removed = await pruneRuns(root, 2);
+    const removed = await pruneRuns(root, 2, Date.now(), {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }),
+      reserveBytes: () => 400,
+    });
     expect(removed.sort()).toEqual(['20250101T000000Z-8', '20260102T000000Z-2', '20260103T000000Z-3']);
     for (const kept of ['20260101T000000Z-1', '20260104T000000Z-4', '20260105T000000Z-5', '20250101T000000Z-9', 'not-a-run']) {
       expect(existsSync(path.join(root, kept))).toBe(true);
@@ -277,7 +291,56 @@ describe('pruneRuns (evidence retention)', () => {
     expect(keepRunsFromEnv({})).toBe(DEFAULT_KEEP_RUNS);
     const root = tmp();
     mkRun(root, '20260101T000000Z-1');
-    expect(await pruneRuns(root, 0)).toEqual([]);
+    expect(await pruneRuns(root, 0, Date.now(), {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }),
+      reserveBytes: () => 400,
+    })).toEqual([]);
+  });
+
+  it('reclaims oldest terminal runs below the disk reserve and protects latest, live, and marked runs', async () => {
+    const root = tmp();
+    const names = [
+      '20260101T000000Z-99999999',
+      '20260102T000000Z-99999998',
+      '20260103T000000Z-' + process.pid,
+      '20260104T000000Z-99999997',
+      '20260105T000000Z-99999996',
+    ];
+    for (const name of names) mkRun(root, name, name !== names[2]);
+    writeFileSync(path.join(root, names[3], VH_KEEP_MARKER), 'pinned evidence');
+    const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    utimesSync(path.join(root, names[2]), old, old);
+    symlinkSync(names[4], path.join(root, 'latest'));
+
+    const report = await pruneRunsWithReport(root, 0, Date.now(), {
+      measureDisk: async () => {
+        const removedCount = names.filter((name) => !existsSync(path.join(root, name))).length;
+        return { totalBytes: 1_000, availableBytes: 100 + removedCount * 150 };
+      },
+      reserveBytes: () => 350,
+    });
+
+    expect(report.removed).toEqual(names.slice(0, 2));
+    expect(report.disk).toEqual({
+      status: 'recovered',
+      reserveBytes: 350,
+      availableBeforeBytes: 100,
+      availableAfterBytes: 400,
+    });
+    for (const kept of names.slice(2)) expect(existsSync(path.join(root, kept))).toBe(true);
+    expect(vhDiskReserveBytes(1_875.7 * 1024 ** 3)).toBeCloseTo(37.514 * 1024 ** 3);
+  });
+
+  it('keeps every run when disk headroom cannot be measured', async () => {
+    const root = tmp();
+    const name = '20260101T000000Z-99999999';
+    mkRun(root, name);
+    const report = await pruneRunsWithReport(root, 0, Date.now(), {
+      measureDisk: async () => null,
+    });
+    expect(report.disk.status).toBe('unmeasured');
+    expect(report.removed).toEqual([]);
+    expect(existsSync(path.join(root, name))).toBe(true);
   });
 });
 

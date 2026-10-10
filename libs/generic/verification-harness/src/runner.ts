@@ -9,7 +9,21 @@
  * its partial result) and repoints `<evidenceRoot>/latest` at it when it ends.
  */
 import { randomUUID } from 'node:crypto';
-import { link, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  link,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  stat,
+  statfs,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 export { defaultEvidenceRoot } from './evidence-root.js';
 import {
@@ -205,6 +219,9 @@ const RUN_DIR_RE = /^\d{8}T\d{6}Z-\d+(\.\d+)?$/;
 export const DEFAULT_KEEP_RUNS = 30;
 /** A run dir with no result.json yet is in progress unless it is older than this. */
 const IN_PROGRESS_GRACE_MS = 24 * 60 * 60 * 1000;
+const GIB = 1024 ** 3;
+/** An entry with this file at its top level is kept regardless of age. */
+export const VH_KEEP_MARKER = '.vh-keep';
 
 export function keepRunsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.VH_KEEP_RUNS;
@@ -213,43 +230,237 @@ export function keepRunsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isInteger(n) && n >= 0 ? n : DEFAULT_KEEP_RUNS;
 }
 
+export interface DiskSpaceSnapshot {
+  totalBytes: number;
+  availableBytes: number;
+}
+
+export interface RunPruneOptions {
+  env?: NodeJS.ProcessEnv;
+  /** Injectable for deterministic retention-policy tests. */
+  measureDisk?: (evidenceRoot: string) => Promise<DiskSpaceSnapshot | null>;
+  /** Injectable reserve calculator; production mirrors the shared disk alarm policy. */
+  reserveBytes?: (totalBytes: number, env: NodeJS.ProcessEnv) => number;
+}
+
+export interface RunPruneReport {
+  removed: string[];
+  runDirsSeen: number;
+  disk: {
+    status: 'healthy' | 'recovered' | 'unresolved' | 'unmeasured';
+    reserveBytes: number | null;
+    availableBeforeBytes: number | null;
+    availableAfterBytes: number | null;
+  };
+}
+
 /**
- * Retention: keep the newest `keep` run dirs under the evidence root and remove older ones. A
- * harness that runs many times a day (a headless UI verify) would otherwise grow the root without
- * bound. Never removes the run `latest` points at, nor a run still in progress (no result.json yet
- * and younger than a day). `VH_KEEP_RUNS` sets the default; 0 disables pruning. Returns the removed
- * run ids.
+ * The shared disk alarm keeps this policy in operator-core. The generic VH package cannot import
+ * that server module without creating a dependency cycle, so consume its existing environment
+ * knobs and pin the same bounded formula here.
  */
-export async function pruneRuns(evidenceRoot: string, keep = keepRunsFromEnv(), now = Date.now()): Promise<string[]> {
-  if (!(keep > 0)) return [];
-  let names: string[];
+export function vhDiskReserveBytes(totalBytes: number, env: NodeJS.ProcessEnv = process.env): number {
+  const envNum = (name: string, fallback: number) => {
+    const value = Number(env[name]);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  };
+  const absolute = envNum('PAPERCUSP_DISK_ALARM_CRITICAL_GB', 2) * GIB;
+  const pct = envNum('PAPERCUSP_DISK_ALARM_CRITICAL_PCT', 2) / 100;
+  const cap = envNum('PAPERCUSP_DISK_ALARM_CRITICAL_CAP_GB', 64) * GIB;
+  const proportional = Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes * pct : 0;
+  return Math.max(absolute, Math.min(proportional, cap));
+}
+
+async function measureDiskSpace(evidenceRoot: string): Promise<DiskSpaceSnapshot | null> {
+  try {
+    const sample = await statfs(evidenceRoot, { bigint: true });
+    const total = sample.blocks * sample.bsize;
+    const available = sample.bavail * sample.bsize;
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    if (total <= 0n || available < 0n || total > maxSafe || available > maxSafe) return null;
+    return { totalBytes: Number(total), availableBytes: Number(available) };
+  } catch {
+    return null;
+  }
+}
+
+async function latestRunId(evidenceRoot: string): Promise<string | null> {
+  try {
+    return path.basename(await readlink(path.join(evidenceRoot, 'latest')));
+  } catch {
+    return null;
+  }
+}
+
+function originatingPidAlive(runId: string): boolean {
+  const match = /^\d{8}T\d{6}Z-(\d+)(?:\.\d+)?$/.exec(runId);
+  const pid = match ? Number(match[1]) : NaN;
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function hasKeepMarker(runDir: string): Promise<boolean> {
+  return lstat(path.join(runDir, VH_KEEP_MARKER)).then(() => true, () => false);
+}
+
+async function hasTerminalResult(evidenceRoot: string, runId: string): Promise<boolean> {
+  try {
+    const result = JSON.parse(await readFile(path.join(evidenceRoot, runId, 'result.json'), 'utf8')) as {
+      schemaVersion?: unknown;
+      runId?: unknown;
+      endedAt?: unknown;
+      verdict?: unknown;
+    };
+    return result?.schemaVersion === 1 &&
+      result.runId === runId &&
+      typeof result.endedAt === 'string' &&
+      Number.isFinite(Date.parse(result.endedAt)) &&
+      typeof result.verdict === 'string';
+  } catch {
+    return false;
+  }
+}
+
+async function removeRunIfEligible(
+  evidenceRoot: string,
+  runId: string,
+  now: number,
+  requireTerminal: boolean,
+): Promise<boolean> {
+  if (await latestRunId(evidenceRoot) === runId) return false;
+  const runDir = path.join(evidenceRoot, runId);
+  const terminal = await hasTerminalResult(evidenceRoot, runId);
+  if (await hasKeepMarker(runDir)) return false;
+  if (requireTerminal && !terminal) return false;
+  // A valid terminal receipt is authoritative even when the producing process is still
+  // alive (a long-lived process may have started several sequential harness runs). PID liveness
+  // protects incomplete checkpoints, whose result.json may be rewritten after every phase.
+  if (!terminal && originatingPidAlive(runId)) return false;
+  if (!terminal) {
+    const born = await stat(runDir).then((s) => s.mtimeMs, () => now);
+    if (now - born < IN_PROGRESS_GRACE_MS) return false;
+  }
+  try {
+    // Recheck both protections at the removal boundary; latest can move while another
+    // run finalizes, and a caller may pin a run while this sweep is judging it.
+    if (await latestRunId(evidenceRoot) === runId || await hasKeepMarker(runDir)) return false;
+    await rm(runDir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Retention keeps the newest `keep` run dirs by count, then removes the oldest completed runs
+ * only as needed to restore the shared critical write-headroom reserve. It always preserves
+ * `latest`, a live originating PID, an unfinished run, and a `.vh-keep` marker. If disk pressure
+ * remains but no completed run is eligible, the report says unresolved rather than deleting
+ * partial or unrecognized evidence. `VH_KEEP_RUNS=0` disables count pruning only; the emergency
+ * disk-pressure floor still applies.
+ */
+export async function pruneRunsWithReport(
+  evidenceRoot: string,
+  keep = keepRunsFromEnv(),
+  now = Date.now(),
+  options: RunPruneOptions = {},
+): Promise<RunPruneReport> {
+  const env = options.env ?? process.env;
+  const measure = options.measureDisk ?? measureDiskSpace;
+  const reserve = options.reserveBytes ?? vhDiskReserveBytes;
+  let names: string[] = [];
   try {
     names = (await readdir(evidenceRoot, { withFileTypes: true }))
       .filter((d) => d.isDirectory() && RUN_DIR_RE.test(d.name))
       .map((d) => d.name);
   } catch {
-    return [];
+    // A missing or unreadable evidence root has no safely judged candidates.
   }
-  names.sort(); // the timestamp prefix sorts chronologically
-  let latest: string | null = null;
-  try {
-    latest = path.basename(await readlink(path.join(evidenceRoot, 'latest')));
-  } catch {
-    /* no latest link yet */
-  }
-  const removed: string[] = [];
-  for (const name of names.slice(0, Math.max(0, names.length - keep))) {
-    if (name === latest) continue;
-    const dir = path.join(evidenceRoot, name);
-    const finished = await stat(path.join(dir, 'result.json')).then(() => true, () => false);
-    if (!finished) {
-      const born = await stat(dir).then((s) => s.mtimeMs, () => now);
-      if (now - born < IN_PROGRESS_GRACE_MS) continue;
+  names.sort();
+  const report: RunPruneReport = {
+    removed: [],
+    runDirsSeen: names.length,
+    disk: { status: 'unmeasured', reserveBytes: null, availableBeforeBytes: null, availableAfterBytes: null },
+  };
+  const removed = new Set<string>();
+  if (keep > 0) {
+    for (const name of names.slice(0, Math.max(0, names.length - keep))) {
+      if (await removeRunIfEligible(evidenceRoot, name, now, false)) {
+        removed.add(name);
+        report.removed.push(name);
+      }
     }
-    await rm(dir, { recursive: true, force: true });
-    removed.push(name);
   }
-  return removed;
+
+  let sample = await measure(evidenceRoot);
+  if (!sample || !Number.isFinite(sample.totalBytes) || sample.totalBytes <= 0 ||
+      !Number.isFinite(sample.availableBytes) || sample.availableBytes < 0) {
+    return report;
+  }
+  report.disk.availableBeforeBytes = sample.availableBytes;
+  report.disk.availableAfterBytes = sample.availableBytes;
+  let reserveBytes = reserve(sample.totalBytes, env);
+  if (!Number.isFinite(reserveBytes) || reserveBytes < 0) return report;
+  report.disk.reserveBytes = reserveBytes;
+  if (sample.availableBytes >= reserveBytes) {
+    report.disk.status = 'healthy';
+    return report;
+  }
+
+  report.disk.status = 'unresolved';
+  for (const name of names) {
+    if (removed.has(name)) continue;
+    if (!(await removeRunIfEligible(evidenceRoot, name, now, true))) continue;
+    removed.add(name);
+    report.removed.push(name);
+    sample = await measure(evidenceRoot);
+    if (!sample || !Number.isFinite(sample.totalBytes) || sample.totalBytes <= 0 ||
+        !Number.isFinite(sample.availableBytes) || sample.availableBytes < 0) {
+      report.disk.status = 'unmeasured';
+      report.disk.availableAfterBytes = null;
+      break;
+    }
+    report.disk.availableAfterBytes = sample.availableBytes;
+    reserveBytes = reserve(sample.totalBytes, env);
+    if (!Number.isFinite(reserveBytes) || reserveBytes < 0) {
+      report.disk.status = 'unmeasured';
+      report.disk.reserveBytes = null;
+      break;
+    }
+    report.disk.reserveBytes = reserveBytes;
+    if (sample.availableBytes >= reserveBytes) {
+      report.disk.status = 'recovered';
+      break;
+    }
+  }
+  return report;
+}
+
+export function formatRunRetentionLine(report: RunPruneReport): string | null {
+  const d = report.disk;
+  const needsReport = report.removed.length > 0 ||
+    (d.status === 'unresolved' || (d.status === 'unmeasured' && report.runDirsSeen > 0));
+  if (!needsReport) return null;
+  const fmt = (value: number | null) => value === null ? 'unknown' : String(value);
+  return 'VH_PRUNED_RUNS removed=' + (report.removed.join(',') || '-') +
+    ' disk=' + d.status +
+    ' free_before_bytes=' + fmt(d.availableBeforeBytes) +
+    ' reserve_bytes=' + fmt(d.reserveBytes) +
+    ' free_after_bytes=' + fmt(d.availableAfterBytes);
+}
+
+export async function pruneRuns(
+  evidenceRoot: string,
+  keep = keepRunsFromEnv(),
+  now = Date.now(),
+  options: RunPruneOptions = {},
+): Promise<string[]> {
+  return (await pruneRunsWithReport(evidenceRoot, keep, now, options)).removed;
 }
 
 /**
@@ -257,8 +468,6 @@ export async function pruneRuns(evidenceRoot: string, keep = keepRunsFromEnv(), 
  * `retained/`, where pinned per-run artifacts (proof receipts) outlive their run dirs.
  */
 const RESERVED_ROOT_ENTRIES = new Set(['latest', 'retained']);
-/** An entry with this file at its top level is kept regardless of age. */
-export const VH_KEEP_MARKER = '.vh-keep';
 export const DEFAULT_FOREIGN_MAX_AGE_HOURS = 72;
 /**
  * Entries one prune call may visit across ALL foreign entries before it stops judging. Judging a
@@ -454,6 +663,7 @@ export async function pruneStaleForeign(evidenceRoot: string, opts: ForeignPrune
 
 export interface EvidenceRootPruneResult {
   runs: string[];
+  runRetention: RunPruneReport;
   foreign: ForeignPruneResult;
 }
 
@@ -462,10 +672,11 @@ export async function pruneEvidenceRoot(
   evidenceRoot: string,
   env: NodeJS.ProcessEnv = process.env,
   now = Date.now(),
+  options: RunPruneOptions = {},
 ): Promise<EvidenceRootPruneResult> {
-  const runs = await pruneRuns(evidenceRoot, keepRunsFromEnv(env), now);
+  const runRetention = await pruneRunsWithReport(evidenceRoot, keepRunsFromEnv(env), now, { ...options, env });
   const foreign = await pruneStaleForeign(evidenceRoot, { maxAgeHours: foreignMaxAgeHoursFromEnv(env), now });
-  return { runs, foreign };
+  return { runs: runRetention.removed, runRetention, foreign };
 }
 
 /** One stderr-ready line naming what retention removed or could not judge, or null when nothing happened. */
@@ -660,6 +871,10 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   const gated = (id: string) => tier !== null && phaseTiers(contract, byId.get(id)!).length === TIERS.length;
   const codeRoot = args.codeRoot ?? args.guardRailCwd ?? process.cwd();
   const receiptsPath = args.tierReceipts ?? defaultTierReceiptsPath(args.evidenceRoot);
+  await mkdir(args.evidenceRoot, { recursive: true });
+  const preRunRetention = await pruneRunsWithReport(args.evidenceRoot);
+  const preRunRetentionLine = formatRunRetentionLine(preRunRetention);
+  if (preRunRetentionLine) process.stderr.write(preRunRetentionLine + '\n');
   const startedAt = now();
   const runId = await claimRunDir(args.evidenceRoot, args.runId, startedAt);
   const runDir = path.join(args.evidenceRoot, runId);
@@ -817,6 +1032,8 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   await checkpoint();
   await linkLatest(args.evidenceRoot, runDir);
   const pruned = await pruneEvidenceRoot(args.evidenceRoot);
+  const runRetentionLine = formatRunRetentionLine(pruned.runRetention);
+  if (runRetentionLine) process.stderr.write(runRetentionLine + '\n');
   const prunedLine = formatForeignPruneLine(pruned.foreign);
   if (prunedLine) process.stderr.write(`${prunedLine}\n`);
   return result;
