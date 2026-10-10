@@ -10,6 +10,60 @@ const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real private Portal Inbox retains selected deep links, isolates denied acknowledgment and persists its retry', async context => {
+    preparePrivateRosterSocketRoot();
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor',
+      inbox: { selectedMessageId: 'preflight-selected', neighborMessageId: 'preflight-neighbor',
+        selectedTitle: 'preflight-selected', neighborTitle: 'preflight-neighbor' } });
+    await verifyPrivateProfileOriginControl();
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+        'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/agent-tools/plans/attention.ts',
+        'packages/operator-core/lib/agent-tools/coordination/messages.ts', 'packages/operator-core/lib/attention/adapters.ts',
+        'packages/operator-core/lib/attention/terminal-action-dispatch.ts', 'packages/operator-core/lib/endpoint-route/routes/admin/coord.ts',
+        'apps/operator/app/_components/inbox/InboxPane.tsx', 'apps/operator/app/_components/inbox/use-inbox-pending.ts',
+        'apps/operator/app/admin/plans/PlanOtherList.tsx', 'apps/operator/app/admin/plans/attention-card.ts',
+        'apps/operator/app/admin/plans/plans-api.ts', 'packages/operator-ui/src/surfaces/index.tsx',
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+      execute: async (observe, evidenceDir) => {
+        await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1',
+          ROSTER_INBOX_BROWSER_PROOF: '1' };
+        for (const key of ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION',
+          'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
+          'ROSTER_SETTINGS_BROWSER_PROOF', 'ROSTER_PROMPTS_BROWSER_PROOF']) delete env[key];
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+        { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
+          if (line.startsWith('ROSTER_STOP_HTTP_PHASE ')) console.info(line); });
+        let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+        try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+        finally { await rm(join(evidenceDir, 'node_modules')); }
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
+          exitWaitTimedOut: false, stdioDrainTimedOut: false, code: 0 });
+        expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
+        const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_BROWSER_RECEIPT '));
+        expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+        const receipt = JSON.parse(line!.slice('ROSTER_COORD_BROWSER_RECEIPT '.length));
+        expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
+          authMethod: 'private-loopback-inbox-with-cookie', keyboardSelection: true, deepLinkReload: true,
+          shellQueryPreserved: true, denialStatus: 403, selectionRetained: true, deniedWriteIsolated: true,
+          retryPersisted: true, neighborIsolated: true, denialTransport: 'real-upstream-response-forwarded' });
+        expect(receipt.writes.map((write: { status: number }) => write.status)).toEqual([403, 200]);
+        expect(new Set(receipt.writes.map((write: { target: string }) => write.target)).size).toBe(1);
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ROSTER_INBOX_BROWSER_PROOF_RUN ' + runId);
+  }, options.testTimeoutMs);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private Portal Quick Panel prompts persist title and note, retain qp deep links and recover from a denied create', async context => {
     preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);

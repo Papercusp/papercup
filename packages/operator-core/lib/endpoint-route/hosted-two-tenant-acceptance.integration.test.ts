@@ -7,11 +7,13 @@
  * cross the same auth, RLS, browser, connector, relay, and delegation seams the
  * deployed control plane uses.
  */
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres, { type Sql } from 'postgres';
+import { serve } from '@hono/node-server';
+import { WORKSPACE_HOST_CANARY_TAG_KEYS } from '@papercusp/deployment-driver';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import {
@@ -28,6 +30,7 @@ import type {
 } from '../workspace-host/hosted-provider-delegation';
 import {
   HOSTED_BROWSER_QUERY_NAME,
+  HOSTED_BROWSER_PROVISION_PATH,
   HOSTED_BROWSER_REST_QUERY_PATH,
   HOSTED_BROWSER_SSE_PATH,
 } from './hosted-browser';
@@ -358,6 +361,10 @@ function runtimeDependencies(): HostedRuntimeDependencies {
       runTenant,
       backfillSince: () => backfillEvents,
       subscribe: async (listener) => ({ send: listener, close: () => {} }),
+      // Boundary probes owe a synchronous refusal; reaching a provision start
+      // is a failure. Keep them off the shared controller and paid backends.
+      provisioningAvailable: () => true,
+      startProvisioning: async () => { throw new Error('unpaid boundary probe reached provisioning'); },
     },
   };
 }
@@ -380,6 +387,69 @@ afterAll(async () => {
 });
 
 describe.sequential('assembled hosted two-tenant acceptance', () => {
+  it('serves the hosted tenant API on a private HTTP target and refuses unpaid provisioning attacks', async () => {
+    // Use the production composition and persisted hosted sessions above, on an
+    // ephemeral loopback listener. This never borrows the shared controller or
+    // starts a provider operation: every write below must stop before enqueue.
+    const server = serve({ fetch: plane.app.fetch, hostname: '127.0.0.1', port: 0 });
+    const query = `/api${HOSTED_BROWSER_REST_QUERY_PATH}?name=${HOSTED_BROWSER_QUERY_NAME}&args=%7B%7D`;
+    const provision = `/api${HOSTED_BROWSER_PROVISION_PATH}`;
+    const headers = { cookie: cookie(plane, sessionA), 'content-type': 'application/json', origin: ORIGIN };
+    const body = { connectionId: CONNECTION_A, name: 'Unpaid boundary probe', desired: { hostId: HOST_A, target: 'gcp' } };
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private hosted HTTP address unavailable');
+      const base = `http://127.0.0.1:${address.port}`;
+      const health = await fetch(`${base}/api/health`);
+      expect(health.status).toBe(200);
+      await health.arrayBuffer();
+      const visible = await fetch(`${base}${query}`, { headers: { cookie: headers.cookie } });
+      expect(visible.status).toBe(200);
+      const rows = (await visible.json() as { rows: Array<{ id: string }> }).rows;
+      expect(rows.map((row) => row.id)).toEqual([CONNECTION_A, HOST_A]);
+
+      for (const authHeaders of [{}, { cookie: `${HOSTED_SESSION_COOKIE}=invalid-cookie` }]) {
+        const denied = await fetch(`${base}${provision}`, {
+          method: 'POST', headers: { ...authHeaders, origin: ORIGIN, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        expect(denied.status).toBe(401);
+        await denied.arrayBuffer();
+      }
+      for (const origin of [undefined, 'https://other.example.test']) {
+        const denied = await fetch(`${base}${provision}`, {
+          method: 'POST', headers: { cookie: headers.cookie, 'content-type': 'application/json', ...(origin ? { origin } : {}) },
+          body: JSON.stringify(body),
+        });
+        expect(denied.status).toBe(403);
+        await expect(denied.json()).resolves.toMatchObject({ error: 'cross_origin_blocked' });
+      }
+      const foreignWorkspace = await fetch(`${base}${provision}`, {
+        method: 'POST', headers: { ...headers, 'x-papercusp-workspace': WORKSPACE_B }, body: JSON.stringify(body),
+      });
+      expect(foreignWorkspace.status).toBe(403);
+      await expect(foreignWorkspace.json()).resolves.toMatchObject({ error: 'workspace_binding_mismatch' });
+
+      const malformed = await fetch(`${base}${provision}`, { method: 'POST', headers, body: '{' });
+      expect(malformed.status).toBe(400);
+      await expect(malformed.json()).resolves.toMatchObject({ error: 'invalid json' });
+      const foreignHost = await fetch(`${base}${provision}`, {
+        method: 'POST', headers, body: JSON.stringify({ ...body, desired: { ...body.desired, hostId: HOST_B } }),
+      });
+      expect(foreignHost.status).toBe(403);
+      await expect(foreignHost.json()).resolves.toMatchObject({ error: 'workspace_host_not_bound' });
+      const forgedCanary = await fetch(`${base}${provision}`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ ...body, desired: { ...body.desired, labels: { [WORKSPACE_HOST_CANARY_TAG_KEYS.runId]: 'forged' } } }),
+      });
+      expect(forgedCanary.status).toBe(422);
+      await expect(forgedCanary.json()).resolves.toMatchObject({ error: 'workspace-host provisioning request rejected' });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('isolates HTTP, SSE, MCP mount, and direct SQL under overlapping tenant names', async () => {
     const rlsFacts = await runTenant(tenantContext(sessionA), (tx) =>
       tx<Array<{

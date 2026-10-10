@@ -7,9 +7,9 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
-import { getMessageById, readInbox } from '../lib/agent-tools/coordination/messages';
+import { getMessageById, readAckedMsgIds, readInbox } from '../lib/agent-tools/coordination/messages';
 import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private-coord-receipt';
-import { portalBrowserPackagesPlugin } from './private-http-workspace-preflight';
+import { portalBrowserPackagesPlugin, portalBrowserSurfaceBuild } from './private-http-workspace-preflight';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 
@@ -20,6 +20,7 @@ type PortalRosterBrowserInput = {
   shortcuts?: boolean;
   settings?: boolean;
   prompts?: boolean;
+  inbox?: { selectedMessageId: string; neighborMessageId: string; selectedTitle: string; neighborTitle: string };
   history?: { selectedSessionId: number; neighborSessionId: number; selectedRolloutId: string; neighborRolloutId: string;
     selectedMarker: string; neighborMarker: string };
   verifyReceipt?: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
@@ -32,7 +33,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'inbox'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -44,7 +45,18 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.prompts ? `
+  const entry = input.inbox ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { Toaster } from 'sonner';
+    import InboxPane from ${JSON.stringify(join(operatorRoot, 'app/_components/inbox/InboxPane.tsx'))};
+    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(React.Fragment, null, React.createElement(InboxPane, { layout: 'split' }),
+          React.createElement(Toaster)))));
+  ` : input.prompts ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -116,13 +128,26 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
+  const boundary = input.inbox ? await portalBrowserSurfaceBuild(portal) : undefined;
+  if (boundary) {
+    const contents = readFileSync(boundary.source);
+    originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
+  }
   const result = await build({ absWorkingDir: portal,
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
     alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
-    loader: { '.css': 'empty' },
+    loader: { '.css': 'empty', '.module.css': 'local-css' },
+    ...(boundary ? { define: boundary.define } : {}),
     bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false,
-    plugins: [portalBrowserPackagesPlugin(portal), { name: 'retain-executed-browser-inputs', setup(builder) {
+    outfile: join(portal, 'private-roster-browser.js'),
+    logLevel: 'silent',
+    plugins: [portalBrowserPackagesPlugin(portal), ...(boundary ? [boundary.plugin] : []), { name: 'retain-executed-browser-inputs', setup(builder) {
+      builder.onLoad({ filter: /\.css$/ }, ({ path }) => {
+        const contents = readFileSync(path);
+        originals.set(path, { sha256: digest(contents), bytes: contents.length });
+        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : 'empty' };
+      });
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, ({ path }) => {
         const contents = readFileSync(path);
         originals.set(path, { sha256: digest(contents), bytes: contents.length });
@@ -131,15 +156,17 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       });
     } }],
   });
-  const bundle = result.outputFiles[0].contents;
+  const bundle = result.outputFiles.find(file => file.path.endsWith('.js'))!.contents;
+  const css = result.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.prompts
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.inbox
+    ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
     ? '/apps/operator/app/quick-panel/PromptsTab.tsx' : input.settings
       ? '/apps/operator/app/settings/profile/page.tsx' : input.shortcuts
       ? '/packages/ui/src/portal-shortcuts.tsx' : '/packages/ui/src/agents-popover.tsx')),
     'Executed bundle must contain the actual product control');
-  return { portal, entry, bundle, originals };
+  return { portal, entry, bundle, css, originals };
 }
 
 /** A failing action must leave its original rendered state before teardown. */
@@ -159,13 +186,16 @@ export async function retainPortalBrowserFailure(page: Pick<Page, 'url' | 'conte
 
 export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { evidence, base, workspace, selected, neighbor } = input;
-  const { portal, entry, bundle, originals } = await buildPortalRosterBrowser(input);
+  const { portal, entry, bundle, css, originals } = await buildPortalRosterBrowser(input);
   const spa = join(evidence, 'portal-roster-spa');
   mkdirSync(spa, { recursive: true });
   writeFileSync(join(spa, 'portal-roster.js'), bundle);
   writeFileSync(join(spa, 'portal-roster.css'), readFileSync(join(portal, 'app/tokens.css'), 'utf8') + '\n'
     + readFileSync(join(portal, 'app/globals.css'), 'utf8')
-    + (input.prompts ? '\n' + readFileSync(resolve(import.meta.dirname, '../../../apps/operator/app/quick-panel/quick-panel.css'), 'utf8') : ''));
+    + (input.prompts ? '\n' + readFileSync(resolve(import.meta.dirname, '../../../apps/operator/app/quick-panel/quick-panel.css'), 'utf8') : '')
+    + (input.inbox ? '\n' + ['app/_components/inbox/inbox-pane.css', 'app/admin/plans/plans.css']
+      .map(path => readFileSync(resolve(import.meta.dirname, '../../../apps/operator', path), 'utf8')).join('\n')
+      + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '') + '\n' + css);
   writeFileSync(join(spa, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="/portal-roster.css"></head>'
     + '<body><div id="root"></div><script src="/portal-roster.js"></script></body></html>');
   const sourceIdentity = { portal, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: portal, encoding: 'utf8' }).trim(),
@@ -187,9 +217,17 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.message));
-    const url = new URL(input.prompts ? '/?app=overview&panel=quick&q=retained-shell-search'
+    const url = new URL(input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
+      : input.prompts ? '/?app=overview&panel=quick&q=retained-shell-search'
       : input.settings || input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
     await page.goto(url.href);
+    if (input.inbox) {
+      const receipt = await runPrivateInboxPage(page, context, input);
+      assert.deepEqual(pageErrors, [], 'real inbox controls must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.prompts) {
       const receipt = await runPrivatePromptsTab(page, context, input);
       assert.deepEqual(pageErrors, [], 'real saved-prompt controls must complete without browser errors');
@@ -439,6 +477,74 @@ async function runPrivateProfilePage(page: Page, context: BrowserContext, input:
     scope: 'Actual default Settings Profile page, unmodified private loopback save/reload/retry, and form handling of a real upstream Origin denial forwarded by the test proxy; no native-browser foreign-Origin, full Settings navigation or hosted tenant-profile acceptance' };
   writeFileSync(join(input.evidence, 'portal-profile-dom.html'), await page.content());
   return result;
+}
+
+/** Real shared split InboxPane and persisted private acknowledgment. */
+async function runPrivateInboxPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
+  const inbox = input.inbox!;
+  const selectedId = 'coord-message:' + inbox.selectedMessageId;
+  const neighborId = 'coord-message:' + inbox.neighborMessageId;
+  const selected = page.getByTestId('inbox-row-' + selectedId);
+  const neighbor = page.getByTestId('inbox-row-' + neighborId);
+  const detail = page.getByTestId('inbox-expanded-' + selectedId);
+  const endpoint = new URL('/api/admin/coord/ack', input.base).href;
+  const writes: Array<{ status: number; target: string; body: unknown }> = [];
+  const assertState = async (acked: boolean) => {
+    const ids = await readAckedMsgIds('pc-admin-coord-ui');
+    assert.equal(ids.has(inbox.selectedMessageId), acked, 'only the selected acknowledgment may change');
+    assert.equal(ids.has(inbox.neighborMessageId), false, 'neighbor acknowledgment must remain untouched');
+  };
+  await page.locator('[data-testid="inbox-tab"][data-layout="split"]').waitFor();
+  await selected.waitFor(); await neighbor.waitFor();
+  await assertState(false);
+  await selected.focus(); await page.keyboard.press('Enter');
+  await page.waitForURL(url => url.searchParams.get('opcis') === selectedId);
+  await detail.getByText(inbox.selectedTitle + ' body', { exact: true }).waitFor();
+  assert.equal(await detail.getByText(inbox.neighborTitle + ' body', { exact: true }).count(), 0);
+  const selectedUrl = page.url();
+  await page.reload();
+  await detail.getByText(inbox.selectedTitle + ' body', { exact: true }).waitFor();
+  assert.equal(page.url(), selectedUrl, 'inbox filters, selection and workspace must survive reload');
+  const acknowledge = async () => {
+    const pending = page.waitForResponse(response => response.url() === endpoint && response.request().method() === 'POST');
+    await detail.getByRole('button', { name: 'Acknowledge', exact: true }).click();
+    const response = await pending;
+    const target = response.request().postDataJSON().msg_id;
+    assert.equal(target, inbox.selectedMessageId, 'the rendered action must name the selected message');
+    const receipt = { status: response.status(), target, body: await response.json() };
+    writes.push(receipt);
+    writeFileSync(join(input.evidence, 'portal-inbox-writes.json'), JSON.stringify(writes, null, 2));
+    return receipt;
+  };
+  // Relay a real private API denial. The browser cannot override its own Origin.
+  await context.route('**/api/admin/coord/ack', async route => {
+    const response = await route.fetch({ headers: { ...route.request().headers(), origin: 'https://unapproved.invalid' } });
+    await route.fulfill({ response });
+  });
+  const denied = await acknowledge();
+  assert.equal(denied.status, 403);
+  await page.getByText('Action failed', { exact: true }).waitFor();
+  await assertState(false);
+  assert.equal(new URL(page.url()).searchParams.get('opcis'), selectedId);
+  await detail.getByRole('button', { name: 'Acknowledge', exact: true }).waitFor();
+  await context.unroute('**/api/admin/coord/ack');
+  const accepted = await acknowledge();
+  assert.equal(accepted.status, 200, JSON.stringify(accepted));
+  await assertState(true);
+  await selected.waitFor({ state: 'detached' });
+  await neighbor.waitFor();
+  await page.reload();
+  await neighbor.waitFor();
+  assert.equal(await selected.count(), 0, 'acknowledged message must stay absent after a fresh real feed read');
+  await assertState(true);
+  const params = new URL(page.url()).searchParams;
+  for (const [key, value] of [['app', 'inbox'], ['ws', input.workspace], ['q', 'retained-shell-search'],
+    ['opci', 'alerts'], ['opck', 'coord-message'], ['opcsort', 'newest']]) assert.equal(params.get(key), value);
+  return { workspace: input.workspace, authMethod: 'private-loopback-inbox-with-cookie', selectedId, neighborId,
+    keyboardSelection: true, deepLinkReload: true, shellQueryPreserved: true, denialStatus: denied.status,
+    selectionRetained: true, deniedWriteIsolated: true, retryPersisted: true, neighborIsolated: true, writes,
+    denialTransport: 'real-upstream-response-forwarded',
+    scope: 'Actual utility.inbox shared split InboxPane, attention sync/detail and private coord acknowledgment; two private producer messages, exact reload and real upstream Origin-denial recovery. Portal navigation geometry is supplied; hosted tenant authorization and bulk resolve are unmeasured' };
 }
 
 /** Browser wire precondition, not product/API authorization evidence. */

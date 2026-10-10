@@ -799,7 +799,8 @@ describe('processes:list structured output', () => {
         workspaceId: 'default',
         rootTaskId: 'task-redaction',
         class: 'bash-job',
-        title: 'DATABASE_URL=postgresql://user:opaque-password@localhost/app',
+        title:
+          'psql DATABASE_URL=postgresql://user:opaque-password@localhost/app --url postgresql://user:second-secret@db.example/app',
         argv: [],
         launchedBy: 'su-test',
         workItemId: null,
@@ -867,8 +868,11 @@ describe('processes:list structured output', () => {
     expect(structured.live.unaccountedGroups[0]!.sample).toBe(
       'python3 - http://127.0.0.1:9071 [redacted] AWS_ACCESS_KEY_ID=[redacted]',
     );
-    expect(structured.tasks[0]!.title).toBe('DATABASE_URL=[redacted]');
+    expect(structured.tasks[0]!.title).toBe(
+      'psql DATABASE_URL=[redacted] --url postgresql://[redacted]@db.example/app',
+    );
     expect(JSON.stringify(structured)).not.toContain('opaque-');
+    expect(JSON.stringify(structured)).not.toContain('second-secret');
     expect(JSON.stringify(structured)).not.toContain(LOCAL_SUPERUSER_BEARER);
   });
 

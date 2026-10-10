@@ -163,12 +163,33 @@ async function coordCanary(health: unknown) {
   const verifyReceipt = (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean, summary = marker) =>
     verifyPrivateCoordReceipt(receipt, { ownerId: expectedOwner, summary, wake }, getMessageById);
   if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
+    let inbox: { selectedMessageId: string; neighborMessageId: string; selectedTitle: string; neighborTitle: string } | undefined;
+    if (process.env.ROSTER_INBOX_BROWSER_PROOF === '1') {
+      const { sendMessage } = await import('../lib/agent-tools/coordination/messages');
+      const selectedTitle = `private-inbox-${process.pid}-selected`;
+      const neighborTitle = `private-inbox-${process.pid}-neighbor`;
+      const seed = (owner: string, title: string) => sendMessage({ ownerId: owner, ownerLabel: owner,
+        source: 'principal', workspaceId: workspace, userId: null },
+      { to: ['human'], summary: title, body: title + ' body', harnessSlug: null, extra: { expects: 'none' } });
+      const selectedMessage = await seed(selected, selectedTitle);
+      const neighborMessage = await seed(neighbor, neighborTitle);
+      const { coordMessageToAttention } = await import('../lib/attention/adapters');
+      for (const message of [selectedMessage, neighborMessage]) {
+        assert.equal(message.expects, 'none', 'private human inbox seed must preserve authored disposition');
+        assert.equal(coordMessageToAttention({ msgId: message.msg_id, summary: String(message.summary),
+          auto: message.auto === true, directToOwner: message.to.includes('human') }).tier, 'alert',
+        'private inbox seed must match the actual Alerts scope before opening the browser');
+      }
+      inbox = { selectedMessageId: selectedMessage.msg_id, neighborMessageId: neighborMessage.msg_id, selectedTitle, neighborTitle };
+      writeFileSync(join(evidence, 'portal-inbox-seed.json'), JSON.stringify(inbox, null, 2));
+    }
     const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
     const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected, neighbor, portalSourceRoot: portalSourceRoot!,
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
       ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
+      ...(inbox ? { inbox } : {}),
       ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {
         selectedSessionId: historySessions.get(selected)!.id, neighborSessionId: historySessions.get(neighbor)!.id,
         selectedRolloutId: historySessions.get(selected)!.rolloutId, neighborRolloutId: historySessions.get(neighbor)!.rolloutId,

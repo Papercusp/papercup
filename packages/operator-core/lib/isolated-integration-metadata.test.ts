@@ -146,6 +146,23 @@ it('joins cross-checkout toast producers and observers into one Sonner module st
 });
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'builds the real Inbox browser graph through the maintained Portal client boundary before private PG', async () => {
+    const { buildPortalRosterBrowser } = await import('../test/portal-roster-browser-fixture');
+    const result = await buildPortalRosterBrowser({ portalSourceRoot: process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', inbox: {
+        selectedMessageId: 'preflight-selected', neighborMessageId: 'preflight-neighbor',
+        selectedTitle: 'preflight-selected', neighborTitle: 'preflight-neighbor' } });
+    const paths = [...result.originals.keys()];
+    expect(paths.some(path => path.endsWith('/InboxPane.tsx'))).toBe(true);
+    expect(paths.some(path => path.endsWith('/operator-surface-build.mjs'))).toBe(true);
+    expect(paths.some(path => path.endsWith('/delegated-tasks-browser.ts'))).toBe(true);
+    expect(paths.some(path => path.endsWith('/lib/delegated-tasks.ts'))).toBe(false);
+    expect(paths.some(path => path.includes('/node_modules/undici/'))).toBe(false);
+    expect(paths.some(path => path.endsWith('/presence-ui.module.css'))).toBe(true);
+    expect(result.css.length).toBeGreaterThan(0);
+  });
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'preflights the browser Origin denial input on the wire before a private database run', async () => {
     const receipt = await verifyPrivateProfileOriginControl();
     expect(receipt.continuedControl).toEqual({ origin: 'https://unapproved.invalid', status: 403 });

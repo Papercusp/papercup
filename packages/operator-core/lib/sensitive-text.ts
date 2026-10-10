@@ -80,13 +80,20 @@ export function redactKeyDirectedSecrets(text: string): string {
   });
 }
 
+const POSTGRES_URL_USERINFO_RE = /\b(postgres(?:ql)?:\/\/)[^\s/@]+@/gi;
+
+/** Scrub credentials embedded in PostgreSQL URLs even when no key labels the URL. */
+function redactPostgresUrlUserInfo(text: string): string {
+  return text.replace(POSTGRES_URL_USERINFO_RE, (_match, scheme: string) => `${scheme}[redacted]@`);
+}
+
 /** Defense-in-depth composition for arbitrary diagnostic text. */
 export function redactSensitiveText(
   text: string,
   knownSecrets: readonly (string | null | undefined)[] = [],
 ): string {
   return redactKnownSecrets(
-    redactKeyDirectedSecrets(redactSelfIdentifyingSecrets(text)),
+    redactPostgresUrlUserInfo(redactKeyDirectedSecrets(redactSelfIdentifyingSecrets(text))),
     knownSecrets,
   );
 }
@@ -116,7 +123,7 @@ const STRUCTURED_STRING_SECRET_SIGNAL_RE = new RegExp(
 );
 
 function redactStructuredString(text: string): string {
-  const selfIdentifyingRedacted = redactSelfIdentifyingSecrets(text);
+  const selfIdentifyingRedacted = redactPostgresUrlUserInfo(redactSelfIdentifyingSecrets(text));
   return STRUCTURED_STRING_SECRET_SIGNAL_RE.test(selfIdentifyingRedacted)
     ? redactKeyDirectedSecrets(selfIdentifyingRedacted)
     : selfIdentifyingRedacted;

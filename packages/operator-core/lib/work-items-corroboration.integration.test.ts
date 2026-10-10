@@ -52,7 +52,24 @@ const readMigration = (f: string) => {
     .join('\n');
 };
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  currentBuild: 'abcdef1' as string | null,
+  beforeBuild: null as (() => Promise<void>) | null,
+}));
+vi.mock('./attention/intake-promotion', async (orig) => {
+  const actual = await orig<typeof import('./attention/intake-promotion')>();
+  const currentTargetBuild = async () => { await h.beforeBuild?.(); return h.currentBuild; };
+  return {
+    ...actual,
+    currentIntakeTargetBuild: currentTargetBuild,
+    verifyAcceptedWorkItemBugReproduction: (item: Parameters<typeof actual.verifyAcceptedWorkItemBugReproduction>[0]) =>
+      actual.verifyAcceptedWorkItemBugReproduction(item, {
+        currentTargetBuild,
+        ledger: actual.defaultReproductionLedgerDeps(),
+      }),
+  };
+});
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -230,6 +247,8 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  h.currentBuild = 'abcdef1';
+  h.beforeBuild = null;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.harness_plans, harness_shared.plan_item_claims, harness_shared.plan_items,
                        harness_shared.work_item_occurrences`;

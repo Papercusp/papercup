@@ -4,6 +4,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
 
@@ -45,6 +46,20 @@ export function portalBrowserPackagesPlugin(portalSourceRoot: string): Plugin {
   return { name: 'portal-browser-package-exports', setup(builder) {
     builder.onResolve({ filter: /^(?:nuqs(?:\/.*)?|sonner)$/ }, ({ path }) => ({ path: fromPortal.resolve(path) }));
   } };
+}
+
+/** Use the exact maintained Portal client boundary, including router and
+ * server-only aliases. Do not duplicate the table in a fixture. */
+export async function portalBrowserSurfaceBuild(portalSourceRoot: string) {
+  const portal = realpathSync(portalSourceRoot);
+  const root = resolve(import.meta.dirname, '../../..');
+  const source = join(portal, 'apps/host/src/operator-surface-build.mjs');
+  const { assertShimsResolvable, operatorSurfaceShims, operatorSurfaceImportMetaEnv } = await import(pathToFileURL(source).href);
+  const shims: Array<{ pattern: RegExp; replacement: string }> = assertShimsResolvable(operatorSurfaceShims(root, portal));
+  const plugin: Plugin = { name: 'maintained-portal-surface-boundary', setup(builder) {
+    for (const shim of shims) builder.onResolve({ filter: shim.pattern }, () => ({ path: shim.replacement }));
+  } };
+  return { plugin, define: { 'import.meta.env': JSON.stringify(operatorSurfaceImportMetaEnv()) }, source };
 }
 
 export function preparePrivateHttpWorkspaces() {

@@ -13,7 +13,8 @@ const listen = (s: Server) => new Promise<number>((resolve, reject) => {
 const stop = (s: Server) => new Promise<void>((resolve, reject) => s.close(e => e ? reject(e) : resolve()));
 
 it('enforces the scoped boundary through the actual launcher and final managed PTY', async () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'psu-native-boundary-physical-'));
+  // The actual sandbox replaces /dev/shm; fixtures must survive that mount.
+  const cwd = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'psu-native-boundary-physical-'));
   const resultPath = join(cwd, 'native-result');
   const calls = [0, 0, 0];
   const servers = calls.map((_, i) => createServer((_req, res) => { calls[i]++; res.end(`endpoint-${i}`); }));
@@ -55,4 +56,28 @@ it('enforces the scoped boundary through the actual launcher and final managed P
     await Promise.all(servers.map(s => s.listening ? stop(s) : Promise.resolve()));
     rmSync(cwd, { recursive: true, force: true });
   }
+}, 30_000);
+
+it('starts the installed Codex runtime through the actual launcher without inference', async () => {
+  const cwd = mkdtempSync('/tmp/psu-native-codex-');
+  const codexHome = join(cwd, 'codex-home'); mkdirSync(codexHome);
+  const env = hermeticEnv({ PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
+    PAPERCUSP_SID: `test-scoped-codex-${process.pid}`, PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_PTY: '1',
+    PAPERCUSP_MCP_PROXY: '0', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:32002',
+    PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) }) });
+  try {
+    const launcher = fileURLToPath(new URL('../scripts/psu-launcher.mjs', import.meta.url));
+    const fixture = join(cwd, 'launcher-fixture.mjs');
+    writeFileSync(fixture, `import { runWrapper } from ${JSON.stringify(launcher)};\nrunWrapper({wrapperBin:'codex',args:['--version'],cwd:${JSON.stringify(cwd)},preserveCwd:true,envelopeEnv:process.env,reportSessionEndedImpl:async()=>{},onSpawn:()=>{}});\n`);
+    const child = spawn(process.execPath, [fixture], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { output += b; });
+    const code = await new Promise<number | null>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Installed Codex PTY fixture exceeded 20 seconds')); }, 20_000);
+      child.once('error', e => { clearTimeout(timer); reject(e); });
+      child.once('close', c => { clearTimeout(timer); resolve(c); });
+    });
+    expect(code, output).toBe(0);
+    expect(output).toMatch(/codex-cli \d+\.\d+/);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
 }, 30_000);
