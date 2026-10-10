@@ -253,7 +253,7 @@ describe('hosted native OpenRouter authorization', () => {
     await p.consume({ model: 'openrouter/vendor/model', messages: [], account: 'foreign-account', ownerId: 'foreign-user' });
     expect(p.principal).not.toHaveBeenCalled();
     expect(p.select).not.toHaveBeenCalled();
-    expect(p.channel).toHaveBeenCalledTimes(2);
+    expect(p.channel).toHaveBeenCalledTimes(5);
     expect(p.authorize).toHaveBeenCalledWith(expect.objectContaining({
       principal: expect.objectContaining({ userId: p.session.userId }) }));
     expect(p.createCapture.mock.calls[0]![0].request.scope).toEqual(authorized().request.scope);
@@ -310,6 +310,76 @@ describe('hosted native OpenRouter authorization', () => {
     p.controller.abort(); await denied;
     expect(p.token).not.toHaveBeenCalled(); expect(p.wire).not.toHaveBeenCalled();
   });
+
+  it.each(['policy', 'credential', 'reservation'] as const)
+    ('revalidates a private customer session after the awaited %s reader', async phase => {
+      const p = await customerModel();
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const entered = vi.fn();
+      if (phase === 'policy') p.authorize.mockImplementation(async () => { entered(); await gate; return authorized(); });
+      if (phase === 'credential') p.secret.mockImplementation(async () => { entered(); await gate; return 'selected-key'; });
+      if (phase === 'reservation') p.capture.mockImplementation(async () => { entered(); await gate; });
+      const pending = p.consume();
+      const denied = expect(pending).rejects.toThrow('OpenRouter request capture failed; reservation remains unresolved');
+      await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+      const r = resolution();
+      p.channel.mockResolvedValue({ ...r, principal: createHostedPrincipal({ ...r.principal, permissions: ['workspace:view'] }) });
+      release(); await denied;
+      expect(p.wire).not.toHaveBeenCalled();
+      expect(p.createCapture).toHaveBeenCalledTimes(phase === 'reservation' ? 1 : 0);
+    });
+
+  it.each(['workspaceId', 'userId', 'activeOrganizationId', 'selectedWorkspaceId', 'sessionId', 'sessionVersion'] as const)
+    ('revalidates cookie-backed %s after credential resolution before reservation', async field => {
+      const p = await prepared();
+      p.secret.mockImplementation(async () => {
+        const r = resolution();
+        const value = field === 'sessionVersion' ? r.principal.sessionVersion + 1 : 'foreign';
+        p.principal.mockResolvedValue({ ...r, principal: createHostedPrincipal({ ...r.principal, [field]: value }) });
+        return 'selected-key';
+      });
+      await expect(p.r.openRouterRequestCapture(p.headers)(context)(intent)).rejects.toThrow('authorization or capture failed');
+      expect(p.createCapture).not.toHaveBeenCalled();
+    });
+
+  it('snapshots a customer request before asynchronous channel authentication', async () => {
+    const p = await customerModel();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    p.channel.mockImplementationOnce(async () => { await gate; return resolution(); });
+    const request: ModelRequest = { model: 'openrouter/vendor/model', messages: [], account: 'foreign' };
+    const pending = p.consume(request);
+    await vi.waitFor(() => expect(p.channel).toHaveBeenCalledOnce());
+    request.model = 'claude/sonnet'; request.account = 'another-account';
+    release(); await pending;
+    expect(p.observations).toEqual([intent]); expect(p.select).not.toHaveBeenCalled();
+    expect(p.wire).toHaveBeenCalledOnce();
+  });
+
+  it.each(['pool', 'policy', 'credential', 'reservation'] as const)
+    ('settles cancellation while the private model %s reader is stalled', async phase => {
+      const p = await customerModel();
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const entered = vi.fn();
+      if (phase === 'pool') p.token.mockImplementation(async () => { entered(); await gate; return 'selected-key'; });
+      if (phase === 'policy') p.authorize.mockImplementation(async () => { entered(); await gate; return authorized(); });
+      if (phase === 'credential') p.secret.mockImplementation(async () => { entered(); await gate; return 'selected-key'; });
+      if (phase === 'reservation') p.capture.mockImplementation(async () => { entered(); await gate; });
+      const outcome = p.consume().then(() => 'fulfilled', () => 'denied');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+        p.controller.abort();
+        const deadline = new Promise<string>(resolve => { timer = setTimeout(() => resolve('stalled'), 500); });
+        expect(await Promise.race([outcome, deadline])).toBe('denied');
+      } finally {
+        if (timer) clearTimeout(timer);
+        release(); await outcome;
+      }
+      expect(p.wire).not.toHaveBeenCalled();
+    });
 
   it('uses the real native router and chat loop, awaits host authority before wire, and captures early identity privately', async () => {
     const p = await prepared(); let wire = 0;
@@ -383,12 +453,12 @@ describe('hosted native OpenRouter authorization', () => {
     expect(first.exitCode).toBe(mode === 'allowed' ? 0 : 1);
     expect(wire).toBe(mode === 'allowed' ? 1 : 0);
     expect(factory).toHaveBeenCalledExactlyOnceWith(controller.signal);
-    expect(p.principal).toHaveBeenCalledTimes(1);
+    expect(p.principal).toHaveBeenCalledTimes(mode === 'allowed' ? 4 : mode === 'capture-failed' ? 3 : 1);
     if (mode === 'allowed') {
       expect(p.createCapture.mock.calls[0]![0].request.scope).toEqual(authorized().request.scope);
       p.principal.mockResolvedValue({ ok: false, reason: 'membership_not_active' });
       expect((await invoke()).exitCode).toBe(1);
-      expect(factory).toHaveBeenCalledTimes(2); expect(p.principal).toHaveBeenCalledTimes(2);
+      expect(factory).toHaveBeenCalledTimes(2); expect(p.principal).toHaveBeenCalledTimes(5);
       expect(wire).toBe(1); expect(p.createCapture).toHaveBeenCalledTimes(1);
     }
     expect(JSON.stringify({ events, first })).not.toMatch(/SELECTED_KEY|selected-key|reservation-1|customer-workspace|private SQL/);
@@ -433,7 +503,7 @@ describe('hosted native OpenRouter authorization', () => {
       request: { ...a.request, reservationId: 'reservation-' + ++id } }; });
     const factory = p.r.openRouterRequestCapture(p.headers);
     await factory(context)(intent); await factory(context)(intent);
-    expect(p.principal).toHaveBeenCalledTimes(2); expect(p.authorize).toHaveBeenCalledTimes(2);
+    expect(p.principal).toHaveBeenCalledTimes(8); expect(p.authorize).toHaveBeenCalledTimes(2);
     expect(p.createCapture.mock.calls.map(([o]) => o.request.reservationId)).toEqual(['reservation-1', 'reservation-2']);
     p.principal.mockResolvedValue({ ok: false, reason: 'membership_not_active' });
     await expect(factory(context)(intent)).rejects.toThrow('authorization or capture failed');

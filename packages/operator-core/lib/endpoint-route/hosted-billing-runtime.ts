@@ -243,6 +243,7 @@ function hostedOpenRouterCapture(
       const context = Object.freeze({ modelId: selected.modelId, servedAccount: selected.servedAccount,
         credentialSha256: selected.credentialSha256 });
       let capture: OpenRouterRequestCapture | undefined;
+      let revalidate: (() => Promise<void>) | undefined;
       let running = false;
       let failed = false;
       return async observation => {
@@ -250,6 +251,7 @@ function hostedOpenRouterCapture(
         running = true;
         try {
           if (signal?.aborted) throw new Error('aborted');
+          const admitting = !capture;
           if (!capture) {
             if (!authorize || !now || !budget || !createCapture
               || observation.provider !== 'openrouter' || observation.modelId !== context.modelId
@@ -264,6 +266,16 @@ function hostedOpenRouterCapture(
             // substitute another tenant even if it mutates its input principal.
             const scope = Object.freeze({ controlWorkspaceId: principal.workspaceId,
               organizationId: principal.activeOrganizationId, customerWorkspaceId: principal.selectedWorkspaceId! });
+            const identity = Object.freeze({ workspaceId: principal.workspaceId, userId: principal.userId,
+              activeOrganizationId: principal.activeOrganizationId, selectedWorkspaceId: principal.selectedWorkspaceId,
+              sessionId: principal.sessionId, sessionVersion: principal.sessionVersion });
+            revalidate = async () => {
+              const current = await readPrincipal();
+              if (!current.ok || !isHostedPrincipal(current.principal)
+                || !current.principal.permissions.has('workspace:operate') || signal?.aborted || failed
+                || (Object.keys(identity) as Array<keyof typeof identity>)
+                  .some(key => current.principal[key] !== identity[key])) throw new Error('tenant changed');
+            };
             const authority = await authorize(Object.freeze({ principal, context }));
             if (!authority || signal?.aborted || failed) throw new Error('authority denied');
             const { credentialRef, isByok, evidenceRef } = authority;
@@ -272,12 +284,18 @@ function hostedOpenRouterCapture(
               || request.scope.organizationId !== scope.organizationId
               || request.scope.customerWorkspaceId !== scope.customerWorkspaceId
               || !/^(?:env:[A-Za-z_][A-Za-z0-9_]*|file:\/[A-Za-z0-9._/-]+)$/.test(credentialRef)) throw new Error('authority mismatch');
+            await revalidate();
             const key = (await resolveSecret(credentialRef)).trim();
             if (!key || createHash('sha256').update(key).digest('hex') !== context.credentialSha256
               || signal?.aborted || failed) throw new Error('credential mismatch');
+            await revalidate();
             capture = createCapture({ budget, request, context, credentialRef, isByok, evidenceRef, now });
           }
           await capture(observation);
+          // Reservation may have committed while authorization changed. Keep
+          // that obligation unresolved and refuse wire I/O; never roll it back
+          // by assertion. Later identity observations still reconcile it.
+          if (admitting) await revalidate!();
         } catch {
           failed = true;
           // Neither upstream error text, credential refs nor tenant/authority

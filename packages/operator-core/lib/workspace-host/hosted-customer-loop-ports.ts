@@ -4,7 +4,8 @@
 import { posix } from 'node:path';
 import { dispatchProjectedTool, lookupByMcpName, type DispatchProjectedDeps,
   type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
-import type { ModelPort, ModelRequest } from '../agent-loop/model-port';
+import { MODEL_PROVIDER_REQUEST_CAPTURE, captureModelProviderRequest,
+  type ModelPort, type ModelRequest } from '../agent-loop/model-port';
 import { createRoutedModelPort, type RoutedModelPortOptions } from '../agent-loop/provider-router';
 import { isHostedPrincipal } from '../auth/hosted-principal';
 import type { HostedBillingRuntime } from '../endpoint-route/hosted-billing-runtime';
@@ -70,7 +71,27 @@ export function createHostedCustomerModelPortFactory(deps: {
       if (!(await readPrincipal()).ok) throw new Error('hosted_customer_model_unavailable');
       const port = createRoutedModelPort({ ...options, env: {}, credentials: async () => ({}),
         openRouterRequestCapture: capture(readPrincipal, streamSignal) });
-      yield* port.stream({ ...request, signal: streamSignal, ownerId: expected.userId });
+      const iterator = port.stream({ ...request, signal: streamSignal, ownerId: expected.userId })[Symbol.asyncIterator]();
+      try {
+        while (true) {
+          const next = await awaitHostedCustomerOperation(() => iterator.next(), streamSignal);
+          if (next.done) break;
+          const event = next.value;
+          // Both the next pull (catalog/credential/model reads) and the private
+          // admission continuation obey invocation cancellation even if a host
+          // reader ignores its signal. Late admission still sees the aborted
+          // signal; no canceled consumer can resume the router onto the wire.
+          yield event.type === 'provider_request' ? { ...event,
+            [MODEL_PROVIDER_REQUEST_CAPTURE]: () => awaitHostedCustomerOperation(
+              () => captureModelProviderRequest(event), streamSignal) } : event;
+        }
+      } finally {
+        const closing = iterator.return?.();
+        // An async generator queues return behind a pending reader. Request
+        // cleanup, but never wait indefinitely for it after cancellation.
+        if (streamSignal.aborted) void closing?.catch(() => {});
+        else await closing;
+      }
     } };
   };
 }
