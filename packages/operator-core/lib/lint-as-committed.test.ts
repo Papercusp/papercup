@@ -1159,6 +1159,39 @@ console.log('CLONE_PREREQUISITES_OK');
     });
   }
 
+  it('refuses insufficient temporary headroom before cloning or running the committed command', () => {
+    const f = fixture('node build.cjs');
+    try {
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+        cwd: f.root, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, PAPERCUSP_DISK_ALARM_CRITICAL_GB: '1000000000000000' },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(2);
+      expect(result.stderr).toContain('no temporary directory has critical disk headroom');
+      expect(result.stdout).not.toContain('extracted ');
+      expect(result.stdout).not.toContain('CLONE_PREREQUISITES_OK');
+      expect(result.stderr).not.toContain('No space left on device');
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it('relocates an unsafe TMPDIR before materialising a committed command', () => {
+    const f = fixture('node build.cjs');
+    try {
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+        cwd: f.root, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, TMPDIR: f.root },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
+      expect(result.stdout).not.toContain(`extracted ${f.root}/`);
+      expect(gitFixture(f.root, ['status', '--porcelain'])).not.toContain('papercusp-lint-as-committed-');
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])('honors a dependent artifact registered during the running command (removed=%s)', (removed) => {
     const f = fixture('node build.cjs');
     let extracted: string | undefined;
