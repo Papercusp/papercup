@@ -8,6 +8,15 @@ import authorDocTool, { normalizeSlug, normalizeSection, resolveAuthorHarness } 
 import getDocTool from '../../../agent-tools/docs/get';
 import { REPORT_BODY_MAX_BYTES } from '../../../report-library';
 
+function hasMarkdownLinkToPath(text: string, target: string): boolean {
+  const marker = '](' + target + ')';
+  const close = text.indexOf(marker);
+  if (close < 1) return false;
+  const open = text.lastIndexOf('[', close);
+  return open >= 0 && text.slice(open + 1, close).trim().length > 0
+    && !text.slice(open + 1, close).includes('\\n');
+}
+
 export const PROCEDURE_SLUG = 'shared-visibility-boundary-procedure';
 export const PROCEDURE_REF = `agent-insights/${PROCEDURE_SLUG}`;
 export const PROCEDURE_BODY = '# Preserve the shared visibility boundary\n\nBefore reading queue rows, apply the shared visibility predicate in the database query before ranking or result limits.\n\nVerify with an allowed-reader positive control and an unrelated-reader negative control.';
@@ -117,6 +126,12 @@ export const SU_S38_REPORTS_CAPTURE: Scenario = {
     });
     const violations = readBack ? [] : [{ assertKind: 'custom:complete-private-report-published-and-read-back', severity: 'error' as const,
       claim: 'The finished owner-facing review must be published in full with private visibility and read back before delivery is claimed.' }];
+    const reportPath = typeof published?.output?.path === 'string' ? published.output.path : undefined;
+    const finalText = run.turns.at(-1)?.assistantText ?? '';
+    if (!readBack || !reportPath || !hasMarkdownLinkToPath(finalText, reportPath)) {
+      violations.push({ assertKind: 'custom:final-report-citation-uses-returned-route', severity: 'error',
+        claim: 'After a successful read-back, the final response must link the report with a descriptive Markdown link to the returned same-origin path.' });
+    }
     const authorIndex = calls.findIndex(call => call.name === 'docs:author'
       && authorDocTool.args.safeParse(call.input).success
       && call.input.body === PROCEDURE_BODY && call.output?.ok === true

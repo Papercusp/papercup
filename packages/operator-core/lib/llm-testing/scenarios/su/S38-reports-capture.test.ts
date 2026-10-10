@@ -3,17 +3,18 @@ import type { RunSummary } from '@papercusp/testing-shell/llm';
 import { REPORT_BODY, PROCEDURE_BODY, PROCEDURE_SLUG, PROCEDURE_REF, SU_S38_REPORTS_CAPTURE, createReportsCaptureWorld } from './S38-reports-capture';
 import { REPORT_BODY_MAX_BYTES } from '../../../report-library';
 
-function violations(calls: Array<{ name: string; input: Record<string, unknown>; responseIndex?: number }>, outputs?: unknown[], routeProcedure = true) {
+function violations(calls: Array<{ name: string; input: Record<string, unknown>; responseIndex?: number }>, outputs?: unknown[],
+  routeProcedure = true, assistantText = 'Saved: [Architecture review](/reports?sel=rpt_fixture)') {
   const prefix: Array<{ name: string; input: Record<string, unknown>; responseIndex?: number }> = routeProcedure ? [
     { name: 'docs:author',input: { harness: 'engineering',slug: PROCEDURE_SLUG,title: 'Shared visibility procedure',body: PROCEDURE_BODY } },
     { name: 'docs:get',input: { harness: 'engineering',slugs: [PROCEDURE_REF] } },
   ] : [];
   const allCalls = [...prefix,...calls];
-  const run = { turns: [{ toolCalls: allCalls.map((call, index) => ({ responseIndex: index, ...call })),
+  const run = { turns: [{ assistantText, toolCalls: allCalls.map((call, index) => ({ responseIndex: index, ...call })),
     toolResults: allCalls.map((call, index) => ({ name: call.name, isError: false, truncated: false,
       output: JSON.stringify(index < prefix.length ? (index === 0 ? { ok: true,slug: PROCEDURE_SLUG,surface: 'engineering' }
         : { results: [{ slug: PROCEDURE_REF,found: true,content: PROCEDURE_BODY }],surface: 'engineering' }) : outputs?.[index-prefix.length] ?? ((call.name === 'reports:publish' || call.input.name === 'reports:publish')
-        ? { ok: true, report_id: 'rpt_fixture' }
+        ? { ok: true, report_id: 'rpt_fixture', path: '/reports?sel=rpt_fixture' }
         : { ok: true, results: [{ id: 'rpt_fixture', ok: true, report: { body_md: REPORT_BODY, visibility: 'owner' } }] })) }))
   }] } as unknown as RunSummary;
   return SU_S38_REPORTS_CAPTURE.asserts.flatMap(assert => assert.kind === 'custom' ? assert.eval(run) : []);
@@ -66,6 +67,15 @@ describe('S38 Reports capture contract', () => {
       { name: 'reports:get', input: { id: 'rpt_fixture' } }];
     expect(violations(calls)).toEqual([]);
     expect(violations(calls.map(call => ({ name: 'tools:invoke', input: { name: call.name, args: call.input } })))).toEqual([]);
+  });
+
+  it('requires the final response to link the exact returned Reports route', () => {
+    const calls = [{ name: 'reports:publish', input: { title: 'Architecture review', body_md: REPORT_BODY, visibility: 'owner' } },
+      { name: 'reports:get', input: { id: 'rpt_fixture' } }];
+    expect(violations(calls, undefined, true, 'Saved the report for later.')).toEqual([
+      expect.objectContaining({ assertKind: 'custom:final-report-citation-uses-returned-route' }),
+    ]);
+    expect(violations(calls, undefined, true, 'Saved: [Architecture review](/reports?sel=rpt_fixture)')).toEqual([]);
   });
 
   it('rejects a missing read-back, altered Markdown, or broader visibility', () => {

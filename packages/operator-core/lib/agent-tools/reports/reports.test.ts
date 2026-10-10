@@ -118,9 +118,12 @@ describe('Reports delivery guidance', () => {
     expect(publishTool.guidance?.chaining).toContain('Claim saved or delivered only after readback succeeds');
     expect(publishTool.guidance?.chaining).toContain('new report_id → verify the correction → cite it');
     expect(publishTool.description).toContain('descriptive Markdown link to the GUI report page');
-    expect(publishTool.description).toContain('absolute HTTP(S) URL');
-    expect(publishTool.guidance?.chaining).toContain('verified GUI origin and returned path');
+    expect(publishTool.description).toContain('returned same-origin path directly as its Markdown target');
+    expect(publishTool.description).toContain('absolute HTTP(S) URL only when a verified GUI origin is available');
+    expect(publishTool.description).toContain('never guess or ask the owner for an origin solely to format the link');
+    expect(publishTool.guidance?.chaining).toContain('returned same-origin path directly in Papercusp/Tauri');
     expect(publishTool.guidance?.chaining).toContain('/reports?sel=<report_id>');
+    expect(publishTool.guidance?.chaining).toContain('never guess or ask the owner for an origin solely to format the link');
   });
 });
 

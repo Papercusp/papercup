@@ -42,7 +42,8 @@ export default defineTool({
     'stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the ' +
     'old body remains resolvable. After publishing, call `reports:get { id: report_id }` and ' +
     'verify the complete body and visibility before citing a descriptive Markdown link to the GUI report page. ' +
-    'Resolve the returned path against the verified GUI origin for an absolute HTTP(S) URL, never a bare path or id. Reports preserve ' +
+    'Use the returned same-origin path directly as its Markdown target in Papercusp/Tauri; use an absolute HTTP(S) URL only ' +
+    'when a verified GUI origin is available. Never guess or ask the owner for an origin solely to format the link, or give a bare id. Reports preserve ' +
     'dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with ' +
     '`docs:get`, and link the maintained procedure from the report without copying private incident details.',
   guidance: {
@@ -55,8 +56,9 @@ export default defineTool({
       'procedures belong in `docs:author`. Minor typos rarely warrant a new edition; corrections use `supersedes`.',
     chaining:
       'reports:publish → reports:get { id: report_id } → verify the complete body and visibility → ' +
-      'cite a descriptive Markdown link to the GUI report page using the verified GUI origin and returned path ' +
-      '(operator reader: /reports?sel=<report_id>). Claim saved or delivered only after readback succeeds. ' +
+      'cite a descriptive Markdown link using the returned same-origin path directly in Papercusp/Tauri ' +
+      '(operator reader: /reports?sel=<report_id>). Use an absolute HTTP(S) URL only when a verified GUI origin is available; ' +
+      'never guess or ask the owner for an origin solely to format the link. Claim saved or delivered only after readback succeeds. ' +
       'For corrections: read the original → publish with supersedes → new report_id → verify the correction → cite it.',
     returns:
       '{ ok:true, report_id, workspace_id, title, summary, kind, subject, origin, visibility, ' +
