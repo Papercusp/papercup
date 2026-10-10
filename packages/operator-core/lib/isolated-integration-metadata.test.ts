@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
-import { portalNuqsPlugin, preparePortalBrowserSource, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot } from '../test/private-http-workspace-preflight';
+import { portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot } from '../test/private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
@@ -104,7 +104,7 @@ it('bundles exported Nuqs adapters and pins cross-checkout consumers to one Port
       import { context as adapter } from 'nuqs/adapters/react';
       import { context as operator } from ${JSON.stringify(join(operator, 'consumer.js'))};
       export const sameContext = context === adapter && context === operator;`, resolveDir: operator },
-    bundle: true, write: false, format: 'cjs', platform: 'browser', metafile: true, plugins: [portalNuqsPlugin(portal)] });
+    bundle: true, write: false, format: 'cjs', platform: 'browser', metafile: true, plugins: [portalBrowserPackagesPlugin(portal)] });
     const module: { exports: { sameContext?: boolean } } = { exports: {} };
     new Function('exports', 'module', result.outputFiles[0].text)(module.exports, module);
     expect(module.exports.sameContext).toBe(true);
@@ -113,7 +113,35 @@ it('bundles exported Nuqs adapters and pins cross-checkout consumers to one Port
     await expect(build({ stdin: { contents: "import 'nuqs/adapters/react';", resolveDir: operator },
       alias: { nuqs: join(portal, 'node_modules/nuqs') }, bundle: true, write: false, logLevel: 'silent' })).rejects.toThrow('Could not resolve');
     await expect(build({ stdin: { contents: "import 'nuqs/private-internal';", resolveDir: operator },
-      plugins: [portalNuqsPlugin(portal)], bundle: true, write: false, logLevel: 'silent' })).rejects.toThrow();
+      plugins: [portalBrowserPackagesPlugin(portal)], bundle: true, write: false, logLevel: 'silent' })).rejects.toThrow();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it('joins cross-checkout toast producers and observers into one Sonner module store', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-portal-sonner-'));
+  try {
+    const portal = join(root, 'portal');
+    const operator = join(root, 'operator');
+    for (const checkout of [portal, operator]) {
+      const pkg = join(checkout, 'node_modules/sonner');
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'sonner', type: 'module', exports: './index.js' }));
+      writeFileSync(join(pkg, 'index.js'), 'export const store = []; export const toast = value => store.push(value);');
+    }
+    writeFileSync(join(operator, 'consumer.js'), "export { toast } from 'sonner';");
+    const entry = `import { store } from 'sonner';
+      import { toast } from ${JSON.stringify(join(operator, 'consumer.js'))};
+      toast('Profile saved'); export const observed = store;`;
+    const run = async (shared: boolean) => {
+      const result = await build({ stdin: { contents: entry, resolveDir: portal }, bundle: true,
+        write: false, format: 'cjs', platform: 'browser',
+        plugins: shared ? [portalBrowserPackagesPlugin(portal)] : [] });
+      const module: { exports: { observed?: string[] } } = { exports: {} };
+      new Function('exports', 'module', result.outputFiles[0].text)(module.exports, module);
+      return module.exports.observed;
+    };
+    expect(await run(false)).toEqual([]); // Reproduce the silent split-store failure.
+    expect(await run(true)).toEqual(['Profile saved']);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

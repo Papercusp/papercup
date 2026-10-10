@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { getMessageById, readInbox } from '../lib/agent-tools/coordination/messages';
 import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private-coord-receipt';
-import { portalNuqsPlugin } from './private-http-workspace-preflight';
+import { portalBrowserPackagesPlugin } from './private-http-workspace-preflight';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 
@@ -109,7 +109,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
     loader: { '.css': 'empty' },
     bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false,
-    plugins: [portalNuqsPlugin(portal), { name: 'retain-executed-browser-inputs', setup(builder) {
+    plugins: [portalBrowserPackagesPlugin(portal), { name: 'retain-executed-browser-inputs', setup(builder) {
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, ({ path }) => {
         const contents = readFileSync(path);
         originals.set(path, { sha256: digest(contents), bytes: contents.length });

@@ -37,12 +37,13 @@ export function preparePortalBrowserSource(argv: readonly string[]) {
   return root;
 }
 
-/** Resolve every consumer through the same maintained package's exports map.
- * A directory alias bypasses exports for adapters and can split Nuqs context. */
-export function portalNuqsPlugin(portalSourceRoot: string): Plugin {
+/** Resolve shared browser stores through one maintained package's exports map.
+ * Directory aliases bypass adapter exports; duplicate installations split the
+ * Nuqs context and Sonner's module-local toast/Toaster observer. */
+export function portalBrowserPackagesPlugin(portalSourceRoot: string): Plugin {
   const fromPortal = createRequire(join(realpathSync(portalSourceRoot), 'package.json'));
-  return { name: 'portal-nuqs-package-exports', setup(builder) {
-    builder.onResolve({ filter: /^nuqs(?:\/|$)/ }, ({ path }) => ({ path: fromPortal.resolve(path) }));
+  return { name: 'portal-browser-package-exports', setup(builder) {
+    builder.onResolve({ filter: /^(?:nuqs(?:\/.*)?|sonner)$/ }, ({ path }) => ({ path: fromPortal.resolve(path) }));
   } };
 }
 
