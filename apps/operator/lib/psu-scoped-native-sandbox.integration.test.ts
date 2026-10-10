@@ -114,6 +114,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
   const gatewayErrors: string[] = [];
   const admissionStages: Record<string, unknown>[] = [];
   let firstNativeAdmissionRequest: Record<string, unknown> | undefined;
+  let rejectedNativeAdmissionRequest: Record<string, unknown> | undefined;
   let readReservations: (() => Promise<unknown>) | undefined;
   try {
   mkdirSync(cwd);
@@ -279,7 +280,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
     if (route === 'metered') {
       const { currentBenchGatewayController, currentBenchProviderAuthenticator, currentBenchOpenAiInputReader,
         currentBenchOpenAiInputContract } = await import('../../../packages/operator-core/lib/external-bench/current-su');
-      const { registerLearningLoop, getLearningSpendPositions } = await import('../../../packages/operator-core/lib/learning-governor/store');
+      const { registerLearningLoop, getLearningSpendPositions, reserveLearningSpend } = await import('../../../packages/operator-core/lib/learning-governor/store');
       const { makeBearerCredentialResolver } = await import('../../../packages/operator-core/lib/inference-gateway/credential-store');
       const { startGatewayService } = await import('../../../packages/operator-core/lib/inference-gateway/launch');
       const loopId = `native-workflow:${owner}`, preregHash = 'a'.repeat(64), workspaceId = 'native-frozen-private';
@@ -290,7 +291,12 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       config.priceSchedule.rates[0].inputTokenCeiling = inputTokens;
       config.priceSchedule.rates[0].cacheWriteUsdPerMillion = 1.25;
       config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract('gpt-6-sol', inputTokens);
-      const resources = { inputTokens: 1_000_000, outputTokens: 4096, requestsPerArm: 50, usdPerArm: 3,
+      // The aggregate resource allowance must cover the bounded multi-request
+      // workflow. The native client's existing per-request output control is
+      // separately tighter; no monetary/assignment cap is increased.
+      const maxRequests = workflow.length + 2 + workflow.length + 1, outputLimit = 4096;
+      const resources = { inputTokens: inputTokens * maxRequests, outputTokens: outputLimit * maxRequests,
+        requestsPerArm: maxRequests, usdPerArm: 3,
         maxOpenUsd: config.maxInFlightUsd, wallClockMs: 120_000, wallClockMsPerArm: 120_000,
         armIds: config.arms.map(arm => currentBenchAssignmentId(owner, arm.id, 't1', 1)) };
       await registerLearningLoop(db.adminSql, { workspaceId, loopId, budgetKind: 'lifetime', budgetUsd: 60,
@@ -319,7 +325,15 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
           admissionStages.push({ stage: 'provider-authentication', accepted: result !== null });
           return result;
         } }, { enabled: async () => true, getSql: async () => db!.adminSql,
-        log: () => {} });
+        reserve: async (sql, input) => {
+          const result = await reserveLearningSpend(sql, input);
+          admissionStages.push({ stage: 'reservation', ok: result.ok,
+            ...(!result.ok ? { reason: result.reason } : {}) });
+          return result;
+        }, log: () => {} });
+      expect(resources.outputTokens).toBeGreaterThan(outputLimit);
+      expect(resources.inputTokens).toBe(inputTokens * maxRequests);
+      expect(resources.usdPerArm).toBe(config.arms[0].generationBudget.maxUsd);
       const hosted = await controller.startNativeGateway(message => { gatewayErrors.push(message); }, options =>
         startGatewayService({ ...options, carryTrial: { ...options.carryTrial!, authorizeAttempt: async attempt => {
           const body = JSON.parse(attempt.body);
@@ -334,6 +348,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
             inputShapes: Array.isArray(body.input) ? body.input.map((item: Record<string, unknown>) =>
               ({ type: item.type, role: item.role, keys: Object.keys(item) })) : typeof body.input });
           const result = await options.carryTrial!.authorizeAttempt(attempt);
+          if (result === null) rejectedNativeAdmissionRequest = body;
           admissionStages.push({ stage: 'controller-output', accepted: result !== null });
           return result;
         } }, resolveAccounts: async () => [{ accountId: account.id,
@@ -351,7 +366,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
             expect(new Headers(init?.headers).get('authorization')).toBe('Bearer PRIVATE_OFFLINE_PROVIDER_CREDENTIAL');
             return fetch(`${baseURL}/v1/responses`, init);
           } }));
-      metered = hosted; nativeGateway = hosted.nativeGateway;
+      metered = hosted; nativeGateway = { ...hosted.nativeGateway, outputTokenLimit: outputLimit };
     }
     const home = writeSuCodexHome({ sessionKey: owner, sid: owner, mcpUrl: `${baseURL}/mcp`, token: 'offline-fixture',
       model: 'gpt-6-sol:medium', promptText: `${roleMarker}\n${restored.contextText}`, headless: true, trustDir: cwd, denyAmbientContext: true });
@@ -407,7 +422,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       return [];
     };
     const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, gatewayErrors, admissionEvidence, admissionStages,
-      firstNativeAdmissionRequest, discoveryCount, workflowRequestIndexes,
+      firstNativeAdmissionRequest, rejectedNativeAdmissionRequest, discoveryCount, workflowRequestIndexes,
       countedInputCount: countedInputs.length, reservations: await readReservations?.(), requestPaths, mcpMethods, workflowCalls,
       dependencyPreflight, executablePath: env.PATH, discoveryRoot: env.PAPERCUSP_PSU_PTY_DIR,
       inputShapes: inputShapes(providerCalls[0]?.input),
