@@ -38,6 +38,7 @@ import {
   endedRecordedOwnerIds,
   acquireAdvSessionResume,
   finalizeAdvSessionResume,
+  getAdvSession,
   isAdvSessionLocalLivenessEvidence,
   markAdvSessionEnded,
   parseKilledBySignalReport,
@@ -3952,6 +3953,23 @@ const sessionResumeFinalized = defineTool({
         parsed.resumeClaimKey,
         parsed.launchArgv,
       );
+      if (finalized) {
+        try {
+          const session = await getAdvSession(parsed.advSessionId);
+          if (session?.coordOwnerId) {
+            const { armInboxWake } = await import('../../../events/await/inbox-wake-arm');
+            await armInboxWake({ ownerId: session.coordOwnerId });
+          } else {
+            process.stderr.write(
+              `[bootstrap-su] resumed inbox-wake arm skipped: no coord owner for adv session ${parsed.advSessionId}\n`,
+            );
+          }
+        } catch (err) {
+          process.stderr.write(
+            `[bootstrap-su] resumed inbox-wake arm failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+      }
       return jsonRes({ ok: true, finalized, resumeClaimKey: parsed.resumeClaimKey });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
