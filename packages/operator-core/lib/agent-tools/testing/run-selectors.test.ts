@@ -1,4 +1,6 @@
-import { join } from 'node:path';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import runTool, {
@@ -8,6 +10,7 @@ import runTool, {
   emptyDistilledRunRefusal,
   nameFilterNoMatchRefusal,
   resolveDetachedHarnessSlug,
+  selectTestFileRoot,
   testEvidenceRecoveryRunId,
 } from './run';
 import { REPO_ROOT } from '../docs/_repo-paths';
@@ -228,6 +231,43 @@ describe('testing:run selector arbitration', () => {
     // measure-nothing hazard wearing a different hat.
     expect(runTool.args.safeParse({ files: [] }).success).toBe(false);
     expect(runTool.args.safeParse({ changedPaths: [] }).success).toBe(false);
+  });
+});
+
+describe('testing:run cross-hive root fallback reproduction (EI-24176097539238030)', () => {
+  const files = ['packages/operator-core/lib/testing-flakiness.test.ts'];
+  const unrelatedHiveRoot = '/tmp/unrelated-hive';
+
+  it('does not use the operator process REPO_ROOT when an unrelated caller requests its test path', () => {
+    expect(selectTestFileRoot(files, unrelatedHiveRoot, { discoveredRoots: [] })).toEqual({
+      root: unrelatedHiveRoot,
+      source: 'requested',
+    });
+  });
+
+  it('rejects a release/checkpoint-style worktree as the configured canonical fallback', async () => {
+    const releaseWorktree = await mkdtemp(join(tmpdir(), 'papercup-release-root-fallback-'));
+    const file = join(releaseWorktree, files[0]!);
+    try {
+      await writeFile(join(releaseWorktree, '.git'), 'gitdir: /tmp/worktrees/release/.git');
+      await writeFile(
+        join(releaseWorktree, 'package.json'),
+        JSON.stringify({ private: true, workspaces: ['packages/*'] }),
+      );
+      await mkdir(join(releaseWorktree, 'scripts'), { recursive: true });
+      await writeFile(join(releaseWorktree, 'scripts', 'test-files.mjs'), 'process.exit(0);\n');
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, 'export {};\n');
+
+      expect(
+        selectTestFileRoot(files, unrelatedHiveRoot, {
+          discoveredRoots: [],
+          canonicalRepoRoot: releaseWorktree,
+        }),
+      ).toEqual({ root: unrelatedHiveRoot, source: 'requested' });
+    } finally {
+      await rm(releaseWorktree, { recursive: true, force: true });
+    }
   });
 });
 

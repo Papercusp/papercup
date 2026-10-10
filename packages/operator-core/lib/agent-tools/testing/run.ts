@@ -97,7 +97,7 @@ import {
   type SpawnRequest,
 } from '../../testing-run-store';
 import { deriveAffectedPlan } from './affected-plan';
-import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { resolveAgentWorkspaceRoot, resolveCapabilityIntegrationRoot } from '../capability/base-dir';
 import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
@@ -606,6 +606,15 @@ function isWorkspaceCheckoutRoot(root: string): boolean {
   }
 }
 
+/** A configured canonical fallback must be a real checkout, not a release/checkpoint worktree. */
+function isCanonicalWorkspaceTestRoot(root: string): boolean {
+  try {
+    return statSync(join(root, '.git')).isDirectory() && isWorkspaceCheckoutRoot(root);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Discover independent workspace checkouts sitting beside the requested repo.
  *
@@ -783,9 +792,11 @@ function testFilesResolveAtRoot(files: string[], root: string): boolean {
 /**
  * WI-41400 — select the direct testing:run handler's tree before the core's loud
  * invalid-root pre-flight. A valid requested checkout stays authoritative. A stale
- * phantom root may fall back to exactly one discovered Hive checkout, then to the
- * canonical repo only when there was no discovered match. Ambiguity preserves the
- * requested root so the core refuses loudly instead of choosing an arbitrary tree.
+ * phantom root may fall back to exactly one discovered Hive checkout, then to an
+ * explicitly configured canonical integration checkout. The operator process root
+ * is not evidence that a tree is canonical: on :3070 it may be papercup-release.
+ * Ambiguity preserves the requested root so the core refuses loudly instead of
+ * choosing an arbitrary tree.
  */
 export function selectTestFileRoot(
   files: string[],
@@ -798,13 +809,16 @@ export function selectTestFileRoot(
   const preferredRoot = checkoutRootForTestFiles(files, requested);
   const preferredSource: TestFileRootSource =
     resolve(preferredRoot) === resolve(requested) ? 'requested' : 'absolute-file-checkout';
+  const canonicalFallback = opts.canonicalRepoRoot && isCanonicalWorkspaceTestRoot(opts.canonicalRepoRoot)
+    ? { root: opts.canonicalRepoRoot, source: 'canonical-repo' as const }
+    : undefined;
   const selected = selectUnambiguousEvidenceRoot<TestFileRootSource>({
     preferred: { root: preferredRoot, source: preferredSource },
     candidates: (opts.discoveredRoots ?? discoverKnownHiveCheckoutRoots()).map((root) => ({
       root,
       source: 'hive-checkout',
     })),
-    fallback: { root: opts.canonicalRepoRoot ?? REPO_ROOT, source: 'canonical-repo' },
+    ...(canonicalFallback ? { fallback: canonicalFallback } : {}),
     resolvesEvery: (root) => testFilesResolveAtRoot(files, root),
   });
   return selected ?? { root: preferredRoot, source: preferredSource };
@@ -3956,7 +3970,9 @@ export default defineTool({
       if (!registeredRoot.ok) return { data: registeredRoot };
       rootSelection = registeredRoot.selection;
     } else {
-      rootSelection = selectTestFileRoot(files, resolveAgentWorkspaceRoot(ctx));
+      rootSelection = selectTestFileRoot(files, resolveAgentWorkspaceRoot(ctx), {
+        canonicalRepoRoot: resolveCapabilityIntegrationRoot(),
+      });
     }
     const allowSiblingCheckoutFallback = rootSelection.source !== 'registered-harness';
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
