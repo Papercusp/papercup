@@ -94,7 +94,7 @@ interface SafeIntegrationStatus {
   accounts?: Array<SafeGoogleAccountStatus | SafeFacebookAccountStatus>;
 }
 
-type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts' | 'youtube';
+export type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts' | 'youtube';
 
 interface SafeGoogleCapability {
   id: GoogleCapabilityId;
@@ -123,7 +123,7 @@ interface SafeFacebookAccountStatus {
   sources: SafeIntegrationSource[];
 }
 
-const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
+export const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
   id: GoogleCapabilityId;
   sourceKind: SafeGoogleCapability['sourceKind'];
   requiredScopes: readonly string[];

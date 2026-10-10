@@ -758,6 +758,152 @@ describe('Codex native id discovered after carry binding deadline (EI-2534455650
   });
 });
 
+describe('unbound Codex successor is replaced or refused, never stranded (P-005 / D-003)', () => {
+  const readEvents = (ownerId: string): Array<Record<string, unknown>> =>
+    existsSync(eventLogPathForOwner(ownerId))
+      ? readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+  const cleanupHost = async (ownerId: string, root: string, done: Promise<unknown>) => {
+    await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+    await done;
+    for (const file of [eventLogPathForOwner(ownerId), metaPathFor(ownerId), socketPathFor(ownerId)]) {
+      rmSync(file, { force: true });
+    }
+    rmSync(root, { recursive: true, force: true });
+  };
+
+  it('replaces a carry successor that never exposes its native id within the spawn-anchored window', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-unbound-carry-'));
+    const ownerId = uniqueOwner('UNBOUND-CARRY');
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const marker = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧';
+    const carry = marker + '\nContinue the saved task';
+    const { captured, io } = fakeIo();
+    const reportedIds: string[] = [];
+    let mints = 0;
+    const freshCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('FRESH-BOOT\\n');",
+      "setTimeout(()=>process.stdout.write('100% context left\\n'),100);",
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+      'setTimeout(()=>process.exit(0),15000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "process.stdout.write('OLD-READY\\n');setTimeout(()=>process.exit(0),15000);"],
+      cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '60',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '150',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '8000',
+        PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS: '400',
+      }),
+      ownerId,
+      io,
+      bridgeTty: false,
+      // Only the FIRST successor is wedged (the measured update-menu case); its
+      // fresh-epoch replacement mints and exposes an id normally.
+      resolveRespawnNativeId: () => (mints >= 2 ? nativeId : null),
+      mintCarryRespawnArgs: () => { mints += 1; return { args: ['-e', freshCode], nativeId: null }; },
+      onRespawn: async (id: string) => { reportedIds.push(id); return true; },
+      emitCompacted: () => null,
+      onExit: () => {},
+    });
+    try {
+      expect(await waitForOutput(captured, 'OLD-READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      await injectIntoHost(socketPathFor(ownerId), {
+        mode: 'carry-respawn', data: carry, systemPromptAddendum: 'saved task', ownerId,
+      });
+      const deadline = Date.now() + 7000;
+      let events = readEvents(ownerId);
+      while (Date.now() < deadline &&
+        !events.some((event) => event.kind === 'respawn-binding-confirmed' && event.nativeId === nativeId)) {
+        await sleep(25);
+        events = readEvents(ownerId);
+      }
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', windowMs: 400,
+      }));
+      const retry = events.find((event) => event.kind === 'respawn-carry-fresh-epoch-retry');
+      expect(retry).toMatchObject({ reason: 'successor-native-id-missing' });
+      // Bounded by the 400ms spawn-anchored window, not the 8s carry budget
+      // (pre-fix: no retry at all, a terminal drop after the full budget).
+      const firstRespawn = events.find((event) => event.kind === 'respawned');
+      expect(Date.parse(String(retry?.ts)) - Date.parse(String(firstRespawn?.ts))).toBeLessThan(4000);
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-binding-confirmed', nativeId }));
+      expect(reportedIds).toEqual([nativeId]);
+      expect(await waitForOutput(captured, marker)).toBe(true);
+    } finally {
+      await cleanupHost(ownerId, root, done);
+    }
+  }, 25_000);
+
+  it('refuses wakes to a still-unbound child as a durable deferral, then self-heals once it binds', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-unbindable-wake-'));
+    const ownerId = uniqueOwner('UNBINDABLE-WAKE');
+    const sock = socketPathFor(ownerId);
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const { captured, io } = fakeIo();
+    let resolvedNativeId: string | null = null;
+    const childCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+      'setTimeout(()=>process.exit(0),15000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
+        PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS: '300',
+        // Isolate (c): no fresh-child replacement, so the wedged child stays.
+        PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '0',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+      }),
+      ownerId, io, bridgeTty: false,
+      kickoff: 'saved carry', adoptedCarryRespawn: { nativeId: null },
+      resolveRespawnNativeId: () => resolvedNativeId,
+      onRespawn: async () => true,
+      emitCompacted: () => null, onExit: () => {},
+    });
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline &&
+        !readEvents(ownerId).some((event) => event.kind === 'respawn-binding-unconfirmed')) await sleep(20);
+      await sleep(400); // the child is now past its 300ms window
+      const wake = { mode: 'turn' as const, ownerId, data: 'later wake', deliveryId: 'unbindable-wake-1' };
+      // Pre-fix: { ok: true, reason: 'accepted' }, then `pending-delivery-id` on
+      // every retry while the pipeline waited on a child that could never bind.
+      expect(await injectIntoHostWithConfirmation(sock, wake))
+        .toMatchObject({ ok: false, reason: 'deferred-successor-unbindable' });
+      expect(await injectIntoHostWithConfirmation(sock, wake))
+        .toMatchObject({ ok: false, reason: 'deferred-successor-unbindable' });
+      expect(readEvents(ownerId).filter((event) => event.kind === 'successor-unbindable-refused')).toHaveLength(1);
+      expect(captured()).not.toContain('INPUT:later wake');
+      // The id appears (e.g. an owner dismissed the menu): the next wake binds and lands.
+      resolvedNativeId = nativeId;
+      expect(await injectIntoHostWithConfirmation(sock, { ...wake, deliveryId: 'unbindable-wake-2' }))
+        .toMatchObject({ ok: true, reason: 'accepted' });
+      expect(await waitForOutput(captured, 'INPUT:later wake')).toBe(true);
+      expect(readEvents(ownerId)).toContainEqual(expect.objectContaining({
+        kind: 'respawn-binding-confirmed', nativeId,
+      }));
+    } finally {
+      await cleanupHost(ownerId, root, done);
+    }
+  }, 25_000);
+});
+
 describe('host-code-adopted carry with a late Codex native id (EI-24961854655864836)', () => {
   it.each([['adopted', true], ['adopted', false], ['in-place', true], ['in-place', false]] as const)(
     'gates %s carry before submission, then proves delivery (confirmation %s)',

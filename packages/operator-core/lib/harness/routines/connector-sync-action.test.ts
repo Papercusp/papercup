@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { ExternalTriggerSourceRow } from '../../external-triggers/source-store';
 import { syncGoogleContacts } from '../../personal-vault/live-sink';
+import { GOOGLE_CAPABILITY_DEFS, type GoogleCapabilityId } from '../../endpoint-route/routes/user/personal-vault';
+import { GOOGLE_WORKSPACE_SOURCE_KINDS } from '../../external-triggers/google-workspace';
 import { getSystemAction, type SystemActionCtx } from './system-actions';
 import {
   runConnectorSyncAction,
@@ -30,7 +32,53 @@ function source(id: string, config: Record<string, unknown> = {}): ExternalTrigg
   };
 }
 
+/**
+ * D-038 recurrence guard: every surfaced Google Personal Vault capability must
+ * have an explicit sync disposition. Gmail and Calendar use connector-sync
+ * providers, Contacts uses the custom Vault poller, and YouTube remains an
+ * explicit missing-ingest gap until it is wired or removed from the capability
+ * definition.
+ */
+const GOOGLE_VAULT_INGEST_COVERAGE = {
+  gmail: { sourceKind: 'gmail', route: 'connector-sync-provider' },
+  calendar: { sourceKind: 'gcal', route: 'connector-sync-provider' },
+  contacts: { sourceKind: 'contacts', route: 'connector-sync-contacts-poller' },
+  youtube: {
+    sourceKind: 'youtube',
+    route: 'missing',
+    reason: 'No YouTube-specific Personal Vault poller is wired into connector-sync.',
+  },
+} as const satisfies Readonly<
+  Record<
+    GoogleCapabilityId,
+    {
+      sourceKind: (typeof GOOGLE_CAPABILITY_DEFS)[number]['sourceKind'];
+      route: 'connector-sync-provider' | 'connector-sync-contacts-poller' | 'missing';
+      reason?: string;
+    }
+  >
+>;
+
 describe('connector-sync Google Contacts Personal Vault path', () => {
+  it('accounts for every surfaced Google capability, including the missing YouTube Vault ingest', () => {
+    const surfacedIds = GOOGLE_CAPABILITY_DEFS.map(({ id }) => id).sort();
+    expect(Object.keys(GOOGLE_VAULT_INGEST_COVERAGE).sort()).toEqual(surfacedIds);
+
+    for (const definition of GOOGLE_CAPABILITY_DEFS) {
+      expect(GOOGLE_VAULT_INGEST_COVERAGE[definition.id].sourceKind).toBe(definition.sourceKind);
+    }
+
+    const connectorProviderKinds = Object.values(GOOGLE_VAULT_INGEST_COVERAGE)
+      .filter((entry) => entry.route === 'connector-sync-provider')
+      .map((entry) => entry.sourceKind)
+      .sort();
+    expect(connectorProviderKinds).toEqual(GOOGLE_WORKSPACE_SOURCE_KINDS.filter((kind) => kind !== 'contacts').sort());
+    expect(GOOGLE_VAULT_INGEST_COVERAGE.youtube).toMatchObject({
+      route: 'missing',
+      reason: expect.stringContaining('No YouTube-specific Personal Vault poller'),
+    });
+  });
+
   it('polls connected sources with their token-store install and retries a People API 401', async () => {
     const current = source('contacts-one', { installSlug: 'google-install' });
     const sql = {} as Sql;

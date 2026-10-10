@@ -189,6 +189,9 @@ const {
   carryTurnProofRequiresNativeId,
   shouldRetryCarryOnFreshEpoch,
   shouldRetryLaunchKickoffOnFreshChild,
+  isUnbindableChild,
+  unboundChildWindowMs,
+  UNBOUND_CHILD_WINDOW_MS,
   shouldRedeliverLaunchKickoffAfterRespawn,
   LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX,
   launchKickoffCodexStartingOptions,
@@ -1955,6 +1958,25 @@ describe('carry binding before first-turn work (EI-24961854655864836)', () => {
     expect(await waitForRespawnBinding({ report, timeoutMs: 1, pollMs: 1 }))
       .toMatchObject({ ok: false, reason: 'successor-native-id-missing' });
     expect(report).not.toHaveBeenCalled();
+  });
+
+  it('bounds only id DISCOVERY by discoveryTimeoutMs, not the report (P-005 / D-003)', async () => {
+    // Missing id: returns at the discovery bound, long before the report budget.
+    const started = Date.now();
+    expect(await waitForRespawnBinding({ timeoutMs: 5_000, discoveryTimeoutMs: 30, pollMs: 5 }))
+      .toMatchObject({ ok: false, reason: 'successor-native-id-missing' });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // A spent window still probes once: a late id is found and its slow report
+    // may confirm within the full budget instead of being cut at the window.
+    let confirm!: () => void;
+    const pending = waitForRespawnBinding({
+      readNativeId: () => 'late-id', timeoutMs: 2_000, discoveryTimeoutMs: 0, pollMs: 5,
+      report: (_id: string, options: { onConfirmed: () => void }) => { confirm = options.onConfirmed; return false; },
+    });
+    await vi.waitFor(() => expect(confirm).toBeTypeOf('function'));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    confirm();
+    expect(await pending).toMatchObject({ ok: true, nativeId: 'late-id' });
   });
 });
 
@@ -4081,6 +4103,37 @@ describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
       maxRetries: 1,
     })).toBe(false);
   });
+
+  it('replaces a child that never exposed its native id, within the same bound (P-005)', () => {
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'successor-native-id-missing' })).toBe(true);
+    expect(shouldRetryCarryOnFreshEpoch({
+      reason: 'successor-native-id-missing', retryCount: 1, maxRetries: 1,
+    })).toBe(false);
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'successor-native-id-missing', drillId: 'drill-1' })).toBe(false);
+    // A found id whose operator report is slow is not a wedged child.
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'successor-reanchor-unconfirmed' })).toBe(false);
+  });
+});
+
+describe('unbindable child predicate (P-005 / D-003)', () => {
+  const base = { bindingOwed: true, childStartedAtMs: 1_000, windowMs: 120_000, probedNativeId: null };
+
+  it('is true only past the spawn-anchored window with no id on a fresh probe', () => {
+    expect(isUnbindableChild({ ...base, nowMs: 1_000 + 120_000 })).toBe(true);
+    expect(isUnbindableChild({ ...base, nowMs: 1_000 + 119_999 })).toBe(false);
+    // Self-healing: an id that appears later ends the refusal.
+    expect(isUnbindableChild({ ...base, nowMs: 1_000 + 500_000, probedNativeId: 'late-id' })).toBe(false);
+    expect(isUnbindableChild({ ...base, bindingOwed: false, nowMs: 1_000 + 500_000 })).toBe(false);
+    expect(isUnbindableChild({ ...base, childStartedAtMs: 0, nowMs: 500_000 })).toBe(false);
+    expect(isUnbindableChild()).toBe(false);
+  });
+
+  it('defaults the window to 120s and honours a positive env override only', () => {
+    expect(UNBOUND_CHILD_WINDOW_MS).toBe(120_000);
+    expect(unboundChildWindowMs({})).toBe(120_000);
+    expect(unboundChildWindowMs({ PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS: '300' })).toBe(300);
+    expect(unboundChildWindowMs({ PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS: 'junk' })).toBe(120_000);
+  });
 });
 
 describe('launch kickoff fresh-child retry (WI-10004943)', () => {
@@ -4101,6 +4154,15 @@ describe('launch kickoff fresh-child retry (WI-10004943)', () => {
     expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, isResume: true, reason: stuck })).toBe(false);
     expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, agent: 'claude', reason: stuck })).toBe(false);
     expect(shouldRetryLaunchKickoffOnFreshChild()).toBe(false);
+  });
+
+  it('also replaces an adopted-carry child that never exposed its native id (P-005)', () => {
+    const missing = 'successor-native-id-missing';
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: missing })).toBe(true);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: missing, retryCount: 1 })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, isResume: true, reason: missing })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, agent: 'claude', reason: missing })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: 'successor-reanchor-unconfirmed' })).toBe(false);
   });
 
   it('arms the early Starting drop only while a retry remains; the last attempt holds', () => {

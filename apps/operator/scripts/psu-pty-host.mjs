@@ -12569,6 +12569,30 @@ export function hostThroughPty(o) {
         }
         return { ok: true, reason: duplicateReason };
       }
+      // P-005(c) / D-003: refuse BEFORE the ACK and before markPending. The
+      // `deferred-` prefix is load-bearing: wake-executor's parkOnHostDeferral
+      // parks only `deferred-*` refusals; any other ok:false falls through to
+      // resume-headless, a second process on this live session.
+      if ((msg.mode === 'turn' || msg.mode === 'reset') && currentChildUnbindable()) {
+        if (unbindableRefusalChild !== child) {
+          unbindableRefusalChild = child;
+          appendHostEvent(ownerId, 'successor-unbindable-refused', {
+            mode: msg.mode,
+            childAgeMs: Date.now() - childStartedAtMs,
+            windowMs: unboundWindowMs,
+          });
+          try {
+            writeHostDiagnostic(
+              `psu-pty-host: ${ownerId} child pid ${child.pid} has no native id after ` +
+                `${Math.round((Date.now() - childStartedAtMs) / 1000)}s; refusing ${msg.mode} deliveries ` +
+                'as deferred-successor-unbindable until it binds\n',
+            );
+          } catch {
+            /* diagnostic only */
+          }
+        }
+        return { ok: false, reason: 'deferred-successor-unbindable' };
+      }
       // SHUTDOWN (WI-6638) — wind this session down and EXIT, closing its tab.
       //
       // Handled HERE, before the coalescer / carry-rearm / inject gates: those all
