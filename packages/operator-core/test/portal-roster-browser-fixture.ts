@@ -333,7 +333,9 @@ async function runPrivatePromptsTab(page: Page, context: BrowserContext, input: 
   const filter = page.getByRole('textbox', { name: 'Filter prompts', exact: true });
   await filter.fill(marker);
   await page.waitForFunction(value => new URL(location.href).searchParams.get('qpq') === value, marker);
-  await page.getByRole('button', { name: `Zoom into ${marker} (drag to move)`, exact: true }).click();
+  const zoom = page.getByRole('button', { name: `Zoom into ${marker} (drag to move)`, exact: true });
+  assert.notEqual(await zoom.getAttribute('aria-disabled'), 'true', 'filter disables dragging, not the independent zoom action');
+  await zoom.click();
   await page.waitForFunction(value => new URL(location.href).searchParams.get('qpzoom') === value, id);
   const deepLink = page.url();
   await page.reload();
