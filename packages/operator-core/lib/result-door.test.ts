@@ -3052,8 +3052,10 @@ describe('applyResultDoor', () => {
       expect(envelope.incomplete.note).toContain('rawRef');
       expect(envelope.incomplete.note).toContain('For other fields omitted by the upstream payload projection');
       expect(envelope.incomplete.note).toContain("Re-call work_items:get with payloadTier:'full'");
-      expect((doored._meta as { resultDoor: { innerTruncationMarkers: string[] } }).resultDoor.innerTruncationMarkers)
-        .toContain('textTruncated');
+      const resultDoorMeta = (doored as unknown as {
+        _meta?: { resultDoor?: { innerTruncationMarkers?: string[] } };
+      })._meta?.resultDoor;
+      expect(resultDoorMeta?.innerTruncationMarkers).toContain('textTruncated');
     });
 
     it('shows a schema-compatible dispatch path for framework-reserved payloadTier', () => {
