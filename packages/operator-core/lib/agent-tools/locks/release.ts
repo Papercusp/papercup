@@ -7,6 +7,7 @@
  * loop the result.
  */
 
+import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readFileLockIdentity } from './identity';
@@ -36,6 +37,7 @@ import { recordEditAttribution, recordEditAttributionStrict } from '../../edit-a
 import { recordRestrictedEditBeforeRelease } from '../../personal-vault/git-sync-hold';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
+import { resolveExternalPathLockIdentity } from './external-path';
 import { domainsHoldingLocks, ownedLocksForPaths, type OwnedLockPaths } from './owner-lock-domains';
 import { releaseAllOwnedLocks } from './release-all-owned';
 
@@ -56,6 +58,20 @@ const lockIdSchema = z.string().uuid({
 const textResult = (value: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(value) }],
 });
+
+function normalizeReleasePaths(paths: string[] | undefined): string[] | undefined {
+  if (paths === undefined) return undefined;
+  return paths.map((path) => {
+    if (!isAbsolute(path)) return path;
+    const identity = resolveExternalPathLockIdentity(path);
+    if (identity.coordinationDomain) {
+      throw new Error(
+        'absolute managed-repository paths are not supported by locks:release paths; pass the lock_id to select that exact file lock',
+      );
+    }
+    return identity.path;
+  });
+}
 
 /**
  * WI-10006831 — attribute a native edit made under a lock the caller STILL holds.
@@ -148,9 +164,9 @@ async function attestRetainedNativeEdit(input: {
 export default defineTool({
   name: 'locks:release',
   description:
-    'Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. A named-resource UUID is rejected with guidance to use locks:release_resource. Fires the classic file-lock grant cascade for waiting agents.',
+    'Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Path-only selection is caller-owned and grouped by lock_id before release. Absolute home/XDG-runtime paths in paths are normalized to the canonical external lock key; use lock_id for absolute managed-repository files. Many: pass lock_ids:[…]. A named-resource UUID is rejected with guidance to use locks:release_resource. Fires the classic file-lock grant cascade for waiting agents.',
   guidance: {
-    when: 'Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id.',
+    when: 'Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. The paths selector accepts repo-relative paths, canonical @external/* keys, or absolute home/XDG-runtime paths (normalized to the canonical key). Use lock_id for an absolute managed-repository file. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id.',
     notWhen: 'Mid-edit. The lock should outlive the edit by enough that no other agent races between release and PR merge.',
     chaining: 'locks:acquire or locks:acquire_granular → work → locks:release { lock_id } or { lock_ids:[…] }. If a classic file-lock id was lost, locks:queue → select your active row\'s lock_id → locks:release { lock_id }. Or: session-end → locks:release { all_mine: true }.',
     seeAlso: [
@@ -173,7 +189,7 @@ export default defineTool({
     paths: z
       .array(z.string())
       .optional()
-      .describe('path filter for a selected lock_id, or a path-only selector for your active locks across all coordination domains'),
+      .describe('repo-relative paths, canonical @external/* lock keys, or absolute home/XDG-runtime files (normalized to their canonical key); path filter for a selected lock_id or path-only selector across coordination domains. Use lock_id for an absolute managed-repository file.'),
     coordination_domain: z
       .string()
       .min(1)
@@ -250,7 +266,17 @@ export default defineTool({
       );
     }
 
-    const hasPathSelector = (args.paths?.length ?? 0) > 0;
+    let selectedPaths: string[] | undefined;
+    try {
+      selectedPaths = normalizeReleasePaths(args.paths);
+    } catch (err) {
+      return textResult({
+        ok: false,
+        error: 'locks:release could not resolve path selector: ' + (err instanceof Error ? err.message : String(err)),
+      });
+    }
+
+    const hasPathSelector = (selectedPaths?.length ?? 0) > 0;
     if (lockIds.length === 0 && !args.all_mine && !hasPathSelector) {
       return {
         content: [
@@ -492,7 +518,7 @@ export default defineTool({
     async function releaseFileLocks(
       lockId: string | undefined,
       allMine = false,
-      paths: string[] | undefined = args.paths,
+      paths: string[] | undefined = selectedPaths,
     ): Promise<ReleaseOutcome> {
       const primary = await releaseInDomain(coordinationDomain, lockId, allMine, paths);
       if (primary.released.length > 0) return primary;
@@ -576,7 +602,7 @@ export default defineTool({
     if (lockIds.length === 0 && hasPathSelector) {
       let selected: OwnedLockPaths[];
       try {
-        selected = await ownedLocksForPaths({ ownerId, paths: args.paths ?? [] });
+        selected = await ownedLocksForPaths({ ownerId, paths: selectedPaths ?? [] });
       } catch (err) {
         return {
           content: [

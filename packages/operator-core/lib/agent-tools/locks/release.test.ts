@@ -6,8 +6,11 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/release.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { mockRejectedTyped, mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 import type { ActiveLockRow } from './su-lock-store';
+import { resolveExternalPathLockIdentity } from './external-path';
 
 /** The release outcome release.ts decodes — see its `ReleaseOutcome`. */
 type ReleaseOutcomeShape = { released: string[]; heldBefore: number | null };
@@ -298,6 +301,46 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
       ],
     });
     expect(routeM.mock.calls.map((call) => call[0])).toEqual(['dom', HIVE, 'dom', OTHER]);
+  });
+
+  it('normalizes an absolute home path before selecting the caller-owned external lock', async () => {
+    const absolute = join(homedir(), '.papercusp-release-test', 'fixture.json');
+    const identity = resolveExternalPathLockIdentity(absolute);
+    expect(identity.coordinationDomain).toBeUndefined();
+    routeByDomain((domain) => domain === HIVE
+      ? { value: { released: [identity.path], heldBefore: 1 }, via: 'local-authority' }
+      : { value: { released: [], heldBefore: 0 }, via: 'local-authority' });
+    heldIn(activeLock(LOCK, HIVE, identity.path));
+
+    const b = body(await call({ paths: [absolute] }));
+
+    expect(readQueueM.mock.calls[0]?.[1]).toMatchObject({
+      coordinationDomain: null,
+      owner: 'me',
+      paths: [identity.path],
+    });
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [{
+        ok: true,
+        lock_id: LOCK,
+        requested_paths: [identity.path],
+        released: [identity.path],
+        cross_domain_released: [{ coordination_domain: HIVE, released: [identity.path] }],
+      }],
+    });
+  });
+
+  it('rejects absolute paths outside home/runtime instead of returning an empty successful selection', async () => {
+    const b = body(await call({ paths: ['/etc/hosts'] }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('locks:release could not resolve path selector'),
+    });
+    expect(readQueueM).not.toHaveBeenCalled();
+    expect(routeM).not.toHaveBeenCalled();
   });
 
   it('returns an empty keyed envelope when no requested path is held by the caller', async () => {
