@@ -39,6 +39,7 @@ import {
   getLatestActivationAudit,
   getLatestPlanAudit,
   recordCurrentActivationAudit,
+  previewCurrentActivationAudit,
   recordPlanAudit,
 } from './plan-audits';
 import {
@@ -675,6 +676,13 @@ describe('migration 938 activation-audit ledger', () => {
     await db.sql`INSERT INTO harness_shared.plan_revisions
       (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
       VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 71, ${neutralHash}, ${neutral})`;
+    const previewState = await db.sql`SELECT content, version, template_data, acceptance_bar_verified_revision
+      FROM harness_shared.harness_plans ORDER BY plan_slug`;
+    const neutralPreview = await previewCurrentActivationAudit(input);
+    expect(neutralPreview, JSON.stringify(neutralPreview)).toMatchObject({ ok: true, preview: true,
+      auditedPlanRevision: { seq: 71 }, barSeed: { rubricRevision: 2, rubricChanged: false } });
+    expect(await db.sql`SELECT content, version, template_data, acceptance_bar_verified_revision
+      FROM harness_shared.harness_plans ORDER BY plan_slug`).toEqual(previewState);
     const neutralAudit = await recordCurrentActivationAudit(input);
     expect(neutralAudit).toMatchObject({ ok: true, auditedPlanRevision: { seq: 71 },
       barSeed: { rubricRevision: 2, rubricChanged: false } });
@@ -785,6 +793,107 @@ describe('migration 938 activation-audit ledger', () => {
       SELECT template_data FROM harness_shared.harness_plans
        WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
     expect(afterDecision!.template_data).toEqual(expectedNeutral);
+  });
+
+  it('previews and adopts a complete plaintext successor without changing eight historical hashes or writing during preview', async () => {
+    await seedPostEpochPlan();
+    const input = {
+      workspaceId: 'activation-audit-test', harnessSlug: 'papercusp',
+      planSlug: 'post-epoch-seed-target', createdBy: 'su-seeder', classRef: evaluatedClassRef,
+      activation: { ...payload, mappings: [{ ...payload.mappings[0],
+        planTargets: ['P-001', 'P-002', 'section:Requirements'] }] },
+    };
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({ ok: true });
+    const criteria = Array.from({ length: 14 }, (_, index) => {
+      const n = index + 1;
+      const outcome = `The exact result ${n} is observable.`;
+      return normalizeAcceptanceBarCriterion({ key: `r-${n}`, barKey: `R-${n}`, title: `Result ${n}`,
+        model: n <= 8 ? `Result ${n}. ${outcome}` : outcome,
+        ...(n > 8 ? { intent: { request: outcome } } : {}),
+        driftMarkers: `Result ${n} is absent.`, role: 'outcome', mandatory: true,
+        requiredScope: ['tree'], evidencePlane: 'tree', passRatings: ['healthy'],
+        requiredTestLayers: ['integration'], method: `Read result ${n} from the canonical writer.`,
+        barProvenance: { lifecycle: 'pre-implementation', declaredAt: '2026-09-04T20:00:00.000Z', declaredBy: 'su-seeder' },
+        check: { kind: 'tests', files: ['packages/operator-core/lib/plan-activation-audits.integration.test.ts'] },
+      });
+    });
+    const source = postEpochContent.replace(/## Requirements[\s\S]*?## Phase 1/, `## Requirements\n\n${
+      criteria.map((criterion, index) => `**${criterion.barKey} — ${criterion.title}.** The exact result ${index + 1} is observable.`).join('\n\n')
+    }\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n${
+      criteria.map((criterion) => `| ${criterion.barKey} | ${criterion.barKey === 'R-2' ? 'P-001, P-002' : 'P-001'} | tree |`).join('\n')
+    }\n\n## Phase 1`);
+    const sourceHash = hashPlanContent(source);
+    await db.sql`UPDATE harness_shared.harness_plans SET content = ${source}, content_hash = ${sourceHash},
+      version = 8 WHERE plan_slug = 'post-epoch-seed-target'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
+      VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 8, ${sourceHash}, ${source})`;
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({ ok: true, barSeed: null,
+      barSeedPendingAmendment: { rubricSlug: 'acceptance-post-epoch-seed-target' } });
+    await db.sql`UPDATE harness_shared.harness_plans SET status = 'superseded'
+      WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    const [historical] = await db.sql<Array<{ template_data: unknown }>>`
+      SELECT template_data FROM harness_shared.harness_plans WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    const successor = { ...rubricTemplateDataSchema.parse(historical!.template_data), criteria };
+    delete successor.barContract;
+    delete successor.barSetHash;
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, version, template, template_data)
+      VALUES ('activation-audit-test', 'papercusp', 'acceptance-plaintext-successor', 'Successor', 'active',
+        'Reviewed successor', ${hashPlanContent('Reviewed successor')}, 3, 'rubric', ${JSON.stringify(successor)}::text::jsonb)`;
+    const snapshot = () => db.sql`
+      SELECT jsonb_build_object(
+        'plans', (SELECT jsonb_agg(to_jsonb(p) ORDER BY plan_slug) FROM harness_shared.harness_plans p),
+        'audits', (SELECT jsonb_agg(to_jsonb(a) ORDER BY audit_seq) FROM harness_shared.plan_audits a),
+        'revisions', (SELECT jsonb_agg(to_jsonb(r) ORDER BY id) FROM harness_shared.plan_revisions r),
+        'clauses', (SELECT jsonb_agg(to_jsonb(c) ORDER BY spec_id) FROM harness_shared.plan_spec_clauses c),
+        'clauseRevisions', (SELECT jsonb_agg(to_jsonb(r) ORDER BY spec_id, revision) FROM harness_shared.plan_spec_clause_revisions r)
+      ) AS state`;
+    const drifted = source.replace('The exact result 1 is observable.', 'A different result is observable.');
+    const driftedHash = hashPlanContent(drifted);
+    await db.sql`UPDATE harness_shared.harness_plans SET content = ${drifted}, content_hash = ${driftedHash},
+      version = 9 WHERE plan_slug = 'post-epoch-seed-target'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
+      VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 9, ${driftedHash}, ${drifted})`;
+    const driftBefore = await snapshot();
+    for (const operation of [previewCurrentActivationAudit, recordCurrentActivationAudit]) {
+      expect(await operation(input)).toMatchObject({ ok: false, error: 'bar_rubric_conflict' });
+      expect(await snapshot()).toEqual(driftBefore);
+    }
+    await db.sql`UPDATE harness_shared.harness_plans SET content = ${source}, content_hash = ${sourceHash},
+      version = 8 WHERE plan_slug = 'post-epoch-seed-target'`;
+    const incomplete = { ...successor, criteria: successor.criteria.map((criterion, index) => {
+      if (index !== 0) return criterion;
+      const { method: _method, ...withoutMethod } = criterion;
+      return withoutMethod;
+    }) };
+    await db.sql`UPDATE harness_shared.harness_plans SET template_data = ${JSON.stringify(incomplete)}::text::jsonb
+      WHERE plan_slug = 'acceptance-plaintext-successor'`;
+    const incompleteBefore = await snapshot();
+    for (const operation of [previewCurrentActivationAudit, recordCurrentActivationAudit]) {
+      expect(await operation(input)).toMatchObject({ ok: false, error: 'bar_contract_method_missing' });
+      expect(await snapshot()).toEqual(incompleteBefore);
+    }
+    await db.sql`UPDATE harness_shared.harness_plans SET template_data = ${JSON.stringify(successor)}::text::jsonb
+      WHERE plan_slug = 'acceptance-plaintext-successor'`;
+    const before = await snapshot();
+    const preview = await previewCurrentActivationAudit(input);
+    expect(preview, JSON.stringify(preview)).toMatchObject({ ok: true, preview: true,
+      barSeed: { rubricSlug: 'acceptance-plaintext-successor', rubricRevision: 4, bars: 14 } });
+    expect(await snapshot()).toEqual(before);
+    const applied = await recordCurrentActivationAudit(input);
+    expect(applied, JSON.stringify(applied)).toMatchObject({ ok: true,
+      barSeed: { rubricSlug: 'acceptance-plaintext-successor', rubricRevision: 4, bars: 14 } });
+    if (!preview.ok || !applied.ok) throw new Error('positive control must adopt');
+    expect(applied.barSeed!.barSetHash).toEqual(preview.barSeed!.barSetHash);
+    const [stored] = await db.sql<Array<{ template_data: unknown }>>`
+      SELECT template_data FROM harness_shared.harness_plans WHERE plan_slug = 'acceptance-plaintext-successor'`;
+    expect(rubricTemplateDataSchema.parse(stored!.template_data).criteria).toEqual(criteria);
+    expect(await db.sql`SELECT template_data FROM harness_shared.harness_plans
+      WHERE plan_slug = 'acceptance-post-epoch-seed-target'`).toEqual([historical]);
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({ ok: true,
+      barSeed: { rubricRevision: 4, rubricChanged: false } });
   });
 
   it('adopts an unstarted successor for a reopened draft without rewriting retired validation history', async () => {

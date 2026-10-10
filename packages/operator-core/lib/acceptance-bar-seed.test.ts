@@ -72,6 +72,7 @@ describe('reopened draft successor adoption', () => {
         method: `Run the detector for outcome ${n}.`,
         check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
         replication: `Inspect the persisted outcome ${n} and its exact evidence.`,
+        barProvenance: { lifecycle: 'pre-implementation', declaredAt: input.declaredAt, declaredBy: input.actorId },
       });
     });
     const content = plan({
@@ -93,7 +94,7 @@ describe('reopened draft successor adoption', () => {
     expect(result.criteria).toEqual(fixture.bars);
     expect(result.criteria.slice(0, 8).map((bar) => bar.barHash)).toEqual(fixture.bars.slice(0, 8).map((bar) => bar.barHash));
     expect(result.criteria.slice(0, 8).every((bar) => bar.intent === undefined)).toBe(true);
-    expect(result.projections.map((projection) => projection.falsifier.observation)).toEqual(fixture.bars.map((bar) => bar.driftMarkers));
+    expect(result.projections.map((projection) => projection.falsifier?.observation)).toEqual(fixture.bars.map((bar) => bar.driftMarkers));
     expect(JSON.stringify(fixture)).toBe(before);
   });
 
@@ -115,6 +116,16 @@ describe('reopened draft successor adoption', () => {
       existingTemplateData: fixture.template, requireContractCompleteness: true })).toMatchObject({
       ok: false, error: 'bar_contract_method_missing', problems: [expect.objectContaining({ barKey: 'R-1' })],
     });
+  });
+
+  it('fills missing server provenance on first adoption without changing BAR hashes', () => {
+    const fixture = authoredSuccessor();
+    delete fixture.bars[0]!.barProvenance;
+    const result = buildAcceptanceBarSeed({ ...input, planStatus: 'draft', planContent: fixture.content,
+      existingTemplateData: fixture.template, requireContractCompleteness: true });
+    if (!result.ok) throw new Error(result.message);
+    expect(result.criteria[0]).toMatchObject({ barHash: fixture.bars[0]!.barHash,
+      barProvenance: { lifecycle: 'pre-implementation', declaredAt: input.declaredAt, declaredBy: input.actorId } });
   });
 
   function adoption() {

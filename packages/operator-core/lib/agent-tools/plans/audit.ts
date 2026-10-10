@@ -42,6 +42,7 @@ import {
   mergeActivationAuditCoverage,
   prepareAuditPassEntries,
   recordCurrentActivationAudit,
+  previewCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
   resolveCitation,
@@ -77,7 +78,6 @@ import {
   acceptanceBarProjectionConflictDetail,
   unexpectedAcceptanceBarProjectionIds,
   validateAcceptanceBarSource,
-  acceptanceBarSourceContractProblems,
 } from '../../acceptance-bar-seed';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
@@ -794,30 +794,18 @@ export default defineTool({
               message: `1 BAR seed problem(s): ${detail}`,
             } };
           }
-          // P-003/P-029: mirror the writer's activation contract-completeness refusal.
-          // The writer judges only FRESH BARs; on a never-seeded post-epoch plan every
-          // BAR is fresh, so the parsed source is exactly what it judges. A seeded plan
-          // re-derives nothing fresh on re-audit (a meaning change routes to amendment),
-          // so the preview stays silent there exactly as the writer does.
-          const barGate = barGateRows[0]!;
-          if (barGate.acceptance_bar_rubric_slug == null &&
-              (barGate.acceptance_bar_cohort ?? 'post-epoch') === 'post-epoch') {
-            const contractProblems = acceptanceBarSourceContractProblems(barSource.bars, barSource.mappings);
-            if (contractProblems.length > 0) {
-              return { data: {
-                ok: false as const,
-                slug: args.slug,
-                phase: 'activation' as const,
-                dryRun: true as const,
-                preview: true as const,
-                error: contractProblems[0]!.code,
-                problems: contractProblems,
-                message:
-                  `${contractProblems.length} BAR seed problem(s): ` +
-                  `${contractProblems.map((problem) => problem.detail).join('; ')}`,
-              } };
-            }
-          }
+          // A pin may name a retired rubric while the writer is adopting an
+          // unstarted successor. Reuse its complete transactional decision;
+          // presence of a pin is not proof that every current BAR is preserved.
+          const seedPreview = await previewCurrentActivationAudit({
+            workspaceId, harnessSlug: harnessSlug ?? '', planSlug: args.slug,
+            createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
+            classRef: args.classRef, activation,
+          });
+          if (!seedPreview.ok) return { data: {
+            ...seedPreview, slug: args.slug, phase: 'activation' as const,
+            dryRun: true as const, preview: true as const,
+          } };
         }
         return { data: {
           ok: true as const,

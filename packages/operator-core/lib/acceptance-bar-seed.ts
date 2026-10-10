@@ -731,7 +731,10 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   const freshBarKeys = new Set<string>();
   const criteria = requirements.bars.map((bar) => {
     const authored = authoredCriteria.get(bar.barKey);
-    if (authored) return { ...authored } as ProposeRubricCriterion;
+    if (authored) return { ...authored, barProvenance: authored.barProvenance ?? {
+      lifecycle: input.cohort === 'post-epoch' && !input.backfilled ? 'pre-implementation' : 'legacy-backfilled',
+      declaredAt: input.declaredAt, declaredBy: input.actorId,
+    } } as ProposeRubricCriterion;
     const seeded = seededCriterion(bar, mappingByKey.get(bar.barKey)!, input, existing?.ratingScale);
     const legacy = legacyMap && existing?.criteria.find((criterion) => criterion.key === legacyMap[bar.barKey]);
     if (legacy) {
@@ -1140,7 +1143,7 @@ export async function seedAcceptanceBarsInTransaction(
     }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;
   }
 
-  const rubricChanged = !existing || stableJson(existing.template_data) !== stableJson(built.templateData);
+  const rubricChanged = !existing || stableJson(seedTemplateData) !== stableJson(built.templateData);
   // WI-10004146 / D-093: a receiver never authors or revises the federated rubric.
   // Rubric absent (the plan arrived first) or not yet agreeing with the local plan
   // (a newer revision of either is still in flight): write nothing. The other row's

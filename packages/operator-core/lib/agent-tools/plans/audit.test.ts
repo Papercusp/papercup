@@ -46,6 +46,7 @@ vi.mock('../../plan-audits', async (orig) => {
     repoCitationContextForHarness: vi.fn(),
     recordPlanAudit: vi.fn(),
     recordCurrentActivationAudit: vi.fn(),
+    previewCurrentActivationAudit: vi.fn(),
   };
 });
 vi.mock('./activation-audit-repair', () => ({
@@ -85,6 +86,7 @@ import {
   getLatestActivationAudit,
   getPlanItemStatuses,
   recordCurrentActivationAudit,
+  previewCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
   resolvePlanItemHomeHarness,
@@ -107,6 +109,7 @@ const mockPreviousActivation = vi.mocked(getLatestActivationAudit);
 const mockContext = vi.mocked(repoCitationContextForHarness);
 const mockRecord = vi.mocked(recordPlanAudit);
 const mockRecordActivation = vi.mocked(recordCurrentActivationAudit);
+const mockPreviewActivation = vi.mocked(previewCurrentActivationAudit);
 const mockResolveSourceRefs = vi.mocked(resolveSessionTurnRefs);
 const mockRepairFiling = vi.mocked(ensureActivationAuditRepairFiling);
 const mockGetPlanRow = vi.mocked(getPlanRow);
@@ -155,6 +158,10 @@ beforeEach(() => {
   mockRecordActivation.mockResolvedValue({
     ok: true,
     audit: { auditSeq: 2 } as never,
+    auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
+  });
+  mockPreviewActivation.mockResolvedValue({
+    ok: true, preview: true,
     auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
   });
   mockPreviewPlanStartConsult.mockResolvedValue({
@@ -310,7 +317,7 @@ describe('plans:audit D-008 writer contract', () => {
       itemId: 'P-001', citations: [expect.objectContaining({ path: 'src/gate.ts', blobSha: expect.any(String) })],
     })] }));
 
-    const activation = await tool.handler(activationArgs(), ctx) as { data: any };
+    const activation = await tool.handler(activationArgs() as never, ctx) as { data: any };
     expect(activation.data).toMatchObject({ ok: true, phase: 'activation', sourceRefsResolved: 1 });
     expect(mockResolveSourceRefs).toHaveBeenCalled();
     expect(mockRecordActivation).toHaveBeenCalled();
@@ -1144,6 +1151,10 @@ describe('plans:audit phase:activation', () => {
     mockOrgSql
       .mockResolvedValueOnce([{ acceptance_bar_epoch: '1', acceptance_bar_cohort: 'post-epoch', acceptance_bar_rubric_slug: null }])
       .mockResolvedValueOnce([]);
+    mockPreviewActivation.mockResolvedValue({ ok: false, error: 'bar_contract_method_missing',
+      message: 'R-1 has no METHOD/check/layers', problems: [{ code: 'bar_contract_method_missing',
+        barKey: 'R-1', detail: 'R-1 has no METHOD/check/layers',
+        contractGaps: ['method_missing', 'check_missing', 'test_layers_missing'] }] });
 
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 
@@ -1152,7 +1163,7 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation).not.toHaveBeenCalled();
   });
 
-  it('stays silent on an already-seeded prose plan, exactly as the writer does (P-003)', async () => {
+  it('delegates seeded-plan completeness to the same transactional decision as the writer', async () => {
     resolvePlanContent(barPlanWithDesign);
     mockOrgSql
       .mockResolvedValueOnce([{ acceptance_bar_epoch: '1', acceptance_bar_cohort: 'post-epoch',
@@ -1162,6 +1173,19 @@ describe('plans:audit phase:activation', () => {
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 
     expect(result).toMatchObject({ ok: true, preview: true });
+    expect(mockPreviewActivation).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'plan-a', activation: expect.any(Object) }));
+  });
+
+  it('propagates successor completeness refusals even when the subject already has a rubric pin', async () => {
+    resolvePlanContent(barPlanWithDesign);
+    mockOrgSql.mockResolvedValueOnce([{ acceptance_bar_epoch: '1',
+      acceptance_bar_rubric_slug: 'retired-acceptance-plan-a' }]).mockResolvedValueOnce([]);
+    mockPreviewActivation.mockResolvedValue({ ok: false, error: 'bar_contract_method_missing',
+      message: 'The authored successor lacks a METHOD for R-1.' });
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+    expect(result).toMatchObject({ ok: false, preview: true, error: 'bar_contract_method_missing' });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
   it('previews the writer projection conflict for a live generated identity outside the current map', async () => {
