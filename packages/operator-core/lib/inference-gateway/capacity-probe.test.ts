@@ -151,7 +151,8 @@ describe('probeAccountCapacity', () => {
       error: { type: 'invalid_request_error', code: 'invalid_model', message: `Rejected ${token}\nmodel request` },
       request_id: 'req_body', ignored: token,
     }), { status: 400, headers: { 'request-id': 'req_header' } });
-    const result = await probeAccountCapacity(acct('refused', { utilization7d: 1 }), refusalDeps(response, token), FULL);
+    const deps = refusalDeps(response, token);
+    const result = await probeAccountCapacity(acct('refused', { utilization7d: 1 }, { credentialRef: 'apikey:env:TEST_API_KEY' }), deps, FULL);
     expect(result).toMatchObject({
       ok: false, status: 400, windows: {}, unwalls: false,
       httpRefusal: { status: 400, bodyState: 'parsed', errorType: 'invalid_request_error', errorCode: 'invalid_model', requestId: 'req_header' },
@@ -160,6 +161,9 @@ describe('probeAccountCapacity', () => {
     expect(result.httpRefusal?.message).not.toContain('\n');
     expect(JSON.stringify(result)).not.toContain(token);
     expect(response.bodyUsed).toBe(true);
+    const [, init] = vi.mocked(deps.fetchImpl).mock.calls[0];
+    expect(new Headers(init?.headers).get('x-api-key')).toBe(token);
+    expect(new Headers(init?.headers).get('authorization')).toBeNull();
   });
 
   it('bounds and sanitizes a complete malformed refusal body', async () => {
@@ -199,6 +203,18 @@ describe('probeAccountCapacity', () => {
     const response = new Response(new ReadableStream({ start(controller) { controller.error(new Error('body failed')); } }), { status: 401 });
     const result = await probeAccountCapacity(acct('unreadable'), refusalDeps(response), FULL);
     expect(result).toMatchObject({ ok: false, status: 401, httpRefusal: { bodyState: 'unavailable' } });
+  });
+
+  it('limits refusal reading to the remaining account deadline', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({ cancel }), { status: 400 });
+    const pending = probeAccountCapacity(acct('short-deadline'), {
+      ...refusalDeps(response), deadlineAt: Date.now() + 25,
+    }, FULL);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(await pending).toMatchObject({ ok: false, status: 400, httpRefusal: { bodyState: 'timed-out' } });
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it('accepts authoritative headers without waiting for a hanging HTTP error body', async () => {
