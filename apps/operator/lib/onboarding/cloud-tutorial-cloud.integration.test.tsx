@@ -194,27 +194,64 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     expect(document.querySelector('[data-tutorial-target="cloud-configuration"]')).not.toBeNull();
     const inputStart = data.companionInputs.length;
     const observationStart = data.observations.length;
+    const stateStart = data.states.length;
+    const boundaryTrace = () => ({
+      companionInputs: data.companionInputs.slice(inputStart),
+      observations: data.observations.slice(observationStart).map(value => {
+        const observation = value as {
+          scope?: { tenantId?: string; userId?: string; workspaceId?: string };
+          revision?: number;
+          configuration?: { connectionId?: string; valid?: boolean; costReviewed?: boolean };
+          workspace?: { id?: string; connectionId?: string; healthy?: boolean };
+        };
+        return { scope: observation.scope, revision: observation.revision,
+          costReviewed: observation.configuration?.costReviewed, configuration: observation.configuration,
+          workspace: observation.workspace };
+      }),
+      reducerStates: data.states.slice(stateStart).map(value => {
+        const state = value as TutorialState;
+        return { scope: state.scope, observationScope: state.observation?.scope,
+          revision: state.observation?.revision, costReviewed: state.observation?.configuration?.costReviewed,
+          currentStep: currentTutorialStep(state)?.id };
+      }),
+      headings: within(guide).queryAllByRole("heading").map(heading => heading.textContent),
+    });
+    const withBoundaryTrace = (error: Error) =>
+      new Error(error.message + "\nBoundary trace: " + JSON.stringify(boundaryTrace()));
     fireEvent.click(review);
-    await waitFor(() => expect(data.companionInputs.slice(inputStart).some(input => input.configurationReviewed)).toBe(true));
+    await waitFor(() => expect(data.companionInputs.slice(inputStart).some(input => input.configurationReviewed)).toBe(true),
+      { onTimeout: withBoundaryTrace });
     const reviewedInput = data.companionInputs.slice(inputStart).filter(input => input.configurationReviewed).at(-1);
     expect(reviewedInput).toMatchObject({ configurationValid: true, configurationReviewed: true,
       boundWorkspaceId: null, workspaceId: "customer", workspaceReady: false });
     await waitFor(() => expect(data.observations.slice(observationStart).some(value => {
-      const observation = value as { configuration?: { valid?: boolean; costReviewed?: boolean }; workspace?: { id?: string; healthy?: boolean } };
-      return observation.configuration?.valid === true && observation.configuration.costReviewed === true &&
+      const observation = value as { scope?: { tenantId?: string; userId?: string; workspaceId?: string }; revision?: number;
+        configuration?: { valid?: boolean; costReviewed?: boolean }; workspace?: { id?: string; healthy?: boolean } };
+      return observation.scope?.tenantId === scope.tenantId && observation.scope.userId === scope.userId &&
+        observation.scope.workspaceId === scope.workspaceId && typeof observation.revision === "number" &&
+        Number.isSafeInteger(observation.revision) && observation.configuration?.valid === true &&
+        observation.configuration.costReviewed === true &&
         observation.workspace?.id === "customer" && observation.workspace?.healthy === false;
-    })).toBe(true));
+    })).toBe(true), { onTimeout: withBoundaryTrace });
     await waitFor(() => {
-      const state = data.states.at(-1) as TutorialState | undefined;
+      const state = data.states.slice(stateStart).at(-1) as TutorialState | undefined;
       expect(state && currentTutorialStep(state)?.id).toBe("workspace");
-    });
-    const appliedState = data.states.at(-1) as TutorialState;
+    }, { onTimeout: withBoundaryTrace });
+    const appliedState = data.states.slice(stateStart).at(-1) as TutorialState;
     expect(appliedState.observation).toMatchObject({
-      scope: { workspaceId: "customer" },
+      scope,
+      revision: expect.any(Number),
       configuration: { connectionId: "gcp", valid: true, costReviewed: true },
       workspace: { id: "customer", connectionId: "gcp", healthy: false },
     });
-    await within(guide).findByRole("heading", { name: "Wait for a healthy workspace" });
+    expect(data.observations.slice(observationStart).some(value => {
+      const observation = value as { scope?: unknown; revision?: number; configuration?: { costReviewed?: boolean } };
+      return observation.revision === appliedState.observation?.revision &&
+        JSON.stringify(observation.scope) === JSON.stringify(appliedState.observation?.scope) &&
+        observation.configuration?.costReviewed === appliedState.observation?.configuration?.costReviewed;
+    })).toBe(true);
+    await waitFor(() => expect(within(guide).queryByRole("heading", { name: "Wait for a healthy workspace" })).toBeTruthy(),
+      { onTimeout: withBoundaryTrace });
     expect(screen.queryByRole("button", { name: "+ New session" })).toBeNull();
     expect(data.mutate).not.toHaveBeenCalled();
   });
