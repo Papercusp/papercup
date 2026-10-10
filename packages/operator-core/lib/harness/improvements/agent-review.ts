@@ -665,7 +665,7 @@ export async function resubmitAgentReview(
     if (current.status !== 'revision-requested') {
       return { resubmitted: false, state: current, reason: 'not-submitter' };
     }
-    if (current.submittedBy.startsWith('system:') && signedSubmitter === null) {
+    if (legacySubmitter === null && current.submittedBy.startsWith('system:') && signedSubmitter === null) {
       return { resubmitted: false, state: current, reason: 'not-submitter:authority-unknown' };
     }
     const verdict = await deps.resolveSubmitterLiveness(effectiveSubmitter, {

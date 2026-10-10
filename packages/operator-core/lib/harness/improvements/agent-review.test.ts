@@ -1411,8 +1411,9 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
 
     await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
       resubmitted: false,
-      reason: 'not-submitter:liveness-unknown',
+      reason: 'not-submitter:authority-unknown',
     });
-    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith(expectedSubmitter, { claimsHeld: false });
+    expect(h.deps.resolveVerifiedSubmitterAlias).toHaveBeenCalledWith(expectedSubmitter);
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
   });
 });
