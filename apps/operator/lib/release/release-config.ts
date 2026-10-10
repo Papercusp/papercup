@@ -246,6 +246,30 @@ export function databaseEvidence(
   return `database: <unset> (source=none, emitter=${emitter}) — resolves via the embedded-pg discovery file, which another install may own`;
 }
 
+/** The operator DSN the GATE PROCESS carries, re-exported as the one variable every script
+ *  resolver ranks first (`HARNESS_ADMIN_DATABASE_URL`, scripts/lib/pg-url.mjs step 1).
+ *
+ *  WI-10006055: the post-suite env is an ALLOWLIST (`canonicalGreenCheckpointSourceEnv`) that
+ *  drops every DSN on purpose, so the candidate suite cannot touch the host's database. The
+ *  agent-state-plane lints are the exception: they census the LIVE plane (30-day producer
+ *  windows), so with no DSN they fell through to `$PAPERCUSP_HOME/embedded-pg.json`. On
+ *  2026-10-10 that file belonged to the installed Papercusp Server sidecar (:24680, 522
+ *  agent_facts rows). lint:plane-producers then reported `agent_facts.enforcement 0/522` and
+ *  red-pinned the gate, while the same census against the operator DB (:5432, 221k rows) passed.
+ *
+ *  Same key precedence as {@link databaseEvidence}, so the DSN handed to the plane lints is the
+ *  one the run log states. Returns `{}` when the gate itself has no DSN; the lints then keep
+ *  their old resolution, and the run log already flags that case as `source=none`. */
+export function gateOperatorPgEnv(
+  env: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  for (const key of ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL'] as const) {
+    const url = env[key];
+    if (url) return { HARNESS_ADMIN_DATABASE_URL: url };
+  }
+  return {};
+}
+
 /**
  * Refuse to GATE a release/checkpoint checkout.
  *

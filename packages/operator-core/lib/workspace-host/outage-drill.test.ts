@@ -371,13 +371,39 @@ describe('runOutageDrill + evaluateOutageDrill', () => {
       const reader = spawn('sh', ['-c', `cat '${gate}'; echo; timeout 5 cat '${gate}' > /dev/null; echo reopen=$?`]);
       let read = '';
       reader.stdout.setEncoding('utf8').on('data', (chunk: string) => { read += chunk; });
-      const exited = new Promise<number | null>((resolve) => reader.on('exit', resolve));
+      // 'close', not 'exit': 'exit' can fire before the reader's last stdout chunk is delivered.
+      const exited = new Promise<number | null>((resolve) => reader.on('close', resolve));
       const released = execFileSync('sh', ['-c', `timeout 10 sh -c '${gateReleaseCommand(gate, 's3cret').replace(/'/g, `'\\''`)}'`]).toString();
       expect(released).toContain(GATE_RELEASED_MARKER);
       expect(await exited).toBe(0);
       expect(read).toContain('s3cret');
       // 124 here means the re-open blocked until `timeout` killed it.
       expect(read).toContain('reopen=0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never leaves the gate path missing while it swaps the pipe for the empty file', async () => {
+    // WI-10006055: the release used to move the pipe aside and only THEN create the empty file, so a re-open
+    // landing in between got ENOENT (`reopen=1` on the gate at f07043ba). Sample the path continuously from
+    // the moment the secret is taken until the regular file is in place: it must never be absent.
+    const dir = mkdtempSync(join(tmpdir(), 'j5-gate-'));
+    try {
+      const gate = join(dir, 'drill.gate');
+      execFileSync('mkfifo', ['-m', '600', gate]);
+      const reader = spawn('sh', [
+        '-c',
+        `cat '${gate}' > /dev/null; miss=0; while [ ! -f '${gate}' ]; do [ -e '${gate}' ] || miss=$((miss+1)); done; echo miss=$miss`,
+      ]);
+      let read = '';
+      reader.stdout.setEncoding('utf8').on('data', (chunk: string) => { read += chunk; });
+      // 'close', not 'exit': 'exit' can fire before the reader's last stdout chunk is delivered.
+      const exited = new Promise<number | null>((resolve) => reader.on('close', resolve));
+      const released = execFileSync('sh', ['-c', `timeout 10 sh -c '${gateReleaseCommand(gate, 's3cret').replace(/'/g, `'\\''`)}'`]).toString();
+      expect(released).toContain(GATE_RELEASED_MARKER);
+      expect(await exited).toBe(0);
+      expect(read).toContain('miss=0');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

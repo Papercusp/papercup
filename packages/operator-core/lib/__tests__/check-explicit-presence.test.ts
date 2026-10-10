@@ -228,7 +228,9 @@ describe('explicit-presence is ENFORCED, not merely available (WI-5977)', () => 
     expect(output).toMatch(/POSITIVE CONTROL: evaluating \d+ analyzer-produced known violation/);
     expect(output).toMatch(/count ROSE above baseline/);
     expect(output).toMatch(/\(\+1\)/);
-  }, 180_000);
+    // The parent budget must OUTLIVE the child's 180s kill, or Vitest times the test out first
+    // and the child's own SIGKILL verdict is unreachable (lint:test-timing-budgets).
+  }, 200_000);
 
   it('refuses to combine the synthetic positive control with --update', () => {
     const run = spawnSync(
