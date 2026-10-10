@@ -251,6 +251,25 @@
     "shutdownEvidence": "/dev/shm/tutorial-private-fixed-shutdown-evidence-20261010T1840.json",
     "scope": "Fixed full hosted startup, actual private database admission and exact owned group teardown. This does not add browser, screen-reader, provider voice, novice or production shipment acceptance."
   },
+  "hostedNativeRunnerPreparation": {
+    "observedAt": "2026-10-10T18:55:29Z",
+    "runnerCommit": "f143146a4c34f9c09cabc5803773a8a9048b841f",
+    "runnerRoot": "/dev/shm/pcv/papercusp-lint-as-committed-f143146a4c-2gqq8r",
+    "profile": "product-hosted",
+    "sourceComparison": "Runner and its maintained test are byte-equal in canonical source, the clean retained checkout and the cited committed blobs.",
+    "runnerSha256": "fa1c330c0cf254c6beefef6835cf4be3eaf249c0ddcc4819b4af62fe3bfbcf48",
+    "testSha256": "a68611e53733a9609b1642cd28b2b3606aa2a4a5ff98428152af0f488abc45dc",
+    "log": "/dev/shm/tutorial-hosted-native-runner-clean-f143146a-20261010T1856.log",
+    "logSha256": "d265e9f09aab51d7e01d796ac65a21c08cc130a824c7e8c3e1dd1f5ae4bf05b9",
+    "localTestRunId": 20993360,
+    "ledgerQualification": "The ledger records pass, the exact commit and worktreeDirty=false. Its summary root is null; retained-root custody and node:test counts come from the committed runner log and independent byte comparison.",
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "portalPauseTicket": "0747af5c-eeee-46a3-b4e8-aa80e28087eb",
+    "portalPauseStatus": "Waiting behind the active fingerprinted Portal build; attended hosted review has not run.",
+    "scope": "Maintained runner regression tests only. No hosted screen-reader, native input, provider voice or shipment acceptance is claimed."
+  },
   "limitations": [
     "The earlier integration and browser fields cover mounted fixtures/jsdom; the qualified hosted field covers one actual preference task.",
     "Supported-runtime screen-reader announcements and wider full-product accessibility task coverage remain unproved; mounted Settings Tab proof20987694 and hosted pure Tab/arrow proof20988435 have their stated narrow scopes.",

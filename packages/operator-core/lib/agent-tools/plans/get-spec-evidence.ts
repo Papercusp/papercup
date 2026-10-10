@@ -122,7 +122,7 @@ export default defineTool({
       harnessSlug,
       diagnostics,
     });
-    ctx.metadata({
+    ctx.metadata?.({
       plansGetSpecEvidenceStageTimings: {
         schemaVersion: 'plans-get-spec-evidence-stage-timings-v1',
         requestedLimit: limit,
