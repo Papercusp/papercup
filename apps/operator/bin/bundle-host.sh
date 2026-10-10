@@ -435,7 +435,7 @@ report_bundle_step_failure() {
 
 # WI-10005745: snapshot the last-known-good artifacts BEFORE anything is rebuilt over them.
 gate_snapshot_args=()
-for gate_artifact in "${OUTFILE##*/}" spawner-sidecar.mjs spawner-sidecar.mjs.meta.json \
+for gate_artifact in "${OUTFILE##*/}" "${OUTFILE##*/}.meta.json" spawner-sidecar.mjs spawner-sidecar.mjs.meta.json \
     "${HOST_WORKER_OUTPUTS[@]}" "${HOST_RUNTIME_SIBLING_OUTPUTS[@]}" blueprints sql; do
   gate_snapshot_args+=(--artifact "$gate_artifact")
 done
@@ -540,6 +540,11 @@ bundle_rc=0
     echo "ERROR: the bundled $OUTFILE fails \`node --check\` (it would throw a SyntaxError at load); keeping the last-known-good bundle."
     exit 1
   fi
+  # Retain the host graph alongside its accepted bundle, as for spawner-sidecar.
+  # The temporary restricted-gate copy is removed on exit and cannot serve as a
+  # durable dependency/profile evidence reference (EI-25614031378277343).
+  # Both published files participate in the same restricted-hold rollback.
+  mv -f "$METAFILE" "$OUTFILE.meta.json" || exit 1
   mv -f "$TMPFILE" "$OUTFILE"
 ) 9>"$LOCKFILE" >"$BUILD_LOG" 2>&1 || bundle_rc=$?
 cat "$BUILD_LOG"

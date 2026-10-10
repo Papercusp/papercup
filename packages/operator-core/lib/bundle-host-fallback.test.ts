@@ -30,7 +30,7 @@
  * how a mutant gets committed by the git-sync sweep mid-probe.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -151,6 +151,29 @@ describe('bundle-host.sh standalone spawner fallback', () => {
 });
 
 describe('bundle-host.sh last-known-good fallback', () => {
+  it('retains the accepted dependency graph after cleanup and preserves it on a rejected rebuild', () => {
+    const entry = join(dir, 'graph-entry.ts');
+    const dependency = join(dir, 'graph-dependency.ts');
+    writeFileSync(dependency, 'export const retainedGraphValue = 42;\n');
+    writeFileSync(entry, "import { retainedGraphValue } from './graph-dependency'; console.log(retainedGraphValue);\n");
+
+    const accepted = runBundler(entry);
+    expect(accepted.code, accepted.output).toBe(0);
+    const bundle = readFileSync(outfile);
+    const metadata = readFileSync(outfile + '.meta.json');
+    const graph = JSON.parse(metadata.toString());
+    const inputPaths = Object.keys(graph.inputs).map(path => resolve(REPO_ROOT, 'apps/operator', path));
+    expect(inputPaths, JSON.stringify({ inputs: graph.inputs, inputPaths, entry, dependency })).toContain(entry);
+    expect(inputPaths).toContain(dependency);
+    expect(readdirSync(join(dir, 'dist-host')).some(name => name.startsWith('.restricted-gate-meta.'))).toBe(false);
+
+    writeFileSync(dependency, 'export const retainedGraphValue = ;\n');
+    const rejected = runBundler(entry);
+    expect(rejected.code, rejected.output).not.toBe(0);
+    expect(readFileSync(outfile)).toEqual(bundle);
+    expect(readFileSync(outfile + '.meta.json')).toEqual(metadata);
+  }, 260_000);
+
   it('enters the install-safe mutex before resolving bundle dependencies', () => {
     const src = readFileSync(SCRIPT, 'utf8');
     const guardIdx = src.indexOf('--exec-under-lock');
