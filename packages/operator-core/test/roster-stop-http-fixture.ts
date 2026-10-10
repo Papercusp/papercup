@@ -20,7 +20,7 @@ assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
 assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
 assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)));
 assert.ok(evidence);
-const portalSourceRoot = process.env.ROSTER_COORD_BROWSER_PROOF === '1'
+const portalSourceRoot = process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1'
   ? preparePortalBrowserSource(process.argv) : undefined;
 // Evidence paths are intentionally long; AF_UNIX addresses are bounded by bytes.
 // Keep the mutable socket namespace short and retain its identity in the receipt.
@@ -188,12 +188,12 @@ async function coordCanary(health: unknown) {
 }
 
 async function main() {
-  if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
+  if (process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1') {
     // Use the existing static-serving seam on this private API origin. No
     // cross-origin transport, API response interception or local-mode identity.
     process.env.PAPERCUSP_SPA_DIST = join(evidence, 'portal-roster-spa');
   }
-  if (process.env.ROSTER_COORD_HTTP_PROOF === '1') {
+  if (process.env.ROSTER_COORD_HTTP_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1') {
     const prepared = preparePrivateHttpWorkspaces();
     assert.equal(prepared.workspace, workspace);
     console.log('ROSTER_STOP_HTTP_PHASE registry-ready');
@@ -221,6 +221,36 @@ async function main() {
   }
   const selected = await child('selected');
   const neighbor = await child('neighbor');
+  if (process.env.ROSTER_STOP_BROWSER_PROOF === '1') {
+    const { signup, login, getSessionUser, SESSION_COOKIE } = await import('../lib/auth');
+    const username = `stop_${process.pid}`;
+    await signup(username, 'Private confirmed stop canary', null);
+    const ownSession = await login(username, null, { workspace_id: workspace });
+    const foreignSession = await login(username, null, { workspace_id: workspace + '-foreign' });
+    assert.equal((await getSessionUser(new Headers({ cookie: `${SESSION_COOKIE}=${ownSession.token}` })))?.workspace_id, workspace);
+    const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
+    let aliveProbe = 0;
+    const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected: selected.owner, neighbor: neighbor.owner,
+      portalSourceRoot: portalSourceRoot!, cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
+      stop: { selected, neighbor,
+        assertChildrenAlive: async () => {
+          aliveProbe++;
+          await responds(selected, `selected-before-confirmed-stop-${aliveProbe}`);
+          await responds(neighbor, `neighbor-before-confirmed-stop-${aliveProbe}`);
+          await Promise.all([quiet(selected), quiet(neighbor)]);
+        },
+        assertSelectedStopped: async () => {
+          await until(() => selected.closed, 'browser selected child stopped');
+          await selected.done; await Promise.all(endings);
+          assert.ok((await getAdvSessionInWorkspace(selected.id, workspace))?.endedAt);
+          assert.equal(existsSync(socketPathFor(selected.owner)), false);
+          await responds(neighbor, 'neighbor-after-browser-selected-stop');
+        },
+      } });
+    console.log('ROSTER_STOP_BROWSER_RECEIPT ' + JSON.stringify({ ...receipt, health,
+      apiBundleSha256: createHash('sha256').update(readFileSync(bundle)).digest('hex') }));
+    return;
+  }
   const valid = { ownerId: selected.owner, managedSessionId: selected.id, expectedStartedAt: selected.startedAt, confirmed: true };
   const foreignId = await recordAdvSession({ workspaceId: workspace + '-foreign', mode: 'console', agent: 'codex', coordOwnerId: 'su-private-foreign' });
   assert.ok(foreignId);

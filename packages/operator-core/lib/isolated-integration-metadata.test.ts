@@ -8,9 +8,21 @@ import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
 import { preparePortalBrowserSource, preparePrivateHttpWorkspaces } from '../test/private-http-workspace-preflight';
-import { verifyPrivateCoordReceipt } from '../test/private-coord-receipt';
+import { verifyPrivateCoordReceipt, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
+
+it('correlates a private browser stop to the exact owner, managed row, launch and disposition', () => {
+  const expected = { ownerId: 'selected', managedSessionId: 17, startedAt: '2026-10-10T03:00:00Z' };
+  const receipt = { status: 200, body: { ok: true, ownerId: expected.ownerId, managedSessionId: expected.managedSessionId,
+    sessionStartedAt: expected.startedAt, status: 'stop-requested' } };
+  expect(() => verifyPrivateStopReceipt(receipt, expected)).not.toThrow();
+  expect(() => verifyPrivateStopReceipt(receipt, { ...expected, ownerId: 'neighbor' })).toThrow('selected-owner');
+  expect(() => verifyPrivateStopReceipt(receipt, { ...expected, managedSessionId: 18 })).toThrow('selected-session');
+  expect(() => verifyPrivateStopReceipt(receipt, { ...expected, startedAt: 'replacement' })).toThrow('selected-launch');
+  expect(() => verifyPrivateStopReceipt({ ...receipt, status: 403 }, expected)).toThrow();
+  expect(() => verifyPrivateStopReceipt({ ...receipt, body: { ...receipt.body, status: 'queued' } }, expected)).toThrow('stop disposition');
+});
 
 it.each([{ summary: 'private-browser-message', wake: false }, { summary: '(nudge from the portal)', wake: true }])(
   'correlates the actual private action payload $summary instead of the HTTP-only marker', async expected => {

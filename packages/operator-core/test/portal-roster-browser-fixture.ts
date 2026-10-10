@@ -5,17 +5,24 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { build } from 'esbuild';
-import { chromium, type Page } from 'playwright-core';
+import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { getMessageById, readInbox } from '../lib/agent-tools/coordination/messages';
+import { verifyPrivateStopReceipt } from './private-coord-receipt';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 
-export async function runPortalRosterBrowser(input: {
+type PortalRosterBrowserInput = {
   evidence: string; base: string; workspace: string; selected: string; neighbor: string;
   portalSourceRoot: string;
   cookieName: string; ownToken: string; foreignToken: string;
-  verifyReceipt: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
-}) {
+  verifyReceipt?: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
+  stop?: {
+    selected: { id: number; startedAt: string }; neighbor: { id: number; startedAt: string };
+    assertChildrenAlive: () => Promise<void>; assertSelectedStopped: () => Promise<void>;
+  };
+};
+
+export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { evidence, base, workspace, selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const spa = join(evidence, 'portal-roster-spa');
@@ -23,7 +30,9 @@ export async function runPortalRosterBrowser(input: {
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
     intent: 'Private browser roster canary', feature: null, currentPlanSlug: null, liveness: 'live',
     sessionState: 'live', heartbeatAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
-    isLocal: true, transcriptFresh: false }));
+    isLocal: true, transcriptFresh: false,
+    ...(input.stop ? { managedSessionId: (ownerId === selected ? input.stop.selected : input.stop.neighbor).id,
+      launchStartedAt: (ownerId === selected ? input.stop.selected : input.stop.neighbor).startedAt } : {}) }));
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const entry = `
@@ -82,6 +91,14 @@ export async function runPortalRosterBrowser(input: {
     const select = page.getByTestId(`agent-select-${selected}`);
     await select.check();
     assert.equal(await page.getByTestId(`agent-select-${neighbor}`).isChecked(), false);
+    if (input.stop) {
+      const receipt = await runConfirmedStopPage(page, context, input);
+      assert.deepEqual(pageErrors, [], 'real stop component must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
+    assert.ok(input.verifyReceipt, 'coord browser proof requires its persisted receipt verifier');
     await page.getByTestId('agents-bulk-message').click();
     await page.getByTestId('agents-bulk-msg').fill(marker);
 
@@ -135,6 +152,65 @@ export async function runPortalRosterBrowser(input: {
     writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(receipt, null, 2));
     return receipt;
   } finally { await context.close(); await browser.close(); }
+}
+
+async function runConfirmedStopPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
+  const stop = input.stop!;
+  const path = '/api/adv/sessions/close-window';
+  const requests: Record<string, unknown>[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === path && request.method() === 'POST') requests.push(request.postDataJSON());
+  });
+  const button = page.getByTestId('agents-bulk-kill');
+  const arm = async () => {
+    await button.click();
+    assert.match(await button.innerText(), /Confirm stop 1/);
+  };
+  const confirm = async () => {
+    const response = page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === 'POST');
+    await button.click();
+    const observed = await response;
+    return { status: observed.status(), body: await observed.json() };
+  };
+  await arm();
+  await page.getByTestId('agents-bulk-kill-cancel').click();
+  assert.doesNotMatch(await button.innerText(), /Confirm/);
+  await stop.assertChildrenAlive();
+  assert.equal(requests.length, 0, 'arming and cancelling must send no stop request');
+
+  const cookie = (value: string) => ({ name: input.cookieName, value, url: input.base, httpOnly: true, sameSite: 'Lax' as const });
+  await context.addCookies([cookie(input.foreignToken)]);
+  await arm();
+  const denied = await confirm();
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  await page.getByTestId('agents-bulk-note').filter({ hasText: /stale|foreign|403/ }).waitFor();
+  assert.equal(await page.getByTestId(`agent-select-${input.selected}`).isChecked(), true, 'denial must retain exact selection');
+  assert.equal(await page.getByTestId(`agent-select-${input.neighbor}`).isChecked(), false);
+  await stop.assertChildrenAlive();
+
+  await context.addCookies([cookie(input.ownToken)]);
+  await arm();
+  const accepted = await confirm();
+  const expected = { ownerId: input.selected, managedSessionId: stop.selected.id, startedAt: stop.selected.startedAt };
+  verifyPrivateStopReceipt(accepted, expected);
+  // The actual receipt cannot attest a neighbor or a replacement launch.
+  assert.throws(() => verifyPrivateStopReceipt(accepted, { ...expected, managedSessionId: stop.neighbor.id }), /selected-session receipt correlation/);
+  assert.throws(() => verifyPrivateStopReceipt(accepted, { ...expected, startedAt: stop.neighbor.startedAt + '-replacement' }), /selected-launch stop receipt correlation/);
+  await page.getByTestId('agents-bulk-note').filter({ hasText: 'Stop requested for 1 session' }).waitFor();
+  assert.equal(await page.getByTestId(`agent-select-${input.selected}`).isChecked(), false);
+  assert.deepEqual(requests, [expected, expected].map(target => ({ ownerId: target.ownerId,
+    managedSessionId: target.managedSessionId, expectedStartedAt: target.startedAt, confirmed: true })),
+  'denial and retry must preserve the same server-resolved launch; no process/window handles');
+  await stop.assertSelectedStopped();
+  const url = page.url();
+  await page.reload();
+  assert.equal(page.url(), url);
+  await page.getByTestId(`agent-select-${input.neighbor}`).waitFor();
+  return { workspace: input.workspace, authMethod: 'cookie-session', selected: { owner: input.selected, id: stop.selected.id, ended: true },
+    neighbor: { owner: input.neighbor, id: stop.neighbor.id, alive: true }, cancelSentNoRequest: true, denialStatus: denied.status,
+    selectionRetained: true, retryClearedSelection: true, deepLinkReload: true, neighborIsolated: true,
+    positiveControl: 'wrong-session and replacement-launch rejected', denied, accepted, requests,
+    scope: 'Actual mounted Portal confirmation and private cookie API/native effects; no whole-Portal or shipment acceptance' };
 }
 
 async function readSettledNote(page: Page) {

@@ -1,6 +1,19 @@
 /** Correlate one action to its real persisted result, never a global fixture marker. */
 import assert from 'node:assert/strict';
 
+/** A stop receipt identifies one launch, not just an owner reused over time. */
+export function verifyPrivateStopReceipt(
+  receipt: { status: number; body: any },
+  expected: { ownerId: string; managedSessionId: number; startedAt: string },
+) {
+  assert.equal(receipt.status, 200, JSON.stringify(receipt.body));
+  assert.equal(receipt.body.ok, true);
+  assert.equal(receipt.body.ownerId, expected.ownerId, 'selected-owner stop receipt correlation');
+  assert.equal(receipt.body.managedSessionId, expected.managedSessionId, 'selected-session receipt correlation');
+  assert.equal(receipt.body.sessionStartedAt, expected.startedAt, 'selected-launch stop receipt correlation');
+  assert.equal(receipt.body.status, 'stop-requested', 'stop disposition must be explicit');
+}
+
 export async function verifyPrivateCoordReceipt(
   receipt: { status: number; body: any },
   expected: { ownerId: string; summary: string; wake: boolean },
