@@ -24,6 +24,8 @@ function issueOf(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
     kind: p.kind ?? 'bug',
     payload: p.payload,
     body: p.body,
+    createdBy: p.createdBy ?? null,
+    createdAt: p.createdAt ?? '2026-10-10T00:00:00.000Z',
     terminalCompletionRef: p.terminalCompletionRef ?? null,
   } as EngineerIssue;
 }
@@ -183,6 +185,23 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
     expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageDecision).toBe('gate');
     expect(deps.merged[0].needsHuman).toBeUndefined();
     expect(deps.reviews).toEqual(['i-gate']);
+  });
+
+  it.each(['improvement-triage', 'Queen'])('keeps the report author as submitter when %s triages it', async (by) => {
+    const deps = depsOf(issueOf({ id: 'author-gate', createdBy: 'su-reporter' }));
+    await applyTriageDecision({ id: 'author-gate', decision: 'gate', reason: 'needs validation', by }, deps);
+
+    expect(deps.enterAgentReview).toHaveBeenCalledWith({ id: 'author-gate', submittedBy: 'su-reporter' });
+    expect(deps.comments[0]).toContain(`Triage (${by})`);
+  });
+
+  it('preserves an explicit person reporter instead of substituting the triage actor', async () => {
+    const deps = depsOf(issueOf({ id: 'person-gate', createdBy: 'system:intake', payload: {
+      reporter: { kind: 'end-user', id: 'install-reporter', basis: 'explicit', at: '2026-10-10T00:00:00.000Z' },
+    } }));
+    await applyTriageDecision({ id: 'person-gate', decision: 'gate', reason: 'needs validation' }, deps);
+
+    expect(deps.enterAgentReview).toHaveBeenCalledWith({ id: 'person-gate', submittedBy: 'install-reporter' });
   });
 
   it('routes operator-scoped infrastructure gates to owner escalation instead of harness review', async () => {

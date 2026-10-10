@@ -150,10 +150,19 @@ async function desktop(root, out, review, profile) {
       ...(profile === 'product-guide' ? { PORTAL_TUTORIAL_ORCA_REVIEW: '1', PORTAL_BROWSER_CHANNEL: 'chrome' } : {}),
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp', PAPERCUSP_TEST_RUN_WORKSPACE: 'papercusp-workspace',
       PAPERCUSP_TEST_RUN_GROUP: `cloud-tutorial-native-${port}` };
-    writeFileSync(`${out}.json`, JSON.stringify({ root, profile, review, port, modules, display: env.DISPLAY,
+    // Pause/resume remounts the guide with Help collapsed. A reviewer must
+    // reopen it before searching AT-SPI for optional output controls.
+    const reviewInstructions = profile === 'product-guide' ? [
+      'After pause/resume, reopen Help with this lesson before inspecting speech controls.',
+      'Verify Help is expanded and Spoken lesson guidance is present before using Speak lesson, Stop speech, Mute, or Replay.',
+      'Missing controls in collapsed Help are an unmet review precondition; record them as not exercised.',
+      'This mounted fixture does not prove hosted provider audio, protected input, or production acceptance.',
+    ] : [];
+    writeFileSync(`${out}.json`, JSON.stringify({ root, profile, review, reviewInstructions, port, modules, display: env.DISPLAY,
       dbus: env.DBUS_SESSION_BUS_ADDRESS, xauthority: env.XAUTHORITY, orcaPid: reader.pid, windowPid: wm.pid,
       head: checked('git', ['-C', root, 'rev-parse', 'HEAD']), observedAt: new Date().toISOString() }, null, 2), { flag: 'wx' });
     console.log(`NATIVE_REVIEW_READY ${out}.json`);
+    for (const instruction of reviewInstructions) console.log(`NATIVE_REVIEW_INSTRUCTION ${instruction}`);
     const journey = spawn('npm', review.args, {
       cwd: review.cwd, env, stdio: 'inherit',
     });

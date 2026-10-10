@@ -612,9 +612,9 @@ export async function resubmitAgentReview(
   if (!workItem) return { resubmitted: false, reason: 'not-found' };
   const current = readAgentReviewState(workItem.payload);
   if (!current) return { resubmitted: false, reason: 'not-agent-review' };
-  const legacySweepSubmitter = readLegacySweepSubmitter(workItem, current);
-  const effectiveSubmitter = legacySweepSubmitter ?? current.submittedBy;
-  const isLegacySweepRepair = legacySweepSubmitter !== null;
+  const legacySubmitter = readLegacySyntheticSubmitter(workItem, current);
+  const effectiveSubmitter = legacySubmitter ?? current.submittedBy;
+  const isProvenanceRepair = legacySubmitter !== null;
   const isLegacyRebind = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER;
   if (isLegacyRebind && workItem.assignee !== input.submittedBy) {
     return { resubmitted: false, state: current, reason: 'legacy-revision-not-claimant' };
@@ -661,11 +661,11 @@ export async function resubmitAgentReview(
     }
     isOrphanRebind = true;
   }
-  // A provenance-checked legacy sweep row can be repaired by its real reporter without
+  // A provenance-checked legacy service row can be repaired by its real reporter without
   // going through the orphan branch above. Keep the same holder fence here, before the
   // payload write, so a reporter cannot rebind a synthetic row held by a third party.
   if (
-    isLegacySweepRepair &&
+    isProvenanceRepair &&
     workItem.assignee != null &&
     workItem.assignee !== effectiveSubmitter &&
     workItem.assignee !== input.submittedBy
@@ -678,7 +678,7 @@ export async function resubmitAgentReview(
   const next: AgentReviewState = {
     ...current,
     status: 'pending',
-    submittedBy: isLegacyRebind || isOrphanRebind || isLegacySweepRepair ? input.submittedBy : current.submittedBy,
+    submittedBy: isLegacyRebind || isOrphanRebind || isProvenanceRepair ? input.submittedBy : current.submittedBy,
     round: current.round + 1,
     timing: { round: current.round + 1, enteredAt: new Date().toISOString() },
   };
@@ -722,21 +722,27 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /**
- * Recover the real submitter on a legacy sweep-enrolled row. The exact synthetic state
- * is accepted only with the sweep's own review marker and a reporter stamp that agrees
- * with the work-item creation identity (or the legacy `_ei.created_by` copy). No other
- * `system:*` submitter receives this path.
+ * Recover the reporter on rows enrolled by known service writers. Their own persisted
+ * routing markers must prove the enrollment, and creation/reporter identities must
+ * agree. This only selects whose liveness to measure; it does not authorize adoption.
+ * Other synthetic identities, missing markers and non-agent reporters stay unknown.
  */
-function readLegacySweepSubmitter(workItem: WorkItem, current: AgentReviewState): string | null {
-  if (current.submittedBy !== STRANDED_SWEEP_OWNER) return null;
+function readLegacySyntheticSubmitter(workItem: WorkItem, current: AgentReviewState): string | null {
   const payload = record(workItem.payload);
-  const marker = record(payload.strandedToolFailureSweep);
-  if (
-    marker.owner !== STRANDED_SWEEP_OWNER ||
-    marker.outcome !== 'review' ||
-    typeof marker.at !== 'string' ||
-    !Number.isFinite(Date.parse(marker.at))
-  ) return null;
+  const dated = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
+  if (current.submittedBy === STRANDED_SWEEP_OWNER) {
+    const marker = record(payload.strandedToolFailureSweep);
+    if (marker.owner !== STRANDED_SWEEP_OWNER || marker.outcome !== 'review' || !dated(marker.at)) return null;
+  } else if (current.submittedBy === 'improvement-triage' || current.submittedBy === 'Queen') {
+    const lifecycle = record(payload.ideaLifecycle);
+    const screen = record(payload.deploymentStalenessScreen);
+    const reviewedPlace = lifecycle.triageDecision === 'place' && screen.screened === true &&
+      screen.state === 'unknown' && screen.divert === false && dated(screen.at);
+    if (lifecycle.state !== 'triaged' || !dated(lifecycle.triagedAt) ||
+      (lifecycle.triageDecision !== 'gate' && !reviewedPlace)) return null;
+  } else {
+    return null;
+  }
 
   const createdBy = workItem.createdBy;
   if (!createdBy || record(payload._ei).created_by !== createdBy) return null;

@@ -109,7 +109,8 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.benchmark_run_result (run_id text, workspace_id text, created_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text);
     CREATE TABLE harness_shared.task_ledger (task_id text, workspace_id text, session_id text, detail jsonb,
-      class text DEFAULT 'agent-session', state text DEFAULT 'exited', parent_task_id text);
+      class text DEFAULT 'agent-session', state text DEFAULT 'exited', parent_task_id text,
+      started_at timestamptz NOT NULL DEFAULT now(), ended_at timestamptz);
     CREATE TABLE harness_shared.adv_sessions (id bigserial, workspace_id text, coord_owner_id text, session_id text,
       agent text, started_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE harness_shared.runtime_vintage (workspace_id text, unit text, host text, tree_sha text,
@@ -128,6 +129,9 @@ beforeAll(async () => {
   }
   await sql.unsafe('ALTER TABLE harness_shared.learning_governor_loops ADD COLUMN pot_slug text');
   await sql.unsafe('ALTER TABLE harness_shared.learning_spend_events ADD COLUMN pot_slug text');
+  // Canonical lifecycle fields from migration 696. Fail setup immediately if
+  // this reduced private fixture cannot exercise the production timing read.
+  await sql`SELECT started_at, ended_at FROM harness_shared.task_ledger LIMIT 0`;
 }, 90_000);
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -397,6 +401,25 @@ describe('production native accounting with private PG and full source bytes', (
     expect(result.costUsd).toBeCloseTo(0.00022, 10);
     expect(result.armMeta).toMatchObject({ nativeCostAccounting: { sourceCensusComplete: true, billedKnownSubtotalUsd: 0.004,
       participantTaskIds: ['private-cost-reviewer', 'private-cost-solver'] } });
+  });
+  it('projects exact recursive task lifetimes and refuses an unknown end instead of reporting free time', async () => {
+    const f = await costFixture();
+    await f.addParticipant('private-cost-reviewer', 'su-private-cost-reviewer', f.solver.taskId);
+    await sql`UPDATE harness_shared.task_ledger SET started_at = '2026-01-01T00:00:00Z', ended_at = '2026-01-01T00:00:00.100Z'
+      WHERE task_id = ${f.solver.taskId}`;
+    await sql`UPDATE harness_shared.task_ledger SET started_at = '2026-01-01T00:00:00.010Z', ended_at = '2026-01-01T00:00:00.020Z'
+      WHERE task_id = 'private-cost-reviewer'`;
+    const result = await f.read();
+    expect(result.armMeta).toMatchObject({ nativeCostAccounting: { taskLedgerConcurrency: {
+      basis: 'task-ledger-lifetime', averageBasis: 'time-weighted', complete: true, participantCensusStable: true,
+      startedAtMs: Date.parse('2026-01-01T00:00:00Z'), endedAtMs: Date.parse('2026-01-01T00:00:00.100Z'),
+      wallClockMs: 100, participantWallClockMs: 110,
+      concurrencyTimeline: { peakConcurrent: 2, avgConcurrent: 1.1,
+        samples: [{ tMs: 0, live: 1 }, { tMs: 10, live: 2 }, { tMs: 20, live: 1 }, { tMs: 100, live: 0 }] } } } });
+    await sql`UPDATE harness_shared.task_ledger SET ended_at = NULL WHERE task_id = 'private-cost-reviewer'`;
+    expect(await f.read()).toMatchObject({ armMeta: { nativeCostAccounting: { taskLedgerConcurrency: {
+      complete: false, missingTimingTaskIds: ['private-cost-reviewer'], wallClockMs: null,
+      participantWallClockMs: null, concurrencyTimeline: null } } } });
   });
   it('accounts for the prior carry source even though adv_sessions names only the latest native session', async () => {
     const f = await costFixture(); await f.addSource(f.solver.home, f.solver.ownerId);

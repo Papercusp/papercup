@@ -34,6 +34,7 @@ import {
 } from './lifecycle';
 import { trackDetached } from '../../detached-imports';
 import { enterAgentReview } from './agent-review';
+import { effectiveReporter } from './provenance';
 import {
   createImplementationReadiness,
   implementationReadinessIsLegacyEquivalent,
@@ -623,7 +624,10 @@ export async function applyTriageDecision(
     implementationReadiness.reason === 'awaiting-agent-review' &&
     deploymentFreshnessUnknown(deploymentStaleness);
   if ((decision === 'gate' && routeTarget !== 'owner-escalation') || freshnessUnknownPlace) {
-    await deps.enterAgentReview({ id: input.id, submittedBy: by });
+    // `by` identifies the triage actor, not the author who can answer a revision.
+    // Preserve the filing provenance so a scheduled service never becomes the
+    // review submitter for an agent's report. A missing reporter stays explicit.
+    await deps.enterAgentReview({ id: input.id, submittedBy: effectiveReporter(issue).id ?? by });
   }
 
   if (input.comment !== false) {

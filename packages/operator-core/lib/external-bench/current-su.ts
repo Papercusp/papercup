@@ -26,8 +26,12 @@ import type { ClosedCodexSessionUsage } from '../session-transcript-resolvers';
 import { priceRun } from '@papercusp/bench-metrics';
 import { currentProtocolPriceTable } from './reproducibility/schema';
 import { readGatewayNativeCorrelation } from '../inference-gateway/request-stage-telemetry';
+import { concurrencyTimelineFromIntervals } from './hive-backlog-utilities';
 
-interface NativeCostParticipant { taskId: string; ownerId: string; codexHome: string; terminal: boolean }
+interface NativeCostParticipant {
+  taskId: string; ownerId: string; codexHome: string; terminal: boolean;
+  startedAtMs?: number | null; endedAtMs?: number | null;
+}
 export interface CurrentBenchAccountingBinding {
   readonly workspaceId: string; readonly loopId: string; readonly runId: string;
   readonly preregHash: string; readonly assignmentId: string;
@@ -179,16 +183,31 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
         else { billedKnownSubtotalUsd += billed.knownSubtotalUsd; if (!billed.complete) missingBills++; }
       }
     }
-    if (canonicalJson(participants) !== canonicalJson(await io.readParticipants())) complete = false;
+    let participantCensusStable = canonicalJson(participants) === canonicalJson(await io.readParticipants());
+    if (!participantCensusStable) complete = false;
     const attemptsComplete = complete && !missingSources &&
       (await io.readAttemptAccountingComplete?.({ participants, sources: accountingSources }).catch(() => false) ?? false);
-    if (canonicalJson(participants) !== canonicalJson(await io.readParticipants())) complete = false;
+    participantCensusStable = participantCensusStable && canonicalJson(participants) === canonicalJson(await io.readParticipants());
+    if (!participantCensusStable) complete = false;
+    const missingTimingTaskIds = participants.filter(p => !p.terminal || p.startedAtMs == null || p.endedAtMs == null ||
+      !Number.isSafeInteger(p.startedAtMs) || p.startedAtMs < 0 || !Number.isSafeInteger(p.endedAtMs) ||
+      p.endedAtMs < p.startedAtMs).map(p => p.taskId);
+    const timing = participantCensusStable && participants.length < 1000 &&
+      new Set(participants.map(p => p.taskId)).size === participants.length && !missingTimingTaskIds.length
+      ? concurrencyTimelineFromIntervals(participants.map(p => ({ startedAtMs: p.startedAtMs!, endedAtMs: p.endedAtMs! }))) : null;
     result.costUsdMeasurementMissing = !complete || missingSources > 0 || missingBills > 0 || !attemptsComplete;
     result.armMeta = { nativeCostAccounting: { basis: 'frozen-normalized-native-source', priceTableVersion: protocol.priceSchedule.version,
       normalizedCostUsd: result.costUsd, billedKnownSubtotalUsd,
       billedCostUsd: complete && !missingBills && attemptsComplete ? billedKnownSubtotalUsd : null,
       sourceCensusComplete: complete, attemptAccountingComplete: attemptsComplete, missingSources, missingBills,
-      participantTaskIds: [...ids].sort(), sources } };
+      participantTaskIds: [...ids].sort(), sources,
+      // task_ledger.started_at is enrollment, not a provider-send or CPU timestamp.
+      // Missing/live/changed intervals cannot establish zero time or concurrency.
+      taskLedgerConcurrency: { basis: 'task-ledger-lifetime', averageBasis: 'time-weighted', complete: timing !== null,
+        participantCensusStable, missingTimingTaskIds,
+        startedAtMs: timing?.startedAtMs ?? null, endedAtMs: timing?.endedAtMs ?? null,
+        wallClockMs: timing?.wallClockMs ?? null, participantWallClockMs: timing?.participantWallClockMs ?? null,
+        concurrencyTimeline: timing?.concurrencyTimeline ?? null } } };
     return result;
   };
 }
@@ -214,7 +233,8 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
       const { resolveDb } = await import('./reproducibility/db');
       const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
       const { sql } = resolveDb({ ...db, workspaceId });
-      const rows = await sql<{ task_id: string; state: string; owner_id: string | null; adv_id: number | null; agent: string | null }[]>`
+      const rows = await sql<{ task_id: string; state: string; owner_id: string | null; adv_id: number | null; agent: string | null;
+        started_at: Date | string; ended_at: Date | string | null }[]>`
         WITH RECURSIVE participants AS (
           SELECT task_id FROM harness_shared.task_ledger
            WHERE workspace_id = ${workspaceId} AND starts_with(detail->>'label', ${labelPrefix})
@@ -222,13 +242,14 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
           SELECT child.task_id FROM harness_shared.task_ledger child JOIN participants parent
             ON child.parent_task_id = parent.task_id WHERE child.workspace_id = ${workspaceId}
         )
-        SELECT t.task_id, t.state, t.detail->>'coordOwnerId' AS owner_id, a.id AS adv_id, a.agent
+        SELECT t.task_id, t.state, t.detail->>'coordOwnerId' AS owner_id, a.id AS adv_id, a.agent, t.started_at, t.ended_at
           FROM participants p JOIN harness_shared.task_ledger t ON t.workspace_id = ${workspaceId} AND t.task_id = p.task_id
           LEFT JOIN harness_shared.adv_sessions a ON a.workspace_id = t.workspace_id AND a.coord_owner_id = t.detail->>'coordOwnerId'
          WHERE t.class = 'agent-session' ORDER BY t.task_id, a.id LIMIT 1001`;
       return rows.map(row => ({ taskId: row.task_id, ownerId: row.owner_id ?? '',
         codexHome: row.agent === 'codex' && row.adv_id != null ? codexHomeForSessionKey(row.adv_id) : '',
-        terminal: ['exited', 'killed', 'timed_out'].includes(row.state) }));
+        terminal: ['exited', 'killed', 'timed_out'].includes(row.state),
+        startedAtMs: new Date(row.started_at).getTime(), endedAtMs: row.ended_at == null ? null : new Date(row.ended_at).getTime() }));
     },
     async readRuntime(participant) {
       const { resolveDb } = await import('./reproducibility/db');

@@ -1241,6 +1241,73 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     });
   });
 
+  function triageRow(overrides: Record<string, unknown> = {}, submittedBy = 'improvement-triage'): WorkItem {
+    return issue({ assignee: null, createdBy: 'su-original', payload: {
+      _ei: { created_by: 'su-original' },
+      ideaLifecycle: { state: 'triaged', triageDecision: 'gate', triagedAt: '2026-10-01T10:00:00.000Z' },
+      agentReview: { status: 'revision-requested', submittedBy, ledgerIdeaId: 'WI-7', round: 1 },
+      ...overrides,
+    } });
+  }
+
+  it.each(['improvement-triage', 'Queen'])('repairs %s enrollment for its proven original reporter', async (submittedBy) => {
+    const h = harness(triageRow({}, submittedBy));
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-original' }, h.deps)).resolves.toMatchObject({
+      resubmitted: true, state: { status: 'pending', submittedBy: 'su-original', round: 2 },
+    });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['live', { sessionState: 'live' } as const, 'not-submitter'],
+    ['unknown', null, 'not-submitter:liveness-unknown'],
+    ['ended', { sessionState: 'ended' } as const, undefined],
+  ])('measures the original triage reporter, keeping %s adoption honest', async (_label, verdict, reason) => {
+    const h = harness(triageRow());
+    h.state.submitterLiveness = verdict;
+    const result = await resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps);
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-original', { claimsHeld: false });
+    expect(result).toMatchObject(reason ? { resubmitted: false, reason } : { resubmitted: true });
+    if (reason) expect(readAgentReviewState(h.state.issue.payload)?.submittedBy).toBe('improvement-triage');
+  });
+
+  it('never repairs triage provenance under a third-party implementation holder', async () => {
+    const h = harness({ ...triageRow(), assignee: 'su-other' });
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false, reason: 'orphan-revision-held-by-other',
+    });
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    expect(readAgentReviewState(h.state.issue.payload)?.status).toBe('revision-requested');
+  });
+
+  it('recovers a place enrolled for a persistently unknown deployment screen', async () => {
+    const h = harness(triageRow({
+      ideaLifecycle: { state: 'triaged', triageDecision: 'place', triagedAt: '2026-10-01T10:00:00.000Z' },
+      deploymentStalenessScreen: { state: 'unknown', screened: true, divert: false, at: '2026-10-01T10:00:00.000Z' },
+    }));
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-original' }, h.deps)).resolves.toMatchObject({
+      resubmitted: true, state: { submittedBy: 'su-original' },
+    });
+  });
+
+  it.each([
+    ['missing triage marker', { ideaLifecycle: undefined }],
+    ['undated triage', { ideaLifecycle: { state: 'triaged', triageDecision: 'gate' } }],
+    ['unreviewed place', { ideaLifecycle: { state: 'triaged', triageDecision: 'place', triagedAt: '2026-10-01T10:00:00.000Z' } }],
+    ['creator mismatch', { _ei: { created_by: 'su-other' } }],
+    ['reporter mismatch', { reporter: { kind: 'agent', id: 'su-other', basis: 'agent-session', at: '2026-10-01T10:00:00.000Z' } }],
+    ['malformed reporter', { reporter: { kind: 'invalid' } }],
+    ['non-agent reporter', { reporter: { kind: 'watchdog', id: 'su-original', basis: 'explicit', at: '2026-10-01T10:00:00.000Z' } }],
+  ])('does not infer triage authority from %s', async (_label, overrides) => {
+    const h = harness(triageRow(overrides));
+    h.state.submitterLiveness = null;
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false, reason: 'not-submitter:liveness-unknown',
+    });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('improvement-triage', { claimsHeld: false });
+  });
+
   it.each([
     ['live', { sessionState: 'live' } as const, 'not-submitter'],
     ['unknown', null, 'not-submitter:liveness-unknown'],

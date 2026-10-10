@@ -36,7 +36,8 @@ describe('source-bound current benchmark cost', () => {
     const population = closedCodexSessionPopulation({ transcript, file: '/private/native-cost-1.jsonl', fileGeneration: 0, nativeSessionId: 'native-cost-1' });
     if (!population.ok) throw new Error(population.detail);
     const usage = { ...population, file: '/private/native-cost-1.jsonl', sourceSha256: createHash('sha256').update(transcript).digest('hex') };
-    const participant = { taskId: 'solver-task', ownerId: 'solver-owner', codexHome: '/private/home', terminal: true };
+    const participant = { taskId: 'solver-task', ownerId: 'solver-owner', codexHome: '/private/home', terminal: true,
+      startedAtMs: 100, endedAtMs: 200 };
     const runtime = { complete: true, sessions: [{ nativeSessionId: 'native-cost-1', usage }] };
     const ports: CurrentBenchNativeCostReaderPorts = {
       readParticipants: vi.fn(async () => [participant]), readRuntime: vi.fn(async () => runtime),
@@ -83,6 +84,29 @@ describe('source-bound current benchmark cost', () => {
     const f = costFixture(); vi.mocked(f.ports.readParticipants).mockResolvedValue([f.participant, { ...f.participant, taskId: 'recovery-task' }]);
     const result = await f.read(); expect(result.costUsd).toBeCloseTo(0.00011, 10); expect(f.ports.readRuntime).toHaveBeenCalledOnce();
     expect(result.armMeta).toMatchObject({ nativeCostAccounting: { participantTaskIds: ['recovery-task', 'solver-task'] } });
+  });
+  it('keeps overlapping recovery lifetimes separate while charging their shared native home once', async () => {
+    const f = costFixture();
+    vi.mocked(f.ports.readParticipants).mockResolvedValue([f.participant,
+      { ...f.participant, taskId: 'recovery-task', startedAtMs: 190, endedAtMs: 210 }]);
+    const result = await f.read();
+    expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result.armMeta).toMatchObject({ nativeCostAccounting: { taskLedgerConcurrency: {
+      basis: 'task-ledger-lifetime', averageBasis: 'time-weighted', complete: true,
+      wallClockMs: 110, participantWallClockMs: 120,
+      concurrencyTimeline: { peakConcurrent: 2, avgConcurrent: 120 / 110,
+        samples: [{ tMs: 0, live: 1 }, { tMs: 90, live: 2 }, { tMs: 100, live: 1 }, { tMs: 110, live: 0 }] } } } });
+  });
+  it.each(['missing-end', 'invalid-start', 'live', 'census-drift', 'duplicate-task'] as const)
+  ('keeps task lifetime measurement unknown for %s', async change => {
+    const f = costFixture();
+    if (change === 'missing-end') delete (f.participant as Partial<typeof f.participant>).endedAtMs;
+    if (change === 'invalid-start') f.participant.startedAtMs = NaN;
+    if (change === 'live') f.participant.terminal = false;
+    if (change === 'census-drift') vi.mocked(f.ports.readParticipants).mockResolvedValueOnce([f.participant]).mockResolvedValue([]);
+    if (change === 'duplicate-task') vi.mocked(f.ports.readParticipants).mockResolvedValue([f.participant, { ...f.participant }]);
+    expect(await f.read()).toMatchObject({ armMeta: { nativeCostAccounting: { taskLedgerConcurrency: {
+      complete: false, wallClockMs: null, participantWallClockMs: null, concurrencyTimeline: null } } } });
   });
   it.each(['live', 'changed-census', 'foreign-owner-home', 'duplicate-source', 'unknown-price', 'invalid-bill'] as const)('refuses completeness for %s', async changed => {
     const f = costFixture();
