@@ -58,6 +58,7 @@ export function readInspectorProcessIdentity({ pid, port, expectedEntry, expecte
       const startTicks = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[19];
       if (!/^\d+$/.test(startTicks ?? '')) continue;
       matches.push({ pid: candidate.pid, entry: expectedEntry, argv: argv.slice(entryIndex + 1),
+        execArgv: argv.slice(1, entryIndex),
         startTicks, listenerInode, identity: 'proc' });
     } catch { /* Exited or unreadable processes cannot supply identity proof. */ }
   }
@@ -71,10 +72,12 @@ export function readInspectorProcessIdentity({ pid, port, expectedEntry, expecte
  * Existing-inspector mode pins one port and checks entry/arguments before sampling;
  * it disconnects its own socket without closing the target's pre-opened inspector.
  * @param {{ pid: number, durationMs?: number, startPort?: number, attachExisting?: boolean,
- *   expectedEntry?: string, expectedArg?: string, deadlineMs?: number, procIdentity?: boolean }} options
+ *   expectedEntry?: string, expectedArg?: string, deadlineMs?: number, procIdentity?: boolean,
+ *   resumeStartup?: boolean }} options
  */
 export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9229,
-  attachExisting = false, expectedEntry, expectedArg, deadlineMs = 50000, procIdentity = false }) {
+  attachExisting = false, expectedEntry, expectedArg, deadlineMs = 50000, procIdentity = false,
+  resumeStartup = false }) {
   if (!Number.isInteger(pid) || pid < 0 || (!attachExisting && pid === 0))
     throw new TypeError('a positive target pid is required unless attaching by exact entry');
   if (!Number.isInteger(durationMs) || durationMs <= 0 || !Number.isInteger(deadlineMs) || deadlineMs <= 5000)
@@ -85,6 +88,8 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     throw new TypeError('existing inspector capture requires an exact expected entry');
   if (procIdentity && (!attachExisting || process.platform !== 'linux' || !isAbsolute(expectedEntry ?? '')))
     throw new TypeError('proc identity requires an existing Linux inspector and absolute expected entry');
+  if (resumeStartup && !procIdentity)
+    throw new TypeError('startup resume requires kernel process identity');
 
   const deadline = Date.now() + deadlineMs;
   if (!attachExisting) {
@@ -107,12 +112,16 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     if (endpoint.protocol !== 'ws:' || endpoint.hostname !== '127.0.0.1' || Number(endpoint.port) !== inspector.port)
       throw new Error('inspector target identity mismatch: nonlocal endpoint');
     target = readInspectorProcessIdentity({ pid, port: inspector.port, expectedEntry, expectedArg });
+    if (resumeStartup && !target.execArgv.some(arg =>
+      arg === '--inspect-wait=127.0.0.1:0' || arg === '--inspect-wait=127.0.0.1:' + inspector.port))
+      throw new Error('startup resume requires an exact loopback --inspect-wait target');
   }
 
   const client = createCdpClient(inspector.wsUrl, {
     requestTimeoutMs: 2000,
     webSocketOptions: { handshakeTimeout: 2000, maxPayload: 64 * 1024 * 1024 },
   });
+  let startupResumed = false;
   try {
     await client.connect();
     // --inspect starts listening before Node has initialized process.argv.
@@ -134,6 +143,12 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     await client.send('Profiler.enable');
     await client.send('Profiler.setSamplingInterval', { interval: attachExisting ? 1000 : 200 });
     await client.send('Profiler.start');
+    // Configure profiling while Node services inspector requests at its startup
+    // wait, before synchronous compilation/initialization can stall the protocol.
+    if (resumeStartup) {
+      await client.send('Runtime.runIfWaitingForDebugger');
+      startupResumed = true;
+    }
     const captureMs = Math.min(durationMs, deadline - Date.now() - 5000);
     if (captureMs <= 0) throw new Error('no capture window remains before the deadline');
     await sleep(captureMs);
@@ -145,10 +160,21 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
       if (after.startTicks !== target.startTicks || after.listenerInode !== target.listenerInode)
         throw new Error('inspector target identity mismatch: process changed during capture');
     }
-    return { profile, target, captureMs, inspector: redactDiagnosticUrl(inspector.wsUrl) };
+    return { profile, target, captureMs, startupResumed, inspector: redactDiagnosticUrl(inspector.wsUrl) };
   } finally {
-    if (attachExisting) client.close();
-    else await closeInspector(client, inspector.port);
+    try {
+      // A failed profiler setup must not strand the owned child at Node's wait.
+      // Preserve a failed release as an error; the caller still owns termination.
+      if (resumeStartup && !startupResumed) {
+        const after = readInspectorProcessIdentity({ pid: target.pid, port: inspector.port, expectedEntry, expectedArg });
+        if (after.startTicks !== target.startTicks || after.listenerInode !== target.listenerInode)
+          throw new Error('inspector target identity mismatch: process changed before startup resume');
+        await client.send('Runtime.runIfWaitingForDebugger');
+      }
+    } finally {
+      if (attachExisting) client.close();
+      else await closeInspector(client, inspector.port);
+    }
   }
 }
 
@@ -157,6 +183,7 @@ async function main() {
     save: { type: 'string' }, 'attach-existing': { type: 'boolean' },
     'expect-entry': { type: 'string' }, 'expect-arg': { type: 'string' },
     'proc-identity': { type: 'boolean' },
+    'resume-startup': { type: 'boolean' },
   } });
   const pid = Number(positionals[0]);
   const durationMs = Number(positionals[1] || 30000);
@@ -165,6 +192,7 @@ async function main() {
     attachExisting: values['attach-existing'] ?? false,
     expectedEntry: values['expect-entry'], expectedArg: values['expect-arg'],
     procIdentity: values['proc-identity'] ?? false,
+    resumeStartup: values['resume-startup'] ?? false,
     deadlineMs: values['attach-existing'] ? 50000 : durationMs + 20000 });
   if (values.save) {
     writeFileSync(values.save, JSON.stringify(profile));

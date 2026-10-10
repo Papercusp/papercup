@@ -5,7 +5,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import * as cdpInspector from '../../../scripts/cdp-inspector.mjs';
 import { captureCpuProfile, readInspectorProcessIdentity } from '../../../scripts/cpu-sample.mjs';
 
 async function withTarget(run: (target: { pid: number; port: number; out: string }) => Promise<void>) {
@@ -73,18 +74,21 @@ it('requires an exact entry when the pid is unknown', async () => {
     durationMs: 250 })).rejects.toThrow('exact expected entry');
 });
 
-async function withBusyTarget(run: (target: { pid: number; port: number; entry: string }) => Promise<void>) {
+async function withBusyTarget(run: (target: { pid: number; port: number; entry: string;
+  output: () => string }) => Promise<void>, waitForStartup = false) {
   const out = mkdtempSync(join(tmpdir(), 'cpu-sample-busy-'));
   const entry = join(out, 'startup.mjs');
   writeFileSync(entry, 'console.log("CPU_SAMPLE_BUSY_READY");function busyStartup(){while(true)Math.sqrt(Math.random());}busyStartup();');
-  const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', entry, '--probe-target'],
+  const child = spawn(process.execPath, [waitForStartup ? '--inspect-wait=127.0.0.1:0' : '--inspect=127.0.0.1:0', entry, '--probe-target'],
     { stdio: ['ignore', 'pipe', 'pipe'] });
   const exit = once(child, 'exit');
+  let output = '';
+  child.stdout!.on('data', chunk => { output += String(chunk); });
   try {
     const port = await new Promise<number>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('busy inspector did not open')), 5000);
       let inspectorPort: number | undefined;
-      let ready = false;
+      let ready = waitForStartup;
       const settle = () => { if (inspectorPort && ready) { clearTimeout(timer); resolve(inspectorPort); } };
       child.once('error', error => { clearTimeout(timer); reject(error); });
       child.stderr!.on('data', chunk => {
@@ -95,7 +99,7 @@ async function withBusyTarget(run: (target: { pid: number; port: number; entry: 
         if (String(chunk).includes('CPU_SAMPLE_BUSY_READY')) { ready = true; settle(); }
       });
     });
-    await run({ pid: child.pid!, port, entry });
+    await run({ pid: child.pid!, port, entry, output: () => output });
   } finally {
     child.kill('SIGTERM');
     await exit;
@@ -115,6 +119,46 @@ it.skipIf(process.platform !== 'linux')('profiles a synchronously busy target wi
     expect(frames.map((node: { callFrame: unknown }) => node.callFrame)).toEqual(expect.arrayContaining([
       expect.objectContaining({ url: pathToFileURL(entry).href }),
     ]));
+  });
+}, 15000);
+
+it.skipIf(process.platform !== 'linux')('starts profiling before releasing an exact cold startup target', async () => {
+  await withBusyTarget(async ({ pid, port, entry, output }) => {
+    expect(output()).toBe('');
+    const result = await captureCpuProfile({ pid, startPort: port, attachExisting: true, procIdentity: true,
+      resumeStartup: true, expectedEntry: entry, expectedArg: '--probe-target', durationMs: 250, deadlineMs: 7000 });
+    expect(result.startupResumed).toBe(true);
+    expect(output()).toContain('CPU_SAMPLE_BUSY_READY');
+    const sampled = new Set(result.profile.samples);
+    expect(result.profile.nodes.some((node: { id: number; callFrame: { url: string } }) =>
+      sampled.has(node.id) && node.callFrame.url === pathToFileURL(entry).href)).toBe(true);
+  }, true);
+}, 15000);
+
+it.skipIf(process.platform !== 'linux')('releases its waiting child when profiler setup fails', async () => {
+  const createClient = cdpInspector.createCdpClient;
+  const spy = vi.spyOn(cdpInspector, 'createCdpClient').mockImplementationOnce((...args) => {
+    const client = createClient(...args);
+    const send = client.send;
+    client.send = (method, ...params) => method === 'Profiler.setSamplingInterval'
+      ? Promise.reject(new Error('injected profiler setup failure')) : send(method, ...params);
+    return client;
+  });
+  try {
+    await withBusyTarget(async ({ pid, port, entry, output }) => {
+      await expect(captureCpuProfile({ pid, startPort: port, attachExisting: true, procIdentity: true,
+        resumeStartup: true, expectedEntry: entry, expectedArg: '--probe-target', durationMs: 250, deadlineMs: 7000 }))
+        .rejects.toThrow('injected profiler setup failure');
+      await vi.waitFor(() => expect(output()).toContain('CPU_SAMPLE_BUSY_READY'), { timeout: 3000 });
+    }, true);
+  } finally { spy.mockRestore(); }
+}, 15000);
+
+it.skipIf(process.platform !== 'linux')('refuses startup resume for a target launched without a startup wait', async () => {
+  await withBusyTarget(async ({ pid, port, entry }) => {
+    await expect(captureCpuProfile({ pid, startPort: port, attachExisting: true, procIdentity: true,
+      resumeStartup: true, expectedEntry: entry, expectedArg: '--probe-target', durationMs: 250, deadlineMs: 7000 }))
+      .rejects.toThrow('exact loopback --inspect-wait');
   });
 }, 15000);
 
