@@ -24,6 +24,9 @@ const ZERO_QUEUE_CONTROL = {
   unattributedClaimHolds: 0,
   pendingAgentReview: 0,
   revisionRequestedAgentReview: 0,
+  revisionReproductionValidation: 0,
+  revisionContentAdoptionCandidates: 0,
+  revisionLegacyException: 0,
 };
 
 const admissionMocks = vi.hoisted(() => ({

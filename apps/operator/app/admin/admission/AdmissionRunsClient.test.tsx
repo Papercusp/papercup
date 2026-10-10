@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import type { ReactElement } from "react";
 import type { WorkItemAdmissionSnapshot } from "@papercusp/operator-core/lib/work-items-admission-promoter";
+import { WORK_ITEM_PRESENTATION_LABELS } from "@papercusp/operator-core/lib/work-item-presentation-contract";
 
 let syncResult: {
   data: WorkItemAdmissionSnapshot[] | undefined;
@@ -174,6 +175,8 @@ function payload(
           admissionUnreviewed: 1,
           pendingAgentReview: 1,
           revisionRequestedAgentReview: 3,
+          revisionReproductionValidation: 1,
+          revisionContentAdoptionCandidates: 1,
           legacyRevisionException: 1,
           readinessAbsentLegacy: 4,
           readinessReady: 3,
@@ -329,11 +332,13 @@ describe("AdmissionRunsClient", () => {
     );
     expect(readiness.textContent).toContain("Claimable by writer policy1");
     const stages = screen.getByRole('region', { name: 'Accepted work and intake' });
-    expect(stages.textContent).toContain('Candidates awaiting decision or revision2');
-    expect(stages.textContent).toContain('Accepted ready work1');
-    expect(stages.textContent).toContain('Active accepted work1');
-    expect(stages.textContent).toContain('Blocked accepted work2');
-    expect(stages.textContent).toContain('Verified accepted completions1');
+    // Labels come from the shared presentation contract the component renders, so a label
+    // rename there cannot leave this assertion hard-coding a string nothing renders any more.
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS.candidate}2`);
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS['accepted-ready']}1`);
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS['accepted-active']}1`);
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS['accepted-blocked']}2`);
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS['verified-completion']}1`);
     expect(stages.textContent).toContain('10 root issue-family work-item rows');
     expect(stages.textContent).toContain('Writer: readWorkItemReadinessProjection');
     expect(screen.getByRole('link', { name: 'bulk review report' }).getAttribute('href')).toBe('/inbox');

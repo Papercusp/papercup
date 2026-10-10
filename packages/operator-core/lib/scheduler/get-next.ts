@@ -96,7 +96,11 @@ import {
 } from '../work-items-admission';
 import { trackDetached } from '../detached-imports';
 import { agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
-import { intakeStageClaimFloorSql, readAgentReviewState } from '../harness/improvements/agent-review-policy';
+import {
+  intakeStageClaimFloorSql,
+  LEGACY_AGENT_REVIEW_SUBMITTER,
+  readAgentReviewState,
+} from '../harness/improvements/agent-review-policy';
 import {
   classifyAuditAge,
   classifyDurableParkReleaseLiveness,
@@ -1106,6 +1110,13 @@ export interface IssueClaimExclusionBreakdown {
     unattributedClaimHolds: number;
     pendingAgentReview: number;
     revisionRequestedAgentReview: number;
+    /** bug-queue-legitimacy D-007/D-008: an exact partition of `revisionRequestedAgentReview`
+     *  (reproduction + content + legacy === revisionRequestedAgentReview). Reproduction rows
+     *  pass the intake claim floor as validation work. Content rows are the adopt-next discovery
+     *  pool only: submitter liveness is a per-row oracle verdict, not a SQL fact. */
+    revisionReproductionValidation: number;
+    revisionContentAdoptionCandidates: number;
+    revisionLegacyException: number;
   };
 }
 
@@ -1471,7 +1482,21 @@ async function aggregateIssueClaimExclusionsOn(
       )::int AS pending_agent_review,
       count(*) FILTER (
         WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
-      )::int AS revision_requested_agent_review
+      )::int AS revision_requested_agent_review,
+      count(*) FILTER (
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
+          AND payload -> 'agentReview' ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER}
+      )::int AS revision_legacy_exception,
+      count(*) FILTER (
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
+          AND payload -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
+          AND payload -> 'agentReview' ->> 'revisionKind' = 'reproduction'
+      )::int AS revision_reproduction_validation,
+      count(*) FILTER (
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
+          AND payload -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
+          AND payload -> 'agentReview' ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
+      )::int AS revision_content_adoption_candidates
     FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
   `) as Array<
     IssueClaimExclusionCountRow & {
@@ -1483,6 +1508,9 @@ async function aggregateIssueClaimExclusionsOn(
       unattributed_claim_holds: number;
       pending_agent_review: number;
       revision_requested_agent_review: number;
+      revision_legacy_exception: number;
+      revision_reproduction_validation: number;
+      revision_content_adoption_candidates: number;
     }
   >;
   const r = rows[0];
@@ -1517,6 +1545,9 @@ async function aggregateIssueClaimExclusionsOn(
       unattributedClaimHolds: r?.unattributed_claim_holds ?? 0,
       pendingAgentReview: r?.pending_agent_review ?? 0,
       revisionRequestedAgentReview: r?.revision_requested_agent_review ?? 0,
+      revisionReproductionValidation: r?.revision_reproduction_validation ?? 0,
+      revisionContentAdoptionCandidates: r?.revision_content_adoption_candidates ?? 0,
+      revisionLegacyException: r?.revision_legacy_exception ?? 0,
     },
   };
 }

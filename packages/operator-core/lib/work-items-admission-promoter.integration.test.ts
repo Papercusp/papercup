@@ -2880,6 +2880,46 @@ describe('work-item admission promoter (real Postgres)', () => {
     ).toBe(projection.headline.population);
   });
 
+  // bug-queue-legitimacy D-007/D-008 (P-010 category b): the revision-requested reason splits
+  // into reproduction (claimable validation work) and content (the adopt-next discovery pool),
+  // and with the legacy exception the three sum exactly to revisionRequestedAgentReview.
+  it('splits revision-requested rows into an exact reproduction/content/legacy partition', async () => {
+    const review = (submittedBy: string, revisionKind?: string) => ({
+      agentReview: {
+        status: 'revision-requested',
+        submittedBy,
+        ledgerIdeaId: `idea-${submittedBy}`,
+        round: 1,
+        ...(revisionKind ? { revisionKind } : {}),
+      },
+    });
+    await seedItem({ id: 'WI-rev-repro', admission: 'admitted', itemKind: 'bug', payload: review('su-author', 'reproduction') });
+    await seedItem({ id: 'WI-rev-content', admission: 'admitted', payload: review('su-author', 'content') });
+    // A revision written before D-006 carries no revisionKind: it is a content revision.
+    await seedItem({ id: 'WI-rev-pre-d006', admission: 'admitted', payload: review('su-author') });
+    await seedItem({ id: 'WI-rev-legacy', admission: 'admitted', payload: review('system:legacy-agent-review') });
+    await seedItem({ id: 'WI-rev-pending', admission: 'admitted', payload: { agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'idea-p', round: 1 } } });
+
+    const projection = await readWorkItemReadinessProjection({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      sql: db.sql,
+      now: () => NOW,
+      windowDays: 30,
+    });
+
+    const r = projection.reasons;
+    expect(r).toMatchObject({
+      revisionRequestedAgentReview: 4,
+      revisionReproductionValidation: 1,
+      revisionContentAdoptionCandidates: 2,
+      legacyRevisionException: 1,
+      pendingAgentReview: 1,
+    });
+    expect(r.revisionReproductionValidation + r.revisionContentAdoptionCandidates + r.legacyRevisionException)
+      .toBe(r.revisionRequestedAgentReview);
+  });
+
   it('partitions accepted work once and matches the shared classifier without counting legacy or duplicate closes as delivery', async () => {
     const title = 'Repair trailing token';
     const summary = 'Parser loses the final token';

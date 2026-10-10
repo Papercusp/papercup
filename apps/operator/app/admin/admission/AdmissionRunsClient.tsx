@@ -115,6 +115,8 @@ const REASON_FACETS: ReadonlyArray<
   ["admissionUnreviewed", "Admission unreviewed"],
   ["pendingAgentReview", "Pending agent review"],
   ["revisionRequestedAgentReview", "Revision requested"],
+  ["revisionReproductionValidation", "Revision: reproduction (claimable to validate)"],
+  ["revisionContentAdoptionCandidates", "Revision: content (adoption candidates)"],
   ["legacyRevisionException", "Legacy revision exception"],
   ["readinessAbsentLegacy", "Legacy readiness absent"],
   ["readinessReady", "Readiness ready"],

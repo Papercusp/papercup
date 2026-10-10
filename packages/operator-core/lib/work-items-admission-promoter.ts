@@ -884,6 +884,22 @@ export interface WorkItemReadinessProjection {
     admissionUnreviewed: number;
     pendingAgentReview: number;
     revisionRequestedAgentReview: number;
+    /**
+     * bug-queue-legitimacy D-007: the revision-requested rows whose ONLY refusal was a
+     * missing/unaccepted current-build reproduction receipt (`revisionKind='reproduction'`,
+     * non-legacy submitter). The intake claim floor admits them as validation work, so they
+     * are P-010 category (b) "claimable to validate" unless another floor holds them.
+     */
+    revisionReproductionValidation: number;
+    /**
+     * bug-queue-legitimacy D-008: the remaining non-legacy revision-requested rows (content
+     * revisions) — the adopt-next DISCOVERY pool, not an eligibility verdict. Adoption also
+     * needs the per-row submitter-liveness oracle, which SQL cannot measure (D-008 forbids an
+     * age proxy), so a live submitter's own revision is counted here too.
+     * Partition: revisionReproductionValidation + revisionContentAdoptionCandidates +
+     * legacyRevisionException === revisionRequestedAgentReview.
+     */
+    revisionContentAdoptionCandidates: number;
     legacyRevisionException: number;
     readinessAbsentLegacy: number;
     readinessReady: number;
@@ -2971,6 +2987,16 @@ export async function readWorkItemReadinessProjection(opts: {
              (count(*) FILTER (
                WHERE agent_review ->> 'status' = 'revision-requested'
              ))::int AS reason_review_revision,
+             -- D-007/D-008: an exact partition of reason_review_revision with
+             -- legacy_revision_exception. review_revision already excludes the legacy submitter.
+             (count(*) FILTER (
+               WHERE review_revision
+                 AND agent_review ->> 'revisionKind' = 'reproduction'
+             ))::int AS reason_review_revision_reproduction,
+             (count(*) FILTER (
+               WHERE review_revision
+                 AND agent_review ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
+             ))::int AS reason_review_revision_content,
              (count(*) FILTER (WHERE legacy_revision))::int AS legacy_revision_exception,
              (count(*) FILTER (WHERE NOT readiness_enrolled))::int AS readiness_absent,
              (count(*) FILTER (
@@ -3090,6 +3116,8 @@ export async function readWorkItemReadinessProjection(opts: {
       admissionUnreviewed: n('admission_unreviewed'),
       pendingAgentReview: n('reason_review_pending'),
       revisionRequestedAgentReview: n('reason_review_revision'),
+      revisionReproductionValidation: n('reason_review_revision_reproduction'),
+      revisionContentAdoptionCandidates: n('reason_review_revision_content'),
       legacyRevisionException: n('legacy_revision_exception'),
       readinessAbsentLegacy: n('readiness_absent'),
       readinessReady: n('readiness_ready'),

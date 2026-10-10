@@ -99,6 +99,9 @@ const BREAKDOWN = {
     unattributedClaimHolds: 0,
     pendingAgentReview: 1,
     revisionRequestedAgentReview: 0,
+    revisionReproductionValidation: 0,
+    revisionContentAdoptionCandidates: 0,
+    revisionLegacyException: 0,
   },
 };
 const ROWS = [

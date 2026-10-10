@@ -424,6 +424,42 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     expect(out.sample).not.toHaveProperty('legacyNeedsHuman');
   });
 
+  // bug-queue-legitimacy D-007/D-008: queueControl splits revision-requested spec rows into an
+  // exact partition, so a census can count "claimable to validate" from revisionKind rather than
+  // from status alone (D-007's correction: status alone overstated the validation reach ~11x).
+  it('partitions revision-requested rows into reproduction, content and legacy', async () => {
+    const review = (submittedBy: string, revisionKind?: string) => ({
+      agentReview: {
+        status: 'revision-requested',
+        submittedBy,
+        ledgerIdeaId: `idea-${submittedBy}`,
+        round: 1,
+        ...(revisionKind ? { revisionKind } : {}),
+      },
+    });
+    await seedIssue('WI-QC-REV-REPRO', review('su-author', 'reproduction'));
+    await seedIssue('WI-QC-REV-CONTENT', review('su-author', 'content'));
+    // Pre-D-006 revisions carry no revisionKind and are content revisions.
+    await seedIssue('WI-QC-REV-PRE-D006', review('su-author'));
+    await seedIssue('WI-QC-REV-LEGACY', review('system:legacy-agent-review'));
+
+    const out = await readIssueClaimability(undefined, { harness: H }, {
+      limit: 20,
+      sampleLimit: 5,
+      breakdownOnly: true,
+    });
+
+    const qc = out.breakdown.queueControl;
+    expect(qc).toMatchObject({
+      revisionRequestedAgentReview: 4,
+      revisionReproductionValidation: 1,
+      revisionContentAdoptionCandidates: 2,
+      revisionLegacyException: 1,
+    });
+    expect(qc.revisionReproductionValidation + qc.revisionContentAdoptionCandidates + qc.revisionLegacyException)
+      .toBe(qc.revisionRequestedAgentReview);
+  });
+
   it('routes only pending peer reviews from the queue-control sample (EI-25275046747164289)', async () => {
     await seedIssue('WI-QC-REVIEW-PENDING', {
       agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'idea-pending', round: 1 },
