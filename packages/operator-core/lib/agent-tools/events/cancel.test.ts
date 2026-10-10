@@ -190,6 +190,19 @@ describe('events:cancel dual-path result', () => {
     expect(out).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 }, results: [{ ok: false, delivery_id: 3, acked: false, error: 'not_found_or_not_yours_or_already_settled' }] });
   });
 
+  it('ack-only in-flight delivery reports its status and reason', async () => {
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false, status: 'delivering' });
+
+    const out = await call({ delivery_id: 3 });
+
+    expect(out).toMatchObject({
+      ok: false,
+      counts: { ok: 0, failed: 1 },
+      results: [{ ok: false, delivery_id: 3, acked: false, status: 'delivering', error: 'delivery_in_flight' }],
+    });
+    expect(out.results[0].warning).toMatch(/already in flight and cannot be recalled/);
+  });
+
   it('ack-only already-delivered result says the host handoff is not recallable', async () => {
     vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: true, status: 'delivered' });
     const out = await call({ delivery_id: 3 });
@@ -215,6 +228,17 @@ describe('events:cancel dual-path result', () => {
     vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false });
     const out = await call({ await_id: 7, delivery_id: 3 });
     expect(out.results[0]).toMatchObject({ ok: true, cancelled: true, acked: false });
+    expect(out.results[0].error).toBeUndefined();
+  });
+
+  it('combined cancellation surfaces an in-flight ACK without failing the cancelled await', async () => {
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false, status: 'delivering' });
+
+    const out = await call({ await_id: 7, delivery_id: 3 });
+
+    expect(out.results[0]).toMatchObject({ ok: true, cancelled: true, acked: false, status: 'delivering' });
+    expect(out.results[0].warning).toMatch(/already in flight and cannot be recalled/);
     expect(out.results[0].error).toBeUndefined();
   });
 
