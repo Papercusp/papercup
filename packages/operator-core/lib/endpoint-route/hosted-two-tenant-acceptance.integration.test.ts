@@ -612,6 +612,70 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     await reader.cancel();
   });
 
+  it('admits a one-time socket ticket exactly once across concurrent control-plane instances', async () => {
+    const restarted = await createHostedRuntime(CONFIGURATION, runtimeDependencies());
+    const gateway = plane.components.connectorGateway!;
+    const restartedGateway = restarted.components.connectorGateway!;
+    expect(restartedGateway).not.toBe(gateway);
+    expect(restartedGateway.store).not.toBe(gateway.store);
+
+    const tenants = [
+      { session: sessionA, workspaceId: WORKSPACE_A, hostId: HOST_A, routeLabel: 'duplicate-tenant-a' },
+      { session: sessionB, workspaceId: WORKSPACE_B, hostId: HOST_B, routeLabel: 'duplicate-tenant-b' },
+    ] as const;
+    for (const tenant of tenants) {
+      const enrollment = await request(plane, `/hosted/workspaces/${tenant.workspaceId}/connectors/enroll`, tenant.session, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ hostId: tenant.hostId, routeLabel: tenant.routeLabel, transport: 'websocket' }),
+      });
+      expect(enrollment.status).toBe(200);
+      const { ticket } = await enrollment.json() as { ticket: string };
+      const registration = await request(restarted, `/hosted/connectors/register?ticket=${ticket}`, undefined, { method: 'POST' });
+      expect(registration.status).toBe(200);
+    }
+
+    const issueUpgrade = async (tenant: typeof tenants[number]): Promise<Request> => {
+      const response = await request(plane, `/hosted/workspaces/${tenant.workspaceId}/connectors/session-ticket`, tenant.session, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ hostId: tenant.hostId, routeLabel: tenant.routeLabel, transport: 'websocket', audience: 'workspace-operator' }),
+      });
+      expect(response.status).toBe(200);
+      const { ticket } = await response.json() as { ticket: string };
+      return new Request(`https://${tenant.routeLabel}.workspaces.papercusp.com/api/hosted/connectors/socket?ticket=${ticket}`);
+    };
+    const expectedAdmission = (tenant: typeof tenants[number]) => ({
+      role: 'browser',
+      binding: {
+        organizationId: tenant.session.organizationId,
+        customerWorkspaceId: tenant.workspaceId,
+        hostId: tenant.hostId,
+        userId: tenant.session.userId,
+        hostedSessionId: tenant.session.id,
+      },
+    });
+
+    // Independent production stores share only PostgreSQL. Launch both consumes
+    // before awaiting either; a process-local replay cache cannot arbitrate them.
+    const upgrade = await issueUpgrade(tenants[0]);
+    const attempts = await Promise.all([
+      authenticateHostedConnectorSocket(gateway, upgrade),
+      authenticateHostedConnectorSocket(restartedGateway, upgrade),
+    ]);
+    expect(attempts.filter((attempt) => attempt !== null)).toEqual([
+      expect.objectContaining({ role: 'browser', binding: expect.objectContaining(expectedAdmission(tenants[0]).binding) }),
+    ]);
+    expect(attempts.filter((attempt) => attempt === null)).toHaveLength(1);
+    await expect(authenticateHostedConnectorSocket(gateway, upgrade)).resolves.toBeNull();
+    await expect(authenticateHostedConnectorSocket(restartedGateway, upgrade)).resolves.toBeNull();
+
+    // Consuming one ticket must preserve its connector and the other tenant.
+    for (const tenant of tenants) {
+      const freshUpgrade = await issueUpgrade(tenant);
+      await expect(authenticateHostedConnectorSocket(restartedGateway, freshUpgrade)).resolves.toMatchObject(expectedAdmission(tenant));
+      await expect(authenticateHostedConnectorSocket(gateway, freshUpgrade)).resolves.toBeNull();
+    }
+  });
+
   it('binds WS/PTY/file/MCP relay tickets to one tenant and rejects replay and rotation residue', async () => {
     const crossTenantEnroll = await request(
       plane,
