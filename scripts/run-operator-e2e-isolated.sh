@@ -86,6 +86,7 @@ echo "OPERATOR_E2E_ISOLATED group=$PAPERCUSP_TEST_RUN_GROUP ledger=${PAPERCUSP_T
 rig_pid=""
 interrupt_suite() {
   local rc="$1"
+  vh_fail "interrupted:exit-$rc"
   trap - INT TERM HUP
   if [ -n "$rig_pid" ]; then
     # The rig owns native-process cleanup. TERM requests that cleanup even
@@ -103,6 +104,10 @@ trap 'interrupt_suite 143' TERM
 trap 'interrupt_suite 129' HUP
 
 vh_begin isolated-suite
+# Bash runs EXIT traps for some unhandled signals with the previous command's
+# zero status. A suite is incomplete until wait returns normally; a zero EXIT
+# status alone cannot prove that the owned rig finished (EI-25624952711525720).
+vh_fail isolated-suite-incomplete
 # shellcheck disable=SC2016 # expanded by the inner shell, inside the rig
 VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   set -u
@@ -197,5 +202,6 @@ rig_pid=$!
 wait "$rig_pid"
 rc=$?
 rig_pid=""
+vh_fail ""
 echo "OPERATOR_E2E_ISOLATED exit=$rc group=$PAPERCUSP_TEST_RUN_GROUP"
 exit "$rc"
