@@ -2387,6 +2387,33 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(writes).toEqual(['fresh']);
     });
 
+    it('reports a started but unconfirmed refresh attempt without treating it as a confirmation', async () => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const start = new Date('2026-10-06T23:00:00Z').getTime();
+      vi.setSystemTime(start);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const result = await runWithGitSyncPerInstallLease('papercup', 'ws-42', async (lease) => {
+          expect(heartbeat).not.toBeNull();
+          tryAcquireResourceMock.mockImplementationOnce(() => new Promise(() => undefined));
+          heartbeat!();
+          await vi.advanceTimersByTimeAsync(45_000);
+          vi.setSystemTime(start + 480_000);
+          lease.assertHeld();
+          return 'must-not-finish';
+        });
+
+        expect(result).toMatchObject({ state: 'lease-lost', leaseLossCause: 'unconfirmed' });
+        if (result.state === 'lease-lost') {
+          expect(result.detail).toContain(`last refresh attempt was sent at ${start} ms`);
+          expect(result.detail).toContain('480000 ms ago');
+        }
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('lease refresh still unsettled'));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('keeps same-slug leases in different workspaces renewing independently after one stops', async () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       const start = new Date('2026-10-09T03:00:00Z').getTime();

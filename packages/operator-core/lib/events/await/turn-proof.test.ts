@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PICKUP_WINDOW_SEC,
+  PICKUP_ESCALATION_SOURCE,
   TURN_PROOF_CONFIRMED,
   TURN_PROOF_STATES,
+  hostRecoverableCondition,
   initialTurnProof,
   isTurnProof,
+  judgeExpiredPickup,
   pickupWindowSec,
 } from './turn-proof';
 import { WAKE_TURN_CHANNELS } from './types';
@@ -72,5 +75,83 @@ describe('pickupWindowSec', () => {
     expect(pickupWindowSec({ PAPERCUSP_WAKE_PICKUP_WINDOW_SEC: 'soon' })).toBe(600);
     expect(pickupWindowSec({ PAPERCUSP_WAKE_PICKUP_WINDOW_SEC: '0' })).toBe(600);
     expect(pickupWindowSec({ PAPERCUSP_WAKE_PICKUP_WINDOW_SEC: '  ' })).toBe(600);
+  });
+});
+
+describe('hostRecoverableCondition (D-004 (4): only what P-004/P-005 recover)', () => {
+  it('names auth, quota and an unbound successor, auth first', () => {
+    expect(hostRecoverableCondition({ authBlocked: true, quotaBlocked: true })).toBe('auth-blocked');
+    expect(hostRecoverableCondition({ quotaBlocked: true })).toBe('quota-blocked');
+    expect(hostRecoverableCondition({ latestBindingEvent: 'respawn-binding-unconfirmed' })).toBe('unbound-successor');
+    expect(hostRecoverableCondition({ latestBindingEvent: 'respawn-carry-dropped' })).toBe('unbound-successor');
+  });
+
+  it('is null for a healthy host, a confirmed binding, or no host at all', () => {
+    expect(hostRecoverableCondition({ authBlocked: false, quotaBlocked: false })).toBeNull();
+    expect(hostRecoverableCondition({ latestBindingEvent: 'respawn-binding-confirmed' })).toBeNull();
+    expect(hostRecoverableCondition(null)).toBeNull();
+  });
+});
+
+describe('judgeExpiredPickup (P-006 slice 2)', () => {
+  const DELIVERED = 1_000_000;
+  const psu = { deliveredAtMs: DELIVERED, channel: 'psu-socket-inject', source: null };
+
+  it('counts a host turn start AFTER delivery as observed', () => {
+    const v = judgeExpiredPickup(psu, { execution: { phase: 'running', turnStartedAt: DELIVERED + 5_000 } });
+    expect(v).toEqual({ proof: 'observed', turnStartedAtMs: DELIVERED + 5_000, via: 'host-turn-start' });
+  });
+
+  it('never counts a turn that started BEFORE (or at) delivery', () => {
+    for (const t of [DELIVERED - 1, DELIVERED]) {
+      const v = judgeExpiredPickup(psu, { execution: { phase: 'running', turnStartedAt: t } });
+      expect(v.proof).toBe('not-picked-up');
+    }
+  });
+
+  it('never counts a failed turn or a turn on a blocked host as a pickup', () => {
+    // A codex child whose login cannot refresh starts a turn that fails at once.
+    const failed = judgeExpiredPickup(psu, { execution: { phase: 'failed', turnStartedAt: DELIVERED + 1 } });
+    expect(failed.proof).toBe('not-picked-up');
+    const blocked = judgeExpiredPickup(psu, {
+      authBlocked: true,
+      execution: { phase: 'settled', turnStartedAt: DELIVERED + 1 },
+    });
+    expect(blocked).toMatchObject({ proof: 'not-picked-up', escalate: true, recoverable: 'auth-blocked' });
+  });
+
+  it('escalates a turn-starting channel once when the host reports a recoverable condition', () => {
+    expect(judgeExpiredPickup(psu, { quotaBlocked: true })).toMatchObject({ escalate: true, recoverable: 'quota-blocked' });
+    expect(judgeExpiredPickup(psu, { latestBindingEvent: 'respawn-binding-unconfirmed' })).toMatchObject({
+      escalate: true,
+      recoverable: 'unbound-successor',
+    });
+  });
+
+  it('never escalates a re-queue again (bounded to ONE)', () => {
+    const v = judgeExpiredPickup({ ...psu, source: PICKUP_ESCALATION_SOURCE }, { authBlocked: true });
+    expect(v).toMatchObject({ proof: 'not-picked-up', escalate: false });
+  });
+
+  it('reports inbox and other non-turn channels without escalating (D-002)', () => {
+    for (const channel of ['inbox', 'coalesced', null]) {
+      const v = judgeExpiredPickup({ ...psu, channel }, { authBlocked: true });
+      expect(v).toMatchObject({ proof: 'not-picked-up', escalate: false });
+    }
+  });
+
+  it('every turn-burning channel is escalatable, so a new turn channel cannot be silently excluded', () => {
+    for (const channel of WAKE_TURN_CHANNELS) {
+      expect(judgeExpiredPickup({ ...psu, channel }, { authBlocked: true }).proof).toBe('not-picked-up');
+      expect(judgeExpiredPickup({ ...psu, channel }, { authBlocked: true })).toMatchObject({ escalate: true });
+    }
+  });
+
+  it('does not escalate without a live host or without a recoverable condition', () => {
+    expect(judgeExpiredPickup(psu, null)).toMatchObject({ escalate: false, recoverable: null });
+    expect(judgeExpiredPickup(psu, { execution: { phase: 'settled', turnStartedAt: DELIVERED - 10 } })).toMatchObject({
+      escalate: false,
+      recoverable: null,
+    });
   });
 });

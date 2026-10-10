@@ -170,6 +170,7 @@ import {
 } from "./green-checkpoint";
 import { git, revParse, advanceReady } from "./git-ops";
 import {
+  gateOperatorPgEnv,
   releaseConfig,
   type GreenCheckpointCapacityMode,
 } from "./release-config";
@@ -14022,6 +14023,64 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
     "lint:timer-classification",
     "lint:no-raw-setinterval",
   ] as const;
+
+  // WI-10006055: the plane lints census the LIVE plane, but the suite env is DSN-free by
+  // design, so they resolved ~/.papercusp/embedded-pg.json — on 2026-10-10 the installed
+  // Papercusp Server sidecar (522 rows) — and red-pinned the gate with `0/522`.
+  it("hands ONLY the live-plane lints the gate's operator DSN", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "green-postsuite-plane-dsn-"));
+    try {
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          scripts: Object.fromEntries(
+            ["lint:tsc", "lint:migrations", "lint:plane-producers", "lint:plane-ratchet"].map(
+              (script) => [script, `node ${script}.mjs`],
+            ),
+          ),
+        }),
+      );
+      const seen = new Map<string, string | undefined>();
+      const exec: CheckpointExec = async (cmd, args, opts) => {
+        const runIndex = args.indexOf("run");
+        const id = cmd === "npm" && runIndex >= 0 ? args[runIndex + 1]! : cmd;
+        seen.set(id, opts?.env?.HARNESS_ADMIN_DATABASE_URL);
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const operatorPgEnv = gateOperatorPgEnv({
+        DATABASE_URL: "postgresql://op@localhost:5432/papercusp",
+      });
+      // Calibration: the helper must produce the variable pg-url.mjs ranks FIRST, or a
+      // passing assertion below could come from a key no resolver reads.
+      expect(operatorPgEnv).toEqual({
+        HARNESS_ADMIN_DATABASE_URL: "postgresql://op@localhost:5432/papercusp",
+      });
+
+      await runPostSuiteLegs(dir, { NODE_ENV: "test" }, exec, "apps/operator", {
+        operatorPgEnv,
+      });
+
+      expect(seen.get("lint:plane-producers")).toBe("postgresql://op@localhost:5432/papercusp");
+      expect(seen.get("lint:plane-ratchet")).toBe("postgresql://op@localhost:5432/papercusp");
+      // Every other leg stays DSN-free: the candidate suite must never reach the host DB.
+      expect(seen.has("lint:tsc")).toBe(true);
+      expect(seen.get("lint:tsc")).toBeUndefined();
+      expect(seen.get("lint:migrations")).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("gateOperatorPgEnv follows databaseEvidence's precedence and is empty without a DSN", () => {
+    expect(
+      gateOperatorPgEnv({ HARNESS_ADMIN_DATABASE_URL: "postgresql://a/x", DATABASE_URL: "postgresql://b/y" }),
+    ).toEqual({ HARNESS_ADMIN_DATABASE_URL: "postgresql://a/x" });
+    expect(gateOperatorPgEnv({ HARNESS_DATABASE_URL: "postgresql://h/z" })).toEqual({
+      HARNESS_ADMIN_DATABASE_URL: "postgresql://h/z",
+    });
+    expect(gateOperatorPgEnv({})).toEqual({});
+  });
 
   it("caps the measured lint group at two children and keeps sequential/downstream legs outside it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "green-postsuite-budget-"));

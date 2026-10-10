@@ -97,6 +97,7 @@ import {
   reportIdleRecipients,
   buildStagedWakeNote,
   type DormantScheduledInfo,
+  type WakePickupHandle,
 } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
@@ -2267,6 +2268,9 @@ async function sendOne(
         /** EI-202273: targets whose wake completion exceeded the local deadline. The durable
          *  inbox row exists, but the wake result is unknown because the emit may finish late. */
         timedOutTargets?: string[];
+        /** P-006 / D-005: per queued target, the key the pump fires if the wake was NOT picked up
+         *  (and the window it waits). The later seam `pickupConfirmed:false` points at. */
+        pickup?: WakePickupHandle[];
         recipient_absent?: boolean;
         /** WI-574: the subset of missed targets with NO live session watching their inbox-wake key —
          *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
@@ -2334,6 +2338,7 @@ async function sendOne(
     wake = { mode: wakeMode, targets: fan.targets, queued, woken: queued, pickupConfirmed: false };
     if (fan.staged > 0) wake.staged = fan.staged;
     if (fan.timedOutTargets?.length) wake.timedOutTargets = fan.timedOutTargets;
+    if (fan.pickup?.length) wake.pickup = fan.pickup;
     // EI-19965318428068990: compute the explicit discriminant BEFORE the staged-note /
     // missed-classification branches below — it depends only on the queued/staged/targets
     // counts already known here, and every branch after this point only adds detail, never

@@ -143,6 +143,30 @@ const fakeBackend = (entries: object[]) => ({
 
 afterEach(() => vi.clearAllMocks());
 
+describe('memory delete input validation before backend access', () => {
+  it('rejects a missing target even when the memory store is unavailable', async () => {
+    const { getMemoryBackend } = await import('../../memory/backend');
+    const backend = fakeBackend([]);
+    backend.available.mockResolvedValue({ ok: false } as never);
+    vi.mocked(getMemoryBackend).mockReturnValue(backend as any);
+    const res = await appWith(userMemory as AnyRoute[]).request('/user/memory', { method: 'DELETE' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('id_or_all_required');
+    expect(backend.available).not.toHaveBeenCalled();
+    expect(backend.forget).not.toHaveBeenCalled();
+  });
+  it('still reports an unavailable store for a valid deletion target', async () => {
+    const { getMemoryBackend } = await import('../../memory/backend');
+    const backend = fakeBackend([]);
+    backend.available.mockResolvedValue({ ok: false, reason: 'offline' } as never);
+    vi.mocked(getMemoryBackend).mockReturnValue(backend as any);
+    const res = await appWith(userMemory as AnyRoute[]).request('/user/memory?id=existing', { method: 'DELETE' });
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe('offline');
+    expect(backend.forget).not.toHaveBeenCalled();
+  });
+});
+
 describe('user family ports — default-user fallback when no session', () => {
   it('GET /user/preferences serves the default user without a session', async () => {
     const res = await appWith(userPreferences as AnyRoute[]).request('/user/preferences');

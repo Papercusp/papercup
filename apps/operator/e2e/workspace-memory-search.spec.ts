@@ -86,20 +86,21 @@ test.describe('workspace registry + user surfaces', () => {
     expect((await res.json()).error).toBe('text_required');
   });
 
-  test('PATCH /api/user/memory requires auth + body', async ({ request }) => {
+  test('PATCH /api/user/memory validates before writing', async ({ request }) => {
     const res = await request.fetch(`${baseURL}/api/user/memory`, {
       method: 'PATCH',
-      data: { id: 'test-id', text: 'updated' },
+      data: { text: '   ' },
       headers: { 'Content-Type': 'application/json' },
     });
-    // Either 401 (no auth) or 400 (bad shape) — both prove the route validates
-    expect([400, 401, 403, 404, 500]).toContain(res.status());
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toBe('id_and_text_required');
   });
 
-  test('DELETE /api/user/memory requires auth', async ({ request }) => {
-    const res = await request.fetch(`${baseURL}/api/user/memory?id=test-id`, {
+  test('DELETE /api/user/memory validates before accessing the backend', async ({ request }) => {
+    const res = await request.fetch(`${baseURL}/api/user/memory`, {
       method: 'DELETE',
     });
-    expect([400, 401, 403, 404, 500]).toContain(res.status());
+    expect(res.status()).toBe(400);
+    expect((await res.json()).error).toBe('id_or_all_required');
   });
 });

@@ -1787,5 +1787,21 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
   const composed = await reconcileComposedRoots();
   if (composed.deliveries > 0) log(`composed: queued ${composed.deliveries} recovered or timed-out root wake(s)`);
 
+  // P-006/D-004: resolve awaiting turn proofs before the pump drains, so a delivery re-queued
+  // for host recovery is pumped on this same tick. Fail-soft: proof bookkeeping must never
+  // stop the pump from delivering.
+  try {
+    const { runPickupSweep } = await import('./pickup-sweep');
+    const pickup = await runPickupSweep({ emit: (o) => emitAwaitedEvent({ ...o, workspaceId: ws }), log });
+    if (pickup.observed + pickup.observedByHost + pickup.notPickedUp > 0) {
+      log(
+        `pickup: observed ${pickup.observed}+${pickup.observedByHost} (host), not-picked-up ${pickup.notPickedUp}, ` +
+          `re-queued ${pickup.escalated}, reported ${pickup.emitted} subscriber(s)`,
+      );
+    }
+  } catch (e) {
+    log(`pickup sweep failed: ${e instanceof Error ? e.message : e}`);
+  }
+
   await pumpWakeDeliveries(ws);
 }

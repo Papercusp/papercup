@@ -1087,6 +1087,7 @@ function startLockHeartbeat(
     // The store extends the expiry at statement time, so a refresh confirms the
     // lease as of when it was SENT, never when its result came back.
     const sentAt = Date.now();
+    fence?.recordAttempt(sentAt);
     try {
       // Refresh the whole owner-scoped set under ONE workspace transaction.
       // Apart from cutting three advisory-lock acquisitions to one, this makes

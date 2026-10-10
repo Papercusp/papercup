@@ -29,9 +29,12 @@ import {
   isOwnerGuiWakeSource,
   ESCALATION_SLA_REROUTE_WAKE_SOURCE,
   COORD_WAKE_TARGET_TIMEOUT_MS,
+  wakePickupHandle,
 } from './inbox-wake';
+import { buildKey } from '../../events/await/catalog';
 import { ADMIN_COORD_UI_OWNER } from './identity';
-import { mockResolvedTyped } from '../../testing/typed-mock';
+import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import type { EmitResult } from '../../events/await/engine';
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { emitAwaitedEvent } from '../../events/await/engine';
@@ -370,6 +373,41 @@ describe('wakeRecipients skips staging debris for an UNKNOWN recipient (EI-9971)
     expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
     expect(stagePendingWake).not.toHaveBeenCalled();
     expect(r.woken).toBe(1);
+  });
+});
+
+// P-006 / D-005: the enqueue seam cannot confirm pickup (pickupConfirmed stays the literal
+// false), so it hands the sender the key the pump's pickup sweep fires when a queued wake
+// was NOT picked up — built from the same catalog template the sweep emits with.
+describe('wakeRecipients pickup handle (P-006 / D-005)', () => {
+  it('returns one not-picked-up handle per QUEUED target, keyed exactly as the pickup sweep emits', async () => {
+    mockImplementationTyped(vi.mocked(emitAwaitedEvent), async (input) => {
+      const woken = input.key.endsWith(':s-quiet') ? 0 : 1;
+      const result: EmitResult = { ok: true, key: input.key, woken, notified: [], msgId: null, waiters: woken };
+      return result;
+    });
+    const r = await wakeRecipients(['s-live', 's-quiet']);
+    expect(r.pickupConfirmed).toBe(false);
+    expect(r.pickup).toEqual([
+      { target: 's-live', event: buildKey('wake-not-picked-up', { subscriberId: 's-live' }), windowSec: 600 },
+    ]);
+    expect(r.pickup[0]!.event).toBe('wake:not-picked-up:s-live');
+  });
+
+  it('a staged (manual-mode) target gets no handle: nothing was queued, so nothing can expire', async () => {
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'manual');
+    const r = await wakeRecipients(['s-paused']);
+    expect(r.staged).toBe(1);
+    expect(r.pickup).toEqual([]);
+  });
+
+  it('the window follows PAPERCUSP_WAKE_PICKUP_WINDOW_SEC, the same knob the sweep reads', async () => {
+    vi.stubEnv('PAPERCUSP_WAKE_PICKUP_WINDOW_SEC', '120');
+    try {
+      expect(wakePickupHandle('s-x').windowSec).toBe(120);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

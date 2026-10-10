@@ -10,6 +10,9 @@
  * emits here.
  */
 
+// Type-only: turn-proof.ts imports a VALUE from this module, so a value import back would cycle.
+import type { TurnProof } from './turn-proof';
+
 /** How a fired event reaches a subscriber (plan D-002). `announce` (EI-9270) is
  *  NOT a delivery policy: it marks an emitter-side DECLARATION row ("this gate
  *  key WILL fire — await it") that never wakes anyone itself; every delivery
@@ -276,6 +279,16 @@ export interface DeliveryRow {
    *  so the async resume-turn-exit handler can attribute a turn DEATH to its source (the
    *  loop-wake-rate-limit-robustness fix). null = unattributed. */
   source: string | null;
+  /** P-006 / D-004 (migration 1441): did this delivery START A TURN — a question `status` does not
+   *  answer (`delivered` only means the delivery reached its channel). `host-attested` / `observed`
+   *  prove a turn; `awaiting` is unresolved until `pickupDeadlineAt`; `not-picked-up` is the
+   *  measured failure; `superseded` rode another delivery. null = booked before migration 1441:
+   *  UNKNOWN, never to be read as either outcome. */
+  turnProof: TurnProof | null;
+  /** When the turn-start proof was established (host attestation or first observed turn signal). */
+  turnStartedAt: string | null;
+  /** An `awaiting` delivery resolves to `not-picked-up` after this instant. */
+  pickupDeadlineAt: string | null;
 }
 
 /** EI-13705: the unconditional per-key "did this ever genuinely fire" latch

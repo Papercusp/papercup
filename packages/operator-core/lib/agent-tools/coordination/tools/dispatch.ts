@@ -122,6 +122,9 @@ export interface DispatchResult {
   queued?: number;
   /** False until a later checkpoint/activity observation proves the target took a turn. */
   pickupConfirmed?: boolean;
+  /** P-006 / D-005: passed through from coord:send — the key the pump fires if the queued wake
+   *  was NOT picked up within `windowSec`. Await it instead of trusting `queued`. */
+  pickup?: Array<{ target: string; event: string; windowSec: number }>;
   /** EI-5957: >0 when the wake STAGED (target in MANUAL wake-mode — the hive
    *  pause/edit gate) instead of delivering. The lane is assigned durably but the
    *  directed note was queued for owner review, NOT delivered — see `warning`. */
@@ -694,6 +697,7 @@ export async function composeDispatch(
       recipient_absent?: boolean;
       recipient_dead?: string[];
       note?: string;
+      pickup?: Array<{ target: string; event: string; windowSec: number }>;
     };
     error?: string;
   };
@@ -730,6 +734,7 @@ export async function composeDispatch(
     woken,
     queued,
     pickupConfirmed: false,
+    ...(Array.isArray(wake.pickup) && wake.pickup.length > 0 ? { pickup: wake.pickup } : {}),
     ...(itemsHydrated > 0 ? { itemsHydrated } : {}),
     ...(staged > 0 ? { staged } : {}),
     ...(wake.recipient_absent ? { recipient_absent: true } : {}),

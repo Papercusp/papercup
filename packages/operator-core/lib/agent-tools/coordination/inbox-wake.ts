@@ -26,6 +26,8 @@
 import { getOrgPg, withDbCallDeadline } from '@papercusp/db-org';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { listActiveAwaitsForKey } from '../../events/await/store';
+import { buildKey } from '../../events/await/catalog';
+import { pickupWindowSec } from '../../events/await/turn-proof';
 // hive-agent-tabs P-007/D-005: the per-agent wake-mode gate (consumed below).
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
@@ -162,6 +164,26 @@ function payloadWithRelayProvenance(
   return { ...record, [RELAY_PROVENANCE_FIELD]: stamp };
 }
 
+/** What a sender awaits to learn a queued wake was NOT picked up (P-006 / D-005). */
+export interface WakePickupHandle {
+  /** The woken ownerId. */
+  target: string;
+  /** `wake:not-picked-up:<target>` — built from the same catalog template the pump's pickup
+   *  sweep emits with, so the awaited key and the fired key cannot drift apart. */
+  event: string;
+  /** Seconds a delivery may wait for a turn before the sweep judges it not-picked-up
+   *  (`PAPERCUSP_WAKE_PICKUP_WINDOW_SEC`, default 600); the sweep runs on the pump tick after. */
+  windowSec: number;
+}
+
+export function wakePickupHandle(target: string): WakePickupHandle {
+  return {
+    target,
+    event: buildKey('wake-not-picked-up', { subscriberId: target }),
+    windowSec: pickupWindowSec(),
+  };
+}
+
 export interface WakeRecipientsResult {
   /** Concrete recipient ownerIds we fired a wake key for (post-filter). */
   targets: string[];
@@ -188,8 +210,15 @@ export interface WakeRecipientsResult {
    *  any such comparison a compile error instead of silently-dead code.
    *
    *  To establish that a target actually picked up, observe it AFTERWARDS: a fresh
-   *  `lastActiveAt` / work-item checkpoint / `lastProgressAt` that post-dates the wake. */
+   *  `lastActiveAt` / work-item checkpoint / `lastProgressAt` that post-dates the wake —
+   *  or await the `pickup` handle below, which the pump fires when it did NOT. */
   pickupConfirmed?: false;
+  /** P-006 / D-005: one handle per target whose wake was QUEUED (`woken > 0` for it). This is the
+   *  LATER seam `pickupConfirmed` points at, not a confirmation: await `event` with a
+   *  `timeout_sec` a little past `windowSec` — it fires when the queued delivery sat the whole
+   *  window without starting a turn; a window that expires with NO fire is the positive reading.
+   *  Per-delivery proof (`turn_proof`) is readable afterwards via `events:status`. */
+  pickup: WakePickupHandle[];
   /** Recipients whose wake was STAGED (wake-mode `manual` — the hive Pause
    *  primitive) instead of fired — always 0 when everything resolves `auto`
    *  (the default). Graduated off the POT_AGENT_TABS flag (start-hive P-007). */
@@ -358,7 +387,7 @@ export async function wakeRecipients(
     isOwnerVerifiedRelay(opts.relayProvenance);
   type TargetOutcome =
     | { kind: 'staged'; ownerId: string }
-    | { kind: 'fired'; key: string; woken: number }
+    | { kind: 'fired'; ownerId: string; key: string; woken: number }
     | { kind: 'fire-failed'; key: string }
     | { kind: 'timed-out'; ownerId: string; key: string }
     | { kind: 'skipped' };
@@ -415,7 +444,7 @@ export async function wakeRecipients(
               source: opts.source,
               workspaceId: opts.workspaceId,
             });
-            return { kind: 'fired', key, woken: res.woken };
+            return { kind: 'fired', ownerId, key, woken: res.woken };
           } catch (e) {
             // Best-effort: the message already persisted to the inbox; a wake-fan
             // hiccup degrades to "seen on the recipient's next natural turn".
@@ -442,6 +471,7 @@ export async function wakeRecipients(
   let staged = 0;
   const stagedTargets: string[] = [];
   const timedOutTargets: string[] = [];
+  const pickup: WakePickupHandle[] = [];
   for (const o of outcomes) {
     switch (o.kind) {
       case 'staged':
@@ -451,6 +481,8 @@ export async function wakeRecipients(
       case 'fired':
         keys.push(o.key);
         woken += o.woken;
+        // Only a QUEUED delivery can later be judged not-picked-up; a 0-match fire has no row.
+        if (o.woken > 0) pickup.push(wakePickupHandle(o.ownerId));
         if (opts.requiredWake) {
           requiredAttempts.push({
             subscriberId: ownerFromInboxWakeKey(o.key) ?? o.key,
@@ -477,6 +509,7 @@ export async function wakeRecipients(
     queued: woken,
     woken,
     pickupConfirmed: false,
+    pickup,
     staged,
     stagedTargets,
     fanoutCapped,

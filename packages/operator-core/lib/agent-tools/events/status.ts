@@ -21,7 +21,7 @@ import {
   listRecentDeliveries,
   wakeMeter,
 } from '../../events/await/store';
-import { wakeChannelInvokesTurn, type KeyFireRow } from '../../events/await/types';
+import { wakeChannelInvokesTurn, type DeliveryRow, type KeyFireRow } from '../../events/await/types';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import {
   announcementExpectedVerdict as expectedVerdict,
@@ -45,6 +45,26 @@ const EXACT_EVENT_INSPECTION_MAX_CHARS = 5_000;
 const EXACT_EVENT_STATUS_TEXT_MAX_CHARS = 256;
 const EXACT_EVENT_STATUS_JSON_MAX_CHARS = 512;
 const EXACT_EVENT_STATUS_SUCCESSOR_LIMIT = 5;
+
+/**
+ * P-006 / D-005: the LATER seam that reports pickup. `turn_invoked` says only that the channel
+ * could start a turn and `status: 'delivered'` only that the delivery reached it; `turn_proof`
+ * says whether a turn actually STARTED (host-attested | observed = yes; not-picked-up = the
+ * window expired with no turn; awaiting = still inside the window; superseded = rode another
+ * delivery; null = booked before migration 1441, unknown). The deadline is shown only while it
+ * can still change the answer.
+ */
+export function turnProofFields(d: Pick<DeliveryRow, 'turnProof' | 'turnStartedAt' | 'pickupDeadlineAt'>): {
+  turn_proof: DeliveryRow['turnProof'];
+  turn_started_at: string | null;
+  pickup_deadline_at?: string | null;
+} {
+  return {
+    turn_proof: d.turnProof,
+    turn_started_at: d.turnStartedAt,
+    ...(d.turnProof === 'awaiting' ? { pickup_deadline_at: d.pickupDeadlineAt } : {}),
+  };
+}
 
 type EventInspectionHistoryGroup = 'declarations' | 'waiters' | 'wake_outcomes';
 
@@ -491,6 +511,7 @@ export default defineTool({
               channel: d.channel,
               /** Derived from channel; inbox/coalesced/suppressed do not invoke a turn. */
               turn_invoked: wakeChannelInvokesTurn(d.channel),
+              ...turnProofFields(d),
               attempts: d.attempts,
               source: d.source,
               last_error: lastError.value,
@@ -565,6 +586,7 @@ export default defineTool({
                     channel: d.channel,
                     /** Derived from channel; status='delivered' alone is not a turn receipt. */
                     turn_invoked: wakeChannelInvokesTurn(d.channel),
+                    ...turnProofFields(d),
                     attempts: d.attempts,
                     last_error: d.lastError,
                     created_at: d.createdAt,

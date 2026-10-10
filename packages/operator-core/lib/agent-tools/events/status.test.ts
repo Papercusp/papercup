@@ -46,7 +46,7 @@ vi.mock('../../events/await/compose-store', () => ({
   loadTreeLeaves: vi.fn(async () => []),
 }));
 
-import status from './status';
+import status, { turnProofFields } from './status';
 import {
   deliveryBacklogSummary,
   inspectEventKey,
@@ -94,6 +94,9 @@ const DELIVERY_ROW: DeliveryRow = {
   minSleepSec: null,
   coalescedCount: 1,
   source: null,
+  turnProof: null,
+  turnStartedAt: null,
+  pickupDeadlineAt: null,
 };
 const EVENT_SUBSCRIPTION_ROW: SubscriptionRow = {
   id: 33,
@@ -252,10 +255,75 @@ describe('events:status projection', () => {
       status: 'parked',
       channel: 'inbox',
       turn_invoked: false,
+      turn_proof: null,
+      turn_started_at: null,
       attempts: 2,
       last_error: 'boom',
       created_at: 'C2',
       delivered_at: null,
+    });
+  });
+
+  // P-006 / D-005: events:status is the LATER seam that reports pickup. `status:'delivered'`
+  // only says the delivery reached its channel; turn_proof says whether a turn started.
+  it('reports turn_proof per delivery: the deadline only while awaiting, the start time once proven', async () => {
+    vi.mocked(listRecentDeliveries).mockResolvedValueOnce([
+      {
+        ...DELIVERY_ROW,
+        id: 40,
+        status: 'delivered',
+        channel: 'psu-socket-inject',
+        deliveredAt: '2026-10-10T20:00:00.000Z',
+        turnProof: 'awaiting',
+        pickupDeadlineAt: '2026-10-10T20:10:00.000Z',
+      },
+      {
+        ...DELIVERY_ROW,
+        id: 41,
+        status: 'delivered',
+        channel: 'psu-socket-inject',
+        deliveredAt: '2026-10-10T19:00:00.000Z',
+        turnProof: 'observed',
+        turnStartedAt: '2026-10-10T19:01:30.000Z',
+        // A resolved row keeps its stale deadline in the ledger; it must not be rendered.
+        pickupDeadlineAt: '2026-10-10T19:10:00.000Z',
+      },
+      {
+        ...DELIVERY_ROW,
+        id: 42,
+        status: 'delivered',
+        channel: 'inbox',
+        deliveredAt: '2026-10-10T18:00:00.000Z',
+        turnProof: 'not-picked-up',
+        pickupDeadlineAt: '2026-10-10T18:10:00.000Z',
+      },
+    ]);
+
+    const out = await call({});
+
+    expect(out.recent_wakes[0]).toMatchObject({
+      delivery_id: 40,
+      status: 'delivered',
+      turn_invoked: true,
+      turn_proof: 'awaiting',
+      turn_started_at: null,
+      pickup_deadline_at: '2026-10-10T20:10:00.000Z',
+    });
+    expect(out.recent_wakes[1]).toMatchObject({
+      delivery_id: 41,
+      turn_proof: 'observed',
+      turn_started_at: '2026-10-10T19:01:30.000Z',
+    });
+    expect(out.recent_wakes[1]).not.toHaveProperty('pickup_deadline_at');
+    // The silent failure the ledger used to hide: delivered, and no turn ever started.
+    expect(out.recent_wakes[2]).toMatchObject({ delivery_id: 42, status: 'delivered', turn_proof: 'not-picked-up' });
+    expect(out.recent_wakes[2]).not.toHaveProperty('pickup_deadline_at');
+  });
+
+  it('turnProofFields renders a pre-1441 row as unknown (null), never as an outcome', () => {
+    expect(turnProofFields({ turnProof: null, turnStartedAt: null, pickupDeadlineAt: null })).toEqual({
+      turn_proof: null,
+      turn_started_at: null,
     });
   });
 

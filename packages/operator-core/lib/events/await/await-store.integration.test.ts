@@ -461,6 +461,8 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     `;
     const loopId = seeded.find((row) => row.subscriber_id === loopSubscriber)?.id;
     expect(loopId).toBeDefined();
+    // Narrow for the SQL template below: postgres.js has no overload for an `undefined` parameter.
+    if (loopId === undefined) throw new Error('the loop delivery was not seeded');
     expect(seeded).toHaveLength(31);
 
     // The work-item retries are older by created_at, so the old single global
@@ -1041,5 +1043,139 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
 
     expect(fired.map((row) => row.id)).toEqual([awaited.id]);
     expect(await store.listActiveAwaits('su-rescue-ordinary-key')).toEqual([]);
+  });
+
+  // ── P-006 slice 2 (WI-10008157, D-004): the pickup sweep's SQL half ──────────────────────
+
+  /** Register → fire → queue → claim → deliver one wake; returns the delivery id. */
+  async function deliveredWake(subscriberId: string, eventKey: string, channel: Parameters<typeof store.markDeliveryDelivered>[1]) {
+    const a = await store.registerAwait({ subscriberId, eventKey });
+    const fired = await store.fireAwaitsForKey({ eventKey });
+    await store.insertDeliveries({ awaits: fired, payload: { k: eventKey }, summary: `wake for ${eventKey}` });
+    const mine = (await store.claimDueDeliveries({ limit: 100 })).filter((w) => w.awaitId === a.id);
+    expect(mine).toHaveLength(1);
+    await store.markDeliveryDelivered(mine[0].id, channel);
+    return mine[0].id;
+  }
+
+  async function proofRow(id: number) {
+    const rows = await db.adminSql<Array<Record<string, unknown>>>`
+      SELECT turn_proof, turn_started_at, pickup_deadline_at, pickup_escalated_at, source, status
+        FROM harness_shared.event_wake_deliveries WHERE id = ${id}`;
+    return rows[0];
+  }
+
+  async function toolCall(owner: string, tool: string, origin: string, offsetSec: number, args: object = {}) {
+    await db.adminSql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status,
+         coord_owner_id, call_origin, args_json, invoked_at)
+      VALUES (${h.ws}, 'papercusp', 'test', ${tool}, 'su', 'spawn-x', 'w', 'ok',
+              ${owner}, ${origin}, ${JSON.stringify(args)}::text::jsonb,
+              now() + make_interval(secs => ${offsetSec}))`;
+  }
+
+  it('observeAwaitingTurnProofs: only a turn-only call AFTER delivery proves a turn (P-006 slice 2)', async () => {
+    const sub = 'su-turn-proof-observe';
+    const id = await deliveredWake(sub, 'turn-proof:observe', 'psu-socket-inject');
+    expect(await proofRow(id)).toMatchObject({ turn_proof: 'awaiting', status: 'delivered' });
+
+    // None of these is a turn: before delivery, the compaction retry stream, lifecycle and
+    // status-line hooks. Each was measured firing for sessions that ran no turn.
+    await toolCall(sub, 'work_items:get', 'agent', -60);
+    await toolCall(sub, 'session:request-compaction', 'agent', 5);
+    await toolCall(sub, 'activity:report', 'hook', 5, { kind: 'lifecycle', summary: '▶ session started' });
+    await toolCall(sub, 'coord:glance', 'hook', 5, { display_only: true });
+    await toolCall(sub, 'coord:emit', 'system', 5);
+    await store.observeAwaitingTurnProofs();
+    expect((await proofRow(id)).turn_proof).toBe('awaiting');
+
+    // A tool-use hook IS a turn (it fires for native tools, which write no agent row).
+    const hookSub = 'su-turn-proof-hook';
+    const hookId = await deliveredWake(hookSub, 'turn-proof:hook', 'resume-headless');
+    await toolCall(hookSub, 'activity:report', 'hook', 3, { phase: 'post' });
+
+    // An agent call after delivery IS a turn, stamped with the FIRST qualifying call.
+    await toolCall(sub, 'work_items:get', 'agent', 20);
+    await toolCall(sub, 'coord:inbox', 'agent', 40);
+    const n = await store.observeAwaitingTurnProofs();
+    expect(n).toBeGreaterThanOrEqual(2);
+
+    const observed = await proofRow(id);
+    expect(observed.turn_proof).toBe('observed');
+    const delivered = await db.adminSql<Array<{ gap: number }>>`
+      SELECT extract(epoch FROM (turn_started_at - delivered_at))::float AS gap
+        FROM harness_shared.event_wake_deliveries WHERE id = ${id}`;
+    expect(delivered[0].gap).toBeGreaterThan(15);
+    expect(delivered[0].gap).toBeLessThan(25);
+    expect((await proofRow(hookId)).turn_proof).toBe('observed');
+  });
+
+  it('listExpiredPickups + settleExpiredPickup: not-picked-up re-queues ONCE for host recovery', async () => {
+    const sub = 'su-turn-proof-expire';
+    const id = await deliveredWake(sub, 'turn-proof:expire', 'psu-socket-inject');
+    const fresh = await deliveredWake(sub, 'turn-proof:fresh', 'psu-socket-inject');
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET delivered_at = now() - interval '20 minutes', pickup_deadline_at = now() - interval '10 minutes'
+       WHERE id = ${id}`;
+
+    const expired = (await store.listExpiredPickups()).filter((r) => r.subscriberId === sub);
+    // The still-open window is not expired; the closed one is, with its routing fields.
+    expect(expired.map((r) => r.id)).toEqual([id]);
+    expect(expired[0]).toMatchObject({ eventKey: 'turn-proof:expire', channel: 'psu-socket-inject', source: null });
+    expect(expired[0].pickupDeadlineAtMs).toBeLessThan(Date.now());
+    expect((await proofRow(fresh)).turn_proof).toBe('awaiting');
+
+    const first = await store.settleExpiredPickup({ id, proof: 'not-picked-up', escalate: true });
+    expect(first.settled).toBe(true);
+    expect(first.requeuedDeliveryId).not.toBeNull();
+    const original = await proofRow(id);
+    expect(original.turn_proof).toBe('not-picked-up');
+    expect(original.pickup_escalated_at).not.toBeNull();
+
+    const requeued = await db.adminSql<Array<Record<string, unknown>>>`
+      SELECT o.await_id = r.await_id AS same_await, o.event_key = r.event_key AS same_key,
+             o.subscriber_id = r.subscriber_id AS same_sub, o.payload = r.payload AS same_payload,
+             r.status, r.source, r.turn_proof
+        FROM harness_shared.event_wake_deliveries o, harness_shared.event_wake_deliveries r
+       WHERE o.id = ${id} AND r.id = ${first.requeuedDeliveryId}`;
+    expect(requeued[0]).toEqual({
+      same_await: true,
+      same_key: true,
+      same_sub: true,
+      same_payload: true,
+      status: 'pending',
+      source: 'pickup-escalation',
+      turn_proof: null,
+    });
+
+    // Settling is one-shot: the row is no longer awaiting, so no second settle and no second re-queue.
+    expect(await store.settleExpiredPickup({ id, proof: 'not-picked-up', escalate: true })).toEqual({
+      settled: false,
+      requeuedDeliveryId: null,
+    });
+
+    // The re-queue itself never escalates again, even if its host is still blocked.
+    const mine = (await store.claimDueDeliveries({ limit: 100 })).filter((w) => w.id === first.requeuedDeliveryId);
+    expect(mine).toHaveLength(1);
+    await store.markDeliveryDelivered(mine[0].id, 'psu-socket-inject');
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries SET pickup_deadline_at = now() - interval '1 minute'
+       WHERE id = ${mine[0].id}`;
+    const second = await store.settleExpiredPickup({ id: mine[0].id, proof: 'not-picked-up', escalate: true });
+    expect(second).toEqual({ settled: true, requeuedDeliveryId: null });
+    expect(await proofRow(mine[0].id)).toMatchObject({ turn_proof: 'not-picked-up', pickup_escalated_at: null });
+  });
+
+  it('settleExpiredPickup observed stamps the host-reported turn start and never re-queues', async () => {
+    const id = await deliveredWake('su-turn-proof-host', 'turn-proof:host', 'psu-socket-inject');
+    const startedMs = Date.now() - 5_000;
+    const res = await store.settleExpiredPickup({ id, proof: 'observed', turnStartedAtMs: startedMs, escalate: true });
+    expect(res).toEqual({ settled: true, requeuedDeliveryId: null });
+    const row = await proofRow(id);
+    expect(row.turn_proof).toBe('observed');
+    expect(new Date(row.turn_started_at as string).getTime()).toBe(startedMs);
+    expect(row.pickup_escalated_at).toBeNull();
   });
 });

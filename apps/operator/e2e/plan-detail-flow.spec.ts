@@ -206,7 +206,7 @@ test.describe('/admin/plans — plan detail flow', () => {
     await expect(detail).toBeVisible({ timeout: 20_000 });
     const tablist = detail.getByRole('tablist', { name: 'Plan view' });
     await expect(tablist).toBeVisible({ timeout: 30_000 });
-    await expect(tablist.getByRole('tab')).toHaveText(['Editor', 'Revisions', 'Agents']);
+    await expect(tablist.getByRole('tab')).toHaveText(['Editor', 'Triggers', 'Revisions', 'Agents', 'Runs']);
 
     // Open the Revisions panel — the click writes `?ptab=revisions` (nuqs)
     // and mounts RevisionsPanel (any of its states carries the class).

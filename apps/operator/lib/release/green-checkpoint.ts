@@ -208,6 +208,7 @@ import type {
 import {
   describeIntegrationRoot,
   databaseEvidence,
+  gateOperatorPgEnv,
   toolingRoot,
   type GreenCheckpointCapacityMode,
   type ReleaseConfig,
@@ -17048,6 +17049,10 @@ interface PostSuiteRunOptions {
   frozenCandidateOpenedAtMs?: number;
   /** Test seam only. Production always uses the fixed resource-derived ceiling. */
   lowMemoryConcurrency?: number;
+  /** WI-10006055: the operator DSN for the LIVE-plane lints only (see `gateOperatorPgEnv`).
+   *  The suite env drops every DSN by design, so without this the plane lints resolve the
+   *  embedded-pg discovery file, which any local install can own. */
+  operatorPgEnv?: Readonly<Record<string, string>>;
   /** EI-203121: real-path run/setup identity; optional keeps injected legacy seams valid. */
   identity?: {
     runId?: string;
@@ -17954,6 +17959,9 @@ export async function runPostSuiteLegs(
     ];
     const planeFailures: string[] = [];
     let planeRan = 0;
+    // WI-10006055: these lints census the LIVE plane, so they get the gate's operator DSN.
+    // No other leg does; the candidate suite stays DSN-free.
+    const planeEnv: NodeJS.ProcessEnv = { ...env, ...(options.operatorPgEnv ?? {}) };
     for (const { script, label } of planeLints) {
       const check = checkNpmScript(treeDir, script);
       if (check === "unreadable") {
@@ -17967,7 +17975,7 @@ export async function runPostSuiteLegs(
       planeRan++;
       const out = await exec("npm", ["run", script], {
         cwd: treeDir,
-        env,
+        env: planeEnv,
         allowNonZero: true,
       });
       if (out.code !== 0) {
@@ -20305,6 +20313,7 @@ export function realCheckpointDeps(
       };
       const postSuiteOptions: PostSuiteRunOptions = {
         identity: postSuiteIdentity,
+        operatorPgEnv: gateOperatorPgEnv(process.env),
         ...(execution?.frozenCandidateOpenedAtMs !== undefined
           ? {
               frozenCandidateOpenedAtMs:

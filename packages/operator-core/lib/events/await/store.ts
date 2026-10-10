@@ -22,7 +22,16 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { normalizeEventKey } from './announce-key';
 import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
-import { initialTurnProof, pickupWindowSec } from './turn-proof';
+import {
+  type TurnProof,
+  initialTurnProof,
+  isTurnProof,
+  pickupWindowSec,
+  PICKUP_ESCALATION_SOURCE,
+  TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS,
+  TURN_EVIDENCE_HOOK_ACTIVITY_PHASES,
+  TURN_EVIDENCE_HOOK_TOOLS,
+} from './turn-proof';
 import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import { reconcileEventExternalBlockers } from '../../work-items';
@@ -190,6 +199,11 @@ function mapDelivery(r: any): DeliveryRow {
     minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
     coalescedCount: r.coalesced_count != null ? Number(r.coalesced_count) : 1,
     source: r.source ?? null,
+    // A value outside the migration-1441 CHECK set cannot be written, but a pre-1441 reader
+    // (column absent) yields undefined: both map to null = UNKNOWN, never to an outcome.
+    turnProof: isTurnProof(r.turn_proof) ? r.turn_proof : null,
+    turnStartedAt: r.turn_started_at ? new Date(r.turn_started_at).toISOString() : null,
+    pickupDeadlineAt: r.pickup_deadline_at ? new Date(r.pickup_deadline_at).toISOString() : null,
   };
 }
 
@@ -2436,6 +2450,171 @@ export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: num
   `;
 }
 
+// ── P-006 slice 2: the pickup sweep's store half (D-004) ─────────────────────────────────
+
+/**
+ * Resolve `awaiting` deliveries whose subscriber has shown a REAL-TIME turn signal since
+ * delivery: an MCP call recorded in `tool_invocations` that only a running turn can make
+ * ({@link TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS} / {@link TURN_EVIDENCE_HOOK_TOOLS}). Each row's
+ * proof becomes `observed`, stamped with the first such call. Rows are scanned oldest
+ * deadline first and bounded by `limit`; the lateral probe rides
+ * `tool_invocations_coord_owner_idx`. Returns how many rows were resolved.
+ */
+export async function observeAwaitingTurnProofs(limit = 500): Promise<number> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const excludedAgentTools = [...TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS];
+  const hookTools = [...TURN_EVIDENCE_HOOK_TOOLS];
+  const hookPhases = [...TURN_EVIDENCE_HOOK_ACTIVITY_PHASES];
+  const rows = await sql<Array<{ id: number }>>`
+    WITH cand AS (
+      SELECT d.id, d.subscriber_id, d.delivered_at
+        FROM harness_shared.event_wake_deliveries d
+       WHERE d.workspace_id = ${ws}
+         AND d.turn_proof = 'awaiting'
+         AND d.delivered_at IS NOT NULL
+       ORDER BY d.pickup_deadline_at ASC NULLS FIRST, d.id ASC
+       LIMIT ${limit}
+       FOR UPDATE OF d SKIP LOCKED
+    ), hit AS (
+      SELECT c.id, ev.invoked_at
+        FROM cand c
+        CROSS JOIN LATERAL (
+          SELECT ti.invoked_at
+            FROM harness_shared.tool_invocations ti
+           WHERE ti.coord_owner_id = c.subscriber_id
+             AND ti.invoked_at > c.delivered_at
+             AND (
+               (ti.call_origin = 'agent' AND NOT (ti.tool_name = ANY(${excludedAgentTools})))
+               OR (ti.call_origin = 'hook' AND ti.tool_name = ANY(${hookTools}))
+               OR (ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'
+                   AND ti.args_json->>'phase' = ANY(${hookPhases}))
+             )
+           ORDER BY ti.invoked_at ASC
+           LIMIT 1
+        ) ev
+    )
+    UPDATE harness_shared.event_wake_deliveries d
+       SET turn_proof = 'observed', turn_started_at = hit.invoked_at
+      FROM hit
+     WHERE d.id = hit.id AND d.turn_proof = 'awaiting'
+    RETURNING d.id
+  `;
+  return rows.length;
+}
+
+/** An `awaiting` delivery whose pickup window has closed with no real-time turn signal. */
+export interface ExpiredPickupRow {
+  id: number;
+  awaitId: number;
+  subscriberId: string;
+  eventKey: string;
+  channel: string | null;
+  source: string | null;
+  deliveredAtMs: number;
+  pickupDeadlineAtMs: number;
+}
+
+/** The expired `awaiting` rows, oldest deadline first. Read-only; settlement re-checks the proof. */
+export async function listExpiredPickups(limit = 200): Promise<ExpiredPickupRow[]> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql<
+    Array<{
+      id: number | string;
+      await_id: number | string;
+      subscriber_id: string;
+      event_key: string;
+      channel: string | null;
+      source: string | null;
+      delivered_at: Date;
+      pickup_deadline_at: Date;
+    }>
+  >`
+    SELECT id, await_id, subscriber_id, event_key, channel, source, delivered_at, pickup_deadline_at
+      FROM harness_shared.event_wake_deliveries
+     WHERE workspace_id = ${ws}
+       AND turn_proof = 'awaiting'
+       AND pickup_deadline_at <= now()
+     ORDER BY pickup_deadline_at ASC, id ASC
+     LIMIT ${limit}
+  `;
+  return rows.map((r) => ({
+    id: Number(r.id),
+    awaitId: Number(r.await_id),
+    subscriberId: r.subscriber_id,
+    eventKey: r.event_key,
+    channel: r.channel,
+    source: r.source,
+    deliveredAtMs: new Date(r.delivered_at).getTime(),
+    pickupDeadlineAtMs: new Date(r.pickup_deadline_at).getTime(),
+  }));
+}
+
+/** Result of {@link settleExpiredPickup}: whether this call settled the row, and the re-queued id. */
+export interface SettleExpiredPickupResult {
+  settled: boolean;
+  requeuedDeliveryId: number | null;
+}
+
+/**
+ * Settle one expired `awaiting` delivery, atomically and only if it is still `awaiting`
+ * (a concurrent observe/ack wins). `observed` stamps the host-reported turn start.
+ * `not-picked-up` optionally hands the delivery to host recovery: ONE fresh pending delivery
+ * carrying the same await, key, payload and summary, tagged `source='pickup-escalation'` so it
+ * is never escalated again, with `pickup_escalated_at` stamped on the original (D-004 (4)).
+ */
+export async function settleExpiredPickup(input: {
+  id: number;
+  proof: 'observed' | 'not-picked-up';
+  turnStartedAtMs?: number | null;
+  escalate?: boolean;
+}): Promise<SettleExpiredPickupResult> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const escalate = input.proof === 'not-picked-up' && input.escalate === true;
+  const startedAt = input.proof === 'observed' && input.turnStartedAtMs != null
+    ? new Date(input.turnStartedAtMs)
+    : null;
+  const rows = await sql<Array<{ settled: number | string; requeued_id: number | string | null }>>`
+    WITH prior AS (
+      -- Judge escalation eligibility on the PRE-update row: never a re-queue of a re-queue,
+      -- never a second escalation of the same delivery.
+      SELECT id,
+             (${escalate} AND source IS DISTINCT FROM ${PICKUP_ESCALATION_SOURCE}
+                          AND pickup_escalated_at IS NULL) AS escalating
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${ws} AND id = ${input.id} AND turn_proof = 'awaiting'
+       FOR UPDATE
+    ), settled AS (
+      UPDATE harness_shared.event_wake_deliveries d
+         SET turn_proof = ${input.proof},
+             turn_started_at = CASE WHEN ${input.proof} = 'observed'
+                                    THEN COALESCE(${startedAt}::timestamptz, now()) ELSE NULL END,
+             pickup_escalated_at = CASE WHEN prior.escalating THEN now() ELSE d.pickup_escalated_at END
+        FROM prior
+       WHERE d.id = prior.id AND d.turn_proof = 'awaiting'
+       RETURNING d.id, d.workspace_id, d.await_id, d.subscriber_id, d.event_key, d.payload, d.summary,
+                 d.urgent, d.min_sleep_sec, prior.escalating
+    ), requeued AS (
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec,
+         source, last_error)
+      SELECT workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec,
+             ${PICKUP_ESCALATION_SOURCE}, 'pickup escalation of wake #' || id || ': no turn started'
+        FROM settled
+       WHERE escalating
+      RETURNING id
+    )
+    SELECT (SELECT count(*) FROM settled) AS settled, (SELECT id FROM requeued LIMIT 1) AS requeued_id
+  `;
+  const row = rows[0];
+  return {
+    settled: Number(row?.settled ?? 0) > 0,
+    requeuedDeliveryId: row?.requeued_id == null ? null : Number(row.requeued_id),
+  };
+}
+
 /**
  * The most-recent ACTUAL wake (a turn-burning channel) per subscriber — the floor anchor
  * the pump uses to decide whether a subscriber may be re-woken yet (P-005). 'inbox' and
@@ -2937,22 +3116,34 @@ export async function listRecentDeliveries(
   return rows.map(mapDelivery);
 }
 
-/** The D-007 meter: wake counts by subscriber + channel over a window. */
+/** The D-007 meter: wake counts by subscriber + channel over a window.
+ *
+ *  `turnProof` (P-006 / D-004) splits every group by whether its deliveries actually started a
+ *  turn. `turnInvoked` only says the CHANNEL was turn-capable; a `delivered` + `turnInvoked` row
+ *  with `turnProof: 'not-picked-up'` is the silent failure this dimension exists to expose.
+ *  null = booked before migration 1441 (unknown). */
 export async function wakeMeter(
   input: {
     sinceHours?: number;
   } = {},
-): Promise<Array<{ subscriberId: string; status: string; channel: string | null; turnInvoked: boolean; count: number }>> {
+): Promise<Array<{
+  subscriberId: string;
+  status: string;
+  channel: string | null;
+  turnInvoked: boolean;
+  turnProof: TurnProof | null;
+  count: number;
+}>> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
-    SELECT subscriber_id, status, channel,
+    SELECT subscriber_id, status, channel, turn_proof,
            COALESCE(channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]}), false) AS turn_invoked,
            count(*)::int AS count
       FROM harness_shared.event_wake_deliveries
      WHERE workspace_id = ${ws}
        AND created_at > now() - make_interval(hours => ${input.sinceHours ?? 24})
-     GROUP BY subscriber_id, status, channel
+     GROUP BY subscriber_id, status, channel, turn_proof
      ORDER BY count DESC
      LIMIT 50
   `;
@@ -2961,6 +3152,7 @@ export async function wakeMeter(
     status: r.status,
     channel: r.channel ?? null,
     turnInvoked: r.turn_invoked === true,
+    turnProof: isTurnProof(r.turn_proof) ? r.turn_proof : null,
     count: Number(r.count),
   }));
 }
