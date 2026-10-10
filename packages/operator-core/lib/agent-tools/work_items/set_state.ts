@@ -498,7 +498,7 @@ export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set lifecycle state for one or many work-items. Unified states: open|wip|blocked|needs-human|done|dropped; legacy aliases preserve terminal_reason. Terminal states require completionRef + assumptions ("none" or facts:assert keys). Blocked writes require an active typed external blocker via work_items:set_blocker; link internal dependencies with work_items:link { rel:"blocks" }. Plan-linked feature blocks use plans:set-status. Reopening a terminal item requires force:true. Supports inline, ids:[…], or items[]; inspect appliedState.',
+    'Set lifecycle state for one or many work-items. Unified states: open|wip|blocked|needs-human|done|dropped; legacy aliases preserve terminal_reason. Terminal states require completionRef + assumptions ("none" or facts:assert keys). Blocked writes require an active typed external blocker via work_items:set_blocker; link internal dependencies with work_items:link { rel:"blocks" }. Plan-linked feature blocks use plans:set-status. Reopening a terminal item requires force:true. Supports inline, ids:[…], or items[]; inspect expectedState/appliedState. Readback mismatches fail.',
   guidance: {
     when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
     notWhen: "Never on non-work or human-audience rows, not even needs-human: data or a person's job.",
@@ -668,7 +668,7 @@ export default defineTool({
         // (`terminalConflictWarning` + raw `terminalConflict`) so the two tools do not disagree
         // about whether a stranded close is visible to the caller.
         let terminalConflict: TerminalCompletionConflict | undefined;
-        const { workItem, aliased, requestedState, appliedState, aliasNote } =
+        const { workItem, aliased, requestedState, expectedState, appliedState, aliasNote } =
           await setWorkItemStateWithAliasInfo(it.id, it.state, {
             harness,
             by: ident.ownerId,
@@ -679,6 +679,13 @@ export default defineTool({
               terminalConflict = info;
             },
           });
+        const canonicalExpectedState = expectedState ?? requestedState ?? it.state;
+        if (workItem && appliedState !== canonicalExpectedState) {
+          throw new Error(
+            `work_item '${it.id}' state verification failed: requested '${requestedState ?? it.state}' ` +
+              `normalizes to '${canonicalExpectedState}', but the canonical post-write reader returned '${String(appliedState)}'.`,
+          );
+        }
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});
         // EI-24917736184136483: record a non-terminal write's reason where it persists —
         // the item's comment thread — AFTER the state write landed, so a refused write
@@ -763,6 +770,7 @@ export default defineTool({
               workItem,
               aliased,
               requestedState,
+              expectedState: canonicalExpectedState,
               appliedState,
               ...(aliasNote ? { aliasNote } : {}),
             }

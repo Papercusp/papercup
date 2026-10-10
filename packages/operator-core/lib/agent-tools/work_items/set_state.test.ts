@@ -87,7 +87,7 @@ describe('work_items:set_state dispatch validation (EI-25280526101674032)', () =
 
 /** Default mock: no alias — the item lands exactly on the requested state. */
 function noAlias(id: string, state: string) {
-  return { workItem: { id, state }, aliased: false, requestedState: state, appliedState: state } as never;
+  return { workItem: { id, state }, aliased: false, requestedState: state, expectedState: state, appliedState: state } as never;
 }
 
 const workItem = (overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'state'>): WorkItem => ({
@@ -337,15 +337,16 @@ describe('work_items:set_state — typed blocker guidance (WI-39529)', () => {
 describe('work_items:set_state — alias note (EI-7125 / WI-2573)', () => {
   it('surfaces an aliasNote when the write aliases', async () => {
     setM.mockImplementation(async (id: string, state: string) => ({
-      workItem: { id, state: 'open' },
+      workItem: { id, state: 'done' },
       aliased: true,
       requestedState: state,
-      appliedState: 'open',
-      aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+      expectedState: 'done',
+      appliedState: 'done',
+      aliasNote: `requested state '${state}' was normalized to 'done'.`,
     }) as never);
-    const b = await body({ id: 'WI-1', state: 'blocked' });
-    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { state: 'open' } });
-    expect(b.results[0].aliasNote).toMatch(/requested state 'blocked'.*recorded as 'open'/);
+    const b = await body({ id: 'WI-1', state: 'resolved' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { state: 'done' }, expectedState: 'done' });
+    expect(b.results[0].aliasNote).toMatch(/requested state 'resolved'.*normalized to 'done'/);
   });
 
   it('omits aliasNote entirely when the requested state is already canonical (no alias fired)', async () => {
@@ -357,17 +358,18 @@ describe('work_items:set_state — alias note (EI-7125 / WI-2573)', () => {
 
   it('each item in a heterogeneous batch gets its OWN aliasNote independently', async () => {
     setM.mockImplementation(async (id: string, state: string) =>
-      state === 'wip'
+      state === 'resolved'
         ? ({
-            workItem: { id, state: 'open' },
+            workItem: { id, state: 'done' },
             aliased: true,
             requestedState: state,
-            appliedState: 'open',
-            aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+            expectedState: 'done',
+            appliedState: 'done',
+            aliasNote: `requested state '${state}' was normalized to 'done'.`,
           } as never)
         : noAlias(id, state),
     );
-    const b = await body({ items: [{ id: 'WI-1', state: 'wip' }, { id: 'WI-2', state: 'resolved' }] });
+    const b = await body({ items: [{ id: 'WI-1', state: 'resolved' }, { id: 'WI-2', state: 'wip' }] });
     expect(b.results[0].aliasNote).toBeTruthy();
     expect(b.results[1]).not.toHaveProperty('aliasNote');
   });
@@ -379,40 +381,46 @@ describe('work_items:set_state — alias note (EI-7125 / WI-2573)', () => {
 // against what it asked for catches a divergence even without pattern-matching prose.
 describe('work_items:set_state — aliased/requestedState/appliedState on every result (EI-7712)', () => {
   it('a clean (non-aliased) write reports aliased:false with matching requested/applied state', async () => {
-    const b = await body({ id: 'WI-1', state: 'resolved' });
-    expect(b.results[0]).toMatchObject({ aliased: false, requestedState: 'resolved', appliedState: 'resolved' });
+    const b = await body({ id: 'WI-1', state: 'wip' });
+    expect(b.results[0]).toMatchObject({ aliased: false, requestedState: 'wip', expectedState: 'wip', appliedState: 'wip' });
   });
 
   it('an aliased write reports aliased:true with DIVERGENT requested/applied state, even without reading aliasNote', async () => {
     setM.mockImplementation(async (id: string, state: string) => ({
-      workItem: { id, state: 'open' },
+      workItem: { id, state: 'done' },
       aliased: true,
       requestedState: state,
-      appliedState: 'open',
-      aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as 'open' instead.`,
+      expectedState: 'done',
+      appliedState: 'done',
+      aliasNote: `requested state '${state}' was normalized to 'done'.`,
     }) as never);
-    const b = await body({ id: 'WI-1', state: 'blocked' });
+    const b = await body({ id: 'WI-1', state: 'resolved' });
     expect(b.results[0].aliased).toBe(true);
-    expect(b.results[0].requestedState).toBe('blocked');
-    expect(b.results[0].appliedState).toBe('open');
+    expect(b.results[0].requestedState).toBe('resolved');
+    expect(b.results[0].expectedState).toBe('done');
+    expect(b.results[0].appliedState).toBe('done');
     expect(b.results[0].requestedState).not.toBe(b.results[0].appliedState);
   });
 
-  it('a silent divergence with NO onAlias fire (a hypothetical future bug class) still surfaces as aliased:true — the WI-2381 recurrence guard', async () => {
+  it('a silent divergence with NO intentional normalization fails the item using the canonical readback — the WI-2381 recurrence guard', async () => {
     // Simulates a lower-layer bug that persists a DIFFERENT state than requested
-    // WITHOUT the normalize-layer onAlias ever firing — setWorkItemStateWithAliasInfo's
-    // own appliedState-vs-requestedState comparison (not just onAlias) must still catch it.
+    // WITHOUT a normalization alias. The handler must fail this item instead of returning
+    // ok:true with a different state that callers can overlook.
     setM.mockImplementation(async (id: string, state: string) => ({
       workItem: { id, state: 'open' }, // silently stayed 'open' instead of 'blocked'
       aliased: true,
       requestedState: state,
+      expectedState: 'blocked',
       appliedState: 'open',
       aliasNote: `requested state '${state}' was not applied verbatim — recorded as 'open' instead.`,
     }) as never);
     const b = await body({ id: 'WI-2381', state: 'blocked' });
-    expect(b.results[0].ok).toBe(true); // the write itself succeeded — this is exactly why `ok` alone is not enough
-    expect(b.results[0].aliased).toBe(true); // but the discriminator catches the divergence
-    expect(b.results[0].appliedState).not.toBe(b.results[0].requestedState);
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-2381',
+      error: expect.stringContaining("normalizes to 'blocked', but the canonical post-write reader returned 'open'"),
+    });
   });
 });
 
