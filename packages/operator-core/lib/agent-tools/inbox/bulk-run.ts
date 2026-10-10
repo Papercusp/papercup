@@ -257,18 +257,36 @@ async function liveActionsFor(itemId: string): Promise<LiveAction[] | null> {
   return byId?.get(itemId) ?? null;
 }
 
+function failureDetails(value: Record<string, unknown>): string {
+  const code = typeof value.error === 'string'
+    ? value.error
+    : typeof value.code === 'string'
+      ? value.code
+      : undefined;
+  const detail = typeof value.detail === 'string'
+    ? value.detail
+    : typeof value.message === 'string'
+      ? value.message
+      : undefined;
+  if (code && detail && code !== detail) return `${code}: ${detail}`;
+  return code ?? detail ?? 'operation refused';
+}
+
 function innerFailure(name: string, result: unknown): Error | null {
   if (!result || typeof result !== 'object') return null;
   const value = result as Record<string, unknown>;
-  if (value.ok === false || typeof value.error === 'string') {
-    return new Error(`${name}: ${String(value.error ?? 'operation refused')}`);
-  }
   const failed = Array.isArray(value.results)
     ? (value.results.find((entry) => entry && typeof entry === 'object' && (entry as { ok?: unknown }).ok === false) as
         | Record<string, unknown>
         | undefined)
     : undefined;
-  return failed ? new Error(`${name}: ${String(failed.error ?? failed.detail ?? 'operation refused')}`) : null;
+  // Bulk envelopes derive outer `ok` from their member results. Preserve the
+  // failed member's canonical details before falling back to aggregate status.
+  if (failed) return new Error(`${name}: ${failureDetails(failed)}`);
+  if (value.ok === false || typeof value.error === 'string') {
+    return new Error(`${name}: ${failureDetails(value)}`);
+  }
+  return null;
 }
 
 async function callRequired(call: InnerCall, name: string, args: Record<string, unknown>): Promise<void> {

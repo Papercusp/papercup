@@ -270,6 +270,18 @@ function liveHostSupersedesRecordedPid(
   );
 }
 
+/** A PID without a non-empty host is not bound to a machine and cannot support
+ *  an OS liveness probe. Keep unknown-host evidence fail-closed even when a
+ *  recorded session row happens to carry a PID. */
+function hasProbeablePidBinding(
+  subject: Pick<LivenessSubject, 'host' | 'pid'>,
+): subject is Pick<LivenessSubject, 'host' | 'pid'> & { host: string; pid: number } {
+  return (
+    typeof subject.host === 'string' && subject.host.trim().length > 0 &&
+    typeof subject.pid === 'number' && Number.isInteger(subject.pid) && subject.pid > 0
+  );
+}
+
 /** PURE: one subject's verdict from already-fetched signals — the single place
  *  the legs meet deriveSessionState. Exported for the parity test (P-001). */
 export function deriveVerdict(
@@ -348,7 +360,9 @@ export function deriveVerdict(
   // concrete pid, or the same pid, is not: the probe stays authoritative and
   // EI-21572355077403526's killed-holder trap stays closed. The host lookup
   // runs only on this rare dead-pid path.
-  const recordedPidDead = probePidFn({ host: subject.host, pid: subject.pid }) === false;
+  const recordedPidDead =
+    hasProbeablePidBinding(subject) &&
+    probePidFn({ host: subject.host, pid: subject.pid }) === false;
   const pidConfirmedDead =
     recordedPidDead &&
     !liveHostSupersedesRecordedPid(psuHost?.findHostFn(subject.ownerId), subject.pid);
@@ -650,7 +664,9 @@ export async function resolveSessionStates(
   const pidProbeByOwner = new Map<string, boolean | null>();
   const hostLookupOwnerIds = new Set<string>();
   for (const subject of hydrated) {
-    const pidResult = probePidFn({ host: subject.host, pid: subject.pid });
+    const pidResult = hasProbeablePidBinding(subject)
+      ? probePidFn({ host: subject.host, pid: subject.pid })
+      : null;
     pidProbeByOwner.set(subject.ownerId, pidResult);
     if (pidResult === false || (
       opts.psuHostPositiveAuthority === true &&

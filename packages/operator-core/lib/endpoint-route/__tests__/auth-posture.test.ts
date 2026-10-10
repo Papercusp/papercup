@@ -203,6 +203,11 @@ const RULES: ReadonlyArray<{
       // instead of letting the family-wide VT default manufacture drift.
       { method: 'POST', path: '/admin/accounts/:verb', auth: VTL },
       { method: 'POST', path: '/admin/config/:verb', auth: VTL },
+      // PlanAuditPane's start/history/report fetches use the same cookie-less
+      // desktop fallback. The POST retains its CSRF guard; plan-audit.test.ts
+      // exercises admission and denial through the production route stack.
+      { method: 'POST', path: '/admin/plan-audit', auth: VTL },
+      { method: 'GET', path: '/admin/plan-audit', auth: VTL },
       // The Goals tab's WRITE half posts from that same cookie-less loopback
       // webview as its /admin/mode/:verb sibling immediately above — which
       // admin/goals.ts is explicitly modelled on — so the same EI-338

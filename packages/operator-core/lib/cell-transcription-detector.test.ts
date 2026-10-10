@@ -200,6 +200,41 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
   });
 });
 
+describe('EI-25431705270466357 — fractional byte amounts are not commit SHAs', () => {
+  for (const amount of ['40,279,831,019.520004B', '14,991,024,619.520004B', '0.1234567B']) {
+    for (const context of ['No live reclaim occurred.', 'The green-checkpoint candidate needs space.']) {
+      it(`does not classify fractional byte amount ${amount} beside ${context}`, () => {
+        const text = `reserve${amount}; ${context}`;
+        expect(detectCellTranscriptions(text)).toEqual([]);
+        // Even a colliding commit cannot change the amount's numeric meaning.
+        expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);
+        expect(cellTranscriptionHint(text)).toBeNull();
+        expect(suggestDependsOnCells(text)).toEqual([]);
+      });
+    }
+  }
+
+  it('retains a standalone deployed SHA beside a fractional byte amount', () => {
+    const text = 'reserve40,279,831,019.520004B; release is serving abc1234';
+    expect(detectCellTranscriptions(text).map((hit) => hit.value)).toEqual(['abc1234']);
+    expect(detectCellTranscriptions('release is serving 520004B').map((hit) => hit.value)).toEqual(['520004B']);
+  });
+
+  it('does not resolve a fractional byte suffix even when the resolver would accept it', async () => {
+    const asked: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(
+      'reserve40,279,831,019.520004B; release is serving abc1234',
+      async (token) => {
+        asked.push(token);
+        return true;
+      },
+    );
+    expect(asked).toEqual(['abc1234']);
+    expect(hint).toContain('abc1234');
+    expect(hint).not.toContain('520004B');
+  });
+});
+
 describe('EI-24684014950807803 — a hex token that names no commit is not a sha', () => {
   it('does not suggest a Git dependency for a coord message prefix that resolves to no commit', () => {
     const body = 'Live intake: ask c308 a853236d for existing-builder acceptance.';

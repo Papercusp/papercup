@@ -668,9 +668,7 @@ export function createCodexProviderCompletionDecoder(contentType: string,
     }
     return typed.type === 'response.completed' ? readResponse(typed.response) : null;
   };
-  const push = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
-    if (failure) throw failure;
-    try {
+  const pushChunk = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
     carry += decoder.write(Buffer.from(chunk));
     detectHeaderlessFormat();
     if (responseKind !== 'sse') {
@@ -695,6 +693,11 @@ export function createCodexProviderCompletionDecoder(contentType: string,
     carry = carry.slice(frameStart);
     if (carry.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
     return newlyCompleted;
+  };
+  const push = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
+    if (failure) throw failure;
+    try {
+      return pushChunk(chunk);
     } catch (error) {
       failure = error instanceof Error ? error : new Error('accepted provider response evidence is invalid');
       throw failure;

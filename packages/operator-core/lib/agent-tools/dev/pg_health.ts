@@ -18,10 +18,10 @@ export default defineTool({
   name: 'dev:pg_health',
   profile: 'engineer',
   description:
-    'PostgreSQL version + connection counts and bounded completed-query diagnostics from this process. localOnly skips the database health query.',
+    'PostgreSQL version + connection counts and bounded completed-query diagnostics, including a separate recent-failure ring, from this process. localOnly skips the database health query.',
   capability: 'intel:read',
   guidance: {
-    when: `Diagnostic snapshot of PG health — connections, longest query, lock count. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained completed results without a health query; this does not measure in-flight queries or other processes.`,
+    when: `Diagnostic snapshot of PG health — connections, longest query, lock count, and bounded recent failures. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained results without a health query; this does not measure in-flight queries or other processes.`,
     notWhen: `For application-level health, use \`harness:health\`. pg_health is the database layer.`,
     seeAlso: [
       'dev:pg_active_queries (currently-running queries)',
@@ -44,16 +44,19 @@ export default defineTool({
       source: 'current-process' as const,
       pid: process.pid,
       capturedAt: new Date().toISOString(),
-      coverage: 'completed-results-in-selected-pools-only' as const,
+      coverage: 'completed-results-and-recent-failures-in-selected-pools-only' as const,
       timing: 'query-build-to-terminal-not-acquisition' as const,
       preBuildTiming: 'first-query-handle-to-build-excludes-lazy-time' as const,
       queryIdentity: ['source.processInstanceId', 'source.poolInstanceId', 'connectionId', 'queryId'],
       resultLimitPerPool,
       limitations:
         'Only completed results in the named pools of this process are observed; in-flight queries, ' +
-        'other pools and processes are not covered. An empty ring does not prove an idle database or connectivity. ' +
-        'dropped counts ring eviction; omittedRetained counts retained results outside this response window. ' +
-        'Evicted result linkage is unavailable. correlationState=unobserved means no captured attempt, ' +
+        'other pools and processes are not covered. The result ring is bounded to 32 per pool; the failure ring is ' +
+        'bounded to 16, selected from that suffix according to resultLimitPerPool. An empty ring does not prove an idle database or connectivity. ' +
+        'dropped counts result-ring eviction; droppedFailures counts failure-ring eviction. A separate ring retains ' +
+        'up to 16 recent failed results per pool independently of successful-query volume; failures can appear in both ' +
+        'rings. Neither ring retains SQL text, parameters, rows, or server messages. omittedRetained counts retained ' +
+        'results outside this response window. correlationState=unobserved means no captured attempt, ' +
         'unknown means its context could not be read safely; neither means no business work occurred. ' +
         'Correlation records query creation, not current attempt liveness. elapsedMs spans build to terminal ' +
         'ReadyForQuery, not acquisition, CPU, GC or root cause. preBuildMs spans first Query.handle to build, ' +

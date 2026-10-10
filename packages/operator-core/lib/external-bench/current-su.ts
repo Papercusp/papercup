@@ -16,7 +16,7 @@ import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from '../runtime-vintage';
 import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { canonicalJson } from './reproducibility/canonical-json';
-import { createNativeGymGatewayController, type NativeGymProviderAuthorization } from '../gym/proposer';
+import { createNativeGymGatewayController, startNativeGymGateway, type NativeGymProviderAuthorization } from '../gym/proposer';
 import type { GovernorGlueDeps } from '../learning-governor/registrants';
 import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 import type { LearningReservationResourceBudget, LearningSpendReservationCensus } from '../learning-governor/store';
@@ -536,6 +536,21 @@ export function currentBenchProviderAuthenticator(input: {
   } };
 }
 
+export interface CurrentBenchHostGateway {
+  readonly nativeGateway: Readonly<ScopedInferenceGateway>;
+  readonly nativeAccountingBinding: CurrentBenchAccountingBinding;
+  stop(): Promise<void>;
+}
+// A loopback URL is configuration, not evidence that its service enforces this
+// assignment's reservations. Only the host controller can issue this pairing.
+const currentBenchHostGateways = new WeakMap<ScopedInferenceGateway, {
+  binding: CurrentBenchAccountingBinding;
+  protocol: string;
+  arm: CurrentBenchmarkProtocol['arms'][number];
+  taskId: string;
+  active(): boolean;
+}>();
+
 /** Private host authority authenticates the FINAL credential, payer and native
  * input bound. A configured account alias or a caller bearer is insufficient.
  * The request still has to match the frozen model, effort, output and prices. */
@@ -544,7 +559,10 @@ export function currentBenchGatewayController(input: {
   protocol: CurrentBenchmarkProtocol; armId: string; taskId: string; seed: number;
   resources: LearningReservationResourceBudget;
   authenticateProvider: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>;
-}, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> & { readonly accountingBinding: CurrentBenchAccountingBinding } {
+}, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> & {
+  readonly accountingBinding: CurrentBenchAccountingBinding;
+  startNativeGateway(log?: (message: string) => void, start?: Parameters<typeof startNativeGymGateway>[3]): Promise<CurrentBenchHostGateway>;
+} {
   const protocol = currentBenchmarkProtocolSchema.parse(input.protocol);
   const arm = protocol.arms.find(arm => arm.id === input.armId);
   resolveBenchWorkspace(input.workspaceId);
@@ -552,7 +570,7 @@ export function currentBenchGatewayController(input: {
       !/^[a-f0-9]{64}$/.test(input.preregHash) || typeof input.authenticateProvider !== 'function') {
     throw new Error('Benchmark gateway requires its frozen assignment and authenticated provider.');
   }
-  const { workspaceId, loopId, token, preregHash, authenticateProvider } = input;
+  const { workspaceId, loopId, token, preregHash, authenticateProvider, taskId } = input;
   const assignmentId = currentBenchAssignmentId(protocol.runId, input.armId, input.taskId, input.seed);
   const assignmentIds = protocol.arms.flatMap(arm => protocol.taskIds.flatMap(taskId =>
     protocol.seeds.map(seed => currentBenchAssignmentId(protocol.runId, arm.id, taskId, seed)))).sort();
@@ -602,7 +620,35 @@ export function currentBenchGatewayController(input: {
       } catch { return null; }
     },
   }, governor);
-  return { ...controller, accountingBinding: Object.freeze({ workspaceId, loopId, runId: protocol.runId, preregHash, assignmentId }) };
+  const accountingBinding = Object.freeze({ workspaceId, loopId, runId: protocol.runId, preregHash, assignmentId });
+  let live = true, starting = false;
+  const revoke = () => { live = false; controller.revoke(); };
+  return { ...controller, accountingBinding, revoke,
+    async startNativeGateway(log = () => {}, start) {
+      // The maintained scoped native launcher currently supports only fresh
+      // Codex sessions. Refuse unsupported clients before binding a listener.
+      if (!live || starting || arm.agent !== 'codex') throw new Error('Benchmark host gateway is revoked, already started or unsupported.');
+      starting = true;
+      let service: Awaited<ReturnType<typeof startNativeGymGateway>> | undefined;
+      try {
+        service = await startNativeGymGateway(controller.gateway, workspaceId, log, start);
+        if (!live) throw new Error('Benchmark host gateway was revoked during startup.');
+        const nativeGateway = snapshotScopedInferenceGateway(service.transport.statelessGateway);
+        let stopped = false, stopping: Promise<void> | undefined;
+        currentBenchHostGateways.set(nativeGateway, { binding: accountingBinding,
+          protocol: canonicalJson(protocol), arm, taskId, active: () => live && !stopped });
+        return Object.freeze({ nativeGateway, nativeAccountingBinding: accountingBinding,
+          stop() {
+            stopped = true; revoke();
+            return stopping ??= Promise.resolve().then(() => service!.stop());
+          } });
+      } catch (error) {
+        revoke();
+        await service?.stop();
+        throw error;
+      }
+    },
+  };
 }
 
 type LaunchArgs = Parameters<typeof launchAgentTool.handler>[0];
@@ -835,12 +881,12 @@ export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
 }
 /** Bind admission/observations from the existing budget and protocol planes. */
 export interface CurrentSuBenchObservations {
-  /** Host-owned startNativeGymGateway transport. Identity reads may precede
-   * setup; an actual launch refuses without this route. */
+  /** Route issued by currentBenchGatewayController.startNativeGateway.
+   * Identity reads may precede setup; unissued routes cannot launch. */
   nativeGateway?: ScopedInferenceGateway;
-  /** Exact host controller scope; omission keeps request accounting incomplete. */
+  /** Same controller-issued scope; omission cannot launch or complete accounting. */
   nativeAccountingBinding?: CurrentBenchAccountingBinding;
-  admit(handle: BenchHarnessHandle, budget: GenerationBudget): Promise<{ admitted: boolean; receiptRef: string }>;
+  admit(handle: BenchHarnessHandle, budget: GenerationBudget, taskId: string): Promise<{ admitted: boolean; receiptRef: string }>;
   observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
 export interface CurrentSuBenchPorts extends Pick<CurrentSuBenchObservations, 'admit'> {
@@ -947,7 +993,7 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
           throw new Error('Benchmark pre-registration receipt is missing or does not match the frozen protocol.');
         }
         if (opts.signal?.aborted) return { disposition: 'timeout', detail: 'Benchmark cancelled before admission.', armMeta: { currentExecution: record } };
-        const admission = await ports.admit(handle, budget);
+        const admission = await ports.admit(handle, budget, task.instanceId);
         record.admission = admission;
         if (!admission.receiptRef?.trim()) throw new Error('Benchmark budget admission has no durable receipt.');
         if (!admission.admitted) return { disposition: 'budget-exhausted', armMeta: { currentExecution: record } };
@@ -1024,15 +1070,43 @@ export async function readCurrentBenchCompletion(
 }
 export function liveCurrentSuBenchPorts(
   ctx: PapercuspUnifiedToolContext, observations: CurrentSuBenchObservations,
-  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration'>,
+  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>,
   db: Pick<DbScope, 'sql'> = {},
 ): CurrentSuBenchPorts {
   const workspaceId = resolveBenchWorkspace(ctx.workspaceId);
   if (ctx.workspaceId !== workspaceId || opts.workspaceId !== workspaceId) throw new Error('Current benchmark launch requires an explicitly isolated caller context.');
   const gateway = observations.nativeGateway === undefined ? null : snapshotScopedInferenceGateway(observations.nativeGateway);
+  const host = observations.nativeGateway === undefined ? undefined : currentBenchHostGateways.get(observations.nativeGateway);
   const accounting = observations.nativeAccountingBinding === undefined ? undefined : Object.freeze({ ...observations.nativeAccountingBinding });
+  const requireBinding = () => {
+    if (!gateway || !host || !host.active() || !accounting ||
+        canonicalJson(accounting) !== canonicalJson(host.binding) ||
+        accounting.workspaceId !== workspaceId || accounting.runId !== opts.runId ||
+        accounting.preregHash !== opts.preregistration.preregHash ||
+        accounting.assignmentId !== currentBenchAssignmentId(opts.runId, opts.armId, host.taskId, opts.seed) ||
+        canonicalJson(opts.preregistration.config) !== host.protocol) {
+      throw new Error('Current benchmark launch requires its active host-owned gateway and exact accounting binding.');
+    }
+    return host;
+  };
+  const requireHost = (args: LaunchArgs) => {
+    const host = requireBinding();
+    const member = args.members?.[0];
+    if (args.members?.length !== 1 || !member || member.agent !== host.arm.agent ||
+        member.model !== host.arm.model || member.effort !== host.arm.effort || member.account !== host.arm.account) {
+      throw new Error('Current benchmark native launch controls differ from its host-owned gateway.');
+    }
+  };
   return {
-    admit: (handle, budget) => observations.admit(handle, budget),
+    admit: async (handle, budget, taskId) => {
+      const host = requireBinding();
+      if (taskId !== host.taskId || canonicalJson(budget) !== canonicalJson(host.arm.generationBudget)) {
+        throw new Error('Current benchmark admission differs from its host assignment or budget.');
+      }
+      const receipt = await observations.admit(handle, budget, taskId);
+      requireBinding();
+      return receipt;
+    },
     collectCost: input => liveCurrentBenchNativeCostReader(input.handle, opts, db, accounting)(),
     readIdentity: async task => {
       const observation = await observations.observeIdentity(task);
@@ -1043,8 +1117,9 @@ export function liveCurrentSuBenchPorts(
     ),
     readCompletion: handle => readCurrentBenchCompletion(handle, { ...db, workspaceId }),
     launch: async args => {
-      if (!gateway) throw new Error('Current benchmark launch requires a private inference gateway.');
+      requireHost(args);
       const module = await import('../agent-tools/capability/launch-agent');
+      requireHost(args);
       return module.default.handler(args, { ...ctx, [module.INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway } as PapercuspUnifiedToolContext);
     },
     getTask: async id => (await import('../task-manager/store')).getTask(id),

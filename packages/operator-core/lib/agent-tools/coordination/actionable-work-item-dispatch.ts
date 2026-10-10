@@ -161,7 +161,7 @@ export interface ActionableWorkItemDispatchDeps {
   claim: (
     id: string,
     assignee: string,
-    opts: { harness?: string; assignedBy?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission },
+    opts: { harness?: string; assignedBy?: string; fromHolder?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission },
   ) => Promise<WorkItem | null>;
   /** The same named-id claim-floor oracle used by work_items:claim. */
   explainClaimFloors: typeof explainIssueClaimFloors;
@@ -311,7 +311,7 @@ async function classifyOne(
   actor: string | undefined,
   deps: ActionableWorkItemDispatchDeps,
 ): Promise<
-  | { kind: 'claim'; workItemId: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission }
+  | { kind: 'claim'; workItemId: string; fromHolder?: string; legacyFleetScopeDowngradeAdmission?: LegacyFleetScopeDowngradeAdmission }
   | { kind: 'retained'; workItemId: string }
   | { kind: 'skip'; skipped: WorkItemDispatchSkip }
 > {
@@ -340,7 +340,12 @@ async function classifyOne(
   const workItem = observed.item;
   const holder = observed.claimedBy ?? workItem.assignee;
   const retainedByTarget = sameAgent(holder, targetAgent);
-  const allowedStates = retainedByTarget ? RETAINED_EXECUTION_STATES : UNASSIGNED_FRONTIER_STATES;
+  // A caller can transfer its own held item through claimWorkItem's atomic
+  // fromHolder compare-and-claim. Keep this distinct from a peer-held item:
+  // dispatch must never take another agent's live claim.
+  const transferFromCaller = Boolean(holder && actor && !retainedByTarget && sameAgent(holder, actor));
+  const heldForExecution = retainedByTarget || transferFromCaller;
+  const allowedStates = heldForExecution ? RETAINED_EXECUTION_STATES : UNASSIGNED_FRONTIER_STATES;
   if (!allowedStates.has(workItem.state)) {
     return {
       kind: 'skip',
@@ -387,11 +392,11 @@ async function classifyOne(
   }
 
   // observeWorkItem already resolves these for an unassigned row. A retained
-  // row needs the same fresh checks because idempotent replay must not wake work
-  // whose plan was edited back behind a blocker after the original assignment.
+  // row or caller-held transfer needs fresh checks because dispatch must not wake
+  // work whose plan was edited back behind a blocker after the original claim.
   let planBlocked = observed.planItemBlocked ?? null;
   let planClaimed = observed.planItemLiveClaimed ?? null;
-  if (retainedByTarget) {
+  if (heldForExecution) {
     try {
       [planBlocked, planClaimed] = await Promise.all([deps.planBlock(workItem), deps.planClaim(workItem)]);
     } catch (error) {
@@ -451,7 +456,7 @@ async function classifyOne(
       },
     };
   }
-  if (holder && !retainedByTarget) {
+  if (holder && !retainedByTarget && !transferFromCaller) {
     return {
       kind: 'skip',
       skipped: {
@@ -493,7 +498,7 @@ async function classifyOne(
       },
     };
   }
-  if (observed.gated || (!retainedByTarget && !observed.available)) {
+  if (observed.gated || (!heldForExecution && !observed.available)) {
     // EI-22008434629323224: preserve the claim path's floors for targeted dispatch,
     // but do not collapse an issue-family refusal into the generic frontier text.
     // Reuse the same named-id oracle as work_items:claim so the caller receives the
@@ -534,6 +539,7 @@ async function classifyOne(
   return {
     kind: 'claim',
     workItemId,
+    ...(transferFromCaller && actor ? { fromHolder: actor } : {}),
     ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
   };
 }
@@ -558,7 +564,7 @@ export async function assignActionableWorkItems(
     .map((r) => r.skipped);
 
   const claimResults = await Promise.all(
-    toClaim.map(async ({ workItemId, legacyFleetScopeDowngradeAdmission }) => {
+    toClaim.map(async ({ workItemId, fromHolder, legacyFleetScopeDowngradeAdmission }) => {
       // Authorization/read failures propagate to the durable caller, rather than
       // being misclassified as an ordinary atomic claim refusal.
       await args.beforeMutate?.('claim');
@@ -566,6 +572,7 @@ export async function assignActionableWorkItems(
         const claimed = await deps.claim(workItemId, args.targetAgent, {
           ...(args.harness ? { harness: args.harness } : {}),
           ...(args.actor ? { assignedBy: args.actor } : {}),
+          ...(fromHolder ? { fromHolder } : {}),
           ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
         });
         return claimed

@@ -2067,6 +2067,18 @@ export function timeoutForTool(toolName, callArgs) {
   const effectiveArgs = toolName === 'tools:invoke' && callArgs?.args && typeof callArgs.args === 'object'
     ? callArgs.args
     : callArgs;
+  // EI-25376635449301072: an unconfirmed release:cut reclaim is a read-only
+  // preview. A measured preview took 46.7s on the server, so ptool's flat 30s
+  // deadline discarded a valid result before the bounded MCP request finished.
+  // Keep direct and tools:invoke routes above the transport cap; confirmed
+  // reclamation and unrelated release:cut operations retain the normal limit.
+  if (
+    effectiveToolName === 'release:cut' &&
+    effectiveArgs?.op === 'reclaim' &&
+    effectiveArgs?.confirm !== true
+  ) {
+    return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+  }
   if (
     effectiveToolName === 'release:repair-queue' &&
     effectiveArgs?.op === 'admit' &&

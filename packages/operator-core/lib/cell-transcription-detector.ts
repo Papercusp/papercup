@@ -248,7 +248,7 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     // Candidate state has its own registered cell. Keep it ahead of the generic
     // pipeline-position pattern and do not let a gate candidate be described as
     // the deployed/serving commit.
-    value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
+    value: /(?<![0-9]\.)(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
     context: /\b(candidate|green[- ]?checkpoint)\b/i,
     commitSha: true,
   },
@@ -270,7 +270,10 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     // So the run must not ABUT an alphanumeric, a hyphen, or a '#': that excludes uuid
     // segments (both interior and leading, via the trailing lookahead), hyphenated
     // identifiers, and hex colours, while leaving a standalone sha untouched.
-    value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
+    // Nor may it start after a digit and decimal point: 019.520004B is a byte
+    // amount, even if its fractional suffix happens to resolve to a Git commit.
+    // The candidate pattern above uses the same numeric boundary.
+    value: /(?<![0-9]\.)(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
     context:
       /\b(deploy(ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|:3070|:3170|running|shipped)\b/i,
     commitSha: true,

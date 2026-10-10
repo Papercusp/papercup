@@ -101,6 +101,22 @@ describe('dispatchCleanupFindingAction', () => {
     expect(h.call).toHaveBeenCalledWith(tool, args);
   });
 
+  it('preserves a failed member detail when the outer bulk envelope is also failed', async () => {
+    h.call.mockResolvedValue({
+      ok: false,
+      results: [{ ok: false, slug: 'plan-a', error: 'acceptance_unaudited', detail: 'no code-truth audit' }],
+      counts: { ok: 0, failed: 1 },
+    });
+
+    await expect(
+      dispatchCleanupFindingAction({
+        run,
+        finding: finding('finish-plan', null),
+        call: h.call,
+      }),
+    ).rejects.toThrow('plans:set-plan-status: acceptance_unaudited: no code-truth audit');
+  });
+
   it('targets exactly one orphaned claim through the canonical stale-claim reaper', async () => {
     await dispatchCleanupFindingAction({ run, finding: finding('orphaned-claim'), call: h.call });
     expect(h.reclaimExpiredPlanItemClaims).toHaveBeenCalledWith(h.sql, {

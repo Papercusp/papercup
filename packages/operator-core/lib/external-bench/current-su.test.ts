@@ -1064,25 +1064,108 @@ describe('current benchmark restart and live binding', () => {
   it('calls the maintained handler with the original authenticated context and subtree controller', async () => {
     const f = fixture();
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
-    const gateway = { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) };
-    const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, nativeGateway: gateway }, options);
-    const args = currentBenchLaunchRequest(options, handle, 'issue');
-    await ports.launch(args);
+    const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
+    const controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId: 'private-host-loop',
+      token: 'b'.repeat(64), preregHash, protocol, armId: 'papercusp', taskId: 't1', seed: 1,
+      resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
+        wallClockMs: 1000, wallClockMsPerArm: 100,
+        armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)) },
+      authenticateProvider: async () => null });
+    const stop = vi.fn(async () => {});
+    const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32101, stop } as never));
+    const opts = { ...options, preregistration: { preregHash, config: protocol } };
+    const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted }, opts);
+    const args = currentBenchLaunchRequest(opts, handle, 'issue');
+    try { await ports.launch(args);
     const forwarded = native.launch.mock.calls.at(-1)![1];
     expect(forwarded.authenticatedPrincipal).toBe((ctx as unknown as { authenticatedPrincipal: unknown }).authenticatedPrincipal);
     expect(forwarded.workspaceId).toBe(ctx.workspaceId);
-    expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(gateway);
+    expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
     expect(Object.getOwnPropertySymbols(ctx)).not.toContain(Symbol.for('benchmark-test-private-route'));
     await ports.killTask('task-own');
     expect(native.kill).toHaveBeenCalledWith('task-own', { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });
     expect(ctx.workspaceId).toBe('bench-private');
+    } finally { await hosted.stop(); }
+    expect(stop).toHaveBeenCalledOnce();
+    await expect(ports.launch(args)).rejects.toThrow(/host-owned gateway/);
+    await hosted.stop(); expect(stop).toHaveBeenCalledOnce();
   });
   it('refuses a production launch without the host private route before invoking the native handler', async () => {
     const ctx = { workspaceId: 'bench-private' } as PapercuspUnifiedToolContext;
     const ports = liveCurrentSuBenchPorts(ctx, { admit: fixture().ports.admit, observeIdentity: async () => null }, options);
     const before = native.launch.mock.calls.length;
-    await expect(ports.launch(currentBenchLaunchRequest(options, handle, 'issue'))).rejects.toThrow(/private inference gateway/);
+    await expect(ports.launch(currentBenchLaunchRequest(options, handle, 'issue'))).rejects.toThrow(/host-owned gateway/);
     expect(native.launch.mock.calls.length).toBe(before);
+  });
+  it.each(['absent', 'plausible', 'foreign'] as const)('refuses an unissued private route with %s accounting before native launch', async mode => {
+    const ctx = { workspaceId: options.workspaceId } as PapercuspUnifiedToolContext;
+    const nativeAccountingBinding = mode === 'absent' ? undefined : {
+      workspaceId: mode === 'foreign' ? 'other-private' : options.workspaceId,
+      runId: options.runId, loopId: 'unissued-host-loop', preregHash: options.preregistration.preregHash,
+      assignmentId: currentBenchAssignmentId(options.runId, options.armId, 't1', options.seed),
+    };
+    const ports = liveCurrentSuBenchPorts(ctx, { admit: fixture().ports.admit, observeIdentity: async () => null,
+      nativeGateway: { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) }, nativeAccountingBinding }, options);
+    const before = native.launch.mock.calls.length;
+    await expect(ports.launch(currentBenchLaunchRequest(options, handle, 'issue'))).rejects.toThrow(/host-owned gateway/);
+    expect(native.launch.mock.calls.length).toBe(before);
+  });
+  it.each(['cloned-route', 'foreign-loop', 'other-arm', 'other-seed', 'protocol-drift', 'wrong-model', 'wrong-effort', 'wrong-account', 'revoked'] as const)(
+    'refuses host gateway drift before native launch: %s', async changed => {
+      const b = budgetFixture(), stop = vi.fn(async () => {});
+      const hosted = await b.startNativeGateway(() => {}, async () => ({ port: 32102, stop } as never));
+      const opts = { ...options, preregistration: { preregHash: b.input.preregHash, config: b.input.protocol } };
+      const observations = { admit: fixture().ports.admit, observeIdentity: async () => null, ...hosted };
+      const args = currentBenchLaunchRequest(opts, handle, 'issue');
+      if (changed === 'cloned-route') observations.nativeGateway = { ...hosted.nativeGateway };
+      if (changed === 'foreign-loop') observations.nativeAccountingBinding = { ...hosted.nativeAccountingBinding, loopId: 'foreign' };
+      if (changed === 'other-arm') opts.armId = 'baseline';
+      if (changed === 'other-seed') opts.seed = 2;
+      if (changed === 'protocol-drift') opts.preregistration.config.grader.version = 'post-outcome';
+      if (changed === 'wrong-model') args.members![0].model = 'unregistered-model';
+      if (changed === 'wrong-effort') args.members![0].effort = 'low';
+      if (changed === 'wrong-account') args.members![0].account = 'foreign-account';
+      if (changed === 'revoked') b.revoke();
+      const before = native.launch.mock.calls.length;
+      try { await expect(liveCurrentSuBenchPorts({ workspaceId: options.workspaceId } as PapercuspUnifiedToolContext,
+        observations, opts).launch(args)).rejects.toThrow(/host-owned gateway/);
+        expect(native.launch.mock.calls.length).toBe(before);
+      } finally { await hosted.stop(); }
+      expect(stop).toHaveBeenCalledOnce();
+    });
+  it.each(['task', 'budget', 'revoked-during-admission'] as const)('refuses admission drift: %s', async changed => {
+    const b = budgetFixture();
+    const hosted = await b.startNativeGateway(() => {}, async () => ({ port: 32103, stop: async () => {} } as never));
+    const opts = { ...options, preregistration: { preregHash: b.input.preregHash, config: b.input.protocol } };
+    const admit = vi.fn(async () => { if (changed === 'revoked-during-admission') b.revoke();
+      return { admitted: true, receiptRef: 'private-host-admission' }; });
+    const ports = liveCurrentSuBenchPorts({ workspaceId: options.workspaceId } as PapercuspUnifiedToolContext,
+      { ...hosted, admit, observeIdentity: async () => null }, opts);
+    try { await expect(ports.admit(handle, changed === 'budget' ? { maxUsd: 4 } : b.input.protocol.arms[0].generationBudget,
+      changed === 'task' ? 'foreign-task' : 't1')).rejects.toThrow(/host assignment|host-owned gateway/);
+      expect(admit).toHaveBeenCalledTimes(changed === 'revoked-during-admission' ? 1 : 0);
+    } finally { await hosted.stop(); }
+  });
+  it('revokes a controller and closes a service that finishes startup after cancellation', async () => {
+    const b = budgetFixture(), stop = vi.fn(async () => {});
+    const start = vi.fn(async () => { b.revoke(); return { port: 32104, stop } as never; });
+    await expect(b.startNativeGateway(() => {}, start)).rejects.toThrow(/revoked during startup/);
+    expect(stop).toHaveBeenCalledOnce();
+    await expect(b.startNativeGateway(() => {}, start)).rejects.toThrow(/revoked/);
+    expect(start).toHaveBeenCalledOnce();
+    expect(await b.gateway.carryTrial.authorizeAttempt(b.attempt)).toBeNull();
+  });
+  it('allows only one service startup and revokes authority before an idempotent failing shutdown', async () => {
+    const b = budgetFixture();
+    const stop = vi.fn(async () => { throw new Error('private shutdown failed'); });
+    const start = vi.fn(async () => ({ port: 32105, stop } as never));
+    const opening = b.startNativeGateway(() => {}, start);
+    await expect(b.startNativeGateway(() => {}, start)).rejects.toThrow(/already started/);
+    const hosted = await opening;
+    const a = hosted.stop(), c = hosted.stop(); expect(a).toBe(c);
+    await expect(a).rejects.toThrow(/private shutdown failed/);
+    expect(stop).toHaveBeenCalledOnce(); expect(start).toHaveBeenCalledOnce();
+    expect(await b.gateway.carryTrial.authorizeAttempt(b.attempt)).toBeNull();
   });
   it('production ports derive identity from scoped observations instead of accepting a configured measurement', async () => {
     const { task, observation } = observedFixture();

@@ -107,6 +107,32 @@ describe('assignActionableWorkItems', () => {
     });
   });
 
+  it('atomically transfers a caller-held item to the dispatched target', async () => {
+    const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'wip', assignee));
+    const d = deps({
+      observe: vi.fn(async (id) => ({
+        item: issueWorkItem(id, 'wip', 'su-holder'),
+        available: false,
+        claimedBy: 'su-holder',
+      })),
+      claim,
+    });
+
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['EI-TRANSFER'], targetAgent: 'su-target', actor: 'su-holder', harness: 'email' },
+      d,
+    );
+
+    expect(result.assigned).toEqual(['EI-TRANSFER']);
+    expect(result.skipped).toEqual([]);
+    expect(result.executionWorkItemIds).toEqual(['EI-TRANSFER']);
+    expect(claim).toHaveBeenCalledWith('EI-TRANSFER', 'su-target', {
+      harness: 'email',
+      assignedBy: 'su-holder',
+      fromHolder: 'su-holder',
+    });
+  });
+
   it('claims only the current dependency frontier and preserves blocked descendants', async () => {
     const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
     const d = deps({
@@ -147,7 +173,11 @@ describe('assignActionableWorkItems', () => {
       })),
     });
 
-    const result = await assignActionableWorkItems({ workItemIds: ['WI-HELD'], targetAgent: 'agent-email-stable' }, d);
+    const result = await assignActionableWorkItems({
+      workItemIds: ['WI-HELD'],
+      targetAgent: 'agent-email-stable',
+      actor: 'agent-sender',
+    }, d);
 
     expect(claim).not.toHaveBeenCalled();
     expect(result.executionWorkItemIds).toEqual([]);

@@ -40,4 +40,9 @@ export async function planAuditHandler(req: Request, _ctx: RouteContext): Promis
   }
 }
 
+// PlanAuditPane uses native fetch for starts, history, and the sandboxed report.
+// Like the other owner-desktop admin surfaces, it must remain reachable during
+// the cookie-less webview HTTP fallback (EI-338). POST is protected both by the
+// route-stack browser policy and the handler's requireAllowedOriginOr403 guard.
+// Remote access still passes the host's verified, workspace-bound cookie gate.
 export default [defineTool({ method: 'POST', path: '/admin/plan-audit', auth: { trust: ['verified', 'trusted', 'unverified-loopback'] }, handler: planAuditHandler }), defineTool({ method: 'GET', path: '/admin/plan-audit', auth: { trust: ['verified', 'trusted', 'unverified-loopback'] }, handler: planAuditHandler })];

@@ -231,12 +231,23 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     });
   });
 
-  it('classifies scratch-reference size refusals from the reported error code', () => {
+  it('classifies scratch-reference size refusals from the reported error code or reason status', () => {
     expect(normalizeSuspectedToolFailure({
       toolName: 'capability:read',
       errorCode: 'scratch_line_window_too_large',
       status: 'handler_error',
       message: 'A tail:45 read of the consult result scratch spill was refused because the selected line window exceeded the response-size limit; the tool advised smaller line windows or byte paging.',
+    }).class).toBe('caller');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:read',
+      status: 'scratch_line_window_too_large',
+      message: 'A line-window read of a scratch spill containing a long JSON body was refused because the selected text exceeded the response-size limit. The response recommends smaller windows or byte_offset+byte_limit; an exact byte-page read succeeded.',
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'Reading the spill with a reasonable line window returns its contents.',
+        actual: 'The line-window call returned scratch_line_window_too_large; the documented byte-page route returned the bytes.',
+      },
     }).class).toBe('caller');
   });
 
@@ -245,6 +256,12 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       toolName: 'capability:read',
       errorCode: 'mixed_window_modes',
       status: 'handler_error',
+      message: 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.',
+    }).class).toBe('caller');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:read',
+      status: 'mixed_window_modes',
       message: 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.',
     }).class).toBe('caller');
   });

@@ -781,6 +781,26 @@ describe('ptool call deadlines', () => {
       .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
+  it('keeps the client alive for unconfirmed release-cut reclaim previews only', () => {
+    const preview = { op: 'reclaim', confirm: false };
+    expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: preview }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:cut', { op: 'reclaim' }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+
+    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:cut',
+      args: { op: 'reclaim', confirm: true },
+    })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:cut', { op: 'status' }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: false }))
+      .toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-22598752399389413: coord:wake has no explicit timeoutSec and its

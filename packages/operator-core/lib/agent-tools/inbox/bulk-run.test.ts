@@ -940,6 +940,26 @@ describe('terminalDependencies plan-item wire contract (WI-41370)', () => {
     expect(String(calls[1]!.args.rationale ?? '').trim()).not.toBe('');
   });
 
+  it('preserves a failed plans:set-status member detail from its outer bulk envelope', async () => {
+    const { terminalDependencies } = await import('./bulk-run');
+    const deps = terminalDependencies({
+      call: (async () => ({
+        ok: false,
+        results: [{ ok: false, item: 'P-010', error: 'unexpected_status', detail: 'current status is shipped' }],
+        counts: { ok: 0, failed: 1 },
+      })) as never,
+    });
+
+    await expect(
+      deps.setPlanItemStatus({
+        slug: 'a-plan',
+        itemId: 'P-010',
+        status: 'dropped',
+        rationale: 'the work is moot',
+      }),
+    ).rejects.toThrow('plans:set-status: unexpected_status: current status is shipped');
+  });
+
   it('retractStandingFact calls facts:retract with the exact projected coordinates', async () => {
     const { terminalDependencies } = await import('./bulk-run');
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];

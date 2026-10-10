@@ -172,6 +172,13 @@ describe('accepted Codex provider completion evidence', () => {
   it('refuses non-object SSE payloads after a provider completion', () => {
     expect(() => decode('openai-responses', [{ type: 'response.completed', response }, []])).toThrow();
   });
+  it('keeps completion evidence invalid after a caller catches a malformed trailing event', () => {
+    const decoder = createCodexProviderCompletionDecoder('text/event-stream');
+    decoder.push(Buffer.from(frame({ type: 'response.completed', response })));
+    expect(() => decoder.push(Buffer.from(frame({ type: 'response.failed' })))).toThrow();
+    expect(() => decoder.finish()).toThrow();
+    expect(() => decoder.push(Buffer.from('data: [DONE]\n\n'))).toThrow();
+  });
 });
 
 async function writeAuth(tokens: Record<string, unknown>, extra: Record<string, unknown> = {}) {

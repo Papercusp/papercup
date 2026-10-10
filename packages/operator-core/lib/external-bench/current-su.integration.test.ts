@@ -12,6 +12,7 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
   liveCurrentBenchNativeCostReader, currentBenchLaunchRequest,
   currentBenchAssignmentId, currentBenchGatewayController,
+  currentBenchProviderAuthenticator, currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
 import { readBenchRunCost, type BenchHarnessOps } from './bench-harness-live';
@@ -24,6 +25,8 @@ import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import { registerLearningLoop, reserveLearningSpend, recordLearningSpendAttemptResult, getLearningSpendPositions } from '../learning-governor/store';
 import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
+import { startGatewayService } from '../inference-gateway/launch';
+import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>() }));
@@ -41,6 +44,7 @@ const ctx = { workspaceId, authenticatedPrincipal: { retained: true } } as unkno
 let sql: postgres.Sql;
 let repoRoot: string;
 const roots: string[] = [];
+const gateways: Array<{ stop(): Promise<void> }> = [];
 const scope = () => ({ workspaceId, sql: sql as never });
 const request = {
   blueprintId: 'su', task: { benchmark: 'swe-bench-pro', instanceId: 't1', problemStatement: 'Fix the public issue.', graderMeta: {} },
@@ -66,8 +70,15 @@ async function execution(committed = true) {
   const admit = vi.fn(async () => ({ admitted: true, receiptRef: 'budget:private-fixture' }));
   // Unknown native identity stays unknown; these tests prove protocol/SQL binding,
   // while actual native client/serving observation has its own acceptance clause.
-  const ports = liveCurrentSuBenchPorts(ctx, { admit, observeIdentity: async () => null,
-    nativeGateway: { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) } }, opts, scope());
+  const controller = currentBenchGatewayController({ workspaceId, loopId: 'private-host-loop', token: 'a'.repeat(64),
+    preregHash: frozen.preregHash, protocol: config, armId: opts.armId, taskId: 't1', seed: opts.seed,
+    resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
+      wallClockMs: 1000, wallClockMsPerArm: 100,
+      armIds: config.arms.map(a => currentBenchAssignmentId(config.runId, a.id, 't1', 1)) },
+    authenticateProvider: async () => null });
+  const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32101, stop: async () => {} } as never));
+  gateways.push(hosted);
+  const ports = liveCurrentSuBenchPorts(ctx, { admit, observeIdentity: async () => null, ...hosted }, opts, scope());
   const lifecycle: BenchHarnessOps = {
     now: () => 0, createHarness: async () => handle,
     addFeature: async () => { await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${handle.slug}, ${handle.featureId}, 'done')`; },
@@ -240,6 +251,82 @@ describe('production native accounting with private PG and full source bytes', (
     expect(positions.positions.unsettledUsd).toBe(0.003);
     expect(positions.census).toMatchObject({ status: 'complete', reservations: [{ status: 'open' }] });
   });
+  it('composes the issued host HTTP route, authenticated provider, SQL admission and native source census', async () => {
+    const f = await costFixture(), protocol = currentProtocolFixture('PRIVATE', 60_000);
+    protocol.maxInFlightUsd = 0.00012;
+    protocol.priceSchedule.rates[0].inputTokenCeiling = 100;
+    protocol.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract('configured-alias', 100);
+    f.opts.preregistration.config = protocol;
+    const loopId = `private-host-http:${randomUUID()}`, key = join(repoRoot, 'private-provider-key');
+    writeFileSync(key, 'PRIVATE_HOST_PROVIDER_CREDENTIAL', { mode: 0o600 });
+    const account = { id: 'private-host-account', provider: 'codex' as const, credentialRef: `token:${key}` };
+    const resources = { inputTokens: 1000, outputTokens: 10, requestsPerArm: 50, usdPerArm: 3,
+      maxOpenUsd: protocol.maxInFlightUsd, wallClockMs: 60_000, wallClockMsPerArm: 60_000,
+      armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)) };
+    await registerLearningLoop(sql, { workspaceId, loopId, budgetKind: 'lifetime', budgetUsd: 60,
+      enabled: true, meta: { reservationBinding: f.opts.preregistration.preregHash, reservationResourceBudget: resources } });
+    const count = vi.fn<typeof fetch>(async () => Response.json({ object: 'response.input_tokens', input_tokens: 100 }));
+    const reader = currentBenchOpenAiInputReader({ model: 'configured-alias', inputTokens: 100 }, { fetch: count });
+    const auth = currentBenchProviderAuthenticator({ workspaceId, preregHash: f.opts.preregistration.preregHash,
+      protocol, armId: 'papercusp', taskId: 't1', seed: 1, readNativeInputCeiling: reader.read }, {
+      readAccount: async (_workspace, id) => id === account.id ? account : null,
+      credentialResolver: (_provider, ref) => makeBearerCredentialResolver(ref),
+    });
+    const authenticate = vi.fn(auth.authenticateProvider);
+    const controller = currentBenchGatewayController({ workspaceId, loopId, token: 'h'.repeat(64),
+      preregHash: f.opts.preregistration.preregHash, protocol, resources, armId: 'papercusp', taskId: 't1', seed: 1,
+      authenticateProvider: authenticate }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    const provider = vi.fn<typeof fetch>(async (target, init) => {
+      expect(String(target)).toBe('https://api.openai.com/v1/responses');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer PRIVATE_HOST_PROVIDER_CREDENTIAL');
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'configured-alias', max_output_tokens: 10 });
+      const beforeSend = await getLearningSpendPositions(sql, { workspaceId, loopId, includeReservations: true });
+      expect(beforeSend.positions.unsettledUsd).toBe(0.00012);
+      expect(beforeSend.census).toMatchObject({ status: 'complete', reservations: [{ status: 'open' }] });
+      return Response.json({ id: 'host-http-provider-response', model: 'configured-alias', status: 'completed',
+        reasoning: { effort: 'high' }, output: [],
+        usage: { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: 20, cache_write_tokens: 0 } } });
+    });
+    const hosted = await controller.startNativeGateway(() => {}, options => startGatewayService({ ...options,
+      resolveAccounts: async () => [{ accountId: account.id, credentialRef: account.credentialRef, source: 'env' }],
+      resolveLocalBackends: async () => [], observePool: () => () => {}, fetchImpl: provider,
+      refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0 }));
+    const ports = liveCurrentSuBenchPorts(ctx, { ...hosted, admit: async () => ({ admitted: true, receiptRef: 'host-http:admit' }),
+      observeIdentity: async () => null }, f.opts, scope());
+    const send = () => fetch(`${hosted.nativeGateway.baseURL}/v1/responses`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${hosted.nativeGateway.token}`,
+        'x-papercusp-owner': f.solver.ownerId },
+      body: JSON.stringify({ model: 'configured-alias', input: 'private benchmark task', reasoning: { effort: 'high' },
+        client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ thread_id: f.solver.nativeSessionId, turn_id: f.solver.nativeTurnId }) } }),
+    });
+    try {
+      await ports.launch(currentBenchLaunchRequest(f.opts, handle, 'private task'));
+      expect(native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
+      const accepted = await send(), acceptedBody = await accepted.text();
+      const authority = await authenticate.mock.results.at(-1)?.value;
+      const lastAttempt = authenticate.mock.calls.at(-1)?.[0];
+      expect(accepted.status, JSON.stringify({ body: acceptedBody, counted: count.mock.calls.length,
+        authenticated: authenticate.mock.calls.length, target: lastAttempt?.target,
+        transport: lastAttempt?.transport, accountId: lastAttempt?.accountId,
+        bodyFields: lastAttempt ? Object.keys(JSON.parse(lastAttempt.body)) : [],
+        authority: authority ? { inputTokens: authority.inputTokens, outputTokens: authority.outputTokens, requestedUsd: authority.requestedUsd } : null,
+        positions: (await getLearningSpendPositions(sql, { workspaceId, loopId })).positions })).toBe(200);
+      expect(provider).toHaveBeenCalledOnce();
+      expect(await ports.collectCost!({ handle, workspaceId })).toMatchObject({ costUsdMeasurementMissing: false,
+        armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: 0.002 } } });
+      const denied = await send(); expect(denied.status).toBe(403); await denied.text();
+      expect(provider).toHaveBeenCalledOnce();
+      const final = await getLearningSpendPositions(sql, { workspaceId, loopId, includeReservations: true });
+      expect(final.positions.unsettledUsd).toBe(0.00012);
+      expect(final.census).toMatchObject({ status: 'complete', reservations: [{ status: 'open', usedUsd: 0 }] });
+      if (final.census?.status !== 'complete') throw new Error('Incomplete private SQL census');
+      const note = final.census.reservations[0].note!;
+      expect(note).not.toContain('PRIVATE_HOST_PROVIDER_CREDENTIAL');
+      expect(JSON.parse(note)).toMatchObject({ nativeGatewayAttemptResult: { outcome: 'response-completed',
+        providerCompletion: { responseId: 'host-http-provider-response' } } });
+      expect(count).toHaveBeenCalledTimes(2);
+    } finally { await hosted.stop(); controller.revoke(); auth.revoke(); reader.revoke(); }
+  });
   it('joins every recovered native file and unlabeled reviewer request to the same exact assignment', async () => {
     const f = await costFixture(), accounting = await f.accountingFixture();
     const recovered = await f.addSource(f.solver.home, f.solver.ownerId);
@@ -337,6 +424,7 @@ describe('production native accounting with private PG and full source bytes', (
 });
 let hostProvider: http.Server | undefined;
 afterEach(async () => {
+  for (const gateway of gateways.splice(0)) await gateway.stop();
   await hostGateway?.close(); hostGateway = undefined;
   if (hostProvider) await new Promise<void>(resolve => hostProvider!.close(() => resolve()));
   hostProvider = undefined; resetGovernorRegistry();
@@ -473,7 +561,8 @@ describe('host-backed benchmark observation with private physical IO', () => {
     expect(await f.read(f.task)).toBeNull();
   });
 });
-afterAll(async () => { await sql?.end({ timeout: 5 }); for (const root of roots) rmSync(root, { recursive: true, force: true }); });
+afterAll(async () => { for (const gateway of gateways) await gateway.stop();
+  await sql?.end({ timeout: 5 }); for (const root of roots) rmSync(root, { recursive: true, force: true }); });
 
 describe('production current benchmark protocol and private completion bindings', () => {
   it('uses the committed protocol, native receipt, private work-item completion and scoped cleanup together', async () => {
