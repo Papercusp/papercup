@@ -169,6 +169,57 @@ beforeEach(() => {
 });
 
 describe('scorecards:emit spec-test-adequacy replay guard', () => {
+  it.each(['fail', 'unknown'])('retains the %s replay explanation and repair guidance without filing a card', async (rating) => {
+    const replay = {
+      ...blockedReplay,
+      rows: [{
+        ...blockedReplay.rows[0],
+        ratings: {
+          'plan-class-risk-floor': {
+            rating,
+            evidence: 'Native environment measurement is unavailable for binding 32838.',
+            suggestion: 'Capture a current native environment witness before certifying this layer.',
+          },
+        },
+      }],
+    };
+    const dispatchTool = vi.fn().mockResolvedValue(replay);
+    const result = await emitScorecard(emitArgs(), { createdBy: 'su-grader' }, { dispatchTool });
+
+    expect(result).toMatchObject({ ok: false, code: 'invalid_spec_test_adequacy_binding' });
+    expect(result.error).toContain('Native environment measurement is unavailable for binding 32838.');
+    expect(result.error).toContain('Capture a current native environment witness');
+    expect(getRubricPlanRevision).not.toHaveBeenCalled();
+    expect(listScorecards).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('bounds oversized replay diagnostics and labels their truncation in the refusal', async () => {
+    const replay = {
+      ...blockedReplay,
+      rows: [{
+        ...blockedReplay.rows[0],
+        ratings: {
+          'plan-class-risk-floor': {
+            rating: 'fail',
+            evidence: 'Evidence context '.repeat(1000),
+            suggestion: 'Repair context '.repeat(1000),
+          },
+        },
+      }],
+    };
+    const result = await emitScorecard(emitArgs(), { createdBy: 'su-grader' }, {
+      dispatchTool: vi.fn().mockResolvedValue(replay),
+    });
+
+    expect(result).toMatchObject({ ok: false, code: 'invalid_spec_test_adequacy_binding' });
+    expect(result.error).toContain('Evidence context');
+    expect(result.error).toContain('Repair context');
+    expect(result.error).toContain('[truncated]');
+    expect(result.error!.length).toBeLessThan(3000);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('rejects a pass-like card when the exact replay is unknown and wouldBlock includes the criterion', async () => {
     const dispatchTool = vi.fn().mockResolvedValue(blockedReplay);
 

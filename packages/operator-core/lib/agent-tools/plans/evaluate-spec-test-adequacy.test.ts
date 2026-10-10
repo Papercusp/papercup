@@ -768,8 +768,12 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     const [compact] = summary.rows;
     expect(compact).not.toHaveProperty('scorecardDraft');
     expect(compact).not.toHaveProperty('evidenceRefs');
-    for (const entry of Object.values(compact.ratings) as Array<Record<string, unknown>>) {
-      expect(entry).not.toHaveProperty('evidence');
+    for (const [criterion, entry] of Object.entries(compact.ratings) as Array<[string, Record<string, unknown>]>) {
+      if (entry.rating === 'pass' || entry.rating === 'not-applicable') {
+        expect(entry).not.toHaveProperty('evidence');
+      } else {
+        expect(entry.evidence).toBe(full.rows[0].ratings[criterion].evidence);
+      }
     }
 
     // Full: the drafts and evidence text, and no ref (there is nothing left to fetch).
@@ -792,6 +796,21 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
 
     // And it is materially smaller.
     expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length / 2);
+  });
+
+  it('bounds blocked-criterion explanations and marks incomplete evidence in compact replay', async () => {
+    listClauses.mockResolvedValue([{ ...clause('active'), requiredTestLayers: ['unmeasured-layer-'.repeat(200)] }]);
+    const base = { harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship', specIds: ['SPEC-001'] };
+    const summary = await call(base);
+    const full = await call({ ...base, detail: 'full' });
+    const explanation = summary.rows[0].ratings['correct-layer'];
+
+    expect(explanation.rating).toBe('fail');
+    expect(explanation.evidence).toContain('Required layer');
+    expect(explanation.evidence.length).toBeLessThanOrEqual(1200);
+    expect(explanation.evidenceTruncated).toBe(true);
+    expect(full.rows[0].ratings['correct-layer'].evidence.length).toBeGreaterThan(1200);
+    expect(summary.rows[0].wouldBlock).toEqual(full.rows[0].wouldBlock);
   });
 
   it('preserves exact work-item, evidence-ref, and plan-item selectors in the emitted rerun recipe', async () => {

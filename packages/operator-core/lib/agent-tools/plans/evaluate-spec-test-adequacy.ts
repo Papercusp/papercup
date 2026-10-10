@@ -28,6 +28,7 @@ import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 
 type EvaluatedRow = ReturnType<typeof evaluateSpecTestAdequacy>;
 const PASS_LIKE = new Set(['pass', 'not-applicable']);
+const COMPACT_FAILURE_EVIDENCE_CHARS = 1200;
 
 /**
  * P-007 (RSR-P-007-A): the per-clause verdict table a summary read returns. It keeps every
@@ -35,7 +36,8 @@ const PASS_LIKE = new Set(['pass', 'not-applicable']);
  * (specId / specRevision / specFingerprint / ratings[].rating / wouldBlock) so a replay
  * reads the SAME verdicts from either detail level; it drops only the prose — each
  * criterion's evidence text and the scorecardDraft — which is what made one evaluation
- * ~138 KB. A non-passing criterion keeps its short `suggestion`, the actionable part.
+ * ~138 KB. A non-passing criterion keeps bounded evidence and its `suggestion`,
+ * so the emit refusal can retain the reason from this exact measurement.
  */
 function summaryRow(row: EvaluatedRow) {
   return {
@@ -53,8 +55,13 @@ function summaryRow(row: EvaluatedRow) {
     ratings: Object.fromEntries(
       Object.entries(row.ratings).map(([criterion, entry]) => [
         criterion,
-        !PASS_LIKE.has(entry.rating) && entry.suggestion
-          ? { rating: entry.rating, suggestion: entry.suggestion }
+        !PASS_LIKE.has(entry.rating)
+          ? {
+              rating: entry.rating,
+              evidence: entry.evidence.slice(0, COMPACT_FAILURE_EVIDENCE_CHARS),
+              ...(entry.evidence.length > COMPACT_FAILURE_EVIDENCE_CHARS ? { evidenceTruncated: true } : {}),
+              ...(entry.suggestion ? { suggestion: entry.suggestion } : {}),
+            }
           : { rating: entry.rating },
       ]),
     ),

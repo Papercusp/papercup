@@ -940,7 +940,12 @@ async function validateSpecTestAdequacyReplay(
 
   const replayRatings =
     row.ratings && typeof row.ratings === 'object' && !Array.isArray(row.ratings)
-      ? (row.ratings as Record<string, { rating?: unknown }>)
+      ? (row.ratings as Record<string, {
+          rating?: unknown;
+          evidence?: unknown;
+          evidenceTruncated?: unknown;
+          suggestion?: unknown;
+        }>)
       : {};
   const wouldBlock = Array.isArray(row.wouldBlock)
     ? row.wouldBlock.filter((key): key is string => typeof key === 'string')
@@ -950,12 +955,21 @@ async function validateSpecTestAdequacyReplay(
     const replayVerdict =
       replayRating && typeof replayRating.rating === 'string' ? ratingVerdict(replayRating.rating) : null;
     if (replayVerdict !== 'pass' || wouldBlock.includes(criterion)) {
+      // Preserve the reason from this exact replay. Re-running the evaluator later
+      // can measure a different evidence cohort and cannot reconstruct this refusal.
+      const diagnostic = (['evidence', 'suggestion'] as const).flatMap((key) => {
+        const value = replayRating?.[key];
+        if (typeof value !== 'string' || !value.trim()) return [];
+        const truncated = value.length > 1200 || (key === 'evidence' && replayRating.evidenceTruncated === true);
+        return [`${key}: ${value.slice(0, 1200)}${truncated ? ' [truncated]' : ''}`];
+      }).join('; ');
       return {
         code: 'invalid_spec_test_adequacy_binding',
         error:
           `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot claim ${criterion}='${submitted.rating}' ` +
           `when the exact evaluator replay returns '${typeof replayRating?.rating === 'string' ? replayRating.rating : 'unknown'}' ` +
           `${wouldBlock.includes(criterion) ? `and wouldBlock includes '${criterion}'` : ''}; ` +
+          (diagnostic ? `${diagnostic}; ` : '') +
           'use the evaluator ratings returned by plans:evaluate-spec-test-adequacy',
       };
     }
