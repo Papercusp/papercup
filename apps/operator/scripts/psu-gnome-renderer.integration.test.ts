@@ -42,6 +42,10 @@ describe.skipIf(!nativeAvailable)('isolated GNOME renderer integration', () => {
       expect(row.sibling_ping_after_resize_ms.every((ms: number) => Number.isFinite(ms) && ms >= 0)).toBe(true);
       if (!row.unlimited) expect(Math.max(...row.sibling_ping_after_resize_ms)).toBeLessThan(250);
     }
+    console.info('CUSTOMER_TERMINAL_STRESS_JSON=' + JSON.stringify({
+      kind: 'gnome-history-reflow', lines: 60000, displayHistoryLimit: 10000,
+      siblingReplyBoundMs: 250, rows,
+    }));
   }, 50_000);
 
   it('keeps a new standard GNOME window in a separate renderer from preserved old history', async () => {
@@ -55,5 +59,8 @@ describe.skipIf(!nativeAvailable)('isolated GNOME renderer integration', () => {
       else expect(row.sibling_server_pid).toBe(row.server_pid);
       expect(row.default_still_unlimited).toBe(true);
     }
+    console.info('CUSTOMER_TERMINAL_STRESS_JSON=' + JSON.stringify({
+      kind: 'gnome-renderer-isolation', lines: 20000, displayHistoryLimit: 10000, rows,
+    }));
   }, 50_000);
 });
