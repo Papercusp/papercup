@@ -685,6 +685,9 @@ async function runPrivatePlansPage(page: Page, context: BrowserContext, input: P
   await context.unroute('**/api/admin/plans/set-archived');
   const accepted = await confirm();
   assert.equal(accepted.status, 200, JSON.stringify(accepted));
+  assert.deepEqual(accepted.body, { ok: true, results: [{ ok: true, slug: plans.selectedSlug,
+    harnessSlug: plans.harness, archived: true }], counts: { ok: 1, failed: 0 } },
+  'HTTP success must include the exact successful plan-archive receipt');
   await assertState(true);
   await selected.waitFor({ state: 'detached' }); await neighbor.waitFor();
   await page.reload(); await neighbor.waitFor();
