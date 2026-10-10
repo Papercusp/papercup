@@ -1203,7 +1203,11 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         ) {
           resumes++;
         }
-        await markDeliveryDelivered(headline.id, outcome.channel, group.length, outcome.turnProof);
+        // P-006/D-004: forward the executor's turn-start attestation only when it has one, so an
+        // unattested delivery is booked exactly as before (awaiting the pump's pickup sweep).
+        await (outcome.turnProof
+          ? markDeliveryDelivered(headline.id, outcome.channel, group.length, outcome.turnProof)
+          : markDeliveryDelivered(headline.id, outcome.channel, group.length));
         recordSettledDeliveryStats(stats, outcome.channel);
         if (siblings.length > 0) {
           await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);

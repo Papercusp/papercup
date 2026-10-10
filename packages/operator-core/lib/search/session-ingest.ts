@@ -2482,7 +2482,11 @@ export async function recorrelatePromptOriginStampsOnce(
        AND encode(sha256(convert_to(
              regexp_replace(regexp_replace(turns.text, E'\\r\\n?', E'\\n', 'g'), '^\\s+|\\s+$', '', 'g'),
              'UTF8')), 'hex') = stamps.prompt_hash
-       -- A stamp already spent on a hook-authenticated row stays spent.
+       -- A stamp already spent on a hook-authenticated row stays spent. A
+       -- promoted row spends only the stamp NEAREST to it (WI-10008183): an
+       -- identical prompt the owner repeated within the window has its own
+       -- stamp, which the earlier promoted turn must not mask. Prefilter only;
+       -- replayPromptOriginClusters decides.
        AND NOT EXISTS (
          SELECT 1
            FROM harness_shared.session_turns AS spent
@@ -2495,6 +2499,16 @@ export async function recorrelatePromptOriginStampsOnce(
             AND encode(sha256(convert_to(
                   regexp_replace(regexp_replace(spent.text, E'\\r\\n?', E'\\n', 'g'), '^\\s+|\\s+$', '', 'g'),
                   'UTF8')), 'hex') = stamps.prompt_hash
+            AND NOT EXISTS (
+              SELECT 1
+                FROM harness_shared.session_prompt_origin_stamps AS closer
+               WHERE closer.workspace_id = stamps.workspace_id
+                 AND closer.source_kind = stamps.source_kind
+                 AND closer.session_id = stamps.session_id
+                 AND closer.prompt_hash = stamps.prompt_hash
+                 AND abs(extract(epoch FROM (spent.ts - closer.submitted_at)))
+                     < abs(extract(epoch FROM (spent.ts - stamps.submitted_at)))
+            )
        )
      ORDER BY turns.ts, turns.session_id, turns.turn_idx
      LIMIT ${limit}
@@ -2503,7 +2517,6 @@ export async function recorrelatePromptOriginStampsOnce(
 
   const rowsByKey = new Map<string, TurnRow>();
   const storedVersion = new Map<TurnRow, number>();
-  const stampsByKey = new Map<string, PromptOriginStamp>();
   for (const p of pairs) {
     const rowKey = [p.workspace_id, p.source_kind, p.session_id, p.turn_idx].join('\u0000');
     if (!rowsByKey.has(rowKey)) {
@@ -2527,19 +2540,9 @@ export async function recorrelatePromptOriginStampsOnce(
       rowsByKey.set(rowKey, row);
       storedVersion.set(row, Number(p.version));
     }
-    const stampKey = [p.source_kind, p.session_id, p.prompt_hash, new Date(p.submitted_at).getTime()].join('\u0000');
-    if (!stampsByKey.has(stampKey)) {
-      stampsByKey.set(stampKey, {
-        source_kind: p.source_kind,
-        session_id: p.session_id,
-        prompt_hash: p.prompt_hash,
-        submitted_at: p.submitted_at,
-        expires_at: p.expires_at,
-      });
-    }
   }
   const rows = [...rowsByKey.values()];
-  correlatePromptOriginStamps(rows, [...stampsByKey.values()]);
+  await replayPromptOriginClusters(sql, workspace, rows);
   const promoted = rows.filter((row) => row.turn_origin === HOOK_AUTHENTICATED_PROMPT_ORIGIN);
   if (promoted.length) {
     await sql`
@@ -2565,6 +2568,93 @@ export async function recorrelatePromptOriginStampsOnce(
     `;
   }
   return { scanned: rows.length, promoted: promoted.length, more: pairs.length === limit };
+}
+
+/**
+ * Decide recorrelation per (source, session, prompt hash) cluster
+ * (WI-10008183).
+ *
+ * The SQL prefilter cannot know which stamp an already-promoted row consumed,
+ * so it can pass a candidate whose only stamp really belongs to a promoted
+ * sibling. Here the cluster is replayed through correlatePromptOriginStamps,
+ * the same one-row-per-stamp rule insertTurns uses: already-promoted rows take
+ * their nearest stamps FIRST, and candidates receive only stamps left over. If
+ * the promoted rows alone already over-subscribe the cluster's stamps, no
+ * candidate in it is promoted. The pass may still miss a row; it never
+ * promotes more rows in a cluster than the hook stamped.
+ *
+ * Mutates `rows`: a candidate that loses keeps its unenrolled verdict.
+ */
+async function replayPromptOriginClusters(sql: Sql, workspace: string, rows: TurnRow[]): Promise<void> {
+  const clusterKey = (sourceKind: string, sessionId: string, hash: string) =>
+    [sourceKind, sessionId, hash].join('\u0000');
+  const candidatesByCluster = new Map<string, TurnRow[]>();
+  for (const row of rows) {
+    if (row.turn_origin_verdict !== UNENROLLED_ORIGIN_VERDICT || !row.prompt_hash) continue;
+    const key = clusterKey(row.source_kind, row.session_id, row.prompt_hash);
+    const list = candidatesByCluster.get(key) ?? [];
+    list.push(row);
+    candidatesByCluster.set(key, list);
+  }
+  if (!candidatesByCluster.size) return;
+  const clusters = [...candidatesByCluster.values()].map((list) => list[0]);
+  const kinds = sql.array(clusters.map((row) => row.source_kind));
+  const sessions = sql.array(clusters.map((row) => row.session_id));
+  const hashes = sql.array(clusters.map((row) => row.prompt_hash!));
+  const windowMs = PROMPT_ORIGIN_MATCH_WINDOW_MS;
+  const stamps = await sql<PromptOriginStamp[]>`
+    SELECT s.source_kind, s.session_id, s.prompt_hash, s.submitted_at, s.expires_at
+      FROM UNNEST(${kinds}::text[], ${sessions}::text[], ${hashes}::text[]) AS c(source_kind, session_id, prompt_hash)
+      JOIN harness_shared.session_prompt_origin_stamps AS s
+        ON s.workspace_id = ${workspace}
+       AND s.source_kind = c.source_kind AND s.session_id = c.session_id AND s.prompt_hash = c.prompt_hash
+  `;
+  const spent = await sql<Array<{ source_kind: string; session_id: string; turn_idx: number; ts: Date | string; prompt_hash: string }>>`
+    SELECT DISTINCT t.source_kind, t.session_id, t.turn_idx, t.ts, c.prompt_hash
+      FROM UNNEST(${kinds}::text[], ${sessions}::text[], ${hashes}::text[]) AS c(source_kind, session_id, prompt_hash)
+      JOIN harness_shared.session_prompt_origin_stamps AS s
+        ON s.workspace_id = ${workspace}
+       AND s.source_kind = c.source_kind AND s.session_id = c.session_id AND s.prompt_hash = c.prompt_hash
+      JOIN harness_shared.session_turns AS t
+        ON t.workspace_id IN ('default', ${workspace})
+       AND t.source_kind = c.source_kind AND t.session_id = c.session_id
+       AND t.ts BETWEEN s.submitted_at - (${windowMs}::int * interval '1 millisecond')
+                    AND s.submitted_at + (${windowMs}::int * interval '1 millisecond')
+     WHERE t.speaker = 'user'
+       AND t.turn_origin = ${HOOK_AUTHENTICATED_PROMPT_ORIGIN}
+       AND encode(sha256(convert_to(
+             regexp_replace(regexp_replace(t.text, E'\\r\\n?', E'\\n', 'g'), '^\\s+|\\s+$', '', 'g'),
+             'UTF8')), 'hex') = c.prompt_hash
+  `;
+  const stampsByCluster = new Map<string, PromptOriginStamp[]>();
+  for (const stamp of stamps) {
+    const key = clusterKey(stamp.source_kind, stamp.session_id, stamp.prompt_hash);
+    stampsByCluster.set(key, [...(stampsByCluster.get(key) ?? []), stamp]);
+  }
+  const spentByCluster = new Map<string, TurnRow[]>();
+  for (const s of spent) {
+    const key = clusterKey(s.source_kind, s.session_id, s.prompt_hash);
+    // A stand-in in the exact state correlation accepts, so it can claim the
+    // stamp it consumed when it was promoted.
+    const standIn: TurnRow = {
+      workspace_id: workspace, source_kind: s.source_kind, session_id: s.session_id,
+      turn_idx: Number(s.turn_idx), ts: new Date(s.ts).toISOString(),
+      owner: null, harness_slug: null, cwd: null, speaker: 'user', text: '',
+      turn_origin: null, turn_origin_verdict: UNENROLLED_ORIGIN_VERDICT,
+      turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION, prompt_hash: s.prompt_hash,
+    };
+    spentByCluster.set(key, [...(spentByCluster.get(key) ?? []), standIn]);
+  }
+  for (const [key, candidates] of candidatesByCluster) {
+    const already = (spentByCluster.get(key) ?? []).sort((a, b) => Date.parse(a.ts!) - Date.parse(b.ts!));
+    correlatePromptOriginStamps([...already, ...candidates], stampsByCluster.get(key) ?? []);
+    if (already.some((row) => row.turn_origin !== HOOK_AUTHENTICATED_PROMPT_ORIGIN)) {
+      for (const row of candidates) {
+        row.turn_origin = null;
+        row.turn_origin_verdict = UNENROLLED_ORIGIN_VERDICT;
+      }
+    }
+  }
 }
 
 interface IngestState {

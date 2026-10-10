@@ -88,6 +88,43 @@ it('recorrelates older-version unenrolled rows with their hook stamp, re-derived
       assert.equal(result.promoted, 3);
       // Spent stamps stay spent.
       assert.equal((await recorrelatePromptOriginStampsOnce(sql, 100)).promoted, 0);
+
+      // WI-10008183: a stamp is spent only by the promoted row it belongs to.
+      // Turns go in before any stamp, so insert-time correlation stays out of it.
+      const repeatText = 'continue where you left off';
+      const at = (ms) => new Date(now.getTime() + ms);
+      const clusterTurn = (session, idx, ms) => ({ workspace_id: workspace, source_kind: 'claude',
+        session_id: session, turn_idx: idx, ts: at(ms).toISOString(), owner: 'synthetic-owner',
+        harness_slug: 'synthetic', cwd: null, speaker: 'user', text: repeatText, prompt_hash: promptOriginHash(repeatText) });
+      // repeat: the owner sent the same prompt twice, 110 s apart; each submit has its own stamp.
+      // dup:    two identical turns but ONE stamp, which the promoted turn consumed.
+      // over:   two promoted turns already hold both stamps; a third turn near stamp 2 gets none.
+      const layout = { 'cluster-repeat': [[-110000, true], [0, false]], 'cluster-dup': [[-37000, false], [0, true]],
+        'cluster-over': [[0, true], [36000, true], [160000, false]] };
+      const stampsAt = { 'cluster-repeat': [-109950, 50], 'cluster-dup': [50], 'cluster-over': [30000, 150000] };
+      for (const [session, turnsAt] of Object.entries(layout)) {
+        await insertTurns(sql, turnsAt.map(([ms], idx) => clusterTurn(session, idx, ms)));
+        for (const [idx, [, promoted]] of turnsAt.entries()) {
+          if (!promoted) continue;
+          await sql\`UPDATE harness_shared.session_turns
+            SET turn_origin = 'hook-authenticated-prompt', turn_origin_verdict = 'owner-typed'
+            WHERE workspace_id = \${workspace} AND session_id = \${session} AND turn_idx = \${idx}\`;
+        }
+        for (const ms of stampsAt[session]) {
+          await sql\`INSERT INTO harness_shared.session_prompt_origin_stamps
+            (workspace_id, source_kind, session_id, prompt_hash, submitted_at, expires_at)
+            VALUES (\${workspace}, 'claude', \${session}, \${promptOriginHash(repeatText)}, \${at(ms)}, \${at(ms + 600000)})\`;
+        }
+      }
+      const clustered = await recorrelatePromptOriginStampsOnce(sql, 100);
+      const clusterRows = await sql\`SELECT session_id, turn_idx, turn_origin_verdict FROM harness_shared.session_turns
+        WHERE workspace_id = \${workspace} AND session_id LIKE 'cluster-%' ORDER BY session_id, turn_idx\`;
+      console.log('STALE_ORIGIN_RESULT cluster ' + JSON.stringify({ clustered, clusterRows }));
+      const verdictOf = (session, idx) => clusterRows.find((r) => r.session_id === session && r.turn_idx === idx).turn_origin_verdict;
+      assert.equal(verdictOf('cluster-repeat', 1), 'owner-typed', 'a repeated prompt with its own stamp is promoted');
+      assert.equal(verdictOf('cluster-dup', 0), 'unenrolled-origin', 'one stamp never promotes two turns');
+      assert.equal(verdictOf('cluster-over', 2), 'unenrolled-origin', 'stamps held by promoted turns are not reused');
+      assert.equal(clustered.promoted, 1);
     } finally { await sql.end(); }
   `.replaceAll('\\`', '`').replaceAll('\\${', '${');
   const syntax = spawnSync(process.execPath, ['--input-type=module', '--check'], { input: probe, encoding: 'utf8', timeout: 10000 });

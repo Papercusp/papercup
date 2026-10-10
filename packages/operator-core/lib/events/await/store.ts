@@ -2300,11 +2300,14 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
   const limit = input.limit ?? 10;
   // Fresh first-attempt work should usually win, but a permanently uninjectable
   // subscriber can otherwise keep a retried row behind an unbounded stream of new
-  // deliveries. Reserve one slot for the aged retry that has been due longest since
-  // its last attempt; ordering by next_attempt_at rotates a repeatedly parked row
-  // behind retries that have waited longer. The remaining slots preserve the
-  // fresh-first policy and keep a bad subscriber from monopolizing the batch.
+  // deliveries. Reserve one slot for the oldest due loop retry so an unrelated
+  // work-item backlog cannot strand an agent's own continuation, and one slot for
+  // the oldest due non-loop retry. Within each retry lane, next_attempt_at rotates
+  // a repeatedly parked row behind retries that have waited longer. The remaining
+  // slots preserve the fresh-first policy and keep a bad subscriber from
+  // monopolizing the batch.
   const retryStarvationAgeSec = 60;
+  const loopRetryReserveSlots = limit > 0 ? 1 : 0;
   const retryReserveSlots = limit > 0 ? 1 : 0;
   const rows = await sql`
     WITH ranked AS (
@@ -2313,13 +2316,39 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
                attempts > 0
                AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
              ) AS aged_retry,
+             (
+               attempts > 0
+               AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+               AND COALESCE(source LIKE 'loop:%', false)
+             ) AS aged_loop_retry,
+             (
+               attempts > 0
+               AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+               AND NOT COALESCE(source LIKE 'loop:%', false)
+             ) AS aged_nonloop_retry,
              row_number() OVER (
                PARTITION BY (
                  attempts > 0
                  AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
                )
                ORDER BY next_attempt_at ASC, created_at ASC, id ASC
-             ) AS retry_rank
+             ) AS aged_rank,
+             row_number() OVER (
+               PARTITION BY (
+                 attempts > 0
+                 AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+                 AND COALESCE(source LIKE 'loop:%', false)
+               )
+               ORDER BY next_attempt_at ASC, created_at ASC, id ASC
+             ) AS loop_retry_rank,
+             row_number() OVER (
+               PARTITION BY (
+                 attempts > 0
+                 AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+                 AND NOT COALESCE(source LIKE 'loop:%', false)
+               )
+               ORDER BY next_attempt_at ASC, created_at ASC, id ASC
+             ) AS nonloop_retry_rank
         FROM harness_shared.event_wake_deliveries
        WHERE workspace_id = ${ws}
          AND status IN ('pending', 'parked')
@@ -2335,19 +2364,21 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
        -- A permanently uninjectable subscriber can legitimately PARK for a long
        -- time, but its retries must never monopolize this bounded batch. Give an
        -- untouched/no-error row its first delivery attempt before retrying recent
-       -- failures, while reserving one slot for the aged retry whose next attempt
-       -- has been due longest. A parked retry gets a later next_attempt_at and
-       -- rotates behind the remaining due retries instead of reclaiming the reserve
-       -- on every pump batch. The final FIFO keys keep each tier deterministic.
-       -- Loop-source compaction above keeps repeated fires from becoming an
-       -- unbounded fresh tier of their own (EI-21303383797798186).
+       -- failures, while reserving one slot for the oldest due loop retry and one
+       -- for the oldest due non-loop retry. A parked retry gets a later
+       -- next_attempt_at and rotates behind the remaining due retries instead of
+       -- reclaiming its lane's reserve on every pump batch. The remaining aged
+       -- retries stay ordered by due time; loop-source compaction above keeps
+       -- repeated fires from becoming an unbounded fresh tier of their own
+       -- (EI-21303383797798186).
        ORDER BY CASE
-                  WHEN r.aged_retry AND r.retry_rank <= ${retryReserveSlots} THEN 0
-                  WHEN d.attempts = 0 AND d.last_error IS NULL THEN 1
-                  WHEN r.aged_retry THEN 2
-                  ELSE 3
+                  WHEN r.aged_loop_retry AND r.loop_retry_rank <= ${loopRetryReserveSlots} THEN 0
+                  WHEN r.aged_nonloop_retry AND r.nonloop_retry_rank <= ${retryReserveSlots} THEN 1
+                  WHEN d.attempts = 0 AND d.last_error IS NULL THEN 2
+                  WHEN r.aged_retry THEN 3
+                  ELSE 4
                 END,
-                CASE WHEN r.aged_retry THEN r.retry_rank END ASC NULLS LAST,
+                CASE WHEN r.aged_retry THEN r.aged_rank END ASC NULLS LAST,
                 d.attempts ASC,
                 d.next_attempt_at ASC,
                 d.created_at ASC,

@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, writeFileSync, openSync, closeSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { resolve, join, dirname, sep } from 'node:path';
+import { resolve, join, dirname, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(import.meta.url);
@@ -54,17 +54,40 @@ export function resolveReviewArgs(args, cwd = process.cwd()) {
   return resolved;
 }
 
-export function reviewCommand({ profile = 'cloud', root, portalRoot }) {
+// Resolve existing ancestors too: an external-looking symlink must not send
+// Playwright's cleanup or failure artifacts back into a reviewed source tree.
+function canonicalPath(path) {
+  let parent = resolve(path);
+  const suffix = [];
+  while (!existsSync(parent)) {
+    suffix.unshift(basename(parent));
+    parent = dirname(parent);
+  }
+  return resolve(realpathSync(parent), ...suffix);
+}
+
+export function reviewCommand({ profile = 'cloud', root, sourceRoot, portalRoot, portalSourceRoot, out }) {
+  if (!out) throw new Error('Native review requires an external --out prefix');
+  const output = `${resolve(out)}-test-results`;
+  for (const source of [root, sourceRoot, portalRoot, portalSourceRoot].filter(Boolean)) {
+    const canonical = canonicalPath(source);
+    for (const path of [out, output].map(canonicalPath)) {
+      if (path === canonical || path.startsWith(canonical.endsWith(sep) ? canonical : canonical + sep)) {
+        throw new Error('Native review output must be outside every reviewed source root');
+      }
+    }
+  }
+  if (existsSync(output)) throw new Error('Review test output already exists; choose a fresh prefix');
   if (profile === 'cloud') return { cwd: join(root, 'apps/operator'),
-    args: ['run', 'test:e2e', '--', 'e2e/cloud-tutorial.spec.ts', '--headed', '--workers=1', '--grep', 'beginner reviews'] };
+    args: ['run', 'test:e2e', '--', 'e2e/cloud-tutorial.spec.ts', '--headed', '--workers=1', '--grep', 'beginner reviews', '--output', output] };
   if (!['product-guide', 'product-hosted'].includes(profile)) throw new Error(`Unknown native review profile: ${profile}`);
   if (!portalRoot) throw new Error('Product guide review requires --portal-root');
   if (profile === 'product-hosted') return { cwd: portalRoot,
     args: ['run', 'test:e2e:browser', '--', 'e2e/portal-product-tutorial-served.spec.ts', '--headed', '--workers=1',
-      '--grep', 'a real hosted non-Cloud preference task saves and survives reload using only Tab and arrow traversal at 200 percent text$'] };
+      '--grep', 'a real hosted non-Cloud preference task saves and survives reload using only Tab and arrow traversal at 200 percent text$', '--output', output] };
   return { cwd: portalRoot,
     args: ['run', 'test:e2e:browser', '--', 'e2e/portal-product-tutorial.spec.ts', '--headed', '--workers=1',
-      '--grep', 'guide precedes portal destination and persists reload with workspace=null$'] };
+      '--grep', 'guide precedes portal destination and persists reload with workspace=null$', '--output', output] };
 }
 
 export function checked(command, args, { run = spawnSync, env = process.env } = {}) {
@@ -210,7 +233,7 @@ async function main() {
   const profile = args.includes('--profile') ? args[args.indexOf('--profile') + 1] : 'cloud';
   const options = { profile, ...(['product-guide', 'product-hosted'].includes(profile)
     ? { portalRoot: get('--portal-root'), portalSourceRoot: get('--portal-source-root') } : {}) };
-  const review = reviewCommand({ root, ...options });
+  const review = reviewCommand({ root, sourceRoot, out, ...options });
   verifySources(root, sourceRoot, JSON.parse(readFileSync(manifestPath, 'utf8')), options);
   if (profile === 'product-guide' || profile === 'product-hosted') {
     verifyProductImports(root, options.portalRoot);

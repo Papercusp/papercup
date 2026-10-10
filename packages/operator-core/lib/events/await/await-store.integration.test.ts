@@ -431,6 +431,68 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     `;
   });
 
+  it('reserves a bounded slot for a loop retry ahead of a larger non-loop retry backlog', async () => {
+    const prefix = 'su-fair-loop-reserve';
+    const loopSubscriber = `${prefix}-loop`;
+    const loopAwait = await store.registerAwait({
+      subscriberId: loopSubscriber,
+      eventKey: 'fair:loop-reserve',
+    });
+    await store.insertDeliveries({
+      awaits: [loopAwait],
+      source: 'loop:rt_test_loop',
+      summary: 'loop self-wake',
+    });
+
+    const nonLoopAwaits = await Promise.all(
+      Array.from({ length: 30 }, (_, index) =>
+        store.registerAwait({
+          subscriberId: `${prefix}-work-${index}`,
+          eventKey: `fair:loop-reserve:work:${index}`,
+        }),
+      ),
+    );
+    await store.insertDeliveries({ awaits: nonLoopAwaits, source: 'work-items', summary: 'work retry' });
+
+    const seeded = await db.adminSql<{ id: number; subscriber_id: string }[]>`
+      SELECT id, subscriber_id
+        FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id LIKE ${`${prefix}-%`}
+    `;
+    const loopId = seeded.find((row) => row.subscriber_id === loopSubscriber)?.id;
+    expect(loopId).toBeDefined();
+    expect(seeded).toHaveLength(31);
+
+    // The work-item retries are older by created_at, so the old single global
+    // reserve would fill a 25-row batch before reaching the loop wake. The loop
+    // lane gets its own one-row reserve; ordinary retries retain their reserve.
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET attempts = 1,
+             status = 'parked',
+             last_error = 'subscriber is currently uninjectable',
+             created_at = CASE
+               WHEN id = ${loopId} THEN now() - interval '9 minutes'
+               ELSE now() - interval '10 minutes'
+             END,
+             next_attempt_at = CASE
+               WHEN id = ${loopId} THEN now() - interval '1 day'
+               ELSE now() - interval '5 minutes'
+             END
+       WHERE id = ANY(${seeded.map((row) => row.id)})
+    `;
+
+    const claimed = await store.claimDueDeliveries({ limit: 25 });
+    expect(claimed.map((delivery) => delivery.id)).toContain(loopId);
+    expect(claimed).toHaveLength(25);
+
+    for (const delivery of claimed) await store.markDeliveryDropped(delivery.id, 'test cleanup');
+    await db.adminSql`
+      DELETE FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id LIKE ${`${prefix}-%`}
+    `;
+  });
+
   it('drops queued and claimed deliveries for any cancelled await before wake execution', async () => {
     const key = `${store.INBOX_WAKE_KEY_PREFIX}su-cancelled-wake`;
     await store.upsertInboxWakeAwait({ subscriberId: 'su-cancelled-wake', eventKey: key, note: 'standing wake' });

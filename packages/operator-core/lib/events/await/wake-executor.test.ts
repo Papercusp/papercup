@@ -235,9 +235,12 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
     });
 
     latest.mockResolvedValueOnce(new Map([[ownerId, new Date(2_001).toISOString()]]));
+    // The productive same-owner call IS the pickup proof, so the delivery is booked
+    // host-attested rather than left awaiting the pump's sweep (P-006/D-004).
     expect(await executeWake(delivery, common)).toEqual({
       kind: 'delivered',
       channel: 'psu-socket-recycle',
+      turnProof: 'host-attested',
     });
     expect(latest).toHaveBeenLastCalledWith([ownerId]);
   });
@@ -2942,6 +2945,48 @@ describe('executeWake — the liveness ladder', () => {
       '/tmp/x.sock',
       expect.objectContaining({ mode: 'turn', deliveryId: String(work({ wakeHandle: null }).id) }),
     );
+  });
+
+  describe('turn-start proof on the confirming psu path (P-006/D-004)', () => {
+    const confirmingDeps = (caps: string[] | undefined, reason: string) => {
+      const injectPsuHostWithConfirmation = vi.fn(async () => ({ ok: true, confirmation: 'acked' as const, reason }));
+      return {
+        injectPsuHostWithConfirmation,
+        deps: deps({
+          findPsuHost: vi.fn(() => ({ sock: '/tmp/x.sock', ...(caps ? { caps } : {}) })) as never,
+          injectPsuHost: undefined,
+          injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+        }),
+      };
+    };
+
+    it('books host-attested when the host confirmed a native turn start it was asked to prove', async () => {
+      const { injectPsuHostWithConfirmation, deps: d } = confirmingDeps(['native-turn-start'], 'delivered');
+      const out = await executeWake(work({ wakeHandle: null }), d);
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject', turnProof: 'host-attested' });
+      expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(
+        '/tmp/x.sock',
+        expect.objectContaining({ requireNativeTurnStart: true }),
+      );
+    });
+
+    it('does not attest a turn on a host that was never asked to prove one', async () => {
+      // An older host (no native-turn-start capability) replies 'delivered' once the bytes are
+      // written; that is persistence, not a turn start, so the pump must still observe it.
+      const { injectPsuHostWithConfirmation, deps: d } = confirmingDeps(undefined, 'delivered');
+      const out = await executeWake(work({ wakeHandle: null }), d);
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+      expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(
+        '/tmp/x.sock',
+        expect.not.objectContaining({ requireNativeTurnStart: true }),
+      );
+    });
+
+    it('does not attest a turn on a duplicate-delivery-id reply', async () => {
+      const { deps: d } = confirmingDeps(['native-turn-start'], 'duplicate-delivery-id');
+      const out = await executeWake(work({ wakeHandle: null }), d);
+      expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    });
   });
 
   it('sends the exact handled-message cancellation to the pending PTY delivery and waits for host confirmation', async () => {

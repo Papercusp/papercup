@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -99,13 +101,13 @@ test('product review refuses drift in either source tree, including its paused P
 });
 
 test('review profile selects the maintained Portal script and one explicit pause journey', () => {
-  assert.equal(reviewCommand({ root: '/root' }).cwd, '/root/apps/operator');
-  assert.deepEqual(reviewCommand({ profile: 'product-guide', root: '/root', portalRoot: '/portal' }), {
+  assert.equal(reviewCommand({ root: '/root', out: '/evidence/native' }).cwd, '/root/apps/operator');
+  assert.deepEqual(reviewCommand({ profile: 'product-guide', root: '/root', portalRoot: '/portal', out: '/evidence/native' }), {
     cwd: '/portal', args: ['run', 'test:e2e:browser', '--', 'e2e/portal-product-tutorial.spec.ts', '--headed', '--workers=1',
-      '--grep', 'guide precedes portal destination and persists reload with workspace=null$'],
+      '--grep', 'guide precedes portal destination and persists reload with workspace=null$', '--output', '/evidence/native-test-results'],
   });
-  assert.throws(() => reviewCommand({ profile: 'product-guide', root: '/root' }), /portal-root/);
-  assert.throws(() => reviewCommand({ profile: 'unknown', root: '/root' }), /Unknown/);
+  assert.throws(() => reviewCommand({ profile: 'product-guide', root: '/root', out: '/evidence/native' }), /portal-root/);
+  assert.throws(() => reviewCommand({ profile: 'unknown', root: '/root', out: '/evidence/native' }), /Unknown/);
 });
 
 test('product import preflight rejects matching live bytes and redirected package exports', () => {
@@ -139,7 +141,7 @@ test('product import preflight rejects matching live bytes and redirected packag
 });
 
 test('product review filter accepts Playwright file-qualified titles and excludes the other account journey', () => {
-  const { args } = reviewCommand({ profile: 'product-guide', root: '/root', portalRoot: '/portal' });
+  const { args } = reviewCommand({ profile: 'product-guide', root: '/root', portalRoot: '/portal', out: '/evidence/native' });
   const filter = new RegExp(args[args.indexOf('--grep') + 1]);
   assert.equal(filter.test('portal-product-tutorial.spec.ts guide precedes portal destination and persists reload with workspace=null'), true);
   assert.equal(filter.test('portal-product-tutorial.spec.ts guide precedes portal destination and persists reload with workspace=assigned-workspace'), false);
@@ -147,7 +149,7 @@ test('product review filter accepts Playwright file-qualified titles and exclude
 });
 
 test('hosted native review selects only the maintained real Tab journey and refuses a missing pause or changed admission fixture', () => {
-  const { cwd, args } = reviewCommand({ profile: 'product-hosted', root: '/root', portalRoot: '/portal' });
+  const { cwd, args } = reviewCommand({ profile: 'product-hosted', root: '/root', portalRoot: '/portal', out: '/evidence/native' });
   assert.equal(cwd, '/portal');
   assert.ok(args.includes('e2e/portal-product-tutorial-served.spec.ts'));
   const filter = new RegExp(args[args.indexOf('--grep') + 1]);
@@ -174,5 +176,58 @@ test('hosted native review selects only the maintained real Tab journey and refu
     verifySources(root, root, manifest, options);
     writeFileSync(join(portalSourceRoot, 'e2e/hosted-test-user.ts'), 'changed admission');
     assert.throws(() => verifySources(root, root, manifest, options), /Product Portal source drift/);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test('native review refuses missing, reused, nested and symlinked artifact destinations for every profile', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'native-output-boundary-'));
+  try {
+    const roots = Object.fromEntries(['root', 'sourceRoot', 'portalRoot', 'portalSourceRoot'].map(key => {
+      const path = join(fixture, key); mkdirSync(path); return [key, path];
+    }));
+    for (const profile of ['cloud', 'product-guide', 'product-hosted']) {
+      assert.throws(() => reviewCommand({ profile, ...roots }), /external --out/);
+      for (const source of Object.values(roots)) {
+        assert.throws(() => reviewCommand({ profile, ...roots, out: source }), /outside every reviewed/);
+        assert.throws(() => reviewCommand({ profile, ...roots, out: join(source, 'nested', 'native') }), /outside every reviewed/);
+      }
+      const out = join(fixture, 'evidence', profile);
+      const command = reviewCommand({ profile, ...roots, out });
+      assert.equal(command.args[command.args.indexOf('--output') + 1], `${out}-test-results`);
+      mkdirSync(`${out}-test-results`, { recursive: true });
+      assert.throws(() => reviewCommand({ profile, ...roots, out }), /already exists/);
+    }
+    const alias = join(fixture, 'external-looking');
+    symlinkSync(roots.portalRoot, alias);
+    assert.throws(() => reviewCommand({ ...roots, out: join(alias, 'native') }), /outside every reviewed/);
+    // A sibling sharing the source basename is still a valid external path.
+    assert.doesNotThrow(() => reviewCommand({ ...roots, out: roots.root + '-evidence/native' }));
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
+test('a failed Playwright review keeps its real failure artifacts outside the verifier checkout', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'native-output-playwright-'));
+  try {
+    const root = join(fixture, 'core'), portalRoot = join(fixture, 'portal'), out = join(fixture, 'evidence', 'native');
+    mkdirSync(root); mkdirSync(join(portalRoot, 'e2e'), { recursive: true });
+    const require = createRequire(import.meta.url);
+    const testModule = require.resolve('@playwright/test');
+    const config = join(portalRoot, 'playwright.config.cjs');
+    writeFileSync(config, "module.exports = {testDir:'./e2e', retries:0, reporter:'line'};");
+    const spec = join(portalRoot, 'e2e/portal-product-tutorial-served.spec.ts');
+    const title = 'a real hosted non-Cloud preference task saves and survives reload using only Tab and arrow traversal at 200 percent text';
+    writeFileSync(spec, `const {test} = require(${JSON.stringify(testModule)}); test(${JSON.stringify(title)}, () => { throw new Error('native-output-regression-sentinel'); });`);
+    const before = [readFileSync(config, 'utf8'), readFileSync(spec, 'utf8')];
+    const review = reviewCommand({ profile: 'product-hosted', root, portalRoot, out });
+    const result = spawnSync(process.execPath, [require.resolve('@playwright/test/cli'), 'test', ...review.args.slice(3), '--config', config], {
+      cwd: review.cwd, encoding: 'utf8', timeout: 20000,
+      env: { ...process.env, PWDEBUG: '0', NODE_OPTIONS: '' },
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout + result.stderr, /native-output-regression-sentinel/);
+    assert.equal(JSON.parse(readFileSync(`${out}-test-results/.last-run.json`, 'utf8')).status, 'failed');
+    assert.equal(existsSync(join(portalRoot, 'test-results')), false);
+    assert.deepEqual([readFileSync(config, 'utf8'), readFileSync(spec, 'utf8')], before);
   } finally { rmSync(fixture, { recursive: true, force: true }); }
 });
