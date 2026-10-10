@@ -642,8 +642,12 @@
     "approvalPost": "thread-post:1169763",
     "metaAttestation": {
       "id": "EI-25553684653416119",
-      "state": "recorded; independent grading-audit settlement not yet verified",
-      "readbackVerified": true
+      "state": "independent grading audit failed: historical test-source inspection lacks a full commit SHA in its stored evidence",
+      "readbackVerified": true,
+      "gradingAuditId": "EI-25554059343086462",
+      "failedCriteria": ["instrument-split", "re-runnable-evidence"],
+      "unresolvedCriterion": "degenerate-distribution",
+      "requiredCorrection": "Pin detector paths and inspected contents to full historical commit identities through capability:git-evidence; replace the failed meta-attestation through the canonical scorecard path and obtain independent settlement. Do not substitute current HEAD or infer settlement from the observation row's done state."
     },
     "adoption": {
       "state": "refused-no-write",
@@ -651,7 +655,18 @@
       "code": "bar_contract_method_missing",
       "ownedBlocker": "WI-10008022",
       "runtime": "staging-operator@81c209358c",
-      "evidencePath": "/dev/shm/p020-reviewrepair-activation-applied.json"
+      "evidencePath": "/dev/shm/p020-reviewrepair-activation-applied.json",
+      "sourceRepair": {
+        "workItem": "WI-10008022",
+        "state": "canonical fix verified; actual P020 adoption remains pending containing staging runtime",
+        "rootCause": "The seed rederived an unstarted full canonical criterion from plaintext Requirements, and the preview exempted subjects with an existing rubric pin even when adopting a fresh successor.",
+        "verification": {
+          "unit": {"passed": 251, "files": 5, "log": "/dev/shm/p020-reviewed-adoption-unit-final.log"},
+          "integration": {"passed": 16, "files": 1, "log": "/dev/shm/p020-reviewed-adoption-integration-final.log"},
+          "typecheck": {"errors": 0, "log": "/dev/shm/p020-reviewed-adoption-typecheck-final.log"},
+          "controls": ["eight unchanged historical hashes without invented Intent", "14 complete criteria preserved", "outcome/title/plane source drift refused", "missing canonical METHOD refused", "preview/write refusal parity", "no table state changes during preview", "retired history unchanged", "neutral revision preview", "repeat-audit idempotence"]
+        }
+      }
     }
   }
 }
