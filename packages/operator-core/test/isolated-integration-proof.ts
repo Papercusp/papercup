@@ -18,6 +18,12 @@ import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog
 /** Shared with the cheap context guard so the expensive fixture uses the tested API. */
 export const isolatedIntegrationCases = it.for([false, true]);
 
+/** Cleanup logs must not displace a worker's original structured assertion. */
+export function isolatedWorkerFailureDetail(output: string): string {
+  const failures = output.split('\n').filter(line => /^[A-Z][A-Z0-9_]*_FAILURE /.test(line));
+  return failures.length ? failures.map(line => line.slice(0, 4_000)).join('\n') : output.slice(-4_000);
+}
+
 type WorkerPhase = 'bootstrap' | 'execute' | 'teardown';
 type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; teardownMs: number; teardownMaxMs?: number; executeMaxMs?: number };
 

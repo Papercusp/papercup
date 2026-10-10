@@ -20926,8 +20926,8 @@
       "archived": false,
       "legacy": false,
       "category": "Implementation recorded complete; acceptance pending",
-      "implementation": "Ledger complete: 0 done, 1 dropped. No implemented items are recorded.",
-      "recommendation": "Check current code truth for the completed items, recover missing audit/test evidence, and run acceptance closeout. A terminal item ledger alone is not sufficient to mark the plan shipped.",
+      "implementation": "Plan ledger: 0 done, 1 dropped, 0 unfinished. D-003 drops P-001 as superseded by shipped refusal-contract work; the implementation is tracked outside this plan.",
+      "recommendation": "Do not restart this plan (D-003). Current source contains both the refusal lift-condition contract and the host-gated non-widening stale-artifact convergence path; the listed resolver tests cover successful convergence and fail-closed cases. The current ship-readiness read still refuses acceptance_bar_contract_not_ready because this draft has no active rubric or BARs. Keep the remaining identity recurrence in EI-23772322660353682, which is blocked/unassigned on its active release:deployed event; WI-10005197 is now done with saved evidence.",
       "counts": {
         "dropped": 1
       },
@@ -20940,16 +20940,28 @@
       "completedWorkWithSavedEvidence": 0,
       "owners": [],
       "declaredOwner": null,
-      "ageDays": 4.0,
+      "ageDays": 8.0,
       "updatedAt": "2026-10-01T22:21:48.112514-04:00",
       "version": 7,
       "revisionRows": 7,
       "decisionCount": 3,
-      "contradictions": [],
+      "contradictions": [
+        "Lifecycle wording says draft status means live work, but the current item census is 0 done, 1 dropped, and 0 nonterminal; lifecycle also says acceptance validation has not begun."
+      ],
       "nextItems": [],
       "nowState": "Triaged 2026-10-02 by the GOAL 60d3a8 holder (D-003): not started. P-001 dropped as superseded by shipped work (EI-23766133296678780 done; guard and baseline in tree).",
       "nowNext": "No action on this plan. Remaining work: WI-10005197 (baseline burn-down, su-5930d3f6) and EI-23772322660353682 (identity-gate recurrence). Re-open trigger is in D-003.",
-      "acceptanceGate": {},
+      "acceptanceGate": {
+        "satisfied": false,
+        "code": "acceptance_bar_contract_not_ready",
+        "message": "No acceptance BARs are declared; the post-epoch plan has an incomplete cohort snapshot and no active acceptance rubric.",
+        "blockingCodes": [
+          "bar_snapshot_cohort_incomplete",
+          "bar_snapshot_bar_set_empty",
+          "bar_snapshot_rubric_missing",
+          "bar_snapshot_author_verdict_missing"
+        ]
+      },
       "acceptanceRubric": null,
       "auditCoverage": 0,
       "citationCount": 0,
@@ -20969,7 +20981,50 @@
       "parsedItemCount": 1,
       "storedIndexCount": 1,
       "indexDisagrees": false,
-      "number": 88
+      "number": 88,
+      "refreshedAt": "2026-10-10T02:36:05.684343+00:00",
+      "citedWorkItems": [
+        {
+          "id": "WI-1574",
+          "state": "done",
+          "completionEvidence": false,
+          "note": "Cited by the plan item; the current record has no completion evidence."
+        },
+        {
+          "id": "EI-23766133296678780",
+          "state": "done",
+          "completionEvidence": true,
+          "note": "Saved completion says refusal contracts shipped and the auto-converge path already existed."
+        },
+        {
+          "id": "WI-10005197",
+          "state": "done",
+          "completionEvidence": true,
+          "note": "Saved completion says the refusal-contract baseline was burned down to zero; terminal state confirmed in this refresh."
+        },
+        {
+          "id": "EI-23772322660353682",
+          "state": "blocked",
+          "assignee": null,
+          "updatedAt": "2026-10-08T04:00:24.959Z",
+          "activeBlocker": "release:deployed",
+          "completionEvidence": false
+        }
+      ],
+      "currentSourceReview": {
+        "verifiedAt": "2026-10-10T02:36:05.684343+00:00",
+        "filesRead": [
+          "packages/operator-core/lib/capability-envelope/identity-refusal-contract.ts",
+          "packages/operator-core/lib/projected-tool-deps.ts",
+          "packages/operator-core/lib/projected-tool-deps.kernel-resolver.test.ts"
+        ],
+        "findings": [
+          "The refusal contract table is exhaustive over IdentityGrantFailureCause and supplies a lift condition for each cause.",
+          "The stale-artifact convergence path only writes when the host-selected launch record admits desired and no longer admits applied; it re-resolves only after a successful write.",
+          "The resolver test file covers successful convergence plus untrusted launch records, retry limits, writer failure, and already-admitted sessions."
+        ],
+        "testExecution": "No tests were run in this refresh. Saved completion evidence for EI-23766133296678780 records the resolver and refusal-contract test files passing on 2026-10-02."
+      }
     },
     {
       "slug": "portable-identity-packages-2026-09-26",

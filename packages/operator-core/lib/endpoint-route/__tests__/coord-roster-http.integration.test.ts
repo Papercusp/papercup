@@ -2,7 +2,7 @@ import { fork } from 'node:child_process';
 import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
-import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
@@ -12,6 +12,8 @@ it('authenticated private HTTP roster delivery preserves exact recipients and de
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/coord-roster-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
+      'packages/operator-core/lib/workspace-registry.ts', 'packages/operator-core/lib/workspace-context-middleware.ts',
       'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/adv-sessions.ts',
       'packages/operator-core/lib/auth.ts', 'packages/operator-core/lib/auth/require-principal.ts',
       'packages/operator-core/lib/auth/principal/from-cookie.ts',
@@ -38,11 +40,11 @@ it('authenticated private HTTP roster delivery preserves exact recipients and de
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
       try { result = await captureIsolatedWorker(child, evidenceDir, options); }
       finally { await rm(join(evidenceDir, 'node_modules')); }
-      expect(result, result.output.slice(-4_000)).toMatchObject({ signal: null, timedOut: false,
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
         exitWaitTimedOut: false, stdioDrainTimedOut: false, code: 0 });
       expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
       const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_HTTP_RECEIPT '));
-      expect(line, result.output.slice(-4_000)).toBeTruthy();
+      expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('ROSTER_COORD_HTTP_RECEIPT '.length));
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
         authMethod: 'cookie-session', neighborIsolated: true, positiveControl: 'wrong-recipient rejected',

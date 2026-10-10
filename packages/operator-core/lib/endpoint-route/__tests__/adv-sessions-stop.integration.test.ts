@@ -2,7 +2,7 @@ import { fork } from 'node:child_process';
 import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
-import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
@@ -15,6 +15,7 @@ it(`confirmed roster stop through private HTTP and native children: ${phase}`, a
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/adv-sessions-stop.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/psu-pty-host-canary.mjs',
       'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/adv-sessions.ts',
       'packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts',
@@ -36,13 +37,13 @@ it(`confirmed roster stop through private HTTP and native children: ${phase}`, a
       let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
       try { result = await captureIsolatedWorker(child, evidenceDir, options); }
       finally { await rm(join(evidenceDir, 'node_modules')); }
-      expect(result, result.output.slice(-4_000)).toMatchObject({ signal: null, timedOut: false,
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
         exitWaitTimedOut: false, stdioDrainTimedOut: false, code: phase === 'positive' ? 0 : 1 });
       expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
       if (phase === 'misroute') expect(result.output).toContain('selected-session receipt correlation');
       else {
         const line = result.output.split('\n').find(value => value.startsWith('ROSTER_STOP_HTTP_RECEIPT '));
-        expect(line, result.output.slice(-4_000)).toBeTruthy();
+        expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
         const receipt = JSON.parse(line!.slice('ROSTER_STOP_HTTP_RECEIPT '.length));
         expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
           selected: { ended: true }, neighbor: { alive: true }, accepted: { status: 200 }, replay: { status: 403 } });

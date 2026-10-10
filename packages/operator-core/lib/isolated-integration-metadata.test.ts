@@ -6,7 +6,42 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions } from '../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
+import { preparePrivateHttpWorkspaces } from '../test/private-http-workspace-preflight';
+import { Hono } from 'hono';
+import { workspaceContextMiddleware } from './workspace-context-middleware';
+
+it('prepares a private foreign workspace before the real HTTP middleware checks it', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-http-registry-'));
+  const workspace = 'test-runtime-registry-control';
+  try {
+    vi.stubEnv('HOME', join(root, 'home'));
+    vi.stubEnv('TMPDIR', join(root, 'tmp'));
+    vi.stubEnv('PAPERCUSP_WORKSPACES_ROOT', join(root, 'workspaces'));
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ID', workspace);
+    const app = new Hono();
+    app.use('*', workspaceContextMiddleware);
+    app.get('/probe', c => c.json({ admitted: true }));
+    const request = () => app.request('/probe', { headers: { 'x-papercusp-workspace': workspace + '-foreign' } });
+    expect((await request()).status).toBe(400);
+    expect(preparePrivateHttpWorkspaces()).toEqual({ workspace, foreignWorkspace: workspace + '-foreign' });
+    expect((await request()).status).toBe(200);
+    const registry = JSON.parse(readFileSync(join(root, 'workspaces/registry.json'), 'utf8'));
+    expect(registry.workspaces.map((entry: { id: string }) => entry.id)).toEqual([workspace, workspace + '-foreign']);
+    // A shared or mismatched root must fail before writing a registry.
+    const retained = readFileSync(join(root, 'workspaces/registry.json'), 'utf8');
+    vi.stubEnv('TMPDIR', join(root, 'unrelated'));
+    expect(preparePrivateHttpWorkspaces).toThrow('disposable runtime scratch');
+    expect(readFileSync(join(root, 'workspaces/registry.json'), 'utf8')).toBe(retained);
+  } finally { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it('retains the original structured worker failure after a long successful cleanup', () => {
+  const failure = 'ROSTER_STOP_HTTP_FAILURE ' + JSON.stringify({ message: 'unknown_workspace', stack: 'original assertion' });
+  const cleanup = '\npg cleanup progress'.repeat(500);
+  expect(isolatedWorkerFailureDetail(failure + cleanup)).toBe(failure);
+  expect(isolatedWorkerFailureDetail('unstructured error')).toBe('unstructured error');
+});
 
 it('pins the original short-lived Node worker before allowing its command to run', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'isolated-worker-start-'));

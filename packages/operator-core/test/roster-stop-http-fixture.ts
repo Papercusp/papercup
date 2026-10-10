@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
+import { preparePrivateHttpWorkspaces } from './private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
@@ -190,6 +191,11 @@ async function coordCanary(health: unknown) {
 }
 
 async function main() {
+  if (process.env.ROSTER_COORD_HTTP_PROOF === '1') {
+    const prepared = preparePrivateHttpWorkspaces();
+    assert.equal(prepared.workspace, workspace);
+    console.log('ROSTER_STOP_HTTP_PHASE registry-ready');
+  }
   const bundle = join(evidence, 'hono-host.mjs');
   console.log('ROSTER_STOP_HTTP_PHASE bundle-start');
   try { execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],

@@ -91,6 +91,16 @@ for slot in 1 2 3; do
 done
 [ -n "$checkout" ] || fail "all three acceptance checkouts under $checkouts are held by other runs"
 
+# A killed prior parent may have missed its EXIT cleanup. Clear that slot's
+# verified, idle copies before admission, so an otherwise admissible retry is
+# not blocked by the previous attempt's retained bytes.
+if [ -d "$checkout" ]; then
+  cached_sha="$(git -C "$checkout" rev-parse HEAD)" || fail "cannot verify cached source at $checkout"
+  "$ROOT/node_modules/.bin/tsx" "$ROOT/packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts" \
+    "$checkout" "$cached_sha" --all-dependencies --execute >&2 \
+    || fail "cached-slot dependency retirement refused at $checkout"
+fi
+
 echo "release-acceptance: checking out candidate source $sha at $checkout" >&2
 # Freeze the shared helper and its adjacent sidecars before its long checkout
 # work. Bash reads scripts lazily; a peer edit during materialization must not

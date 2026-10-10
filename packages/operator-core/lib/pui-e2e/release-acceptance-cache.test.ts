@@ -88,16 +88,36 @@ describe('PUI acceptance dependency retirement', () => {
     await mkdir(join(fixture, 'apps/tui/scripts'), { recursive: true });
     await writeFile(wrapper, await readFile(join(repo, 'apps/tui/scripts/release-acceptance.sh')));
     await mkdir(join(fixture, 'scripts'));
-    // The fixture slot is already pinned; isolate just the real wrapper lifecycle.
-    await writeFile(join(fixture, 'scripts/npm-install-safe.mjs'), 'process.exit(0);');
+    // Emulate materialization after the real wrapper has retired crash residue.
+    await writeFile(join(fixture, 'scripts/npm-install-safe.mjs'), `import fs from 'node:fs';
+const checkout=${JSON.stringify(checkout)};
+if (fs.existsSync(checkout+'/node_modules/package.txt') || fs.existsSync(checkout+'/apps/operator/node_modules/package.txt')) process.exit(44);
+fs.mkdirSync(checkout+'/node_modules/.bin', {recursive:true});
+fs.copyFileSync(${JSON.stringify(join(fixture, 'runner.sh'))}, checkout+'/node_modules/.bin/tsx');
+fs.chmodSync(checkout+'/node_modules/.bin/tsx', 0o755);
+fs.writeFileSync(checkout+'/node_modules/package.txt', 'rebuildable');
+fs.mkdirSync(checkout+'/apps/operator/node_modules', {recursive:true});
+fs.writeFileSync(checkout+'/apps/operator/node_modules/package.txt', 'rebuildable');
+fs.writeFileSync(checkout+'/.papercusp-artifacts/prepared.json', 'old copies retired');
+`);
     const shim = join(fixture, 'node_modules/.bin/tsx');
     await mkdir(join(fixture, 'node_modules/.bin'), { recursive: true });
-    await writeFile(shim, `#!/usr/bin/env node\n${cleanupRefused ? 'process.exit(2);' : ''}\nconst {spawnSync} = require('node:child_process');\nconst r=spawnSync(${JSON.stringify(join(repo, 'node_modules/.bin/tsx'))}, [${JSON.stringify(join(repo, 'packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts'))}, ...process.argv.slice(3)], {stdio:'inherit'});\nprocess.exit(r.status ?? 2);\n`);
+    await writeFile(shim, `#!/usr/bin/env node
+const fs=require('node:fs');
+const calls=${JSON.stringify(join(fixture, 'calls'))};
+const n=fs.existsSync(calls)?Number(fs.readFileSync(calls,'utf8')):0;
+fs.writeFileSync(calls,String(n+1));
+${cleanupRefused ? 'if(n>0) process.exit(2);' : ''}
+const {spawnSync} = require('node:child_process');
+const r=spawnSync(${JSON.stringify(join(repo, 'node_modules/.bin/tsx'))}, [${JSON.stringify(join(repo, 'packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts'))}, ...process.argv.slice(3)], {stdio:'inherit'});
+process.exit(r.status ?? 2);
+`);
     await chmod(shim, 0o755);
     const runner = join(checkout, 'node_modules/.bin/tsx');
     await mkdir(join(checkout, 'node_modules/.bin'));
     await writeFile(runner, `#!/bin/sh\nprintf 'completed' > '${join(checkout, '.papercusp-artifacts/run.json')}'\nexit ${status}\n`);
     await chmod(runner, 0o755);
+    await writeFile(join(fixture, 'runner.sh'), await readFile(runner));
     const archiveSource = join(cache, 'archive-source');
     await mkdir(join(archiveSource, 'pui'), { recursive: true });
     await writeFile(join(archiveSource, 'pui/PROVENANCE.json'), JSON.stringify({ source: { commit: sha } }));
@@ -119,9 +139,10 @@ describe('PUI acceptance dependency retirement', () => {
       await expect(readFile(join(checkout, 'apps/operator/node_modules/package.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
     }
     expect(await readFile(join(checkout, '.papercusp-artifacts/run.json'), 'utf8')).toBe('completed');
+    expect(await readFile(join(checkout, '.papercusp-artifacts/prepared.json'), 'utf8')).toBe('old copies retired');
     expect(await readFile(join(checkout, 'source.txt'), 'utf8')).toBe('source evidence');
     expect(await readFile(archive)).not.toHaveLength(0);
-  }, 30_000);
+  }, 45_000);
   it('the existing wrapper refuses retirement while a slot lock is held', async () => {
     const child = spawn('flock', [join(cache, 'slot-1.lock'), 'sh', '-c', 'echo READY; cat'], { stdio: ['pipe', 'pipe', 'pipe'] });
     try {
