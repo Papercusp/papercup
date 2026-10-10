@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { readFileSync, readdirSync } from 'node:fs';
 import ts from 'typescript';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   decideOperatorHttpRoute,
   HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES,
@@ -20,7 +20,8 @@ import {
   OperatorHttpChannel,
   operatorHttpRequestHeaders,
 } from './hosted-operator-http';
-import { HostedWorkspaceHostSessionAdapter, type HostedHostOutboundEnvelope } from './hosted-session-host';
+import { HostedWorkspaceHostSessionAdapter, type HostedHostOutboundEnvelope,
+  type HostedWorkspaceHostOptions, type HostedCustomerHttpRequestContext } from './hosted-session-host';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import { ALL_ROUTES } from '../endpoint-route/routes';
 
@@ -257,7 +258,7 @@ async function operator(handler: (req: IncomingMessage, res: ServerResponse, see
   return { seen, origin };
 }
 
-function adapterFor(origin: string) {
+function adapterFor(origin: string, httpOptions: HostedWorkspaceHostOptions['operatorHttp'] = {}) {
   const sent: HostedHostOutboundEnvelope[] = [];
   const audit: Array<{ action: string; userId?: string; detail?: string }> = [];
   const adapter = new HostedWorkspaceHostSessionAdapter({
@@ -265,7 +266,7 @@ function adapterFor(origin: string) {
     workspaceRoot: '/nonexistent-root',
     send: (message) => sent.push(message),
     onAudit: (event) => audit.push(event),
-    operatorHttp: { origin },
+    operatorHttp: { origin, ...httpOptions },
   });
   const payloads = (channelId = 'http-1') =>
     sent
@@ -287,7 +288,124 @@ function adapterFor(origin: string) {
 const decodeBody = (frames: Array<Record<string, unknown>>) =>
   frames.filter((f) => f.type === 'http.body').map((f) => Buffer.from(String(f.data), 'base64').toString()).join('');
 
+describe('OperatorHttpChannel request ownership', () => {
+  it('runs a private callback only after route/body validation with filtered headers', async () => {
+    const frames: Record<string, unknown>[] = [];
+    const seen: Request[] = [];
+    const fallback = vi.fn(async () => new Response('loopback'));
+    const channel = new OperatorHttpChannel({ principal: { userId: 'user-1', hostedSessionId: 'session-1' },
+      send: frame => frames.push(frame), audit: () => {}, fetch: fallback,
+      handleRequest: async request => { seen.push(request); return new Response(await request.text()); } });
+    await channel.accept('http.request', { requestId: 'forbidden', method: 'POST', path: '/api/mcp' });
+    expect(seen).toHaveLength(0);
+    await channel.accept('http.request', { requestId: 'private', method: 'POST',
+      path: '/api/harness/h/agent-chats/c/messages', body: Buffer.from('native').toString('base64'),
+      headers: { authorization: 'stolen', cookie: 'stolen', [HOSTED_PRINCIPAL_USER_HEADER]: 'forged' } });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].headers.get('authorization')).toBeNull();
+    expect(seen[0].headers.get('cookie')).toBeNull();
+    expect(seen[0].headers.get(HOSTED_PRINCIPAL_USER_HEADER)).toBe('user-1');
+    expect(seen[0].signal.aborted).toBe(true);
+    expect(decodeBody(frames)).toBe('native');
+    expect(fallback).not.toHaveBeenCalled();
+    channel.close();
+  });
+
+  it('preserves ordinary forwarding when the private callback does not claim a route', async () => {
+    const fetch = vi.fn(async () => new Response('ordinary'));
+    const channel = new OperatorHttpChannel({ principal: { userId: 'user-1', hostedSessionId: 'session-1' },
+      send: () => {}, audit: () => {}, fetch, handleRequest: async () => undefined });
+    await channel.accept('http.request', { requestId: 'ordinary', method: 'GET', path: '/api/operator/conversations' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    channel.close();
+  });
+
+  it('settles an aborted private callback without fallback or late response publication', async () => {
+    const frames: Record<string, unknown>[] = [];
+    let finish!: (response: Response) => void;
+    const fetch = vi.fn(async () => new Response('ambient'));
+    const channel = new OperatorHttpChannel({ principal: { userId: 'user-1', hostedSessionId: 'session-1' },
+      send: frame => frames.push(frame), audit: () => {}, fetch,
+      handleRequest: () => new Promise<Response>(resolve => { finish = resolve; }) });
+    const pending = channel.accept('http.request', { requestId: 'cancel', method: 'GET', path: '/api/operator/conversations' });
+    await channel.accept('http.abort', { requestId: 'cancel' });
+    await pending;
+    finish(new Response('late'));
+    await Promise.resolve(); await Promise.resolve();
+    expect(frames).toEqual([]); expect(fetch).not.toHaveBeenCalled();
+    channel.close();
+  });
+
+  it('does not publish a late response from an aborted request after its id is reused', async () => {
+    const frames: Record<string, unknown>[] = [];
+    const replies: Array<(response: Response) => void> = [];
+    const channel = new OperatorHttpChannel({ principal: { userId: 'user-1', hostedSessionId: 'session-1' },
+      send: frame => frames.push(frame), audit: () => {},
+      fetch: () => new Promise<Response>(resolve => replies.push(resolve)) });
+    const payload = { requestId: 'reused', method: 'GET', path: '/api/operator/conversations' };
+    const old = channel.accept('http.request', payload);
+    await channel.accept('http.abort', { requestId: 'reused' });
+    const current = channel.accept('http.request', payload);
+    replies[0](new Response('stale'));
+    await old;
+    expect(frames).toEqual([]);
+    expect(channel.inflightCount).toBe(1);
+    replies[1](new Response('current'));
+    await current;
+    expect(decodeBody(frames)).toBe('current');
+    channel.close();
+  });
+
+  it('cancels a private response body even when its producer ignores the fetch signal', async () => {
+    const cancel = vi.fn();
+    const frames: Record<string, unknown>[] = [];
+    const channel = new OperatorHttpChannel({ principal: { userId: 'user-1', hostedSessionId: 'session-1' },
+      send: frame => frames.push(frame), audit: () => {},
+      fetch: async () => new Response(new ReadableStream({ cancel })) });
+    const pending = channel.accept('http.request', { requestId: 'stream', method: 'GET', path: '/api/operator/conversations' });
+    await vi.waitFor(() => expect(frames.some(frame => frame.type === 'http.response')).toBe(true));
+    await channel.accept('http.abort', { requestId: 'stream' });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    await pending;
+    expect(frames.some(frame => frame.type === 'http.end')).toBe(false);
+    channel.close();
+  });
+});
+
 describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)', () => {
+  it('pins private callback authority to the exact request and original channel object', async () => {
+    const contexts: HostedCustomerHttpRequestContext[] = [];
+    const signals: AbortSignal[] = [];
+    let finish!: (response: Response) => void;
+    const { adapter, open, relay, payloads } = adapterFor('http://127.0.0.1:9', {
+      handleRequest: (request, context) => {
+        contexts.push(context);
+        signals.push(context.sessionHost.customerInvocationSignal(context.channelId, request.signal));
+        return new Promise<Response>(resolve => { finish = resolve; });
+      },
+    });
+    await open();
+    const old = relay({ type: 'http.request', requestId: 'old', method: 'GET', path: '/api/operator/conversations' });
+    await vi.waitFor(() => expect(contexts).toHaveLength(1));
+    expect(() => contexts[0].sessionHost.customerInvocationSignal('another-channel')).toThrow();
+    await adapter.accept({ type: 'relay.close', channelId: 'http-1' });
+    await old;
+    expect(signals[0].aborted).toBe(true);
+    await open();
+    expect(() => contexts[0].sessionHost.customerInvocationSignal('http-1')).toThrow();
+    expect(await contexts[0].sessionHost.resolveCustomerPrincipal('http-1')).toEqual({ ok: false });
+    finish(new Response('late'));
+    expect(payloads().some(frame => frame.type === 'http.response')).toBe(false);
+    const current = relay({ type: 'http.request', requestId: 'new', method: 'GET', path: '/api/operator/conversations' });
+    await vi.waitFor(() => expect(contexts).toHaveLength(2));
+    expect(signals[1].aborted).toBe(false);
+    finish(new Response('current'));
+    await current;
+    expect(signals[1].aborted).toBe(true);
+    expect(await contexts[1].sessionHost.resolveCustomerPrincipal('http-1')).toEqual({ ok: false });
+    adapter.close();
+  });
+
   it('relays the exact Autonomy save and preserves its ticket principal', async () => {
     const policy = { op: 'set', level: 'L1', minimumConfidence: 'high' };
     const { seen, origin } = await operator((_req, res, entry) => {

@@ -5,6 +5,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { Button } from "@/app/harness/Button";
 import { createTutorialState, tutorialReducer, type ProductObservation } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { CloudTutorialGuide, CloudTutorialHelpEntry } from "./cloud-tutorial-guide";
+import { AccountProductTutorial, type ProductTutorialAccount } from "@papercusp/operator-ui/onboarding";
+import { PRODUCT_TUTORIAL_LESSONS } from "@papercusp/operator-core/lib/onboarding/product-tutorial-lesson";
 
 const scope = { tenantId: "tenant", userId: "user", workspaceId: "customer" };
 let systemReducedMotion = false;
@@ -20,6 +22,70 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+// R-6: the Cloud guide below is one module. Exercise the composed account guide
+// with its real progress validation and destination controls for every lesson.
+// Browser tests own geometric zoom/reflow and axe; jsdom asserts semantics/focus.
+describe("Full-product guide accessibility composition", () => {
+  for (const workspaceId of [null, "customer"]) {
+    it(`preserves lesson Help, pause/resume focus and editable destinations with workspace=${workspaceId}`, async () => {
+      const account: ProductTutorialAccount = { tenantId: "tenant", userId: "user", sessionId: "session", workspaceId };
+      let record = { scope: { tenantId: account.tenantId, userId: account.userId }, version: 3,
+        revision: 0, mutationId: null, disposition: "active", currentLessonId: "welcome", reviewedLessonIds: [] as string[] };
+      const writes: Array<Record<string, unknown>> = [];
+      const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+        // Validate the real account endpoint including its required scope/version
+        // query before a permissive fixture can hide an unexpected transport.
+        expect(String(url)).toBe("/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3");
+        if (init?.method === "POST") {
+          const patch = JSON.parse(String(init.body)); writes.push(patch);
+          record = { ...record, ...patch, revision: record.revision + 1 };
+        }
+        return Response.json({ record });
+      });
+      vi.stubGlobal("fetch", fetcher);
+      render(<AccountProductTutorial account={account}>{controls => <section aria-label="Product destination">
+        {controls}<label>Product form field<input /></label>
+      </section>}</AccountProductTutorial>);
+      await screen.findByRole("heading", { name: "Welcome to Papercusp" });
+
+      for (const lesson of PRODUCT_TUTORIAL_LESSONS) {
+        const navigation = screen.getByRole("button", { name: lesson.title, exact: true });
+        navigation.focus(); fireEvent.click(navigation);
+        const heading = await screen.findByRole("heading", { name: lesson.title, exact: true });
+        await waitFor(() => expect(document.activeElement).toBe(heading));
+        expect(navigation.getAttribute("aria-current")).toBe("step");
+        const help = screen.getByText("Help with this lesson", { exact: true });
+        const disclosure = help.closest("details")!;
+        disclosure.open = true; fireEvent(disclosure, new Event("toggle"));
+        expect(screen.getByText(lesson.help, { exact: true })).toBeTruthy();
+        const question = screen.getByRole("textbox", { name: "Lesson question", exact: true });
+        question.focus(); fireEvent.change(question, { target: { value: `Explain ${lesson.title}` } });
+        expect(document.activeElement).toBe(question);
+        expect((question as HTMLTextAreaElement).value).toBe(`Explain ${lesson.title}`);
+        const progressStatus = screen.getByText(/explanations reviewed\. Product tasks are verified separately\./);
+        expect(progressStatus.getAttribute("role")).toBe("status");
+        disclosure.open = false; fireEvent(disclosure, new Event("toggle"));
+
+        const pause = screen.getByRole("button", { name: "Pause guide" }); pause.focus(); fireEvent.click(pause);
+        const resume = await screen.findByRole("button", { name: "Resume product guide" });
+        await waitFor(() => expect(document.activeElement).toBe(resume));
+        const field = screen.getByRole("textbox", { name: "Product form field" });
+        field.focus(); fireEvent.change(field, { target: { value: "My product input" } });
+        expect(document.activeElement).toBe(field);
+        expect((field as HTMLInputElement).value).toBe("My product input");
+        expect(screen.queryByRole("heading", { name: lesson.title, exact: true })).toBeNull();
+        fireEvent.click(resume);
+        const restored = await screen.findByRole("heading", { name: lesson.title, exact: true });
+        await waitFor(() => expect(document.activeElement).toBe(restored));
+      }
+      expect(writes.every(patch => Array.isArray(patch.reviewedLessonIds) && patch.reviewedLessonIds.length === 0)).toBe(true);
+      expect(writes.every(patch => patch.expectedScope && ["active", "paused"].includes(String(patch.disposition)))).toBe(true);
+      expect(fetcher.mock.calls.every(([url]) => String(url) === "/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3")).toBe(true);
+    });
+  }
+});
+
 function Fixture({ observation = { scope, revision: 1, access: "allowed" } as ProductObservation, target = true, check = vi.fn(), reducedMotion = true }) {
   const [state, dispatch] = useReducer(tutorialReducer, tutorialReducer(createTutorialState(scope), { type: "observe", observation }));
   return <>

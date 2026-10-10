@@ -111,6 +111,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
   const countedInputs: Record<string, unknown>[] = [];
   const gatewayErrors: string[] = [];
   const admissionStages: Record<string, unknown>[] = [];
+  let firstNativeAdmissionRequest: Record<string, unknown> | undefined;
   let readReservations: (() => Promise<unknown>) | undefined;
   try {
   mkdirSync(cwd);
@@ -311,6 +312,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       const hosted = await controller.startNativeGateway(message => { gatewayErrors.push(message); }, options =>
         startGatewayService({ ...options, carryTrial: { ...options.carryTrial!, authorizeAttempt: async attempt => {
           const body = JSON.parse(attempt.body);
+          firstNativeAdmissionRequest ??= body;
           admissionStages.push({ stage: 'controller-input', model: body.model, reasoning: body.reasoning,
             outputLimit: body.max_output_tokens, fields: Object.keys(body), transport: attempt.transport,
             clientMetadata: body.client_metadata, promptCacheOptions: body.prompt_cache_options,
@@ -394,6 +396,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       return [];
     };
     const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, gatewayErrors, admissionEvidence, admissionStages,
+      firstNativeAdmissionRequest,
       countedInputCount: countedInputs.length, reservations: await readReservations?.(), requestPaths, mcpMethods, workflowCalls,
       dependencyPreflight, executablePath: env.PATH, discoveryRoot: env.PAPERCUSP_PSU_PTY_DIR,
       inputShapes: inputShapes(providerCalls[0]?.input),

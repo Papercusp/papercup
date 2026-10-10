@@ -351,7 +351,10 @@ export interface HostedWorkspaceHostOptions {
    * The `operator-http` plane's forward target (D-418). Defaults to this process's
    * own loopback operator; overridable only so tests need no listening server.
    */
-  operatorHttp?: { origin?: string; fetch?: OperatorHttpFetch };
+  operatorHttp?: { origin?: string; fetch?: OperatorHttpFetch;
+    /** Optional private route composition on this VM. Never used by app/device
+     * planes, and never installed from relay frames or identity headers. */
+    handleRequest?: HostedCustomerOperatorHttpHandler };
   /**
    * P-328 (D-030 #4): the portal sends this month's relay usage on an `app-http` `relay.open`.
    * The raw field is passed through unparsed; the receiver validates it and may raise an alert.
@@ -860,6 +863,14 @@ function ptyHandleAdapter(handle: PtyHandle, scope: PtyAccessScope): HostedHostP
   };
 }
 
+export interface HostedCustomerHttpRequestContext {
+  readonly channelId: string;
+  readonly sessionHost: Pick<HostedWorkspaceHostSessionAdapter,
+    'resolveCustomerPrincipal' | 'customerInvocationSignal'>;
+}
+export type HostedCustomerOperatorHttpHandler = (request: Request,
+  context: HostedCustomerHttpRequestContext) => Promise<Response | undefined>;
+
 export class HostedWorkspaceHostSessionAdapter {
   private readonly sessions = new Map<string, HostSession>();
   private readonly channels = new Map<string, Channel>();
@@ -1197,15 +1208,38 @@ export class HostedWorkspaceHostSessionAdapter {
       // D-418: the principal is the one the control plane bound from the single-use
       // ticket; nothing a later frame carries can change it.
       const principal = { userId, hostedSessionId };
+      const lifetime = new AbortController();
+      const handleRequest = this.options.operatorHttp?.handleRequest;
       const http = new OperatorHttpChannel({
         principal,
         send: (payload) => this.send(channelId, payload),
         audit: (action, detail) => this.audit(action, principal, channelId, detail),
         ...(this.options.operatorHttp?.origin ? { origin: this.options.operatorHttp.origin } : {}),
         ...(this.options.operatorHttp?.fetch ? { fetch: this.options.operatorHttp.fetch } : {}),
+        ...(handleRequest ? { handleRequest: (request: Request) => {
+          // Capture this CHANNEL OBJECT, not merely its reusable id. A delayed
+          // request cannot acquire authority from a replacement channel.
+          const current = () => {
+            const channel = this.channels.get(channelId);
+            return !this.closed && !lifetime.signal.aborted && channel?.kind === 'operator-http'
+              && channel.http === http && !channel.plane;
+          };
+          const sessionHost: HostedCustomerHttpRequestContext['sessionHost'] = Object.freeze({
+            customerInvocationSignal: (id: string, signal?: AbortSignal) => {
+              if (id !== channelId || !current()) throw new Error('hosted_customer_execution_denied');
+              return AbortSignal.any([lifetime.signal, request.signal, ...(signal ? [signal] : [])]);
+            },
+            resolveCustomerPrincipal: (id: string, signal?: AbortSignal) => {
+              if (id !== channelId || !current() || request.signal.aborted) return Promise.resolve({ ok: false as const });
+              return this.resolveCustomerPrincipal(channelId,
+                AbortSignal.any([lifetime.signal, request.signal, ...(signal ? [signal] : [])]));
+            },
+          });
+          return handleRequest(request, Object.freeze({ channelId, sessionHost }));
+        } } : {}),
       });
       this.channels.set(channelId, { kind: 'operator-http', userId, hostedSessionId, http,
-        lifetime: new AbortController() });
+        lifetime });
       this.send(channelId, { type: 'http.ready' });
       this.audit('operator_http_attached', principal, channelId);
       return;

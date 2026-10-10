@@ -251,6 +251,9 @@ export function localOperatorOrigin(env: NodeJS.ProcessEnv = process.env): strin
 export type OperatorHttpSend = (payload: Record<string, unknown>) => void;
 export type OperatorHttpAudit = (action: string, detail: string) => void;
 export type OperatorHttpFetch = (url: string, init: RequestInit) => Promise<Response>;
+/** Private in-process route composition. Undefined leaves an ordinary request
+ * on the existing loopback route; a claimed request must return its response. */
+export type OperatorHttpRequestHandler = (request: Request) => Promise<Response | undefined>;
 
 export interface OperatorHttpChannelOptions {
   /**
@@ -263,6 +266,9 @@ export interface OperatorHttpChannelOptions {
   audit: OperatorHttpAudit;
   origin?: string;
   fetch?: OperatorHttpFetch;
+  /** Host-owned callback, never serialized on the relay. Receives only an
+   * allowlisted request with filtered headers and this request's lifetime. */
+  handleRequest?: OperatorHttpRequestHandler;
   headerTimeoutMs?: number;
   /** Opt-in upload assembly for device-http; other planes keep inline-only bodies. */
   maxChunkedRequestBodyBytes?: number;
@@ -434,15 +440,48 @@ export class OperatorHttpChannel {
     timer?.unref?.();
     const logLine = `${decision.method} ${decision.path.split('?')[0]}`;
     let headersSent = false;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const cancelReader = () => { void reader?.cancel().catch(() => {}); };
+    const ownsRequest = () => !this.closed && !controller.signal.aborted
+      && this.inflight.get(requestId) === controller;
     try {
-      const response = await this.fetchImpl(`${this.origin}${decision.path}`, {
+      const url = `${this.origin}${decision.path}`;
+      const init: RequestInit = {
         method: decision.method,
         headers: this.requestHeaders(payload.headers),
         ...(body ? { body: new Uint8Array(body) } : {}),
         redirect: 'manual',
         signal: controller.signal,
-      });
+      };
+      // Bound even a private handler that ignores cancellation. Its eventual
+      // rejection is still consumed; it cannot publish into a reused request id.
+      let onAbort: (() => void) | undefined;
+      const operation = (async () => {
+        const handled = this.options.handleRequest
+          ? await this.options.handleRequest(new Request(url, init)) : undefined;
+        if (!ownsRequest()) {
+          void handled?.body?.cancel().catch(() => {});
+          throw new Error('operator_request_aborted');
+        }
+        const response = handled ?? await this.fetchImpl(url, init);
+        if (!ownsRequest()) {
+          void response.body?.cancel().catch(() => {});
+          throw new Error('operator_request_aborted');
+        }
+        return response;
+      })();
+      let response: Response;
+      try {
+        response = await Promise.race([operation, new Promise<never>((_resolve, reject) => {
+          onAbort = () => reject(new Error('operator_request_aborted'));
+          controller.signal.addEventListener('abort', onAbort, { once: true });
+          if (controller.signal.aborted) onAbort();
+        })]);
+      } finally {
+        if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+      }
       clearTimeout(timer);
+      if (!ownsRequest()) { void response.body?.cancel().catch(() => {}); return; }
       const headers: Record<string, string> = {};
       response.headers.forEach((value, name) => {
         if (this.responseHeaders.has(name.toLowerCase())) headers[name.toLowerCase()] = value;
@@ -451,27 +490,36 @@ export class OperatorHttpChannel {
       headersSent = true;
       this.options.audit('operator_http_request', `${logLine} ${response.status}`);
       if (response.body) {
-        const reader = response.body.getReader();
+        reader = response.body.getReader();
+        controller.signal.addEventListener('abort', cancelReader, { once: true });
+        if (!ownsRequest()) { cancelReader(); return; }
         for (;;) {
           const { done, value } = await reader.read();
+          if (!ownsRequest()) return;
           if (done) break;
           for (let offset = 0; offset < value.byteLength; offset += HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES) {
+            if (!ownsRequest()) return;
             const chunk = value.subarray(offset, Math.min(value.byteLength, offset + HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES));
             this.options.send({ type: 'http.body', requestId, data: Buffer.from(chunk).toString('base64') });
           }
         }
       }
-      this.options.send({ type: 'http.end', requestId });
+      if (ownsRequest()) this.options.send({ type: 'http.end', requestId });
     } catch {
       clearTimeout(timer);
       // An abort the CLIENT asked for needs no reply; the client already forgot it.
-      if (this.closed || !this.inflight.has(requestId)) return;
+      if (this.closed || this.inflight.get(requestId) !== controller) return;
       if (controller.signal.aborted && !headersSent) fail('operator_timeout', 504);
       else if (controller.signal.aborted) return;
       else fail(headersSent ? 'operator_stream_failed' : 'operator_unreachable', 502);
     } finally {
       clearTimeout(timer);
+      controller.signal.removeEventListener('abort', cancelReader);
+      reader?.releaseLock();
       if (this.inflight.get(requestId) === controller) this.inflight.delete(requestId);
+      // A captured private port must expire after the HTTP response completes,
+      // as well as on abort/detach. Completion cannot leave reusable authority.
+      controller.abort();
     }
   }
 }

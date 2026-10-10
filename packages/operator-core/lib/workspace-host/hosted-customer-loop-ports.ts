@@ -7,7 +7,7 @@ import { dispatchProjectedTool, lookupByMcpName, type DispatchProjectedDeps,
 import type { ModelPort, ModelRequest } from '../agent-loop/model-port';
 import { capabilityToolset, type ToolDispatcher, type DispatchResult } from '../agent-loop/capability-toolset';
 import { createOperatorOwnedLoopPort, type OperatorOwnedLoopPortOptions } from '../agent-loop/headless-invoke';
-import type { HostedWorkspaceHostSessionAdapter } from './hosted-session-host';
+import type { HostedWorkspaceHostSessionAdapter, HostedCustomerOperatorHttpHandler } from './hosted-session-host';
 import { awaitHostedCustomerOperation, bindHostedCustomerCommandExecutor, type HostedCustomerCommandDependencies,
   type HostedCustomerSessionBinding } from './hosted-customer-command';
 
@@ -24,6 +24,54 @@ export interface HostedCustomerLoopPortDependencies extends HostedCustomerComman
 }
 
 const SHELL_TOOL = 'capability:bash';
+
+/** Prepare the existing native chat turn door on the VM's PRIVATE relay path.
+ * Production does not install this callback until model/budget and customer OS
+ * acceptance exists; the public/default HTTP native guard remains in force.
+ * The route adapter owns prompt/persistence semantics and receives a port bound
+ * to this exact request. JSON/header/account labels cannot create that port. */
+export function createHostedCustomerChannelHttpHandler(
+  deps: Omit<HostedCustomerLoopPortDependencies, 'resolvePrincipal' | 'sessionHeaders' | 'signal'> & {
+    readonly workspaceId: string;
+    readonly flushTelemetry?: OperatorOwnedLoopPortOptions['flushTelemetry'];
+    readonly handleNativeRequest: (request: Request,
+      port: ReturnType<typeof createOperatorOwnedLoopPort>) => Promise<Response>;
+  },
+): HostedCustomerOperatorHttpHandler {
+  const { handleNativeRequest, ...ports } = { ...deps };
+  return async (request, { sessionHost, channelId }) => {
+    const path = new URL(request.url).pathname;
+    if (request.method !== 'POST' || !/^\/api\/harness\/[^/]+\/agent-chats\/[^/]+\/messages$/.test(path)) return undefined;
+    let body: unknown;
+    try { body = await request.clone().json(); } catch { return undefined; }
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || (body as Record<string, unknown>).engine !== 'loop') return undefined;
+    try {
+      // Capture request lifetime before constructing a reusable invocation port.
+      // Even a caller omitting invoke.signal remains bound to this request.
+      const signal = sessionHost.customerInvocationSignal(channelId, request.signal);
+      if (signal.aborted) throw new Error('hosted_customer_execution_denied');
+      const requestHost: typeof sessionHost = Object.freeze({
+        customerInvocationSignal: (id, callerSignal) => {
+          if (id !== channelId || signal.aborted) throw new Error('hosted_customer_execution_denied');
+          return sessionHost.customerInvocationSignal(id,
+            callerSignal ? AbortSignal.any([signal, callerSignal]) : signal);
+        },
+        resolveCustomerPrincipal: (id, callerSignal) => {
+          if (id !== channelId || signal.aborted) return Promise.resolve({ ok: false });
+          return sessionHost.resolveCustomerPrincipal(id,
+            callerSignal ? AbortSignal.any([signal, callerSignal]) : signal);
+        },
+      });
+      const port = createHostedCustomerChannelOwnedLoopPort({ ...ports, sessionHost: requestHost, channelId });
+      const response = await awaitHostedCustomerOperation(() => handleNativeRequest(request, port), signal);
+      if (!(response instanceof Response)) throw new Error('hosted_customer_execution_denied');
+      return response;
+    } catch {
+      return Response.json({ error: 'hosted_native_loop_unavailable' }, { status: 403 });
+    }
+  };
+}
 
 /** Compose the existing one-shot native host on the customer VM. The local
  * workspace pin is distinct from the control-plane customer-workspace id.

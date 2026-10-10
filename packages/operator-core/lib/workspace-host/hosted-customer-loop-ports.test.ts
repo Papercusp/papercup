@@ -10,7 +10,8 @@ import type { ModelPort, ModelRequest } from '../agent-loop/model-port';
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '../task-manager/enroll-sync';
 import { notifyTaskKillRequested } from '../task-manager/kill-notify';
 import { bindHostedCustomerChannelLoopPorts, bindHostedCustomerLoopPorts,
-  createHostedCustomerChannelOwnedLoopPort } from './hosted-customer-loop-ports';
+  createHostedCustomerChannelOwnedLoopPort, createHostedCustomerChannelHttpHandler } from './hosted-customer-loop-ports';
+import { HostedWorkspaceHostSessionAdapter, type HostedHostOutboundEnvelope } from './hosted-session-host';
 
 vi.mock('../task-manager/enroll-sync', () => ({
   beginSyncEnrolment: vi.fn(() => ({ taskId: 'testcustomertask', enrolled: true })),
@@ -58,8 +59,111 @@ const request: ModelRequest = { model: 'fixture/model', messages: [] };
 async function consume(port: ModelPort, req = request) {
   const events = []; for await (const event of port.stream(req)) events.push(event); return events;
 }
+function commandResult(result: unknown): unknown {
+  // flattenDispatchResult parses a single JSON text item. A dispatcher advisory
+  // makes it plain text instead; both carry the same first command receipt.
+  return typeof result === 'string' ? JSON.parse(result.split('\n')[0]) : result;
+}
 
 describe('private customer loop port composition', () => {
+  it('binds an actual relay HTTP request to the native factory without header or ambient authority', async () => {
+    vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'vm-release');
+    const f = await fixture();
+    const requests: ModelRequest[] = [];
+    const modelFactory = vi.fn((): ModelPort => ({ async *stream(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        yield { type: 'tool_call', id: 'http-command', name: 'capability:bash', input: { command: 'printf native-http' } };
+        yield { type: 'stop', reason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+      } else {
+        yield { type: 'text_delta', text: 'http customer done' };
+        yield { type: 'stop', reason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+      }
+    } }));
+    const events: unknown[] = [];
+    const input = { role: 'worker', prompt: 'fixture route prompt', model: 'openrouter/fixture/model',
+      runId: 'http-native-run', featureId: null, chunkId: null, workspaceId: 'vm-local-workspace',
+      harnessSlug: 'customer-harness', projectDir: project, cwd: project, stateDir: join(project, '.papercusp'),
+      emit: (event: unknown) => events.push(event) };
+    let capturedPort: ReturnType<typeof createHostedCustomerChannelOwnedLoopPort> | undefined;
+    const handleNativeRequest = vi.fn(async (_request: Request, port: NonNullable<typeof capturedPort>) => {
+      capturedPort = port;
+      return Response.json(await port.invoke(input));
+    });
+    const handleRequest = createHostedCustomerChannelHttpHandler({ workspaceId: 'vm-local-workspace',
+      customerWorkspaceId: 'customer-workspace', projectDir: project, transform: f.transform,
+      lookupTool: () => f.tool, dispatchDeps: { recordInvocation: f.telemetry }, createModelPort: modelFactory,
+      flushTelemetry: async () => {}, handleNativeRequest });
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const fetch = vi.fn(async () => new Response('ambient'));
+    let adapter!: HostedWorkspaceHostSessionAdapter;
+    adapter = new HostedWorkspaceHostSessionAdapter({ workspaceRoot: project,
+      binding: { controlPlaneWorkspaceId: 'control-workspace', organizationId: 'customer-org',
+        customerWorkspaceId: 'customer-workspace', hostId: 'host', routeLabel: 'route',
+        generation: 1, transport: 'websocket', state: 'active' },
+      operatorHttp: { fetch, handleRequest }, send: message => {
+        sent.push(message);
+        if (message.type === 'session.authorize') queueMicrotask(() => {
+          // Mock authenticated control-plane ledger response, not customer acceptance.
+          void adapter.accept({ ...message, type: 'session.authorized', authority: {
+            controlPlaneWorkspaceId: 'control-workspace', organizationId: 'customer-org',
+            customerWorkspaceId: 'customer-workspace', userId: 'customer-user',
+            sessionId: 'authenticated-session', sessionVersion: 1, permissions: ['workspace:operate'],
+          } });
+        });
+      },
+    });
+    try {
+      await adapter.accept({ type: 'relay.open', channelId: 'http', kind: 'operator-http',
+        audience: 'workspace-operator', role: 'controller', userId: 'customer-user', hostedSessionId: 'authenticated-session' });
+      await adapter.accept({ type: 'relay', channelId: 'http', payload: { type: 'http.request', requestId: 'native',
+        method: 'POST', path: '/api/harness/h/agent-chats/c/messages',
+        headers: { 'content-type': 'application/json', 'x-papercusp-hosted-user-id': 'forged', cookie: 'stolen' },
+        body: Buffer.from(JSON.stringify({ engine: 'loop', account: 'forged', ownerId: 'forged' })).toString('base64') } });
+      const payloads = sent.filter(m => m.type === 'relay').map(m => m.payload as Record<string, unknown>);
+      expect(payloads).toContainEqual(expect.objectContaining({ type: 'http.response', status: 200 }));
+      expect(fetch).not.toHaveBeenCalled(); expect(handleNativeRequest).toHaveBeenCalledTimes(1);
+      expect(modelFactory).toHaveBeenCalledWith(expect.objectContaining({ userId: 'customer-user',
+        sessionId: 'authenticated-session', selectedWorkspaceId: 'customer-workspace' }), expect.any(AbortSignal));
+      expect(requests).toHaveLength(2); expect(requests[0].ownerId).toBe('customer-user');
+      expect(f.transform).toHaveBeenCalledTimes(1); expect(f.localHandler).not.toHaveBeenCalled();
+      const result = events.find(event => (event as { type: string }).type === 'tool_result') as { result: unknown };
+      expect(commandResult(result.result)).toMatchObject({ output: 'native-http', exit_code: 0 });
+      // The saved port expires when the HTTP response completes even if invoke
+      // omits its own signal and the channel remains connected.
+      expect(await capturedPort!.invoke(input)).toEqual({ exitCode: 1, stderr: 'owned-loop customer execution host unavailable' });
+      expect(requests).toHaveLength(2);
+    } finally { adapter.close(); }
+  });
+
+  it('claims only native message turns and sanitizes private route errors', async () => {
+    const f = await fixture();
+    const handleNativeRequest = vi.fn(async () => { throw new Error('private-secret'); });
+    const handler = createHostedCustomerChannelHttpHandler({ workspaceId: 'vm-local-workspace',
+      customerWorkspaceId: 'customer-workspace', projectDir: project, transform: f.transform,
+      lookupTool: () => f.tool, dispatchDeps: {}, createModelPort: f.modelFactory, handleNativeRequest });
+    const context = { channelId: 'http', sessionHost: {
+      customerInvocationSignal: vi.fn(() => f.controller.signal), resolveCustomerPrincipal: vi.fn(() => f.resolve(new Headers())) } };
+    for (const [method, path, body] of [
+      ['GET', '/api/harness/h/agent-chats/c/messages', undefined],
+      ['POST', '/api/operator/conversations', JSON.stringify({ engine: 'loop' })],
+      ['POST', '/api/harness/h/agent-chats/c/messages', JSON.stringify({ engine: 'omp' })],
+      ['POST', '/api/harness/h/agent-chats/c/messages', 'invalid-json'],
+    ] as const) {
+      expect(await handler(new Request(`http://127.0.0.1${path}`, { method, ...(body ? { body } : {}) }), context)).toBeUndefined();
+    }
+    expect(handleNativeRequest).not.toHaveBeenCalled();
+    const response = await handler(new Request('http://127.0.0.1/api/harness/h/agent-chats/c/messages',
+      { method: 'POST', body: JSON.stringify({ engine: 'loop' }) }), context);
+    expect(response?.status).toBe(403);
+    expect(await response?.text()).toBe('{"error":"hosted_native_loop_unavailable"}');
+    handleNativeRequest.mockResolvedValue(undefined as never);
+    const malformed = await handler(new Request('http://127.0.0.1/api/harness/h/agent-chats/c/messages',
+      { method: 'POST', body: JSON.stringify({ engine: 'loop' }) }), context);
+    expect(malformed?.status).toBe(403);
+    expect(f.transform).not.toHaveBeenCalled(); expect(f.modelFactory).not.toHaveBeenCalled();
+  });
+
   it('composes an owned native invocation with exact channel authority and customer commands', async () => {
     vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'vm-release');
     const f = await fixture();
@@ -92,8 +196,7 @@ describe('private customer loop port composition', () => {
     expect(f.localHandler).not.toHaveBeenCalled();
     expect(f.transform).toHaveBeenCalledTimes(1);
     const resultEvent = input.emit.mock.calls.map(call => call[0]).find(event => event.type === 'tool_result');
-    // The projected dispatcher may append its provenance advisory to text content.
-    expect(JSON.parse(resultEvent.result.split('\n')[0])).toMatchObject({ output: 'native-customer', exit_code: 0 });
+    expect(commandResult(resultEvent.result)).toMatchObject({ output: 'native-customer', exit_code: 0 });
     expect(flushTelemetry).toHaveBeenCalledTimes(1);
     f.controller.abort();
     expect(await host.invoke(input)).toEqual({ exitCode: 1, stderr: 'owned-loop customer execution host unavailable' });
