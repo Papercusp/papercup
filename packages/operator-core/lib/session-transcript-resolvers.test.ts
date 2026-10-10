@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import type { Sql } from 'postgres';
 import {
   findCodexLiveThreadId,
   findCodexRolloutPath,
@@ -16,9 +18,106 @@ import {
   ompAgentHomeForSessionKey,
   ompSessionsRootForSessionKey,
   __resetTranscriptResolverCaches,
+  readClosedCodexSessionUsage,
+  readClosedCodexRuntimeUsage,
 } from './session-transcript-resolvers';
 
 afterEach(() => __resetTranscriptResolverCaches());
+
+describe('complete closed Codex source accounting', () => {
+  const session = '11111111-2222-3333-4444-555555555555';
+  const line = (value: unknown) => JSON.stringify(value) + '\n';
+  const transcript = line({ type: 'session_meta', payload: { id: session } }) +
+    line({ type: 'turn_context', payload: { turn_id: 'turn-1', model: 'configured-alias' } }) +
+    line({ type: 'event_msg', payload: { type: 'token_count', info: {
+      total_token_usage: { input_tokens: 100, output_tokens: 10 },
+      last_token_usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 },
+    } } }) + line({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } });
+  async function fixture(run: (input: { home: string; file: string; sql: Sql; calls: unknown[][] }) => Promise<void>,
+    frontier: unknown = { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: true, fileGeneration: 0 } }) {
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-complete-source-'));
+    const dir = join(home, 'sessions', '2026', '10', '09');
+    await fs.mkdir(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-10-09T00-00-00-${session}.jsonl`);
+    await fs.writeFile(file, transcript);
+    const calls: unknown[][] = [];
+    const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => { calls.push(values); return frontier ? [frontier] : []; }) as unknown as Sql;
+    try { await run({ home, file, sql, calls }); } finally { await fs.rm(home, { recursive: true, force: true }); }
+  }
+  const read = (sql: Sql, home: string) => readClosedCodexSessionUsage(sql, { workspaceId: 'bench-private', codexHome: home, nativeSessionId: session });
+
+  it('binds exact native tokens to full bytes and a workspace-scoped canonical frontier without fabricating billed dollars', async () => {
+    await fixture(async ({ home, file, sql, calls }) => {
+      const result = await read(sql, home);
+      expect(result).toMatchObject({ ok: true, file, sourceSha256: createHash('sha256').update(transcript).digest('hex'), nativeTurnIds: ['turn-1'] });
+      expect(calls).toEqual([['bench-private', file]]);
+      expect(result).not.toHaveProperty('billedInferenceMicros');
+      if (result.ok) expect(result.events[0].usage).toMatchObject({ inputTokens: 80, cacheReadTokens: 20, cacheCreationTokens: 0 });
+    });
+  });
+  it.each([
+    ['missing', null],
+    ['partial', { byte_offset: '0', parser_state: { initialized: true } }],
+    ['beyond source', { byte_offset: String(Buffer.byteLength(transcript) + 1), parser_state: { initialized: true } }],
+    ['uninitialized', { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: false } }],
+    ['bootstrap', { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: true, bootstrapOffset: 0 } }],
+    ['invalid generation', { byte_offset: String(Buffer.byteLength(transcript)), parser_state: { initialized: true, fileGeneration: -1 } }],
+  ])('refuses a %s frontier', async (_name, frontier) => {
+    await fixture(async ({ home, sql }) => { expect(await read(sql, home)).toMatchObject({ ok: false }); }, frontier);
+  });
+  it('refuses a source modified during frontier IO', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const changing = (async (...args: unknown[]) => {
+        const rows = await (sql as unknown as (...args: unknown[]) => Promise<unknown>)(...args);
+        await fs.appendFile(file, line({ type: 'response_item', payload: { type: 'message' } }));
+        return rows;
+      }) as unknown as Sql;
+      expect(await read(changing, home)).toMatchObject({ ok: false, detail: expect.stringMatching(/changed/) });
+    });
+  });
+  it('refuses a replaced source even when its byte length is unchanged', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const replacing = (async (...args: unknown[]) => {
+        const rows = await (sql as unknown as (...args: unknown[]) => Promise<unknown>)(...args);
+        await fs.rename(file, file + '.old'); await fs.writeFile(file, transcript);
+        return rows;
+      }) as unknown as Sql;
+      expect(await read(replacing, home)).toMatchObject({ ok: false, detail: expect.stringMatching(/changed/) });
+    });
+  });
+  it('refuses a symlink to source bytes in another runtime', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const outside = join(home, 'other-runtime.jsonl');
+      await fs.rename(file, outside); await fs.symlink(outside, file);
+      expect(await read(sql, home)).toMatchObject({ ok: false });
+    });
+  });
+  it('includes earlier native carry sources rather than returning only the latest session', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const old = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      await fs.writeFile(file.replace(session, old), transcript.replace(session, old));
+      const result = await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home });
+      expect(result.complete).toBe(true);
+      expect(result.sessions.map(source => source.nativeSessionId)).toEqual([session, old]);
+    });
+  });
+  it('retains complete sources while marking an open predecessor incomplete', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      const old = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      await fs.writeFile(file.replace(session, old), transcript.replace(session, old).trimEnd());
+      const result = await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home });
+      expect(result.complete).toBe(false);
+      expect(result.sessions).toHaveLength(2);
+      expect(result.sessions.map(source => source.usage.ok)).toEqual([true, false]);
+    });
+  });
+  it('refuses an ambiguous duplicated native session source', async () => {
+    await fixture(async ({ home, file, sql }) => {
+      await fs.writeFile(file.replace('00-00-00', '01-00-00'), transcript);
+      expect(await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home })).toEqual({ complete: false, sessions: [] });
+    });
+  });
+});
 
 describe('findCodexRolloutPath', () => {
   it('resolves the NEWEST rollout under sessions/<y>/<m>/<d>/ (a resume adds a second file)', async () => {

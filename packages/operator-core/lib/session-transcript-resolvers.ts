@@ -21,9 +21,119 @@
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import type { Sql } from 'postgres';
 import type { IdentityTurnUsageBinding, IdentityTurnBilledCost } from './cupboard/shadow-metering-reader';
+import type { ClosedCodexSessionPopulation } from './interactive-usage/ingest-adapters';
+
+class CodexSourceProofError extends Error {
+  constructor(readonly code: Exclude<IdentityTurnBilledCost, { ok: true }>['code'], detail: string) { super(detail); }
+}
+
+/** One stable, complete host-owned source for both token and monetary proofs. */
+async function readCompleteCodexSource(binding: { nativeSessionId: string; codexHome: string }) {
+  const [{ constants }, path] = await Promise.all([import('node:fs'), import('node:path')]);
+  const file = await findCodexRolloutPathByUuid(binding.nativeSessionId, { homeOverride: binding.codexHome });
+  if (!file) throw new CodexSourceProofError('identity-usage-incomplete', 'the host native transcript is unavailable');
+  const root = await fs.realpath(path.join(binding.codexHome, 'sessions'));
+  const realFile = await fs.realpath(file), relative = path.relative(root, realFile);
+  if (realFile !== file || !relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    throw new CodexSourceProofError('identity-usage-binding-mismatch', 'the native transcript must belong to this exact runtime home');
+  }
+  const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.size <= 0 || before.size > 16 * 1024 * 1024) throw new CodexSourceProofError('identity-usage-incomplete', 'native transcript size is incomplete or unbounded');
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (read.bytesRead === 0) throw new CodexSourceProofError('identity-usage-incomplete', 'the native transcript changed during proof');
+      offset += read.bytesRead;
+    }
+    const unchanged = async () => {
+      const after = await fs.lstat(file);
+      return after.isFile() && before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+        before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs;
+    };
+    if (!await unchanged()) throw new CodexSourceProofError('identity-usage-incomplete', 'the native transcript changed during proof');
+    const transcript = bytes.toString('utf8');
+    if (!Buffer.from(transcript, 'utf8').equals(bytes)) throw new CodexSourceProofError('identity-usage-incomplete', 'the native source is not complete UTF-8');
+    return { file, transcript, sourceSha256: createHash('sha256').update(bytes).digest('hex'), unchanged };
+  } finally { await handle.close(); }
+}
+
+export type ClosedCodexSessionUsage =
+  (Extract<ClosedCodexSessionPopulation, { ok: true }> & { readonly file: string; readonly sourceSha256: string }) |
+  Extract<ClosedCodexSessionPopulation, { ok: false }>;
+
+/** Complete session token census from native bytes plus the atomic ingest
+ * frontier. Never promotes estimated/list-price costs to provider bills.
+ * The authenticated execution host must verify process termination and supply
+ * the exact home/session binding; this reader does not discover participants. */
+export async function readClosedCodexSessionUsage(sql: Sql, input: {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly codexHome: string;
+}): Promise<ClosedCodexSessionUsage> {
+  const binding = { ...input };
+  const fail = (detail: string): ClosedCodexSessionUsage => ({ ok: false, detail });
+  if ([binding.workspaceId, binding.nativeSessionId, binding.codexHome].some(v => typeof v !== 'string' || !v.trim())) {
+    return fail('an exact workspace, native session and host-owned home are required');
+  }
+  try {
+    const source = await readCompleteCodexSource(binding);
+    const [frontier] = await sql<{ byte_offset: string; parser_state: { fileGeneration?: number; initialized?: boolean; bootstrapOffset?: number } }[]>`
+      SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
+      WHERE workspace_id = ${binding.workspaceId} AND file_path = ${source.file}`;
+    if (!frontier || frontier.parser_state?.initialized !== true || frontier.parser_state.bootstrapOffset !== undefined ||
+        Number(frontier.byte_offset) !== Buffer.byteLength(source.transcript)) {
+      return fail('the canonical ingest frontier must cover the entire native source');
+    }
+    const { closedCodexSessionPopulation } = await import('./interactive-usage/ingest-adapters');
+    const population = closedCodexSessionPopulation({ transcript: source.transcript, file: source.file,
+      fileGeneration: frontier.parser_state.fileGeneration ?? 0, nativeSessionId: binding.nativeSessionId });
+    if (!population.ok) return population;
+    if (!await source.unchanged()) return fail('the native source changed while reconciling its frontier');
+    return { ...population, file: source.file, sourceSha256: source.sourceSha256 };
+  } catch { return fail('the complete native source and canonical frontier could not be verified'); }
+}
+
+/** Source-defined carry/recovery census within one host-allocated runtime home.
+ * A latest adv_sessions.session_id is not the population: a carry can leave
+ * multiple native transcripts behind. Bound and re-read the directory census,
+ * retaining an explicit failure for each unreadable/incomplete source. */
+export async function readClosedCodexRuntimeUsage(sql: Sql, input: {
+  readonly workspaceId: string; readonly codexHome: string;
+}): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] }> {
+  const binding = { ...input };
+  const list = async () => {
+    const root = join(binding.codexHome, 'sessions');
+    const found: string[] = [];
+    let entries = 0;
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      const children = await fs.readdir(dir, { withFileTypes: true });
+      entries += children.length;
+      if (entries > 5000) throw new Error('native source directory census exceeds its bound');
+      for (const child of children) {
+        if (child.isDirectory() && depth < 3 && /^\d+$/.test(child.name)) { await walk(join(dir, child.name), depth + 1); continue; }
+        if (!child.isFile()) throw new Error('native source directory contains a noncanonical entry');
+        const match = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(child.name);
+        if (!match || depth !== 3) throw new Error('native source directory contains an unidentified source');
+        found.push(match[1].toLowerCase());
+      }
+    };
+    await walk(root, 0);
+    if (!found.length || found.length > 1000 || new Set(found).size !== found.length) throw new Error('native source census is empty or ambiguous');
+    return found.sort();
+  };
+  try {
+    if ([binding.workspaceId, binding.codexHome].some(v => typeof v !== 'string' || !v.trim())) throw new Error('missing runtime binding');
+    const ids = await list();
+    const sessions: { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] = [];
+    for (const nativeSessionId of ids) sessions.push({ nativeSessionId, usage: await readClosedCodexSessionUsage(sql, { ...binding, nativeSessionId }) });
+    return { complete: JSON.stringify(ids) === JSON.stringify(await list()) && sessions.every(source => source.usage.ok), sessions };
+  } catch { return { complete: false, sessions: [] }; }
+}
 
 /** Trusted Codex host resolver. The native home is a runtime capability owned
  * by the authenticated engine, never a command argument. Full source defines
@@ -39,37 +149,11 @@ export async function readClosedCodexTurnBilledCost(sql: Sql,
     return fail('identity-usage-invalid-binding', 'a closed host turn needs its exact native runtime and identity');
   }
   try {
-    const [{ promises: fs, constants }, path, { readIdentityTurnBilledCost }, { closedCodexTurnPopulation }] = await Promise.all([
-      import('node:fs'), import('node:path'), import('./cupboard/shadow-metering-reader'), import('./interactive-usage/ingest-adapters'),
+    const [{ readIdentityTurnBilledCost }, { closedCodexTurnPopulation }] = await Promise.all([
+      import('./cupboard/shadow-metering-reader'), import('./interactive-usage/ingest-adapters'),
     ]);
-    const file = await findCodexRolloutPathByUuid(binding.nativeSessionId, { homeOverride: binding.codexHome });
-    if (!file) return fail('identity-usage-incomplete', 'the host native transcript is unavailable');
-    const root = await fs.realpath(path.join(binding.codexHome, 'sessions'));
-    const realFile = await fs.realpath(file), relative = path.relative(root, realFile);
-    if (realFile !== file || !relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
-      return fail('identity-usage-binding-mismatch', 'the native transcript must belong to this exact runtime home');
-    }
-    const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-    let transcript: string;
-    try {
-      const before = await handle.stat();
-      if (!before.isFile() || before.size <= 0 || before.size > 16 * 1024 * 1024) {
-        return fail('identity-usage-incomplete', 'the complete native transcript exceeds the bounded proof reader');
-      }
-      const bytes = Buffer.alloc(before.size);
-      let offset = 0;
-      while (offset < bytes.length) {
-        const read = await handle.read(bytes, offset, bytes.length - offset, offset);
-        if (read.bytesRead === 0) return fail('identity-usage-incomplete', 'the native transcript changed during proof');
-        offset += read.bytesRead;
-      }
-      const after = await handle.stat();
-      if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
-        return fail('identity-usage-incomplete', 'the native transcript changed during proof');
-      }
-      transcript = bytes.toString('utf8');
-      if (!Buffer.from(transcript, 'utf8').equals(bytes)) return fail('identity-usage-incomplete', 'the native source is not complete UTF-8');
-    } finally { await handle.close(); }
+    const source = await readCompleteCodexSource(binding);
+    const { file, transcript } = source;
     const [frontier] = await sql<{ byte_offset: string; parser_state: { fileGeneration?: number; initialized?: boolean; bootstrapOffset?: number } }[]>`
       SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
       WHERE workspace_id = ${binding.workspaceId} AND file_path = ${file}`;
@@ -84,8 +168,10 @@ export async function readClosedCodexTurnBilledCost(sql: Sql,
       return fail('identity-usage-incomplete', 'the atomic ingest frontier does not cover the full native turn closure');
     }
     const cost = await readIdentityTurnBilledCost(sql, { ...binding, usageEventKeys: population.usageEventKeys });
+    if (!await source.unchanged()) return fail('identity-usage-incomplete', 'the native source changed while verifying its bill');
     return cost.ok ? { ...cost, usageEventKeys: population.usageEventKeys } : cost;
-  } catch {
+  } catch (error) {
+    if (error instanceof CodexSourceProofError) return fail(error.code, error.message);
     return fail('identity-usage-unavailable', 'the complete native source and canonical billed proof could not be verified');
   }
 }
