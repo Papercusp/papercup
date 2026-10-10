@@ -925,6 +925,32 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(args[1]).toContain((r as { normalizedLogPath: string }).normalizedLogPath);
   }, 10_000);
 
+  it('forwards a known launcher into the pty host environment without inventing one', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7780));
+    await spawnHeadless({
+      envelope,
+      label: 'launched',
+      launchedBy: '  su-launching-agent  ',
+      ...noSystemdRun,
+    });
+    let [, , options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      { env?: Record<string, string | undefined> },
+    ];
+    expect(options.env?.PAPERCUSP_LAUNCHED_BY).toBe('su-launching-agent');
+
+    spawnMock.mockReset();
+    spawnMock.mockImplementation(() => fakeChild(7781));
+    await spawnHeadless({ envelope, label: 'unmarked', ...noSystemdRun });
+    [, , options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      { env?: Record<string, string | undefined> },
+    ];
+    expect(options.env?.PAPERCUSP_LAUNCHED_BY).toBeUndefined();
+  }, 10_000);
+
   it('passes the kickoff proof token through the child environment without putting it in argv', async () => {
     const routes = [
       { label: 'direct-bash', expectedBin: 'bash', spawnCommandProbes: { hasSystemdRun: () => false } },

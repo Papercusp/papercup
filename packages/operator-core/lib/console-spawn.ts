@@ -2681,8 +2681,13 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
   }
   const logPath = headlessLogPath({ logDir, label });
   const normalizedLogPath = opts.normalizedLogPath?.trim() || headlessNormalizedLogPath(logPath);
+  const launchedBy = opts.launchedBy?.trim();
   const launchEnv = {
     ...envelope.env,
+    // The pty host records agent-vs-human provenance from this environment key.
+    // The launcher also puts the caller in opts.launchedBy and the greeting argv,
+    // but neither the argv nor the task ledger populates the host's process env.
+    ...(launchedBy ? { PAPERCUSP_LAUNCHED_BY: launchedBy } : {}),
     // Keep the raw stdout log byte-oriented for existing lifecycle/activity
     // consumers. The managed pty host reads this separate path and writes its
     // bounded ANSI-free companion without changing that contract.

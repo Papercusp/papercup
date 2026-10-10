@@ -50,10 +50,17 @@ describe('exact turn billed-cost evidence', () => {
   it('reads an exact expected population, keeps integer cost and retained evidence identities', async () => {
     const { sql, calls } = recordingSql(() => [row]);
     expect(await readIdentityTurnBilledCost(sql, binding)).toEqual({ ok: true, billedInferenceMicros: 999n,
-      samples: [{ usageEventKey: key, sampleId: '101', activationEventId: '7' }] });
+      samples: [{ usageEventKey: key, sampleId: '101', activationEventId: '7', billedInferenceMicros: '999' }] });
     expect(calls[0]!.text).toContain('agent_usage_samples_identity_attribution');
     expect(calls[0]!.values).toEqual(['workspace', [key]]);
     expect(isReadOnlyStatement(calls[0]!.text)).toBe(true);
+  });
+  it('retains distinct billed amounts for multiple requests in one native turn', async () => {
+    const secondKey = 'b'.repeat(64);
+    expect(await read([row, { ...row, usage_event_key: secondKey, sample_id: '102', cost_micros: '1001' }],
+      { ...binding, usageEventKeys: [key, secondKey] })).toEqual({ ok: true, billedInferenceMicros: 2000n,
+      samples: [{ usageEventKey: key, sampleId: '101', activationEventId: '7', billedInferenceMicros: '999' },
+        { usageEventKey: secondKey, sampleId: '102', activationEventId: '7', billedInferenceMicros: '1001' }] });
   });
 
   it('refuses each changed identity, principal and native-turn binding', async () => {

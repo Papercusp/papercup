@@ -227,7 +227,8 @@ describe('source-bound current benchmark cost', () => {
   it('passes the exact host-native population to the accounting verifier', async () => {
     const f = costFixture(); await f.read();
     expect(f.ports.readAttemptAccountingComplete).toHaveBeenCalledWith({ participants: [f.participant],
-      sources: [{ participant: f.participant, nativeSessionId: 'native-cost-1', usage: f.usage }] });
+      sources: [{ participant: f.participant, nativeSessionId: 'native-cost-1', usage: f.usage,
+        billed: { knownSubtotalUsd: 0.002, complete: true } }] });
   });
   it('rejects a new participant appearing during gateway reconciliation', async () => {
     const f = costFixture();

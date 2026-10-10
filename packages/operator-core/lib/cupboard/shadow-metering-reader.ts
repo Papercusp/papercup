@@ -227,7 +227,9 @@ export interface IdentityTurnUsageBinding {
 export type IdentityTurnBilledCost = {
   readonly ok: true;
   readonly billedInferenceMicros: bigint;
-  readonly samples: readonly { usageEventKey: string; sampleId: string; activationEventId: string }[];
+  readonly samples: readonly { usageEventKey: string; sampleId: string; activationEventId: string;
+    /** Decimal integer microUSD, retained per event for exact request reconciliation. */
+    billedInferenceMicros?: string }[];
 } | {
   readonly ok: false;
   readonly code: 'identity-usage-invalid-binding' | 'identity-usage-incomplete' |
@@ -300,7 +302,8 @@ export async function readIdentityTurnBilledCost(sql: Sql, input: IdentityTurnUs
       return fail('identity-usage-not-bill-grade', 'every usage event needs provider-reported nonnegative integer microUSD cost');
     }
     billedInferenceMicros += BigInt(money[1]!);
-    samples.push({ usageEventKey: row.usage_event_key, sampleId: row.sample_id, activationEventId: row.activation_event_id });
+    samples.push({ usageEventKey: row.usage_event_key, sampleId: row.sample_id, activationEventId: row.activation_event_id,
+      billedInferenceMicros: BigInt(money[1]!).toString() });
   }
   return { ok: true, billedInferenceMicros, samples };
 }

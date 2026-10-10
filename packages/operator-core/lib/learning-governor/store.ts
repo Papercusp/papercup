@@ -749,6 +749,9 @@ export interface SettleLearningSpendInput {
    * an explicit nonnegative microdollar value; unknown charges stay OPEN. */
   usedUsd?: number;
   note?: string | null;
+  /** Guard a source-bound reconciliation against a changed reservation. Checked
+   * under the row lock before releasing any headroom or writing a charge. */
+  expectedNoteSha256?: string;
   /**
    * true (default): the charge also bumps the registration's spent_usd — the
    * path for loops whose only spend store is the governor. false: ledger the
@@ -768,7 +771,7 @@ export type SettleLearningSpendResult =
       releasedUsd: number;
       overrunUsd: number;
     }
-  | { ok: false; reason: 'not-found' | 'already-settled' | 'exact-settlement-required' | 'cycle-settlement-required'; reservation: LearningSpendReservation | null };
+  | { ok: false; reason: 'not-found' | 'already-settled' | 'exact-settlement-required' | 'cycle-settlement-required' | 'reservation-changed'; reservation: LearningSpendReservation | null };
 
 /**
  * Close one attempt — the ONLY way an attempt leaves 'open'. Idempotent by
@@ -880,6 +883,10 @@ export async function settleLearningSpend(
     const current = mapReservation(rows[0]);
     if (current.status !== 'open') {
       return { ok: false, reason: 'already-settled', reservation: current };
+    }
+    if (q.expectedNoteSha256 !== undefined && (!/^[a-f0-9]{64}$/.test(q.expectedNoteSha256) ||
+        createHash('sha256').update(current.note ?? '').digest('hex') !== q.expectedNoteSha256)) {
+      return { ok: false, reason: 'reservation-changed', reservation: current };
     }
     // Identify the original exact grant from durable provenance, not today's
     // registration settings, which may have changed since it was reserved.

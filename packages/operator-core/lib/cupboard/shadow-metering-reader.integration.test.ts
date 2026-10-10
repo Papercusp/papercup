@@ -386,7 +386,7 @@ describe('readShadowStatement (P-003)', () => {
       const initial = await readIdentityTurnBilledCost(db.sql, binding);
       expect(initial.ok, initial.ok ? 'verified' : `${initial.code}: ${initial.detail}`).toBe(true);
       expect(initial).toMatchObject({ ok: true, billedInferenceMicros: 999n,
-        samples: [{ usageEventKey, sampleId: '201', activationEventId: expect.any(String) }] });
+        samples: [{ usageEventKey, sampleId: '201', activationEventId: expect.any(String), billedInferenceMicros: '999' }] });
       expect(await readIdentityTurnBilledCost(db.sql, { ...binding, principalId: 'other' }))
         .toMatchObject({ ok: false, code: 'identity-usage-binding-mismatch' });
       expect(await readIdentityTurnBilledCost(db.sql, { ...binding, specificationRevision: SPEC_NEWER }))

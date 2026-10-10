@@ -42,6 +42,11 @@ export interface CurrentBenchAccountingBinding {
 interface NativeAccountingSource {
   participant: NativeCostParticipant; nativeSessionId: string;
   usage: Extract<ClosedCodexSessionUsage, { ok: true }>;
+  billed?: NativeBillPopulation;
+}
+interface NativeBillPopulation {
+  knownSubtotalUsd: number; complete: boolean;
+  samples?: readonly { usageEventKey: string; sampleId: string; activationEventId: string; billedInferenceMicros?: string }[];
 }
 interface NativeAccountingPopulation {
   participants: readonly NativeCostParticipant[]; sources: readonly NativeAccountingSource[];
@@ -123,7 +128,7 @@ export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccoun
 export interface CurrentBenchNativeCostReaderPorts {
   readParticipants(): Promise<NativeCostParticipant[]>;
   readRuntime(participant: NativeCostParticipant): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] }>;
-  readBilled(participant: NativeCostParticipant, nativeSessionId: string, usage: Extract<ClosedCodexSessionUsage, { ok: true }>): Promise<{ knownSubtotalUsd: number; complete: boolean }>;
+  readBilled(participant: NativeCostParticipant, nativeSessionId: string, usage: Extract<ClosedCodexSessionUsage, { ok: true }>): Promise<NativeBillPopulation>;
   /** Full source-bound gateway attempt reconciliation is separate from a native
    * transcript census. Omission keeps efficiency claims closed. */
   readAttemptAccountingComplete?(population: NativeAccountingPopulation): Promise<boolean>;
@@ -180,8 +185,9 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
         }
         result.turns += usage.nativeTurnIds.length; result.costUsd += priced;
         sources.push({ nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256 });
-        if (source.usage.ok) accountingSources.push({ participant, nativeSessionId: source.nativeSessionId, usage });
         const billed = await io.readBilled(participant, source.nativeSessionId, usage).catch(() => ({ knownSubtotalUsd: 0, complete: false }));
+        if (source.usage.ok) accountingSources.push({ participant, nativeSessionId: source.nativeSessionId, usage,
+          billed: { ...billed, ...('samples' in billed && billed.samples ? { samples: billed.samples.map(sample => ({ ...sample })) } : {}) } });
         if (!Number.isFinite(billed.knownSubtotalUsd) || billed.knownSubtotalUsd < 0) missingBills++;
         else { billedKnownSubtotalUsd += billed.knownSubtotalUsd; if (!billed.complete) missingBills++; }
       }
@@ -273,6 +279,7 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
           ON a.workspace_id = u.workspace_id AND a.id = u.id
         WHERE u.workspace_id = ${workspaceId} AND u.usage_event_key = ANY(${[...usage.usageEventKeys]}::text[])`;
       let complete = rows.length === usage.usageEventKeys.length, knownSubtotalUsd = 0;
+      const samples: NonNullable<NativeBillPopulation['samples']>[number][] = [];
       for (const nativeTurnId of usage.nativeTurnIds) {
         const expected = usage.events.filter(event => event.turnId === nativeTurnId).map(event => event.usageEventKey).sort();
         if (!expected.length) continue;
@@ -283,17 +290,21 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
               row.principal_id !== first.principal_id || row.specification_revision !== first.specification_revision || row.state_revision !== first.state_revision)) {
           complete = false; continue;
         }
+        // The full native source supplies this event population; the second
+        // runtime read below brackets it before settlement. A partial source
+        // may retain its earlier closed subtotal but cannot enter settlement.
         const cost = await readIdentityTurnBilledCost(sql, { workspaceId, ownerId: participant.ownerId,
           nativeSessionId, nativeTurnId, principalId: first.principal_id, specificationRevision: first.specification_revision,
           stateRevision: first.state_revision, usageEventKeys: expected });
         if (!cost.ok || cost.billedInferenceMicros > BigInt(Number.MAX_SAFE_INTEGER)) { complete = false; continue; }
         knownSubtotalUsd += Number(cost.billedInferenceMicros) / 1_000_000;
+        samples.push(...cost.samples);
       }
-      return { knownSubtotalUsd, complete };
+      return { knownSubtotalUsd, complete, samples };
     },
     ...(binding ? { async readAttemptAccountingComplete(population: NativeAccountingPopulation) {
       const { resolveDb } = await import('./reproducibility/db');
-      const { getLearningSpendPositions } = await import('../learning-governor/store');
+      const { getLearningSpendPositions, settleLearningSpend } = await import('../learning-governor/store');
       const { sql } = resolveDb({ ...db, workspaceId });
       const query = { workspaceId, loopId: binding.loopId, includeReservations: true };
       const before = (await getLearningSpendPositions(sql, query)).census;
@@ -311,7 +322,55 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
               canonicalJson(expected)) return false;
       }
       const after = (await getLearningSpendPositions(sql, query)).census;
-      return !!after && currentBenchAttemptPopulationMatches(binding, population, before, after);
+      if (!after || !currentBenchAttemptPopulationMatches(binding, population, before, after)) return false;
+      // Token reconciliation alone grants no settlement. Unknown/partial bills
+      // keep every reservation open and remain explicit in the result above.
+      if (population.sources.some(source => !source.billed?.complete || !source.billed.samples)) return true;
+      const bills = new Map<string, { source: NativeAccountingSource; sample: NonNullable<NativeBillPopulation['samples']>[number] }>();
+      for (const source of population.sources) {
+        for (const sample of source.billed!.samples!) {
+          if (bills.has(sample.usageEventKey) || !sample.sampleId || !sample.activationEventId ||
+              !/^(0|[1-9][0-9]*)$/.test(sample.billedInferenceMicros ?? '') ||
+              BigInt(sample.billedInferenceMicros!) > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+          bills.set(sample.usageEventKey, { source, sample });
+        }
+      }
+      if (canonicalJson(await io.readParticipants()) !== canonicalJson(population.participants)) return false;
+      const settlements: { row: typeof before.reservations[number]; usedUsd: number; proof: Record<string, string> }[] = [];
+      for (const row of before.reservations) {
+        const note = JSON.parse(row.note!), result = note.nativeGatewayAttemptResult as GatewayCarryTrialAttemptResult | undefined;
+        if (note.nativeGatewayAttempt.armId !== binding.assignmentId || result?.outcome === 'send-refused') continue;
+        if (result?.outcome !== 'response-completed') return false;
+        const source = population.sources.find(source => source.nativeSessionId === result.nativeSessionId);
+        const u = result.providerCompletion.usage;
+        const event = source?.usage.events.find(event => event.turnId === result.nativeTurnId &&
+          event.model === result.providerCompletion.model && event.inputTotalTokens === u.inputTokens &&
+          event.usage.outputTokens === u.outputTokens && event.usage.cacheReadTokens === u.cacheReadTokens &&
+          event.usage.cacheCreationTokens === u.cacheCreationTokens);
+        const bill = event && bills.get(event.usageEventKey);
+        if (!source || !bill || bill.source !== source) return false;
+        bills.delete(event!.usageEventKey);
+        const usedUsd = Number(BigInt(bill.sample.billedInferenceMicros!)) / 1_000_000;
+        const proof = { ...bill.sample, billedInferenceMicros: bill.sample.billedInferenceMicros!,
+          nativeSessionId: source.nativeSessionId, nativeTurnId: result.nativeTurnId!, sourceSha256: source.usage.sourceSha256 };
+        if (row.status !== 'open' && (row.status !== 'settled' || row.usedUsd !== usedUsd ||
+            canonicalJson(note.nativeGatewaySettlement) !== canonicalJson(proof))) return false;
+        settlements.push({ row, usedUsd, proof });
+      }
+      if (bills.size) return false;
+      for (const { row, usedUsd, proof } of settlements) {
+        if (row.status !== 'open') continue;
+        const settled = await settleLearningSpend(sql, { workspaceId, reservationId: row.id, disposition: 'used', usedUsd,
+          expectedNoteSha256: createHash('sha256').update(row.note!).digest('hex'),
+          note: JSON.stringify({ ...JSON.parse(row.note!), nativeGatewaySettlement: proof }) });
+        if (!settled.ok && (settled.reason !== 'already-settled' || settled.reservation?.status !== 'settled' ||
+            settled.reservation.usedUsd !== usedUsd ||
+            canonicalJson(JSON.parse(settled.reservation.note ?? 'null')?.nativeGatewaySettlement) !== canonicalJson(proof))) return false;
+      }
+      // A newly arrived request remains exposure and closes the claim even if
+      // earlier verified requests were settled successfully.
+      const final = (await getLearningSpendPositions(sql, query)).census;
+      return !!final && currentBenchAttemptPopulationMatches(binding, population, final, final);
     } } : {}),
   };
   return currentBenchNativeCostReader(protocol, io);

@@ -3,10 +3,32 @@ import assert from 'node:assert/strict';
 import { realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
+
+/** Read the same declared corpus as the real Docs API before allocating PG. */
+export async function preparePrivateDocsBrowserDocuments(repoRoot: string, selection = {
+  selectedDoc: 'branding.mdx', neighborDoc: 'index.mdx',
+  selectedHeading: 'Classic Identity', neighborHeading: 'What this is',
+}) {
+  const { resolveDocsRoot, resolveDocsSources } = await import('../lib/endpoint-route/routes/harness/project-docs');
+  const { readDocBody } = await import('../lib/harness/docs/doc-fs');
+  const docsRoot = await resolveDocsRoot(repoRoot);
+  const sources = await resolveDocsSources(repoRoot);
+  const bodies: Record<string, string> = {};
+  for (const [docId, heading] of [[selection.selectedDoc, selection.selectedHeading],
+    [selection.neighborDoc, selection.neighborHeading]]) {
+    const body = await readDocBody({ docsRoot, sources }, docId);
+    assert.ok(body, `Private Docs target ${docId} has no body in the configured corpus`);
+    assert.ok(body.split('\n').some(line => /^#{1,6}\s/.test(line) && line.replace(/^#{1,6}\s+/, '').trim() === heading),
+      `Private Docs target ${docId} lacks its expected heading ${heading}`);
+    bodies[docId] = body;
+  }
+  return { selection, bodies, docsRoot, sourcePaths: ['.papercusp/docs.json',
+    ...[selection.selectedDoc, selection.neighborDoc].map(docId => relative(repoRoot, join(docsRoot, docId)))] };
+}
 
 /** Match with-test-pg's six-character runtime allocation and the native fixture's
  * existing conservative socket limit before paying for PG startup/migrations. */

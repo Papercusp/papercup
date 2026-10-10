@@ -23,7 +23,8 @@ import { createInferenceGateway } from '../inference-gateway/gateway';
 import { createFailoverPool } from '../inference-gateway/account-failover';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
-import { registerLearningLoop, reserveLearningSpend, recordLearningSpendAttemptResult, getLearningSpendPositions } from '../learning-governor/store';
+import { registerLearningLoop, reserveLearningSpend, recordLearningSpendAttemptResult, getLearningSpendPositions,
+  settleLearningSpend, listLearningSpendEvents } from '../learning-governor/store';
 import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 import { startGatewayService } from '../inference-gateway/launch';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
@@ -263,8 +264,8 @@ describe('production native accounting with private PG and full source bytes', (
     expect(await accounting.read()).toMatchObject({ costUsdMeasurementMissing: false,
       armMeta: { nativeCostAccounting: { sourceCensusComplete: true, attemptAccountingComplete: true, billedCostUsd: 0.002 } } });
     const positions = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
-    expect(positions.positions.unsettledUsd).toBe(0.003);
-    expect(positions.census).toMatchObject({ status: 'complete', reservations: [{ status: 'open' }] });
+    expect(positions.positions).toMatchObject({ unsettledUsd: 0, usedUsd: 0.002 });
+    expect(positions.census).toMatchObject({ status: 'complete', reservations: [{ status: 'settled', usedUsd: 0.002 }] });
   });
   it('composes the issued host HTTP route, authenticated provider, SQL admission and native source census', async () => {
     const f = await costFixture(), protocol = currentProtocolFixture('PRIVATE', 60_000);
@@ -345,8 +346,9 @@ describe('production native accounting with private PG and full source bytes', (
       const denied = await send(); expect(denied.status).toBe(403); await denied.text();
       expect(provider).toHaveBeenCalledOnce();
       const final = await getLearningSpendPositions(sql, { workspaceId, loopId, includeReservations: true });
-      expect(final.positions.unsettledUsd).toBe(0.00012);
-      expect(final.census).toMatchObject({ status: 'complete', reservations: [{ status: 'open', usedUsd: 0 }] });
+      expect(final.positions).toMatchObject({ unsettledUsd: 0, usedUsd: 0.002 });
+      expect(final.positions.overrunAttempts).toBe(1);
+      expect(final.census).toMatchObject({ status: 'complete', reservations: [{ status: 'settled', usedUsd: 0.002 }] });
       if (final.census?.status !== 'complete') throw new Error('Incomplete private SQL census');
       const note = final.census.reservations[0].note!;
       expect(note).not.toContain('PRIVATE_HOST_PROVIDER_CREDENTIAL');
@@ -359,11 +361,43 @@ describe('production native accounting with private PG and full source bytes', (
     const f = await costFixture(), accounting = await f.accountingFixture();
     const recovered = await f.addSource(f.solver.home, f.solver.ownerId);
     const reviewer = await f.addParticipant('private-reviewer', 'private-reviewer-owner', f.solver.taskId);
+    await sql`UPDATE harness_shared.agent_usage_samples SET cost_usd = 0.007 WHERE identity_owner_id = ${reviewer.ownerId}`;
     await accounting.addAttempt(recovered); await accounting.addAttempt(reviewer);
     const result = await accounting.read();
     expect(result.costUsd).toBeCloseTo(0.00033, 10);
     expect(result).toMatchObject({ costUsdMeasurementMissing: false,
-      armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: 0.006 } } });
+      armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: 0.011 } } });
+    const positions = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
+    expect(positions.positions).toMatchObject({ usedUsd: 0.011, unsettledUsd: 0 });
+    if (positions.census?.status !== 'complete') throw new Error('Incomplete role settlement census');
+    expect(positions.census.reservations.map(row => row.status)).toEqual(['settled', 'settled', 'settled']);
+    expect(positions.census.reservations.map(row => row.usedUsd).sort()).toEqual([0.002, 0.002, 0.007]);
+  });
+  it('settles only the source-matched provider bill once and preserves its request provenance', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    await accounting.read(); await accounting.read();
+    const final = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
+    expect(final.positions).toMatchObject({ usedUsd: 0.002, unsettledUsd: 0 });
+    expect(await listLearningSpendEvents(sql, { workspaceId, loopId: accounting.binding.loopId })).toHaveLength(1);
+    if (final.census?.status !== 'complete') throw new Error('Incomplete settlement census');
+    const note = JSON.parse(final.census.reservations[0].note!);
+    expect(note).toMatchObject({ nativeGatewayAttemptResult: { outcome: 'response-completed' },
+      nativeGatewaySettlement: { billedInferenceMicros: '2000', nativeSessionId: f.solver.nativeSessionId,
+        nativeTurnId: f.solver.nativeTurnId, sourceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        usageEventKey: expect.stringMatching(/^[a-f0-9]{64}$/), sampleId: expect.any(String),
+        activationEventId: 'private-cost-activation' } });
+  });
+  it('refuses settlement when the reservation changed after its bill was matched', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    const before = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
+    if (before.census?.status !== 'complete') throw new Error('Incomplete settlement census');
+    const row = before.census.reservations[0];
+    const expectedNoteSha256 = createHash('sha256').update(row.note!).digest('hex');
+    await sql`UPDATE harness_shared.learning_spend_reservations SET note = note || ' ' WHERE id = ${row.id}`;
+    expect(await settleLearningSpend(sql, { workspaceId, reservationId: row.id, disposition: 'used', usedUsd: 0.002,
+      expectedNoteSha256 })).toMatchObject({ ok: false, reason: 'reservation-changed', reservation: { status: 'open' } });
+    expect((await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId })).positions.unsettledUsd).toBe(0.003);
+    expect(await listLearningSpendEvents(sql, { workspaceId, loopId: accounting.binding.loopId })).toHaveLength(0);
   });
   it('keeps failed retry exposure and efficiency uncertainty even when the completed request has a native source and bill', async () => {
     const f = await costFixture(), accounting = await f.accountingFixture();
@@ -377,6 +411,17 @@ describe('production native accounting with private PG and full source bytes', (
     await sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'estimate'`;
     expect(await accounting.read()).toMatchObject({ costUsdMeasurementMissing: true,
       armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: null, missingBills: 1 } } });
+    expect((await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId })).positions.unsettledUsd).toBe(0.003);
+  });
+  it('settles a repaired provider measurement after retaining the earlier unknown exposure', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    await sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'estimate'`;
+    expect((await accounting.read()).costUsdMeasurementMissing).toBe(true);
+    expect(await listLearningSpendEvents(sql, { workspaceId, loopId: accounting.binding.loopId })).toHaveLength(0);
+    await sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'provider'`;
+    expect((await accounting.read()).costUsdMeasurementMissing).toBe(false);
+    expect((await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId })).positions)
+      .toMatchObject({ usedUsd: 0.002, unsettledUsd: 0, openAttempts: 0 });
   });
   it('refuses a mutated complete reservation population during native source validation', async () => {
     const f = await costFixture(), accounting = await f.accountingFixture();
@@ -392,6 +437,7 @@ describe('production native accounting with private PG and full source bytes', (
     expect(await liveCurrentBenchNativeCostReader(handle, f.opts, { ...scope(), sql: guarded as unknown as ReturnType<typeof scope>['sql'] }, accounting.binding)())
       .toMatchObject({ costUsdMeasurementMissing: true, armMeta: { nativeCostAccounting: { attemptAccountingComplete: false, billedCostUsd: null } } });
     expect(frontiers).toBeGreaterThanOrEqual(2);
+    expect((await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId })).positions.unsettledUsd).toBe(0.003);
   });
   it('rejects a fabricated controller scope before accounting IO', async () => {
     const f = await costFixture(), accounting = await f.accountingFixture();
