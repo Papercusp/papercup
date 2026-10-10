@@ -61,7 +61,7 @@ describe('workspaceContextMiddleware (per-window-workspace-context P-011)', () =
       const events: EndpointStreamEvent[] = [];
       await handleSysHttp(1n, input, options?.signal ?? new AbortController().signal, {
         upstreamBase: 'http://isolated.local',
-        fetchImpl: (url, init) => app.request(String(url), init),
+        fetchImpl: async (url, init) => app.request(String(url), init),
         injectHeaders: () => ({ authorization: 'Bearer host-credential' }),
         logger: { info: () => {}, warn: () => {} },
         writeJson: (type, value: any) => {

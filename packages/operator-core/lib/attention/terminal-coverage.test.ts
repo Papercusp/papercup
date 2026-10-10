@@ -423,6 +423,7 @@ describe('P-006 apply-intake', () => {
     workKind: 'fix' as const,
     acceptance: null,
     sourceRevision: 'rev-1',
+    reproduction: null,
   };
 
   it('executes the recorded decision against the improvement source and resolves on effect', async () => {

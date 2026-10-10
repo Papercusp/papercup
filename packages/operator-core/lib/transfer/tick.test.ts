@@ -6,6 +6,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { MemoryBackend, MemoryEntry, RememberOptions, UpdatePatch } from '@papercusp/memory';
+import type { GovernedSpendAttemptOutcome, SpendAttemptReport } from '../learning-governor/registrants';
+import type { SpendAttemptKind } from '../learning-governor/spend';
 import { MEMORY_TIER_KEY } from '../memory/two-tier';
 import type { ReplayTranscript } from '../replay/types';
 import { DEFAULT_TRANSFER_TICK, type TransferTickOptions } from './gate';
@@ -164,7 +166,13 @@ interface Harness {
 function fakeSpendAttempt(
   spends: Array<{ costUsd: number; note: string; disposition: string }>,
 ): TransferTickDeps['spendAttempt'] {
-  return async (q) => {
+  return async <T>(q: {
+    attemptKind: SpendAttemptKind;
+    requestedUsd: number;
+    note: string;
+    runRef?: string;
+    run: (grant: { reservedUsd: number; clamped: boolean }) => Promise<SpendAttemptReport<T>>;
+  }): Promise<GovernedSpendAttemptOutcome<T>> => {
     try {
       const report = await q.run({ reservedUsd: q.requestedUsd, clamped: false });
       const disposition = report.cancelled ? 'cancelled' : 'used';
@@ -176,6 +184,7 @@ function fakeSpendAttempt(
         reservationId: 'res-fake',
         clamped: false,
         cancelled: report.cancelled === true,
+        settlement: null,
       };
     } catch (e) {
       const burned = (e as { costUsd?: unknown }).costUsd;
@@ -187,6 +196,7 @@ function fakeSpendAttempt(
         error: e instanceof Error ? e.message : String(e),
         costUsd,
         reservationId: 'res-fake',
+        settlement: null,
       };
     }
   };
