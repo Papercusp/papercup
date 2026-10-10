@@ -31,6 +31,7 @@
  *     a fork mints a fresh identity and leaves the original untouched.
  */
 import { randomUUID } from 'node:crypto';
+import { SCOPED_INFERENCE_GATEWAY_ENV, snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { join } from 'node:path';
 import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
@@ -120,6 +121,9 @@ import {
  * successor's already-enrolled first-turn provenance. It is not part of the
  * public launch-agent schema or ordinary caller arguments. */
 export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
+
+/** Private controller seam, absent from the public tool schema. */
+export const INTERNAL_SCOPED_INFERENCE_GATEWAY: unique symbol = Symbol('internal-scoped-inference-gateway');
 
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
@@ -748,6 +752,13 @@ export default defineTool({
       });
   })(),
   async handler(args, ctx) {
+    const privateRoute = (ctx as typeof ctx & {
+      [INTERNAL_SCOPED_INFERENCE_GATEWAY]?: ScopedInferenceGateway;
+    })[INTERNAL_SCOPED_INFERENCE_GATEWAY];
+    const scopedGateway = privateRoute === undefined ? null : snapshotScopedInferenceGateway(privateRoute);
+    if (scopedGateway && (args.resume || args.successor || args.fork || (args.count ?? args.members?.length ?? 1) !== 1)) {
+      return err('Scoped inference gateway requires a fresh single native launch.');
+    }
     // Internal direct-handler seam used only by fleet:respawn-member after the
     // canonical saved profile has been resolved. It is deliberately absent
     // from the public zod schema, so ordinary fresh-launch behavior does not
@@ -1683,6 +1694,9 @@ export default defineTool({
       });
       return { ...folded, model: selection.model, modelSource: selection.source };
     });
+    if (scopedGateway && (foldedConfigs.length !== 1 || foldedConfigs.some(config => config.agent !== 'codex'))) {
+      return err('Scoped inference gateway requires the supported Codex transport.');
+    }
     // A workItem grants launch scope but does not bind a worker identity. When
     // the requested role is the accepted operation's worker role, require the
     // same target as --feature before any terminal is opened. Generic audit
@@ -2038,6 +2052,7 @@ export default defineTool({
         const memberBrief = memberBriefs[i];
         const env = {
           ...base.env,
+          ...(scopedGateway ? { [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(scopedGateway) } : {}),
           ...(memberBrief ? { PAPERCUSP_KICKOFF_PROMPT: memberBrief } : {}),
           ...(internalKickoffOrigin
             ? { PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: internalKickoffOrigin }

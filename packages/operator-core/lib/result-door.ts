@@ -51,6 +51,7 @@ import { dirname } from 'node:path';
 import type { ScratchWriteTimings } from './scratch-gc';
 import { withBoundedTimeout } from './bounded-timeout';
 import { projectBoundedPayload, type BoundedPayloadRecovery, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
+import { compactLeaderBriefForResultDoor } from './agent-tools/fleet/leader-brief-shape';
 import { decode } from '@papercusp/result-encoding';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
@@ -3222,7 +3223,27 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       parsedJsonBody && opts.toolName === SPEC_TEST_ADEQUACY_TOOL
         ? compactSpecTestAdequacyBody(bodyShape.json!.parsed)
         : null;
-    const projected = projectBoundedPayload(
+    // Full fleet indexes can outgrow even the domain emergency shaper. The
+    // source body has already been spilled above; retain the atomic numeric
+    // contract inline instead of walking early obligation fields until the
+    // generic budget runs out before it encounters the queue metrics.
+    const leaderBriefCore = parsedJsonBody &&
+      (opts.toolName === 'fleet:leader-brief' || opts.nestedTargetToolName === 'fleet:leader-brief') &&
+      recovery?.cursor
+      ? compactLeaderBriefForResultDoor(bodyShape.json!.parsed)
+      : null;
+    const leaderBriefPreview = leaderBriefCore ? {
+      ...leaderBriefCore,
+      _partial: true,
+      _projection: {
+        kind: 'bounded-payload', truncated: true, tier: 'trimmed', forced: true,
+        originalChars: totalChars, cursor: recovery!.cursor,
+        next: 'Page this cursor for the emitted snapshot, including all indexes and secondary metrics.',
+      },
+    } : null;
+    const leaderBriefFits = leaderBriefPreview !== null &&
+      Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') <= structuralTargetChars;
+    const projected = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
       evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
@@ -3294,6 +3315,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         resultDoor: {
           ...baseResultDoorMeta,
           structural: true,
+          ...(leaderBriefFits ? { compactProjection: 'fleet:leader-brief-numeric-core' } : {}),
           ...(evaluatorCompactBody != null
             ? { compactProjection: 'evaluator-specific:plans:evaluate-spec-test-adequacy' }
             : {}),

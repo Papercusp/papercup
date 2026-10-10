@@ -1,8 +1,10 @@
 # Reproducible public PUI rubric review for plan revision 150
 
-Subject: `acceptance-pui-first-party-public-release-2026-09-07@16`, criteria hash `9dd8a68c940e70de35f5fa8e9ca3bb318ffbd299cc8fb0b609d76d6a35527b09`. Frozen plan revision 150, content hash `c40527e25f63a8e30e4875c0391fd4a9127bef5c8808943795379dacc4ce5999`. Pinned source generation: `e180cae84778e1c33d1622cc8f160e9c66519deb`. Input: [pui-public-rubric16-repro-plan150.json](pui-public-rubric16-repro-plan150.json), SHA-256 `65c61e42befb7a712782f8034c547faf32641d9504ba715b1d316cf56f2e3f7c`.
+Subject: `acceptance-pui-first-party-public-release-2026-09-07@16`, criteria hash `9dd8a68c940e70de35f5fa8e9ca3bb318ffbd299cc8fb0b609d76d6a35527b09`. Frozen plan revision 150, content hash `c40527e25f63a8e30e4875c0391fd4a9127bef5c8808943795379dacc4ce5999`. Pinned source generation: `e180cae84778e1c33d1622cc8f160e9c66519deb`. Input: [pui-public-rubric16-repro-plan150.json](pui-public-rubric16-repro-plan150.json), SHA-256 `8bfc2368736b8ff4aea82204a2023512a00260a9449f3b2a5fa3cb9c26d7d993`.
 
-This edition supersedes the plan-147 input for current review. It retains all 15 current criteria and all 45 complete current decision bodies from the canonical plan reader. Decision bodies changed since plan147: none. Source files and both compiler runtime sources are pinned and hashed before use. Existing independent reviews are historical until a fresh review explicitly accepts this edition.
+This edition supersedes the plan-147 input for current review. It retains all 15 current criteria and all 45 complete current decision bodies, with owner names removed from six provenance tags by the canonical identity-safe serializer. Tier, date, normative text and every requirement remain intact. Decision bodies changed since plan147: none. Source files and both compiler runtime sources are pinned and hashed before use. Existing independent reviews are historical until a fresh review explicitly accepts this edition.
+
+The raw canonical snapshot SHA-256 is `65c61e42befb7a712782f8034c547faf32641d9504ba715b1d316cf56f2e3f7c`. `decisionCapture.identitySerialization` records every raw decision-body hash, the six normalized decision IDs, and the maintained regeneration command. Canonical originals are retrieved with `plans:get { slug:"pui-first-party-public-release-2026-09-07", heading:"Decisions", includeEnrichments:false }`; require plan revision 150 and content hash `c40527e25f63a8e30e4875c0391fd4a9127bef5c8808943795379dacc4ce5999` before comparing hashes. This transformation changes attribution display only and does not grant approval or weaken a BAR.
 
 Run both commands from the canonical repository with Node v22.21.1 or v25.9.0 and the retained git objects. They need no installed package loader.
 
@@ -15,7 +17,7 @@ const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const bytes = fs.readFileSync(process.argv[2]);
-assert.equal(createHash('sha256').update(bytes).digest('hex'), '65c61e42befb7a712782f8034c547faf32641d9504ba715b1d316cf56f2e3f7c');
+assert.equal(createHash('sha256').update(bytes).digest('hex'), '8bfc2368736b8ff4aea82204a2023512a00260a9449f3b2a5fa3cb9c26d7d993');
 const s = JSON.parse(bytes);
 const source = file => execFileSync('git', ['show', s.testedSha + ':' + file], {encoding:'utf8'});
 const sources = new Map();
@@ -93,7 +95,7 @@ const { createHash } = require('node:crypto');
 const { stripTypeScriptTypes } = require('node:module');
 void (async () => {
   const bytes=fs.readFileSync(process.argv[2]);
-  assert.equal(createHash('sha256').update(bytes).digest('hex'),'65c61e42befb7a712782f8034c547faf32641d9504ba715b1d316cf56f2e3f7c');
+  assert.equal(createHash('sha256').update(bytes).digest('hex'),'8bfc2368736b8ff4aea82204a2023512a00260a9449f3b2a5fa3cb9c26d7d993');
   const s=JSON.parse(bytes); assert.ok(s.nodeBootstrap.supportedNodeVersions.includes(process.version),'unverified Node runtime '+process.version);
   assert.equal(typeof stripTypeScriptTypes,'function','builtin type stripper required');
   const readVerified=file=>{

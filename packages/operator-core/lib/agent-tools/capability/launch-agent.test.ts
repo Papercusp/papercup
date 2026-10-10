@@ -326,7 +326,7 @@ vi.mock('../../agent-launch-core', async (orig) => ({
 
 const launchAgentModule = await import('./launch-agent');
 const launchAgent = launchAgentModule.default;
-const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN } = launchAgentModule;
+const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_INFERENCE_GATEWAY } = launchAgentModule;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
@@ -553,6 +553,25 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
 });
 
 describe('internal launch context provenance', () => {
+  it('threads the private controller route only through a fresh supported host context', async () => {
+    const gateway = { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) };
+    const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway } as never;
+    const res = await launchAgent.handler({ brief: 'Private native task', harness: 'papercusp', agent: 'codex', headless: true }, privateCtx);
+    expect(isError(res)).toBe(false);
+    expect(JSON.parse(spawnedEnv(spawnHeadlessMock).PAPERCUSP_SCOPED_INFERENCE_GATEWAY)).toEqual(gateway);
+    expect(spawnedCommand(spawnHeadlessMock)).not.toContain(gateway.token);
+  });
+  it('refuses private unsupported or multi-process launches before opening a process', async () => {
+    const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]:
+      { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) } } as never;
+    for (const args of [{ agent: 'claude' as const }, { agent: 'codex' as const, count: 2 },
+      { members: [{ agent: 'codex' as const }, { agent: 'codex' as const }] }]) {
+      const res = await launchAgent.handler({ brief: 'Refused', harness: 'papercusp', ...args }, privateCtx);
+      expect(isError(res)).toBe(true);
+    }
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
   it('does not set the private kickoff origin for ordinary callers', async () => {
     const res = await launchAgent.handler({ brief: 'Ordinary agent work', harness: 'papercusp' }, ctx);
     expect(isError(res)).toBe(false);

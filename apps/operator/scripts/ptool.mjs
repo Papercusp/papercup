@@ -2576,6 +2576,10 @@ export const PTOOL_POST_CONNECT_RETRIES = 0;
 // exact request once. This is separate from POST_CONNECT_RETRIES: socket closes
 // and timeouts after connect remain outcome-unknown and must not be replayed.
 export const PTOOL_PRE_CONNECT_CALL_RETRIES = 1;
+// A stale serving-generation rejection is pre-dispatch. Allow two catalog
+// refreshes so a second generation change during the refresh/retry cycle can
+// settle, while keeping this separate from transport retries.
+const PTOOL_STALE_CONTRACT_MAX_REFRESHES = 2;
 
 async function closeClientQuietly(client) {
   try {
@@ -2611,7 +2615,7 @@ export async function callToolWithReplayRecovery(
   let activeClient = client;
   let activeParams = params;
   let retriesUsed = 0;
-  let staleContractRefreshUsed = false;
+  let staleContractRefreshesUsed = 0;
   const requestedRetries = Number.isFinite(maxAttempts) ? Math.max(0, Math.floor(maxAttempts)) : 0;
   // No automatic replay exists. A caller must explicitly supply a valid,
   // server-owned proof for this exact code:run body, and even then only one
@@ -2627,10 +2631,10 @@ export async function callToolWithReplayRecovery(
     } catch (error) {
       if (
         isStaleToolContractFailure(error) &&
-        !staleContractRefreshUsed &&
+        staleContractRefreshesUsed < PTOOL_STALE_CONTRACT_MAX_REFRESHES &&
         typeof onStaleToolContract === 'function'
       ) {
-        staleContractRefreshUsed = true;
+        staleContractRefreshesUsed += 1;
         try {
           const refreshedParams = await onStaleToolContract({
             client: activeClient,

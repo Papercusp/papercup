@@ -127,7 +127,7 @@ When the goal is paused, new placement/throughput and traversal may be `unknown`
 
 ## Scorecard contract
 
-Use rubric ref `work-on-everything-stewardship-health`. File all 15 criterion keys in one structured observation. Include the goal id, holder owner id, exact window, deployed generation, and attribution on every non-pass rating. Link concrete follow-up work at scorecard creation time. A partial/fail/severe finding without durable ownership is itself evidence against completion-flow health.
+Use rubric ref `work-on-everything-stewardship-health`. File every criterion key returned by `rubrics:get` for the active revision in one structured observation. Enumerate the current rubric criteria instead of copying a fixed count from this runbook; absent evidence must remain explicitly unknown, with its reason and next evidence action. Include the goal id, holder owner id, exact window, deployed generation, and attribution on every non-pass rating. Link concrete follow-up work at scorecard creation time. A partial/fail/severe finding without durable ownership is itself evidence against completion-flow health.
 
 The rubric is operational, not a release gate. Trends across windows matter more than one isolated card, but a severe boundary violation stands on one occurrence.
 

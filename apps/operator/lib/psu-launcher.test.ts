@@ -99,6 +99,7 @@ import {
   ALLOW_WALLED_LAUNCH_ENV,
   accountRoutingMode,
   codexGatewayConfigPatch,
+  applyScopedNativeGateway,
   accountPinnable,
   accountPickerChoices,
   accountProviderFromChoices,
@@ -6442,6 +6443,53 @@ describe("psu-launcher arg parsing", () => {
     };
     expect(applyHeadlessCodexBrowserPolicy(visible)).toEqual(visible);
     expect(applyHeadlessCodexBrowserPolicy(headlessClaude)).toEqual(headlessClaude);
+  });
+
+  it("applies an exact private route after fresh and carry home materialization", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-scoped-route-"));
+    const configPath = join(home, "config.toml");
+    const gateway = { baseURL: "http://127.0.0.1:32101", token: "a".repeat(64) };
+    const env = { PAPERCUSP_AGENT: "codex", CODEX_HOME: home, PAPERCUSP_SID: "su-private",
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: "pin", PAPERCUSP_ACCOUNT_ID: "provider-account",
+      PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify(gateway) };
+    try {
+      for (const prior of ['model = "fixture-model"\n', codexGatewayConfigPatch('model = "fixture-model"\n', "ambient")]) {
+        writeFileSync(configPath, prior);
+        applyScopedNativeGateway(env);
+        const config = readFileSync(configPath, "utf8");
+        expect(config).toContain('base_url = "http://127.0.0.1:32101/v1"');
+        expect(config).toContain(`experimental_bearer_token = "${gateway.token}"`);
+        expect(config).toContain('"x-papercusp-account" = "provider-account"');
+        expect(config).toContain('"x-papercusp-owner" = "su-private"');
+        expect(config).toContain('model = "fixture-model"');
+        expect(config).not.toContain('"ambient"');
+        expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      }
+      expect(sanitizeInheritedEnv(env)).not.toHaveProperty("PAPERCUSP_SCOPED_INFERENCE_GATEWAY");
+      expect(env.PAPERCUSP_SCOPED_INFERENCE_GATEWAY).toBe(JSON.stringify(gateway));
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("refuses invalid private routes before writing the native home and keeps credentials out of errors", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-scoped-refusal-"));
+    const path = join(home, "config.toml");
+    const before = 'model = "fixture"\n';
+    writeFileSync(path, before);
+    const env = { PAPERCUSP_AGENT: "codex", CODEX_HOME: home,
+      PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: "http://127.0.0.1:32101", token: "a".repeat(64) }) };
+    try {
+      for (const bad of [
+        { ...env, PAPERCUSP_AGENT: "claude" },
+        { ...env, CODEX_HOME: "relative" },
+        { ...env, PAPERCUSP_ACCOUNT_ROUTING_MODE: "pin" },
+        { ...env, PAPERCUSP_SCOPED_INFERENCE_GATEWAY: '{"token":"secret-value' },
+      ]) {
+        expect(() => applyScopedNativeGateway(bad)).toThrow(/scoped|Scoped/);
+        expect(readFileSync(path, "utf8")).toBe(before);
+      }
+      try { applyScopedNativeGateway({ ...env, PAPERCUSP_SCOPED_INFERENCE_GATEWAY: '{"token":"secret-value' }); }
+      catch (error) { expect(String(error)).not.toContain("secret-value"); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it("codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin", () => {

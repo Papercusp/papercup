@@ -141,6 +141,7 @@ export function createNativeGymGatewayController(input: {
   token: string;
   manifestSha256: string;
   armId: string;
+  outputTokenLimit?: number;
   /** Existing Gym cycles and frozen benchmark lifetime grants share the same
    * authenticated send guard. Exactly one budget identity must be supplied. */
   cycle?: { runId: string; budgetUsd: number; resourceBudget: LearningReservationResourceBudget };
@@ -154,7 +155,7 @@ export function createNativeGymGatewayController(input: {
   const text = (s: unknown): s is string => typeof s === 'string' && s.trim() === s && s.length > 0;
   if (!input || Boolean(input.cycle) === Boolean(input.exact)) throw invalid();
   // Snapshot caller policy and callbacks before any asynchronous authentication.
-  const { workspaceId, loopId, potSlug, token, manifestSha256, armId, authorizeProviderAttempt } = input;
+  const { workspaceId, loopId, potSlug, token, manifestSha256, armId, outputTokenLimit, authorizeProviderAttempt } = input;
   const scope = input.exact ?? input.cycle!;
   const budgetUsd = scope.budgetUsd;
   const runId = input.cycle?.runId;
@@ -167,6 +168,7 @@ export function createNativeGymGatewayController(input: {
       !/^[a-f0-9]{64}$/.test(binding!) || binding !== manifestSha256) || !usd(budgetUsd) ||
     !count(resourceBudget.inputTokens) || !count(resourceBudget.outputTokens) || resourceBudget.outputTokens === 0 ||
     !count(resourceBudget.requestsPerArm) || resourceBudget.requestsPerArm === 0 ||
+    outputTokenLimit !== undefined && (!count(outputTokenLimit) || outputTokenLimit === 0 || outputTokenLimit > resourceBudget.outputTokens) ||
     resourceBudget.armIds.length > 1000 || !resourceBudget.armIds.every(text) ||
     new Set(resourceBudget.armIds).size !== resourceBudget.armIds.length || !resourceBudget.armIds.includes(armId) ||
     typeof authorizeProviderAttempt !== 'function') throw invalid();
@@ -177,6 +179,7 @@ export function createNativeGymGatewayController(input: {
   const pending = new Set<() => void>();
   const gateway = snapshotNativeGymGatewayConfig({ token, carryTrial: {
     manifestSha256, armId, requestTokenSha256: createHash('sha256').update(token).digest('hex'),
+    ...(outputTokenLimit === undefined ? {} : { outputTokenLimit }),
     protocols: ['anthropic-messages', 'openai-responses'],
     async authorizeAttempt(value) {
       const attempt = Object.freeze({ ...value });
@@ -266,13 +269,15 @@ export function snapshotNativeGymGatewayConfig(value: NativeGymGatewayConfig): N
   const token = value.token, binding = value.carryTrial;
   if (typeof token !== 'string' || token.trim() !== token || token.length < 32 ||
     !binding || typeof binding !== 'object' || Array.isArray(binding)) throw invalid();
-  const { manifestSha256, armId, requestTokenSha256, authorizeAttempt } = binding;
+  const { manifestSha256, armId, requestTokenSha256, outputTokenLimit, authorizeAttempt } = binding;
   const protocols = binding.protocols;
   if (!/^[a-f0-9]{64}$/.test(manifestSha256) || typeof armId !== 'string' || !armId.trim() ||
     requestTokenSha256 !== createHash('sha256').update(token).digest('hex') ||
+    outputTokenLimit !== undefined && (!Number.isSafeInteger(outputTokenLimit) || outputTokenLimit <= 0) ||
     typeof authorizeAttempt !== 'function' || !Array.isArray(protocols) || protocols.length !== 2 ||
     !protocols.includes('anthropic-messages') || !protocols.includes('openai-responses')) throw invalid();
   const carryTrial: GatewayCarryTrialBinding = Object.freeze({ manifestSha256, armId, requestTokenSha256,
+    ...(outputTokenLimit === undefined ? {} : { outputTokenLimit }),
     protocols: Object.freeze([...protocols]),
     async authorizeAttempt(attempt: GatewayCarryTrialAttempt) {
       if (attempt.manifestSha256 !== manifestSha256 || attempt.armId !== armId || attempt.signal.aborted) return null;

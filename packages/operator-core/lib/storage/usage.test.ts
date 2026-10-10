@@ -95,13 +95,18 @@ describe('computeStorageUsage', () => {
     expect(b365.bytes).toBe(700);
   });
 
-  it('prioritizes scratch before PG reads can exhaust the shared deadline and preserves output order', async () => {
-    const clock = vi.spyOn(Date, 'now');
-    clock.mockReturnValueOnce(0).mockReturnValueOnce(1).mockReturnValue(100);
+  it('measures PG catalog totals before disk and age scans can exhaust the shared deadline', async () => {
+    const pgCategoryCount = STORAGE_CATEGORIES.filter((category) => category.kind === 'pg').length;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (h.diskCalls > 0 ? 100 : 0));
     try {
       const rows = await computeStorageUsage({ deadlineMs: 50 });
+
+      const pgRows = rows.filter((row) => row.kind === 'pg');
+      expect(h.catalogCalls).toBe(pgCategoryCount);
+      expect(pgRows.every((row) => row.totalBytes === 1000)).toBe(true);
+      expect(h.ageCalls).toBe(0);
+      expect(h.diskCalls).toBe(1);
       expect(rows.find((r) => r.id === 'scratch')?.totalBytes).toBe(1000);
-      expect(rows.find((r) => r.kind === 'pg')?.totalBytes).toBeNull();
       expect(rows.map((r) => r.id)).toEqual(STORAGE_CATEGORIES.map((r) => r.id));
     } finally {
       clock.mockRestore();

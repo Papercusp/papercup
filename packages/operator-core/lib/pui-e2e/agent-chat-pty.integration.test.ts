@@ -8422,11 +8422,15 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         // Reopening from the same directory lands on the saved conversation
         // and resumes it (D-008): no picker step, one resumed engine.
         await resumedPane.waitFor(`chat ${firstChat.id.slice(0, 12)}`);
-        resumedPane.escape();
-        await resumedPane.waitFor('i type · v speak');
+        // Finish the existing bounded native-startup wait before leaving the
+        // resume view. The composer marker can render while the native engine
+        // is still starting; waiting for it first can stop the test before its
+        // readiness result or startup diagnostic is observed.
         await vi.waitFor(() => expect(scriptedEngine.engines).toHaveLength(2), { timeout: 120_000, interval: 100 });
         const resumedEngine = scriptedEngine.engines[1];
         await resumedEngine.ready;
+        resumedPane.escape();
+        await resumedPane.waitFor('i type · v speak');
         expect(resumedEngine.adapter.host.recent.map(({ event }) => event)).toEqual(
           expect.arrayContaining([
             expect.objectContaining({

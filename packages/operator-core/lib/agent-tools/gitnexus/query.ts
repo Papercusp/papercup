@@ -54,7 +54,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 async function firstPartyCallersAnswer(
   args: { name?: string; kind?: string; file_path?: string; uid?: string; repo?: string; limit?: number; paths?: string[] },
   ctx: { projectDir?: string },
-) {
+): Promise<CodeIntelAnswer> {
   const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), FIRST_PARTY_CALLERS_DEFAULT_LIMIT);
   const answer = await firstPartyCallersOffthread({
     vendorDir: LSP_VENDOR_DIR,
@@ -65,12 +65,17 @@ async function firstPartyCallersAnswer(
   });
   const ignored = (['kind', 'file_path', 'uid', 'repo'] as const).filter((k) => args[k] !== undefined);
   if (ignored.length === 0) return answer;
+  const coverage = answer.coverage ?? {
+    basis: 'compiler-project' as const,
+    sourceCompleteness: 'unverified' as const,
+    limitations: [],
+  };
   return {
     ...answer,
     coverage: {
-      ...answer.coverage,
+      ...coverage,
       limitations: [
-        ...(answer.coverage?.limitations ?? []),
+        ...coverage.limitations,
         `callers ignores ${ignored.join(', ')}: it answers for every symbol with this name in the workspace.`,
       ],
     },

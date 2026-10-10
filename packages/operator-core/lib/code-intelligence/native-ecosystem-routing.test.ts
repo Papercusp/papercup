@@ -57,17 +57,30 @@ describe('native baseline exposed semantic and packing handlers', () => {
   });
 
   it('enumerates every admitted exposed operation even if the inventory omits one', () => {
-    expect(graphQuery.args.shape.op.options.toSorted()).toEqual([
+    expect([...graphQuery.args.shape.op.options].sort()).toEqual([
       'callers', 'callees', 'diagnostics', 'health', 'impact', 'implementations', 'references',
       'rename-preview', 'structural-search', 'symbol', 'symbol-search', 'text-search',
-    ].toSorted());
-    expect(graphOperations.map(row => row.op).toSorted()).toEqual(['callers', 'callees', 'health', 'impact', 'symbol'].toSorted());
-    expect(semantic.map(row => row.op).toSorted()).toEqual(lspQuery.args.shape.op.options.toSorted());
-    expect(packing.map(row => row.op).toSorted()).toEqual(codePack.args.shape.op.options.toSorted());
+    ].sort());
+    expect(graphOperations.map(row => row.op).sort()).toEqual(['callers', 'callees', 'health', 'impact', 'symbol'].sort());
+    expect(semantic.map(row => row.op).sort()).toEqual([...lspQuery.args.shape.op.options].sort());
+    expect(packing.map(row => row.op).sort()).toEqual([...codePack.args.shape.op.options].sort());
   });
 });
 
 describe('native baseline against the exposed graph handler', () => {
+  it.each([false, true])('retains complete, conservative coverage for ignored selectors (producer coverage: %s)', async supplied => {
+    calls.compiler.mockResolvedValue({ backend: 'typescript-service', intent: 'callers', sites: [], error: 'compiler unavailable',
+      ...(supplied ? { coverage: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: ['producer limitation'] } } : {}) });
+    const out = await graphQuery.handler(graphQuery.args.parse({ op: 'callers', name: 'target', repo: 'ignored', paths: ['src'] }),
+      { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer };
+    expect(out.data.coverage).toEqual({ basis: 'compiler-project', sourceCompleteness: 'unverified',
+      limitations: [...(supplied ? ['producer limitation'] : []), 'callers ignores repo: it answers for every symbol with this name in the workspace.'] });
+    expect(out.data.error).toBe('compiler unavailable');
+    expect(out.data.evidence!.sourceScope.sourceFingerprint).toBeNull();
+    expect(calls.compiler).toHaveBeenCalledWith(expect.objectContaining({ root: '/baseline-repo', name: 'target', paths: ['src'] }));
+    expect(calls.indexed).not.toHaveBeenCalled();
+  });
+
   it('reports unknown indexed versions without assigning current-source identities', async () => {
     calls.indexed.mockResolvedValue({ backend: 'gitnexus', intent: 'callees', sites: [{ path: 'src/old.ts', line1: 2, kind: 'function' }],
       error: null, freshness: { health: 'healthy', indexedAt: null, indexedCommit: 'older-index', staleVsDisk: true } });

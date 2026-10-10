@@ -85,6 +85,38 @@ test('native reload readiness rejects a still-visible previous document', () => 
 });
 
 // An explicit ESM entry keeps the backend writer graph on Playwright's ESM loader.
+function nativeWorklistRowGeometry(selector: string) {
+  return `(() => {
+    const row = document.querySelector(${JSON.stringify(selector)});
+    const rect = row.getBoundingClientRect();
+    let top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
+    const clips = [];
+    for (let parent = row.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (!['auto', 'scroll', 'hidden', 'clip'].includes(style.overflowY)) continue;
+      const bounds = parent.getBoundingClientRect();
+      const clipTop = bounds.top + parent.clientTop;
+      const clipBottom = clipTop + parent.clientHeight;
+      top = Math.max(top, clipTop); bottom = Math.min(bottom, clipBottom);
+      clips.push({ className: parent.className, height: bounds.height,
+        clientHeight: parent.clientHeight, overflowY: style.overflowY, flexShrink: style.flexShrink });
+    }
+    return { top: rect.top, bottom: rect.bottom, height: rect.height,
+      visibleHeight: Math.max(0, bottom - top), clips };
+  })()`;
+}
+
+test('native row geometry rejects DOM rows clipped by a shrunken table wrapper', () => {
+  const wrapper = { className: 'woe__table-wrap', clientTop: 1, clientHeight: 22,
+    parentElement: null, getBoundingClientRect: () => ({ top: 708, bottom: 732, height: 24 }) };
+  const row = { parentElement: wrapper, getBoundingClientRect: () => ({ top: 739, bottom: 787, height: 48 }) };
+  const context = { document: { querySelector: () => row }, innerHeight: 900,
+    getComputedStyle: () => ({ overflowY: 'hidden', flexShrink: '1' }) };
+  expect(runInNewContext(nativeWorklistRowGeometry('row'), context)).toMatchObject({ height: 48, visibleHeight: 0 });
+  wrapper.clientHeight = 180;
+  expect(runInNewContext(nativeWorklistRowGeometry('row'), context)).toMatchObject({ height: 48, visibleHeight: 48 });
+});
+
 async function loadNativeCollectionWriter() {
   const { default: postgres } = await import('postgres');
   const { applyGoalPropertyWrite } = await import('../../../packages/operator-core/lib/typed-properties-db');
@@ -286,7 +318,23 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     expect(layout.totals).toBe(true);
     expect(layout.chart).toBe(true);
     for (const next of layout.nextSteps) expect(next.trim().length).toBeGreaterThan(0);
+    const rowGeometry = [];
+    for (const id of ids) {
+      const selector = `${panel} [data-testid="ongoing-worklist-row"][data-worklist-id="${id}"]`;
+      await native('eval', `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'center' })`);
+      const geometry = await measure(nativeWorklistRowGeometry(selector));
+      rowGeometry.push({ id, ...geometry });
+    }
+    await info.attach('native-worklist-row-geometry', {
+      body: JSON.stringify({ viewport: { width: layout.width, height: layout.height }, rows: rowGeometry, sourceReceipt }),
+      contentType: 'application/json',
+    });
     await native('screenshot', '--output', info.outputPath(`worklist-${expectedWidth}.png`));
+    for (const row of rowGeometry) {
+      expect(row.height, `plan ${row.id} has a rendered row`).toBeGreaterThan(0);
+      expect(row.visibleHeight, `plan ${row.id} is visible beyond all clipping ancestors`)
+        .toBeGreaterThanOrEqual(Math.min(row.height, 32) - 1);
+    }
     // Drive an offered draft control through trusted native keyboard input.
     const toggle = 'button[aria-label="Move Design search reliability up"]';
     await native('focus', toggle, '--json');

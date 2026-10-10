@@ -22,7 +22,8 @@ import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 const hostHome = vi.hoisted(() => ({ path: '' }));
-vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch } }));
+vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
+  INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route') }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 // Only the private home allocator is substituted. SQL bindings, filesystem
 // bytes, process pins, request observation and HTTP reads use production IO.
@@ -60,7 +61,8 @@ async function execution(committed = true) {
   const admit = vi.fn(async () => ({ admitted: true, receiptRef: 'budget:private-fixture' }));
   // Unknown native identity stays unknown; these tests prove protocol/SQL binding,
   // while actual native client/serving observation has its own acceptance clause.
-  const ports = liveCurrentSuBenchPorts(ctx, { admit, observeIdentity: async () => null }, opts, scope());
+  const ports = liveCurrentSuBenchPorts(ctx, { admit, observeIdentity: async () => null,
+    nativeGateway: { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) } }, opts, scope());
   const lifecycle: BenchHarnessOps = {
     now: () => 0, createHarness: async () => handle,
     addFeature: async () => { await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${handle.slug}, ${handle.featureId}, 'done')`; },

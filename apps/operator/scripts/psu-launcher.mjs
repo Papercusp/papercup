@@ -7547,6 +7547,9 @@ export function applyCodexGatewayRoute(
   const current = existsSync(configPath)
     ? readFileSync(configPath, "utf8")
     : "";
+  // writeFileSync's mode only protects creation, not a reused home. Tighten
+  // the existing file BEFORE writing a private controller credential.
+  if (existsSync(configPath)) chmodSync(configPath, 0o600);
   writeFileSync(
     configPath,
     codexGatewayConfigPatch(current, mode === "pin" ? id : null, {

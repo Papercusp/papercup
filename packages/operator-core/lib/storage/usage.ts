@@ -192,33 +192,37 @@ function bucketSql(
 async function computePgUsage(
   sql: Sql,
   cat: StorageCategory & { kind: 'pg' },
-  opts: { sizesOnly?: boolean; budget: DiskWalkBudget },
+  opts: { sizesOnly?: boolean; budget: DiskWalkBudget; base?: StorageUsageRow },
 ): Promise<StorageUsageRow> {
-  const base: StorageUsageRow = {
-    id: cat.id,
-    label: cat.label,
-    kind: 'pg',
-    federation: cat.federation,
-    trimmable: isTrimmable(cat),
-    bloats: Boolean(cat.bloats),
-    totalBytes: null,
-    totalRows: null,
-    ageBuckets: [],
-    ageColumnType: cat.ageColumnType,
-    description: cat.description,
-  };
-  try {
-    const { totalBytes, rowsEstimate } = await catalogSize(sql, cat.schema, cat.table, opts.budget);
-    base.totalBytes = totalBytes;
-    base.totalRows = rowsEstimate;
-  } catch (err) {
-    base.note = storageReadNote(err, `size unavailable: ${(err as Error)?.message ?? 'error'}`);
-    return base;
+  const base: StorageUsageRow = opts.base
+    ? { ...opts.base }
+    : {
+        id: cat.id,
+        label: cat.label,
+        kind: 'pg',
+        federation: cat.federation,
+        trimmable: isTrimmable(cat),
+        bloats: Boolean(cat.bloats),
+        totalBytes: null,
+        totalRows: null,
+        ageBuckets: [],
+        ageColumnType: cat.ageColumnType,
+        description: cat.description,
+      };
+  if (!opts.base) {
+    try {
+      const { totalBytes, rowsEstimate } = await catalogSize(sql, cat.schema, cat.table, opts.budget);
+      base.totalBytes = totalBytes;
+      base.totalRows = rowsEstimate;
+    } catch (err) {
+      base.note = storageReadNote(err, `size unavailable: ${(err as Error)?.message ?? 'error'}`);
+      return base;
+    }
   }
 
   // sizesOnly (storage-growth-alarm P-017): the catalog size is all the caller
   // needs — skip the bounded age-distribution scan entirely (no per-table SQL).
-  if (opts.sizesOnly) return base;
+  if (opts.sizesOnly || base.totalBytes === null) return base;
 
   // Federated / no age column → read-only, no distribution.
   if (!base.trimmable || !cat.ageColumn || !cat.ageColumnType) return base;
@@ -309,53 +313,76 @@ export async function computeStorageUsage(
   // remain in the response with an explicit note.
   const budgetMs = opts.offReadPath ? STORAGE_PRECOMPUTE_BUDGET_MS : STORAGE_READ_BUDGET_MS;
   const diskBudget: DiskWalkBudget = { deadlineMs: opts.deadlineMs ?? Date.now() + budgetMs };
-  // Scratch is the direct read's most time-sensitive local pressure signal.
-  // Earlier sequential PG catalog/age queries could consume the shared budget
-  // before this category was reached. Size it first, then preserve the declared
-  // category order in the returned rows.
-  const priority = (cat: StorageCategory): number =>
-    cat.id === 'scratch' ? 0 : cat.kind === 'disk' ? 1 : 2;
-  const executionOrder = [...selectedCategories].sort((a, b) => priority(a) - priority(b));
-  for (const cat of executionOrder) {
-    if (cat.kind === 'pg') {
-      out.set(cat.id, await computePgUsage(sql, cat, { sizesOnly: opts.sizesOnly, budget: diskBudget }));
-    } else {
-      if (diskBudget.deadlineMs <= Date.now()) {
-        diskBudget.truncated = true;
-        out.set(cat.id, {
-          id: cat.id,
-          label: cat.label,
-          kind: 'disk',
-          federation: cat.federation,
-          trimmable: true,
-          bloats: false,
-          totalBytes: null,
-          totalRows: null,
-          ageBuckets: [],
-          minOlderThanDays: cat.minOlderThanDays,
-          description: cat.description,
-          note: `storage usage read deadline exhausted before disk sizing for ${cat.id}`,
-        });
-        continue;
-      }
-      try {
-        out.set(cat.id, await computeDiskUsage(cat, diskBudget));
-      } catch (err) {
-        out.set(cat.id, {
-          id: cat.id,
-          label: cat.label,
-          kind: 'disk',
-          federation: cat.federation,
-          trimmable: true,
-          bloats: false,
-          totalBytes: null,
-          totalRows: null,
-          ageBuckets: [],
-          minOlderThanDays: cat.minOlderThanDays,
-          description: cat.description,
-          note: `disk scan unavailable: ${(err as Error)?.message ?? 'error'}`,
-        });
-      }
+  const pgCategories = selectedCategories.filter(
+    (cat): cat is Extract<StorageCategory, { kind: 'pg' }> => cat.kind === 'pg',
+  );
+  const diskCategories = selectedCategories.filter(
+    (cat): cat is Extract<StorageCategory, { kind: 'disk' }> => cat.kind === 'disk',
+  );
+
+  const measureDiskCategory = async (cat: Extract<StorageCategory, { kind: 'disk' }>): Promise<StorageUsageRow> => {
+    if (diskBudget.deadlineMs <= Date.now()) {
+      diskBudget.truncated = true;
+      return {
+        id: cat.id,
+        label: cat.label,
+        kind: 'disk',
+        federation: cat.federation,
+        trimmable: true,
+        bloats: false,
+        totalBytes: null,
+        totalRows: null,
+        ageBuckets: [],
+        minOlderThanDays: cat.minOlderThanDays,
+        description: cat.description,
+        note: `storage usage read deadline exhausted before disk sizing for ${cat.id}`,
+      };
+    }
+    try {
+      return await computeDiskUsage(cat, diskBudget);
+    } catch (err) {
+      return {
+        id: cat.id,
+        label: cat.label,
+        kind: 'disk',
+        federation: cat.federation,
+        trimmable: true,
+        bloats: false,
+        totalBytes: null,
+        totalRows: null,
+        ageBuckets: [],
+        minOlderThanDays: cat.minOlderThanDays,
+        description: cat.description,
+        note: `disk scan unavailable: ${(err as Error)?.message ?? 'error'}`,
+      };
+    }
+  };
+
+  // Measure cheap PG catalog totals before any disk walk or age-distribution
+  // scan can consume the shared deadline. The old sequential order let a large
+  // on-disk store exhaust the budget before PG sizing began, making every PG
+  // total unknown even when its catalog query was available.
+  for (const cat of pgCategories) {
+    out.set(cat.id, await computePgUsage(sql, cat, { sizesOnly: true, budget: diskBudget }));
+  }
+
+  // Scratch remains the first disk category because it is the most time-sensitive
+  // local pressure signal, while the PG totals are now already protected.
+  const scratch = diskCategories.find((cat) => cat.id === 'scratch');
+  if (scratch) out.set(scratch.id, await measureDiskCategory(scratch));
+
+  for (const cat of diskCategories) {
+    if (cat.id === scratch?.id) continue;
+    out.set(cat.id, await measureDiskCategory(cat));
+  }
+
+  // Age distributions are useful but can scan large tables. Run them only after
+  // every category's size has had a chance to use the shared deadline.
+  if (!opts.sizesOnly) {
+    for (const cat of pgCategories) {
+      const measured = out.get(cat.id)!;
+      if (measured.totalBytes === null) continue;
+      out.set(cat.id, await computePgUsage(sql, cat, { budget: diskBudget, base: measured }));
     }
   }
   return selectedCategories.map((cat) => out.get(cat.id)!);

@@ -1968,11 +1968,13 @@ export default defineTool({
         // stored narrative when owner authority is not mechanically established.
         const successfulActions =
           hasPotentialActionClaim(currentProvenanceText)
-            ? await readSuccessfulActionInvocations({
-                workspaceId,
-                spawnId: c.spawnId,
-                coordOwnerId: ident.ownerId,
-              })
+            ? await runPhase('provenance-action-proof-read', () =>
+                readSuccessfulActionInvocations({
+                  workspaceId,
+                  spawnId: c.spawnId,
+                  coordOwnerId: ident.ownerId,
+                }),
+              )
             : undefined;
         // EI-19425644478222007: expand `[turn:self]` / `[turn:current]` into this write's
         // REAL anchor (see carry-surface-provenance-stamp for why a sentinel beats making
@@ -1984,7 +1986,9 @@ export default defineTool({
         // turn leaves the sentinel verbatim and still lint-flagged.
         const sentinelTurn =
           hasCurrentTurnSentinel(currentProvenanceText) || hasCurrentTurnSentinel(checkpointToStore)
-            ? await resolveCurrentTurnStamp(ident.ownerId).catch(() => null)
+            ? await runPhase('provenance-current-turn-stamp', () =>
+                resolveCurrentTurnStamp(ident.ownerId).catch(() => null),
+              )
             : null;
         if (sentinelTurn) {
           checkpointToStore = expandCurrentTurnSentinel(checkpointToStore, sentinelTurn);
@@ -1999,10 +2003,12 @@ export default defineTool({
           joinAddendumStored =
             expandCurrentTurnSentinel(joinAddendumStored, sentinelTurn) ?? joinAddendumStored;
         }
-        const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ident.ownerId, {
-          successfulActions,
-          ...(sentinelTurn ? { currentTurnStamp: sentinelTurn } : {}),
-        });
+        const preWriteStamp = await runPhase('provenance-carry-surface-stamp', () =>
+          stampCarrySurfaceProvenance(currentProvenanceText, ident.ownerId, {
+            successfulActions,
+            ...(sentinelTurn ? { currentTurnStamp: sentinelTurn } : {}),
+          }),
+        );
         const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
         if (ownerEnforcement.unverified) {
           checkpointToStore = markUnverifiedOwnerAttribution(checkpointToStore);

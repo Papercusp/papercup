@@ -299,6 +299,30 @@ export async function runCleanRoomAcceptanceCli(
   );
 }
 
+/** Keep machine-readable report stdout and a stable cause in the durable job log. */
+export function writeCleanRoomAcceptanceCliReport(
+  report: WorkspaceHostCleanRoomAcceptanceReport,
+  output = { stdout: (text: string) => process.stdout.write(text), stderr: (text: string) => process.stderr.write(text) },
+): number {
+  output.stdout(`${JSON.stringify({ cleanRoomReport: report }, null, 2)}\n`);
+  if (report.passed) return 0;
+
+  const messages = report.issues.map((issue) => issue.message).join('\n');
+  // Reuse the phase/step/reason summary already read by failure-fingerprint.
+  // These are observations from the rejected report, never guest attestations.
+  let step = 'acceptance';
+  let reason: string = report.issues[0]?.code ?? 'measurement-rejected';
+  if (messages.includes('insufficient release storage')) {
+    step = 'archive-storage';
+    reason = 'insufficient-release-storage';
+  } else if (messages.includes('papercusp-content-bootstrap:') && messages.includes('git clone failed')) {
+    step = 'content';
+    reason = 'content-repository-clone-failed';
+  }
+  output.stderr(`phase clean-room (${step}): ${reason}\n`);
+  return 3;
+}
+
 async function main(): Promise<void> {
   const args = parseCleanRoomAcceptanceCliArgs(process.argv.slice(2));
   const raw = await readFile(args.inputFile, "utf8").catch(() => {
@@ -316,11 +340,10 @@ async function main(): Promise<void> {
     aws: awsCleanRoomCompositionOptionsFromEnv(),
   });
 
-  process.stdout.write(`${JSON.stringify({ cleanRoomReport: report }, null, 2)}\n`);
   // A rejected report is a successful MEASUREMENT of a failing subject, so it is emitted on
   // stdout like any other. The exit code still distinguishes them, so a pipeline cannot
   // splice a failing report into a release request by accident.
-  if (!report.passed) process.exitCode = 3;
+  process.exitCode = writeCleanRoomAcceptanceCliReport(report);
 }
 
 if (isCliEntry(import.meta.url)) {

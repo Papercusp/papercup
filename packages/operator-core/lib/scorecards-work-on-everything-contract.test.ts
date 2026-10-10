@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   computeWorkOnEverythingRollup,
@@ -22,6 +23,30 @@ const rating = (overrides: Partial<ObservationRatingEntry> = {}): ObservationRat
 });
 
 describe('Work on everything scorecard contract', () => {
+  it('grades the active rubric population rather than a frozen runbook count', () => {
+    const runbook = readFileSync(new URL(
+      '../../../apps/operator-docs/src/content/docs/agent-insights/work-on-everything-stewardship-health-grading-runbook.mdx',
+      import.meta.url,
+    ), 'utf8');
+    const contract = runbook.split('## Scorecard contract')[1]?.split('\n## ')[0];
+    expect(contract).toContain('every criterion key returned by `rubrics:get` for the active revision');
+    expect(contract).not.toMatch(/File all \d+ criterion keys/);
+    expect(contract).toContain('absent evidence must remain explicitly unknown');
+  });
+
+  it.each(['rubric-coverage-stewardship', 'rubric-quality-stewardship', 'grading-correction-closure'])(
+    'keeps omitted %s unassessable even when the other stewardship duties pass', key => {
+      const keys = ['rubric-coverage-stewardship', 'rubric-quality-stewardship', 'grading-correction-closure'];
+      const passing = Object.fromEntries(keys.map(k => [k, rating()])) as ObservationRatings;
+      expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, passing, keys))
+        .toMatchObject({ verdict: 'pass', coverage: { sufficient: true } });
+      const omitted = { ...passing };
+      delete omitted[key];
+      expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, omitted, keys))
+        .toMatchObject({ verdict: 'unassessable', criticalUnknowns: [key], coverage: { sufficient: false } });
+    },
+  );
+
   it.each(['rubric-coverage-stewardship', 'rubric-quality-stewardship', 'grading-correction-closure'])(
     'cannot average away absent or failed %s stewardship', key => {
       expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC,

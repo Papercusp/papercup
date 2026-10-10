@@ -1213,6 +1213,9 @@ export type GatewayCarryTrialAttemptResult = Readonly<Omit<GatewayCarryTrialAtte
 export interface GatewayCarryTrialBinding {
   readonly manifestSha256: string;
   readonly armId: string;
+  /** Host-frozen ceiling for native clients that omit max_output_tokens.
+   * Applied only after this private binding authenticates the caller. */
+  readonly outputTokenLimit?: number;
   /** Explicit host-owned inference protocols. Omission retains the original
    * OpenAI-only binding; an Anthropic arm cannot use unobserved alternate routes. */
   readonly protocols?: readonly ('openai-responses' | 'anthropic-messages')[];
@@ -2386,6 +2389,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   }) : null;
   if (carryTrial && (!/^[a-f0-9]{64}$/.test(carryTrial.manifestSha256) ||
     !/^[a-f0-9]{64}$/.test(carryTrial.requestTokenSha256) || !carryTrial.armId.trim() ||
+    carryTrial.outputTokenLimit !== undefined && (!Number.isSafeInteger(carryTrial.outputTokenLimit) || carryTrial.outputTokenLimit <= 0) ||
     typeof carryTrial.authorizeAttempt !== 'function')) {
     throw new Error('inference-gateway: invalid carry trial binding');
   }
@@ -9421,7 +9425,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let requestModel: string | null = null;
     let requestEffort: string | null = null;
     const outputLimitHeader = req.headers[REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER];
-    const requiresOutputTokenLimit = outputLimitHeader !== undefined;
+    const hostOutputLimit = carryTrialRequests.has(req) ? carryTrial?.outputTokenLimit : undefined;
+    const requiresOutputTokenLimit = outputLimitHeader !== undefined || hostOutputLimit !== undefined;
     const invalidOutputLimit = () => {
       req.resume();
       sendJson(res, 400, { type: 'error', gateway: true,
@@ -9429,7 +9434,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           message: 'Required output limit needs the header true and a positive integer max_output_tokens' } },
         { 'x-should-retry': 'false' });
     };
-    if (requiresOutputTokenLimit && outputLimitHeader !== 'true') {
+    if (outputLimitHeader !== undefined && outputLimitHeader !== 'true') {
       invalidOutputLimit();
       return;
     }
@@ -9460,6 +9465,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         stageSpan?.setNativeCorrelation(parsed);
         if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object')
           throw new Error('request body must be a JSON object');
+        if (hostOutputLimit !== undefined) {
+          if (parsed.max_output_tokens === undefined) parsed.max_output_tokens = hostOutputLimit;
+          else if (!Number.isSafeInteger(parsed.max_output_tokens) || (parsed.max_output_tokens as number) > hostOutputLimit) {
+            invalidOutputLimit();
+            return;
+          }
+        }
         if (requiresOutputTokenLimit && (!Number.isSafeInteger(parsed.max_output_tokens) ||
             (parsed.max_output_tokens as number) <= 0)) {
           invalidOutputLimit();

@@ -1,6 +1,7 @@
 /** Current native su execution over the existing benchmark lifecycle and task ledger. */
 import { createHash } from 'node:crypto';
 import type launchAgentTool from '../agent-tools/capability/launch-agent';
+import { snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { TaskRow } from '../task-manager/types';
 import type { ControlOutcome } from '../task-manager/control';
@@ -60,6 +61,7 @@ export function currentBenchGatewayController(input: {
   }
   const rate = protocol.priceSchedule.rates.find(rate => rate.model === arm.model)!;
   return createNativeGymGatewayController({ workspaceId, loopId, token, manifestSha256: preregHash, armId: assignmentId,
+    outputTokenLimit: Math.min(resources.outputTokens, arm.generationBudget.maxTokens ?? resources.outputTokens),
     exact: { binding: preregHash, budgetUsd: protocol.aggregateBudgetUsd, resourceBudget: resources },
     async authorizeProviderAttempt(attempt) {
       // Copy before authentication so an async callback cannot retarget the
@@ -328,6 +330,9 @@ export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
 }
 /** Bind admission/observations from the existing budget and protocol planes. */
 export interface CurrentSuBenchObservations {
+  /** Host-owned startNativeGymGateway transport. Identity reads may precede
+   * setup; an actual launch refuses without this route. */
+  nativeGateway?: ScopedInferenceGateway;
   admit(handle: BenchHarnessHandle, budget: GenerationBudget): Promise<{ admitted: boolean; receiptRef: string }>;
   observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
@@ -508,6 +513,7 @@ export function liveCurrentSuBenchPorts(
 ): CurrentSuBenchPorts {
   const workspaceId = resolveBenchWorkspace(ctx.workspaceId);
   if (ctx.workspaceId !== workspaceId || opts.workspaceId !== workspaceId) throw new Error('Current benchmark launch requires an explicitly isolated caller context.');
+  const gateway = observations.nativeGateway === undefined ? null : snapshotScopedInferenceGateway(observations.nativeGateway);
   return {
     admit: (handle, budget) => observations.admit(handle, budget),
     readIdentity: async task => {
@@ -518,7 +524,11 @@ export function liveCurrentSuBenchPorts(
       opts.runId, opts.preregistration, { ...db, workspaceId, repoRoot: opts.preregistration.repoRoot },
     ),
     readCompletion: handle => readCurrentBenchCompletion(handle, { ...db, workspaceId }),
-    launch: async args => (await import('../agent-tools/capability/launch-agent')).default.handler(args, ctx),
+    launch: async args => {
+      if (!gateway) throw new Error('Current benchmark launch requires a private inference gateway.');
+      const module = await import('../agent-tools/capability/launch-agent');
+      return module.default.handler(args, { ...ctx, [module.INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway } as PapercuspUnifiedToolContext);
+    },
     getTask: async id => (await import('../task-manager/store')).getTask(id),
     listTasks: async filter => (await import('../task-manager/store')).listTasks(filter),
     killTask: async id => (await import('../task-manager/control')).killTask(id, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 }),

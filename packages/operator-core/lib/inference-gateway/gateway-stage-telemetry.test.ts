@@ -671,6 +671,42 @@ const fixtureReservation = (attempt: GatewayCarryTrialAttempt) => ({
   clockId: attempt.clockId, validUntilMonotonicMs: processMonotonicClock.now() + 5_000,
 });
 
+it('host-frozen native output ceiling reaches the selected bearer provider and cannot be widened', async () => {
+  const observed: GatewayCarryTrialAttempt[] = [], sent: Record<string, unknown>[] = [];
+  const binding = { ...trialBinding(async attempt => {
+    observed.push(attempt); return fixtureReservation(attempt);
+  }), outputTokenLimit: 40 };
+  gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    codexPool: createFailoverPool([{ accountId: 'final-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]),
+    carryTrial: binding, requestAbsorbMs: 0, selfHeal: { enabled: false },
+    fetchImpl: (async (_url, init) => {
+      sent.push(JSON.parse(Buffer.from(init!.body as Uint8Array).toString('utf8')));
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch,
+  });
+  binding.outputTokenLimit = 999; // Live mutation cannot widen the captured host policy.
+  const port = await gateway.listen(0);
+  const send = (limit?: unknown, token = trialToken) => fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, originator: 'codex_cli_rs' },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_NATIVE_TASK', ...(limit === undefined ? {} : { max_output_tokens: limit }) }),
+  });
+  for (const [limit, status] of [[undefined, 200], [11, 200], [41, 400], [0, 400], ['40', 400]] as const) {
+    const response = await send(limit); expect(response.status).toBe(status); await response.text();
+  }
+  const unauthorized = await send(undefined, 'OTHER_CALLER_TOKEN');
+  expect(unauthorized.status).toBe(403); await unauthorized.text();
+  expect(observed).toHaveLength(2); expect(sent).toHaveLength(2);
+  expect(sent.map(body => body.max_output_tokens)).toEqual([40, 11]);
+  expect(observed.map(attempt => JSON.parse(attempt.body).max_output_tokens)).toEqual([40, 11]);
+  expect(observed.map(attempt => attempt.bodySha256)).toEqual(sent.map(body => sha256(JSON.stringify(body))));
+});
+
+it.each([0, -1, 1.5, NaN, Infinity])('refuses invalid host native output ceiling before startup: %s', outputTokenLimit => {
+  expect(() => createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    carryTrial: { ...trialBinding(async attempt => fixtureReservation(attempt)), outputTokenLimit },
+  })).toThrow(/carry trial binding/);
+});
+
 const anthropicTrialBinding = (authorizeAttempt: GatewayCarryTrialBinding['authorizeAttempt']): GatewayCarryTrialBinding => ({
   ...trialBinding(authorizeAttempt), protocols: ['anthropic-messages'],
 });

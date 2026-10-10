@@ -77,6 +77,82 @@ describe('Work on everything: progress table (WI-10007603)', () => {
     expect(screen.queryByText('Improvement verified')).toBeNull();
   });
 
+  it.each([
+    ['baseline', 'Baseline recorded'],
+    ['needs-repair', 'Repairs needed'],
+    ['needs-regrade', 'Re-grade needed'],
+    ['unverified', 'Needs verification'],
+    ['incomparable', 'Fresh baseline needed'],
+    ['verified', 'Improvement verified'],
+  ] as const)('renders supplied cycle status %s and preserves its evidence targets', (status, label) => {
+    const data = fixture();
+    data.rubricStewardship = {
+      measuredAt: '2026-10-09T12:00:00Z', windowStart: '2026-10-02T12:00:00Z',
+      complete: true, rubricRef: 'work-on-everything-stewardship-health', rubricRevision: 47,
+      criteria: { 'rubric-coverage-stewardship': null, 'rubric-quality-stewardship': null,
+        'grading-correction-closure': null },
+      cycles: [{ target: 'Measured target', rubricRef: 'target-quality', rubricRevision: 8,
+        baselineRef: 'EI-baseline', scorecardRef: 'EI-regrade', repairRefs: ['WI-repair'],
+        status, reason: 'Canonical cycle reason' }], error: null,
+    };
+    const open = vi.fn();
+    render(<WorkOnEverythingPanel data={data} {...props()} onOpenWorkItem={open} />);
+    const quality = screen.getByRole('region', { name: 'Rubric stewardship' });
+    const table = within(quality).getByRole('table', { name: 'Grading cycles' });
+    expect(within(table).getByText(label).getAttribute('data-state')).toBe(status);
+    expect(within(table).getByText('Canonical cycle reason')).toBeTruthy();
+    expect(within(table).getByText('target-quality · revision 8')).toBeTruthy();
+    expect(within(quality).getByRole('link', { name: /Browse rubrics/ }).textContent).toContain('revision 47');
+    expect(within(quality).queryByText(/limited recent page/)).toBeNull();
+    for (const [button, ref] of [['Baseline', 'EI-baseline'], ['Scorecard', 'EI-regrade'],
+      ['WI-repair', 'WI-repair']]) {
+      fireEvent.click(within(table).getByRole('button', { name: button }));
+      expect(open).toHaveBeenLastCalledWith(ref);
+    }
+    if (status !== 'verified') expect(within(table).queryByText('Improvement verified')).toBeNull();
+  });
+
+  it('renders supplied criterion evidence and opens its canonical scorecard references', () => {
+    const data = fixture();
+    data.rubricStewardship = {
+      measuredAt: '2026-10-09T12:00:00Z', windowStart: '2026-10-02T12:00:00Z',
+      complete: false, rubricRef: 'work-on-everything-stewardship-health', rubricRevision: 47,
+      criteria: {
+        'rubric-coverage-stewardship': { rating: 'pass', evidence: 'Coverage measured', scorecardRef: 'EI-coverage' },
+        'rubric-quality-stewardship': { rating: 'unknown', evidence: 'Quality not exercised', scorecardRef: 'EI-quality' },
+        'grading-correction-closure': { rating: 'partial', evidence: 'Repair still open', scorecardRef: 'EI-correction' },
+      }, cycles: [], error: null,
+    };
+    const open = vi.fn();
+    render(<WorkOnEverythingPanel data={data} {...props()} onOpenWorkItem={open} />);
+    const quality = screen.getByRole('region', { name: 'Rubric stewardship' });
+    expect(within(quality).getByText('pass')).toBeTruthy();
+    expect(within(quality).getByText('unknown')).toBeTruthy();
+    expect(within(quality).getByText('partial')).toBeTruthy();
+    expect(within(quality).getByText(/limited recent page/)).toBeTruthy();
+    for (const [evidence, ref] of [['Coverage measured', 'EI-coverage'], ['Quality not exercised', 'EI-quality'],
+      ['Repair still open', 'EI-correction']]) {
+      fireEvent.click(within(quality).getByTitle(evidence));
+      expect(open).toHaveBeenLastCalledWith(ref);
+    }
+    expect(within(quality).queryByText('Improvement verified')).toBeNull();
+  });
+
+  it('keeps a canonical evidence read error visible without promoting missing measurements', () => {
+    const data = fixture();
+    data.rubricStewardship = {
+      measuredAt: '2026-10-09T12:00:00Z', windowStart: '2026-10-02T12:00:00Z',
+      complete: false, rubricRef: 'work-on-everything-stewardship-health', rubricRevision: null,
+      criteria: { 'rubric-coverage-stewardship': null, 'rubric-quality-stewardship': null,
+        'grading-correction-closure': null }, cycles: [], error: 'Canonical evidence query unavailable',
+    };
+    render(<WorkOnEverythingPanel data={data} {...props()} />);
+    const quality = screen.getByRole('region', { name: 'Rubric stewardship' });
+    expect(within(quality).getByRole('alert').textContent).toBe('Canonical evidence query unavailable');
+    expect(within(quality).getAllByText('Not measured')).toHaveLength(3);
+    expect(within(quality).queryByText('Improvement verified')).toBeNull();
+  });
+
   it('shows every plan with progress, keeps unpicked plans visible, and hides empty plans by default', () => {
     render(<WorkOnEverythingPanel data={fixture()} {...props()} />);
     openEditor();

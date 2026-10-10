@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
+import { decideLoopExecutionRecovery, type ExecutionRecoveryInput } from '@papercusp/operator-core/lib/harness/routines/loop-execution-recovery';
 import { makeAgentBusyGate, nativeExecutionBlocksInjection, nativeExecutionFromRows, nativeTurnVerifierSupport } from '../scripts/psu-pty-host.mjs';
 
 const timestamp = new Date(1000).toISOString();
@@ -82,6 +83,54 @@ describe('native execution observations', () => {
     expect(nativeExecutionBlocksInjection(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx }))).toBe(true);
     rows.push({ type: 'response_item', timestamp, payload: { type: 'function_call_output', call_id: 'effect' } });
     expect(nativeExecutionBlocksInjection(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx }))).toBe(false);
+  });
+
+  it.each(['codex', 'claude', 'omp'])('protects an unresolved native %s approval request after failure until its matching result', agent => {
+    // Native permission prompts leave the requested operation unresolved. The
+    // observer must preserve that call even if its model turn fails meanwhile.
+    const callId = 'approval-operation';
+    const rows = agent === 'codex' ? [
+      { type: 'event_msg', timestamp, payload: { type: 'task_started' } },
+      { type: 'response_item', timestamp, payload: { type: 'function_call', call_id: callId,
+        name: 'exec_command', arguments: JSON.stringify({ cmd: 'printf approved',
+          sandbox_permissions: 'require_escalated', justification: 'Approve this operation?' }) } },
+      { type: 'event_msg', timestamp, payload: { type: 'turn_aborted' } },
+    ] : agent === 'claude' ? [
+      { type: 'user', timestamp, message: { role: 'user', content: 'Run the approved operation' } },
+      { type: 'assistant', timestamp, message: { role: 'assistant', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: callId, name: 'Bash', input: { command: 'printf approved' } }] } },
+      { type: 'assistant', timestamp, isApiErrorMessage: true, message: { role: 'assistant' } },
+    ] : [
+      { type: 'message', id: 'owner', timestamp, message: { role: 'user', content: 'Run the approved operation' } },
+      { type: 'message', id: 'request', timestamp, message: { role: 'assistant', stopReason: 'toolUse',
+        content: [{ type: 'toolCall', id: callId, name: 'bash', arguments: { command: 'printf approved' } }] } },
+      { type: 'message', id: 'failed', timestamp, message: { role: 'assistant', stopReason: 'error' } },
+    ];
+    const nowMs = 40_000;
+    const decision = () => {
+      const observed = nativeExecutionFromRows(rows, { agent, receivedAtMs: 900, nowMs });
+      expect(observed.phase).toBe('failed');
+      const input: ExecutionRecoveryInput = { ownerId: 'approval-owner', active: true, parked: true,
+        firedAt: 900, nowMs, host: { ownerId: 'approval-owner', advSessionId: null, pid: 1, ptyPid: 2,
+          sock: '/fixture', command: agent, startedAt: 0,
+          execution: { ...observed, phase: 'failed', ownerId: 'approval-owner', hostPid: 1, childPid: 2,
+            childGeneration: 1, receivedAtMs: 900, observedAt: nowMs } },
+        inference: { active: 0, observedAt: nowMs } };
+      return { observed, recovery: decideLoopExecutionRecovery(input) };
+    };
+    expect(decision()).toMatchObject({ observed: { pendingTools: 1 },
+      recovery: { action: 'protect', state: { reason: 'native-operation', attempts: 0 } } });
+    const output = (id: string) => agent === 'codex'
+      ? { type: 'response_item', timestamp, payload: { type: 'function_call_output', call_id: id, output: 'approved' } }
+      : agent === 'claude'
+        ? { type: 'user', timestamp, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'approved' }] } }
+        : { type: 'message', id: `result-${id}`, timestamp,
+          message: { role: 'toolResult', toolCallId: id, content: [{ type: 'text', text: 'approved' }] } };
+    rows.push(output('another-operation') as never);
+    expect(decision().recovery.action).toBe('protect');
+    rows.push(output(callId) as never);
+    expect(decision()).toMatchObject({ observed: { pendingTools: 0 },
+      recovery: { action: 'recover', state: { attempts: 1 } } });
   });
 
   it('excludes a predecessor running turn after a new child/submission floor', () => {

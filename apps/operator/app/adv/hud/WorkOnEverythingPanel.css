@@ -118,7 +118,7 @@
 .woe__link { background: none; border: 0; padding: 0; color: var(--accent); font-size: 12px; }
 
 /* table */
-.woe__table-wrap { margin: 0 20px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-raised); }
+.woe__table-wrap { flex-shrink: 0; margin: 0 20px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-raised); }
 .woe__table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .woe__table th { text-align: left; font-size: 11px; font-weight: 500; color: var(--fg-mute); padding: 9px 12px; background: var(--bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1; }
 .woe__table th:nth-child(1) { width: 112px; } .woe__table th:nth-child(3) { width: 210px; }

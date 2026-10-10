@@ -58,6 +58,13 @@ function budgetFixture() {
 }
 
 describe('frozen benchmark native provider admission', () => {
+  it('binds the host native output ceiling to the frozen resource allowance', () => {
+    const f = budgetFixture();
+    expect(f.gateway.carryTrial.outputTokenLimit).toBe(1000);
+    f.input.resources.outputTokens = 9999;
+    expect(f.gateway.carryTrial.outputTokenLimit).toBe(1000);
+    f.revoke();
+  });
   it('binds every provider attempt to the existing exact lifetime ledger and assignment cap', async () => {
     const f = budgetFixture();
     try {
@@ -148,7 +155,8 @@ describe('frozen benchmark native provider admission', () => {
 });
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
-vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch } }));
+vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
+  INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route') }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 
 const options: CurrentSuBenchOptions = {
@@ -494,13 +502,25 @@ describe('current benchmark restart and live binding', () => {
   it('calls the maintained handler with the original authenticated context and subtree controller', async () => {
     const f = fixture();
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
-    const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null }, options);
+    const gateway = { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) };
+    const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, nativeGateway: gateway }, options);
     const args = currentBenchLaunchRequest(options, handle, 'issue');
     await ports.launch(args);
-    expect(native.launch).toHaveBeenCalledWith(args, ctx);
+    const forwarded = native.launch.mock.calls.at(-1)![1];
+    expect(forwarded.authenticatedPrincipal).toBe((ctx as unknown as { authenticatedPrincipal: unknown }).authenticatedPrincipal);
+    expect(forwarded.workspaceId).toBe(ctx.workspaceId);
+    expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(gateway);
+    expect(Object.getOwnPropertySymbols(ctx)).not.toContain(Symbol.for('benchmark-test-private-route'));
     await ports.killTask('task-own');
     expect(native.kill).toHaveBeenCalledWith('task-own', { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });
     expect(ctx.workspaceId).toBe('bench-private');
+  });
+  it('refuses a production launch without the host private route before invoking the native handler', async () => {
+    const ctx = { workspaceId: 'bench-private' } as PapercuspUnifiedToolContext;
+    const ports = liveCurrentSuBenchPorts(ctx, { admit: fixture().ports.admit, observeIdentity: async () => null }, options);
+    const before = native.launch.mock.calls.length;
+    await expect(ports.launch(currentBenchLaunchRequest(options, handle, 'issue'))).rejects.toThrow(/private inference gateway/);
+    expect(native.launch.mock.calls.length).toBe(before);
   });
   it('production ports derive identity from scoped observations instead of accepting a configured measurement', async () => {
     const { task, observation } = observedFixture();

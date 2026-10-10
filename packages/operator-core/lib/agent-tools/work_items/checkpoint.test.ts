@@ -247,7 +247,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       harnessSlug: 'papercup',
       log: (message: string) => logs.push(message),
     } as never;
-    const body = 'Keep the measurement attached to this checkpoint item.';
+    const body = 'Messaged fleet leader su-bce40c51 [turn:self]';
 
     setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string | null | undefined, opts: unknown) => {
       const transform = (opts as { transform?: (prior: string | null, incoming: string | null | undefined) => string | null | undefined })
@@ -266,6 +266,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect.arrayContaining([
         expect.objectContaining({ phase: 'append-prior-read', state: 'started', itemId: 'WI-7' }),
         expect.objectContaining({ phase: 'append-prior-read', state: 'completed', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'provenance-action-proof-read', state: 'started', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'provenance-action-proof-read', state: 'completed', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'provenance-current-turn-stamp', state: 'started', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'provenance-current-turn-stamp', state: 'completed', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'provenance-carry-surface-stamp', state: 'started', itemId: 'WI-7' }),
+        expect.objectContaining({ phase: 'provenance-carry-surface-stamp', state: 'completed', itemId: 'WI-7' }),
         expect.objectContaining({ phase: 'locked-check-row-transform', state: 'started', itemId: 'WI-7' }),
         expect.objectContaining({ phase: 'locked-check-row-transform', state: 'completed', itemId: 'WI-7' }),
         expect.objectContaining({ phase: 'store-write-transaction', state: 'started', itemId: 'WI-7' }),

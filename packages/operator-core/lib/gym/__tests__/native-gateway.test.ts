@@ -15,6 +15,15 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) })
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const token = 'PRIVATE_NATIVE_TOKEN_0123456789abcdef0123456789abcdef';
+it('preserves and freezes the host native output ceiling through authority snapshots', () => {
+  const base = config();
+  const cfg = { ...base, carryTrial: { ...base.carryTrial, outputTokenLimit: 23 } };
+  const frozen = snapshotNativeGymGatewayConfig(cfg);
+  cfg.carryTrial.outputTokenLimit = 999;
+  expect(frozen.carryTrial.outputTokenLimit).toBe(23);
+  expect(Object.isFrozen(frozen.carryTrial)).toBe(true);
+  expect(() => snapshotNativeGymGatewayConfig({ ...base, carryTrial: { ...base.carryTrial, outputTokenLimit: 0 } })).toThrow(/authority/);
+});
 function config(): NativeGymGatewayConfig {
   return { token, carryTrial: { manifestSha256: digest('native manifest'), armId: 'native-cycle',
     protocols: ['anthropic-messages', 'openai-responses'], requestTokenSha256: digest(token),

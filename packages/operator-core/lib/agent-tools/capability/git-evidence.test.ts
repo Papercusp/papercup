@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createCache } from '@papercusp/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessRegistry } from '../../harness-registry';
+import * as gitTools from './git';
 import { runGit } from './git';
 import gitEvidence, {
   MAX_GIT_EVIDENCE_INLINE_BYTES,
@@ -87,6 +88,36 @@ describe('capability:git-evidence', () => {
     );
 
     expect(result).toMatchObject({ ok: true, op: 'readFileAtCommit', content: 'pinned contents\n' });
+  });
+
+  it('routes concurrent historical reads through the dedicated read-only Git runner', async () => {
+    const root = repository();
+    const paths = ['first.txt', 'second.txt', 'third.txt'];
+    for (const path of paths) writeFileSync(join(root, path), `pinned ${path}\n`);
+    git(root, ['add', ...paths]);
+    git(root, ['commit', '--quiet', '-m', 'concurrent evidence blobs']);
+    const commitSha = git(root, ['rev-parse', 'HEAD']);
+    const readOnlyRunner = vi.spyOn(gitTools, 'runGitReadOnlyEvidence');
+
+    try {
+      const results = await Promise.all(paths.map((path) => runJudgeGitEvidence(
+        { op: 'readFileAtCommit', commitSha, path },
+        { repositoryDir: root, workspaceId: 'test-workspace', signal: never },
+      )));
+
+      expect(results).toHaveLength(paths.length);
+      for (const [index, result] of results.entries()) {
+        expect(result).toMatchObject({
+          ok: true,
+          op: 'readFileAtCommit',
+          path: paths[index],
+          content: `pinned ${paths[index]}\n`,
+        });
+      }
+      expect(readOnlyRunner).toHaveBeenCalledTimes(paths.length * 5);
+    } finally {
+      readOnlyRunner.mockRestore();
+    }
   });
 
   it('keeps interrupted or ambiguous repository probes out of the not-repository verdict', async () => {
