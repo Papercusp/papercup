@@ -57,7 +57,9 @@ import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
 // @ts-expect-error The maintained CLI policy is JavaScript without declarations.
 import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-committed.mjs';
 
-const execFileAsync = promisify(execFile);
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 /** Complete read-only process evidence for destructive log/lint retention. An ordinary
  * host cannot read other users' /proc entries; sudo is used only for the census,
