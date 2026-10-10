@@ -180,7 +180,7 @@ describe('native provider authority uses real exact benchmark reservations', () 
       const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId });
       expect(rows).toHaveLength(1); expect(rows[0].reservedUsd).toBe(3); expect(rows[0].status).toBe('open');
       expect(rows[0].id).toBe(responses.find(Boolean)!.reservationRef);
-      expect(rows[0].runRef).toBe(`manifest:${manifest === 'unused' ? manifest : JSON.parse(rows[0].note!).nativeGatewayAttempt.manifestSha256}/attempt:${rows[0].id}`);
+      expect(rows[0].runRef).toBe(`manifest:${JSON.parse(rows[0].note!).nativeGatewayAttempt.manifestSha256}/attempt:${rows[0].id}`);
       expect(rows[0].note).not.toContain('PRIVATE_SECRET');
     } finally { a.revoke(); b.revoke(); }
   });

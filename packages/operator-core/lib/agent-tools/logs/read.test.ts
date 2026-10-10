@@ -104,6 +104,19 @@ describe('logs:read — dispatch transaction boundary', () => {
 });
 
 describe('logs:read — unit resolution', () => {
+  it('documents the real service prefix and journal scope semantics', () => {
+    const argsSchema = (logsReadTool as unknown as {
+      args: { toJSONSchema: () => { properties?: Record<string, { description?: string }> } };
+    }).args.toJSONSchema();
+    const unitDescription = argsSchema.properties?.unit?.description ?? '';
+    const scopeDescription = argsSchema.properties?.scope?.description ?? '';
+
+    expect(unitDescription).toContain("'papercup-bg-host' → 'papercup-bg-host.service'");
+    expect(unitDescription).not.toContain('papercusp-bg-host');
+    expect(scopeDescription).toContain('no unit-name prefix filter');
+    expect(scopeDescription).not.toContain('papercusp-* units');
+  });
+
   it('suffixes a bare unit name with .service', async () => {
     await call({ unit: 'papercup-bg-host' });
     expect(readJournalMock.mock.calls[0][0].units).toEqual(['papercup-bg-host.service']);
