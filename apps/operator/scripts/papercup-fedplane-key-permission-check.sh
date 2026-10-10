@@ -72,7 +72,7 @@
 #   KEYPERM_SSH_MAXDEPTH    (default 6)   — depth bound for the tier-1 sweep
 #   KEYPERM_DEEP            (default 1)   — run the tier-2 content sweep
 #   KEYPERM_DEEP_ROOTS      (default "$HOME /mnt/data/back") — tier-2 roots
-#   KEYPERM_DEEP_TIMEOUT_S  (default 900) — hard bound; a timeout is
+#   KEYPERM_DEEP_TIMEOUT_S  (default 2700) — hard bound per root; a timeout is
 #                             INDETERMINATE, never clean
 #   KEYPERM_EXCLUDE_DIRS    (default: see EXCLUDE_DIRS_DEFAULT) — space-separated
 #                             directory-NAME globs pruned from both tiers
@@ -118,7 +118,9 @@ KEYPERM_DEEP="${KEYPERM_DEEP:-1}"
 # pruning, and the find leg completes in under 100s. Widen it deliberately with
 # a matching KEYPERM_DEEP_TIMEOUT_S; do not widen it and leave the budget.
 KEYPERM_DEEP_ROOTS="${KEYPERM_DEEP_ROOTS:-$HOME/papercupai-workspace $HOME/.config /mnt/data/back}"
-KEYPERM_DEEP_TIMEOUT_S="${KEYPERM_DEEP_TIMEOUT_S:-900}"
+# Repeated .config content passes varied from a 900s timeout to a 213s
+# completion; size the bound for the slow observation instead of the fastest.
+KEYPERM_DEEP_TIMEOUT_S="${KEYPERM_DEEP_TIMEOUT_S:-2700}"
 # ${VAR-default}, NOT ${VAR:-default} — the colon form treats an explicitly EMPTY
 # value as unset and substitutes the default, which would silently cancel the
 # documented opt-out below and re-enable a control the operator deliberately
@@ -390,6 +392,7 @@ fi
 # the same sweep ran for ~10 minutes at load average 63 (a security probe that
 # degrades its host is a probe that gets disabled).
 DEEP_STATUS="disabled"
+DEEP_FAILURE_DETAIL=""
 if [ "$KEYPERM_DEEP" = 1 ]; then
   DEEP_STATUS="ok"
   for root in $KEYPERM_DEEP_ROOTS; do
@@ -404,11 +407,12 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
     # precisely the false-clean this probe exists to refuse, so it is worth the
     # extra process.
     deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 19 ionice -c 3 bash -c '
+        set -o pipefail
         re="$1"; shift
-        # The current workspace population is over 1.1M eligible files; batches
-        # of 200 start nearly 6,000 grep processes per run. Larger batches cut
-        # process startup overhead; xargs still enforces system argument-size limits.
-        find "$@" -print0 2>/dev/null | xargs -0 -r -n 1000 grep -laIE -m1 "$re" 2>/dev/null
+        # The current workspace population is over 1.1M eligible files. Larger
+        # batches cut process startup overhead; four concurrent batches overlap
+        # content reads while xargs enforces system argument-size limits.
+        find "$@" -print0 2>/dev/null | xargs -0 -r -P 4 -n 1000 bash -c "grep -laIE -m1 \"\$0\" \"\$@\" 2>/dev/null; status=\$?; [ \"\$status\" -eq 1 ] && exit 0; exit \"\$status\"" "$re"
       ' _ "$KEY_HEADER_RE" "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
     rc=$?
     # 124 is timeout(1)'s own "the command timed out" status. Partial output from
@@ -416,7 +420,12 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
     # than folded into the clean case.
     if [ "$rc" = 124 ]; then
       DEEP_STATUS="TIMEOUT"
+      DEEP_FAILURE_DETAIL="$root: status 124 (timeout)"
       log "tier2: TIMED OUT after ${KEYPERM_DEEP_TIMEOUT_S}s under $root — result INDETERMINATE, not clean."
+    elif [ "$rc" != 0 ]; then
+      DEEP_STATUS="ERROR"
+      DEEP_FAILURE_DETAIL="$root: command status $rc"
+      log "tier2: scan command failed with status $rc under $root — result INDETERMINATE, not clean."
     fi
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -430,15 +439,19 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
   done
 fi
 
-if [ "$DEEP_STATUS" = "TIMEOUT" ]; then
+if [ "$DEEP_STATUS" = "TIMEOUT" ] || [ "$DEEP_STATUS" = "ERROR" ]; then
   file_red "deeptimeout-red-ei-filed" \
-    "fed-plane key-permission deep sweep timed out on $(hostname 2>/dev/null || echo unknown-host) — the tier-2 result is INDETERMINATE" \
-    "WI-2143622 key-permission probe: the tier-2 content sweep over [${KEYPERM_DEEP_ROOTS}] exceeded KEYPERM_DEEP_TIMEOUT_S=${KEYPERM_DEEP_TIMEOUT_S}s and was killed. Whatever it had found so far is reported alongside this, but ABSENCE OF FURTHER FINDINGS PROVES NOTHING for this run — a killed find prints nothing and looks exactly like a clean one, which is the failure mode this probe was built to refuse (see constraint 3 in the script header). ACTION: either raise KEYPERM_DEEP_TIMEOUT_S, narrow KEYPERM_DEEP_ROOTS, or widen KEYPERM_EXCLUDE_DIRS — on this box the dominant cost is vendored dependency trees, and pruning them is what makes the sweep tractable. Note that tier 1 (.ssh directories) is independent of this and reported separately."
+    "fed-plane key-permission deep sweep did not complete on $(hostname 2>/dev/null || echo unknown-host) — the tier-2 result is INDETERMINATE" \
+    "WI-2143622 key-permission probe: the tier-2 content sweep over [${KEYPERM_DEEP_ROOTS}] did not complete (status=${DEEP_STATUS}; ${DEEP_FAILURE_DETAIL}; KEYPERM_DEEP_TIMEOUT_S=${KEYPERM_DEEP_TIMEOUT_S}s). Partial findings are reported alongside this, but ABSENCE OF FURTHER FINDINGS PROVES NOTHING for this run — a timeout or failed find/grep can look like a clean one, which is the failure mode this probe was built to refuse (see constraint 3 in the script header). ACTION: diagnose the scan/command failure and adjust the bounded scan strategy or budget. Tier 1 (.ssh directories) is independent of this and reported separately."
 fi
 
 # ── Report ──────────────────────────────────────────────────────────────────
 if [ "$FINDING_COUNT" = 0 ]; then
-  log "no exposed private keys found (tier1 control=$CONTROL_STATUS, tier2=$DEEP_STATUS)."
+  if [ "$DEEP_STATUS" = "TIMEOUT" ] || [ "$DEEP_STATUS" = "ERROR" ]; then
+    log "no complete exposure inventory (tier1 control=$CONTROL_STATUS, tier2=$DEEP_STATUS)."
+  else
+    log "no exposed private keys found (tier1 control=$CONTROL_STATUS, tier2=$DEEP_STATUS)."
+  fi
   rm -f "$STATE_DIR/exposed-red-ei-filed"
 else
   log "EXPOSED PRIVATE KEYS: $FINDING_COUNT"
