@@ -1094,7 +1094,7 @@ function isCanonicalMutantCounterexample(row: SpecEvidenceForAdequacy): boolean 
     row.testRunProvenance.mutationPhase === 'mutant';
 }
 
-/** A measured failed-mutant scope may tolerate skips outside the failed case. */
+/** Every declared case must have a measured outcome; mutant scopes must include a failed case. */
 function hasMeasuredCaseScope(row: SpecEvidenceForAdequacy, failedCases?: string[]): boolean {
   const declared = detailsOf(row).testCases ?? [];
   if (declared.length === 0) return false;
@@ -1137,7 +1137,8 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
 
   if (status === 'fail') return 'fail';
   if (status !== 'pass') return 'unknown';
-  return run.collectionFailed || run.failed > 0 || run.passed < 1 || run.skipped > 0
+  return run.collectionFailed || run.failed > 0 || run.passed < 1 ||
+    (run.skipped > 0 && !hasMeasuredCaseScope(row))
     ? 'fail'
     : 'pass';
 }
@@ -1693,8 +1694,9 @@ function appendRatingRerunProbes(
  *  18 — map legacy manual-provenance requirements only to canonical measured operational cases.
  *  19 — pending clause/composite proof and unresolved disclosure scope notes block a machine PASS.
  *  20 — disclosure-bearing metadata is scanned recursively, preserving gaps moved outside scopeNote.
+ *  21 — passing selected scopes tolerate unrelated skips only when every declared case canonically passed.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 20;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 21;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -2550,12 +2552,12 @@ export function evaluateSpecTestAdequacy(input: {
                   rating: 'pass',
                   evidence: [
                     evidenceWithBindings(
-                      `Canonical test_runs status/counts show bound proof was collected, not skipped, executed, and successful for ${clauseIdentity(clause)}.`,
+                      `Canonical test_runs status/counts and selected case identities show the bound proof scope was collected, not skipped, executed, and successful for ${clauseIdentity(clause)}.`,
                       executable.filter((row) => measuredExecutionVerdict(row) === 'pass'),
                     ),
                     ...(executable.some((row) => measuredExecutionVerdict(row) === 'pass' && hasUnmatchedPassingCaseDeclaration(row))
                       ? [
-                          'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run, which measures canonical runner status/counts; any skipped ordinary run fails execution-integrity. correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer.',
+                          'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run, which measures canonical runner status/counts; a skipped ordinary run requires every declared case to have canonically passed. correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer.',
                         ]
                       : []),
                   ].join(' '),

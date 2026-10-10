@@ -22,6 +22,35 @@ import { resolveLocalRubric } from '../../cupboard/rubric-store';
 
 const DEFAULT_MUTATION_TEST_CASE = 'the mutation is detected';
 
+describe('supersession of measured passing case scopes', () => {
+  it('allows selected passing cases with unrelated unselected file cases', () => {
+    const row = successfulTestBinding('selected.integration.test.ts', {
+      testCases: ['suite > selected', 'suite > another selected'],
+    });
+    row.testRunExecution!.skipped = 95;
+    row.testRunExecution!.passedCaseTitles = [
+      'outer > suite > selected',
+      'outer > suite > another selected',
+    ];
+
+    expect(supersedeEligibilityGaps(row)).toEqual([]);
+  });
+
+  it.each([
+    ['empty declaration', []],
+    ['missing selected case', ['suite > selected', 'suite > skipped']],
+    ['partial title', ['suite > select']],
+  ])('refuses scoped supersession with %s', (_label, testCases) => {
+    const row = successfulTestBinding('selected.integration.test.ts', { testCases });
+    row.testRunExecution!.skipped = 95;
+    row.testRunExecution!.passedCaseTitles = ['outer > suite > selected'];
+
+    expect(supersedeEligibilityGaps(row)).toEqual([
+      expect.stringContaining('canonical execution=fail'),
+    ]);
+  });
+});
+
 describe('supersession preserves measured mutation provenance', () => {
   function caughtMutation(): SpecEvidenceForAdequacy {
     return evidence({
@@ -1130,30 +1159,35 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run',
     );
     expect(result.ratings['execution-integrity'].evidence).toContain(
-      'any skipped ordinary run fails execution-integrity',
+      'a skipped ordinary run requires every declared case to have canonically passed',
     );
     expect(result.ratings['execution-integrity'].evidence).toContain(
       'correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer',
     );
   });
 
-  it('rejects the recorded skipped run even when its binder and case scope claim success', () => {
+  it('accepts measured passing selections while rejecting skipped or unmatched selected cases', () => {
     const selected = successfulTestBinding('selected.integration.test.ts', { testCases: ['suite > selected'] });
     selected.testRunId = 20919771;
     selected.testRunExecution!.skipped = 165;
     const evaluate = () => evaluateSpecTestAdequacy({ clause: clause(), evidence: [selected], classRef: 'plan-class-feature-ship' });
-    expect(evaluate().ratings['execution-integrity'].rating).toBe('fail');
+    expect(evaluate().ratings['execution-integrity'].rating).toBe('pass');
 
     const bareDeclaration = successfulTestBinding('bare-selected.integration.test.ts', { testCases: ['selected'] });
     bareDeclaration.testRunExecution!.passedCaseTitles = ['suite > selected'];
     bareDeclaration.testRunExecution!.skipped = 71;
     expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: [bareDeclaration], classRef: 'plan-class-feature-ship' })
-      .ratings['execution-integrity'].rating).toBe('fail');
+      .ratings['execution-integrity'].rating).toBe('pass');
 
     // Neither an absent selected case nor a prefix of a real title is proof.
     selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: ['suite > selected', 'suite > skipped'] };
     expect(evaluate().ratings['execution-integrity'].rating).toBe('fail');
     selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: ['suite'] };
+    expect(evaluate().ratings['execution-integrity'].rating).toBe('fail');
+    selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: [] };
+    expect(evaluate().ratings['execution-integrity'].rating).toBe('fail');
+    selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: ['suite > selected'] };
+    selected.testRunExecution!.passedCaseTitles = [];
     expect(evaluate().ratings['execution-integrity'].rating).toBe('fail');
   });
 
@@ -1162,6 +1196,10 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       { collectionFailed: true },
       { failed: 1 },
       { status: 'fail' },
+      { passed: 0 },
+      { status: 'running' },
+      { status: 'cancelled' },
+      { status: 'skipped' },
     ]) {
       const selected = successfulTestBinding('selected.integration.test.ts', { testCases: ['suite > selected'] });
       Object.assign(selected.testRunExecution!, { skipped: 71 }, execution);
@@ -2696,7 +2734,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(20);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(21);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
