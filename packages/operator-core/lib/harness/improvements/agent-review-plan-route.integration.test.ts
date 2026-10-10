@@ -23,7 +23,7 @@ vi.mock('../../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: vi
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { getIssue, linkIssue } = await import('../../issues-engineer');
-const { getWorkItem } = await import('../../work-items');
+const { getWorkItem, mergeWorkItemPayload, releaseWorkItem } = await import('../../work-items');
 const { recordRoutedIdea } = await import('../../scout/routed-ledger');
 const { runRouteIdea } = await import('../../agent-tools/scout/route-idea');
 const { runGradeIdea } = await import('../../agent-tools/scout/grade-idea');
@@ -91,7 +91,55 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
     // case measures history instead of silently contributing an undated round.
     await db.adminSql`DELETE FROM harness_shared.work_items
       WHERE workspace_id=${WS} AND harness_slug=${HARNESS}
-        AND feature_id IN ('EI-BQL-P002-TRIAGE-unheld', 'EI-BQL-P002-TRIAGE-su-peer')`;
+        AND feature_id IN ('EI-BQL-P002-TRIAGE-unheld', 'EI-BQL-P002-TRIAGE-su-peer', 'EI-BQL-P002-SIGNED')`;
+    await db.adminSql`DELETE FROM harness_shared.tool_invocations
+      WHERE workspace_id=${WS} AND spawn_id='bql-p002-signed-fixture'`;
+  });
+
+  it.each([
+    ['trusted', 'spawn-url', 'harness', 'judge', 'su-signed', 'ended', null, true],
+    ['untrusted', 'spawn-url', 'harness', 'judge', 'su-signed', 'ended', null, false],
+    ['trusted', 'bearer', 'harness', 'judge', 'su-signed', 'ended', null, false],
+    ['trusted', 'spawn-url', 'system', 'judge', 'su-signed', 'ended', null, false],
+    ['trusted', 'spawn-url', 'harness', 'reviewer', 'su-signed', 'ended', null, false],
+    ['trusted', 'spawn-url', 'harness', 'judge', 'su-forged', 'ended', null, false],
+    ['trusted', 'spawn-url', 'harness', 'judge', 'su-signed', 'parked', null, false],
+    ['trusted', 'spawn-url', 'harness', 'judge', 'su-signed', 'ended', 'su-peer', false],
+    ['trusted', 'spawn-url', 'harness', 'judge', 'su-signed', 'ended', 'system:judge/su-signed', true],
+  ] as const)('P-002 checks persisted signed alias trust=%s auth=%s kind=%s role=%s client=%s state=%s holder=%s', async (trust, authMethod, principalKind, role, client, sessionState, holder, allowed) => {
+    const id = 'EI-BQL-P002-SIGNED';
+    const submitter = 'system:judge/su-signed';
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, item_kind, status, payload, taken_by)
+      VALUES (${WS}, ${HARNESS}, ${id}, 'Unvalidated signed report', 'Needs reproduction', 'bug', 'open',
+        ${JSON.stringify({ agentReview: { status: 'revision-requested', submittedBy: submitter, ledgerIdeaId: id, round: 1 } })}::jsonb, ${holder})`;
+    await db.adminSql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status,
+       coord_owner_id, principal_kind, principal_auth_method, principal_trust, metadata_json)
+      VALUES (${WS}, ${HARNESS}, 'papercusp', 'improvements:capture', ${role}, 'bql-p002-signed-fixture',
+        'run:bql-p002', 'ok', ${submitter}, ${principalKind}, ${authMethod}, ${trust},
+        ${JSON.stringify({ requestOrigin: { query: { client } } })}::jsonb)`;
+    const resolveSubmitterLiveness = vi.fn(async () => ({ sessionState }));
+    const result = await resubmitAgentReview({ id, submittedBy: 'su-adopter' }, {
+      getWorkItem, mergeWorkItemPayload, releaseWorkItem, resolveSubmitterLiveness,
+    } as never);
+    const stored = (await getWorkItem(id, HARNESS))!;
+    expect(result.resubmitted).toBe(allowed);
+    if (allowed) {
+      expect(readAgentReviewState(stored.payload)).toMatchObject({ status: 'pending', submittedBy: 'su-adopter', round: 2 });
+      expect(stored.assignee).toBeNull();
+      expect(stored.payload).toMatchObject({ implementationReadiness: { status: 'unknown' } });
+    } else {
+      expect(readAgentReviewState(stored.payload)).toMatchObject({ status: 'revision-requested', submittedBy: submitter, round: 1 });
+      expect(stored.assignee).toBe(holder);
+    }
+    if (trust !== 'trusted' || authMethod !== 'spawn-url' || principalKind !== 'harness' || role !== 'judge' || client !== 'su-signed') {
+      expect(result).toMatchObject({ reason: 'not-submitter:authority-unknown' });
+      expect(resolveSubmitterLiveness).not.toHaveBeenCalled();
+    } else {
+      expect(resolveSubmitterLiveness).toHaveBeenCalledWith('su-signed', { claimsHeld: holder === submitter });
+    }
+    expect(stored.payload).not.toHaveProperty('intakeReproduction');
   });
 
   it.each([null, 'su-peer'])('P-002 recovers triage provenance without accepting a bug or stealing holder %s', async (holder) => {
