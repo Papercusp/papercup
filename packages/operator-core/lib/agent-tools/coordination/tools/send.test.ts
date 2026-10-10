@@ -733,6 +733,36 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(reassembleChunkedBodies(delivered)).toEqual(sections);
   });
 
+  it('RSR-P-008-B: chunked replies to a departed sender authenticate every part without threading continuations', async () => {
+    const departedSender = 'ghost-sender';
+    mockResolvedTyped(
+      getByIdM,
+      envelope({ msg_id: 'orig', from: departedSender, to: ['me'], wakeOnReply: false }),
+    );
+    mockResolvedTyped(resolveM, { resolved: [], unknown: [departedSender], ambiguous: [] });
+    const authoredBody = 'This is the complete reply body. '.repeat(100);
+
+    const b = await body({
+      to: [departedSender],
+      summary: 'closing the loop',
+      expects: 'none',
+      related_msg_id: 'orig',
+      body: [{ text: authoredBody }],
+    });
+
+    const parts = sendM.mock.calls.map((call) => call[1] as { related_msg_id?: string; body?: string });
+    expect(parts.length).toBeGreaterThan(1);
+    expect(b).toMatchObject({ ok: true, counts: { failed: 0 } });
+    expect(b.results).toHaveLength(parts.length);
+    expect(b.results.every((result: { ok: boolean }) => result.ok)).toBe(true);
+    expect(b.results.every((result: { recipients_gone?: string[] }) =>
+      result.recipients_gone?.includes(departedSender),
+    )).toBe(true);
+    expect(parts.slice(0, -1).every((part) => part.related_msg_id === undefined)).toBe(true);
+    expect(parts[parts.length - 1].related_msg_id).toBe('orig');
+    expect(wakeM).not.toHaveBeenCalled();
+  });
+
   it('RSR-P-008-B: refuses a body too long to chunk before anything is persisted', async () => {
     const b = await body({
       to: ['bee-1'],

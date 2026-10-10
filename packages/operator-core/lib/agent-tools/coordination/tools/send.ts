@@ -299,6 +299,9 @@ interface SendMsg {
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
+  /** Internal only: chunk continuations use this to validate a departed reply
+   *  recipient without persisting a reply edge or firing reply-wake per part. */
+  recipientAuthRelatedMsgId?: string;
   /** D-048: REQUIRED reply-expectation. `expectsReply` is derived from it, never passed. */
   expects: ExpectsKind;
   /** H2 (coord-authority-hardening P-004): relay provenance — the coord msg_id
@@ -1286,21 +1289,25 @@ async function sendOne(
   // Keep the caller's ref for diagnostics, but persist and reuse the canonical
   // full id when resolveMessageRef accepted a unique leading prefix.
   let relatedMsgIdForSend = msg.related_msg_id;
-  if (msg.related_msg_id) {
+  // A chunk continuation carries this internal auth-only reference so the
+  // departed-sender exception is checked consistently for every part. It is
+  // deliberately not persisted as related_msg_id and cannot cause a reply wake.
+  const recipientAuthRelatedMsgId = msg.related_msg_id ?? msg.recipientAuthRelatedMsgId;
+  if (recipientAuthRelatedMsgId) {
     let lookupErrored = false;
     let relatedLookup: Awaited<ReturnType<typeof resolveMessageRef>> | null = null;
     try {
-      relatedLookup = await resolveMessageRef(msg.related_msg_id);
+      relatedLookup = await resolveMessageRef(recipientAuthRelatedMsgId);
       if (relatedLookup.status === 'found') {
         relatedOriginal = relatedLookup.message;
-        relatedMsgIdForSend = relatedLookup.msgId;
+        if (msg.related_msg_id) relatedMsgIdForSend = relatedLookup.msgId;
       } else if (relatedLookup.status === 'ambiguous') {
         return {
           ok: false,
           to: msg.to,
           error: 'related_msg_ambiguous',
           message:
-            `related_msg_id '${msg.related_msg_id}' matches multiple coord messages ` +
+            `related_msg_id '${recipientAuthRelatedMsgId}' matches multiple coord messages ` +
             `(${relatedLookup.candidates.join(', ')}) — nothing was sent. ` +
             'Use the full msg_id or a longer unique leading prefix.',
         };
@@ -1317,13 +1324,13 @@ async function sendOne(
       // of leaving the caller to guess.
       let conversationHint = '';
       try {
-        const maybeConversation = await getConversation(msg.related_msg_id);
+        const maybeConversation = await getConversation(recipientAuthRelatedMsgId);
         if (maybeConversation) {
           conversationHint =
-            ` '${msg.related_msg_id}' IS a valid conversation id (kind:${maybeConversation.conversation.kind}, ` +
+            ` '${recipientAuthRelatedMsgId}' IS a valid conversation id (kind:${maybeConversation.conversation.kind}, ` +
             `state:${maybeConversation.conversation.state}) — but related_msg_id threads coord MESSAGES, a ` +
             'separate id space conversations do not share. Reply IN the conversation with ' +
-            `conversations:answer / conversations:post { conversation_id: '${msg.related_msg_id}' } instead; ` +
+            `conversations:answer / conversations:post { conversation_id: '${recipientAuthRelatedMsgId}' } instead; ` +
             'if you meant to thread a coord message, find its msg_id in coord:inbox.';
         }
       } catch {
@@ -1334,7 +1341,7 @@ async function sendOne(
         to: msg.to,
         error: 'related_msg_not_found',
         message:
-          `related_msg_id '${msg.related_msg_id}' matches no coord message — nothing was sent.` +
+          `related_msg_id '${recipientAuthRelatedMsgId}' matches no coord message — nothing was sent.` +
           conversationHint +
           ` A dangling threading id silently voids the asker's wake-on-reply (they sleep while ` +
           `you believe you replied). Copy the full msg_id from coord:inbox / the message you ` +
@@ -1440,7 +1447,7 @@ async function sendOne(
             'coord:send addressed agent(s) not in the roster — nothing was sent. ' +
             'Use the short handle from [coord+N]/inbox, the su- prefix, or the full ownerId ' +
             '(coord:presence lists them); a substring of a live ownerId also resolves.' +
-            (msg.related_msg_id
+            (recipientAuthRelatedMsgId
               ? ' Just closing the loop on a message from someone whose session has ended? ' +
                 'coord:ack { msg_id } never requires the original sender to still be in the ' +
                 'roster — use it instead of a manual related_msg_id reply.'
