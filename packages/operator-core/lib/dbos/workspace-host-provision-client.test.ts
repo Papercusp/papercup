@@ -22,6 +22,10 @@ const input: StartWorkspaceHostProvisioningInput = {
   connection: { id: 'conn-1' } as unknown as WorkspaceHostProviderConnection,
   operationId: 'op-1',
   actorId: 'user-1',
+  bootstrapReleaseOverride: {
+    manifestPath: '/var/lib/papercusp/releases/aws-canary.json',
+    migrationId: '1101',
+  },
 };
 
 function fakeClient() {
@@ -55,6 +59,7 @@ describe('workspace-host provisioning DBOS client', () => {
       expected.workflowInput,
     );
     expect(expected.workflowInput).toMatchObject({ action: 'provision', operationId: 'op-1' });
+    expect(expected.workflowInput.bootstrapReleaseOverride).toEqual(input.bootstrapReleaseOverride);
     expect(result).toEqual({ workflowId: expected.workflowId });
   });
 

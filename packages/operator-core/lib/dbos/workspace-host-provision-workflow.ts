@@ -43,6 +43,7 @@ import {
   type WorkspaceHostDestroyResult,
   type WorkspaceHostProvisioningResult,
 } from '../workspace-host/provisioning-runner';
+import type { WorkspaceHostProvisionBootstrapReleaseOverride } from '../workspace-host/provision-bootstrap';
 import {
   runWorkspaceHostLifecycle,
   validateWorkspaceHostLifecycleRequest,
@@ -80,6 +81,8 @@ export interface StartWorkspaceHostProvisioningInput {
    * D-015); see `hosted-bring-up.ts`.
    */
   bringUp?: WorkspaceHostBringUp;
+  /** Internal controller-selected release pin; HTTP admission routes intentionally omit it. */
+  bootstrapReleaseOverride?: WorkspaceHostProvisionBootstrapReleaseOverride;
 }
 
 export interface StartWorkspaceHostDestroyInput {

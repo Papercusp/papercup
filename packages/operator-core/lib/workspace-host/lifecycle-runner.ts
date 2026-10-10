@@ -53,6 +53,7 @@ import {
   type WorkspaceHostProvisioningResult,
   type WorkspaceHostCanaryAdmission,
 } from './provisioning-runner';
+import type { WorkspaceHostProvisionBootstrapReleaseOverride } from './provision-bootstrap';
 import {
   WorkspaceHostInitializationReplayInFlightError,
   createWorkspaceHostInitializationReplayStore,
@@ -92,6 +93,8 @@ export interface RunWorkspaceHostLifecycleInput {
   desiredRevision?: number;
   /** Test/adapter seam; production derives this with the trusted bootstrap profile. */
   runtimeRelease?: WorkspaceHostRuntimeRelease;
+  /** Internal controller-selected release pin for this operation; not accepted by HTTP routes. */
+  bootstrapReleaseOverride?: WorkspaceHostProvisionBootstrapReleaseOverride;
   /** Test seam for lifecycle actions that must install the controller's current trusted release. */
   renderHostBootstrap?: (hostId: string) => Promise<string>;
   /** @internal The product wrapper keeps the operation running after provider completion. */
@@ -967,7 +970,12 @@ export async function runWorkspaceHostLifecycle(
         const statusChannel = input.provider.capabilities.lifecycle.bootstrapStatusChannel;
         const resolved = await resolveControllerWorkspaceHostBootstrap(
           bootstrapHostId,
-          statusChannel ? { statusChannel } : {},
+          {
+            ...(statusChannel ? { statusChannel } : {}),
+            ...(input.bootstrapReleaseOverride
+              ? { bootstrapReleaseOverride: input.bootstrapReleaseOverride }
+              : {}),
+          },
         );
         hostBootstrapScript = resolved.script;
         runtimeRelease = resolved.runtimeRelease;

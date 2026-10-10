@@ -33,6 +33,7 @@ import {
   renderWorkspaceHostProvisionBootstrap,
   resolveWorkspaceHostControllerAuthorizedKeys,
   resolveWorkspaceHostProvisionBootstrapProfile,
+  type WorkspaceHostProvisionBootstrapReleaseOverride,
 } from './provision-bootstrap';
 
 const MANIFEST_PATH = '/etc/papercusp/workspace-host/manifest.json';
@@ -195,6 +196,59 @@ describe('workspace-host provision bootstrap profile', () => {
       port: DEFAULT_WORKSPACE_HOST_SERVICE_PORT,
     });
     expect(profile.minimumNodeMajor).toBe(DEFAULT_WORKSPACE_HOST_MINIMUM_NODE_MAJOR);
+  });
+
+  it('keeps concurrent operation release pins independent of the controller-wide environment', async () => {
+    const awsManifestPath = '/etc/papercusp/workspace-host/aws-canary.json';
+    const gcpManifestPath = '/etc/papercusp/workspace-host/gcp-live.json';
+    const controllerEnv = env({
+      [WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile]: '/etc/papercusp/workspace-host/controller.json',
+      [WORKSPACE_HOST_PROVISION_ENV.migrationId]: '1000',
+    });
+    const readTextFile = reader({
+      ...FILES,
+      [awsManifestPath]: JSON.stringify({ artifact: artifact('2026.10.10-1') }),
+      [gcpManifestPath]: JSON.stringify({ artifact: artifact('2026.10.10-2') }),
+    });
+
+    const [aws, gcp] = await Promise.all([
+      resolveWorkspaceHostProvisionBootstrapProfile({
+        env: controllerEnv,
+        readTextFile,
+        controllerProfile: CONTROLLER,
+        bootstrapReleaseOverride: { manifestPath: awsManifestPath, migrationId: '1101' },
+      }),
+      resolveWorkspaceHostProvisionBootstrapProfile({
+        env: controllerEnv,
+        readTextFile,
+        controllerProfile: CONTROLLER,
+        bootstrapReleaseOverride: { manifestPath: gcpManifestPath, migrationId: '1102' },
+      }),
+    ]);
+
+    expect(aws.release.version).toBe('2026.10.10-1');
+    expect(aws.migrationId).toBe('1101');
+    expect(gcp.release.version).toBe('2026.10.10-2');
+    expect(gcp.migrationId).toBe('1102');
+    expect(controllerEnv[WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile]).toBe(
+      '/etc/papercusp/workspace-host/controller.json',
+    );
+    expect(controllerEnv[WORKSPACE_HOST_PROVISION_ENV.migrationId]).toBe('1000');
+  });
+
+  it('refuses a partial operation release override instead of mixing it with the controller defaults', async () => {
+    const partialOverride = {
+      manifestPath: MANIFEST_PATH,
+    } as unknown as WorkspaceHostProvisionBootstrapReleaseOverride;
+
+    await expect(
+      resolveWorkspaceHostProvisionBootstrapProfile({
+        env: env(),
+        readTextFile: reader(FILES),
+        controllerProfile: CONTROLLER,
+        bootstrapReleaseOverride: partialOverride,
+      }),
+    ).rejects.toThrow(/operation bootstrapReleaseOverride\.migrationId is not set/);
   });
 
   it('refuses when the release manifest is unset, relative, missing, or not a valid artifact', async () => {

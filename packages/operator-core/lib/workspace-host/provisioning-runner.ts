@@ -76,6 +76,7 @@ import {
 import {
   renderWorkspaceHostProvisionBootstrap,
   resolveWorkspaceHostProvisionBootstrapProfile,
+  type WorkspaceHostProvisionBootstrapReleaseOverride,
 } from './provision-bootstrap';
 import {
   workspaceHostReleaseClosurePointer,
@@ -151,9 +152,16 @@ export interface ControllerWorkspaceHostBootstrap {
 /** Resolve script and the closed signed-runtime identity from one trusted controller profile. */
 export async function resolveControllerWorkspaceHostBootstrap(
   hostId: string,
-  options: { statusChannel?: WorkspaceHostBootstrapStatusChannel } = {},
+  options: {
+    statusChannel?: WorkspaceHostBootstrapStatusChannel;
+    bootstrapReleaseOverride?: WorkspaceHostProvisionBootstrapReleaseOverride;
+  } = {},
 ): Promise<ControllerWorkspaceHostBootstrap> {
-  const profile = await resolveWorkspaceHostProvisionBootstrapProfile();
+  const profile = await resolveWorkspaceHostProvisionBootstrapProfile({
+    ...(options.bootstrapReleaseOverride
+      ? { bootstrapReleaseOverride: options.bootstrapReleaseOverride }
+      : {}),
+  });
   return {
     script: renderWorkspaceHostProvisionBootstrap(hostId, profile, options),
     runtimeRelease: workspaceHostRuntimeRelease(
@@ -298,6 +306,8 @@ export interface RunWorkspaceHostProvisioningInput {
   desiredRevision?: number;
   /** Test/adapter seam; production derives this from the same trusted profile as the script. */
   runtimeRelease?: WorkspaceHostRuntimeRelease;
+  /** Internal controller-selected release pin for this operation; not accepted by HTTP routes. */
+  bootstrapReleaseOverride?: WorkspaceHostProvisionBootstrapReleaseOverride;
   /**
    * Test seam for the controller-authored host bootstrap. Production resolves the controller's
    * own trusted release and SSH public key; see `provision-bootstrap.ts`. Consulted only when the
@@ -1044,7 +1054,12 @@ export async function runWorkspaceHostProvisioning(
         const statusChannel = input.provider.capabilities.lifecycle.bootstrapStatusChannel;
         const resolved = await resolveControllerWorkspaceHostBootstrap(
           hostId,
-          statusChannel ? { statusChannel } : {},
+          {
+            ...(statusChannel ? { statusChannel } : {}),
+            ...(input.bootstrapReleaseOverride
+              ? { bootstrapReleaseOverride: input.bootstrapReleaseOverride }
+              : {}),
+          },
         );
         hostBootstrapScript = resolved.script;
         runtimeRelease = resolved.runtimeRelease;
