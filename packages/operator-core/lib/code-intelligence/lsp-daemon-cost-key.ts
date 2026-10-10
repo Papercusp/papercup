@@ -7,7 +7,8 @@ import type { LspFacadeArgs } from './lsp-facade.ts';
 export const LSP_DAEMON_INPUT_BOUNDS = Object.freeze({ maxEntries: 4_096, maxBytes: 8 * 1024 * 1024 });
 
 export type LspDaemonInputSnapshot =
-  | { measured: true; root: string; fingerprint: string; entries: number; bytes: number }
+  | { measured: true; root: string; fingerprint: string; entries: number; bytes: number; files: readonly string[];
+      externalReferenceCandidates: readonly string[] }
   | { measured: false; reason: string };
 
 /** Reconcile from bytes, independent of filesystem notifications and mtimes.
@@ -29,6 +30,7 @@ export async function captureLspDaemonInputs(rootPath: string,
     const scan = async () => {
       let entries = 0, bytes = 0;
       const rows: Array<[string, string]> = [];
+      const externalReferenceCandidates: string[] = [];
       const walk = async (dir: string): Promise<void> => {
         for await (const entry of await opendir(dir)) {
           if (++entries > bounds.maxEntries) throw new Error('project-input entry bound exceeded');
@@ -43,6 +45,8 @@ export async function captureLspDaemonInputs(rootPath: string,
             if (bytes + before.size > bounds.maxBytes) throw new Error('project-input byte bound exceeded');
             const hash = createHash('sha256');
             let prefix = '';
+            let previousTextTail = '';
+            let referenceCandidate = false;
             // A file can grow after stat. Stream under the remaining budget so
             // reconciliation never allocates an unbounded readFile buffer.
             const file = await open(path, 'r');
@@ -54,6 +58,12 @@ export async function captureLspDaemonInputs(rootPath: string,
                 bytes += bytesRead;
                 if (bytes > bounds.maxBytes) throw new Error('project-input byte bound exceeded');
                 const chunk = buffer.subarray(0, bytesRead);
+                // Conservative admission only: any triple-slash text in a TS
+                // source may introduce an external path/type/lib reference.
+                // Detect across chunk boundaries under the same streaming bound.
+                const text = previousTextTail + chunk.toString('utf8');
+                referenceCandidate ||= text.includes('///');
+                previousTextTail = text.slice(-2);
                 if (prefix.length < 7) prefix += chunk.toString('utf8').slice(0, 7 - prefix.length);
                 hash.update(chunk);
               }
@@ -67,12 +77,15 @@ export async function captureLspDaemonInputs(rootPath: string,
             if (entry.name === '.git' && prefix.startsWith('gitdir:'))
               throw new Error(`external repository metadata is unmeasured: ${rel}`);
             rows.push([rel, hash.digest('hex')]);
+            if (referenceCandidate && /\.[cm]?tsx?$/.test(rel)) externalReferenceCandidates.push(rel);
           } else throw new Error(`non-file project input is unmeasured: ${rel}`);
         }
       };
       await walk(root);
       rows.sort(([a], [b]) => a.localeCompare(b));
-      return { fingerprint: createHash('sha256').update(JSON.stringify({ root, rows })).digest('hex'), entries, bytes };
+      return { fingerprint: createHash('sha256').update(JSON.stringify({ root, rows })).digest('hex'), entries, bytes,
+        files: rows.filter(([, hash]) => hash !== 'directory').map(([path]) => path),
+        externalReferenceCandidates: externalReferenceCandidates.sort() };
     };
     // A second complete pass detects a missed edit, addition or deletion while
     // the first census was being assembled. No persistent watcher state is trusted.

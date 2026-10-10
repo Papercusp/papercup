@@ -3,12 +3,16 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket.ts';
 import { resolveLspDaemonSocketPath, reapOrphanedLspDaemonSockets } from './lsp-daemon-socket.ts';
 import { resolveLspDaemonDispatchContext, type LspDaemonRequest, type LspDaemonApplyRequest } from './lsp-daemon-protocol.ts';
 import { lspAdmissionController, runLspAdmission } from './lsp-admission.ts';
 import { lspDaemonFacade, lspHealth } from './lsp-daemon-facade.ts';
-import { languageForFile, resolveProjectRoot, lspRenameWorkspaceEdit, lspDiagnostics, lspResyncDocument } from './lsp-adapter.ts';
+import { languageForFile, resolveProjectRoot, lspRenameWorkspaceEdit, lspDiagnostics, lspResyncDocument,
+  lspCacheRevision, prepareLspCacheInputs } from './lsp-adapter.ts';
+import { LspDaemonAnswerCache } from './lsp-daemon-cache';
 import { isTrustworthyEmpty } from './contracts.ts';
 import { lspDaemonCostKey } from './lsp-daemon-cost-key.ts';
 import { activeWorkspaceId } from '../workspace-registry.ts';
@@ -17,6 +21,7 @@ import { newLspQueryEvidence, withLspQueryEvidence, lspEvidenceNow } from './lsp
 import type { LspDaemonAnswer } from './lsp-daemon-protocol.ts';
 
 interface RpcRequest { jsonrpc: '2.0'; id: string; method: 'lsp:query' | 'lsp:cancel' | 'lsp:admission' | 'lsp:rename' | 'lsp:diagnostic-count' | 'lsp:resync'; params: LspDaemonRequest | LspDaemonApplyRequest | { requestId: string } | { workspaceId: string } }
+const answerCache = new LspDaemonAnswerCache({ prepare: prepareLspCacheInputs, current: lspCacheRevision });
 
 export async function dispatchLspDaemonApply(
   method: 'lsp:rename' | 'lsp:diagnostic-count' | 'lsp:resync',
@@ -26,6 +31,7 @@ export async function dispatchLspDaemonApply(
 ): Promise<unknown> {
   const { file, rootPath, workspaceId } = request;
   if (!workspaceId || !file || !rootPath) throw new Error('LSP apply request requires workspaceId, file and rootPath');
+  answerCache.clear();
   if (method === 'lsp:resync') {
     if (typeof request.newText !== 'string') throw new Error('LSP resync requires newText');
     return lspResyncDocument(file, rootPath, request.newText);
@@ -58,9 +64,15 @@ export async function dispatchLspDaemonRequest(
 ): Promise<LspDaemonAnswer> {
   const context = resolveLspDaemonDispatchContext(request, signal);
   const evidence = request.archive === true ? newLspQueryEvidence(requestId) : undefined;
-  const task = (taskSignal: AbortSignal) => withLspQueryEvidence(evidence, () =>
-    lspDaemonFacade(request.op, request.args, evidence ? 'archive' : 'context',
-      { semanticCompletion: request.semanticCompletion, signal: taskSignal }));
+  const task = async (taskSignal: AbortSignal) => {
+    const execute = () => withLspQueryEvidence(evidence, () =>
+      lspDaemonFacade(request.op, request.args, evidence ? 'archive' : 'context',
+        { semanticCompletion: request.semanticCompletion, signal: taskSignal }));
+    // A previously cached answer cannot bypass the facade's live kill switch.
+    const enabled = await getFlag(FLAGS.CODE_INTEL_LSP, 'system').catch(() => false);
+    return context && enabled ? answerCache.query({ ...request, workspaceId: request.workspaceId ?? activeWorkspaceId() },
+      context.language, context.projectRoot, taskSignal, execute) : execute();
+  };
   // The local facade owns the original exact refusals and the flag check. An
   // incomplete request never reaches admission or an adapter child.
   const answer = !context ? await task(signal) : await runLspAdmission({
@@ -161,6 +173,7 @@ export function runLspDaemonServer(
     socket.once('close', () => { clients.delete(socket); for (const controller of controllers.values()) controller.abort(); });
   });
   const closeRpc = () => new Promise<void>((resolve) => {
+    answerCache.clear();
     // Abort before resolving the listener drain. Socket 'close' is delivered
     // later, so relying on it lets adapter/database teardown overtake work.
     for (const [client, controllers] of clients) {

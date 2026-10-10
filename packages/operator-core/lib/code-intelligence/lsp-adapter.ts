@@ -44,6 +44,7 @@ import {
 } from 'vscode-jsonrpc/node';
 
 import { pinModuleState } from '@papercusp/module-singleton';
+import type { LspCacheRevision, MeasuredLspInputs } from './lsp-daemon-cache';
 import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn.ts';
 import { killScopeUnit, killTask } from '../task-manager/control.ts';
 import { recordLspWireRequest } from './lsp-query-evidence.ts';
@@ -382,6 +383,8 @@ interface LspOpenDocument {
 }
 
 interface LspClient {
+  /** Complete bounded disk reconciliation associated with this managed client. */
+  inputFingerprint?: string;
   connection: MessageConnection;
   semanticPlugin?: SemanticCompletionPluginDeclaration;
   /** Identity of the installed binary + initialize version, never a project-specific cache. */
@@ -1959,8 +1962,11 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
     throw error;
   }
 
+  // Peers can preserve both size and mtime. Only the bytes identify retained text.
+  const text = await readFile(absPath, 'utf8');
+  const contentHash = createHash('sha256').update(text).digest('hex');
   if (seen) {
-    if (stamp && seen.mtimeMs === stamp.mtimeMs && seen.size === stamp.size) return uri;
+    if (seen.contentHash === contentHash) return uri;
     // Disk moved under us. Close before re-opening: the adapter never
     // established incremental sync (documents open at version 1 and never
     // advance), so didChange would carry a version the server has no baseline
@@ -1969,7 +1975,6 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
     client.openDocs.delete(uri);
   }
 
-  const text = await readFile(absPath, 'utf8');
   // Opening a document can start a new project-loading cycle. The client's
   // previous idle period describes the server BEFORE this document existed
   // and is therefore not readiness evidence for the query about to follow.
@@ -1993,7 +1998,7 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
   // forces another reopen on the next query rather than certifying freshness.
   client.openDocs.set(uri, {
     ...(stamp ?? { mtimeMs: -1, size: -1 }),
-    contentHash: createHash('sha256').update(text).digest('hex'),
+    contentHash,
     ...(tsProjectKey ? { typescriptProjectKey: tsProjectKey } : {}),
   });
   return uri;
@@ -2774,6 +2779,66 @@ export function lspResyncDocument(absPath: string, rootPath: string, newText: st
     // reporting a clean one it did not earn.
     return false;
   }
+}
+
+/** A cache hit must still check the live managed process and readiness. */
+export function lspCacheRevision(language: LspLanguage, root: string): LspCacheRevision {
+  const client = state.clients.get(clientKey(language, root));
+  if (!client || client.health !== 'healthy' || client.pendingProgress.size ||
+      client.child.exitCode !== null || client.child.killed ||
+      (language === 'typescript' && probeLanguageServiceLiveness(client) !== 'alive'))
+    return { measured: false, reason: 'managed language service is not currently ready' };
+  return { measured: true, identity: createHash('sha256').update(JSON.stringify({ task: client.taskId,
+    server: client.capabilityServerIdentity, input: client.inputFingerprint,
+    documents: [...client.openDocs].map(([uri, doc]) => [uri, doc.contentHash]).sort(),
+    readiness: [...client.certifiedReadiness].sort() })).digest('hex') };
+}
+
+/** Initially admit only self-contained TypeScript programs. Other language/system
+ * inputs remain explicit bypasses until their compiler dependency closure is measured.
+ * This does not infer closure from a project-only file census.
+ */
+export async function prepareLspCacheInputs(language: LspLanguage, inputs: MeasuredLspInputs,
+  file: string): Promise<LspCacheRevision> {
+  if (language !== 'typescript') return { measured: false, reason: `${language} external compiler inputs are unmeasured` };
+  if (inputs.files.filter(path => /(?:^|\/)(?:tsconfig|jsconfig)\.json$/.test(path)).join() !== 'tsconfig.json')
+    return { measured: false, reason: 'cache requires one measured root TypeScript configuration' };
+  if (!resolveServerBin(language)) return { measured: false, reason: 'pinned language server is not provisioned' };
+  let ts: typeof import('typescript');
+  try { ts = createRequire(resolveTsserverPath())('./typescript.js') as typeof import('typescript'); }
+  catch { return { measured: false, reason: 'pinned compiler inputs could not be measured' }; }
+  const config = ts.readConfigFile(join(inputs.root, 'tsconfig.json'), ts.sys.readFile);
+  if (config.error || !config.config) return { measured: false, reason: 'TypeScript configuration could not be measured' };
+  // Reject external configuration/path discovery before the compiler enumerates
+  // it. A bounded project census does not bound an escaping include glob.
+  const pathLists = [config.config.files, config.config.include, config.config.exclude];
+  if (config.config.extends || config.config.references?.length || config.config.typeAcquisition?.enable === true ||
+      inputs.externalReferenceCandidates.length || pathLists.some(paths => paths !== undefined &&
+        (!Array.isArray(paths) || paths.some(path => typeof path !== 'string' || isAbsolute(path) || path.split(/[\\/]/).includes('..')))))
+    return { measured: false, reason: 'TypeScript external compiler inputs are unmeasured' };
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, inputs.root);
+  if (config.error || parsed.errors.length || config.config.extends || config.config.references?.length ||
+      parsed.options.noLib !== true || parsed.options.noResolve !== true || parsed.options.allowJs ||
+      parsed.options.types?.length !== 0 || (parsed.options.plugins !== undefined &&
+        (!Array.isArray(parsed.options.plugins) || parsed.options.plugins.length > 0)) ||
+      !parsed.fileNames.includes(resolvePath(file)) || parsed.fileNames.some(path => !withinProjectBoundary(path, inputs.root)))
+    return { measured: false, reason: 'TypeScript external compiler inputs are unmeasured' };
+  const key = clientKey(language, inputs.root);
+  let client = state.clients.get(key);
+  if (client?.semanticPlugin) return { measured: false, reason: 'semantic plugin external inputs are unmeasured' };
+  if (client && client.inputFingerprint !== inputs.fingerprint) {
+    if (client.typescriptProjectLease?.users) return { measured: false, reason: 'managed project has an active lease' };
+    state.clients.delete(key);
+    await shutdownLspClient(client);
+    client = undefined;
+  }
+  client ??= await getClient(language, inputs.root);
+  client.inputFingerprint = inputs.fingerprint;
+  // Opening the requested project is expected lifecycle work, not a concurrent
+  // edit. Finish it before snapshotting the client identity used by the cache.
+  const release = await acquireLspProjectLease(client, file);
+  try { await ensureOpen(client, file); } finally { release(); }
+  return lspCacheRevision(language, inputs.root);
 }
 
 /** Shut down every live language server. Safe to call repeatedly. */

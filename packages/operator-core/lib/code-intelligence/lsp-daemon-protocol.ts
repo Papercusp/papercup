@@ -31,6 +31,9 @@ export interface LspDaemonRequest {
 }
 
 export interface LspDaemonAnswer extends CodeIntelAnswer {
+  /** Daemon-local reuse diagnostics; a bypass never claims external inputs were measured. */
+  readonly daemonCache?: { state: 'hit' | 'miss' | 'bypass' | 'pending'; reason: string | null;
+    inputFingerprint: string | null; pendingFiles: readonly string[] };
   readonly daemonEvidence?: LspQueryEvidence;
   /** Complete existing health inventory at archive boundaries; never clipped into sites. */
   readonly daemonRuntime?: Awaited<ReturnType<typeof lspHealth>> & { pid: number; node: string; entry: string; sampledAtMs: number };

@@ -10,7 +10,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, truncate, utimes, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -318,7 +318,7 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
  * the merge-resolver, a human's editor) left the SHARED server answering about
  * text that no longer exists, fleet-wide, while certifying it healthy.
  *
- * The fix is a pull-based stat (mtime+size) on every call. These tests fail if
+ * The fix is a pull-based content hash on every call. These tests fail if
  * anyone restores the open-once shape: the important assertion is that a
  * mutated file forces didClose + didOpen carrying the NEW text — not a no-op.
  */
@@ -439,6 +439,18 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
 
     expect(sent).toEqual([]);
     expect((client as unknown as { idleSince: number | null }).idleSince).toBe(123);
+  });
+
+  it('refreshes changed bytes even when a peer preserves file size and mtime', async () => {
+    const uri = await ensureOpen(client, file);
+    const before = await stat(file);
+    sent.length = 0;
+    await writeFile(file, 'export const a = 2;\n');
+    await utimes(file, before.atime, before.mtime);
+    await ensureOpen(client, file);
+    expect(sent.map(row => row.method)).toEqual(['textDocument/didClose', 'textDocument/didOpen']);
+    expect(sent[1]?.params.textDocument.text).toBe('export const a = 2;\n');
+    expect(client.openDocs.get(uri)?.contentHash).toBe(createHash('sha256').update('export const a = 2;\n').digest('hex'));
   });
 
   it('a file mutated on disk forces didClose + didOpen carrying the NEW text — never a silent stale serve', async () => {
