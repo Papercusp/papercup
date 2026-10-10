@@ -633,6 +633,32 @@ export function nativeExecutionFromRows(rows: any[], { agent, receivedAtMs, nowM
     lastProgressAt: number | null;
     pendingTools: number;
 };
+/**
+ * Preserve a verified running turn when a bounded transcript tail no longer
+ * contains its start row. The caller must scope `previous` to the same child
+ * generation and submission floor; terminal observations always win. This is
+ * deliberately one-way: missing or unreadable evidence cannot create a
+ * running verdict, but it also cannot erase positive evidence already seen for
+ * the current turn.
+ * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}|null} previous
+ * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}} current
+ */
+export function retainRunningNativeExecution(previous: {
+    phase: string;
+    turnStartedAt: number | null;
+    lastProgressAt: number | null;
+    pendingTools: number;
+} | null, current: {
+    phase: string;
+    turnStartedAt: number | null;
+    lastProgressAt: number | null;
+    pendingTools: number;
+}): {
+    phase: string;
+    turnStartedAt: number | null;
+    lastProgressAt: number | null;
+    pendingTools: number;
+};
 /** Read only this child's isolated current transcript. Missing/partial proof is unknown.
  * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number}} options
  */

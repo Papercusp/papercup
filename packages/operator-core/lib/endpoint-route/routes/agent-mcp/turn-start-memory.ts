@@ -188,6 +188,9 @@ const turnStartMemory = defineTool({
       const workspace = (body.workspace ?? '').trim();
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
+      const { sessionAllowsAmbientContext } = await import('../../../capability-envelope/session-confinement-port');
+      if (!await sessionAllowsAmbientContext({ ownerId: owner, workspaceId }))
+        return Response.json({ ok: true, text: '' });
 
       // EI-24791346664119438: stamp a loop-fire turn start in real time, so the loop
       // reconciler can tell a long-running loop turn from a wake that never became one
@@ -576,7 +579,7 @@ const turnStartMemory = defineTool({
                 // the serial lexical leg was ~386 ms p50 of pure waiting.
                 overlapGatedLexical: true,
               });
-            }),
+            }, { sessionId: owner }),
           );
           if (!admitted.admitted) return '';
           const bounded = admitted.value;

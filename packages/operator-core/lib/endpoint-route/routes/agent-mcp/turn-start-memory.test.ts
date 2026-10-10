@@ -129,6 +129,7 @@ vi.mock('../../../agent-identities/turn-start-package-sink', () => ({
 }));
 
 import routes from './turn-start-memory';
+import { setSessionConfinementResolver } from '../../../capability-envelope/session-confinement-port';
 
 const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
@@ -144,7 +145,19 @@ const post = async (body: unknown): Promise<{ ok: boolean; text: string; deliver
   return (await res.json()) as { ok: boolean; text: string; deliveryToken?: string };
 };
 
+it('suppresses all live turn-start context before recall, control or package reads for frozen sessions', async () => {
+  setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
+    denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+  try {
+    expect(await post({ owner: 'su-frozen', workspace: 'private', prompt: 'retrieve live context' })).toEqual({ ok: true, text: '' });
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(preparePendingControlTransitionMock).not.toHaveBeenCalled();
+    expect(evaluateTurnStartPackageSinkMock).not.toHaveBeenCalled();
+  } finally { setSessionConfinementResolver(undefined); }
+});
+
 beforeEach(() => {
+  setSessionConfinementResolver(() => null);
   configureReadCursorStore(new InMemoryReadCursorStore());
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM-BLOCK');
   preparePendingControlTransitionMock.mockReset().mockResolvedValue(null);
@@ -239,7 +252,7 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 
     expect(out.text).toContain('improvement triage: top EI-1');
     expect(out.text).not.toContain('MEM-BLOCK');
-    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1', expect.any(Function));
+    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1', expect.any(Function), { sessionId: 'sess-1' });
     expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
   });
 

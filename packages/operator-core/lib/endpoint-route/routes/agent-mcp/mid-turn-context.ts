@@ -1043,6 +1043,12 @@ const midTurnContext = defineTool({
     }
     const owner = (body.owner ?? '').trim();
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
+    const { sessionAllowsAmbientContext } = await import('../../../capability-envelope/session-confinement-port');
+    const { activeWorkspaceId } = await import('../../../workspace-registry');
+    const contextWorkspace = body.workspace?.trim();
+    if (!await sessionAllowsAmbientContext({ ownerId: owner,
+      workspaceId: contextWorkspace && contextWorkspace !== '*' ? contextWorkspace : activeWorkspaceId() }))
+      return Response.json({ ok: true, text: '' });
 
     // Drain before any query/admission branch. A repeated-failure advisory is
     // orthogonal to memory recall, so it must still be delivered when this

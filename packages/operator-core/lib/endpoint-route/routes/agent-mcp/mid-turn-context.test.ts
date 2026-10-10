@@ -77,6 +77,7 @@ import routes, {
   splitLegQueries,
 } from './mid-turn-context';
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
+import { setSessionConfinementResolver } from '../../../capability-envelope/session-confinement-port';
 
 const endpoint = routes[0] as unknown as {
   handler: (req: Request) => Promise<Response>;
@@ -92,6 +93,17 @@ const post = async (body: unknown): Promise<{ ok: boolean; text: string }> => {
   return (await res.json()) as { ok: boolean; text: string };
 };
 
+it('suppresses live mid-turn memory, rule and failure-hint delivery for a frozen native session', async () => {
+  setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
+    denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+  try {
+    expect(await post({ owner: 'su-frozen', workspace: 'private', tool: 'Read', toolInput: { file_path: 'code.ts' } })).toEqual({ ok: true, text: '' });
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(evaluateHookContextSinkMock).not.toHaveBeenCalled();
+    expect(takePendingFailureLoopHintMock).not.toHaveBeenCalled();
+  } finally { setSessionConfinementResolver(undefined); }
+});
+
 /** Each test gets a fresh session id — the rate/dedup state is keyed by owner. */
 let seq = 0;
 const owner = (): string => `sess-${++seq}`;
@@ -99,6 +111,7 @@ const owner = (): string => `sess-${++seq}`;
 const firstCall = () => buildMemoryContextBlockMock.mock.calls[0]![0] as Record<string, unknown>;
 
 beforeEach(() => {
+  setSessionConfinementResolver(() => null);
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM');
   withMidTurnMemoryAdmissionMock
     .mockReset()

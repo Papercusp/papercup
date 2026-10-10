@@ -1759,6 +1759,26 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
   return { phase, turnStartedAt, lastProgressAt, pendingTools: pendingTools.size };
 }
 
+/**
+ * Preserve a verified running turn when a bounded transcript tail no longer
+ * contains its start row. The caller must scope `previous` to the same child
+ * generation and submission floor; terminal observations always win. This is
+ * deliberately one-way: missing or unreadable evidence cannot create a
+ * running verdict, but it also cannot erase positive evidence already seen for
+ * the current turn.
+ * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}|null} previous
+ * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}} current
+ */
+export function retainRunningNativeExecution(previous, current) {
+  if (previous?.phase !== 'running' || current.phase !== 'unknown') return current;
+  return {
+    ...current,
+    phase: 'running',
+    turnStartedAt: previous.turnStartedAt,
+    lastProgressAt: current.lastProgressAt ?? previous.lastProgressAt,
+  };
+}
+
 /** Read only this child's isolated current transcript. Missing/partial proof is unknown.
  * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number}} options
  */
@@ -9850,11 +9870,20 @@ export function hostThroughPty(o) {
   // A machine submit and real owner input both advance the observation floor.
   // The host/process and child generation travel with the snapshot so readers
   // can reject predecessor observations after a resume or host replacement.
+  let nativeExecutionFence = null;
+  let lastNativeExecution = null;
   function currentNativeExecution() {
     const receivedAtMs = Math.max(childStartedAtMs,
       Number(activity.snapshot().lastInputAt ?? 0), lastMachineTurnSubmittedAtMs);
+    const fence = `${childGeneration}:${receivedAtMs}`;
+    const observed = nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs });
+    const execution = nativeExecutionFence === fence
+      ? retainRunningNativeExecution(lastNativeExecution, observed)
+      : observed;
+    nativeExecutionFence = fence;
+    lastNativeExecution = execution;
     return {
-      ...nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs }),
+      ...execution,
       ownerId, hostPid: process.pid, childPid: child.pid ?? null,
       childGeneration, receivedAtMs,
       ownerInputPending: Boolean(ownerComposerGate?.hasPending()),

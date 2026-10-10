@@ -26,6 +26,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { redactSensitiveText } from '../sensitive-text';
 import { isIdentityPackageHit, packageRecallEligibility, shapeIdentityPackageHits,
   wearerPackageResourcesOrEmpty } from '../blueprint/package-memory-visibility';
 import { getSessionBriefAmbientExcludedRefs } from '../session-brief';
@@ -414,6 +415,8 @@ const MAX_ENTRY_CHARS = 450;
 const SLOW_INJECTION_LOG_MS = 750;
 
 export async function buildMemoryContextBlock(input: MemoryInjectionInput): Promise<string | null> {
+  const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
+  if (!await sessionAllowsAmbientContext({ ownerId: input.session?.sessionId, workspaceId: input.workspaceId })) return null;
   const ownsDeadline = !input.deadline;
   const deadline = input.deadline ?? createMemoryWorkDeadline(MEMORY_INJECT_TIMEOUT_MS);
   input = { ...input, deadline };
@@ -945,7 +948,11 @@ async function buildBlockInner(
   onRendered: (block: string | null) => void = () => {},
 ): Promise<string | null> {
   const deadline = input.deadline!;
-  const rendered = (block: string | null) => { onRendered(block); return block; };
+  const rendered = (block: string | null) => {
+    const safeBlock = block === null ? null : redactSensitiveText(block);
+    onRendered(safeBlock);
+    return safeBlock;
+  };
   // P-042 (F-J): normalize the accepted forms ONCE, here, so the three readers
   // below share one query object. P-044 (F-L) then splits what is ISSUED into
   // two texts, one per fusion leg: `queryText` (the user text) is embedded by

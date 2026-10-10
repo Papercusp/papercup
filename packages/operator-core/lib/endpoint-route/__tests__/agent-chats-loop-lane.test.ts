@@ -127,6 +127,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const m of MOCKED_MODULES) vi.doUnmock(m);
+  vi.unstubAllEnvs();
 });
 
 interface LoopLaneMocks {
@@ -310,6 +311,42 @@ function findRoute(routes: RouteDefinition<undefined>[], method: string, path: s
 }
 
 describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
+  it('refuses connector-stamped customer native turns before operator execution or transcript writes', async () => {
+    const { operatorHttpRequestHeaders } = await import('../../workspace-host/hosted-operator-http');
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const request = new Request(postReq({ content: 'customer turn', engine: 'loop', model: 'sonnet' }), {
+      headers: operatorHttpRequestHeaders({ 'content-type': 'application/json' }, {
+        userId: 'customer-user', hostedSessionId: 'customer-session',
+      }),
+    });
+    const res = await messages.handler(request, ctxFor(CHAT)) as Response;
+    // Drain the unexpected old SSE path too, so a failing regression leaves no stream behind.
+    const { text, closed } = await drainSse(res.body, 8_000);
+    expect(closed).toBe(true);
+    expect(res.status).toBe(403);
+    expect(JSON.parse(text)).toMatchObject({ error: 'hosted_native_loop_unavailable' });
+    expect(mocks.runLoopChatTurn).not.toHaveBeenCalled();
+    expect(mocks.dispatchProjectedTool).not.toHaveBeenCalled();
+    expect(mocks.updates).toEqual([]);
+  });
+
+  it.each(['', 'off'])('refuses bare native turns on a VM release host with peer policy %j before operator execution', async (peerPolicy) => {
+    vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'vm-release');
+    vi.stubEnv('PAPERCUSP_LOOPBACK_PEER_UID_POLICY', peerPolicy);
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const res = await messages.handler(
+      postReq({ content: 'customer turn', engine: 'loop', model: 'sonnet' }), ctxFor(CHAT),
+    ) as Response;
+    const { text, closed } = await drainSse(res.body, 8_000);
+    expect(closed).toBe(true);
+    expect(res.status).toBe(403);
+    expect(JSON.parse(text)).toMatchObject({ error: 'hosted_native_loop_unavailable' });
+    expect(mocks.runLoopChatTurn).not.toHaveBeenCalled();
+    expect(mocks.updates).toEqual([]);
+  });
+
   it('routes to runLoopChatTurn with the assembled system + transcript, streams, persists, closes', async () => {
     const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
     const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
@@ -428,7 +465,8 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
   it('rejects an unsupported loop model before user-turn persistence or streaming', async () => {
     const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
     const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
-    const model = 'openrouter/stealth/ox-alpha:max';
+    // OpenRouter is now executable; use a provider the router actually refuses.
+    const model = 'unsupported-test-provider/model:max';
     const res = (await messages.handler(
       postReq({ content: 'must not run', engine: 'loop', model }),
       ctxFor(CHAT),

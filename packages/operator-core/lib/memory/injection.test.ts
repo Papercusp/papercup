@@ -173,6 +173,18 @@ import {
 } from './injection';
 import { CORPUS_BLOCK_HEADING } from './corpus-recall';
 import { getMemoryBackend } from './backend';
+import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
+
+it('does no live memory or corpus IO for a frozen native assignment', async () => {
+  setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
+    denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+  try {
+    expect(await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'private', queryContext: 'find hidden answers',
+      session: { sessionId: 'su-frozen', port: 'claim' } })).toBeNull();
+    expect(getMemoryBackend).not.toHaveBeenCalled();
+    expect(recallCorpusContext).not.toHaveBeenCalled();
+  } finally { setSessionConfinementResolver(undefined); }
+});
 import { _resetForTests } from './bump-last-surfaced';
 
 type Row = { id: string; text: string; kind?: string; metadata?: Record<string, unknown> };
@@ -323,6 +335,7 @@ it('charges availability and search to one budget and cancels the remaining sear
 });
 
 beforeEach(() => {
+  setSessionConfinementResolver(() => null);
   // Vitest's manual-mock callstack is shared across concurrent dynamic imports.
   // Spy on resolved exports so burst recalls cannot bypass these fixture seams.
   vi.spyOn(recallStats, 'recordRecallStats').mockImplementation(recordRecallStatsMock);
@@ -1572,6 +1585,21 @@ describe('buildMemoryContextBlock', () => {
     expect(block).toContain('## Operator memory (relevant entries)');
     expect(block).toContain('- [preference] (id=i1) User prefers terse replies');
     expect(block).toContain('- [identity] (id=i2) User name is Aviyn');
+  });
+
+  it('redacts credential-bearing memory text before returning the recall block', async () => {
+    useBackend(mockBackend([
+      {
+        id: 'i-secret',
+        text: 'Database recovery note: postgresql://memory-user:synthetic-db-password@db.example/app',
+        kind: 'project',
+      },
+    ]));
+    const block = await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'database recovery',
+    });
+    expect(block).toContain('postgresql://[redacted]@db.example/app');
+    expect(block).not.toContain('synthetic-db-password');
   });
 
   it('labels a harness-scoped hit with its slug', async () => {

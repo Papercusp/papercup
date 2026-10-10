@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { decideLoopExecutionRecovery, type ExecutionRecoveryInput } from '@papercusp/operator-core/lib/harness/routines/loop-execution-recovery';
-import { makeAgentBusyGate, nativeExecutionBlocksInjection, nativeExecutionFromRows, nativeTurnVerifierSupport } from '../scripts/psu-pty-host.mjs';
+import { makeAgentBusyGate, nativeExecutionBlocksInjection, nativeExecutionFromRows, nativeTurnVerifierSupport,
+  retainRunningNativeExecution } from '../scripts/psu-pty-host.mjs';
 
 const timestamp = new Date(1000).toISOString();
 const ctx = { receivedAtMs: 900, nowMs: 2000 };
@@ -26,6 +27,26 @@ describe('native execution observations', () => {
     expect(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx }).pendingTools).toBe(1);
     rows.push({ type: 'response_item', timestamp, payload: { type: 'function_call_output', call_id: 'tool-a' } });
     expect(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx }).pendingTools).toBe(0);
+  });
+
+  it('retains verified running state when a bounded transcript tail evicts task_started', () => {
+    const previous = { phase: 'running', turnStartedAt: 1000, lastProgressAt: 1500, pendingTools: 0 };
+    const evicted = { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 };
+    expect(retainRunningNativeExecution(previous, evicted)).toEqual({
+      phase: 'running', turnStartedAt: 1000, lastProgressAt: 1500, pendingTools: 0,
+    });
+  });
+
+  it('lets terminal native evidence replace a retained running state', () => {
+    const previous = { phase: 'running', turnStartedAt: 1000, lastProgressAt: 1500, pendingTools: 0 };
+    const settled = { phase: 'settled', turnStartedAt: null, lastProgressAt: 2000, pendingTools: 0 };
+    expect(retainRunningNativeExecution(previous, settled)).toBe(settled);
+  });
+
+  it('does not turn unknown prior evidence into a running verdict', () => {
+    const previous = { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 };
+    const current = { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 };
+    expect(retainRunningNativeExecution(previous, current)).toBe(current);
   });
 
   it('does not treat OMP tool-use as terminal and recognizes arbitrary failed outcomes', () => {

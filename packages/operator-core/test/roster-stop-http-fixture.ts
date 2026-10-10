@@ -36,6 +36,8 @@ const { sql } = getOrgPg();
 const sessions: Array<{ owner: string; id: number; startedAt: string; done: Promise<number>; closed: boolean; output: () => string }> = [];
 let api: ChildProcess | undefined;
 const endings: Promise<unknown>[] = [];
+const inboxInvalidations: Array<Record<string, unknown>> = [];
+let inboxInvalidationListener: { unlisten: () => Promise<void> } | undefined;
 
 async function until(check: () => boolean | Promise<boolean>, label: string, timeout = 10_000) {
   const deadline = Date.now() + timeout;
@@ -234,6 +236,14 @@ async function coordCanary(health: unknown) {
 }
 
 async function main() {
+  if (process.env.ROSTER_INBOX_BROWSER_PROOF === '1') {
+    inboxInvalidationListener = await sql.listen('sync_invalidate', payload => {
+      const event = JSON.parse(payload);
+      if (event.name !== 'harness_shared.coord_event_log.changed') return;
+      inboxInvalidations.push({ at: new Date().toISOString(), name: event.name, args: event.args });
+      writeFileSync(join(evidence, 'portal-inbox-invalidations.json'), JSON.stringify(inboxInvalidations, null, 2));
+    });
+  }
   if (process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1') {
     // Use the existing static-serving seam on this private API origin. No
     // cross-origin transport, API response interception or local-mode identity.
@@ -358,6 +368,7 @@ finally {
     const timer = setTimeout(() => api!.kill('SIGKILL'), 5_000);
     await closed; clearTimeout(timer);
   }
+  await inboxInvalidationListener?.unlisten();
   await sql.end({ timeout: 5 });
   rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));

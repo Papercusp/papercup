@@ -53,6 +53,8 @@ import { chatModelFailureFields, safeChatFailureTranscriptFields } from '../../.
 import { taskOpsRoute } from './task-ops';
 import { suSessionRoutes } from './su-session';
 import externalTurnRoutes from './external-turns';
+import { customerAgentExecutionRequired } from '../../../auth/loopback-peer-trust';
+import { HOSTED_PRINCIPAL_USER_HEADER, HOSTED_PRINCIPAL_SESSION_HEADER } from '../../../workspace-host/hosted-operator-http';
 
 /**
  * P-008 (own-tui-full-divorce-2026-08-24): doors whose calls route through
@@ -363,6 +365,20 @@ const messagesRoute = defineTool({
     // P-008: `engine:'loop'` selects the OWNED in-process loop (native session
     // protocol lane); anything else keeps the legacy CLI-spawn engine.
     const useLoopEngine = body.engine === 'loop';
+    // D-421/D-423: this lane executes tools in the operator process, bypassing
+    // the customer CLI identity transform. Until a customer-bound native host
+    // is composed, neither a connector relay nor a multi-account host may
+    // enter it. The peer-policy opt-out changes TCP trust, not OS authority.
+    if (useLoopEngine && (
+      req.headers.has(HOSTED_PRINCIPAL_USER_HEADER)
+      || req.headers.has(HOSTED_PRINCIPAL_SESSION_HEADER)
+      || customerAgentExecutionRequired()
+    )) {
+      return Response.json({
+        error: 'hosted_native_loop_unavailable',
+        detail: 'Native-loop sessions are unavailable on hosted workspaces. Start a customer CLI session.',
+      }, { status: 403 });
+    }
     // Tier menus are shared with the legacy OMP lane, so an explicit picker
     // value may be valid there but unavailable to the in-process loop. Reject
     // that mismatch before acquiring the lock or persisting the user turn.
