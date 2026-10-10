@@ -1322,7 +1322,7 @@ describe.each(['memory', 'uds', 'listener'] as const)('launch ceiling listing â€
     expect(h.readSessionConfinement).toHaveBeenCalledWith('su-ceiling', 'ws-test');
     await withSdkHost(extra(), async client => {
       const native = await client.listTools();
-      assertCatalogParity(native, http);
+      expect(native).toEqual(http);
       expect(native.tools.map(tool => tool.name)).toEqual(['gatingtest:engineer']);
     }, connection);
   });

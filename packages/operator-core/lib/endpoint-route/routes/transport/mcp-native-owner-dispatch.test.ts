@@ -86,7 +86,7 @@ describe('D-063 owner rebuild of native MCP targets', () => {
     r.spawn.admissionRecoveryAuthority = authority;
     expect(normalizeNativeMcpOwnerSpawn(r.spawn).admissionRecoveryAuthority).toEqual(authority);
     const fn = vi.fn(async (_args, ctx: UnifiedToolContext) => {
-      expect(ctx.admissionRecoveryAuthority).toEqual(authority);
+      expect((ctx as UnifiedToolContext & Pick<BuiltSpawnContext, 'admissionRecoveryAuthority'>).admissionRecoveryAuthority).toEqual(authority);
       expect(ctx.advSessionId).toBe(address.advSessionId);
       expect(ctx.uiClientId).toBe(address.ownerId);
       return { content: [{ type: 'text' as const, text: 'recovery-proof-preserved' }] };
