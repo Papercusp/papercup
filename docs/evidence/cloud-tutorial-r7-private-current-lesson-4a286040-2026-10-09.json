@@ -68,6 +68,36 @@
       }
     }
   ],
+  "currentSharedLedgerRound": {
+    "sourceCommit": "405947bc4cfff1ed3b721daa4af027d64d71e970",
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-405947bc4c-edpqzo",
+    "selectedCase": "hosted lesson assistance boundary > checks the account-owned current lesson before AI Help without granting workspace or speech authority",
+    "baselineRunId": 20964691,
+    "copyBaselineRunId": 20964693,
+    "mutantRunId": 20964695,
+    "workspaceId": "papercusp-workspace",
+    "harnessSlug": "papercusp",
+    "startedAt": "2026-10-09T23:54:07.182Z",
+    "finishedAt": "2026-10-09T23:54:47.183Z",
+    "summary": "Fresh selected current-lesson control with shared-ledger attribution. Original and unmutated-copy controls each passed one case; removing the account-owned current-lesson comparison caused the same case to fail with expected 409, received 200. Thirteen unselected cases in each phase produced no evidence. The retained source remained byte-identical and clean. Private Postgres shut down at 23:54:48.461Z; native execution completed exit 0 and its handle was drained.",
+    "subjectSha256": "f40e2368f7f046462ab1dbf701da424be6af2d10b47fb9dbee87ccc0b3c822f2",
+    "mutantSha256": "b22b7cbebefcc1a6fbec0e97578b1fb8ff1facc8763d9b08c805bce7afb86f0b",
+    "mutation": "s/record[.]currentLessonId !== input[.]context[.]step/false/g",
+    "replacementCount": 1,
+    "relocation": "overlay",
+    "runnerMutantParse": "unchecked",
+    "independentParseCheck": { "tool": "esbuild.transformSync", "loader": "ts", "warnings": 0 },
+    "log": {
+      "path": "/dev/shm/tutorial-r7-shared-currentlesson-20261009T2355.log",
+      "bytes": 856439,
+      "sha256": "badf51c12555c94472ac095abe371cdf46d6240e96aeab57b93b08651b92f631"
+    },
+    "limitations": [
+      "Selected mutation comparison only; the historical full fourteen-case pass is preserved as shared run 20958063 and was not replayed.",
+      "Typed provider and progress-store seams; protected voice, native review and exact production shipment remain separate acceptance work.",
+      "The original private-ledger archive and its unavailable local id 3 remain unchanged."
+    ]
+  },
   "archiveProvenance": {
     "workItemId": "WI-10007744",
     "plan": "cloud-app-live-tutorial-2026-10-01",
