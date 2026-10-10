@@ -108,6 +108,13 @@ export async function recoverExpectedLoopExecution(input: {
   // Exited sessions continue through the existing captured-handle resume path.
   // A parked child also uses that path; its transcript belongs to a predecessor.
   if (!host || host.parked) return { handled: false };
+  // Bridged hosts keep their loaded code across child carry-respawns. Hosts
+  // launched before the execution observer never publish this property; an
+  // unknown-state probe cannot make them acquire that capability. Preserve
+  // the existing bounded, fire-fenced reconciler instead of intercepting it
+  // forever. A supported host that publishes an unavailable observation still
+  // takes the fail-closed decision below; absence never certifies idle or done.
+  if (!Object.prototype.hasOwnProperty.call(host, 'execution')) return { handled: false };
   const inference = await (deps.inference ?? fetchGatewayOwnerExecution)(input.ownerId);
   return input.sql.begin(async tx => {
     const rows = await tx<Array<{

@@ -46,6 +46,31 @@ async function state(id: string) {
 }
 
 describe('durable recovery against isolated Postgres', () => {
+  it('leaves pre-observer hosts on the maintained reconciliation path without rewriting failure evidence', async () => {
+    const f = await routine('recovery-legacy-host');
+    delete f.host.execution;
+    const prior = { status: 'blocked', reason: 'native-observation-unavailable', probes: 46,
+      attempts: 0, nextProbeAt: nowMs + 300_000, observedAt: nowMs - 1_000,
+      generation: null, lastAttemptAt: null };
+    await sql`UPDATE harness_shared.routines SET metadata = ${sql.json({ executionRecovery: prior })}
+      WHERE id = ${f.input.routineId}`;
+    const inference = vi.fn(f.deps.inference);
+    expect(await recoverExpectedLoopExecution(f.input, { ...f.deps, inference })).toEqual({ handled: false });
+    expect(inference).not.toHaveBeenCalled();
+    expect(f.deps.arm).not.toHaveBeenCalled();
+    expect(await state(f.input.routineId)).toMatchObject({ parked: true, active: true,
+      metadata: { executionRecovery: prior } });
+  });
+
+  it('keeps a supported host with an unavailable observation unknown instead of using legacy reconciliation', async () => {
+    const f = await routine('recovery-supported-observer-unavailable');
+    f.host.execution = undefined;
+    expect(await recoverExpectedLoopExecution(f.input, f.deps)).toMatchObject({ handled: true, rearmed: false,
+      state: { status: 'unknown', reason: 'native-observation-unavailable', attempts: 0 } });
+    expect(f.deps.arm).not.toHaveBeenCalled();
+    expect((await state(f.input.routineId)).parked).toBe(true);
+  });
+
   it('serializes racing reconciler/guard actors and preserves microsecond fire identity', async () => {
     const f = await routine('recovery-race');
     const results = await Promise.all([recoverExpectedLoopExecution(f.input, f.deps), recoverExpectedLoopExecution(f.input, f.deps)]);
@@ -75,7 +100,7 @@ describe('durable recovery against isolated Postgres', () => {
     const f = await routine(`recovery-protected-${control}`, control !== 'stopped', control !== 'cadence');
     if (control === 'tool' || control === 'approval') f.host.execution!.pendingTools = 1;
     if (control === 'owner') f.host.execution!.ownerInputPending = true;
-    if (control === 'unknown') delete f.host.execution;
+    if (control === 'unknown') f.host.execution = undefined;
     const result = await recoverExpectedLoopExecution(f.input, { ...f.deps,
       inference: async () => ({ active: control === 'inference' ? 1 : 0, observedAt: nowMs }) });
     expect(result.rearmed).not.toBe(true);

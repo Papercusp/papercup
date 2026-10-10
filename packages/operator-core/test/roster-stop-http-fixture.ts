@@ -108,6 +108,87 @@ async function request(payload: Record<string, unknown>) {
   return { status: response.status, body: await response.json() as Record<string, unknown> };
 }
 
+/** Exercise the real cookie principal and persisted inbox without touching a live agent. */
+async function coordCanary(health: unknown) {
+  const { signup, login, getSessionUser, SESSION_COOKIE } = await import('../lib/auth');
+  const { getMessageById, readInbox } = await import('../lib/agent-tools/coordination/messages');
+  const selected = `su-coord-${process.pid}-selected`;
+  const neighbor = `su-coord-${process.pid}-neighbor`;
+  const foreign = `su-coord-${process.pid}-foreign`;
+  const stale = `su-coord-${process.pid}-stale`;
+  const foreignWorkspace = workspace + '-foreign';
+  for (const [owner, scope] of [[selected, workspace], [neighbor, workspace], [foreign, foreignWorkspace], [stale, workspace]]) {
+    const id = await recordAdvSession({ workspaceId: scope, mode: 'console', agent: 'codex', role: 'su', coordOwnerId: owner });
+    assert.ok(id);
+    if (owner === stale) await markAdvSessionEnded(id, 0, 'self', { throwOnError: true });
+  }
+  const username = `coord_${process.pid}`;
+  await signup(username, 'Private roster canary', null);
+  const ownSession = await login(username, null, { workspace_id: workspace });
+  const foreignSession = await login(username, null, { workspace_id: foreignWorkspace });
+  const cookie = (token: string) => `${SESSION_COOKIE}=${token}`;
+  const ownPrincipal = await getSessionUser(new Headers({ cookie: cookie(ownSession.token) }));
+  assert.equal(ownPrincipal?.workspace_id, workspace);
+  const marker = `private-coord-${process.pid}`;
+  const receipts: Array<{ status: number; body: any }> = [];
+  const post = async (to: string[], wake = false, overrides: Record<string, string> = {}) => {
+    const response = await fetch(base + '/api/admin/coord/send', { method: 'POST',
+      headers: { 'content-type': 'application/json', origin: base, cookie: cookie(ownSession.token),
+        'x-papercusp-workspace': foreignWorkspace, ...overrides },
+      body: JSON.stringify({ to, summary: marker, body: [{ text: marker }], expects: 'none',
+        ...(wake ? { wake: 'required' } : {}) }), signal: AbortSignal.timeout(25_000) });
+    return { status: response.status, body: await response.json() as any };
+  };
+  const verifyReceipt = async (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean) => {
+    assert.equal(receipt.status, 200, JSON.stringify(receipt.body));
+    assert.equal(receipt.body.results?.length, 1);
+    const result = receipt.body.results[0];
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.to, [expectedOwner], 'selected-recipient receipt correlation');
+    assert.equal(typeof result.msg_id, 'string');
+    const stored = await getMessageById(result.msg_id);
+    assert.ok(stored, 'HTTP receipt must identify a durable message');
+    assert.deepEqual(stored.to, [expectedOwner], 'persisted recipient correlation');
+    assert.equal(stored.summary, marker);
+    if (wake) {
+      assert.equal(result.wake?.pickupConfirmed, false, 'send-time wake cannot attest pickup');
+      assert.equal(stored.wake, true);
+    }
+    return result.msg_id as string;
+  };
+  for (const wake of [false, true]) {
+    const accepted = await post([selected], wake);
+    receipts.push(accepted);
+    const msgId = await verifyReceipt(accepted, selected, wake);
+    // Positive control: a successful response attributed to the neighbor must fail.
+    await assert.rejects(() => verifyReceipt(accepted, neighbor, wake), /selected-recipient receipt correlation/);
+    const inbox = await readInbox(selected, {}, { enough: entries => entries.length >= 20 });
+    assert.ok(inbox.some(message => message.msg_id === msgId), 'selected inbox must contain the returned message');
+  }
+  const selectedIds = receipts.map(receipt => receipt.body.results[0].msg_id);
+  assert.equal(new Set(selectedIds).size, 2);
+  const beforeDenials = (await readInbox(selected, {}, { enough: entries => entries.length >= 20 })).filter(message => message.summary === marker).map(message => message.msg_id).sort();
+  const denied = [
+    await post([foreign]), await post([selected, foreign]), await post([stale]),
+    await post([selected], false, { cookie: cookie(foreignSession.token), 'x-papercusp-workspace': workspace }),
+    await post([selected], false, { origin: 'https://unapproved.invalid' }),
+  ];
+  assert.deepEqual(denied.map(receipt => receipt.status), [403, 403, 403, 403, 403]);
+  const afterDenials = (await readInbox(selected, {}, { enough: entries => entries.length >= 20 })).filter(message => message.summary === marker).map(message => message.msg_id).sort();
+  assert.deepEqual(afterDenials, beforeDenials, 'denied requests must not persist a partial delivery');
+  for (const owner of [neighbor, foreign, stale]) {
+    assert.equal((await readInbox(owner, {}, { enough: entries => entries.length >= 20 })).some(message => message.summary === marker), false,
+      `${owner} must not receive the private marker`);
+  }
+  // Tokens are deliberately absent from retained evidence.
+  console.log('ROSTER_COORD_HTTP_RECEIPT ' + JSON.stringify({ workspace, health,
+    bundleSha256: createHash('sha256').update(readFileSync(join(evidence, 'hono-host.mjs'))).digest('hex'),
+    authenticatedUser: ownPrincipal?.id, authMethod: 'cookie-session', selected, neighbor, foreign, stale,
+    selectedMessageIds: selectedIds, receipts, denialStatuses: denied.map(receipt => receipt.status),
+    neighborIsolated: true, positiveControl: 'wrong-recipient rejected',
+    pickupScope: 'persisted message and synchronous wake receipt only; no parked-agent turn attested' }));
+}
+
 async function main() {
   const bundle = join(evidence, 'hono-host.mjs');
   console.log('ROSTER_STOP_HTTP_PHASE bundle-start');
@@ -126,6 +207,10 @@ async function main() {
     return false;
   }, 'private API readiness', 90_000);
   console.log('ROSTER_STOP_HTTP_PHASE request-ready');
+  if (process.env.ROSTER_COORD_HTTP_PROOF === '1') {
+    await coordCanary(health);
+    return;
+  }
   const selected = await child('selected');
   const neighbor = await child('neighbor');
   const valid = { ownerId: selected.owner, managedSessionId: selected.id, expectedStartedAt: selected.startedAt, confirmed: true };

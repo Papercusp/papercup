@@ -3,8 +3,12 @@
  * Injected fake readers — NO PG. Proves the live-store → bundle adapter joins rollouts, derives
  * arms/models, maps coord/spawn, and degrades gracefully.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildBundleFromPg, type PgReportReaders } from './report-builder-pg';
+
+const defaults = vi.hoisted(() => ({ listRunResults: vi.fn(), getRollout: vi.fn(), getBenchRunDetail: vi.fn() }));
+vi.mock('../reproducibility/store', () => ({ listRunResults: defaults.listRunResults, getRollout: defaults.getRollout }));
+vi.mock('../run-store', () => ({ getBenchRunDetail: defaults.getBenchRunDetail }));
 
 function fakeReaders(over: Partial<PgReportReaders> = {}): PgReportReaders {
   return {
@@ -29,6 +33,19 @@ function fakeReaders(over: Partial<PgReportReaders> = {}): PgReportReaders {
 }
 
 describe('buildBundleFromPg', () => {
+  it('binds the requested workspace on each default store read', async () => {
+    const fixtures = fakeReaders();
+    defaults.listRunResults.mockResolvedValue(await fixtures.listRunResults({ runId: 'r1' }));
+    defaults.getRollout.mockImplementation(fixtures.getRollout);
+    defaults.getBenchRunDetail.mockImplementation(fixtures.getBenchRunDetail!);
+    const report = await buildBundleFromPg('r1', { workspace: 'bench-private' });
+    expect(report?.rollouts).toHaveLength(2);
+    expect(defaults.listRunResults).toHaveBeenCalledWith({ runId: 'r1', workspaceId: 'bench-private' });
+    expect(defaults.getRollout).toHaveBeenCalledWith('roll-1', { workspaceId: 'bench-private' });
+    expect(defaults.getRollout).toHaveBeenCalledWith('roll-2', { workspaceId: 'bench-private' });
+    expect(defaults.getBenchRunDetail).toHaveBeenCalledWith('r1', { workspaceId: 'bench-private' });
+  });
+
   it('assembles a bundle from the live store: rollups, replay fingerprint, coord + spawn', async () => {
     const b = (await buildBundleFromPg('r1', { readers: fakeReaders() }))!;
     expect(b).not.toBeNull();

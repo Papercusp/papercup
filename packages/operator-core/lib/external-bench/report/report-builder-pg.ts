@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { BenchReportBundle, BenchReportCall, BenchReportCoordEvent, BenchReportSpawnNode } from './report-schema';
 import { bundleFromRollouts, writeReportHtml } from './report-builder';
+import type { DbScope } from '../reproducibility/db';
 
 /** Structural shapes of the store reads we consume (kept loose so real types satisfy them). */
 interface TaskRunResultRow {
@@ -74,7 +75,7 @@ export interface PgReportReaders {
 /** Default readers — the real store functions (lazy-imported so a pure-fake test never loads PG). */
 async function defaultReaders(scope: { workspace?: string } = {}): Promise<PgReportReaders> {
   const [store, runStore] = await Promise.all([import('../reproducibility/store'), import('../run-store')]);
-  const ws = scope.workspace ? { workspace: scope.workspace } : {};
+  const ws: DbScope = scope.workspace ? { workspaceId: scope.workspace } : {};
   return {
     listRunResults: (opts) => store.listRunResults({ ...opts, ...ws }) as unknown as Promise<TaskRunResultRow[]>,
     getRollout: (id) => store.getRollout(id, ws) as unknown as Promise<RolloutRow | null>,
