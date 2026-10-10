@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectedTool, DispatchProjectedDeps } from '@papercusp/tooldef';
@@ -63,6 +63,39 @@ function commandResult(result: unknown): unknown {
   // flattenDispatchResult parses a single JSON text item. A dispatcher advisory
   // makes it plain text instead; both carry the same first command receipt.
   return typeof result === 'string' ? JSON.parse(result.split('\n')[0]) : result;
+}
+
+async function withRunningCustomerCommand(
+  action: (f: Awaited<ReturnType<typeof fixture>>, pending: ReturnType<Awaited<ReturnType<typeof fixture>>['ports']['dispatch']>) => Promise<void>,
+) {
+  const f = await fixture();
+  const marker = join(project, 'running-command-pid');
+  const pending = f.ports.dispatch('capability:bash', { command: 'printf "%s" "$$" > running-command-pid; exec sleep 30' });
+  let pid: number | undefined;
+  try {
+    // Local enrollment means the transport was spawned, not that the customer
+    // payload is ready. Exercise cancellation AFTER observing the real payload.
+    await vi.waitFor(() => {
+      expect(existsSync(marker)).toBe(true);
+      pid = Number(readFileSync(marker, 'utf8'));
+      expect(Number.isSafeInteger(pid) && pid! > 0).toBe(true);
+    });
+    await action(f, pending);
+    expect(() => process.kill(pid!, 0)).toThrow();
+  } finally {
+    f.controller.abort();
+    if (pid) { try { process.kill(-pid, 'SIGKILL'); } catch { /* already reaped */ } }
+    await pending;
+  }
+}
+
+async function boundedCommandStop<T>(pending: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('customer command shutdown exceeded 2s')), 2_000);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 describe('private customer loop port composition', () => {
@@ -325,24 +358,22 @@ describe('private customer loop port composition', () => {
   });
 
   it('cancels a running customer command through the dispatcher signal and closes its task', async () => {
-    const f = await fixture();
-    const pending = f.ports.dispatch('capability:bash', { command: 'sleep 30' });
-    await vi.waitFor(() => expect(completeSyncEnrolment).toHaveBeenCalled());
-    f.controller.abort(); expect((await pending).isError).toBe(true);
-    expect(finishSyncEnrolment).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ state: 'killed' }));
+    await withRunningCustomerCommand(async (f, pending) => {
+      f.controller.abort(); expect((await boundedCommandStop(pending)).isError).toBe(true);
+      expect(finishSyncEnrolment).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ state: 'killed' }));
+    });
   });
 
   it('propagates an external task kill through the remote wrapper and removes its listener after close', async () => {
-    const f = await fixture();
-    const pending = f.ports.dispatch('capability:bash', { command: 'sleep 30' });
-    await vi.waitFor(() => expect(completeSyncEnrolment).toHaveBeenCalled());
-    notifyTaskKillRequested('unrelated-task', 'SIGTERM');
-    expect(finishSyncEnrolment).not.toHaveBeenCalled();
-    notifyTaskKillRequested('testcustomertask', 'SIGTERM');
-    expect((await pending).isError).toBe(true);
-    expect(finishSyncEnrolment).toHaveBeenCalledTimes(1);
-    notifyTaskKillRequested('testcustomertask', 'SIGTERM');
-    expect(finishSyncEnrolment).toHaveBeenCalledTimes(1);
+    await withRunningCustomerCommand(async (_f, pending) => {
+      notifyTaskKillRequested('unrelated-task', 'SIGTERM');
+      expect(finishSyncEnrolment).not.toHaveBeenCalled();
+      notifyTaskKillRequested('testcustomertask', 'SIGTERM');
+      expect((await boundedCommandStop(pending)).isError).toBe(true);
+      expect(finishSyncEnrolment).toHaveBeenCalledTimes(1);
+      notifyTaskKillRequested('testcustomertask', 'SIGTERM');
+      expect(finishSyncEnrolment).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('records deadline expiry distinctly from caller cancellation', async () => {
