@@ -21,7 +21,9 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { COORD_ROLES } from '../coordination/roles';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
-import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem, unlinkWorkItem } from '../../work-items';
+import { updateWorkItem, getWorkItem, activeExternalBlockers, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem, unlinkWorkItem } from '../../work-items';
+import { hasStrictOwnerAction } from '../../harness/improvements/agent-review-policy';
+import { hasActiveStrictHumanAsk } from '../../hold-registry';
 import { runBulk, bulkContent } from '../_bulk';
 import { refuseExternalOwnedPatch } from '../../work-admission/admit';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -445,6 +447,30 @@ export default defineTool({
           const otherEdits = Object.entries(it).some(([key, value]) => !['id', 'harness', 'reporterQuestion'].includes(key) && value !== undefined);
           if (otherEdits) return { ok: false as const, id: it.id, error: 'reporterQuestion-must-be-used-without-other-edits' };
           return askReporterQuestion({ id: it.id, harness: it.harness, actor: ident.ownerId, text: it.reporterQuestion });
+        }
+        // A compatibility flag is not its own owner-action evidence. Check the
+        // current typed condition before ANY field edit, including mixed/bulk
+        // requests; otherwise an unsupported flag can strand executable work.
+        // Ignore both the old flag and caller-supplied payload when establishing
+        // authority. Product decisions retain their agent-review route.
+        if (it.needsHuman === true) {
+          const current = await getWorkItem(it.id, it.harness);
+          const supported = activeExternalBlockers(current?.payload).some((blocker) =>
+            hasStrictOwnerAction({ externalBlockers: [blocker] }) &&
+            Boolean(blocker.summary.trim() && blocker.nextVerb?.trim()) &&
+            (blocker.kind !== 'human' || hasActiveStrictHumanAsk({ externalBlockers: [blocker] })),
+          );
+          if (!supported) {
+            return {
+              ok: false as const,
+              id: it.id,
+              error:
+                'needsHuman:true requires a current typed credential, physical-device, or external-service-action ' +
+                'condition. Record its evidence and next action with work_items:set_blocker first; human asks also ' +
+                'require defaultIfUnanswered. Existing flags, technical dependencies and product decisions do not ' +
+                'establish this admission gate. No fields were written.',
+            };
+          }
         }
         // P-020 / D-004: an admitted item's title and description are owned by its source.
         // Refuse before any write so the edit is never half-applied.
