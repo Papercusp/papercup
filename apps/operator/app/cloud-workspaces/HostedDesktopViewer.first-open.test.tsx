@@ -90,28 +90,30 @@ const H = vi.hoisted(() => {
   }
 
   let releaseNoVnc = () => {};
-  const noVncLoaded = new Promise<void>((resolve) => {
-    releaseNoVnc = resolve;
-  });
 
   return {
     AttachingRFB,
     FakeSocket,
     fetch: vi.fn(),
     sockets: [] as FakeSocket[],
-    noVncLoaded,
+    holdNoVnc: () =>
+      new Promise<void>((resolve) => {
+        releaseNoVnc = resolve;
+      }),
     releaseNoVnc: () => releaseNoVnc(),
   };
-});
-
-vi.mock("@novnc/novnc", async () => {
-  await H.noVncLoaded;
-  return { default: H.AttachingRFB };
 });
 
 import { HostedDesktopViewer } from "./HostedDesktopViewer";
 
 beforeEach(() => {
+  H.sockets.length = 0;
+  H.AttachingRFB.instances.length = 0;
+  const noVncLoaded = H.holdNoVnc();
+  vi.doMock("@novnc/novnc", async () => {
+    await noVncLoaded;
+    return { default: H.AttachingRFB };
+  });
   H.fetch.mockImplementation(() =>
     Promise.resolve(
       new Response(JSON.stringify({ ok: true, ticket: `ht_${"a".repeat(43)}` }), {
@@ -126,10 +128,17 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.doUnmock("@novnc/novnc");
   vi.unstubAllGlobals();
 });
 
-it("connects when the desktop's greeting arrives before noVNC has loaded", async () => {
+it.each([
+  { mode: "watch", inputAllowed: false, viewOnly: true },
+  { mode: "takeover", inputAllowed: false, viewOnly: true },
+  { mode: "takeover", inputAllowed: true, viewOnly: false },
+] as const)(
+  "preserves $mode inputAllowed=$inputAllowed when the greeting arrives before noVNC loads",
+  async ({ mode, inputAllowed, viewOnly }) => {
   const onStateChange = vi.fn();
   render(
     <HostedDesktopViewer
@@ -137,6 +146,7 @@ it("connects when the desktop's greeting arrives before noVNC has loaded", async
       hostId="host-1"
       routeLabel="workspace-relay"
       desktopSessionId="desktop-1"
+      mode={mode}
       onStateChange={onStateChange}
     />,
   );
@@ -148,8 +158,8 @@ it("connects when the desktop's greeting arrives before noVNC has loaded", async
     socket.emit("message", {
       data: JSON.stringify({
         type: "desktop.ready",
-        action: "watch",
-        inputAllowed: false,
+        action: mode,
+        inputAllowed,
       }),
     });
     socket.emit("message", {
@@ -166,4 +176,6 @@ it("connects when the desktop's greeting arrives before noVNC has loaded", async
   await waitFor(() =>
     expect(onStateChange).toHaveBeenLastCalledWith("connected"),
   );
-});
+  expect(H.AttachingRFB.instances[0]!.viewOnly).toBe(viewOnly);
+  },
+);
