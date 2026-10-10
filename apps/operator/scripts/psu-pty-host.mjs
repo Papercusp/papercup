@@ -3165,9 +3165,34 @@ export function appendSharedDrillLedgerEvent(ownerId, kind, extra = {}, dir = PS
   }
 }
 
-/** Control-socket path for an ownerId. Pure. */
-export function socketPathFor(ownerId) {
-  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`);
+/** Keep discovery in its configured directory, but bound Unix socket addresses
+ * by bytes. Deep isolated roots and long owner keys exceed sun_path before the
+ * native child starts. The discovery record remains the socket authority. */
+export function socketPathFor(ownerId, dir = PSU_PTY_DIR) {
+  const key = sanitizeKey(ownerId);
+  const original = join(dir, `${key}.sock`);
+  if (Buffer.byteLength(original) <= 100) return original;
+  const namespace = createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 16);
+  const root = `/tmp/pc-pty-${process.getuid?.() ?? 'user'}`;
+  const shortDir = join(root, namespace);
+  const named = join(shortDir, `${key}.sock`);
+  return Buffer.byteLength(named) <= 100 ? named :
+    join(shortDir, `${createHash('sha256').update(key).digest('hex').slice(0, 48)}.sock`);
+}
+
+function ensureControlSocketDir(sock) {
+  const dir = dirname(sock);
+  if (dir === PSU_PTY_DIR) return;
+  // Both levels are private to this Unix user. Refuse a pre-existing symlink
+  // or foreign/public directory rather than taking over its sockets.
+  for (const path of [dirname(dir), dir]) {
+    try { mkdirSync(path, { mode: 0o700 }); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.isSymbolicLink() ||
+        (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0)
+      throw new Error('psu-pty-host: refusing unsafe control socket directory');
+  }
 }
 
 /** Discovery-metadata path for an ownerId. Pure. */
@@ -9290,6 +9315,7 @@ export function hostThroughPty(o) {
 
   pruneDead();
   const sock = socketPathFor(ownerId);
+  ensureControlSocketDir(sock);
   const metaPath = metaPathFor(ownerId);
   // A stale socket from a crashed prior session of the SAME owner would block
   // bind; remove it (pruneDead already cleared dead ones, but be defensive).

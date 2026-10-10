@@ -323,12 +323,19 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
     expect(JSON.stringify(workflowCalls[2].result), diagnostics).toContain(checkpointMarker);
     expect(JSON.stringify(providerCalls[4]), diagnostics).toContain(checkpointMarker);
     expect(JSON.stringify(providerCalls[5]), diagnostics).toContain('capability_denied');
-    const rows = await db.adminSql`SELECT feature_id, status, terminal_owner, terminal_completion_ref
+    const rows = await db.adminSql`SELECT feature_id, status, terminal_owner, terminal_completion_ref,
+        payload -> '_completionEvidence' AS completion_evidence
       FROM harness_shared.work_items WHERE workspace_id = 'native-frozen-private' ORDER BY feature_id`;
-    expect(rows.find(row => row.feature_id === own.id), diagnostics).toMatchObject({
-      status: 'done', terminal_owner: owner, terminal_completion_ref: completionMarker,
+    const terminalDiagnostics = JSON.stringify({ rows, nativeWorkflow: workflowCalls.map(call => ({
+      name: call.name, ok: (call.result as { ok: boolean }).ok,
+    })) });
+    expect(rows.find(row => row.feature_id === own.id), terminalDiagnostics).toMatchObject({
+      status: 'done', terminal_owner: owner, terminal_completion_ref: null,
+      completion_evidence: { summary: completionMarker, testResult: 'pass', verifiedHow: 'manual' },
     });
-    expect(rows.find(row => row.feature_id === neighbor)).toMatchObject({ status: 'wip', terminal_completion_ref: null });
+    expect(rows.find(row => row.feature_id === neighbor), terminalDiagnostics).toMatchObject({
+      status: 'wip', terminal_completion_ref: null, completion_evidence: null,
+    });
     const { workItemScope } = await import('../../../packages/operator-core/lib/carry-note');
     const notes = await db.adminSql`SELECT scope FROM harness_shared.carry_notes
       WHERE workspace_id = 'native-frozen-private' AND scope = ${workItemScope(own.harness, neighbor)}`;

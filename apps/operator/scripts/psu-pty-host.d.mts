@@ -1157,8 +1157,10 @@ export function sharedDrillLedgerPath(dir?: string): string;
  *  sessionClass, reason?, nativeId?, ... }). FAIL-SOFT like appendHostEvent —
  *  a ledger write must never break the session. */
 export function appendSharedDrillLedgerEvent(ownerId: any, kind: any, extra?: {}, dir?: string): boolean;
-/** Control-socket path for an ownerId. Pure. */
-export function socketPathFor(ownerId: any): string;
+/** Keep discovery in its configured directory, but bound Unix socket addresses
+ * by bytes. Deep isolated roots and long owner keys exceed sun_path before the
+ * native child starts. The discovery record remains the socket authority. */
+export function socketPathFor(ownerId: any, dir?: string): string;
 /** Discovery-metadata path for an ownerId. Pure. */
 export function metaPathFor(ownerId: any): string;
 /** WI-38292: where a host about to re-exec leaves the successor's marching

@@ -1,5 +1,7 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
+import * as discovery from './events/await/psu-pty-discovery';
+import { describe, expect, it, vi } from 'vitest';
 import {
   gradeColdBootDrill,
   reportColdBootDrills,
@@ -580,6 +582,25 @@ describe('verifyColdBootDrill — post-start lifecycle self-check (EI-12655 fix 
     { ts: new Date(NOW + 2).toISOString(), kind: 'carry-drill-respawned', drillId: 'd-1', sessionClass: 'gateway-claude-headless', nativeId: 'n-1' },
     { ts: new Date(NOW + 3).toISOString(), kind: 'carry-drill-carry-delivered', drillId: 'd-1', sessionClass: 'gateway-claude-headless' },
   ];
+
+  it('checks the recorded live socket when it is outside the discovery directory', async () => {
+    const dir = mkdtempSync('/tmp/pc-drill-');
+    const sock = `${dir}/recorded.sock`;
+    const server = createServer();
+    const find = vi.spyOn(discovery, 'findLiveHost').mockReturnValue({ ...HOST, pid: process.pid, sock });
+    try {
+      await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(sock, resolve); });
+      const result = await verifyColdBootDrill('su-1', { drillId: 'd-1' }, {
+        readLedger: async () => LEDGER, readHostEvents: async () => HOST_EVENTS,
+      });
+      expect(find).toHaveBeenCalledWith('su-1');
+      expect(result).toMatchObject({ ok: true, pass: true });
+    } finally {
+      find.mockRestore();
+      if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('passes all four assertions for a fully-recorded drill', async () => {
     const result = await verifyColdBootDrill('su-1', { drillId: 'd-1' }, {

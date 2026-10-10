@@ -5386,6 +5386,36 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
+  it("chooseResumeAccount: no-picker Codex resume inherits saved --account=auto when new args omit it", async () => {
+    const account = await withAccountChoices(
+      {
+        gatewayOn: true,
+        pool: ["codex-main"],
+        forcedAccounts: [],
+        excludeAccounts: [],
+        provider: "codex",
+      },
+      () =>
+        chooseResumeAccount(
+          {
+            agent: "codex",
+            workspaceId: "ws1",
+            coordOwnerId: "su-resume-codex-auto",
+            launchArgv: ["psu", "--no-picker", "--account=auto"],
+          },
+          { account: null, picker: false, model: "gpt-6.1-sol:xhigh" },
+        ),
+    );
+
+    expect(account).toMatchObject({
+      mode: "auto",
+      auto: true,
+      forward: "auto",
+      provider: "codex",
+      env: {},
+    });
+  });
+
   const withAccountChoices = async (
     accounts: Record<string, unknown>,
     run: () => Promise<unknown>,

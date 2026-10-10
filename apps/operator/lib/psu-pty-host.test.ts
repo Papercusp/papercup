@@ -303,9 +303,19 @@ describe('sanitizeKey', () => {
 });
 
 describe('socketPathFor / metaPathFor', () => {
-  it('derive sibling .sock / .json paths under PSU_PTY_DIR', () => {
-    expect(socketPathFor('su-x')).toBe(`${PSU_PTY_DIR}/su-x.sock`);
+  it('preserves ordinary addresses and the configured discovery path', () => {
+    expect(socketPathFor('su-x', '/tmp/short-discovery')).toBe('/tmp/short-discovery/su-x.sock');
     expect(metaPathFor('su-x')).toBe(`${PSU_PTY_DIR}/su-x.json`);
+  });
+  it('bounds deep roots and long keys by bytes without crossing discovery namespaces', () => {
+    const deep = '/tmp/' + 'nested/'.repeat(40);
+    for (const owner of ['su-x', 'x'.repeat(200), 'é'.repeat(100)]) {
+      const sock = socketPathFor(owner, deep);
+      expect(Buffer.byteLength(sock)).toBeLessThanOrEqual(100);
+      expect(socketPathFor(owner, deep)).toBe(sock);
+      expect(socketPathFor(owner, deep + 'other')).not.toBe(sock);
+      expect(socketPathFor('other-' + owner, deep)).not.toBe(sock);
+    }
   });
 });
 

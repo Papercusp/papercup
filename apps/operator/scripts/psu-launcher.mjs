@@ -9408,13 +9408,18 @@ export function accountProviderFromChoices(accounts, agent = "claude") {
  * path (folded server-side via the bootstrap POST), `env`/`notice` for the in-place resume
  * (launchResume). A default route forwards the explicit `system` marker because omitting the
  * account at bootstrap means "owner-nominated default", which may be gateway-routed.
- * Scripting (`--no-picker`) with no account uses the default system login. A
+ * Scripting (`--no-picker`) inherits a saved non-default Codex account route;
+ * otherwise no account uses the default system login. A
  * user-selected `auto` or named pin is fail-closed: if the gateway/provider/pin
  * cannot be honored, this function throws instead of silently returning the
  * default-account marker.
  */
 export async function chooseResumeAccount(session, args) {
-  const plan = resumeAccountPlan(args);
+  let plan = resumeAccountPlan(args);
+  if (plan.source === "none" && session?.agent === "codex") {
+    const savedAccount = originalCodexRoutingAccount(session);
+    if (savedAccount) plan = resumeAccountPlan({ ...args, account: savedAccount });
+  }
   if (plan.source === "none") {
     return {
       mode: "default",

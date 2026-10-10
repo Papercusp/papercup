@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
-import type { ReactElement } from 'react';
+import { Profiler, type ReactElement } from 'react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 vi.mock('@/lib/useLexicon', () => ({
@@ -108,6 +108,21 @@ describe('AdvDocsTab — fetch lifecycle', () => {
 });
 
 describe('AdvDocsTab — nav + article', () => {
+  it('shows the cached selected article on the first committed warm mount', async () => {
+    stubFetchOk(docsResponse({ activePath: 'guides/setup.md', content: 'warm-private-doc',
+      activeEntry: { ...entry({ source: 'manual' }), overlay: null } }));
+    const first = renderTab(<AdvDocsTab slug="warm-private-docs" />, '?docpath=guides/setup.md');
+    await screen.findByText('warm-private-doc');
+    first.unmount();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+    const commits: string[] = [];
+    renderTab(<Profiler id="warm-docs" onRender={() => commits.push(document.body.textContent ?? '')}>
+      <AdvDocsTab slug="warm-private-docs" />
+    </Profiler>, '?docpath=guides/setup.md');
+    expect(commits[0]).toContain('warm-private-doc');
+    expect(commits[0]).not.toContain('Loading docs');
+  });
+
   it('renders the directory-grouped nav with one link per file', async () => {
     stubFetchOk(
       docsResponse({
@@ -170,7 +185,7 @@ describe('AdvDocsTab — nav + article', () => {
 
 describe('AdvDocsTab — actions', () => {
   it('shows Regenerate only for a stale generated/augmented doc, and POSTs on click', async () => {
-    const f = vi.fn(async () => new Response(JSON.stringify(docsResponse({
+    const f = vi.fn(async (_url: RequestInfo | URL) => new Response(JSON.stringify(docsResponse({
       activePath: 'guides/setup.md',
       content: 'x',
       activeEntry: { ...entry({ source: 'generated', status: 'stale' }), overlay: null },
@@ -189,7 +204,7 @@ describe('AdvDocsTab — actions', () => {
   });
 
   it('shows Re-verify only for a manual doc needing review, and POSTs on click', async () => {
-    const f = vi.fn(async () => new Response(JSON.stringify(docsResponse({
+    const f = vi.fn(async (_url: RequestInfo | URL) => new Response(JSON.stringify(docsResponse({
       activePath: 'guides/setup.md',
       content: 'x',
       activeEntry: { ...entry({ source: 'manual', status: 'review' }), overlay: null },
@@ -204,6 +219,36 @@ describe('AdvDocsTab — actions', () => {
     await waitFor(() =>
       expect(f.mock.calls.some(([url]) => String(url).includes('/docs/verify'))).toBe(true),
     );
+  });
+
+  it('retains the selected article after a denied action and clears the error after an exact retry', async () => {
+    const activeEntry = { ...entry({ source: 'manual', status: 'review' }), overlay: null };
+    const initial = docsResponse({ activePath: 'guides/setup.md', content: 'retained-private-doc',
+      activeEntry });
+    let verified = false;
+    let posts = 0;
+    const f = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ docId: 'guides/setup.md' });
+        posts += 1;
+        if (posts === 1) return new Response(JSON.stringify({ ok: false }), { status: 403 });
+        verified = true;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify(verified ? { ...initial,
+        activeEntry: { ...activeEntry, status: 'fresh' } } : initial), { status: 200 });
+    });
+    vi.stubGlobal('fetch', f);
+    renderTab(<AdvDocsTab slug="denied-private-docs" />, '?docpath=guides/setup.md');
+    fireEvent.click(await screen.findByRole('button', { name: 'Re-verify' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('HTTP 403');
+    expect(screen.getByText('retained-private-doc')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Re-verify' }).hasAttribute('disabled')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Re-verify' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Re-verify' })).toBeNull());
+    expect(posts).toBe(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('retained-private-doc')).toBeTruthy();
   });
 
   it('shows NO action buttons for a fresh generated doc', async () => {

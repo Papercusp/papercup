@@ -50,7 +50,7 @@ import {
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
 // subpath keeps this an integration test of the actual chain, not a re-impl.
-import { interruptViaPty, findLiveHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
+import { interruptViaPty, findLiveHost, injectIntoHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 /**
@@ -135,6 +135,44 @@ const FLATTENED_CODEX_READY_FOOTER =
   '› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left';
 const FLATTENED_CODEX_STARTING_FOOTER =
   '› Ask Codex to do anythingStarting · GPT-5.6-Sol high · Context 100% left';
+
+it('binds, discovers, injects and cleans a byte-bounded control socket for a long owner', async () => {
+  const ownerId = (`su-byte-bound-${process.pid}-${Date.now()}-` + 'x'.repeat(200)).slice(0, 200);
+  const sibling = join(PSU_PTY_DIR, `${ownerId}.sock`);
+  expect(Buffer.byteLength(sibling)).toBeGreaterThan(107);
+  // Distinguish address overflow from a missing native/SRT dependency: the
+  // legacy address fails at the OS bind, while the maintained host below works.
+  const legacy = net.createServer();
+  const error = await new Promise<NodeJS.ErrnoException>(resolve => {
+    legacy.once('error', resolve); legacy.listen(sibling);
+  });
+  expect(error.code).toBe('EINVAL');
+  const sock = socketPathFor(ownerId);
+  const { captured, io } = fakeIo();
+  const done = hostThroughPty({ command: execPath, args: ['-e',
+    "process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('BOUNDED_SOCKET_READY\\n');process.stdin.on('data',d=>{if(d.includes('COMPLETE')){process.stdout.write('BOUNDED_SOCKET_INJECTED\\n');process.exit(0);}if(d.includes('\\u0004'))process.exit(0);});setTimeout(()=>process.exit(19),10000);"],
+    cwd: process.cwd(), env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
+    io, bridgeTty: false, signalSource: new EventEmitter(), onExit: () => undefined,
+  });
+  try {
+    await vi.waitFor(() => expect(captured()).toContain('BOUNDED_SOCKET_READY'), { timeout: 5000 });
+    const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+    expect(meta).toMatchObject({ ownerId, sock });
+    expect(Buffer.byteLength(sock)).toBeLessThanOrEqual(100);
+    expect(statSync(sock).isSocket()).toBe(true);
+    expect(statSync(sock).mode & 0o077).toBe(0);
+    expect(findLiveHost(ownerId, undefined, { verifyIdentity: pid => pid === process.pid })?.sock).toBe(sock);
+    const injection = await injectIntoHost(sock, { mode: 'raw', data: 'COMPLETE\n', ownerId });
+    expect(injection).toBe(true);
+    expect(await done, captured()).toBe(0);
+    expect(captured()).toContain('BOUNDED_SOCKET_INJECTED');
+    expect(existsSync(sock)).toBe(false);
+    expect(existsSync(metaPathFor(ownerId))).toBe(false);
+  } finally {
+    if (existsSync(sock)) await injectIntoHost(sock, { mode: 'raw', data: '\u0004', ownerId }).catch(() => undefined);
+    await done;
+  }
+}, 20_000);
 
 /** A deliberately wrong pre-fix control: it checks an exact Ready token. */
 function exactStatusOnlyCodexReady(output: string): boolean {

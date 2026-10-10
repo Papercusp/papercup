@@ -792,7 +792,8 @@ function verifyDeps(overrides: Partial<VerifyColdBootDrillDeps>): VerifyColdBoot
     readHostEvents: readOwnerHostEvents,
     socketExists: async (ownerId) => {
       try {
-        return (await fs.stat(join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`))).isSocket();
+        const host = findLiveHost(ownerId);
+        return !!host && (await fs.stat(host.sock)).isSocket();
       } catch {
         return false;
       }
