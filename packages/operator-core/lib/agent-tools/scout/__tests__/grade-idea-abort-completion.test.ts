@@ -39,6 +39,10 @@ const outcome = (over: Partial<GradeIdeaOutcome> = {}): GradeIdeaOutcome =>
 const attempt = { callId: 'call-1', toolName: 'blender:grade-idea' };
 
 describe('blender:grade-idea abort-completion receipt (WI-10005670)', () => {
+  it('declares the dispatch budget so nested tools:invoke leaves room for its completion receipt', () => {
+    expect(gradeIdeaTool.timeoutSec).toBe(60);
+  });
+
   it('is declared on the tool (the dispatcher only consults a declared resolver)', () => {
     expect(gradeIdeaTool.abortCompletionReceipt).toBe(gradeIdeaAbortCompletionReceipt);
   });

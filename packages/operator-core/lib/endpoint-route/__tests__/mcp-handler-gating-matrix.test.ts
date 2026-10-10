@@ -1315,6 +1315,15 @@ describe.each(['memory', 'uds', 'listener'] as const)('launch ceiling listing â€
   const extra = () => superuserExtra('&workspace=ws-test&client=su-ceiling&tools=gatingtest:engineer,gatingtest:txless_scope');
   const policy = (denyOutside: string[]) => ({ denyTools: [], denyOutside,
     reason: 'metered benchmark', imposedBy: 'benchmark-host' });
+  it('advertises the assigned maintained workflow without treating a listing as execution', async () => {
+    const verbs = ['work_items:get', 'work_items:checkpoint', 'work_items:complete'];
+    h.readSessionConfinement.mockResolvedValue({ ...policy(verbs), denyAmbientContext: true,
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' } });
+    const scoped = superuserExtra(`&workspace=ws-test&client=su-assignment&tools=${verbs.join(',')}`);
+    await withSdkHost(scoped, async client => {
+      expect((await client.listTools()).tools.map(tool => tool.name).sort()).toEqual([...verbs].sort());
+    }, connection);
+  });
   it('advertises only launch-authorized tools through HTTP assembly and the native SDK', async () => {
     h.readSessionConfinement.mockResolvedValue(policy(['gatingtest:engineer']));
     const http = await listTools(extra());
@@ -1539,6 +1548,33 @@ describe('public Papercup PI card transport (EI-22679615443261276)', () => {
 });
 
 describe('MCP scratch resource authentication', () => {
+  describe.each(['memory', 'uds', 'listener'] as const)('frozen context protocol â€” %s', connection => {
+    const extra = () => superuserExtra('&workspace=ws-test&client=su-frozen-resources');
+    it('refuses resource content before calling its registered reader', async () => {
+      h.readSessionConfinement.mockResolvedValue({ denyTools: [], denyOutside: ['work_items:get'],
+        denyAmbientContext: true, reason: 'frozen corpus', imposedBy: 'benchmark-host' });
+      await withSdkHost(extra(), async client => {
+        await expect(client.readResource({ uri: 'papercusp://ambient/neighbor-corpus' })).rejects.toThrow(/frozen assignment context/);
+        expect(h.resourceReads).toHaveLength(0);
+      }, connection);
+    });
+    it('lists no ambient resources or prompts and refuses direct prompt lookup', async () => {
+      h.readSessionConfinement.mockResolvedValue({ denyTools: [], denyOutside: ['work_items:get'],
+        denyAmbientContext: true, reason: 'frozen corpus', imposedBy: 'benchmark-host' });
+      await withSdkHost(extra(), async client => {
+        expect(await client.listResources()).toEqual({ resources: [] });
+        expect(await client.listPrompts()).toEqual({ prompts: [] });
+        await expect(client.getPrompt({ name: 'agent:role', arguments: { role: 'su' } })).rejects.toThrow(/frozen assignment context/);
+      }, connection);
+    });
+    it('fails closed if authoritative policy cannot be read', async () => {
+      h.readSessionConfinement.mockRejectedValue(new Error('policy unavailable'));
+      await withSdkHost(extra(), async client => {
+        await expect(client.readResource({ uri: 'papercusp://ambient/neighbor-corpus' })).rejects.toThrow(/frozen assignment context/);
+        expect(h.resourceReads).toHaveLength(0);
+      }, connection);
+    });
+  });
   it('uses the same signed-session owner for a tools:invoke spill and its resource read', async () => {
     const extra = extraFor(signedUrl({ client: 'scoper-session-spill' }));
     const result = await callTool(
@@ -1606,6 +1642,9 @@ describe('MCP scratch resource authentication', () => {
           },
         });
         expect(h.resourceReads[0]).not.toHaveProperty('bearer');
+        // Confinement and resource authorization must use the same verified
+        // request identity, without a second token verification or new spawn.
+        expect(h.verifyAccessToken).toHaveBeenCalledTimes(1);
       },
       'memory',
     );

@@ -3445,7 +3445,7 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       const ownerId = resolveAgentIdentity(spawnRes.ctx).ownerId;
       const confinement = await readSessionConfinement(ownerId, spawnRes.ctx.workspaceId);
       if (confinement) result = result.filter(listing =>
-        evaluateSessionConfinement({ toolName: listing.name, confinement }).allowed);
+        evaluateSessionConfinement({ toolName: listing.name, confinement, purpose: 'listing' }).allowed);
     } catch {
       return { kind: 'failed', reason: 'session_confinement_unavailable' };
     }
@@ -5845,6 +5845,7 @@ export function registerMcpHost(server: McpServer): void {
   const resourceAuthFromExtra = async (
     extra: unknown,
     resourceUri?: string,
+    verifiedSpawn?: Awaited<ReturnType<typeof tryBuildSpawnContext>>,
   ): Promise<{ bearer: string } | { principal: Principal }> => {
     const url = urlFromExtra(extra);
     const usesTransportPrincipal =
@@ -5854,7 +5855,7 @@ export function registerMcpHost(server: McpServer): void {
       (url?.searchParams.get('power_user') === '1' || url?.searchParams.has('role') === true);
     if (!usesTransportPrincipal && !usesScopedScratchPrincipal) return { bearer: bearerFromExtra(extra) };
 
-    const spawnRes = await tryBuildSpawnContext(extra);
+    const spawnRes = verifiedSpawn ?? await tryBuildSpawnContext(extra);
     if (spawnRes.kind === 'failed') {
       throw new Error(`mcp_auth_failed: ${spawnRes.reason}`);
     }
@@ -5870,14 +5871,36 @@ export function registerMcpHost(server: McpServer): void {
     return { bearer: bearerFromExtra(extra) };
   };
 
+  // MCP resources/prompts do not traverse tool dispatch. They still read
+  // context, so consult the same authoritative frozen-context policy before
+  // listing or executing their readers. A failed policy read never leaks it.
+  const protocolContextFromExtra = async (extra: unknown): Promise<{
+    allowed: boolean;
+    spawn: Awaited<ReturnType<typeof tryBuildSpawnContext>> | null;
+  }> => {
+    try {
+      const spawn = await tryBuildSpawnContext(extra);
+      if (spawn.kind === 'failed') return { allowed: false, spawn };
+      if (spawn.kind !== 'ok') return { allowed: true, spawn };
+      const ownerId = resolveAgentIdentity(spawn.ctx).ownerId;
+      const confinement = await readSessionConfinement(ownerId, spawn.ctx.workspaceId);
+      return { allowed: confinement?.denyAmbientContext === undefined, spawn };
+    } catch { return { allowed: false, spawn: null }; }
+  };
+  const ambientProtocolRefusal = 'MCP content is unavailable under frozen assignment context or unreadable session policy.';
+
   server.server.setRequestHandler(sdk.ListResourcesRequestSchema, async (_req: unknown, extra: unknown) => {
-    const r = await listResources(await resourceAuthFromExtra(extra));
+    const context = await protocolContextFromExtra(extra);
+    if (!context.allowed) return { resources: [] };
+    const r = await listResources(await resourceAuthFromExtra(extra, undefined, context.spawn ?? undefined));
     return { resources: r.ok ? (r.resources ?? []) : [] };
   });
   server.server.setRequestHandler(
     sdk.ReadResourceRequestSchema,
     async (req: { params: { uri: string } }, extra: unknown) => {
-      const auth = await resourceAuthFromExtra(extra, req.params.uri);
+      const context = await protocolContextFromExtra(extra);
+      if (!context.allowed) throw new Error(ambientProtocolRefusal);
+      const auth = await resourceAuthFromExtra(extra, req.params.uri, context.spawn ?? undefined);
       const r = await readResource({ uri: req.params.uri, ...auth });
       if (!r.ok) throw new Error(`${r.error?.code}: ${r.error?.message}`);
       return { contents: [r.contents!] };
@@ -5893,6 +5916,7 @@ export function registerMcpHost(server: McpServer): void {
   //      surfaces as a `tool:*` prompt so agent clients render the whole
   //      catalog as slash commands. Flag-gated (SLASH_EXPOSURE, default ON).
   server.server.setRequestHandler(sdk.ListPromptsRequestSchema, async (_req: unknown, extra: unknown) => {
+    if (!(await protocolContextFromExtra(extra)).allowed) return { prompts: [] };
     await ensureOperatorToolsLoaded();
     const bearer = bearerFromExtra(extra);
     const prompts: Array<{
@@ -5931,6 +5955,7 @@ export function registerMcpHost(server: McpServer): void {
   server.server.setRequestHandler(
     sdk.GetPromptRequestSchema,
     async (req: { params: { name: string; arguments?: Record<string, string> } }, extra: unknown) => {
+      if (!(await protocolContextFromExtra(extra)).allowed) throw new Error(ambientProtocolRefusal);
       await ensureOperatorToolsLoaded();
       const name = req.params.name;
       const args = (req.params.arguments ?? {}) as Record<string, string>;

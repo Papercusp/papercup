@@ -103,6 +103,7 @@ import {
   materializeHarnessPrompts,
 } from '../../../saved-prompts-materialize';
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
+import { sessionAllowsAmbientContext } from '../../../capability-envelope/session-confinement-port';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
 import { parseLaunchCompactionLimitArgv } from '../../../compaction-usage';
 import { readSuperuserToken } from '../../../superuser-token';
@@ -3012,6 +3013,7 @@ export const bootstrapSu = defineTool({
     // a raw launch — no per-launch .mcp.json needed for su).
     let promptFile = '';
     let codexHome: string | null = null;
+    const ambientContextAllowed = await sessionAllowsAmbientContext({ ownerId: sid, workspaceId: workspace });
     try {
       if (agent === 'codex') {
         // D-006: the superuser bearer is baked into the home's config.toml
@@ -3023,6 +3025,7 @@ export const bootstrapSu = defineTool({
           async (priorSid) => (await findLiveHostAsync(priorSid)) != null,
         );
         const ch = writeSuCodexHome({
+          ...(ambientContextAllowed ? {} : { denyAmbientContext: true as const }),
           sessionKey,
           mcpUrl: spec.mcpUrl,
           promptText,
@@ -3075,7 +3078,10 @@ export const bootstrapSu = defineTool({
     // Codex needs them in its ephemeral home; claude/omp read .claude/commands.
     // Best-effort — never block a launch.
     try {
-      if (agent === 'codex' && codexHome) {
+      // Native homes are readable inside the scoped sandbox. Copying saved
+      // workspace prompts or the full slash catalog here would reintroduce
+      // live context after the frozen persona builder has suppressed it.
+      if (ambientContextAllowed && agent === 'codex' && codexHome) {
         await materializeCodexPrompts(codexHome, workspace, harnessSlug);
         // Slash exposure (slash-exposure-tool-catalog-2026-06-12 P-009):
         // Codex doesn't surface MCP prompts as slash commands, so the
@@ -3085,7 +3091,7 @@ export const bootstrapSu = defineTool({
         process.stderr.write(
           `[bootstrap-su] slash tool prompts: ${r.written} written, ${r.pruned} pruned in ${Math.round(r.ms)}ms\n`,
         );
-      } else {
+      } else if (ambientContextAllowed) {
         await materializeWorkspacePrompts(workspace);
         if (harnessSlug) await materializeHarnessPrompts(workspace, harnessSlug);
       }

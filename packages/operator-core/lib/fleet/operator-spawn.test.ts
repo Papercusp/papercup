@@ -80,6 +80,7 @@ vi.mock('../dbos/orchestrator-runner', () => ({
   // when the spawn didn't override timeoutMs — mirror the real default (45min).
   invokeTimeoutMs: vi.fn(() => 2_700_000),
 }));
+vi.mock('./supervision', () => ({ superviseCrash: vi.fn() }));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
 vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));
 // Per-hive override resolver (P-012/P-013) is a PG-backed spawn dep like its siblings —
@@ -147,6 +148,7 @@ import { spawnInvokeOnceWithFallback } from '../dbos/orchestrator-runner';
 import { resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { recordSpawn, finishSpawn } from './spawn-tree';
+import { superviseCrash } from './supervision';
 import { reclaimOrphanedSpawns, recordSpawnPid, removeSpawnResultArtifact } from './spawn-reclaim';
 import { releaseWorkItem } from '../work-items';
 import { evaluatePerfSignals } from '../system-health/perf-budgets';
@@ -221,6 +223,15 @@ beforeEach(() => {
   vi.mocked(resolveSpawnGatewayEnv).mockResolvedValue({});
   vi.mocked(recordSpawn).mockResolvedValue(undefined);
   vi.mocked(finishSpawn).mockResolvedValue(undefined);
+  vi.mocked(superviseCrash).mockResolvedValue({
+    spawnId: 'test-spawn',
+    action: 'noop',
+    intensity: null,
+    strategy: 'one_for_one',
+    toRestart: [],
+    reason: 'spawn not found',
+    relaunches: [],
+  } as never);
   // Default getFlag → each flag's real default (no PostHog), matching the prior
   // real-getFlag fallback. Overwatch defaults OFF, so the gate rejects it unless a
   // test overrides this. Other callers (WEDGE_AUTO_REAP/SPAWN_HANDOFF_HYDRATION) keep
@@ -328,6 +339,76 @@ describe('spawnAgentInHarness — happy path', () => {
     expect(vi.mocked(recordSpawnPid).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(spawnInvokeOnceWithFallback).mock.invocationCallOrder[0],
     );
+  });
+
+  it('automatically supervises a durable failure after the child has started', async () => {
+    vi.mocked(superviseCrash).mockResolvedValue({
+      spawnId: 'crashed-spawn',
+      action: 'restart',
+      intensity: null,
+      strategy: 'one_for_one',
+      toRestart: ['crashed-spawn'],
+      reason: 'restart (one_for_one)',
+      relaunches: [],
+    } as never);
+    vi.mocked(spawnInvokeOnceWithFallback).mockImplementation(((
+      _dir: string,
+      _role: string,
+      _extras: string[],
+      _env: Record<string, string>,
+      opts?: { onChildPid?: (pid: number) => void },
+    ) => {
+      opts?.onChildPid?.(1234);
+      return Promise.resolve({ output: '', exitCode: 1, stderr: 'child crashed' });
+    }) as never);
+
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });
+    await flush();
+
+    expect(superviseCrash).toHaveBeenCalledTimes(1);
+    expect(superviseCrash).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      workspaceId: 'ws-1',
+      spawnId: res.spawnId,
+      actor: {
+        ownerId: 'system:operator-spawn-supervision',
+        ownerLabel: 'operator spawn supervision',
+        source: 'static-client',
+        workspaceId: 'ws-1',
+        userId: null,
+      },
+      reason: 'child crashed',
+    }));
+    expect(vi.mocked(finishSpawn).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(superviseCrash).mock.invocationCallOrder[0]);
+  });
+
+  it.each([
+    { label: 'successful', childStarted: true, cancelled: false, exitCode: 0, expectedStatus: 'done' },
+    { label: 'cancelled', childStarted: true, cancelled: true, exitCode: 1, expectedStatus: 'cancelled' },
+    { label: 'pre-start', childStarted: false, cancelled: false, exitCode: 1, expectedStatus: 'failed' },
+  ])('does not supervise a $label terminal', async ({ childStarted, cancelled, exitCode, expectedStatus }) => {
+    let finishChild!: (result: { output: string; exitCode: number; stderr: string }) => void;
+    vi.mocked(spawnInvokeOnceWithFallback).mockImplementation(((
+      _dir: string,
+      _role: string,
+      _extras: string[],
+      _env: Record<string, string>,
+      opts?: { onChildPid?: (pid: number) => void },
+    ) => {
+      if (childStarted) opts?.onChildPid?.(1234);
+      return new Promise((resolve) => { finishChild = resolve; });
+    }) as never);
+
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });
+    if (cancelled) expect(abortLocalSpawn(res.spawnId!)).toBe(true);
+    finishChild({ output: '', exitCode, stderr: 'terminal detail' });
+    await flush();
+
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId,
+      status: expectedStatus,
+    }));
+    expect(superviseCrash).not.toHaveBeenCalled();
   });
 
   it('times out a spawn that never reaches child pid and releases only its reserved work item claim', async () => {

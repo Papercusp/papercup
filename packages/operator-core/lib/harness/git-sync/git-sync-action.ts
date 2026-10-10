@@ -4357,10 +4357,12 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
     // edit a local git commit yet". Remote origin/staging egress is a distinct,
     // later git-sync:egressed event emitted by runGithubBridgeLeg.
-    // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
-    // fire-and-forget, never gates the tick, benign to replay past the record step.
-    if (outcome.status === 'synced') {
-      emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
+    // A sibling failure can make the aggregate verdict error/conflict after the
+    // root commit succeeded. Aggregate counts also include submodule commits,
+    // so emit only from the root commit proof captured by the local producer.
+    // Fire-and-forget, never gates the tick, benign to replay past the record step.
+    if (outcome.localCommitSha) {
+      emitGitSyncCommittedEvent(outcome.localCommitSha, { scope: { installSlug: slug, workspaceId } });
     }
 
     const reconcileCommittedCompletions = async (): Promise<GitSyncActionTimeoutError | undefined> => {
@@ -7914,7 +7916,8 @@ async function recordAndEscalateTick(a: {
       committedCount: outcome.committedCount,
       skippedPaths: outcome.skippedPaths ?? [],
       consecutiveErrorTicks: errTicks,
-      ...(outcome.status === 'synced' ? { headSha: outcome.headSha } : {}),
+      ...(outcome.headSha ? { headSha: outcome.headSha } : {}),
+      ...(outcome.localCommitSha ? { localCommitSha: outcome.localCommitSha } : {}),
     },
   });
 

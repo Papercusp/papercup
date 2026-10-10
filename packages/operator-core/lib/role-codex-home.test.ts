@@ -532,6 +532,40 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
+  it('keeps a frozen native home free of user capabilities and preserves that boundary during config repair', async () => {
+    const user = join(fakeHome, '.codex');
+    for (const dir of ['skills', 'plugins', 'prompts']) {
+      mkdirSync(join(user, dir), { recursive: true });
+      writeFileSync(join(user, dir, 'ambient.md'), `AMBIENT ${dir}`);
+    }
+    writeFileSync(join(user, 'auth.json'), '{"user":"AMBIENT AUTH"}');
+    writeFileSync(join(user, 'config.toml'), '[projects."/ambient-project"]\ntrust_level = "trusted"\n');
+    writeFileSync(join(fakeHome, '.claude.json'), JSON.stringify({ projects: {
+      '/frozen-assignment': { mcpServers: { ambient: { type: 'http', url: 'http://example.invalid' } } },
+    } }));
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'frozen-native-home', sid: 'su-frozen-home',
+      mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'FROZEN ROLE',
+      trustDir: '/frozen-assignment', denyAmbientContext: true as const };
+    const out = writeSuCodexHome(input);
+    expect(existsSync(join(out.codexHome, 'auth.json'))).toBe(false);
+    expect(existsSync(join(out.codexHome, 'plugins'))).toBe(false);
+    expect(existsSync(join(out.codexHome, 'prompts'))).toBe(false);
+    expect(lstatSync(join(out.codexHome, 'skills')).isDirectory()).toBe(true);
+    expect(existsSync(join(out.codexHome, 'skills', 'ambient.md'))).toBe(false);
+    const config = readFileSync(out.configPath, 'utf8');
+    expect(config).toContain('[projects."/frozen-assignment"]');
+    expect(config).not.toContain('/ambient-project');
+    expect(config).not.toContain('example.invalid');
+    // Recovery often has only the recorded model and owner, not the original
+    // launch options. The existing home diagnostics must retain this policy.
+    rmSync(out.configPath);
+    ensureSuCodexHomeConfig({ sessionKey: input.sessionKey, sid: input.sid,
+      mcpUrl: input.mcpUrl, projectDir: input.trustDir });
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(existsSync(join(out.codexHome, 'auth.json'))).toBe(false);
+  });
+
   it('sends the live native Codex session and repairs older configs without it', async () => {
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
     const opts = {

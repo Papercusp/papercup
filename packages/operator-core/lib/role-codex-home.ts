@@ -200,10 +200,10 @@ function resolveWorkspaceRoot(): string {
 /** Rebuild a per-session codex home dir fresh + share the ChatGPT OAuth
  *  login via a SYMLINK (never a copy — a copied single-use refresh token
  *  can log the user out). Returns the home path. */
-function freshCodexHome(codexHome: string): string {
+function freshCodexHome(codexHome: string, inheritAmbientContext = true): string {
   rmSync(codexHome, { recursive: true, force: true });
   mkdirSync(codexHome, { recursive: true });
-  inheritUserCodexHome(codexHome);
+  if (inheritAmbientContext) inheritUserCodexHome(codexHome);
   ensureCodexSkillWatchRoots({ codexHome });
   return codexHome;
 }
@@ -497,10 +497,10 @@ const CODEX_DANGER_TOML = [
  *     CODEX_HOME never carries an answer forward — without the seed, every
  *     scripted codex launch hangs at the trust prompt.
  */
-function inheritedCodexTrustToml(trustDir?: string | null): string[] {
+function inheritedCodexTrustToml(trustDir?: string | null, inheritAmbientContext = true): string[] {
   const source = join(homedir(), '.codex', 'config.toml');
   const out: string[] = [];
-  if (existsSync(source)) {
+  if (inheritAmbientContext && existsSync(source)) {
     let keep = false;
     for (const line of readFileSync(source, 'utf8').split(/\r?\n/)) {
       const table = line.match(/^\s*\[([^\]]+)\]\s*$/);
@@ -1005,6 +1005,7 @@ function writeCodexHomeDiagnostics(
   opts: {
     hooksInstalled: boolean;
     inheritedPromptsCopied: boolean;
+    denyAmbientContext?: boolean;
     lockOwnerSid?: string;
     lockRuntime: CodexLockRuntimeVerdict;
   },
@@ -1021,6 +1022,7 @@ function writeCodexHomeDiagnostics(
     requiresExplicitPapercuspLocks: opts.lockRuntime.lockMode === 'manual',
     ...(opts.lockOwnerSid ? { lockOwnerSid: opts.lockOwnerSid } : {}),
     inheritedPromptsCopied: opts.inheritedPromptsCopied,
+    ...(opts.denyAmbientContext ? { denyAmbientContext: true } : {}),
     // EI-21417256075155406: systemSkillsReady=false means every Codex session on this host
     // watches /etc and wakes on every process start — provision /etc/codex/skills.
     codexSkillWatchRoots: ensureCodexSkillWatchRoots({ codexHome }),
@@ -1376,6 +1378,9 @@ export type { CodexHomeDiagnostics, CodexPapercuspDiagnostics } from './codex-ho
 /** Inputs the su `config.toml` is rendered from — the subset of
  *  `writeSuCodexHome`'s options that end up IN the file. */
 export interface SuCodexConfigInput {
+  /** Host confinement policy: only the declared native role and assignment
+   * may populate this home's readable context and connectors. */
+  denyAmbientContext?: true;
   mcpUrl: string;
   sid: string;
   /** Absolute per-session directory Codex uses for its plaintext TUI log. */
@@ -1477,7 +1482,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
     codexIsolationPreamble(opts.headless),
-    ...inheritedCodexTrustToml(opts.trustDir),
+    ...inheritedCodexTrustToml(opts.trustDir, opts.denyAmbientContext !== true),
     ...gatewayConfig.tables,
     ...CODEX_TUI_TOML,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
@@ -1485,7 +1490,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     `url = "${tomlEscape(url)}"`,
     ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
     'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
-    ...projectHttpMcpToml(opts.projectDir ?? opts.trustDir),
+    ...projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir),
     '',
   ].join('\n');
 }
@@ -1537,9 +1542,16 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       return { codexHome, sqliteHome, configPath, repaired: false, identityRepaired: false, promptRepaired: false, reason: 'no-home' };
     }
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-    inheritUserCodexHome(codexHome);
+    if (!opts.denyAmbientContext) inheritUserCodexHome(codexHome);
     ensureCodexSkillWatchRoots({ codexHome });
   }
+  // The recorded home can be repaired without the original launch options.
+  // Reuse its existing diagnostics rather than granting ambient inheritance.
+  try {
+    if (JSON.parse(readFileSync(join(codexHome, 'papercusp-diagnostics.json'), 'utf8')).denyAmbientContext === true) {
+      opts = { ...opts, denyAmbientContext: true };
+    }
+  } catch { /* Legacy/unconfined homes have no saved context policy. */ }
   mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
@@ -1562,7 +1574,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
     ownerId: opts.sid,
     priority: opts.codexGatewayPriority,
   });
-  const expectedProjectMcp = projectHttpMcpToml(opts.projectDir ?? opts.trustDir).join('\n');
+  const expectedProjectMcp = projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir).join('\n');
   let configReady = false;
   try {
     const current = readFileSync(configPath, 'utf8');
@@ -1637,6 +1649,8 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
 }
 
 export function writeSuCodexHome(opts: {
+  /** Same host-owned context ceiling consulted by bootstrap and MCP. */
+  denyAmbientContext?: true;
   sessionKey: string | number;
   /** Superuser MCP url (?superuser=1&workspace=…) from buildLaunchSpec(su). */
   mcpUrl: string;
@@ -1702,9 +1716,9 @@ export function writeSuCodexHome(opts: {
         `not collide with a live session's home.`,
     );
   }
-  const codexHome = freshCodexHome(targetHome);
+  const codexHome = freshCodexHome(targetHome, opts.denyAmbientContext !== true);
   const sqliteHome = freshCodexSqliteHome(opts.sessionKey);
-  const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
+  const inheritedPromptsCopied = !opts.denyAmbientContext && copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
 
@@ -1738,6 +1752,7 @@ export function writeSuCodexHome(opts: {
   writeCodexHomeDiagnostics(codexHome, {
     hooksInstalled,
     inheritedPromptsCopied,
+    denyAmbientContext: opts.denyAmbientContext === true,
     lockOwnerSid: opts.sid,
     lockRuntime,
   });

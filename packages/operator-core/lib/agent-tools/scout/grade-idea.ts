@@ -888,6 +888,10 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
+  // tools:invoke's nested MCP race defaults to 55s, but the dispatcher defaults
+  // to 60s and needs to return its late-completion receipt for committed grades.
+  // Declaring the dispatch budget gives the nested race its 5s buffer.
+  timeoutSec: 60,
   abortCompletionReceipt: gradeIdeaAbortCompletionReceipt,
   args: gradeIdeaArgs,
   async handler(args, ctx) {

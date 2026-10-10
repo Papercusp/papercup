@@ -311,7 +311,7 @@ vi.mock('../../agent-launch-core', async (importOriginal) => ({
 }));
 vi.mock('../../role-codex-home', () => ({
   assertSuCodexHomeNotOwnedByLiveSession: (...args: unknown[]) =>
-    assertSuCodexHomeNotOwnedByLiveSessionMock(...(args as any)),
+    assertSuCodexHomeNotOwnedByLiveSessionMock(...(args as Parameters<typeof assertSuCodexHomeNotOwnedByLiveSessionMock>)),
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
   rekeyCodexHome: (...args: unknown[]) => rekeyCodexHomeMock(...(args as [any, any])),
 }));
@@ -326,6 +326,9 @@ vi.mock('../../saved-prompts-materialize', () => ({
   materializeWorkspacePrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
   materializeHarnessPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
   materializeCodexPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
+}));
+vi.mock('../../slash-tool-prompts-codex', () => ({
+  emitCodexSlashToolPrompts: vi.fn(async () => ({ written: 0, skipped: 0, pruned: 0, ms: 0 })),
 }));
 vi.mock('../../desktop-install/papercusp-files', () => ({
   resolveInstallPaths: () => ({ extensionPath: COORD_EXT }),
@@ -657,6 +660,23 @@ beforeEach(() => {
 });
 
 describe('bootstrap frozen native prompt binding', () => {
+  it.each([false, true])('saved prompt isolation follows host ambient policy: allowed=%s', async (allowed) => {
+    sessionAllowsAmbientContextMock.mockResolvedValue(allowed);
+    const saved = await import('../../saved-prompts-materialize');
+    const slash = await import('../../slash-tool-prompts-codex');
+    const response = await callPost({ agent: 'codex', harness_slug: 'papercup',
+      owner_id: 'su-frozen-prompts-123', model: 'gpt-6-sol', account: 'default' });
+    expect(response.status).toBe(200);
+    // These writes expose workspace content and the full operator catalog in
+    // the readable native home, after the persona builder has already run.
+    const homeInput = writeSuCodexHomeMock.mock.calls.at(-1)![0];
+    expect(homeInput.denyAmbientContext).toBe(allowed ? undefined : true);
+    expect(saved.materializeCodexPrompts).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    expect(slash.emitCodexSlashToolPrompts).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    expect(saved.materializeWorkspacePrompts).not.toHaveBeenCalled();
+    expect(saved.materializeHarnessPrompts).not.toHaveBeenCalled();
+  });
+
   it('threads the pre-pinned host identity into the renderer and suppresses live plan context', async () => {
     sessionAllowsAmbientContextMock.mockResolvedValue(false);
     const response = await callPost({ agent: 'codex', harness_slug: 'papercup', plan_slug: 'private-plan',

@@ -1624,6 +1624,12 @@ export function expandNpmManifestClosure(
  */
 export type GitSyncOutcome = {
   /**
+   * Exact root commit created by this pass, captured before fetch/merge/push.
+   * Unlike aggregate committedCount or a measured existing headSha, this proves
+   * a new local commit in the checkout whose install scopes the notification.
+   */
+  localCommitSha?: string;
+  /**
    * Measured superproject HEAD after the local stage, including a partial
    * error/conflict pass. Absence means that stage did not supply a readable
    * HEAD; it does not mean the checkout has no committed work. Synced outcomes
@@ -6978,6 +6984,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
     });
   });
+  const localCommitSha = commitRes.committedLocal ? await headSha(runGit, repo) : undefined;
   const commitMetrics = {
     dirtyPathCount: commitRes.dirtyPathCount,
     committedCount: commitRes.committedCount,
@@ -7133,7 +7140,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // EI-25545265520729999: the superproject can commit successfully while a
   // sibling fetch/push fails. Keep its measured local HEAD on partial outcomes
   // so health readers do not retain a stale tip behind the whole-pass verdict.
-  const measuredHead = superHeadSha ? { headSha: superHeadSha } : {};
+  const measuredHead = {
+    ...(superHeadSha ? { headSha: superHeadSha } : {}),
+    ...(localCommitSha ? { localCommitSha } : {}),
+  };
 
   if (conflicts.length > 0)
     return {
@@ -7176,6 +7186,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   if (skippedPaths.some((path) => 'owner' in path) && !didSomething)
     return {
       status: 'skipped-locked',
+      ...measuredHead,
       dirtyPathCount,
       committedCount,
       skippedPaths,
@@ -7192,6 +7203,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   if (!didSomething)
     return {
       status: 'nothing',
+      ...measuredHead,
       dirtyPathCount,
       committedCount,
       skippedPaths,
@@ -7206,6 +7218,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
   return {
     status: 'synced',
+    ...measuredHead,
     dirtyPathCount,
     committedCount,
     headSha: superHeadSha ?? (await headSha(runGit, repo)),

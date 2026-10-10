@@ -910,6 +910,7 @@ const syncedOutcome: GitSyncOutcome = {
   status: 'synced',
   dirtyPathCount: 4,
   committedCount: 2,
+  localCommitSha: 'abc123def456',
   headSha: 'abc123def456',
   pushed: ['libs/generic/sync', 'superproject'],
   merged: ['superproject'],
@@ -945,6 +946,7 @@ const contentErrorOutcome: GitSyncOutcome = {
   status: 'synced',
   dirtyPathCount: 2,
   committedCount: 1,
+  localCommitSha: 'def789',
   headSha: 'def789',
   pushed: ['superproject'],
   merged: [],
@@ -1154,6 +1156,35 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     const result = await fireGitSyncNow(ctx.installSlug, ctx.workspaceId);
 
     expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
+  });
+
+  it.each([errorOutcome, conflictOutcome])(
+    'EI-255862: notifies a proven root local commit despite aggregate $status',
+    async (partialOutcome) => {
+      const localCommitSha = 'e'.repeat(40);
+      runGitSyncMock.mockResolvedValue({
+        ...partialOutcome,
+        committedCount: 2,
+        localCommitSha,
+        headSha: 'f'.repeat(40),
+      } as GitSyncOutcome);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await action(ctx);
+        expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
+          localCommitSha,
+          { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it('EI-255862: does not infer a root commit from a submodule count and existing root HEAD', async () => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, committedCount: 1, localCommitSha: undefined });
+    await action(ctx);
+    expect(emitGitSyncCommittedEventMock).not.toHaveBeenCalled();
   });
 
   it('refuses every on-demand fire on a request-only host before the git-sync pipeline starts', async () => {

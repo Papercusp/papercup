@@ -4240,6 +4240,8 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
       expect(out.headSha).toBe(git(repo, 'rev-parse', 'HEAD'));
+      // The local root commit is independent of the aggregate submodule error.
+      expect(out.localCommitSha).toBe(git(repo, 'rev-parse', 'HEAD'));
     });
   });
 });

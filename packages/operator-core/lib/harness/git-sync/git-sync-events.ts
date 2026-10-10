@@ -2,8 +2,8 @@
  * git-sync-events — the git-sync commit/egress signals through the await-event primitive
  * (event-await-discoverability-and-coverage-2026-07-03 P-102).
  *
- * When git-sync actually commits the shared tree (`status: 'synced'`), two LOCAL
- * commit keys fire:
+ * When git-sync actually commits the shared tree (`localCommitSha`), two LOCAL
+ * commit keys fire even if a sibling makes the aggregate verdict error/conflict:
  *
  *   `git-sync:committed` — the GLOBAL "a commit just landed" signal: any agent that
  *   left an edit in the tree and wants to know "is my edit a local git commit yet"

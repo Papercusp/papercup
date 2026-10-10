@@ -248,6 +248,17 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
     },
   ],
   [
+    'scheduler/get-next.ts#claimSpecDeltaCandidateFilter',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'Pure predicate builder used by readClaimSpecDelta to bound the candidate population to ' +
+        'the union of the current and proposed filters. It returns a FilterNode and neither reads ' +
+        'nor writes work_items or claims anything; this module enters the scan because its other ' +
+        'exports are real work-item doors.',
+    },
+  ],
+  [
     'pot/watchdog.ts#claimWatchdogFire',
     {
       klass: 'not-a-work-item-door',
