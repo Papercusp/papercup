@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ModelPort, ModelRequest } from './model-port';
 import { createOperatorOwnedLoopPort } from './headless-invoke';
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe('createOperatorOwnedLoopPort', () => {
   const invocation = (runId = 'run-host', signal?: AbortSignal) => ({
@@ -8,6 +10,23 @@ describe('createOperatorOwnedLoopPort', () => {
     featureId: null, chunkId: null, workspaceId: 'caller-workspace', harnessSlug: 'papercusp',
     projectDir: '/repo', stateDir: '/repo/.papercusp', cwd: '/repo', signal,
     emit: vi.fn(),
+  });
+
+  it.each([
+    { name: 'VM release', env: { PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release' } },
+    { name: 'VM release with TCP opt-out', env: { PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release', PAPERCUSP_LOOPBACK_PEER_UID_POLICY: 'off' } },
+    { name: 'unenrolled customer host', env: { PAPERCUSP_HOSTED_WORKSPACE_ROOT: '/customer-workspace' } },
+    { name: 'multi-account service', env: { PAPERCUSP_LOOPBACK_PEER_UID_POLICY: 'service-only' } },
+  ])('refuses $name before resolving a model factory or emitting native events', async ({ env }) => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    const factory = vi.fn(() => ({ stream: vi.fn() }) as unknown as ModelPort);
+    const flushTelemetry = vi.fn(async () => {});
+    const input = invocation();
+    expect(await createOperatorOwnedLoopPort({ modelPort: factory, tools: [], flushTelemetry }).invoke(input))
+      .toEqual({ exitCode: 1, stderr: 'owned-loop customer execution host unavailable' });
+    expect(factory).not.toHaveBeenCalled();
+    expect(input.emit).not.toHaveBeenCalled();
+    expect(flushTelemetry).toHaveBeenCalledTimes(1);
   });
 
   it('awaits a fresh host port per invocation and snapshots caller attribution', async () => {

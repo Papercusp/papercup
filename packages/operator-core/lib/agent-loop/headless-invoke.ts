@@ -22,6 +22,7 @@ import {
 import { runLoopChatTurn } from './chat-engine';
 import type { ModelPort } from './model-port';
 import type { ApprovalPort, LoopTool, LoopProviderRequestInfo } from './loop';
+import { customerAgentExecutionRequired } from '../auth/loopback-peer-trust';
 import {
   flushPendingTelemetry,
   PROJECTED_DEPS,
@@ -118,6 +119,11 @@ export function createOperatorOwnedLoopPort(
       const configuredModelPort = options.modelPort;
       try {
         if (request.signal?.aborted) return { exitCode: 130, stderr: 'owned-loop turn aborted' };
+        // This operator-owned host cannot supply customer OS/tool authority.
+        // A model factory alone never authorizes the ambient capability doors.
+        if (customerAgentExecutionRequired()) {
+          return { exitCode: 1, stderr: 'owned-loop customer execution host unavailable' };
+        }
         let modelPort: ModelPort | undefined;
         let onAbort: (() => void) | undefined;
         try {
