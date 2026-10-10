@@ -1948,6 +1948,24 @@ async function assembleGoalPortfolioBrief(args: {
            AND hp.archived = false
            AND NOT EXISTS (SELECT 1 FROM explicit_refs er
              WHERE er.ref = 'plan:' || hp.harness_slug || '/' || hp.plan_slug)
+      ), plan_fleets AS MATERIALIZED (
+        -- Newest fleet per (harness, plan), decoded ONCE. headcount_config is sometimes a
+        -- JSON-encoded string, so the per-plan lookup this replaces decoded every workspace
+        -- fleet row for every worklist plan (~0.3ms x 345 plans, WI-10008214).
+        SELECT DISTINCT ON (fc.cfg->>'harness', fc.cfg->>'plan')
+               fc.cfg->>'plan' AS plan_slug, fc.cfg->>'harness' AS harness_slug,
+               af.fleet_slug, af.control_state, af.leader_owner_id,
+               af.headcount_target, af.last_launch_transaction
+          FROM goal_row g
+          JOIN harness_shared.agent_fleets af ON af.workspace_id = g.workspace_id
+          CROSS JOIN LATERAL (
+            SELECT CASE jsonb_typeof(af.headcount_config)
+                     WHEN 'string' THEN (af.headcount_config #>> '{}')::jsonb
+                     ELSE af.headcount_config
+                   END AS cfg
+          ) fc
+         WHERE fc.cfg->>'plan' IS NOT NULL AND fc.cfg->>'harness' IS NOT NULL
+         ORDER BY fc.cfg->>'harness', fc.cfg->>'plan', af.updated_at DESC
       )
       SELECT g.status, g.parent_id, g.tripwires, g.property_schema, g.properties, g.metadata,
              (SELECT COALESCE(jsonb_agg(jsonb_build_object(
@@ -1956,7 +1974,11 @@ async function assembleGoalPortfolioBrief(args: {
                      ) ORDER BY (gp.role = 'owner') DESC, gp.added_at), '[]'::jsonb)
                 FROM harness_shared.goal_pots gp
                WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id AND gp.removed_at IS NULL) AS pots,
-             (SELECT COALESCE(jsonb_agg(plan_row ORDER BY (plan_row->>'ordinal')::int), '[]'::jsonb)
+             -- Sort by the plain plan_ordinal column, never by an expression over plan_row:
+             -- the planner pulls this subquery up and substitutes plan_row's whole
+             -- jsonb_build_object at every reference, so ORDER BY (plan_row->>'ordinal')
+             -- re-ran every per-plan SubPlan (items, fleet, claims) a second time (WI-10008214).
+             (SELECT COALESCE(jsonb_agg(plan_row ORDER BY plan_ordinal), '[]'::jsonb)
                 FROM (
                   SELECT jsonb_build_object(
                            'ref', wr.ref, 'ordinal', wr.ordinality,
@@ -2039,7 +2061,7 @@ async function assembleGoalPortfolioBrief(args: {
                                         ),
                                         'launchTransaction', af.last_launch_transaction
                                       )
-                                 FROM harness_shared.agent_fleets af
+                                 FROM plan_fleets af
                                  LEFT JOIN LATERAL (
                                    SELECT cp.heartbeat_at
                                      FROM harness_shared.coord_presence cp
@@ -2048,20 +2070,12 @@ async function assembleGoalPortfolioBrief(args: {
                                     ORDER BY cp.heartbeat_at DESC
                                     LIMIT 1
                                  ) leader_presence ON true
-                                WHERE af.workspace_id = g.workspace_id
-                                  AND (CASE jsonb_typeof(af.headcount_config)
-                                         WHEN 'string' THEN (af.headcount_config #>> '{}')::jsonb
-                                         ELSE af.headcount_config
-                                       END)->>'plan' = p.plan_slug
-                                  AND (CASE jsonb_typeof(af.headcount_config)
-                                         WHEN 'string' THEN (af.headcount_config #>> '{}')::jsonb
-                                         ELSE af.headcount_config
-                                       END)->>'harness' = p.harness_slug
-                                ORDER BY af.updated_at DESC
-                                LIMIT 1
+                                WHERE af.plan_slug = p.plan_slug
+                                  AND af.harness_slug = p.harness_slug
                              )
                            )
-                         ) AS plan_row
+                         ) AS plan_row,
+                         wr.ordinality AS plan_ordinal
                     FROM worklist_refs wr
                     LEFT JOIN LATERAL (
                       SELECT hp.* FROM harness_shared.harness_plans hp
