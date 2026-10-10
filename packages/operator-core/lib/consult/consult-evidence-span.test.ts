@@ -44,6 +44,8 @@ function depsFor(input: { ranks: AllowedExpertModel[]; resolved?: string[] }) {
       return targetFor(sessionId);
     }) as never,
     checkResumeTranscript: async () => ({ available: true, detail: 'source is readable' }),
+    // These synthetic sessions have no native file; conversion-path tests keep the port preflight isolated.
+    checkPortTranscript: async () => ({ available: true, detail: 'fixture source passes session-port preflight' }),
     buildAgentLaunchCommand,
     injectLaunchedByArg,
     buildConsoleEnvelope: async () => ({ cwd: '/fallback', env: { BASE: '1' }, greetingCmd: '' }) as never,
