@@ -18,6 +18,8 @@ import {
  */
 export type OperatorSettingsSlotName =
   | "personalization"
+  // Replaces desktop identity/project-directory effects for hosted accounts.
+  | "profile"
   // Replaces the native picker and its theme-writing hooks. A host theme
   // must have one owner even when the canonical Settings page is mounted.
   | "theme"
