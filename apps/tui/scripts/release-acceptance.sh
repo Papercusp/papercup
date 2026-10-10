@@ -33,6 +33,24 @@ run_in() {
 }
 fail() { echo "release-acceptance: ERROR: $*" >&2; exit 2; }
 
+# Retire only explicitly named rebuildable dependencies of an idle slot. Source,
+# archives and acceptance evidence stay in place; normal preparation restores
+# these trees from its required immutable generation on the next use.
+if [ "${1:-}" = --retire-dependencies ]; then
+  shift
+  slot="${1:-}"; expected="${2:-}"; shift 2 || fail 'retirement needs slot and exact source commit'
+  [[ "$slot" =~ ^[123]$ ]] || fail 'retirement slot must be 1, 2 or 3'
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || fail 'retirement needs the exact source commit'
+  checkouts="${PUI_ACCEPTANCE_CHECKOUT_ROOT:-$HOME/.cache/pui-acceptance-checkouts}"
+  [ -d "$checkouts" ] || fail "no acceptance cache at $checkouts"
+  checkouts="$(cd "$checkouts" && pwd -P)"
+  [ ! -L "$checkouts/slot-$slot.lock" ] || fail 'slot lock cannot be a symlink'
+  exec 9>"$checkouts/slot-$slot.lock"
+  flock -n 9 || fail "slot $slot is held"
+  exec "$ROOT/node_modules/.bin/tsx" "$ROOT/packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts" \
+    "$checkouts/slot-$slot" "$expected" "$@"
+fi
+
 archive=""
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
