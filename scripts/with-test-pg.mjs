@@ -128,11 +128,17 @@ let cleanupPromise = null;
 let terminatingSignal = null;
 let cleanupStartedAt = null;
 function cleanupStage(stage, detail = {}) {
-  if (!isolatedRuntime || process.env.PC_ISOLATED_RUNTIME_PROOF !== '1') return;
+  // Cleanup is operational evidence for every isolated CLI. The proof flag
+  // gates original-worker admission and detailed /proc sampling, not whether
+  // a caller can distinguish a finished child from a still-stopping database.
+  if (!isolatedRuntime) return;
   const message = { kind: 'isolated-runtime-cleanup', stage,
-    elapsedMs: Date.now() - cleanupStartedAt, ...detail };
+    elapsedMs: Date.now() - cleanupStartedAt,
+    supervisorPid: process.pid, workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, ...detail };
   console.log('[with-test-pg] cleanup ' + JSON.stringify(message));
-  if (process.connected && process.send) return new Promise(done => process.send(message, done));
+  if (process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.connected && process.send) {
+    return new Promise(done => process.send(message, done));
+  }
 }
 function observePrivatePgStop() {
   if (!isolatedRuntime || process.env.PC_ISOLATED_RUNTIME_PROOF !== '1' || process.platform !== 'linux') return () => {};
@@ -195,6 +201,11 @@ async function cleanupOwnedState() {
     }
   }
   const stopObserving = observePrivatePgStop();
+  // Elapsed waiting is not measured I/O progress and must not renew the proof
+  // observer's deadline. Ordinary no-IPC runs still need a bounded-cadence signal
+  // identifying the cleanup stage which keeps their supervisor alive.
+  const stopTimer = isolatedRuntime ? setInterval(() => cleanupStage('pg-stop-waiting'), 5000) : null;
+  stopTimer?.unref();
   try {
     cleanupStage('pg-stop', { health: pg?.health() ?? null });
     await pg?.stop();
@@ -202,7 +213,10 @@ async function cleanupOwnedState() {
   } catch (error) {
     cleanupStage('pg-stop-error', { error: error?.message ?? String(error) });
     /* best effort — we still want the datadir gone */
-  } finally { stopObserving(); }
+  } finally {
+    if (stopTimer) clearInterval(stopTimer);
+    stopObserving();
+  }
   cleanupStage('remove-private-state');
   await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true }).catch(() => {});
