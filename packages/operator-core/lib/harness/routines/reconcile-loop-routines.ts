@@ -1694,8 +1694,24 @@ export async function reconcileLoopRoutines(
       }
 
       // Resolve the re-arm time + provenance.
-      const executionRecovery = await (opts.recoverExpectedExecution ?? recoverExpectedLoopExecution)({ sql: db, routineId: row.id,
-        ownerId: row.target_owner_id, nowMs });
+      const loopTurnAtMs = loopTurnCompletionAt(row, lastFiredMs);
+      // A suppressed-redundant delivery is known not to have burned a loop turn. Fresh native
+      // inference can belong to the unrelated turn that caused suppression (including a
+      // self-compaction continuation), so it cannot prove that this fire started. Let the
+      // channel-aware settle path below wait for that turn to go quiet, then re-arm the parked
+      // loop so a later fire can produce strict loop-origin proof.
+      const suppressedWakeStillNeedsLoopTurn =
+        row.last_wake_status === 'delivered' &&
+        row.last_wake_channel === 'suppressed-redundant' &&
+        loopTurnAtMs == null;
+      const executionRecovery = suppressedWakeStillNeedsLoopTurn
+        ? { handled: false as const }
+        : await (opts.recoverExpectedExecution ?? recoverExpectedLoopExecution)({
+            sql: db,
+            routineId: row.id,
+            ownerId: row.target_owner_id,
+            nowMs,
+          });
       if (executionRecovery.handled) {
         if (executionRecovery.rearmed && executionRecovery.state) {
           result.rearmed++;
@@ -1720,7 +1736,6 @@ export async function reconcileLoopRoutines(
       // ladder out of the way until the strict loop-origin clock catches up.
       // The full delivered-wake classification runs in the no-signal branch so
       // post-grace retries still pass through terminal-guard handling.
-      const loopTurnAtMs = loopTurnCompletionAt(row, lastFiredMs);
       const wakeAtMs = tsMs(row.last_wake_at);
       // EI-22177872501023528: a 'suppressed-redundant' delivery is settled WITHOUT spending a
       // turn because one was already in flight, and the psu-host stacks the queued prompt into

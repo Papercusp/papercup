@@ -3410,13 +3410,17 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
 
   it('settles via presence-quiescence once the session goes quiet — WITHOUT waiting for the 30-min stuck-park dwell', async () => {
     const recordFire = vi.fn(async () => {});
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
     const res = await reconcile({
       sql: fakeSql([warmSuppressedRow()], []),
       nowMs: T0 + 110_000, // 70s of quiet — far short of the 30-min dwell
       recordFire,
       readFireState: NO_PRIOR_ERRORS,
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
     });
+    // This active inference is the unrelated turn that caused suppression, not a loop-fire turn.
+    expect(recoverExpectedExecution).not.toHaveBeenCalled();
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('presence-quiescence');
     // A wake that was never spent must never feed the fire-circuit (EI-22127560919383327).
@@ -3426,6 +3430,19 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
       expect.anything(),
       'error',
     );
+  });
+
+  it('still lets expected-execution recovery protect a delivered wake that may have opened a loop turn', async () => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ last_wake_channel: 'psu-socket-inject' })], []),
+      nowMs: T0 + 110_000,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
+    });
+    expect(recoverExpectedExecution).toHaveBeenCalledTimes(1);
+    expect(res.rearmed).toBe(0);
   });
 
   it('CONTROL — while the session is STILL BUSY (presence beat 20s old) it keeps waiting, unchanged', async () => {
