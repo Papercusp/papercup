@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { generateKeyPairSync, sign as nodeSign, type KeyObject } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import type { SignedPresenceFrame } from '../presence-gossip';
 
 // ── Protomux fake (the directory-swarm.test.ts harness, trimmed) ──
@@ -142,6 +143,8 @@ async function settle(check: () => Promise<boolean>, ms = 2000): Promise<void> {
 
 describe('presence-gossip wiring (real PG, fake swarm)', () => {
   let db: FreshPgDb;
+  let dedicatedPg: DedicatedNativePg | undefined;
+  const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
   let channel: FakeChannel;
   const admittedDevices = new Map<string, number>([
     [member.pubB64, 42],
@@ -149,6 +152,8 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
   ]);
 
   beforeAll(async () => {
+    dedicatedPg = await startDedicatedNativePg({ baseDir: '/dev/shm/pcv' });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     db = await createFreshPgDb('presence_gossip_wiring');
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
     // shared_presence (baseline shape + the pot_slug hive-scope key (mig 187 →
@@ -227,8 +232,20 @@ describe('presence-gossip wiring (real PG, fake swarm)', () => {
   }, 60_000);
 
   afterAll(async () => {
-    await __resetPresenceGossipWiring();
-    await db?.cleanup();
+    try {
+      await __resetPresenceGossipWiring();
+    } finally {
+      try {
+        await db?.cleanup();
+      } finally {
+        try {
+          await dedicatedPg?.stop();
+        } finally {
+          if (priorAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+          else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = priorAdminUrl;
+        }
+      }
+    }
   });
 
   it('pair-time hello sends a signed session snapshot over a short-lived channel', async () => {
