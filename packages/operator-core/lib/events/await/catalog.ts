@@ -439,6 +439,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     emitter: 'external-trigger ingestion core (packages/operator-core/lib/external-triggers/ingestion.ts)',
     exists: true,
   },
+  // ── Wake pickup (P-006 / D-004) ──────────────────────────────────────────────────
+  {
+    family: 'wake-not-picked-up',
+    keyTemplate: 'wake:not-picked-up:<subscriberId>',
+    params: [{ name: 'subscriberId', required: true, describe: 'the coord ownerId the wake was delivered to' }],
+    describe:
+      "One or more wake deliveries to this subscriber started no turn within the pickup window (PAPERCUSP_WAKE_PICKUP_WINDOW_SEC, default 600s): no turn-only MCP call and no host turn-start after delivery. Payload names the delivery ids, channels, and any delivery re-queued once for host recovery (auth/quota blocked, unbound successor). A delivered wake is NOT a pickup — await this instead of trusting status='delivered'.",
+    emitter: 'wake pickup sweep (packages/operator-core/lib/events/await/pickup-sweep.ts)',
+    exists: true,
+    replacesPoll: 'polling coord:presence / tool activity to check whether a woken peer actually started',
+  },
   // ── Work items ────────────────────────────────────────────────────────────
   {
     family: 'work-item',
