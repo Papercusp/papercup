@@ -93,7 +93,7 @@ describe('producerSilenceVerdict', () => {
     expect(producerSilenceNote(v)).toContain('intentionally-gated=1');
   });
 
-  it('still flags silence when a recent gate does not cover every Scout tick in the window', () => {
+  it('still flags silence without complete-window gating evidence', () => {
     const v = producerSilenceVerdict(facts({
       loops: [loop('blender:papercusp')],
       lastOutputMs: new Map([['scout:papercusp', NOW - 30 * H]]),
