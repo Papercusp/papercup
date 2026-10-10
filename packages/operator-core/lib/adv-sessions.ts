@@ -2536,11 +2536,16 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
  * No recency cutoff is applied — a genuinely live interactive terminal can
  * remain open for days. The owner id is globally unique, but the active
  * workspace predicate keeps this low-level control read inside the caller's
- * workspace just like {@link getAdvSession}.
+ * workspace just like {@link getAdvSession}. Server-side callers can pass an
+ * explicit resolved workspace; legacy in-process callers use the active one.
  */
-export async function getLatestActiveAdvSessionByOwner(coordOwnerId: string): Promise<AdvSessionRow | null> {
+export async function getLatestActiveAdvSessionByOwner(
+  coordOwnerId: string,
+  workspaceId?: string | null,
+): Promise<AdvSessionRow | null> {
   const ownerId = coordOwnerId.trim();
   if (!ownerId) return null;
+  const scopedWorkspaceId = workspaceId?.trim() || activeWorkspaceId();
   try {
     const rows = await boundedOrgTxn(
       (tx) => tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
@@ -2555,7 +2560,7 @@ export async function getLatestActiveAdvSessionByOwner(coordOwnerId: string): Pr
                to_jsonb(a)->>'port_status' AS port_status,
                to_jsonb(a)->'port_metadata' AS port_metadata
           FROM harness_shared.adv_sessions a
-         WHERE workspace_id = ${activeWorkspaceId()}
+         WHERE workspace_id = ${scopedWorkspaceId}
            AND coord_owner_id = ${ownerId}
            AND ended_at IS NULL
            AND NOT EXISTS (

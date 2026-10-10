@@ -366,7 +366,7 @@ describe('getLatestActiveAdvSessionByOwner', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
       id: 28143,
-      workspace_id: 'papercusp-workspace',
+      workspace_id: 'request-workspace',
       plan_slug: 'retrieval-soft-budget-hard-deadline-2026-09-13',
       agent: 'codex',
       role: null,
@@ -387,9 +387,11 @@ describe('getLatestActiveAdvSessionByOwner', () => {
       ended_signal: null,
       }]);
 
-    const result = await getLatestActiveAdvSessionByOwner(' su-8ee55568 ');
+    const result = await getLatestActiveAdvSessionByOwner(' su-8ee55568 ', 'request-workspace');
     expect(result).toMatchObject({ id: 28143, coordOwnerId: 'su-8ee55568', windowId: '0x01e70b14' });
-    const sql = ((advSessionRowsMock.mock.calls as unknown[][]).at(-1)?.[0] as readonly string[]).join(' ');
+    const queryCall = (advSessionRowsMock.mock.calls as unknown[][]).at(-1);
+    const sql = (queryCall?.[0] as readonly string[]).join(' ');
+    expect(queryCall?.slice(1)).toContain('request-workspace');
     expect(sql).toContain('coord_owner_id =');
     expect(sql).toContain('ended_at IS NULL');
     expect(sql).toContain('successor.id > a.id');

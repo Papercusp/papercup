@@ -10,8 +10,10 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { getLatestActiveAdvSessionByOwner } from '../../adv-sessions';
 import { setOwnerPin, clearOwnerPin } from '../../deployment/account-owner-pins';
 import { trackDetached } from '../../detached-imports';
+import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
 
 /** Localhost base of the running gateway. Read PER-CALL (not at module load) so tests can point it at a
  *  mock server via PAPERCUSP_GATEWAY_PORT, and so an env override is honored without a re-import. */
@@ -200,6 +202,13 @@ export const accountsPinTool = defineTool({
     const routedAccount = autoRoute ? AUTO_ACCOUNT_ROUTE : requestedAccount;
     if (autoRoute && hard) return fail({ error: "hard:true is incompatible with account:'auto'" });
     try {
+      const activeSession = await getLatestActiveAdvSessionByOwner(agent, ws);
+      const activeRoute = activeSession ? wakeAccountRouteFromArgv(activeSession.launchArgv, agent) : null;
+      if (activeRoute?.mode === 'default') {
+        return fail({
+          error: `agent '${agent}' has an active launch route that bypasses the inference gateway; respawn it with gateway routing before changing accounts`,
+        });
+      }
       const cfg = (await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) })
         .then((r) => r.json())
         .catch(() => ({}))) as { accounts?: string[]; codexAccounts?: string[] };
