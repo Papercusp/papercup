@@ -60,6 +60,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
 import { recordInjectionCoverage } from '../../../memory/injection-delivery-coverage';
 import { takePendingFailureLoopHint, type FailureLoopHint } from '../../../failure-loop-circuit-breaker';
+import { turnStartRespondBy } from './turn-start-memory';
+import { createMemoryWorkDeadline } from '../../../memory/op-deadline';
 
 /**
  * Query clamp — embed the head of a long command, not a pasted heredoc.
@@ -1022,6 +1024,7 @@ const midTurnContext = defineTool({
   path: '/agent-mcp/mid-turn-context',
   auth: 'loopback',
   async handler(req) {
+    const arrivedAt = Date.now();
     let body: {
       owner?: string;
       /** Private detector key carried separately from the public injection owner. */
@@ -1035,6 +1038,8 @@ const midTurnContext = defineTool({
       cwd?: string;
       /** Which TUI is asking — 'claude' | 'codex' | 'omp'. Recorded only (P-005). */
       client?: string;
+      /** Native hook response wall, shared with both retrieval legs. */
+      wallMs?: number;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -1178,8 +1183,15 @@ const midTurnContext = defineTool({
         // AFTER admitCall: the cost guards above key on the tool-derived query alone,
         // and a tail that shifts as ingest lands would perturb the
         // "identical consecutive query ⇒ skip" guard.
-        return (
+        // A ready corpus must not wait past the native hook's wall for an
+        // unrelated memory availability probe. Reuse turn-start's response
+        // margin and the builder's existing shared, cancellable deadline.
+        const respondBy = turnStartRespondBy(arrivedAt, body.wallMs);
+        const deadline = respondBy === null ? undefined
+          : createMemoryWorkDeadline(Math.max(1, respondBy - Date.now()), req.signal);
+        try { return (
           (await buildMemoryContextBlock({
+            ...(deadline ? { deadline, respondByMs: respondBy! } : {}),
             userId: user?.id ?? null,
             workspaceId,
             harnessSlugs: harness ? [harness] : [],
@@ -1202,7 +1214,7 @@ const midTurnContext = defineTool({
             budgetChars: MID_TURN_BUDGET_CHARS,
             heading: 'Possibly relevant (mid-turn)',
           })) ?? ''
-        );
+        ); } finally { deadline?.close(); }
       });
       if (!admitted.admitted) return respond();
       const block = admitted.value;
