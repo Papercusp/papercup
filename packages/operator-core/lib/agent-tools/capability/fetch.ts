@@ -54,9 +54,9 @@ export class CapabilityFetchSizeLimitError extends Error {
 
 /**
  * Read a response without materializing an unbounded body in memory. The first
- * maxBytes are retained for the inline result; once the cap is crossed, the
- * complete stream is written to a scratch file with backpressure and only the
- * bounded prefix remains in memory.
+ * min(maxBytes, INLINE_OUTPUT_CAP) bytes are retained for the inline result;
+ * once that effective cap is crossed, the complete stream is written to a
+ * scratch file with backpressure and only the bounded prefix remains in memory.
  */
 export async function readResponseBody(
   response: Response,
@@ -73,6 +73,7 @@ export async function readResponseBody(
   }
 
   const reader = response.body.getReader();
+  const inlineLimit = Math.min(maxBytes, INLINE_OUTPUT_CAP);
   const prefix: Uint8Array[] = [];
   let prefixBytes = 0;
   let totalBytes = 0;
@@ -100,7 +101,7 @@ export async function readResponseBody(
       }
       totalBytes += chunk.byteLength;
 
-      if (!truncated && totalBytes <= maxBytes) {
+      if (!truncated && totalBytes <= inlineLimit) {
         prefix.push(chunk);
         prefixBytes += chunk.byteLength;
         continue;
@@ -113,7 +114,7 @@ export async function readResponseBody(
         // The chunks retained before the threshold are also part of the full
         // spill, so write them before the chunk that crossed the threshold.
         for (const prior of prefix) await writeChunk(prior);
-        const remaining = Math.max(0, maxBytes - prefixBytes);
+        const remaining = Math.max(0, inlineLimit - prefixBytes);
         if (remaining > 0) {
           prefix.push(chunk.subarray(0, remaining));
           prefixBytes += remaining;
@@ -134,7 +135,6 @@ export async function readResponseBody(
     reader.releaseLock();
   }
 
-  const inlineLimit = Math.min(maxBytes, INLINE_OUTPUT_CAP);
   const inline = Buffer.concat(prefix.map((chunk) => Buffer.from(chunk))).subarray(0, inlineLimit);
   return {
     body: inline.toString('utf8'),
@@ -164,7 +164,7 @@ export default defineTool({
     method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).optional().describe('Default GET.'),
     headers: z.record(z.string(), z.string()).optional().describe('Request headers.'),
     body: z.string().optional().describe('Request body (string).'),
-    max_bytes: z.number().int().positive().max(HARD_MAX_BYTES).optional().describe(`Max body bytes returned inline (default ${DEFAULT_MAX_BYTES}); beyond spills to a file.`),
+    max_bytes: z.number().int().positive().max(HARD_MAX_BYTES).optional().describe(`Max body bytes returned inline (default ${DEFAULT_MAX_BYTES}, bounded by the shared ${INLINE_OUTPUT_CAP}-byte inline ceiling); beyond the effective cap spills to a file.`),
     max_download_bytes: z.number().int().positive().max(HARD_MAX_DOWNLOAD_BYTES).optional().describe(`Hard streamed response ceiling (default ${DEFAULT_MAX_DOWNLOAD_BYTES}); the body is cancelled before further buffering or disk growth.`),
     max_redirects: z.number().int().min(0).max(10).optional().describe(`Maximum manually validated redirects (default ${DEFAULT_MAX_REDIRECTS}).`),
     timeout_ms: z.number().int().positive().max(120_000).optional().describe(`Request timeout in ms (default ${DEFAULT_TIMEOUT_MS}).`),

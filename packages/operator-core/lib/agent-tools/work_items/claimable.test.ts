@@ -981,6 +981,28 @@ describe('work_items:claimable handler', () => {
     expect(out.excludedSample.queueControl.agentReview).toEqual([reviewRow]);
   });
 
+  it('keeps revision-requested review rows in the excluded sample, not the claimable rows', async () => {
+    const reviewRow = {
+      id: 'EI-review-revision-requested',
+      status: 'revision-requested',
+      submittedBy: 'su-author',
+      ledgerIdeaId: 'idea-revision-requested',
+      round: 1,
+    };
+    sampleValue = {
+      ...EMPTY_SAMPLE,
+      queueControl: {
+        ...EMPTY_QUEUE_CONTROL_SAMPLE,
+        agentReview: [reviewRow],
+      },
+    };
+
+    const out = await run({ harness: 'papercup', kind: 'bug', sampleExcluded: 5 });
+
+    expect(out.claimable.map((row: { id: string }) => row.id)).not.toContain(reviewRow.id);
+    expect(out.excludedSample.queueControl.agentReview).toEqual([reviewRow]);
+  });
+
   it('WI-5947: the counts, the rows and the sample come from ONE read — the handler never issues them separately', async () => {
     await run({ harness: 'papercup', sampleExcluded: 3 });
     // Three independent round-trips presented as one verdict is the defect; one call is the fix.
