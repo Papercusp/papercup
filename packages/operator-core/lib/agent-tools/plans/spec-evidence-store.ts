@@ -1046,6 +1046,13 @@ export type BindSpecEvidenceResult =
       passedCaseTitleCount: number;
       message: string;
     }
+  | {
+      status: 'test_run_measurement_recipe_changed' | 'test_run_measurement_recipe_unverified';
+      testRunId: number;
+      previousSpecRevision: number;
+      specRevision: number;
+      message: string;
+    }
   // The test-run lookup is tenant-scoped, so a row that EXISTS but carries a
   // different (or NULL) harness_slug is indistinguishable from a fabricated id
   // — both surface as a bare `test_run_not_found`, which reads as "you invented
@@ -1121,6 +1128,16 @@ interface SpecIdentityRow {
 
 interface SpecRevisionRow {
   content_hash: string;
+}
+
+interface PriorTestRunBindingRow {
+  spec_revision: number;
+  source_fingerprint: string;
+  test_fingerprint: string | null;
+  fixture_fingerprint: string | null;
+  rubric_fingerprint: string | null;
+  environment_fingerprint: string | null;
+  details: Record<string, unknown>;
 }
 
 /** Resolve the selector and append one idempotent exact evidence binding. */
@@ -1281,13 +1298,33 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     }
 
     const evidenceRef = input.evidenceRef.trim();
-    const sourceFingerprint = input.sourceFingerprint.trim();
-    const testFingerprint = nullableTrimmed(input.testFingerprint);
-    const fixtureFingerprint = nullableTrimmed(input.fixtureFingerprint);
-    const rubricFingerprint = nullableTrimmed(input.rubricFingerprint);
+    let sourceFingerprint = input.sourceFingerprint.trim();
+    let testFingerprint = nullableTrimmed(input.testFingerprint);
+    let fixtureFingerprint = nullableTrimmed(input.fixtureFingerprint);
+    let rubricFingerprint = nullableTrimmed(input.rubricFingerprint);
     // A binding-time observation must never replace the runtime the execution measured.
-    const environmentFingerprint = runtimeUnits
+    let environmentFingerprint = runtimeUnits
       ? executionRuntimeFingerprint : nullableTrimmed(input.environmentFingerprint);
+    const priorTestRunBinding = input.testRunId == null
+      ? undefined
+      : (
+          await tx<PriorTestRunBindingRow[]>`
+        SELECT spec_revision, source_fingerprint, test_fingerprint, fixture_fingerprint,
+               rubric_fingerprint, environment_fingerprint, details
+          FROM harness_shared.spec_evidence_bindings
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND work_item_id = ${input.workItemId}
+           AND plan_slug = ${planSlug}
+           AND spec_id = ${identity.spec_id}
+           AND evidence_kind = ${input.evidenceKind}
+           AND evidence_ref = ${evidenceRef}
+           AND coverage_evidence_ref IS NOT DISTINCT FROM ${input.coverageEvidenceRef ?? null}
+           AND test_run_id = ${input.testRunId}
+           AND retracted_at IS NULL
+         ORDER BY created_at ASC, id ASC
+         LIMIT 1`
+        )[0];
     // A replay that omits details is a partial update of an existing logical
     // binding, not a request to replace executable proof metadata with `{}`.
     // Explicit details (including `{}`) remain authoritative and retain the
@@ -1319,6 +1356,53 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           )[0]?.details
         : undefined;
 
+    let details = (input.details ?? priorDetails ?? priorTestRunBinding?.details ?? {}) as Record<string, unknown>;
+    if (priorTestRunBinding) {
+      const previousMeasurement = measurementFromDetails(priorTestRunBinding.details);
+      const currentMeasurement = measurementFromDetails(details);
+      if (previousMeasurement || currentMeasurement) {
+        if (!previousMeasurement || !currentMeasurement) {
+          return {
+            status: 'test_run_measurement_recipe_unverified',
+            testRunId: input.testRunId!,
+            previousSpecRevision: Number(priorTestRunBinding.spec_revision),
+            specRevision,
+            message:
+              `Cannot safely rebind test-run ${input.testRunId} at spec revision ${specRevision}: ` +
+              `the earliest live binding at revision ${priorTestRunBinding.spec_revision} has no matching ` +
+              'verifiable currentMeasurement recipe. Re-run the test or use its original recipe.',
+          };
+        }
+        const previousRecipe = JSON.stringify(canonicalJson(previousMeasurement));
+        const currentRecipe = JSON.stringify(canonicalJson(currentMeasurement));
+        if (previousRecipe !== currentRecipe) {
+          return {
+            status: 'test_run_measurement_recipe_changed',
+            testRunId: input.testRunId!,
+            previousSpecRevision: Number(priorTestRunBinding.spec_revision),
+            specRevision,
+            message:
+              `Cannot safely rebind test-run ${input.testRunId} at spec revision ${specRevision}: ` +
+              `the measurement recipe differs from its earliest live binding at revision ` +
+              `${priorTestRunBinding.spec_revision}. Re-run the test with the new recipe.`,
+          };
+        }
+
+        // The same recorded execution must keep the state measured for that execution.
+        // Re-measuring at bind time would let a later spec revision reset the source pin
+        // and turn old, source-stale test evidence into source-current evidence.
+        sourceFingerprint = priorTestRunBinding.source_fingerprint;
+        testFingerprint = priorTestRunBinding.test_fingerprint;
+        fixtureFingerprint = priorTestRunBinding.fixture_fingerprint;
+        rubricFingerprint = priorTestRunBinding.rubric_fingerprint;
+        environmentFingerprint = priorTestRunBinding.environment_fingerprint;
+        details = { ...details, currentMeasurement: previousMeasurement };
+        const previousPin = readMeasurementPin(priorTestRunBinding.details);
+        if (previousPin) details[MEASUREMENT_PIN_DETAILS_KEY] = previousPin;
+        else delete details[MEASUREMENT_PIN_DETAILS_KEY];
+      }
+    }
+
     const canonical: CanonicalBinding = {
       workspaceId: scope.workspaceId,
       harnessSlug: scope.harnessSlug,
@@ -1336,7 +1420,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       environmentFingerprint,
       coverageEvidenceRef: input.coverageEvidenceRef ?? null,
       testRunId: input.testRunId ?? null,
-      details: (canonicalJson(input.details ?? priorDetails ?? {}) ?? {}) as Record<string, unknown>,
+      details: (canonicalJson(details) ?? {}) as Record<string, unknown>,
     };
     const bindingFingerprint = specEvidenceBindingFingerprint(canonical);
 
