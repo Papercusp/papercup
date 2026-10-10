@@ -170,7 +170,7 @@ export function ProductTutorialAssistance({ account, lesson, onQuestion, openVoi
       <p role="status">{muted ? 'Guide speech is muted.' : speechStatus === 'loading' ? 'Preparing speech…' : speechStatus === 'playing' ? 'Speaking the lesson.' : speechStatus === 'unavailable' ? 'Speech could not be played. The text remains available; use Replay speech to try again.' : 'Speech is ready.'}</p>
     </section>}
     <form onSubmit={event => { event.preventDefault(); void ask(); }}>
-      <label>Lesson question<textarea value={question} maxLength={2000} disabled={busy} onChange={event => setQuestion(event.target.value)} /></label>
+      <label>Lesson question<textarea style={{ display: 'block', boxSizing: 'border-box', width: '100%', maxWidth: '100%' }} value={question} maxLength={2000} disabled={busy} onChange={event => setQuestion(event.target.value)} /></label>
       <button disabled={busy || !question.trim()} type="submit">Ask AI Help</button>
       {busy && <button type="button" onClick={cancel}>Cancel AI Help</button>}
     </form>
