@@ -12,6 +12,26 @@ import { portalNuqsPlugin, preparePortalBrowserSource, preparePrivateHttpWorkspa
 import { verifyPrivateCoordReceipt, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
+import { retainPortalBrowserFailure } from '../test/portal-roster-browser-fixture';
+
+it('retains the original browser error and rendered controls when screenshot capture fails', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-browser-failure-'));
+  try {
+    const page = {
+      url: () => 'http://private.test/?agentHistory=selected',
+      content: async () => '<button>Open conversation</button>',
+      locator: () => ({ innerText: async () => 'selected transcript', allTextContents: async () => ['Open conversation'] }),
+      screenshot: async () => { throw new Error('screenshot unavailable'); },
+    } as unknown as Parameters<typeof retainPortalBrowserFailure>[0];
+    await retainPortalBrowserFailure(page, root, new Error('original missing-control failure'), ['original page error']);
+    expect(JSON.parse(readFileSync(join(root, 'portal-browser-failure.json'), 'utf8'))).toMatchObject({
+      url: 'http://private.test/?agentHistory=selected', message: 'original missing-control failure',
+      text: 'selected transcript', buttons: ['Open conversation'], pageErrors: ['original page error'],
+      diagnosticErrors: [{ index: 3, message: 'Error: screenshot unavailable' }],
+    });
+    expect(readFileSync(join(root, 'portal-browser-failure.html'), 'utf8')).toContain('Open conversation');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 function writeNuqsExportFixture(root: string) {
   const files = {

@@ -97,6 +97,21 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   return { portal, entry, bundle, originals };
 }
 
+/** A failing action must leave its original rendered state before teardown. */
+export async function retainPortalBrowserFailure(page: Pick<Page, 'url' | 'content' | 'locator' | 'screenshot'>,
+  evidence: string, error: unknown, pageErrors: readonly string[]) {
+  const results = await Promise.allSettled([
+    page.content(), page.locator('body').innerText({ timeout: 3_000 }), page.locator('button').allTextContents(),
+    page.screenshot({ path: join(evidence, 'portal-browser-failure.png'), timeout: 3_000, animations: 'disabled' }),
+  ]);
+  if (results[0].status === 'fulfilled') writeFileSync(join(evidence, 'portal-browser-failure.html'), results[0].value);
+  const snapshot = { url: page.url(), message: error instanceof Error ? error.message : String(error), pageErrors,
+    text: results[1].status === 'fulfilled' ? results[1].value : null,
+    buttons: results[2].status === 'fulfilled' ? results[2].value : null,
+    diagnosticErrors: results.flatMap((result, index) => result.status === 'rejected' ? [{ index, message: String(result.reason) }] : []) };
+  writeFileSync(join(evidence, 'portal-browser-failure.json'), JSON.stringify(snapshot, null, 2));
+}
+
 export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const { evidence, base, workspace, selected, neighbor } = input;
   const { portal, entry, bundle, originals } = await buildPortalRosterBrowser(input);
@@ -120,9 +135,10 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const selectedMessageIds: string[] = [];
   const marker = `private-browser-${process.pid}`;
   const pageErrors: string[] = [];
+  let page: Page | undefined;
   try {
     await context.addCookies([cookie(input.ownToken)]);
-    const page = await context.newPage();
+    page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.message));
     const url = new URL('/?panel=agents', base); url.searchParams.set('ws', workspace);
@@ -197,6 +213,12 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       scope: 'Actual mounted Portal controls and private HTTP/inbox effects; no whole-Portal or parked-turn acceptance' };
     writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(receipt, null, 2));
     return receipt;
+  } catch (error) {
+    if (page) {
+      try { await retainPortalBrowserFailure(page, evidence, error, pageErrors); }
+      catch (diagnosticError) { console.error('PORTAL_BROWSER_FAILURE_CAPTURE_ERROR', diagnosticError); }
+    }
+    throw error;
   } finally { await context.close(); await browser.close(); }
 }
 
@@ -215,7 +237,7 @@ async function runHistoryPage(page: Page, input: PortalRosterBrowserInput) {
   await page.reload();
   await page.getByText(history.selectedMarker, { exact: true }).waitFor();
   assert.equal(page.url(), historyUrl, 'history selection and workspace must survive reload');
-  await page.getByRole('button', { name: 'Open in GUI', exact: true }).click();
+  await page.getByTestId('agent-history-open-conversation').click();
   await page.waitForURL(url => url.searchParams.get('agentConversation') === input.selected
     && url.searchParams.get('hudsession') === input.selected && url.searchParams.get('app') === 'hud'
     && !url.searchParams.has('agentHistory') && !url.searchParams.has('agentHistorySession'));
