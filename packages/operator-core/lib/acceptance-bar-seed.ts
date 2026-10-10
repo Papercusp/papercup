@@ -545,12 +545,13 @@ const SEED_CODE_BY_CONTRACT_GAP: Record<AcceptanceBarContractGap, AcceptanceBarS
 export function acceptanceBarSourceContractProblems(
   bars: readonly ParsedRequirementBar[],
   mappings: readonly ParsedBarMapping[],
+  canonicalCriteria?: ReadonlyMap<string, ProposeRubricCriterion>,
 ): AcceptanceBarSeedProblem[] {
   const planeByBar = new Map(mappings.map((mapping) => [mapping.barKey, mapping.evidencePlane]));
   const problems: AcceptanceBarSeedProblem[] = [];
   let templateShown = false;
   for (const bar of bars) {
-    const criterion = bar.criterion;
+    const criterion = canonicalCriteria?.get(bar.barKey) ?? bar.criterion;
     const evidencePlane = criterion?.evidencePlane ?? planeByBar.get(bar.barKey) ?? 'tree';
     const layers = criterion?.requiredTestLayers;
     // A structured tests check owes automated proof even on a live/deployed plane,
@@ -568,7 +569,9 @@ export function acceptanceBarSourceContractProblems(
     if (gaps.length === 0) continue;
     let repair: string;
     if (criterion) {
-      repair = `Fix these fields in ${bar.barKey}'s \`\`\`requirement block, then re-run the activation audit.`;
+      repair = canonicalCriteria?.has(bar.barKey)
+        ? `Fix these fields in the authored acceptance criterion for ${bar.barKey}, then re-run the activation audit.`
+        : `Fix these fields in ${bar.barKey}'s \`\`\`requirement block, then re-run the activation audit.`;
     } else if (!templateShown) {
       templateShown = true;
       repair =
@@ -700,11 +703,35 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     }]);
   }
 
+  // An authored, unstarted rubric already contains the full contract. Plain
+  // Requirements cannot reproduce its falsifier/check or absent legacy Intent.
+  // Preserve it only when the source label, outcome and mapped plane agree. A
+  // historical heading echo is the sole accepted outcome alias; no semantic
+  // inference may turn source drift into an approved criterion.
+  const authoredCriteria = new Map<string, ProposeRubricCriterion>();
+  if (existing && !existing.barContract && !legacyMap) {
+    for (const bar of requirements.bars) {
+      const prior = existingByBar.get(bar.barKey);
+      if (!prior || bar.criterion) continue;
+      const model = prior.model?.replace(/\r\n?/g, '\n').trim();
+      const outcome = bar.model.replace(/\r\n?/g, '\n').trim();
+      if (prior.title !== bar.title ||
+          (model !== outcome && model !== `${bar.title}. ${outcome}`) ||
+          prior.evidencePlane !== mappingByKey.get(bar.barKey)!.evidencePlane) {
+        return refusal([{ code: 'bar_rubric_conflict', barKey: bar.barKey,
+          detail: `${bar.barKey} Requirements disagree with the authored acceptance criterion; reconcile the source and rubric explicitly before adoption` }]);
+      }
+      authoredCriteria.set(bar.barKey, prior);
+    }
+  }
+
   // BARs whose criterion is derived from the plan body in THIS build, as opposed to
   // preserved, legacy-adopted or unchanged-meaning ones. Only these are judged for
   // contract completeness: an unchanged BAR was already judged when it was fresh.
   const freshBarKeys = new Set<string>();
   const criteria = requirements.bars.map((bar) => {
+    const authored = authoredCriteria.get(bar.barKey);
+    if (authored) return { ...authored } as ProposeRubricCriterion;
     const seeded = seededCriterion(bar, mappingByKey.get(bar.barKey)!, input, existing?.ratingScale);
     const legacy = legacyMap && existing?.criteria.find((criterion) => criterion.key === legacyMap[bar.barKey]);
     if (legacy) {
@@ -740,8 +767,9 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   // discards bound proof. Legacy-backfilled BARs describe work that already exists.
   if (input.requireContractCompleteness && input.cohort === 'post-epoch' && !input.backfilled) {
     const contractProblems = acceptanceBarSourceContractProblems(
-      requirements.bars.filter((bar) => freshBarKeys.has(bar.barKey)),
+      requirements.bars.filter((bar) => freshBarKeys.has(bar.barKey) || authoredCriteria.has(bar.barKey)),
       mappings.mappings,
+      authoredCriteria,
     );
     if (contractProblems.length > 0) return refusal(contractProblems);
   }

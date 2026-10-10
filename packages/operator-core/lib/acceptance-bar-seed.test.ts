@@ -57,6 +57,66 @@ const input = {
 };
 
 describe('reopened draft successor adoption', () => {
+  function authoredSuccessor() {
+    const bars = Array.from({ length: 14 }, (_, index) => {
+      const n = index + 1;
+      const title = `Outcome ${n}`;
+      const outcome = `The observed result ${n} is available.`;
+      return normalizeAcceptanceBarCriterion({
+        key: `r-${n}`, barKey: `R-${n}`, title,
+        model: n <= 8 ? `${title}. ${outcome}` : outcome,
+        ...(n > 8 ? { intent: { request: outcome } } : {}),
+        driftMarkers: `The observed result ${n} is missing.`,
+        role: 'outcome', mandatory: true, requiredScope: ['tree'], evidencePlane: 'tree',
+        passRatings: ['healthy'], requiredTestLayers: ['unit'],
+        method: `Run the detector for outcome ${n}.`,
+        check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+        replication: `Inspect the persisted outcome ${n} and its exact evidence.`,
+      });
+    });
+    const content = plan({
+      requirements: bars.map((bar, index) => `**${bar.barKey} — ${bar.title}.** The observed result ${index + 1} is available.`).join('\n\n'),
+      map: bars.map((bar) => `| ${bar.barKey} | P-001 | tree |`).join('\n'),
+    });
+    return { bars, content, template: { kind: 'acceptance', subjectPlan: input.planSlug,
+      characteristic: 'plan-acceptance', description: 'Reviewed successor', proposedBy: input.actorId,
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'], criteria: bars } };
+  }
+
+  it('adopts complete authored successor criteria verbatim, including eight historical hashes without Intent', () => {
+    const fixture = authoredSuccessor();
+    const before = JSON.stringify(fixture);
+    const result = buildAcceptanceBarSeed({ ...input, planStatus: 'draft',
+      planContent: fixture.content, existingTemplateData: fixture.template, requireContractCompleteness: true });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error(result.message);
+    expect(result.criteria).toEqual(fixture.bars);
+    expect(result.criteria.slice(0, 8).map((bar) => bar.barHash)).toEqual(fixture.bars.slice(0, 8).map((bar) => bar.barHash));
+    expect(result.criteria.slice(0, 8).every((bar) => bar.intent === undefined)).toBe(true);
+    expect(result.projections.map((projection) => projection.falsifier.observation)).toEqual(fixture.bars.map((bar) => bar.driftMarkers));
+    expect(JSON.stringify(fixture)).toBe(before);
+  });
+
+  it.each(['outcome', 'title', 'plane'])('refuses %s source drift instead of silently rebuilding an authored successor', (field) => {
+    const fixture = authoredSuccessor();
+    const changed = field === 'outcome' ? fixture.content.replace('The observed result 1 is available.', 'A different result is available.')
+      : field === 'title' ? fixture.content.replace('R-1 — Outcome 1.', 'R-1 — Different title.')
+      : fixture.content.replace('| R-1 | P-001 | tree |', '| R-1 | P-001 | live |');
+    expect(buildAcceptanceBarSeed({ ...input, planStatus: 'draft', planContent: changed,
+      existingTemplateData: fixture.template, requireContractCompleteness: true })).toMatchObject({
+      ok: false, error: 'bar_rubric_conflict', problems: [expect.objectContaining({ barKey: 'R-1' })],
+    });
+  });
+
+  it('validates the preserved successor contract rather than exempting it as previously seeded', () => {
+    const fixture = authoredSuccessor();
+    delete fixture.bars[0]!.method;
+    expect(buildAcceptanceBarSeed({ ...input, planStatus: 'draft', planContent: fixture.content,
+      existingTemplateData: fixture.template, requireContractCompleteness: true })).toMatchObject({
+      ok: false, error: 'bar_contract_method_missing', problems: [expect.objectContaining({ barKey: 'R-1' })],
+    });
+  });
+
   function adoption() {
     const built = buildAcceptanceBarSeed({ ...input, planContent: plan() });
     if (!built.ok) throw new Error('valid retired contract fixture required');
