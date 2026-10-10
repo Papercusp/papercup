@@ -613,6 +613,9 @@ describe('dispatchPendingGradingAudits', () => {
     );
     const brief = d.route.mock.calls[0]?.[0].brief ?? '';
     expect(brief).toContain("capability:git-evidence { op:'readFileAtCommit'");
+    expect(brief).toContain('Do not fan out byte-page chains for multiple large blobs in one call');
+    expect(brief).toContain("If a single blob's full chain might approach the ceiling, read a bounded page segment");
+    expect(brief).toContain('continue its exact next_cursor in a separate call, or issue the page reads directly');
     expect(brief).toContain('copy that exact registered slug');
     expect(brief).toContain("path, rootHarnessSlug }");
     expect(brief).toContain('does not establish absence in the recorded evidence repository');
