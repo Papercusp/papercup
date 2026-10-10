@@ -510,13 +510,15 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('verification-failed', 'error', 'tool failed while verifying its result')).toBe('structural');
   });
 
-  it('classifies kernel identity outside-ceiling and stale-artifact refusals as caller without broadly matching authorization_denied', () => {
+  it('classifies kernel identity outside-ceiling and stale-artifact refusals, including the persisted tools:find message, as caller', () => {
     const sessionsRefusal = 'Kernel preflight denied tool "sessions:ingest-gate-event": Identity capability (unresolved): outside-ceiling (sessions:ingest-gate-event)';
     const journalRefusal = 'Kernel preflight denied tool "journal:record-turn": Identity capability (unresolved): outside-ceiling (journal:record-turn)';
     const staleArtifactRefusal = 'Kernel preflight denied tool "tools:invoke": Identity capability (unresolved): stale-artifact (tools:invoke)';
+    const persistedToolsFindRefusal = 'Kernel preflight denied tool "tools:find": Identity capability (unresolved): stale-artifact (tools:find)';
     expect(classifyToolError('authorization_denied', 'error', sessionsRefusal)).toBe('caller');
     expect(classifyToolError('authorization_denied', 'error', journalRefusal)).toBe('caller');
     expect(classifyToolError('authorization_denied', 'error', staleArtifactRefusal)).toBe('caller');
+    expect(classifyToolError('authorization_denied', 'error', persistedToolsFindRefusal)).toBe('caller');
     expect(classifyToolError('authorization_denied', 'error', 'database constraint failed')).toBe('structural');
     expect(classifyToolError(
       'authorization_denied', 'error',
