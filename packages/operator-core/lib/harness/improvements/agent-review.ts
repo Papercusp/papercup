@@ -888,6 +888,17 @@ export async function reconcileAgentReviewGrade(
       } } : {}),
     };
     const changed = current.status !== next.status;
+    // The claim store can persist an ended session id as an assignee. Measure the
+    // submitter before this ledger-derived transition so a confirmed dead session
+    // is never selected as the revision target. A thrown oracle failure happens
+    // before any transition write; an in-band unknown keeps the prior transfer
+    // behavior, and the explicit orphan-resubmit path owns adoption.
+    const submitterLiveness = changed && current.submittedBy !== LEGACY_AGENT_REVIEW_SUBMITTER
+      ? await deps.resolveSubmitterLiveness(current.submittedBy, {
+          claimsHeld: workItem.assignee === current.submittedBy,
+        })
+      : null;
+    const submitterEnded = submitterLiveness?.sessionState === 'ended';
     const merged = await deps.mergeWorkItemPayload(
       workItem.id,
       {
@@ -925,10 +936,12 @@ export async function reconcileAgentReviewGrade(
     }
     let returnedToSubmitter = true;
     if (changed) {
-      const transferred = await deps.claimWorkItem(workItem.id, current.submittedBy, {
-        ...(workItem.harness ? { harness: workItem.harness } : {}),
-        ...(workItem.assignee ? { fromHolder: workItem.assignee } : {}),
-      });
+      const transferred = submitterEnded
+        ? null
+        : await deps.claimWorkItem(workItem.id, current.submittedBy, {
+            ...(workItem.harness ? { harness: workItem.harness } : {}),
+            ...(workItem.assignee ? { fromHolder: workItem.assignee } : {}),
+          });
       if (!transferred) {
         // WI-41687: the submitter frequently no longer EXISTS by review time — a session
         // that filed a report hours earlier is routinely reaped, and a reaped owner cannot
@@ -958,7 +971,7 @@ export async function reconcileAgentReviewGrade(
       }
     }
     let woken: number | undefined;
-    if (changed || commentAdded) {
+    if ((changed || commentAdded) && !submitterEnded) {
       woken = (await deps.deliverRevision({
         to: current.submittedBy,
         workItemId: workItem.id,

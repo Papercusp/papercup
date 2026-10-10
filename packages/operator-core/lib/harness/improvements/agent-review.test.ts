@@ -757,6 +757,39 @@ describe('agent-review grading lifecycle', () => {
     expect(h.state.issue.assignee).toBeNull();
   });
 
+  it('does not assign revision work to a submitter whose session is confirmed ended', async () => {
+    const h = harness(pending);
+    h.state.ledger = {
+      ideaId: 'WI-7',
+      workItemId: 'WI-7',
+      grade: 2,
+      feedback: 'Add deterministic retry coverage.',
+      gradedBy: 'su-reviewer',
+    };
+    h.state.submitterLiveness = { sessionState: 'ended' };
+
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
+      workItemId: 'WI-7',
+      status: 'revision-requested',
+      round: 1,
+      changed: true,
+      returnedToSubmitter: false,
+    });
+
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-filer', { claimsHeld: false });
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-reviewer',
+    });
+    expect(h.state.issue.assignee).toBeNull();
+    expect(h.state.issue.payload).toMatchObject({
+      agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      implementationReadiness: { status: 'not-ready', reason: 'agent-review-revision-requested' },
+    });
+    expect(h.deliverRevision).not.toHaveBeenCalled();
+  });
+
   it('releases legacy-sentinel revision work to normal implementation without assigning or waking the sentinel', async () => {
     const h = harness(issue({
       assignee: 'su-reviewer',
