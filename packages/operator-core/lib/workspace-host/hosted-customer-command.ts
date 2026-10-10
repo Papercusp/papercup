@@ -10,6 +10,9 @@ import type { AgentSpawnPlan, AgentSpawnTransform } from '@papercusp/papercusp-s
 import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import { hostedCustomerCommandSpawnTransform } from './hosted-agent-identity';
+import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '../task-manager/enroll-sync';
+import { onTaskKillRequested } from '../task-manager/kill-notify';
+import type { TaskSpec } from '../task-manager/types';
 
 export interface HostedCustomerCommandRequest {
   readonly command: string;
@@ -23,6 +26,8 @@ export interface HostedCustomerCommandResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly signal: NodeJS.Signals | null;
+  readonly taskId: string;
+  readonly taskEnrolled: boolean;
 }
 
 export interface HostedCustomerCommandDependencies {
@@ -43,18 +48,18 @@ const AUTHORIZATION_TIMEOUT_MS = 15_000;
 // into this wrapper's shell source. The generic spawn wrapper starts in HOME.
 const COMMAND_WRAPPER = 'cd -- "$1" && exec /bin/bash -o pipefail -c "$2"';
 
-type SessionBinding = Readonly<Pick<HostedPrincipal,
+export type HostedCustomerSessionBinding = Readonly<Pick<HostedPrincipal,
   'workspaceId' | 'userId' | 'activeOrganizationId' | 'selectedWorkspaceId' | 'sessionId' | 'sessionVersion'>>;
 
 function denied(): Error { return new Error('hosted_customer_execution_denied'); }
 
-function binding(principal: HostedPrincipal): SessionBinding {
+function binding(principal: HostedPrincipal): HostedCustomerSessionBinding {
   return Object.freeze({ workspaceId: principal.workspaceId, userId: principal.userId,
     activeOrganizationId: principal.activeOrganizationId, selectedWorkspaceId: principal.selectedWorkspaceId,
     sessionId: principal.sessionId, sessionVersion: principal.sessionVersion });
 }
 
-async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+export async function awaitHostedCustomerOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) throw denied();
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
@@ -68,15 +73,15 @@ async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise
 
 async function authorize(
   resolve: HostedPrincipalResolver, headers: Headers, workspaceId: string,
-  signal: AbortSignal, expected?: SessionBinding,
-): Promise<SessionBinding> {
+  signal: AbortSignal, expected?: HostedCustomerSessionBinding,
+): Promise<HostedCustomerSessionBinding> {
   try {
-    const result = await abortable(Promise.resolve().then(() => resolve(new Headers(headers))), signal);
+    const result = await awaitHostedCustomerOperation(Promise.resolve().then(() => resolve(new Headers(headers))), signal);
     if (signal.aborted || !result.ok || !isHostedPrincipal(result.principal)
       || !result.principal.permissions.has('workspace:operate')
       || result.principal.selectedWorkspaceId !== workspaceId) throw denied();
     const current = binding(result.principal);
-    if (expected && (Object.keys(expected) as Array<keyof SessionBinding>)
+    if (expected && (Object.keys(expected) as Array<keyof HostedCustomerSessionBinding>)
       .some((key) => expected[key] !== current[key])) throw denied();
     return current;
   } catch { throw denied(); }
@@ -89,6 +94,7 @@ async function authorize(
  */
 export async function bindHostedCustomerCommandExecutor(deps: HostedCustomerCommandDependencies): Promise<{
   run(request: HostedCustomerCommandRequest): Promise<HostedCustomerCommandResult>;
+  authorize(signal?: AbortSignal): Promise<HostedCustomerSessionBinding>;
 }> {
   const headers = new Headers(deps.sessionHeaders);
   const resolve = deps.resolvePrincipal;
@@ -98,6 +104,11 @@ export async function bindHostedCustomerCommandExecutor(deps: HostedCustomerComm
   const expected = await authorize(resolve, headers, workspaceId, AbortSignal.timeout(AUTHORIZATION_TIMEOUT_MS));
   const transform = deps.transform ?? hostedCustomerCommandSpawnTransform();
   return {
+    authorize(signal) {
+      const deadline = AbortSignal.timeout(AUTHORIZATION_TIMEOUT_MS);
+      return authorize(resolve, headers, workspaceId,
+        signal ? AbortSignal.any([signal, deadline]) : deadline, expected);
+    },
     async run(input) {
       const { command, cwd = projectDir, timeoutMs = 120_000, signal: callerSignal } = { ...input };
       if (typeof command !== 'string' || !command.trim() || typeof cwd !== 'string'
@@ -117,18 +128,28 @@ export async function bindHostedCustomerCommandExecutor(deps: HostedCustomerComm
           cwd: undefined, env: {}, stagedDirs: [] });
       } catch { throw new Error('hosted_customer_execution_unavailable'); }
       if (signal.aborted) throw denied();
-      return execute(plan, signal);
+      return execute(plan, signal, expected, deadline);
     },
   };
 }
 
-function execute(plan: AgentSpawnPlan, signal: AbortSignal): Promise<HostedCustomerCommandResult> {
+function execute(plan: AgentSpawnPlan, signal: AbortSignal,
+  session: HostedCustomerSessionBinding, deadline: AbortSignal): Promise<HostedCustomerCommandResult> {
   return new Promise((resolve, reject) => {
+    // Account for the local SSH transport with the existing task ledger. The
+    // remote wrapper owns its child group; local enrollment is not a claim of
+    // customer cgroup confinement. Wrapping SSH in a service would lose stdin.
+    const spec: TaskSpec = { class: 'other', title: 'Hosted customer foreground command',
+      argv: [plan.command, ...plan.args], launchedBy: session.userId,
+      sessionId: session.sessionId, detail: { customerWorkspaceId: session.selectedWorkspaceId,
+        organizationId: session.activeOrganizationId, foreground: true } };
+    const task = beginSyncEnrolment(spec, { confine: false });
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(plan.command, [...plan.args], { cwd: plan.cwd, env: plan.env,
         stdio: ['pipe', 'pipe', 'pipe'] });
     } catch { reject(new Error('hosted_customer_execution_unavailable')); return; }
+    completeSyncEnrolment(task, spec, child.pid ?? null, { workspaceId: session.workspaceId });
     const stdout: Buffer[] = [], stderr: Buffer[] = [];
     let bytes = 0, failure: Error | undefined, killTimer: ReturnType<typeof setTimeout> | undefined;
     const fail = (message: string) => {
@@ -153,10 +174,18 @@ function execute(plan: AgentSpawnPlan, signal: AbortSignal): Promise<HostedCusto
       ? 'hosted_customer_execution_aborted' : 'hosted_customer_execution_unavailable'));
     child.on('close', (exitCode, exitSignal) => {
       signal.removeEventListener('abort', onAbort);
+      unsubscribeKill();
       if (killTimer) clearTimeout(killTimer);
+      finishSyncEnrolment(task, { state: deadline.aborted ? 'timed_out'
+        : failure || signal.aborted || exitSignal ? 'killed' : 'exited', exitCode,
+        exitReason: failure?.message ?? exitSignal });
       if (failure || signal.aborted) { reject(failure ?? new Error('hosted_customer_execution_aborted')); return; }
       resolve({ exitCode, signal: exitSignal,
+        taskId: task.taskId, taskEnrolled: task.enrolled,
         stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') });
+    });
+    const unsubscribeKill = onTaskKillRequested((taskId) => {
+      if (taskId === task.taskId) fail('hosted_customer_execution_aborted');
     });
     const onAbort = () => fail('hosted_customer_execution_aborted');
     signal.addEventListener('abort', onAbort, { once: true });

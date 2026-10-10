@@ -8,6 +8,11 @@ import { HOSTED_SESSION_COOKIE, HostedSessionCookieCodec, type HostedSession } f
 import { hostedPermissionsForMembership } from '../auth/hosted-role-permissions';
 import { bindHostedCustomerCommandExecutor } from './hosted-customer-command';
 
+vi.mock('../task-manager/enroll-sync', () => ({
+  beginSyncEnrolment: vi.fn(() => ({ taskId: 'testcustomertask', enrolled: true })),
+  completeSyncEnrolment: vi.fn(), finishSyncEnrolment: vi.fn(),
+}));
+
 let root: string, home: string, project: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'customer-command-'));
