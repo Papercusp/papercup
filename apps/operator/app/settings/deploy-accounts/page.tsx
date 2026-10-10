@@ -241,12 +241,13 @@ export default function DeployAccountsPage() {
     }
   }, [accountId, label, provider]);
 
-  // While a claude OAuth link is held open, poll its server-side status: claude CLI ≥2.1.200
+  // Both providers install browser-approved credentials server-side. Poll the held link
+  // so the wizard observes completion for Codex as well as Claude. Claude CLI ≥2.1.200
   // runs a localhost callback listener, so a SAME-MACHINE browser approval delivers the code
   // straight to the CLI ("You're all set up … close this window" — no code shown) and the server
   // auto-finalizes. Without this poll that path looked like "nothing happened" (2026-07-03).
   useEffect(() => {
-    if (!linkId || !authorizeUrl || provider !== 'claude') return;
+    if (!linkId || !authorizeUrl) return;
     let stopped = false;
     const tick = async () => {
       try {
@@ -261,11 +262,17 @@ export default function DeployAccountsPage() {
         if (j.status === 'completed') {
           stopped = true;
           resetForm();
-          toast.success(`Claude account "${accountId}" linked via browser login`);
+          toast.success(`${providerLabel(provider)} account "${accountId}" linked via browser login`);
           await refresh();
         } else if (j.status === 'failed') {
           stopped = true;
           setAddError(j.error || 'link failed');
+        } else if (j.status === 'unknown') {
+          stopped = true;
+          setAuthorizeUrl(null);
+          setLinkId(null);
+          setUserCode(null);
+          setAddError('The login link expired or the workspace restarted. Generate a new authorize link.');
         }
       } catch {
         /* transient — next tick retries */
@@ -508,7 +515,7 @@ export default function DeployAccountsPage() {
                     <>
                       2 · We'll start a Codex device login for this account and show you the OpenAI device code.
                       Open the link signed in as the <strong>target ChatGPT/Codex account</strong>, enter the code,
-                      then complete the link. The credential is written server-side and never returned to the browser.
+                      then return here when the login is approved. The credential is written server-side and never returned to the browser.
                     </>
                   ) : (
                     <>
@@ -565,7 +572,7 @@ export default function DeployAccountsPage() {
                   <div className="pc-da__step">
                     <span className="pc-da__step-label">3 · Complete after the browser confirms login</span>
                     <p className="pc-da__step-hint">
-                      Codex polls the device login in the held CLI process. When the browser says the login is complete, click Complete link.
+                      Codex polls the device login in the held CLI process. When the browser says the login is complete, return here. The account will appear automatically.
                     </p>
                   </div>
                 )}
