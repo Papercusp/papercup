@@ -13,7 +13,14 @@ import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateSt
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
-import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight } from '../test/portal-roster-browser-fixture';
+import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport } from '../test/portal-roster-browser-fixture';
+
+it('delivers the intended denial Host on the wire before trusting a private browser falsifier', async () => {
+  const measured = await verifyPrivateHostHeaderTransport();
+  console.info('PRIVATE_HOST_TRANSPORT_MEASUREMENT ' + JSON.stringify(measured));
+  expect(measured.actualHost).toBe('foreign-work.invalid');
+  expect(measured.intendedHost).toBe(measured.actualHost);
+});
 
 it('preflights native HUD read policy and the exact host denial before private PG', async () => {
   expect(await verifyPrivateHudReadPolicy()).toEqual({ denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 });

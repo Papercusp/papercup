@@ -8,13 +8,13 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
-import { chromium, type BrowserContext, type Page } from 'playwright-core';
+import { chromium, request as apiRequest, type BrowserContext, type Page } from 'playwright-core';
 import { getOrgPg } from '@papercusp/db-org';
 import { getMessageById, readAckedMsgIds, readInbox } from '../lib/agent-tools/coordination/messages';
 import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private-coord-receipt';
 import { portalBrowserPackagesPlugin, portalBrowserSurfaceBuild } from './private-http-workspace-preflight';
 
-const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
 /** The host rejects this request before the inner auth:loopback route runs. */
 export function verifyPrivateHudHostDenial(status: number, body: string) {
@@ -53,6 +53,7 @@ export function verifyPrivateHudCapturePreflight() {
 
 /** Exercise the production middleware order before allocating a private PG. */
 export async function verifyPrivateHudReadPolicy() {
+  await verifyPrivateHostHeaderTransport();
   verifyPrivateHudCapturePreflight();
   const { Hono } = await import('hono');
   const { hostRebindingGuard } = await import('../../../apps/operator/bin/host-rebinding-guard');
@@ -75,6 +76,33 @@ export async function verifyPrivateHudReadPolicy() {
   verifyPrivateHudHostDenial(denied.status, await denied.text());
   assert.equal(handlerReads, 2, 'external Host must not reach the native read handler');
   return { denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 };
+}
+
+/** Measure the request header on the wire, before trusting a Host falsifier.
+ * Node fetch may rewrite Host; the private browser uses Playwright's existing
+ * API request context, which carries the explicit denial header unchanged. */
+export async function verifyPrivateHostHeaderTransport() {
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ host: request.headers.host }));
+  });
+  const context = await apiRequest.newContext();
+  try {
+    await new Promise<void>((done, reject) => {
+      server.once('error', reject); server.listen(0, '127.0.0.1', done);
+    });
+    const address = server.address(); assert.ok(address && typeof address === 'object');
+    const url = `http://127.0.0.1:${address.port}/`;
+    const intendedHost = 'foreign-work.invalid';
+    const fetchHost = (await (await fetch(url, { headers: { host: intendedHost } })).json()).host;
+    const response = await context.get(url, { headers: { host: intendedHost } });
+    const actualHost = (await response.json()).host;
+    assert.equal(actualHost, intendedHost, 'private denial transport must deliver the intended Host on the wire');
+    return { intendedHost, actualHost, fetchHost };
+  } finally {
+    await context.dispose();
+    await new Promise<void>(done => server.close(() => done()));
+  }
 }
 // Reuse the installed version that the actual MarkdownPreview imports. The
 // production SPA likewise mounts its package tree at /vditor; Vditor appends
@@ -826,9 +854,9 @@ async function runPrivateHarnessesPage(page: Page, context: BrowserContext, inpu
   await neighborRead;
   await page.waitForFunction(slug => document.querySelector(`[data-testid="hive-member-${slug}"]`)?.getAttribute('aria-current') === 'true', work.neighbor);
   assertSelection(work.neighbor);
-  const denied = await fetch(String(registry.url), { headers: { host: 'foreign-work.invalid',
+  const denied = await context.request.get(String(registry.url), { headers: { host: 'foreign-work.invalid',
     cookie: `${input.cookieName}=${input.ownToken}` } });
-  verifyPrivateHudHostDenial(denied.status, await denied.text());
+  verifyPrivateHudHostDenial(denied.status(), await denied.text());
   assertSelection(work.neighbor);
   const reloadRead = dockRead(work.neighbor);
   await page.reload();
@@ -839,7 +867,7 @@ async function runPrivateHarnessesPage(page: Page, context: BrowserContext, inpu
   return { workspace: input.workspace, authMethod: 'private-loopback-work-with-cookie', ...work,
     keyboardDrill: true, keyboardMemberSelection: true, deepLinkReload: true, dockQueryRekeyed: true,
     shellQueryPreserved: true, foreignExcluded: true, foreignRegistryControl: true,
-    denialStatus: denied.status, denialTransport: 'actual-private-work-external-host', selectionRetained: true,
+    denialStatus: denied.status(), denialTransport: 'actual-private-work-external-host', selectionRetained: true,
     scope: 'Actual mounted HarnessesWorkspace and private workspace registry/dock reads; no hosted tenant, full-shell, work-item action or shipment acceptance' };
 }
 
