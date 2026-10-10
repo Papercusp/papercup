@@ -134,6 +134,24 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it('rejects invalid committed acceptance inputs before spawning the native rig', () => {
+    const f = fixture(0);
+    const marker = join(f.dir, 'rig-started');
+    writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+    const inputs = join(f.dir, 'inputs.json');
+    writeFileSync(inputs, JSON.stringify(['../outside-source']));
+    const result = run(f, [], {
+      VERIFY_TAURI_SOURCE_REF: 'HEAD',
+      VERIFY_TAURI_SOURCE_INPUTS_FILE: inputs,
+      VERIFY_TAURI_SOURCE_INPUTS: '',
+      OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
+    });
+    expect(result.status).toBe(2);
+    expect(result.out).toContain('invalid tested input: ../outside-source');
+    expect(existsSync(marker)).toBe(false);
+    expect(result.recorded).toBeNull();
+  });
+
   it.each([['SIGINT', 130, false], ['SIGTERM', 143, false], ['SIGHUP', 129, false], ['SIGTERM', 143, true]] as const)(
     'records failure and reaps the rig when interrupted by %s (exit: %s, whole group: %s)', async (signal, code, wholeGroup) => {
       const f = fixture(0);

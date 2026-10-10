@@ -84,6 +84,20 @@ export PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIGNUP="${PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIG
 unset PAPERCUSP_DISABLE_TEST_RUNS_REPORTER
 RIG="${OPERATOR_E2E_RIG:-$ROOT/scripts/verify-tauri-headless.sh}"
 
+# Refuse stale acceptance inputs before the rig allocates native build slots or
+# runs platform preparation. The rig still validates mandatory tooling and
+# rechecks after export to protect against edits racing this early check.
+if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
+  input_check_args=(--repo "$ROOT" --ref "$VERIFY_TAURI_SOURCE_REF")
+  if [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}" ]; then
+    input_check_args+=(--inputs "$VERIFY_TAURI_SOURCE_INPUTS")
+  fi
+  if [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
+    input_check_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
+  fi
+  node "$ROOT/scripts/source-preview.mjs" verifier-inputs-check "${input_check_args[@]}" || exit $?
+fi
+
 echo "OPERATOR_E2E_ISOLATED group=$PAPERCUSP_TEST_RUN_GROUP ledger=${PAPERCUSP_TEST_RUNS_DB_URL##*@} workspace=${PAPERCUSP_TEST_RUN_WORKSPACE:-<rig>} harness=$PAPERCUSP_TEST_RUN_HARNESS rig=$RIG"
 
 rig_pid=""
