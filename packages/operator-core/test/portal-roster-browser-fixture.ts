@@ -21,6 +21,7 @@ type PortalRosterBrowserInput = {
   shortcuts?: boolean;
   settings?: boolean;
   prompts?: boolean;
+  plans?: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string };
   inbox?: { selectedMessageId: string; neighborMessageId: string; selectedTitle: string; neighborTitle: string };
   history?: { selectedSessionId: number; neighborSessionId: number; selectedRolloutId: string; neighborRolloutId: string;
     selectedMarker: string; neighborMarker: string };
@@ -34,7 +35,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'inbox'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'inbox' | 'plans'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -46,7 +47,18 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.inbox ? `
+  const entry = input.plans ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { Toaster } from 'sonner';
+    import PlansPane from ${JSON.stringify(join(operatorRoot, 'app/_components/plans/PlansPane.tsx'))};
+    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(React.Fragment, null, React.createElement(PlansPane, { layout: 'split' }),
+          React.createElement(Toaster)))));
+  ` : input.inbox ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -129,7 +141,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox ? await portalBrowserSurfaceBuild(portal) : undefined;
+  const boundary = input.inbox || input.plans ? await portalBrowserSurfaceBuild(portal) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -161,7 +173,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const css = result.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.inbox
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.plans
+    ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
     ? '/apps/operator/app/quick-panel/PromptsTab.tsx' : input.settings
       ? '/apps/operator/app/settings/profile/page.tsx' : input.shortcuts
@@ -194,6 +207,9 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   writeFileSync(join(spa, 'portal-roster.css'), readFileSync(join(portal, 'app/tokens.css'), 'utf8') + '\n'
     + readFileSync(join(portal, 'app/globals.css'), 'utf8')
     + (input.prompts ? '\n' + readFileSync(resolve(import.meta.dirname, '../../../apps/operator/app/quick-panel/quick-panel.css'), 'utf8') : '')
+    + (input.plans ? '\n' + ['app/_components/plans/plans-pane.css', 'app/admin/plans/plans.css']
+      .map(path => readFileSync(resolve(import.meta.dirname, '../../../apps/operator', path), 'utf8')).join('\n')
+      + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '')
     + (input.inbox ? '\n' + ['app/_components/inbox/inbox-pane.css', 'app/admin/plans/plans.css']
       .map(path => readFileSync(resolve(import.meta.dirname, '../../../apps/operator', path), 'utf8')).join('\n')
       + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '') + '\n' + css);
@@ -236,10 +252,18 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       inboxReadCaptures.add(capture);
       void capture.finally(() => inboxReadCaptures.delete(capture));
     });
-    const url = new URL(input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
+    const url = new URL(input.plans ? '/?app=plans&q=retained-shell-search'
+      : input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
       : input.prompts ? '/?app=overview&panel=quick&q=retained-shell-search'
       : input.settings || input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
     await page.goto(url.href);
+    if (input.plans) {
+      const receipt = await runPrivatePlansPage(page, context, input);
+      assert.deepEqual(pageErrors, [], 'real Plans controls must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.inbox) {
       const receipt = await runPrivateInboxPage(page, context, input);
       assert.deepEqual(pageErrors, [], 'real inbox controls must complete without browser errors');
@@ -588,6 +612,93 @@ async function runPrivateInboxPage(page: Page, context: BrowserContext, input: P
     selectionRetained: true, deniedWriteIsolated: true, retryPersisted: true, neighborIsolated: true, writes,
     denialTransport: 'real-upstream-response-forwarded',
     scope: 'Actual utility.inbox shared split InboxPane, attention sync/detail and private coord acknowledgment; two private producer messages, exact reload and real upstream Origin-denial recovery. Portal navigation geometry is supplied; hosted tenant authorization and bulk resolve are unmeasured' };
+}
+
+async function runPrivatePlansPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
+  const plans = input.plans!;
+  const selected = page.getByTestId('plans-pane-row-' + plans.selectedSlug);
+  const neighbor = page.getByTestId('plans-pane-row-' + plans.neighborSlug);
+  const archive = page.getByTestId('plans-pane-archive-' + plans.selectedSlug);
+  const endpoint = new URL('/api/admin/plans/set-archived', input.base).href;
+  const writes: Array<{ status: number; target: string; harness: string; body: unknown }> = [];
+  const assertState = async (archived: boolean) => {
+    const rows = await getOrgPg().sql<{ plan_slug: string; archived: boolean }[]>`
+      SELECT plan_slug, archived FROM harness_shared.harness_plans
+      WHERE workspace_id = ${input.workspace} AND harness_slug = ${plans.harness}
+        AND plan_slug IN (${plans.selectedSlug}, ${plans.neighborSlug})`;
+    assert.equal(rows.length, 2, 'both exact private plan rows must exist');
+    assert.equal(rows.find(row => row.plan_slug === plans.selectedSlug)!.archived, archived);
+    assert.equal(rows.find(row => row.plan_slug === plans.neighborSlug)!.archived, false,
+      'neighbor plan must remain unarchived');
+  };
+  await page.locator('[data-testid="plans-pane"][data-layout="split"]').waitFor();
+  await selected.waitFor(); await neighbor.waitFor(); await archive.waitFor();
+  await assertState(false);
+  const search = page.getByTestId('plans-pane-search');
+  const query = plans.selectedTitle.replace(/-selected$/, '');
+  await search.focus(); await page.keyboard.insertText(query);
+  await page.waitForURL(url => url.searchParams.get('plq') === query);
+  await selected.waitFor(); await neighbor.waitFor();
+  const filteredUrl = page.url();
+  await page.reload();
+  await selected.waitFor(); await neighbor.waitFor();
+  assert.equal(await search.inputValue(), query);
+  assert.equal(page.url(), filteredUrl, 'private Plans filter URL must survive reload');
+  const openArchive = async () => {
+    await archive.focus(); await page.keyboard.press('Enter');
+    const dialog = page.getByRole('dialog', { name: 'Archive this plan?' });
+    await dialog.waitFor();
+    await dialog.getByText('“' + plans.selectedTitle + '” will drop out of your plan lists.', { exact: false }).waitFor();
+    return dialog;
+  };
+  let requestCount = 0;
+  page.on('request', request => { if (request.url() === endpoint && request.method() === 'POST') requestCount++; });
+  const cancel = await openArchive();
+  await cancel.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await cancel.waitFor({ state: 'detached' });
+  assert.equal(requestCount, 0, 'cancel must send no archive request');
+  await assertState(false);
+  const confirm = async () => {
+    const dialog = await openArchive();
+    const pending = page.waitForResponse(response => response.url() === endpoint && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'Archive', exact: true }).click();
+    const response = await pending;
+    const payload = response.request().postDataJSON();
+    assert.equal(payload.slug, plans.selectedSlug, 'archive must name the selected plan');
+    assert.equal(payload.harness, plans.harness, 'archive must preserve the selected harness');
+    assert.equal(payload.archived, true);
+    const receipt = { status: response.status(), target: payload.slug, harness: payload.harness, body: await response.json() };
+    writes.push(receipt);
+    writeFileSync(join(input.evidence, 'portal-plans-writes.json'), JSON.stringify(writes, null, 2));
+    return receipt;
+  };
+  await context.route('**/api/admin/plans/set-archived', async route => {
+    const response = await route.fetch({ headers: { ...route.request().headers(), origin: 'https://unapproved.invalid' } });
+    await route.fulfill({ response });
+  });
+  const denied = await confirm();
+  assert.equal(denied.status, 403);
+  await page.getByText(/^Could not archive:/).waitFor();
+  await assertState(false);
+  await selected.waitFor(); await neighbor.waitFor(); await archive.waitFor();
+  assert.equal(page.url(), filteredUrl, 'denied archive must retain the exact Plans filter URL');
+  await context.unroute('**/api/admin/plans/set-archived');
+  const accepted = await confirm();
+  assert.equal(accepted.status, 200, JSON.stringify(accepted));
+  await assertState(true);
+  await selected.waitFor({ state: 'detached' }); await neighbor.waitFor();
+  await page.reload(); await neighbor.waitFor();
+  assert.equal(await selected.count(), 0, 'archived selected plan must stay absent after reload');
+  await assertState(true);
+  const params = new URL(page.url()).searchParams;
+  for (const [key, value] of [['app', 'plans'], ['ws', input.workspace], ['q', 'retained-shell-search'], ['plq', query]])
+    assert.equal(params.get(key), value);
+  assert.equal(requestCount, 2);
+  return { workspace: input.workspace, authMethod: 'private-loopback-plans-with-cookie', ...plans,
+    filterKeyboard: true, deepLinkReload: true, shellQueryPreserved: true, cancelNoRequest: true,
+    denialStatus: denied.status, deniedWriteIsolated: true, retryPersisted: true, neighborIsolated: true, writes,
+    denialTransport: 'real-upstream-response-forwarded',
+    scope: 'Actual utility.plans shared split PlansPane, real plan list and selected stale-plan archive confirmation; private PG rows, exact filter reload and real Origin-denial recovery. Supplied host geometry; dashboard authoring and hosted tenant authorization remain unmeasured' };
 }
 
 /** Browser wire precondition, not product/API authorization evidence. */

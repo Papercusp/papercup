@@ -146,6 +146,21 @@ it('joins cross-checkout toast producers and observers into one Sonner module st
 });
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'builds the real Plans browser graph through the maintained Portal client boundary before private PG', async () => {
+    const { buildPortalRosterBrowser } = await import('../test/portal-roster-browser-fixture');
+    const result = await buildPortalRosterBrowser({ portalSourceRoot: process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', plans: {
+        selectedSlug: 'preflight-selected', neighborSlug: 'preflight-neighbor', selectedTitle: 'preflight-selected',
+        neighborTitle: 'preflight-neighbor', harness: 'papercusp' } });
+    const paths = [...result.originals.keys()];
+    expect(paths.some(path => path.endsWith('/PlansPane.tsx'))).toBe(true);
+    expect(paths.some(path => path.endsWith('/operator-surface-build.mjs'))).toBe(true);
+    expect(paths.some(path => path.endsWith('/useConfirmDialog.tsx'))).toBe(true);
+    expect(paths.some(path => path.includes('/node_modules/undici/'))).toBe(false);
+    expect(result.css.length).toBeGreaterThan(0);
+  });
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'builds the real Inbox browser graph through the maintained Portal client boundary before private PG', async () => {
     const { buildPortalRosterBrowser } = await import('../test/portal-roster-browser-fixture');
     const result = await buildPortalRosterBrowser({ portalSourceRoot: process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!,
