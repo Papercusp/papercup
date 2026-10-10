@@ -243,6 +243,28 @@ describe('capability:git-evidence', () => {
     expect(Buffer.from(second.data, 'base64').toString('utf8')).toBe('tents with t');
   });
 
+  it('returns a 94,304-byte pinned historical blob inline in one call', async () => {
+    const root = repository();
+    const committedContent = 'x'.repeat(94_304);
+    const path = 'large-inline-evidence.txt';
+    writeFileSync(join(root, path), committedContent);
+    git(root, ['add', path]);
+    git(root, ['commit', '--quiet', '-m', 'large inline evidence']);
+    const commitSha = git(root, ['rev-parse', 'HEAD']);
+    writeFileSync(join(root, path), 'uncommitted replacement\n');
+
+    const result = await runJudgeGitEvidence(
+      { op: 'readFileAtCommit', commitSha, path },
+      { repositoryDir: root, workspaceId: 'test-workspace', signal: never },
+    );
+
+    if (!result.ok || result.op !== 'readFileAtCommit' || !('content' in result)) {
+      throw new Error(`Expected one inline pinned blob read, got ${JSON.stringify(result)}`);
+    }
+    expect(result).toMatchObject({ ok: true, commitSha, path, bytes: 94_304 });
+    expect(result.content).toBe(committedContent);
+  });
+
   it('pages oversized pinned UTF-8 blobs as exact bounded bytes', async () => {
     const root = repository();
     const largeContent = '€'.repeat(Math.ceil((MAX_GIT_EVIDENCE_INLINE_BYTES + 1) / 3));
