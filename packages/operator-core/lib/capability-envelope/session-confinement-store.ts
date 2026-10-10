@@ -31,13 +31,10 @@
  * (WI-39930). So importing this module only ASSIGNS the resolver; the first dispatch that
  * actually consults it primes the cache and arms the refresh timer.
  *
- * WHY THE FIRST CALL AWAITS BUT THE REST DO NOT
- * --------------------------------------------
- * Fail-open on a cold cache is forced, not chosen (D-017 §4): unconfined is the default for
- * every session in the fleet, so a fail-closed miss would deny every dispatch on the box.
- * Ordering closes the window in the launch case — the launch writes the confinement, which
- * primes this process's cache, BEFORE the implementer is spawned. It does not close the
- * OPERATOR-RESTART case, where the cache starts empty with a confined session already live.
+ * WHY EACH DISPATCH READS AUTHORITATIVE STATE
+ * -----------------------------------------
+ * The launcher persists a confinement BEFORE spawning its session. The dispatch
+ * host may be another process or may restart while that session remains live.
  * Dispatch now reads authoritative state for its verified workspace on EACH call.
  * A warm cache miss on another serving process cannot prove absence. The cache
  * remains a local boundary hint, while exact ceilings survive expiry as denials.
@@ -68,7 +65,7 @@ const STATE_TABLE = 'operator_session_confinements' as const;
 const DEFAULT_TTL_SEC = 12 * 60 * 60;
 
 const state = pinModuleState('@papercusp/operator-core.session-confinement-store', () => ({
-  /** The sync cache the dispatch hot path reads. Empty until primed. */
+  /** Local hint for synchronous callers; dispatch reads authoritative PG state. */
   cache: {} as Record<string, StoredSessionConfinement>,
   /** Memoized priming promise — one per process, not one per dispatch. */
   priming: undefined as Promise<void> | undefined,
@@ -78,9 +75,8 @@ const state = pinModuleState('@papercusp/operator-core.session-confinement-store
 
 function isExpired(row: StoredSessionConfinement, nowMs: number): boolean {
   const t = Date.parse(row.expiresAt);
-  // An unparseable expiry is treated as EXPIRED. A confinement is a narrowing, so the
-  // conservative reading of a corrupt row is "do not apply it" — the alternative would let a
-  // malformed row confine a session forever with no way to age out.
+  // Unparseable expiry is expired. Legacy engagements age out; exact launch
+  // ceilings remain denied until explicitly released by the external host.
   return !Number.isFinite(t) || t <= nowMs;
 }
 
@@ -134,8 +130,8 @@ export async function refreshSessionConfinements(workspaceId?: string): Promise<
 
 /**
  * Prime once per process, and arm the periodic refresh on the same first consult.
- * Never rejects: a store that cannot be read leaves the session UNCONFINED (the forced
- * default) and says so loudly, rather than taking every dispatch on the box down with it.
+ * This legacy cache initializer never rejects. Dispatch does not rely on the
+ * cache: its independent authoritative read fails closed through the resolver port.
  */
 export function ensureSessionConfinementsReady(): Promise<void> {
   if (state.priming) return state.priming;
@@ -144,7 +140,7 @@ export function ensureSessionConfinementsReady(): Promise<void> {
       await refreshSessionConfinements();
     } catch (err) {
       console.error(
-        '[session-confinement] priming read failed — sessions treated as UNCONFINED until the next refresh',
+        '[session-confinement] cache priming failed — dispatch still requires authoritative policy reads',
         err,
       );
     }
@@ -174,8 +170,8 @@ export function ensureSessionConfinementsReady(): Promise<void> {
 }
 
 /**
- * The sync lookup the resolver performs. Returns null for an unknown, expired, or
- * population-keyed owner — all three mean "this session is not confined".
+ * Local synchronous lookup, not the dispatch resolver. Unknown/population owners
+ * and expired legacy rows return null; expired exact ceilings deny every tool.
  */
 export function sessionConfinementFor(
   ownerId: string | null | undefined,

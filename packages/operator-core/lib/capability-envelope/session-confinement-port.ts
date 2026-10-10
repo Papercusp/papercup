@@ -53,10 +53,9 @@ const state = pinModuleState('@papercusp/operator-core.session-confinement-port'
 /**
  * Install (or clear, with `undefined`) the host resolver.
  *
- * `ensureReady` is awaited before the FIRST consult and is expected to memoize itself, so the
- * host can prime a cache without the resolver having to be async. It exists for one case the
- * launch ordering cannot cover: an operator RESTART with a confined session already live, where
- * the cache starts empty and a cold miss would read as "unconfined" (D-017 §4).
+ * Optional `ensureReady` is awaited before consulting the resolver. A host may
+ * memoize initialization, but the installed store resolver independently reads
+ * authoritative per-workspace policy on every call, including after restart.
  */
 export function setSessionConfinementResolver(
   fn: SessionConfinementResolver | undefined,
