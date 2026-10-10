@@ -720,6 +720,40 @@ describe('collection child identity evidence (WI-10007991)', () => {
     });
     expect(readTestChildDiagnostic(undefined)).toMatchObject({ status: 'unavailable', processes: [] });
   });
+
+  it('calibrates the pre-reap evidence guard against a permanently disabled-reader control', async () => {
+    // The same behavioral guard must accept the real runner and reject this
+    // deliberately wrong wrapper; no mutation of the shared source is needed.
+    const omitDiagnostic = (command: string, args: string[], options: object) =>
+      runVitestList(command, args, { ...options, readProcessDiagnosticImpl: null });
+    vi.useFakeTimers();
+    try {
+      for (const [run, shouldPass] of [[runVitestList, true], [omitDiagnostic, false]] as const) {
+        const child = Object.assign(new EventEmitter(), { pid: 4350,
+          stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+        const events: string[] = [];
+        const snapshot = { status: 'partial', rootPid: 4350,
+          processes: [{ pid: 4350, name: 'vitest', state: 'S', waitChannel: 'futex_wait_queue' }] };
+        const pending = run('npx', ['vitest', 'list', '--filesOnly', 'a.test.ts'], {
+          env: { PATH: '/usr/bin' }, timeoutMs: 100, killGraceMs: 20,
+          systemdRunPath: null, setsidPath: '/usr/bin/setsid',
+          spawnImpl: () => child, onProgress: () => {},
+          readProcessDiagnosticImpl: () => { events.push('snapshot'); return snapshot; },
+          killProcessImpl: (_child: unknown, signal: string) => { events.push(signal); return 'group'; },
+        });
+        await vi.advanceTimersByTimeAsync(120);
+        child.emit('close', null, 'SIGKILL');
+        const result = await pending;
+        const assertEvidence = () => {
+          expect(result.processDiagnostic).toEqual(snapshot);
+          expect(events.indexOf('snapshot')).toBeGreaterThanOrEqual(0);
+          expect(events.indexOf('snapshot')).toBeLessThan(events.indexOf('SIGTERM'));
+        };
+        if (shouldPass) assertEvidence();
+        else expect(assertEvidence).toThrow();
+      }
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {

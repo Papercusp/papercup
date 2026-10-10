@@ -2389,17 +2389,6 @@ function printTestFinalizationError(result) {
   );
 }
 
-/**
- * Run one captured test child without blocking this router's event loop.
- *
- * On Linux, prefer `systemd-run --user --scope --collect` so the short-lived child tree moves into
- * a sibling user scope instead of remaining in the caller's cgroup. The process-group watchdog
- * still targets the scope's owned group id, never a name/pattern. Hosts without systemd-run retain
- * the `setsid --wait` process-group boundary; other platforms fall back to signaling the owned
- * direct child only.
- *
- * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
- */
 /** Capture bounded identities before a collection watchdog destroys its evidence.
  * This is an identity snapshot, not a measurement of progress or a causal verdict.
  * Reuse the governed tree walker, with a bounded children reader that never falls
@@ -2458,6 +2447,17 @@ export function readTestChildDiagnostic(rootPid, {
   return { status: unreadableFields > 0 ? 'partial' : 'measured', rootPid, truncated, unreadableFields, processes };
 }
 
+/**
+ * Run one captured test child without blocking this router's event loop.
+ *
+ * On Linux, prefer `systemd-run --user --scope --collect` so the short-lived child tree moves into
+ * a sibling user scope instead of remaining in the caller's cgroup. The process-group watchdog
+ * still targets the scope's owned group id, never a name/pattern. Hosts without systemd-run retain
+ * the `setsid --wait` process-group boundary; other platforms fall back to signaling the owned
+ * direct child only.
+ *
+ * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
+ */
 export function runCapturedTestProcess(command, args, options = {}) {
   const {
     cwd,
