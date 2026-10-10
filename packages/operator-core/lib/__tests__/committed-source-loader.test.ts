@@ -77,6 +77,9 @@ beforeAll(() => {
   put(fixture, 'cjs-entry.mjs', "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('./c.cjs');\n");
   put(fixture, 'c.cjs', "console.log('CJS-RAN');\n");
   put(fixture, 'dep-entry.mjs', "import { d } from 'dep';\nconsole.log(`D=${d}`);\n");
+  put(fixture, 'packages/workspace/package.json', '{ "name": "workspace", "type": "module", "exports": "./value.mjs" }\n');
+  put(fixture, 'packages/workspace/value.mjs', "export const v = 'HEAD';\n");
+  put(fixture, 'workspace-entry.mjs', "import { v } from 'workspace';\nconsole.log(`WORKSPACE=${v}`);\n");
   // The census's closure walk forks its worker with execArgv: [] — only NODE_OPTIONS reaches it.
   put(fixture, 'fork-entry.mjs', [
     "import { fork } from 'node:child_process';",
@@ -99,6 +102,8 @@ beforeAll(() => {
   put(fixture, 'gen/out.mjs', "export const g = 'GEN';\n");
   put(fixture, 'node_modules/dep/package.json', '{ "name": "dep", "type": "module", "exports": "./index.mjs" }\n');
   put(fixture, 'node_modules/dep/index.mjs', "export const d = 'DEP';\n");
+  put(fixture, 'packages/workspace/value.mjs', "export const v = 'DIRTY';\n");
+  symlinkSync(join(fixture, 'packages/workspace'), join(fixture, 'node_modules/workspace'), 'dir');
   // `--import tsx` resolves from the cwd; the real package lives under the repo's node_modules.
   symlinkSync(join(REPO, 'node_modules', 'tsx'), join(fixture, 'node_modules', 'tsx'), 'dir');
 }, 60_000);
@@ -237,6 +242,23 @@ describe('committed-source loader — a scratch checkout', () => {
     const records = readAudit(audit);
     expect(records.find((r) => r.rel === 'gen/out.mjs')?.kind).toBe('ignored');
     expect(records.find((r) => r.rel === 'node_modules/dep/index.mjs')?.kind).toBe('dependency');
+  }, 60_000);
+
+  it.each([false, true])('loads committed workspace alias bytes with preserveSymlinks=%s', (preserveSymlinks) => {
+    const options = preserveSymlinks ? ['--preserve-symlinks'] : [];
+    const control = run([...options, 'workspace-entry.mjs'], cleanEnv());
+    expect(control.status).toBe(0);
+    expect(control.stdout).toContain('WORKSPACE=DIRTY');
+
+    const { prefix, env } = censusPrefix();
+    const audit = join(scratch, `workspace-${preserveSymlinks}.audit`);
+    const loaded = run([...options, ...prefix, 'workspace-entry.mjs'], env, audit);
+    expect(loaded.status).toBe(0);
+    expect(loaded.stdout).toContain('WORKSPACE=HEAD');
+    expect(loaded.stdout).not.toContain('WORKSPACE=DIRTY');
+    expect(readAudit(audit).find((record) => record.rel === 'packages/workspace/value.mjs')).toMatchObject({
+      kind: 'substituted', returnedSha256: sha256("export const v = 'HEAD';\n"),
+    });
   }, 60_000);
 
   it('refuses a checkout module loaded through CommonJS, which the ES hook cannot judge', () => {
