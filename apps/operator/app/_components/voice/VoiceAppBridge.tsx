@@ -33,7 +33,6 @@ import { useEffect, useRef } from 'react';
 import {
   onFinalUtterance,
   subscribeVoiceState,
-  cancelAllSpeech,
   getVoiceState,
   speak,
   startReading,
@@ -330,7 +329,10 @@ export function VoiceAppBridge(): null {
     return () => {
       unsubState();
       unsubUtterance();
-      cancelAllSpeech({ preserveReading: true });
+      // This bridge owns subscriptions, not the shared reply player. React
+      // disconnects effects when Suspense hides the shell; cancelling here
+      // aborts an in-flight TTS reply even though the user never stopped it.
+      // Explicit mode-off and user interruption own playback cancellation.
     };
   }, []);
 
