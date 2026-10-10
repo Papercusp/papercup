@@ -49,7 +49,7 @@
   ],
   "workItem": "WI-10007984",
   "sourceVerifier": "apps/operator/scripts/resume-spawn-live.ts#verifyResumeSmokeContinuation",
-  "privateEvidenceDirectory": "/home/marsh-office/.papercusp/evidence/WI-10007984/native-client-smoke-20261009/",
+  "privateEvidenceDirectory": "$HOME/.papercusp/evidence/WI-10007984/native-client-smoke-20261009/",
   "acceptanceScope": "archived-native-cli-witness-readback",
   "clientWitnesses": [
     {
