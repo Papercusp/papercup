@@ -1,7 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { enterSupportedAccountShell, runDownloadPhases } from '../portal-android-download-check';
+import { assertAuthenticatedArtifact, enterSupportedAccountShell, runDownloadPhases } from '../portal-android-download-check';
 
 describe('Android served download phase evidence', () => {
+  it('refuses changed authenticated build before onboarding or click and still cleans', async () => {
+    const actions: string[] = [];
+    const oracle = {
+      resolveServedRelease: ({ html }: { html: string }) => ({ release: html }),
+      assertTutorialSourceCustody: () => { actions.push('source'); },
+    };
+    const result = await runDownloadPhases([
+      { phase: 'authenticated-artifact-custody', run: () => assertAuthenticatedArtifact(oracle, { text: async () => 'changed' }, {}, '/portal', 'Gv90') },
+      { phase: 'onboarding', run: async () => { actions.push('onboarding'); } },
+      { phase: 'click', run: async () => { actions.push('click'); } },
+    ], async () => { actions.push('cleanup'); }, async () => ({}));
+    expect(result.failedPhase).toBe('authenticated-artifact-custody');
+    expect(result.passed).toBe(false);
+    expect(actions).toEqual(['cleanup']);
+  });
+  it('checks authenticated response HTML and source custody for the accepted artifact', async () => {
+    let checked = false;
+    await assertAuthenticatedArtifact({
+      resolveServedRelease: ({ html }: { html: string }) => { expect(html).toBe('authenticated-html'); return { release: 'Gv90' }; },
+      assertTutorialSourceCustody: (release: { release: string }, root: string) => { expect(release.release).toBe('Gv90'); expect(root).toBe('/portal'); checked = true; },
+    }, { text: async () => 'authenticated-html' }, {}, '/portal', 'Gv90');
+    expect(checked).toBe(true);
+  });
   it.each([true, false])('uses real account-guide navigation only when welcome is visible (%s)', async visible => {
     const clicked: string[] = [];
     const page = {

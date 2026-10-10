@@ -5,6 +5,11 @@ import { pathToFileURL } from 'node:url';
 import { tsImport } from 'tsx/esm/api';
 
 export type PhaseReceipt = { phase: string; outcome: 'passed' | 'failed' };
+export async function assertAuthenticatedArtifact(oracle: any, response: any, options: any, root: string, expectedRelease: string) {
+  const release = oracle.resolveServedRelease({ ...options, html: await response.text() });
+  if (release.release !== expectedRelease) throw new Error('authenticated_artifact_changed');
+  oracle.assertTutorialSourceCustody(release, root);
+}
 export async function enterSupportedAccountShell(page: any) {
   if (await page.getByRole('heading', { name: 'Welcome to Papercusp', exact: true }).isVisible()) {
     await page.getByRole('button', { name: 'Manage your account and preferences', exact: true }).click();
@@ -53,6 +58,7 @@ export async function main() {
   const playwright = await load('node_modules/@playwright/test/index.mjs');
   let user: any, browser: any, page: any, kit: any;
   let navigationStatus: number | null = null;
+  let navigationResponse: any;
   let downloadedHash: string | undefined;
   const receipt = await runDownloadPhases([
     { phase: 'artifact-custody', run: async () => {
@@ -67,7 +73,10 @@ export async function main() {
     } },
     { phase: 'browser-launch', run: async () => { browser = await playwright.chromium.launch({ channel: 'chrome', headless: true }); } },
     { phase: 'session-cookie', run: async () => { const context = await browser.newContext({ acceptDownloads: true }); context.setDefaultTimeout(10000); await context.addCookies([user.cookie(origin)]); page = await context.newPage(); } },
-    { phase: 'navigation', run: async () => { navigationStatus = (await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 30000 }))?.status() ?? null; if (navigationStatus !== 200) throw new Error('navigation_refused'); } },
+    { phase: 'navigation', run: async () => { navigationResponse = await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 30000 }); navigationStatus = navigationResponse?.status() ?? null; if (navigationStatus !== 200) throw new Error('navigation_refused'); } },
+    { phase: 'authenticated-artifact-custody', run: async () => {
+      await assertAuthenticatedArtifact(oracle, navigationResponse, { releasesDir: runtime.standaloneRuntimePaths(root).releasesRoot, journeyStartedAt: new Date(), expectedBuildId: expectedRelease.split('-2026')[0] }, root, expectedRelease);
+    } },
     { phase: 'supported-onboarding', run: async () => { await enterSupportedAccountShell(page); } },
     { phase: 'android-toolbar', run: async () => {
       const link = page.getByRole('link', { name: 'Download Android app', exact: true });
