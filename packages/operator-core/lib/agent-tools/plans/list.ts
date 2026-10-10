@@ -519,6 +519,11 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const ctxWorkspace = (ctx as { workspaceId?: string | null }).workspaceId?.trim();
+    // Resolve once before cachedRead: an unbound superuser wildcard still
+    // reads one concrete workspace, and its row notifications invalidate
+    // that partition. Retain the same scope in detached SWR source reads.
+    const workspaceId = ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId();
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
     const includeFinished = args.includeFinished !== false;
@@ -607,7 +612,7 @@ export default defineTool({
     };
 
     const { plans, groups, harnessCount, batchUnknown, truncated } = await cachedRead(
-      ctx as CachedReadCtx,
+      { ...(ctx as CachedReadCtx), workspaceId },
       {
         tool: 'plans:list',
         key: cacheKey,
@@ -628,7 +633,7 @@ export default defineTool({
         const batches: Array<{ harnessSlug: string; rows: PlanIndexRow[] }> = [];
         if (args.workspaceWide) {
           const allRows = await listPlanIndexRowsForWorkspace({
-            workspaceId: activeWorkspaceId(),
+            workspaceId,
             includeArchived,
             includeInstances,
             ...(args.template ? { template: args.template } : {}),
@@ -646,6 +651,7 @@ export default defineTool({
           for (const harnessSlug of perHarness) {
             try {
               const rows = await listPlanIndexRows({
+                workspaceId,
                 harnessSlug,
                 includeArchived,
                 includeInstances,
