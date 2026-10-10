@@ -57,7 +57,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private Portal roster opens the selected native history and explicitly selects its GUI conversation across reload', async context => {
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor',
-      history: { selectedSessionId: 1, neighborSessionId: 2, selectedMarker: 'preflight-selected', neighborMarker: 'preflight-neighbor' } });
+      history: { selectedSessionId: 1, neighborSessionId: 2, selectedRolloutId: 'preflight-selected-rollout',
+        neighborRolloutId: 'preflight-neighbor-rollout', selectedMarker: 'preflight-selected', neighborMarker: 'preflight-neighbor' } });
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
