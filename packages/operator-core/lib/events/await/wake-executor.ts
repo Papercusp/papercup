@@ -662,6 +662,7 @@ export async function defaultEnsureCodexHomeForWake(
       { ensureSuCodexHomeConfig },
       { readSuperuserToken },
       { parseLaunchCompactionLimitArgv },
+      { sessionAllowsAmbientContext },
     ] = await Promise.all([
       import('../../adv-sessions'),
       import('../../su-persona-render'),
@@ -669,6 +670,8 @@ export async function defaultEnsureCodexHomeForWake(
       import('../../role-codex-home'),
       import('../../superuser-token'),
       import('../../compaction-usage'),
+      import('../../capability-envelope/session-confinement-store')
+        .then(() => import('../../capability-envelope/session-confinement-port')),
     ]);
     const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(input.owner));
     const sessionRow = input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null));
@@ -677,6 +680,9 @@ export async function defaultEnsureCodexHomeForWake(
       fallbackCodexLaunchSpecFromAdvSession(sessionRow, input.owner);
     if (!record) return { ok: true, repaired: false, reason: 'no-launch-spec' };
     if (record.agent !== 'codex') return { ok: true, repaired: false, reason: 'unsupported-agent' };
+    const denyAmbientContext = !(await sessionAllowsAmbientContext({
+      ownerId: input.owner, workspaceId: record.workspaceId,
+    }));
 
     const operatorBaseUrl =
       resolveInheritedOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL) ||
@@ -708,7 +714,8 @@ export async function defaultEnsureCodexHomeForWake(
           input.requireGatewayProvider === true || !!input.codexGatewayAccountId ? 'su' : null,
         headless: input.headless,
         trustDir: null,
-        projectDir: input.sessionRow?.cwd,
+        projectDir: sessionRow?.cwd,
+        ...(denyAmbientContext ? { denyAmbientContext: true } : {}),
       }),
     };
   } catch (err) {
