@@ -6,8 +6,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildBundleFromPg, type PgReportReaders } from './report-builder-pg';
 
-const defaults = vi.hoisted(() => ({ listRunResults: vi.fn(), getRollout: vi.fn(), getBenchRunDetail: vi.fn() }));
-vi.mock('../reproducibility/store', () => ({ listRunResults: defaults.listRunResults, getRollout: defaults.getRollout }));
+const defaults = vi.hoisted(() => ({ listRunResults: vi.fn(), getRollout: vi.fn(), getBenchRunDetail: vi.fn(), getPrereg: vi.fn() }));
+vi.mock('../reproducibility/store', async importOriginal => ({
+  ...await importOriginal<typeof import('../reproducibility/store')>(),
+  listRunResults: defaults.listRunResults, getRollout: defaults.getRollout, getPrereg: defaults.getPrereg,
+}));
 vi.mock('../run-store', () => ({ getBenchRunDetail: defaults.getBenchRunDetail }));
 
 function fakeReaders(over: Partial<PgReportReaders> = {}): PgReportReaders {
@@ -33,6 +36,28 @@ function fakeReaders(over: Partial<PgReportReaders> = {}): PgReportReaders {
 }
 
 describe('buildBundleFromPg', () => {
+  const prereg = { runId: 'r1', preregHash: 'frozen', suites: ['swe-bench-pro'], createdAt: '2026-10-09',
+    config: { taskIds: ['t1', 't2', 't3'], seeds: [0, 1], arms: ['hive', 'su-independent', 'absent'] } };
+  it('reads the frozen population from preregistration including wholly absent arms and tasks', async () => {
+    const b = await buildBundleFromPg('r1', { readers: fakeReaders({ getPrereg: async () => prereg }) });
+    expect(b?.run.totals.tasks).toBe(3);
+    expect(b?.run.arms).toEqual(['hive', 'su-independent', 'absent']);
+    expect(b?.arms[0]).toMatchObject({ assignedAttempts: 6, primaryResolvedPct: 1 / 6 });
+    expect(b?.arms[2]).toMatchObject({ absentAttempts: 6, primaryResolvedPct: 0 });
+    expect(b?.run.prereg?.hash).toBe('frozen');
+  });
+  it('keeps an entirely unattempted preregistered run exportable', async () => {
+    const b = await buildBundleFromPg('r1', { readers: fakeReaders({ getPrereg: async () => prereg,
+      listRunResults: async () => [] }) });
+    expect(b?.suite).toBe('swe-bench-pro');
+    expect(b?.arms).toHaveLength(3);
+    expect(b?.arms.every(a => a.primaryResolvedPct === 0 && a.assignedAttempts === 6)).toBe(true);
+  });
+  it('fails closed on an unreadable preregistration rather than shrinking the population', async () => {
+    await expect(buildBundleFromPg('r1', { readers: fakeReaders({ getPrereg: async () => {
+      throw new Error('prereg unavailable');
+    } }) })).rejects.toThrow('prereg unavailable');
+  });
   it('retains source cost uncertainty and native timing metadata through the store adapter', async () => {
     const readers = fakeReaders(), rows = await readers.listRunResults({ runId: 'r1' });
     const armMeta = { costUsdMeasurementMissing: true, nativeCostAccounting: { billedCostUsd: null,
