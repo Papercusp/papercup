@@ -409,7 +409,10 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
       const rows = (await visible.json() as { rows: Array<{ id: string }> }).rows;
       expect(rows.map((row) => row.id)).toEqual([CONNECTION_A, HOST_A]);
 
-      for (const authHeaders of [{}, { cookie: `${HOSTED_SESSION_COOKIE}=invalid-cookie` }]) {
+      const unauthenticatedHeaders: Record<string, string>[] = [
+        {}, { cookie: `${HOSTED_SESSION_COOKIE}=invalid-cookie` },
+      ];
+      for (const authHeaders of unauthenticatedHeaders) {
         const denied = await fetch(`${base}${provision}`, {
           method: 'POST', headers: { ...authHeaders, origin: ORIGIN, 'content-type': 'application/json' },
           body: JSON.stringify(body),
