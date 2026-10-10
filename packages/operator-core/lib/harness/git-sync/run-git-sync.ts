@@ -1629,6 +1629,8 @@ export type GitSyncOutcome = {
    * a new local commit in the checkout whose install scopes the notification.
    */
   localCommitSha?: string;
+  /** Original producer observation time, persisted with the root commit phase. */
+  localCommitAtMs?: number;
   /**
    * Measured superproject HEAD after the local stage, including a partial
    * error/conflict pass. Absence means that stage did not supply a readable
@@ -6984,15 +6986,18 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
     });
     // Persist the proof with the commit phase itself. On a durable replay the
-    // current HEAD may already belong to a different tick.
+    // current HEAD and wall clock may already belong to a different tick.
+    const localCommitAtMs = committed.committedLocal ? Date.now() : undefined;
     return {
       ...committed,
       localCommitSha: committed.committedLocal ? await headSha(runGit, repo) : undefined,
+      localCommitAtMs,
     };
   });
   // Old phase checkpoints carry only committedLocal; never manufacture their
   // missing proof from a newer checkout HEAD.
   const localCommitSha = 'localCommitSha' in commitRes ? commitRes.localCommitSha : undefined;
+  const localCommitAtMs = 'localCommitAtMs' in commitRes ? commitRes.localCommitAtMs : undefined;
   const commitMetrics = {
     dirtyPathCount: commitRes.dirtyPathCount,
     committedCount: commitRes.committedCount,
@@ -7151,6 +7156,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const measuredHead = {
     ...(superHeadSha ? { headSha: superHeadSha } : {}),
     ...(localCommitSha ? { localCommitSha } : {}),
+    ...(localCommitSha && localCommitAtMs != null ? { localCommitAtMs } : {}),
   };
 
   if (conflicts.length > 0)

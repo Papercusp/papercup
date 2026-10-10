@@ -4362,7 +4362,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // so emit only from the root commit proof captured by the local producer.
     // Fire-and-forget, never gates the tick, benign to replay past the record step.
     if (outcome.localCommitSha) {
-      emitGitSyncCommittedEvent(outcome.localCommitSha, { scope: { installSlug: slug, workspaceId } });
+      emitGitSyncCommittedEvent(
+        outcome.localCommitSha,
+        { scope: { installSlug: slug, workspaceId } },
+        outcome.localCommitAtMs,
+      );
     }
 
     const reconcileCommittedCompletions = async (): Promise<GitSyncActionTimeoutError | undefined> => {
@@ -7918,6 +7922,7 @@ async function recordAndEscalateTick(a: {
       consecutiveErrorTicks: errTicks,
       ...(outcome.headSha ? { headSha: outcome.headSha } : {}),
       ...(outcome.localCommitSha ? { localCommitSha: outcome.localCommitSha } : {}),
+      ...(outcome.localCommitSha && outcome.localCommitAtMs != null ? { localCommitAtMs: outcome.localCommitAtMs } : {}),
     },
   });
 

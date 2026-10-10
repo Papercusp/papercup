@@ -72,6 +72,9 @@ import {
 import { dependencyGenerationRootRecord } from '../../release/dependency-generation-prebuild';
 import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
+import { emitGitSyncCommittedEvent } from './git-sync-events';
+import { gitSyncScopePayloadFilter } from '../../agent-tools/events/git-sync-await-scope';
+import { payloadMatchesFilter } from '../../events/await/pattern';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
 import { withFsMutex, withFsMutexRead } from '../../../../../scripts/lib/fs-mutex.mjs';
@@ -4240,6 +4243,64 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     phases.set('git-sync:pointer-bump', legacyPhase);
     const legacyResume = await runGitSync('test', options);
     expect(legacyResume.localCommitSha).toBeUndefined();
+  });
+
+  it('EI-255886: replaying an old commit phase cannot satisfy a newer no-SHA wait', async () => {
+    const phases = new Map<string, unknown>();
+    const step: GitSyncStepRunner = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+      if (phases.has(name)) return structuredClone(phases.get(name)) as T;
+      const result = await operation();
+      phases.set(name, structuredClone(result));
+      return result;
+    };
+    const options = { repoPath: repo, config: { push: false, pushSubmodules: false }, step };
+    const scope = { installSlug: 'test', workspaceId: 'workspace-test' };
+    const emit = vi.fn(async (_opts: { key: string; payload?: unknown }) => ({
+      ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0,
+    }));
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      writeFileSync(join(repo, 'producer-time.txt'), 'first local tick\n');
+      const first = await runGitSync('test', options);
+      const firstCommit = git(repo, 'rev-parse', 'HEAD');
+      expect(first.localCommitSha).toBe(firstCommit);
+
+      // A later tick advances HEAD after this wait registered. Replay must carry
+      // the original producer boundary, not the new HEAD or the emission time.
+      const laterWait = gitSyncScopePayloadFilter(scope, 'committed', 2_000);
+      now.mockReturnValue(4_000);
+      writeFileSync(join(repo, 'later-producer.txt'), 'independent later tick\n');
+      git(repo, 'add', 'later-producer.txt');
+      git(repo, 'commit', '--no-verify', '-m', 'independent later producer');
+      const resumed = await runGitSync('test', options);
+      expect(resumed.localCommitSha).toBe(firstCommit);
+      expect(git(repo, 'rev-parse', 'HEAD')).not.toBe(firstCommit);
+      emitGitSyncCommittedEvent(resumed.localCommitSha!, { scope, emit }, resumed.localCommitAtMs);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const payload = emit.mock.calls.find(([opts]) => opts.key === 'git-sync:committed')?.[0].payload;
+      expect(payloadMatchesFilter(laterWait, payload)).toBe(false);
+      expect(payloadMatchesFilter(gitSyncScopePayloadFilter(scope, 'committed', 500), payload)).toBe(true);
+      expect(emit.mock.calls.map(([opts]) => opts.key)).toContain(`git-sync:committed:${firstCommit}`);
+      expect(payload).toMatchObject({ sha: firstCommit, committedAtMs: 1_000 });
+      expect(phases.get('git-sync:pointer-bump')).toMatchObject({ localCommitAtMs: 1_000 });
+
+      // Old checkpoints can prove a SHA without a timestamp. Do not manufacture
+      // freshness for them, while preserving the precise per-SHA signal.
+      const legacyPhase = { ...phases.get('git-sync:pointer-bump') as Record<string, unknown> };
+      delete legacyPhase.localCommitAtMs;
+      phases.set('git-sync:pointer-bump', legacyPhase);
+      emit.mockClear();
+      const legacy = await runGitSync('test', options);
+      emitGitSyncCommittedEvent(legacy.localCommitSha!, { scope, emit }, legacy.localCommitAtMs);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const legacyPayload = emit.mock.calls.find(([opts]) => opts.key === 'git-sync:committed')?.[0].payload;
+      expect(payloadMatchesFilter(laterWait, legacyPayload)).toBe(false);
+      expect(legacyPayload).not.toHaveProperty('committedAtMs');
+      expect(emit.mock.calls.map(([opts]) => opts.key)).toContain(`git-sync:committed:${firstCommit}`);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('GAP-4: a submodule unreachable while ahead → errors + defers the superproject PUSH (no broken gitlink) but still COMMITS it locally', () => {

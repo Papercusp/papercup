@@ -911,6 +911,7 @@ const syncedOutcome: GitSyncOutcome = {
   dirtyPathCount: 4,
   committedCount: 2,
   localCommitSha: 'abc123def456',
+  localCommitAtMs: 1_000,
   headSha: 'abc123def456',
   pushed: ['libs/generic/sync', 'superproject'],
   merged: ['superproject'],
@@ -947,6 +948,7 @@ const contentErrorOutcome: GitSyncOutcome = {
   dirtyPathCount: 2,
   committedCount: 1,
   localCommitSha: 'def789',
+  localCommitAtMs: 1_000,
   headSha: 'def789',
   pushed: ['superproject'],
   merged: [],
@@ -1162,10 +1164,12 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     'EI-255862: notifies a proven root local commit despite aggregate $status',
     async (partialOutcome) => {
       const localCommitSha = 'e'.repeat(40);
+      const localCommitAtMs = 1_000;
       runGitSyncMock.mockResolvedValue({
         ...partialOutcome,
         committedCount: 2,
         localCommitSha,
+        localCommitAtMs,
         headSha: 'f'.repeat(40),
       } as GitSyncOutcome);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -1174,6 +1178,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
         expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
           localCommitSha,
           { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
+          localCommitAtMs,
         );
       } finally {
         warn.mockRestore();
@@ -1185,6 +1190,21 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     runGitSyncMock.mockResolvedValue({ ...syncedOutcome, committedCount: 1, localCommitSha: undefined });
     await action(ctx);
     expect(emitGitSyncCommittedEventMock).not.toHaveBeenCalled();
+  });
+
+  it.each([1_000, undefined])('EI-255886: carries producer time %s without retimestamping on action replay', async (localCommitAtMs) => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, localCommitAtMs } as GitSyncOutcome);
+    const now = vi.spyOn(Date, 'now').mockReturnValue(4_000);
+    try {
+      await action(ctx);
+      expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
+        syncedOutcome.localCommitSha,
+        { scope: { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId } },
+        localCommitAtMs,
+      );
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('refuses every on-demand fire on a request-only host before the git-sync pipeline starts', async () => {
@@ -1419,6 +1439,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
       expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
         syncedOutcome.headSha,
         expect.objectContaining({ scope: expect.any(Object) }),
+        syncedOutcome.localCommitAtMs,
       );
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('remaining candidates will be retried on a later fire'));
     } finally {
