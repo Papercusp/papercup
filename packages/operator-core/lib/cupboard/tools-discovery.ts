@@ -580,12 +580,13 @@ export function unionRequiredKeyHint(branches: readonly { required?: unknown }[]
     .join('|');
 }
 
-/** Keep conditional root-union guidance useful without allowing one schema to
- * consume the discovery response. A skipped hint is safer than a partial
- * condition that could teach an invalid value. */
-export const UNION_CONDITIONAL_HINT_MAX_CHARS = 320;
+/** Keep conditional root-union guidance bounded. When the complete set of
+ * branch rules cannot fit, signal that the merged view is incomplete instead
+ * of returning a partial condition that could teach an invalid combination. */
+export const UNION_CONDITIONAL_HINT_MAX_CHARS = 1_200;
 const UNION_CONDITIONAL_HINT_MAX_VALUES = 8;
-const UNION_CONDITIONAL_HINT_MAX_RELATIONS = 4;
+const UNION_CONDITIONAL_HINT_MAX_RELATIONS = 32;
+const UNION_CONDITIONAL_HINT_OVERFLOW = 'conditional branch rules omitted; request full schema';
 
 type UnionSchemaBranch = {
   properties?: unknown;
@@ -651,6 +652,7 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
   );
   const targetNames = [...new Set(branchData.flatMap((branch) => Object.keys(branch.properties as Record<string, unknown>)))];
   const relations: string[] = [];
+  let incomplete = false;
 
   for (const discriminator of discriminatorNames) {
     const discriminatorValues = branchData.map((branch) =>
@@ -704,7 +706,11 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
         }
       });
 
-      if (!valid || statuses.size !== allValues.size || forbiddenValues.size === 0) continue;
+      if (!valid || statuses.size !== allValues.size) {
+        if ([...statuses.values()].includes('forbidden')) incomplete = true;
+        continue;
+      }
+      if (forbiddenValues.size === 0) continue;
 
       let requiredCondition: string | null = null;
       let forbiddenCondition: string | null = null;
@@ -727,10 +733,16 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
             : forbiddenList.length === 1 && requiredList.length > 0
               ? unionConditionText(discriminator, forbiddenList)
               : unionConditionText(discriminator, forbiddenList);
-        if (!requiredCondition || !forbiddenCondition) continue;
+        if (!requiredCondition || !forbiddenCondition) {
+          incomplete = true;
+          continue;
+        }
       } else {
         forbiddenCondition = unionConditionText(discriminator, [...forbiddenValues.values()]);
-        if (!forbiddenCondition) continue;
+        if (!forbiddenCondition) {
+          incomplete = true;
+          continue;
+        }
       }
 
       // Group fields with the same branch-status vector before the compact
@@ -753,12 +765,19 @@ export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): st
         ? `when ${group.requiredCondition} => ${targets} required; when ${group.forbiddenCondition} => ${targets} forbidden`
         : `when ${group.forbiddenCondition} => ${targets} forbidden`;
       const candidate = relations.length > 0 ? `${relations.join('; ')}; ${relation}` : relation;
-      if (candidate.length > UNION_CONDITIONAL_HINT_MAX_CHARS) continue;
+      // A compact merged field list is only safe when every branch rule fits.
+      // Returning the first few rules made later operation-specific fields look
+      // valid in every variant (release:cut's work_item_id on reclaim was one
+      // observed example). Mark the whole conditional section incomplete rather
+      // than teaching a partial contract.
+      if (
+        candidate.length > UNION_CONDITIONAL_HINT_MAX_CHARS ||
+        relations.length >= UNION_CONDITIONAL_HINT_MAX_RELATIONS
+      ) return UNION_CONDITIONAL_HINT_OVERFLOW;
       relations.push(relation);
-      if (relations.length >= UNION_CONDITIONAL_HINT_MAX_RELATIONS) return relations.join('; ');
     }
   }
-  return relations.join('; ');
+  return incomplete ? UNION_CONDITIONAL_HINT_OVERFLOW : relations.join('; ');
 }
 
 /**
