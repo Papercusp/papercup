@@ -98,6 +98,7 @@ import {
 } from '../../../mcp-request-trace';
 import type { ScratchWriteTimings } from '../../../scratch-gc';
 import { acquireSnapshot, DbCallDeadlineError, getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
+import { samplePgBouncerPools } from './pgbouncer-pool-sample.mjs';
 import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import {
@@ -1885,6 +1886,22 @@ export async function tryBuildSpawnContext(
         // A supplied native-session claim is meaningful only when the binding
         // check succeeds. Failing open here would restore the inherited-SID bug
         // exactly when its verifier is unavailable.
+        if (error instanceof DbCallDeadlineError &&
+            Number.isFinite(error.deadlineMs) && Number.isFinite(error.elapsedMs)) {
+          const requestFingerprint = typeof verifierTraceId === 'string' && verifierTraceId.length <= 256
+            ? createHash('sha256').update(verifierTraceId, 'utf8').digest('hex').slice(0, 16)
+            : undefined;
+          try {
+            // Start out-of-band sampling before returning the auth failure; never await a
+            // diagnostic whose purpose is to observe a potentially blocked DB path.
+            void samplePgBouncerPools('native-session-verifier-deadline', {
+              pid: process.pid,
+              ...(requestFingerprint ? { requestFingerprint } : {}),
+            }).catch(() => {});
+          } catch {
+            /* diagnostic trigger failures must not alter fail-closed auth behavior */
+          }
+        }
         return {
           kind: 'failed',
           reason: 'superuser_native_session_verifier_unavailable',

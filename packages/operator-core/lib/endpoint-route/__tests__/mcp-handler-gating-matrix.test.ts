@@ -92,6 +92,7 @@ const h = vi.hoisted(() => {
     nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
     nativeSessionWorkspaceScopes: [] as Array<string | undefined>,
     nativeSessionDiagnosticContexts: [] as unknown[],
+    nativeVerifierSampling: [] as unknown[][],
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
     /** EI-22390450916579377: plugin-host warm seam for late projected-tool registration. */
@@ -524,6 +525,18 @@ vi.mock('../../plugin-host-runtime', async (importOriginal) => {
   return {
     ...actual,
     getPluginHost: (): Promise<unknown> => h.pluginHostWarm(),
+  };
+});
+vi.mock('../routes/transport/pgbouncer-pool-sample.mjs', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    // A never-settling promise proves verifier failure handling does not await
+    // the out-of-band diagnostic before returning its fail-closed auth result.
+    samplePgBouncerPools: (...args: unknown[]) => {
+      h.nativeVerifierSampling.push(args);
+      return new Promise(() => {});
+    },
   };
 });
 
@@ -2063,6 +2076,7 @@ beforeEach(() => {
   h.nativeSessionCalls.length = 0;
   h.nativeSessionWorkspaceScopes.length = 0;
   h.nativeSessionDiagnosticContexts.length = 0;
+  h.nativeVerifierSampling.length = 0;
   h.workspaceAcquireError = null;
   h.getPresence.mockResolvedValue(null);
   h.assemblePresenceSnapshot.mockResolvedValue({
@@ -5521,6 +5535,13 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
         state: 'linked',
         correlation: { requestId: traceId, operation: 'mcp.nativeSessionVerifier' },
       });
+      expect(h.nativeVerifierSampling).toEqual([[
+        'native-session-verifier-deadline',
+        {
+          pid: process.pid,
+          requestFingerprint: createHash('sha256').update(traceId, 'utf8').digest('hex').slice(0, 16),
+        },
+      ]]);
     } finally {
       waitingTicket.release();
       heldTicket.release();
@@ -5554,6 +5575,7 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
       mcpAuthFailure?: { nativeSession?: { verifierFailure?: Record<string, unknown> } };
     };
     expect(metadata.mcpAuthFailure?.nativeSession?.verifierFailure).not.toHaveProperty('acquisition');
+    expect(h.nativeVerifierSampling).toHaveLength(0);
   });
 
   it('redacts identifiers and connection URLs in typed native verifier deadline fields', async () => {
