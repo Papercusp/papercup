@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
@@ -79,9 +79,18 @@ describe('PUI acceptance dependency retirement', () => {
     expect(await readFile(join(checkout, 'node_modules/package.txt'), 'utf8')).toBe('rebuildable');
   });
   it.each([
-    { status: 0, cleanupRefused: false }, { status: 1, cleanupRefused: false },
-    { status: 2, cleanupRefused: false }, { status: 0, cleanupRefused: true },
-  ])('runs the actual wrapper lifecycle: $status, cleanup refused=$cleanupRefused', async ({ status, cleanupRefused }) => {
+    { status: 0, cleanupRefused: false, symlinkedSlotOne: false },
+    { status: 1, cleanupRefused: false, symlinkedSlotOne: false },
+    { status: 2, cleanupRefused: false, symlinkedSlotOne: false },
+    { status: 0, cleanupRefused: true, symlinkedSlotOne: false },
+    { status: 0, cleanupRefused: false, symlinkedSlotOne: true },
+  ])('runs the actual wrapper lifecycle: $status, cleanup refused=$cleanupRefused, symlinked slot=$symlinkedSlotOne', async ({ status, cleanupRefused, symlinkedSlotOne = false }) => {
+    if (symlinkedSlotOne) {
+      const secondSlot = join(cache, 'slot-2');
+      await rename(checkout, secondSlot);
+      await symlink(secondSlot, checkout);
+      checkout = secondSlot;
+    }
     const repo = resolve(__dirname, '../../../..');
     const fixture = join(cache, 'runner');
     const wrapper = join(fixture, 'apps/tui/scripts/release-acceptance.sh');
@@ -131,6 +140,7 @@ process.exit(r.status ?? 2);
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     const [code] = await once(child, 'close');
     expect(code, stderr).toBe(cleanupRefused ? 2 : status);
+    if (symlinkedSlotOne) expect(stderr).toContain('skipping symlinked checkout slot 1');
     if (cleanupRefused) {
       expect(stderr).toContain('dependency retirement refused');
       expect(await readFile(join(checkout, 'node_modules/package.txt'), 'utf8')).toBe('rebuildable');
