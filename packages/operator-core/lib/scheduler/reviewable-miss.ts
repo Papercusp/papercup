@@ -46,7 +46,14 @@ export interface ReviewableMissRoute {
    *  `excludedSample.queueControl.agentReview[].id`, each with its `ledgerIdeaId`. */
   list: {
     tool: 'work_items:claimable';
-    args: { harness?: string; spec?: string; breakdownOnly: true; sampleExcluded: number };
+    args: {
+      harness?: string;
+      spec?: string;
+      breakdownOnly: true;
+      sampleExcluded: number;
+      /** Dispatch-level projection keeps the bounded sample visible through the result door. */
+      projection: { pick: string[] };
+    };
     idsAt: typeof REVIEWABLE_MISS_IDS_AT;
   };
   /** Step 2: bind one listed id to the required `id` argument before calling the review tool. */
@@ -96,6 +103,7 @@ export function reviewableMiss(
         ...(spec ? { spec } : {}),
         breakdownOnly: true,
         sampleExcluded: REVIEWABLE_MISS_SAMPLE,
+        projection: { pick: ['excludedSample.queueControl.agentReview'] },
       },
       idsAt: REVIEWABLE_MISS_IDS_AT,
     },
