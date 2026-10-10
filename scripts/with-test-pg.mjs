@@ -50,6 +50,15 @@ if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime)) {
   process.exit(2);
 }
 
+// Evidence must outlive the private database. Require an explicit reporter-only
+// sink before bootstrapping when the caller asks for durable ledger receipts.
+// Never derive it from a product URL or silently claim a private insert survived.
+if (isolatedRuntime && (process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim() ||
+    process.env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) && !process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim()) {
+  console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+  process.exit(1);
+}
+
 // spawn below runs from ROOT. Resolve that SAME executable before allocating
 // or migrating Postgres, and pin the path used by spawn. A package-relative
 // command must not burn an entire bootstrap before discovering ENOENT.
@@ -337,7 +346,18 @@ if (isolatedRuntime) {
   // Start from no ambient operator identity, endpoints, IPC or credentials.
   // HOME alone is insufficient: an inherited PAPERCUSP_SUBSTRATE_IPC_SOCKET,
   // API base or DHT bootstrap can still join the running operator.
+  // The existing test reporters have a separate explicit ledger sink and
+  // attribution contract. Preserve only those keys; product pools still receive
+  // the private runtime URLs below, and unrelated PAPERCUSP_ keys stay scrubbed.
+  const evidenceKeys = new Set([
+    'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+    'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
+    'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
+    'PAPERCUSP_TEST_RUN_COMMIT', 'PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN',
+    'PAPERCUSP_TEST_RUN_LOOP_LAG_P95_MS',
+  ]);
   for (const key of Object.keys(childEnv)) {
+    if (evidenceKeys.has(key)) continue;
     if (/^(PAPERCUSP_|HARNESS_|DBOS__|PG[A-Z]|DATABASE_URL$|AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|CLOUDSDK_|DOCKER_|GIT_ASKPASS$|GIT_CONFIG_|SSH_AUTH_SOCK$|CODEX_HOME$|VITEST(?:_|$)|DBUS_SESSION_BUS_ADDRESS$|GNOME_KEYRING_CONTROL$)/i.test(key)) {
       delete childEnv[key];
     }

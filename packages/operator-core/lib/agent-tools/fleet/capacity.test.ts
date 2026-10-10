@@ -476,8 +476,9 @@ test('EI-20183190844096359: Codex capacity ignores stale Claude walls and report
   const body = JSON.parse(res.content[0]!.text);
 
   assert.equal(body.ok, true);
-  assert.equal(body.verdict, 'measured');
+  assert.equal(body.verdict, 'unknown');
   assert.deepEqual(body.scope, { provider: 'codex', model: 'gpt-5.6-luna', account: null });
+  assert.ok(body.capacityUnknown.some((note: string) => note.includes('gpt-5.6-luna')));
   assert.equal(body.usableAccounts, 1);
   assert.equal(body.poolExhausted, false);
   assert.equal(body.healthyAccounts, 1);
@@ -575,11 +576,63 @@ test('WI-10006088: a real account pin still narrows capacity with an explicit mo
   try {
     const res = await capacityMod.default.handler({ model: 'gpt-6-luna', account: 'selected', headroom: 3 } as never, {} as never);
     const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
-    assert.equal(body.verdict, 'measured');
+    assert.equal(body.verdict, 'unknown');
+    assert.equal(body.recommendedHeadroom, null);
     assert.equal(body.accountPool.total, 1);
     assert.equal(body.accountPool.usable, 1);
     assert.equal(body.account, 'selected');
     assert.equal(mockAccountStatus.mock.calls.length > 0, true);
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('EI-25562829699329250: pinned canonical verdict excludes the other accounts in both directions', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValue(tieredHr());
+  try {
+    for (const pinnedWalled of [false, true]) {
+      mockAccountStatus.mockResolvedValueOnce([
+        acctRow('selected', { available: !pinnedWalled, usageWalled: pinnedWalled }),
+        acctRow('other', { available: pinnedWalled, usageWalled: !pinnedWalled }),
+      ]);
+      const res = await capacityMod.default.handler({ provider: 'claude', account: 'selected' } as never, {} as never);
+      const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
+      assert.equal(body.accountPool.total, 1);
+      assert.equal(body.capacityVerdict.atCapacity, pinnedWalled);
+      assert.equal(body.capacityVerdict.binding, pinnedWalled ? 'usage-wall' : 'none');
+      const signals = new Map(body.capacityVerdict.evidence.map((entry: { signal: string; value: number }) =>
+        [entry.signal, entry.value]));
+      assert.equal(signals.get('pool.serviceable'), pinnedWalled ? 0 : 1);
+      assert.equal(signals.get('pool.walledFresh'), pinnedWalled ? 1 : 0);
+      assert.deepEqual(body.capacityUnknown, []);
+    }
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('EI-25562829699329250: representative-model health cannot establish requested Haiku readiness', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom');
+  try {
+    for (const representativeHealthyAccounts of [0, 8]) {
+      mockAccountStatus.mockResolvedValueOnce([acctRow('selected')]);
+      headroomSpy.mockResolvedValueOnce(tieredHr({
+        healthyAccounts: representativeHealthyAccounts,
+        priorityTiers: { ...tieredHr().priorityTiers!, healthyAccounts: representativeHealthyAccounts },
+      }));
+      const model = 'claude-haiku-4-5-20251001';
+      const res = await capacityMod.default.handler({ provider: 'claude', model, account: 'selected' } as never, {} as never);
+      const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
+      assert.equal(body.verdict, 'unknown');
+      assert.equal(body.scope.model, model);
+      assert.equal(body.recommendedHeadroom, null);
+      assert.ok(body.capacityVerdict.unknown.some((note: string) => note.includes(model) && /unmeasured/i.test(note)));
+      assert.deepEqual(body.capacityUnknown, body.capacityVerdict.unknown);
+    }
   } finally {
     headroomSpy.mockRestore();
   }

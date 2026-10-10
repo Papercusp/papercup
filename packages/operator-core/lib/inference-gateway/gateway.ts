@@ -135,6 +135,7 @@ import type { AccountPool, ActiveAccount } from './provider-contracts';
 export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
   GatewayRequestTelemetry,
+  readGatewayNativeCorrelation,
   classifyGatewayTelemetryOutcome,
   type GatewayRequestSpan,
   type GatewayRequestTelemetrySnapshot,
@@ -1197,6 +1198,9 @@ export interface GatewayCarryTrialAttempt {
   readonly target: string;
   readonly body: string;
   readonly bodySha256: string;
+  /** Caller-observed native IDs; only host/source reconciliation may attest them. */
+  readonly nativeSessionId?: string;
+  readonly nativeTurnId?: string;
   readonly clockId: string;
   readonly signal: AbortSignal;
 }
@@ -2423,10 +2427,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const credential = authorization ?? apiKey!;
     const body = Buffer.from(init.body).toString('utf8');
     const attemptId = randomUUID();
+    const native = transport === 'anthropic-http' ? null : readGatewayNativeCorrelation(JSON.parse(body));
     const attempt: GatewayCarryTrialAttempt = Object.freeze({
       attemptId, manifestSha256: carryTrial.manifestSha256, armId: carryTrial.armId,
       transport, accountId, target, body,
       bodySha256: createHash('sha256').update(init.body).digest('hex'),
+      ...(native?.status === 'observed' ? { nativeSessionId: native.threadId!, nativeTurnId: native.turnId! } : {}),
       credentialHeader, credentialSha256: createHash('sha256').update(credential).digest('hex'),
       clockId: processMonotonicClock.id, signal: init.signal,
     });

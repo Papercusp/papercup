@@ -97,16 +97,35 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
 
   it('keeps the pending-review projection and claim-next partial index aligned (EI-25555666233005302)', async () => {
     await seed('WI-PROJECTION', true, 1, null);
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, item_kind, status, payload, created_ts, feature_order)
+      SELECT ${WS}, ${HARNESS}, 'WI-PLAN-FILLER-' || i::text, 'Neutral queue item', 'Plan fixture', 'change',
+        'open', '{}'::jsonb, i + 1, i + 1
+      FROM generate_series(1, 5000) AS i`;
+    await db.adminSql`ANALYZE harness_shared.work_items`;
 
     const [row] = await db.adminSql`SELECT agent_review_projection
       FROM harness_shared.work_items
       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-PROJECTION'`;
     const [index] = await db.adminSql`SELECT indexdef FROM pg_indexes
       WHERE schemaname = 'harness_shared' AND indexname = 'work_items_agent_review_claim_next_idx'`;
+    const [plan] = await db.adminSql`EXPLAIN (FORMAT JSON, COSTS FALSE)
+      SELECT feature_id
+      FROM harness_shared.work_items wi
+      WHERE workspace_id = ${WS}
+        AND harness_slug = ${HARNESS}
+        AND status = 'open'
+        AND item_kind IN ('bug', 'change', 'task', 'feature')
+        AND (taken_by IS NULL OR btrim(taken_by) = '')
+        AND agent_review_projection ->> 'status' = 'pending'
+      ORDER BY feature_order ASC NULLS LAST, created_ts ASC
+      LIMIT 25`;
+    const indexDef = index?.indexdef ?? '';
 
     expect(row?.agent_review_projection).toMatchObject({ status: 'pending', submittedBy: 'su-filer' });
-    expect(index?.indexdef).toContain("agent_review_projection ->> 'status' = 'pending'");
-    expect(index?.indexdef).toContain("status = 'open'");
-    expect(index?.indexdef).toContain("btrim(taken_by) = ''");
+    expect(indexDef).toMatch(/agent_review_projection\s*->>\s*'status'(?:::text)?\)?\s*=\s*'pending'(?:::text)?/);
+    expect(indexDef).toMatch(/status\s*=\s*'open'(?:::text)?/);
+    expect(indexDef).toMatch(/btrim\(\s*taken_by\s*\)\s*=\s*''(?:::text)?/);
+    expect(JSON.stringify(plan)).toContain('work_items_agent_review_claim_next_idx');
   });
 });

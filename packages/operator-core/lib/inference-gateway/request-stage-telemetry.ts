@@ -96,6 +96,35 @@ export interface GatewayNativeCorrelation {
 const emptyNativeCorrelation = (status: GatewayNativeCorrelation['status'] = 'unobserved'): GatewayNativeCorrelation =>
   ({ status, sessionId: null, threadId: null, turnId: null, windowId: null });
 
+/** Read the maintained bounded native correlation format. These are caller
+ * observations, to be reconciled with host-owned source identity, not authority. */
+export function readGatewayNativeCorrelation(body: unknown): GatewayNativeCorrelation {
+  const record = (v: unknown): Record<string, unknown> | null =>
+    v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+  const parsed = record(body);
+  if (!parsed) return emptyNativeCorrelation('invalid');
+  if (!Object.hasOwn(parsed, 'client_metadata')) return emptyNativeCorrelation('missing');
+  const client = record(parsed.client_metadata);
+  if (!client) return emptyNativeCorrelation('invalid');
+  if (!Object.hasOwn(client, 'x-codex-turn-metadata')) return emptyNativeCorrelation('missing');
+  const text = client['x-codex-turn-metadata'];
+  if (typeof text !== 'string') return emptyNativeCorrelation('invalid');
+  if (Buffer.byteLength(text, 'utf8') > 4096) return emptyNativeCorrelation('oversized');
+  try {
+    const meta = record(JSON.parse(text));
+    const uuid = (v: unknown): v is string => typeof v === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+    const windowId = (v: unknown): v is string => uuid(v) || typeof v === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]{1,10}$/i.test(v);
+    if (!meta || !uuid(meta.thread_id) || !uuid(meta.turn_id) ||
+        Object.hasOwn(meta, 'session_id') && !uuid(meta.session_id) ||
+        Object.hasOwn(meta, 'window_id') && !windowId(meta.window_id)) return emptyNativeCorrelation('invalid');
+    return { status: 'observed', threadId: meta.thread_id, turnId: meta.turn_id,
+      sessionId: typeof meta.session_id === 'string' ? meta.session_id : null,
+      windowId: typeof meta.window_id === 'string' ? meta.window_id : null };
+  } catch { return emptyNativeCorrelation('invalid'); }
+}
+
 export interface GatewayCacheObservation {
   servingAccountId: string | null;
   providerRequestId: string | null;
@@ -1015,38 +1044,8 @@ export class GatewayRequestSpan {
    * fingerprint ceiling can carry a bounded correlation observation. */
   setNativeCorrelation(body: unknown): void {
     if (this.finished) return;
-    const record = (v: unknown): Record<string, unknown> | null =>
-      v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
-    const unknown = (status: GatewayNativeCorrelation['status']) => { this.nativeCorrelation = emptyNativeCorrelation(status); };
-    const parsed = record(body);
-    if (!parsed || this.provider !== 'codex' || this.protocol !== 'openai-responses') { unknown('invalid'); return; }
-    if (!Object.hasOwn(parsed, 'client_metadata')) { unknown('missing'); return; }
-    const client = record(parsed.client_metadata);
-    if (!client) { unknown('invalid'); return; }
-    if (!Object.hasOwn(client, 'x-codex-turn-metadata')) { unknown('missing'); return; }
-    const text = client['x-codex-turn-metadata'];
-    if (typeof text !== 'string') { unknown('invalid'); return; }
-    // Fixed diagnostic bound, not a larger request parse/retention budget.
-    if (Buffer.byteLength(text, 'utf8') > 4096) { unknown('oversized'); return; }
-    try {
-      const meta = record(JSON.parse(text));
-      const uuid = (v: unknown): v is string => typeof v === 'string' &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
-      // Installed Codex emits window_id as UUID:<window ordinal>, e.g. :0;
-      // it is not itself a UUID. Keep that exact bounded identity intact.
-      const windowId = (v: unknown): v is string => uuid(v) || typeof v === 'string' &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]{1,10}$/i.test(v);
-      if (!meta || !uuid(meta.thread_id) || !uuid(meta.turn_id) ||
-        (Object.hasOwn(meta, 'session_id') && !uuid(meta.session_id)) ||
-        (Object.hasOwn(meta, 'window_id') && !windowId(meta.window_id))) {
-        unknown('invalid'); return;
-      }
-      // No truncation, normalization, or fallback from owner/time proximity.
-      // Discard every non-whitelisted field, including custom case/prompt data.
-      this.nativeCorrelation = { status: 'observed', threadId: meta.thread_id, turnId: meta.turn_id,
-        sessionId: typeof meta.session_id === 'string' ? meta.session_id : null,
-        windowId: typeof meta.window_id === 'string' ? meta.window_id : null };
-    } catch { unknown('invalid'); }
+    this.nativeCorrelation = this.provider === 'codex' && this.protocol === 'openai-responses'
+      ? readGatewayNativeCorrelation(body) : emptyNativeCorrelation('invalid');
   }
 
   /** Inspect only the already-buffered shaped body, with a hard parse-size ceiling. */

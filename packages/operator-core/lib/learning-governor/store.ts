@@ -799,12 +799,17 @@ export async function recordLearningSpendAttemptResult(sql: Sql, q: RecordLearni
   const text = (s: unknown): s is string => typeof s === 'string' && !!s.trim() && s.length <= 4096;
   const identity = { attemptId: value.attemptId, manifestSha256: value.manifestSha256, armId: value.armId,
     transport: value.transport, accountId: value.accountId, credentialHeader: value.credentialHeader,
-    credentialSha256: value.credentialSha256, target: value.target, bodySha256: value.bodySha256, clockId: value.clockId };
+    credentialSha256: value.credentialSha256, target: value.target, bodySha256: value.bodySha256, clockId: value.clockId,
+    ...(value.nativeSessionId === undefined && value.nativeTurnId === undefined ? {} :
+      { nativeSessionId: value.nativeSessionId, nativeTurnId: value.nativeTurnId }) };
   if (!text(q.workspaceId) || !text(q.reservationId) || value.reservationRef !== q.reservationId ||
       ![identity.attemptId, identity.armId, identity.accountId, identity.target, identity.clockId].every(text) ||
       ![identity.manifestSha256, identity.credentialSha256, identity.bodySha256].every(sha) ||
       !['oauth-http', 'bearer-http', 'anthropic-http'].includes(identity.transport) ||
       !['authorization', 'x-api-key'].includes(identity.credentialHeader)) return { ok: false, reason: 'invalid-result' };
+  if ((identity.nativeSessionId !== undefined || identity.nativeTurnId !== undefined) &&
+      ![identity.nativeSessionId, identity.nativeTurnId].every(id => typeof id === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) return { ok: false, reason: 'invalid-result' };
   let result: Record<string, unknown> = { ...identity, reservationRef: q.reservationId, outcome: value.outcome,
     responseStatus: value.responseStatus, costUsdMeasurementMissing: value.costUsdMeasurementMissing };
   if (value.outcome === 'send-refused') {

@@ -1471,10 +1471,11 @@ export async function requestSessionIdentityActivationInTransaction(input: {
  * at all — and the fail-closed rules that govern it — is decided entirely by
  * `carryIdentityReceiptForControlActivation`; this function only does the I/O.
  *
- * Returns what it did rather than throwing: a session with no launch record is
- * the ordinary legacy path, and a losing CAS means a concurrent writer already
- * rewrote the record (the next transition re-carries). Neither is a reason to
- * fail the mode/loop/route write this receipt is merely accompanying.
+ * The row lock serializes this read/merge/write with recordSuLaunchSpec, which
+ * also locks its selected adv_sessions row. Keep the compare-and-set as a
+ * defensive guard; an ordinary concurrent launch rewrite must resume this read
+ * with the newly committed record instead of making receipt carry lose its CAS.
+ * A session with no launch record remains the ordinary legacy path.
  */
 async function carryControlActivationIdentityReceipt(input: {
   ownerId: string;
@@ -1486,8 +1487,13 @@ async function carryControlActivationIdentityReceipt(input: {
     SELECT a.id, to_jsonb(a)->'launch_spec' AS launch_spec
       FROM harness_shared.adv_sessions a
      WHERE a.workspace_id = ${input.workspaceId} AND a.coord_owner_id = ${input.ownerId}
-     ORDER BY a.id DESC
+       AND a.ended_at IS NULL AND a.ended_by IS NULL
+     -- session_briefs is owner-scoped, but tool preflight evaluates the
+     -- caller's live adv_sessions row. Never carry its receipt onto a newer
+     -- ended sibling and leave the live caller stale.
+     ORDER BY a.started_at DESC, a.id DESC
      LIMIT 1
+     FOR UPDATE OF a
   `;
   const row = rows[0];
   const record = parseSuLaunchSpecRecord(row?.launch_spec);

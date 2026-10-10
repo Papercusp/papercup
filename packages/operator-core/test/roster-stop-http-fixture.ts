@@ -230,6 +230,7 @@ async function main() {
     assert.equal((await getSessionUser(new Headers({ cookie: `${SESSION_COOKIE}=${ownSession.token}` })))?.workspace_id, workspace);
     const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
     let aliveProbe = 0;
+    let neighborProbe = 0;
     const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected: selected.owner, neighbor: neighbor.owner,
       portalSourceRoot: portalSourceRoot!, cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
       stop: { selected, neighbor,
@@ -245,6 +246,14 @@ async function main() {
           assert.ok((await getAdvSessionInWorkspace(selected.id, workspace))?.endedAt);
           assert.equal(existsSync(socketPathFor(selected.owner)), false);
           await responds(neighbor, 'neighbor-after-browser-selected-stop');
+        },
+        assertNeighborAlive: async () => {
+          await responds(neighbor, `neighbor-after-browser-control-${++neighborProbe}`);
+          await quiet(neighbor);
+        },
+        invalidateNeighborLaunch: async () => {
+          await sql`UPDATE harness_shared.adv_sessions SET started_at = started_at + interval '1 second' WHERE id = ${neighbor.id}`;
+          assert.notEqual((await getAdvSessionInWorkspace(neighbor.id, workspace))?.startedAt, neighbor.startedAt);
         },
       } });
     console.log('ROSTER_STOP_BROWSER_RECEIPT ' + JSON.stringify({ ...receipt, health,

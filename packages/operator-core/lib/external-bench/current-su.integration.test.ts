@@ -1,7 +1,7 @@
 /** Private PG + immutable git protocol integration; no inference or product writes. */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync, renameSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
@@ -11,6 +11,7 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { currentBenchObservationReader, currentBenchIdentityFromObservation, liveCurrentBenchObservationReaderPorts,
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
   liveCurrentBenchNativeCostReader, currentBenchLaunchRequest,
+  currentBenchAssignmentId, currentBenchGatewayController,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
 import type { BenchHarnessOps } from './bench-harness-live';
@@ -21,6 +22,8 @@ import { createInferenceGateway } from '../inference-gateway/gateway';
 import { createFailoverPool } from '../inference-gateway/account-failover';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
+import { registerLearningLoop, reserveLearningSpend, recordLearningSpendAttemptResult, getLearningSpendPositions } from '../learning-governor/store';
+import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>() }));
@@ -106,13 +109,21 @@ beforeAll(async () => {
       identity_activation_event_id text, identity_owner_id text, identity_principal_id text,
       identity_specification_revision text, identity_state_revision text);
     CREATE VIEW harness_shared.agent_usage_samples_identity_attribution AS SELECT * FROM harness_shared.agent_usage_samples;`);
+  for (const name of ['244-learning-governor.sql', '1116-learning-spend-reservations.sql', '1224-learning-reservation-resources.sql']) {
+    const body = readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url), 'utf8')
+      .split('\n').filter(line => !/\bGRANT\b|^\s*\\/.test(line)).join('\n');
+    await sql.unsafe(body);
+  }
+  await sql.unsafe('ALTER TABLE harness_shared.learning_governor_loops ADD COLUMN pot_slug text');
+  await sql.unsafe('ALTER TABLE harness_shared.learning_spend_events ADD COLUMN pot_slug text');
 }, 90_000);
 beforeEach(async () => {
   vi.clearAllMocks();
   hostHome.byId.clear();
   await sql`TRUNCATE harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
     harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage,
-    harness_shared.interactive_usage_files, harness_shared.agent_usage_samples`;
+    harness_shared.interactive_usage_files, harness_shared.agent_usage_samples,
+    harness_shared.learning_governor_loops, harness_shared.learning_spend_events, harness_shared.learning_spend_reservations`;
   repoRoot = mkdtempSync(join(tmpdir(), 'current-bench-protocol-')); roots.push(repoRoot);
 });
 
@@ -122,7 +133,7 @@ describe('production native accounting with private PG and full source bytes', (
   async function costFixture() {
     const opts: CurrentSuBenchOptions = { workspaceId, runId: 'PRIVATE', armId: 'papercusp', seed: 1,
       agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto',
-      preregistration: { preregHash: 'private-cost-protocol', config } };
+      preregistration: { preregHash: createHash('sha256').update('private-cost-protocol').digest('hex'), config } };
     const label = currentBenchLaunchRequest(opts, handle, 'Private cost fixture.').label;
     async function addSource(home: string, ownerId: string) {
       const nativeSessionId = randomUUID(), nativeTurnId = randomUUID();
@@ -161,8 +172,99 @@ describe('production native accounting with private PG and full source bytes', (
       return { ...source, home, taskId, ownerId };
     }
     const solver = await addParticipant('private-cost-solver', 'su-private-cost-solver');
-    return { solver, addParticipant, addSource, read: liveCurrentBenchNativeCostReader(handle, opts, scope()) };
+    async function accountingFixture() {
+      const loopId = `private-benchmark:${randomUUID()}`, protocol = currentProtocolFixture('PRIVATE');
+      const resources = { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50,
+        armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)),
+        usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 1000, wallClockMsPerArm: 100 };
+      await registerLearningLoop(sql, { workspaceId, loopId, budgetKind: 'lifetime', budgetUsd: 60,
+        enabled: true, meta: { reservationBinding: opts.preregistration.preregHash, reservationResourceBudget: resources } });
+      const controller = currentBenchGatewayController({ workspaceId, loopId, token: randomUUID(),
+        preregHash: opts.preregistration.preregHash, protocol, armId: 'papercusp', taskId: 't1', seed: 1, resources,
+        authenticateProvider: async () => null });
+      const binding = controller.accountingBinding; controller.revoke();
+      async function addAttempt(source: { nativeSessionId: string; nativeTurnId: string },
+        outcome: 'response-completed' | 'fetch-failed' = 'response-completed') {
+        const id = randomUUID(), identity = { attemptId: id, manifestSha256: binding.preregHash, armId: binding.assignmentId,
+          nativeSessionId: source.nativeSessionId, nativeTurnId: source.nativeTurnId, transport: 'bearer-http' as const,
+          accountId: 'private-provider-account', credentialHeader: 'authorization' as const,
+          credentialSha256: 'b'.repeat(64), bodySha256: 'c'.repeat(64), clockId: 'private-host-clock',
+          target: 'https://api.openai.com/v1/responses' };
+        const receipt = await reserveLearningSpend(sql, { workspaceId, loopId, requestedUsd: 0.003, floorUsd: 0,
+          attemptKind: 'evaluation', note: JSON.stringify({ nativeGatewayAttempt: identity }),
+          exact: { reservationId: id, binding: binding.preregHash, expectedBudgetUsd: 60,
+            resources: { armId: binding.assignmentId, inputTokens: 100, outputTokens: 10 }, expectedResourceBudget: resources } });
+        expect(receipt.ok).toBe(true);
+        const headers: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: id,
+          outcome: outcome === 'fetch-failed' ? 'fetch-failed' : 'response-headers',
+          responseStatus: outcome === 'fetch-failed' ? null : 200, costUsdMeasurementMissing: true };
+        expect(await recordLearningSpendAttemptResult(sql, { workspaceId, reservationId: id, result: headers })).toEqual({ ok: true });
+        if (outcome === 'response-completed') {
+          const terminal: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: id, outcome, responseStatus: 200,
+            costUsdMeasurementMissing: true, responseSha256: 'd'.repeat(64), responseBytes: 300,
+            providerCompletion: { responseId: `response-${id}`, model: 'configured-alias', providerEffort: 'high',
+              usage: { inputTokenBasis: 'inclusive', inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheCreationTokens: 0 } } };
+          expect(await recordLearningSpendAttemptResult(sql, { workspaceId, reservationId: id, result: terminal })).toEqual({ ok: true });
+        }
+        return id;
+      }
+      await addAttempt(solver);
+      return { binding, addAttempt, read: liveCurrentBenchNativeCostReader(handle, opts, scope(), binding) };
+    }
+    return { solver, addParticipant, addSource, opts, accountingFixture, read: liveCurrentBenchNativeCostReader(handle, opts, scope()) };
   }
+
+  it('reconciles production reservation evidence with exact host-native source requests using the frozen controller scope', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    expect(await accounting.read()).toMatchObject({ costUsdMeasurementMissing: false,
+      armMeta: { nativeCostAccounting: { sourceCensusComplete: true, attemptAccountingComplete: true, billedCostUsd: 0.002 } } });
+    const positions = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
+    expect(positions.positions.unsettledUsd).toBe(0.003);
+    expect(positions.census).toMatchObject({ status: 'complete', reservations: [{ status: 'open' }] });
+  });
+  it('joins every recovered native file and unlabeled reviewer request to the same exact assignment', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    const recovered = await f.addSource(f.solver.home, f.solver.ownerId);
+    const reviewer = await f.addParticipant('private-reviewer', 'private-reviewer-owner', f.solver.taskId);
+    await accounting.addAttempt(recovered); await accounting.addAttempt(reviewer);
+    const result = await accounting.read();
+    expect(result.costUsd).toBeCloseTo(0.00033, 10);
+    expect(result).toMatchObject({ costUsdMeasurementMissing: false,
+      armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: 0.006 } } });
+  });
+  it('keeps failed retry exposure and efficiency uncertainty even when the completed request has a native source and bill', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    await accounting.addAttempt(f.solver, 'fetch-failed');
+    expect(await accounting.read()).toMatchObject({ costUsdMeasurementMissing: true,
+      armMeta: { nativeCostAccounting: { attemptAccountingComplete: false, billedCostUsd: null, billedKnownSubtotalUsd: 0.002 } } });
+    expect((await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId })).positions.unsettledUsd).toBe(0.006);
+  });
+  it('does not replace actual provider billing with matched native token usage', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    await sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'estimate'`;
+    expect(await accounting.read()).toMatchObject({ costUsdMeasurementMissing: true,
+      armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: null, missingBills: 1 } } });
+  });
+  it('refuses a mutated complete reservation population during native source validation', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    let frontiers = 0;
+    const guarded = new Proxy(sql, { apply(target, self, args) {
+      const result = Reflect.apply(target, self, args);
+      if (!String(args[0]).includes('harness_shared.interactive_usage_files') || ++frontiers !== 2) return result;
+      return Promise.resolve(result).then(async rows => {
+        await sql`UPDATE harness_shared.learning_spend_reservations SET note = note || ' ' WHERE loop_id = ${accounting.binding.loopId}`;
+        return rows;
+      });
+    } });
+    expect(await liveCurrentBenchNativeCostReader(handle, f.opts, { ...scope(), sql: guarded as unknown as ReturnType<typeof scope>['sql'] }, accounting.binding)())
+      .toMatchObject({ costUsdMeasurementMissing: true, armMeta: { nativeCostAccounting: { attemptAccountingComplete: false, billedCostUsd: null } } });
+    expect(frontiers).toBeGreaterThanOrEqual(2);
+  });
+  it('rejects a fabricated controller scope before accounting IO', async () => {
+    const f = await costFixture(), accounting = await f.accountingFixture();
+    expect(() => liveCurrentBenchNativeCostReader(handle, f.opts, scope(), { ...accounting.binding, preregHash: 'f'.repeat(64) }))
+      .toThrow('exact frozen controller binding');
+  });
 
   it('uses exact full native bytes and provider attribution while leaving gateway-attempt reconciliation explicit', async () => {
     const f = await costFixture(), result = await f.read();

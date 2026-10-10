@@ -88,7 +88,21 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
       'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/process-identity.ts'],
     execute: async (observe, evidenceDir) => {
       await mkdir(join(evidenceDir, 'tmp'));
-      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', TMPDIR: join(evidenceDir, 'tmp') };
+      const evidenceEnv = {
+        PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://reporter-only:fixture@127.0.0.1:1/ledger',
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(evidenceDir, 'reporter-receipts.jsonl'),
+        PAPERCUSP_TEST_RUN_WORKSPACE: 'ledger-workspace',
+        PAPERCUSP_TEST_RUN_HARNESS: 'ledger-harness',
+        PAPERCUSP_TEST_RUN_GROUP: 'ledger-group',
+        PAPERCUSP_TEST_RUN_SOURCE: 'mutation-probe',
+        PAPERCUSP_TEST_RUN_COMMIT: 'abcdef123456',
+        PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN: 'isolated-ledger-control',
+      };
+      const env: NodeJS.ProcessEnv = { ...process.env, ...evidenceEnv,
+        PC_ISOLATED_RUNTIME_PROOF: '1', TMPDIR: join(evidenceDir, 'tmp'),
+        PAPERCUSP_SUBSTRATE_IPC_SOCKET: '/tmp/forbidden-live-product-socket',
+        PAPERCUSP_TEST_RUN_UNREGISTERED_ENDPOINT: 'http://127.0.0.1:1/forbidden',
+        OPENAI_API_KEY: 'fixture-must-not-reach-private-runtime' };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const expectedBrowserCache = browserCachePath(env);
@@ -97,6 +111,15 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
           const assert = require('node:assert/strict');
           const postgres = require('postgres');
           (async () => {
+            for (const [key, expected] of Object.entries(${JSON.stringify(evidenceEnv)})) {
+              assert.equal(process.env[key], expected, 'isolated reporter setting: ' + key);
+            }
+            assert.equal(process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET, undefined);
+            assert.equal(process.env.PAPERCUSP_TEST_RUN_UNREGISTERED_ENDPOINT, undefined);
+            assert.equal(process.env.OPENAI_API_KEY, undefined);
+            assert.notEqual(process.env.PAPERCUSP_WORKSPACE_ID, process.env.PAPERCUSP_TEST_RUN_WORKSPACE);
+            assert.notEqual(process.env.HARNESS_ADMIN_DATABASE_URL, process.env.PAPERCUSP_TEST_RUNS_DB_URL);
+            console.log('isolated-reporter-env-control');
             const { chromium } = require('playwright-core');
             const path = require('node:path');
             assert.equal(process.env.PLAYWRIGHT_BROWSERS_PATH, ${JSON.stringify(expectedBrowserCache)});
@@ -132,6 +155,7 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
         exitWaitTimedOut: false, stdioDrainTimedOut: false });
       expect(result.output).toContain('isolated-cleanup-control');
       expect(result.output).toContain('private-integration-admin-control');
+      expect(result.output).toContain('isolated-reporter-env-control');
       expect(stages).toEqual(expect.arrayContaining(['start', 'pg-stop', 'pg-stopped', 'remove-private-state', 'complete']));
     },
   });

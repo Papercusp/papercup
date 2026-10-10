@@ -21,12 +21,15 @@ const M = vi.hoisted(() => ({
   ])),
   assemblePresenceSnapshot: vi.fn(async (
     _resolved: unknown,
-    _opts?: { onDiagnostic?: (diagnostic: {
-      phase: string;
-      name: string;
-      elapsedMs: number;
-      status: "ok" | "error";
-    }) => void },
+    _opts?: {
+      includeDesktopEnrichment?: boolean;
+      onDiagnostic?: (diagnostic: {
+        phase: string;
+        name: string;
+        elapsedMs: number;
+        status: "ok" | "error";
+      }) => void;
+    },
   ) => ({})),
   consumePresenceRebootstrap: vi.fn(async (
     _ownerId: unknown,
@@ -222,6 +225,11 @@ describe("coord:inbox — cache the derive, keep side effects", () => {
 
     const metadata = vi.fn();
     await inbox("owner-a", { kinds: ["message"], limit: 50 }, metadata);
+
+    expect(M.assemblePresenceSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ includeDesktopEnrichment: false }),
+    );
 
     const traces = metadata.mock.calls
       .map(([value]) => (value as { coordInboxRead?: {

@@ -19,6 +19,7 @@ type PortalRosterBrowserInput = {
   stop?: {
     selected: { id: number; startedAt: string }; neighbor: { id: number; startedAt: string };
     assertChildrenAlive: () => Promise<void>; assertSelectedStopped: () => Promise<void>;
+    assertNeighborAlive: () => Promise<void>; invalidateNeighborLaunch: () => Promise<void>;
   };
 };
 
@@ -206,10 +207,27 @@ async function runConfirmedStopPage(page: Page, context: BrowserContext, input: 
   await page.reload();
   assert.equal(page.url(), url);
   await page.getByTestId(`agent-select-${input.neighbor}`).waitFor();
+  // A second session remains controllable after the selected stop. Cancelling
+  // its confirmation cannot dispatch; an old launch must then be refused.
+  await page.getByTestId(`agent-select-${input.neighbor}`).check();
+  await arm();
+  await page.getByTestId('agents-bulk-kill-cancel').click();
+  await stop.assertNeighborAlive();
+  assert.equal(requests.length, 2, 'cancelling a second stop must not dispatch');
+  await stop.invalidateNeighborLaunch();
+  await arm();
+  const stale = await confirm();
+  assert.equal(stale.status, 403, JSON.stringify(stale.body));
+  await page.getByTestId('agents-bulk-note').filter({ hasText: /stale|foreign/ }).waitFor();
+  await stop.assertNeighborAlive();
+  assert.deepEqual(requests[2], { ownerId: input.neighbor, managedSessionId: stop.neighbor.id,
+    expectedStartedAt: stop.neighbor.startedAt, confirmed: true }, 'stale replay must name the original launch');
+  assert.equal(requests.length, 3);
   return { workspace: input.workspace, authMethod: 'cookie-session', selected: { owner: input.selected, id: stop.selected.id, ended: true },
     neighbor: { owner: input.neighbor, id: stop.neighbor.id, alive: true }, cancelSentNoRequest: true, denialStatus: denied.status,
     selectionRetained: true, retryClearedSelection: true, deepLinkReload: true, neighborIsolated: true,
-    positiveControl: 'wrong-session and replacement-launch rejected', denied, accepted, requests,
+    secondCancelSentNoRequest: true, staleDenialStatus: stale.status,
+    positiveControl: 'wrong-session and replacement-launch rejected', denied, accepted, stale, requests,
     scope: 'Actual mounted Portal confirmation and private cookie API/native effects; no whole-Portal or shipment acceptance' };
 }
 

@@ -271,6 +271,27 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     if (parsed.success) expect(parsed.data.criteria?.[0]?.bar).toBe(criterion.bar);
   });
 
+  it('accepts a full criteria replacement with both optimistic revision guards', () => {
+    const parsed = rubricsAmendArgs.safeParse({
+      rubricRef: 'acceptance-example',
+      dryRun: true,
+      reason: 'Repair the accepted-content detector.',
+      criteria: [criterion],
+      idempotencyKey: 'amend-criteria-revision-guards',
+      expectedRubricRevision: 7,
+      expectedSubjectPlanRevision: 11,
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data).toMatchObject({
+        idempotencyKey: 'amend-criteria-revision-guards',
+        expectedRubricRevision: 7,
+        expectedSubjectPlanRevision: 11,
+      });
+    }
+  });
+
   it('accepts a serving runtime in a complete BAR amendment', () => {
     const parsed = rubricsAmendArgs.safeParse({
       rubricRef: 'acceptance-example',

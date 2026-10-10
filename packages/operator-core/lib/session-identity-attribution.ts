@@ -116,7 +116,12 @@ export async function recordCurrentSessionIdentityActivation(input: {
           FROM harness_shared.adv_sessions a
          WHERE a.workspace_id = b.workspace_id
            AND a.coord_owner_id = b.owner_id
-         ORDER BY a.id DESC
+           AND a.ended_at IS NULL
+           AND a.ended_by IS NULL
+         -- The activation lives on session_briefs, but the kernel judges the
+         -- native caller's live adv_session; an ended high-id sibling is not
+         -- evidence for the session that will execute the next tool call.
+         ORDER BY a.started_at DESC, a.id DESC
          LIMIT 1
       ) av ON true
      WHERE b.owner_id = ${input.ownerId}

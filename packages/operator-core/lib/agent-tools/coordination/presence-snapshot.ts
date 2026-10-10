@@ -440,6 +440,8 @@ export async function assemblePresenceSnapshot(
     owners?: readonly string[];
     nowMs?: number;
     detail?: { coordinationDomain: string };
+    /** Defaults to true. Compact presence rebootstrap blocks do not render desktop state. */
+    includeDesktopEnrichment?: boolean;
     onDiagnostic?: (diagnostic: PresenceSnapshotDiagnostic) => void;
   } = {},
 ): Promise<PresenceSnapshot> {
@@ -688,20 +690,25 @@ export async function assemblePresenceSnapshot(
     // On-desktop (live OS window) owners — best-effort, box-local (empty on a
     // headless box). Independent of the other joins so a wmctrl hiccup never
     // affects wakeability/tier-1, and vice-versa.
-    timeAsync('enrichment', 'gatherOnDesktopSessions', () =>
-      gatherOnDesktopSessions({
-        ...(targeted ? { ownerIds: localAllIds } : {}),
-        onDiagnostic: (diagnostic) => reportDiagnostic({
-          phase: 'enrichment',
-          name: `gatherOnDesktopSessions.${diagnostic.name}`,
-          elapsedMs: diagnostic.elapsedMs,
-          status: diagnostic.status,
-        }),
-      }))
-      .then((s) => {
-        onDesktopOwners = s.owners;
-      })
-      .catch(() => {}),
+    // The rebootstrap renderer only consumes labels, roles, intents, plans and
+    // by-state counts. Its cold first read can skip this full local-host/proc
+    // ancestry traversal; normal presence reads retain the desktop enrichment.
+    opts.includeDesktopEnrichment === false
+      ? Promise.resolve()
+      : timeAsync('enrichment', 'gatherOnDesktopSessions', () =>
+          gatherOnDesktopSessions({
+            ...(targeted ? { ownerIds: localAllIds } : {}),
+            onDiagnostic: (diagnostic) => reportDiagnostic({
+              phase: 'enrichment',
+              name: `gatherOnDesktopSessions.${diagnostic.name}`,
+              elapsedMs: diagnostic.elapsedMs,
+              status: diagnostic.status,
+            }),
+          }))
+          .then((s) => {
+            onDesktopOwners = s.owners;
+          })
+          .catch(() => {}),
     // PTY-panel viewer-attach owners (pty-viewer-heartbeat.ts) — the no-OS-window
     // sibling of on-desktop. Best-effort + independent so a DB hiccup never affects
     // the other joins.

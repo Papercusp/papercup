@@ -45,9 +45,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), authMethod: 'cookie-session',
           cancelSentNoRequest: true, denialStatus: 403, selectionRetained: true, retryClearedSelection: true,
           selected: { ended: true }, neighbor: { alive: true }, neighborIsolated: true, deepLinkReload: true,
+          secondCancelSentNoRequest: true, staleDenialStatus: 403,
           accepted: { status: 200 }, positiveControl: 'wrong-session and replacement-launch rejected' });
         expect(receipt.selected.id).not.toBe(receipt.neighbor.id);
-        expect(receipt.requests).toHaveLength(2);
+        expect(receipt.requests).toHaveLength(3);
       },
     });
     Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });

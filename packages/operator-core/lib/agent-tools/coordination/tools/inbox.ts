@@ -1622,6 +1622,7 @@ export default defineTool({
             const snap = await measureInboxPhase(
               "rebootstrap-presence-snapshot",
               () => assemblePresenceSnapshot(resolved, {
+                includeDesktopEnrichment: false,
                 onDiagnostic: (diagnostic) => {
                   inboxPhases.push({
                     name: `rebootstrap-presence-snapshot:${diagnostic.phase}:${diagnostic.name}`,

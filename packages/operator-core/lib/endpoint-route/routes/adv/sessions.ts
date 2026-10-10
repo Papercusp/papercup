@@ -14,6 +14,8 @@
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { readCookie } from '../../cookies';
+import { SESSION_COOKIE } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
 import type { TranscriptTurnHit } from '../../../adv-session-search';
@@ -611,12 +613,20 @@ const focus = defineTool({
 const closeWindow = defineTool({
   method: 'POST',
   path: '/adv/sessions/close-window',
-  auth: 'loopback',
+  // Managed browser stops must resolve cookie scope. The loopback-only tier
+  // deliberately drops principals and cannot authorize this mixed surface.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req, ctx) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
     const parsed = await parseJsonBody(req);
-    if ('ownerId' in parsed || 'managedSessionId' in parsed || req.headers.has('x-papercusp-hosted-user-id')) {
-      const csrf = requireAllowedOriginOr403(req);
-      if (csrf) return csrf;
+    const hasSessionCookie = readCookie(req, SESSION_COOKIE) !== undefined;
+    // requirePrincipal also supports credential-free native loopback. A
+    // presented invalid session must not inherit that native fallback.
+    if (hasSessionCookie && ctx.principal?.authMethod !== 'cookie-session') {
+      return json({ ok: false, error: 'invalid session cookie' }, 401);
+    }
+    if ('ownerId' in parsed || 'managedSessionId' in parsed || hasSessionCookie || ctx.principal?.kind === 'user' || req.headers.has('x-papercusp-hosted-user-id')) {
       const { activeWorkspaceId } = await import('../../../workspace-registry');
       const { findLiveHostAsync, hostSupports, shutdownViaPty } = await import('../../../events/await/psu-pty-discovery');
       const ownerId = typeof parsed.ownerId === 'string' ? parsed.ownerId.trim() : '';

@@ -12,6 +12,7 @@ import {
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   currentBenchNativeCostReader, type CurrentBenchNativeCostReaderPorts,
+  currentBenchAttemptPopulationMatches,
   type CurrentBenchNativeInputCeiling,
   type CurrentBenchIdentity, type CurrentBenchTask, type CurrentSuBenchOptions, type CurrentSuBenchPorts,
 } from './current-su';
@@ -101,6 +102,116 @@ describe('source-bound current benchmark cost', () => {
     expect(result.telemetry).toMatchObject({ tokensIn: 80, tokensCacheRead: 20, tokensCacheWrite: 5, costUsd: 0.00012,
       armMeta: { costUsdMeasurementMissing: true, nativeCostAccounting: { billedCostUsd: null }, currentExecution: expect.any(Object) } });
     expect(f.lifecycle.collectCost).not.toHaveBeenCalled();
+  });
+
+  function attemptFixture() {
+    const f = costFixture();
+    const binding = { workspaceId: 'bench-private', loopId: 'exact-private-loop', runId: 'run-1',
+      preregHash: 'a'.repeat(64), assignmentId: currentBenchAssignmentId('run-1', 'papercusp', 't1', 1) };
+    const identity = { attemptId: 'provider-attempt-1', manifestSha256: binding.preregHash, armId: binding.assignmentId,
+      nativeSessionId: 'native-cost-1', nativeTurnId: 'turn-cost-1', transport: 'bearer-http',
+      accountId: 'provider-account', credentialHeader: 'authorization', credentialSha256: 'b'.repeat(64),
+      target: 'https://api.openai.com/v1/responses', bodySha256: 'c'.repeat(64), clockId: 'host-clock' };
+    const result = { ...identity, reservationRef: identity.attemptId, outcome: 'response-completed', responseStatus: 200,
+      costUsdMeasurementMissing: true, responseSha256: 'd'.repeat(64), responseBytes: 300,
+      providerCompletion: { responseId: 'response-1', model: 'configured-alias', providerEffort: 'high',
+        usage: { inputTokenBasis: 'inclusive', inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheCreationTokens: 0 } } };
+    const row: LearningSpendReservation = { id: identity.attemptId, workspaceId: binding.workspaceId, loopId: binding.loopId,
+      potSlug: null, attemptKind: 'evaluation', requestedUsd: 0.003, reservedUsd: 0.003, usedUsd: 0,
+      status: 'open', signalOrigin: 'organic', runRef: `manifest:${binding.preregHash}/attempt:${identity.attemptId}`,
+      note: JSON.stringify({ nativeGatewayAttempt: identity, nativeGatewayAttemptResult: result }), createdAt: 1, settledAt: null,
+      resources: { armId: binding.assignmentId, inputTokens: 200, outputTokens: 100 } };
+    const population = { participants: [f.participant], sources: [{ participant: f.participant, nativeSessionId: 'native-cost-1', usage: f.usage }] };
+    const census = { status: 'complete' as const, source: 'learning-spend-reservations' as const,
+      populationSha256: 'e'.repeat(64), reservations: [row] };
+    const save = () => { row.note = JSON.stringify({ nativeGatewayAttempt: identity, nativeGatewayAttemptResult: result }); };
+    return { ...f, binding, identity, result, row, population, census, save,
+      matches: () => currentBenchAttemptPopulationMatches(binding, population, census, structuredClone(census)) };
+  }
+  it('joins provider request evidence to host-native turn/model/inclusive cache usage without releasing unknown billing headroom', () => {
+    const f = attemptFixture(); expect(f.matches()).toBe(true);
+    expect(f.row.status).toBe('open'); expect(f.row.usedUsd).toBe(0);
+  });
+  it.each(['missing', 'extra', 'wrong-turn', 'wrong-session', 'wrong-model', 'wrong-cache', 'unknown-cache',
+    'failed-fetch', 'headers-only', 'incomplete-response', 'live', 'foreign-loop', 'foreign-workspace',
+    'wrong-manifest', 'foreign-arm', 'identity-drift', 'missing-source-hash', 'duplicate-native-key',
+    'ambiguous-native-requests', 'duplicate-provider-response', 'unknown-refused-charge', 'invalid-json'] as const)
+  ('refuses request population completeness for %s', change => {
+    const f = attemptFixture();
+    if (change === 'missing') f.census.reservations = [];
+    if (change === 'extra') {
+      const second = structuredClone(f.row), note = JSON.parse(second.note!);
+      second.id = 'extra-attempt'; second.runRef = `manifest:${f.binding.preregHash}/attempt:${second.id}`;
+      note.nativeGatewayAttempt.attemptId = second.id;
+      note.nativeGatewayAttemptResult.attemptId = second.id; note.nativeGatewayAttemptResult.reservationRef = second.id;
+      note.nativeGatewayAttemptResult.providerCompletion.responseId = 'response-extra'; second.note = JSON.stringify(note);
+      f.census.reservations.push(second);
+    }
+    if (change === 'wrong-turn') { f.identity.nativeTurnId = 'foreign-turn'; f.result.nativeTurnId = 'foreign-turn'; }
+    if (change === 'wrong-session') { f.identity.nativeSessionId = 'foreign-session'; f.result.nativeSessionId = 'foreign-session'; }
+    if (change === 'wrong-model') f.result.providerCompletion.model = 'foreign-model';
+    if (change === 'wrong-cache') f.result.providerCompletion.usage.cacheReadTokens++;
+    if (change === 'unknown-cache') f.result.providerCompletion.usage.cacheReadTokens = null as never;
+    if (change === 'failed-fetch') f.result.outcome = 'fetch-failed';
+    if (change === 'headers-only') f.result.outcome = 'response-headers';
+    if (change === 'incomplete-response') f.result.outcome = 'response-incomplete';
+    if (change === 'live') f.participant.terminal = false;
+    if (change === 'foreign-loop') f.row.loopId = 'wrong-loop';
+    if (change === 'foreign-workspace') f.row.workspaceId = 'wrong-workspace';
+    if (change === 'wrong-manifest') f.identity.manifestSha256 = 'f'.repeat(64);
+    if (change === 'foreign-arm') { f.identity.armId = currentBenchAssignmentId('run-1', 'baseline', 't1', 1);
+      f.result.armId = f.identity.armId; f.row.resources!.armId = f.identity.armId; }
+    if (change === 'identity-drift') f.result.bodySha256 = 'f'.repeat(64);
+    if (change === 'missing-source-hash') f.usage.sourceSha256 = '';
+    if (change === 'duplicate-native-key') f.usage.events = [...f.usage.events, f.usage.events[0]];
+    if (change === 'ambiguous-native-requests') f.usage.events = [...f.usage.events,
+      { ...f.usage.events[0], usageEventKey: 'distinct-native-request' }];
+    if (change === 'duplicate-provider-response') f.census.reservations.push(structuredClone(f.row));
+    if (change === 'unknown-refused-charge') { f.result.outcome = 'send-refused'; f.row.status = 'cancelled'; }
+    f.save();
+    if (change === 'invalid-json') f.row.note = '{';
+    expect(f.matches()).toBe(false);
+  });
+  it('requires the same complete reservation population before and after native source validation', () => {
+    const f = attemptFixture(), after = structuredClone(f.census);
+    after.populationSha256 = 'f'.repeat(64);
+    expect(currentBenchAttemptPopulationMatches(f.binding, f.population, f.census, after)).toBe(false);
+    after.populationSha256 = f.census.populationSha256; after.reservations[0].usedUsd = 0.001;
+    expect(currentBenchAttemptPopulationMatches(f.binding, f.population, f.census, after)).toBe(false);
+    expect(currentBenchAttemptPopulationMatches(f.binding, f.population, f.census,
+      { status: 'unavailable', source: 'learning-spend-reservations', reason: 'schema-unavailable' })).toBe(false);
+  });
+  it('includes an explicitly zero-charge refusal alongside completed native requests', () => {
+    const f = attemptFixture(), refused = structuredClone(f.row), note = JSON.parse(refused.note!);
+    refused.id = 'pre-fetch-refusal'; refused.status = 'cancelled';
+    refused.runRef = `manifest:${f.binding.preregHash}/attempt:${refused.id}`;
+    note.nativeGatewayAttempt.attemptId = refused.id;
+    note.nativeGatewayAttemptResult = { ...note.nativeGatewayAttempt, reservationRef: refused.id,
+      outcome: 'send-refused', responseStatus: null, costUsd: 0, costUsdMeasurementMissing: false };
+    refused.note = JSON.stringify(note); f.census.reservations.push(refused);
+    expect(f.matches()).toBe(true);
+  });
+  it('retains another assignment in the full loop census without charging its distinct native session twice', () => {
+    const f = attemptFixture(), other = structuredClone(f.row), note = JSON.parse(other.note!);
+    other.id = 'other-assignment-attempt'; other.resources!.armId = currentBenchAssignmentId('run-1', 'baseline', 't1', 1);
+    other.runRef = `manifest:${f.binding.preregHash}/attempt:${other.id}`;
+    Object.assign(note.nativeGatewayAttempt, { attemptId: other.id, armId: other.resources!.armId, nativeSessionId: 'other-native' });
+    other.note = JSON.stringify(note); f.census.reservations.push(other);
+    expect(f.matches()).toBe(true);
+  });
+  it('passes the exact host-native population to the accounting verifier', async () => {
+    const f = costFixture(); await f.read();
+    expect(f.ports.readAttemptAccountingComplete).toHaveBeenCalledWith({ participants: [f.participant],
+      sources: [{ participant: f.participant, nativeSessionId: 'native-cost-1', usage: f.usage }] });
+  });
+  it('rejects a new participant appearing during gateway reconciliation', async () => {
+    const f = costFixture();
+    vi.mocked(f.ports.readAttemptAccountingComplete!).mockImplementation(async () => {
+      vi.mocked(f.ports.readParticipants).mockResolvedValue([f.participant, { ...f.participant, taskId: 'late-reviewer' }]);
+      return true;
+    });
+    expect(await f.read()).toMatchObject({ costUsdMeasurementMissing: true,
+      armMeta: { nativeCostAccounting: { sourceCensusComplete: false, billedCostUsd: null } } });
   });
 });
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
@@ -365,6 +476,23 @@ describe('provider-counted complete native input', () => {
     const reader = currentBenchOpenAiInputReader(input, { fetch });
     return { ...f, input, attempt, fetch, reader, credential: { secret: NEVER_EMIT_MARKER } };
   }
+  it.each(['valid', 'unknown-metadata', 'malformed-metadata'] as const)(
+    'counts native input with bounded source correlation (%s)', async mode => {
+      const f = fixture();
+      const body = JSON.parse(f.attempt.body);
+      body.client_metadata = { 'x-codex-turn-metadata': JSON.stringify({
+        thread_id: '11111111-1111-1111-1111-111111111111', turn_id: '22222222-2222-2222-2222-222222222222' }) };
+      if (mode === 'unknown-metadata') body.client_metadata.unreviewed_context = 'PRIVATE_CONTEXT';
+      if (mode === 'malformed-metadata') body.client_metadata['x-codex-turn-metadata'] = '{broken';
+      f.attempt.body = JSON.stringify(body); f.attempt.bodySha256 = f.digest(f.attempt.body);
+      try {
+        const proof = await f.reader.read(f.attempt, f.credential);
+        if (mode !== 'valid') { expect(proof).toBeNull(); expect(f.fetch).not.toHaveBeenCalled(); return; }
+        expect(proof?.evidence?.bodySha256).toBe(f.attempt.bodySha256);
+        expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).not.toHaveProperty('client_metadata');
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
+
   it('counts the entire native payload with the final registered credential and reserves the frozen ceiling', async () => {
     const f = fixture();
     try {

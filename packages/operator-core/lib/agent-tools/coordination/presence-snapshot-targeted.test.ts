@@ -108,6 +108,7 @@ vi.mock('./presence-fleet', async (importOriginal) => ({
 vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   findLiveHost: findLiveHostMock,
+  findLiveHostAsync: async (ownerId: string) => findLiveHostMock(ownerId),
 }));
 vi.mock('../../desktop-window-liveness', () => ({
   gatherOnDesktopSessions: desktopSessionsMock,
@@ -215,8 +216,18 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
   it('default (no-owner) read is UNCHANGED: whole-roster joins + the GC sweep run', async () => {
     const snap = await assemblePresenceSnapshot(RESOLVED, {});
     expect(sweepMock).toHaveBeenCalledTimes(1);
+    expect(desktopSessionsMock).toHaveBeenCalledTimes(1);
     expect(tier1Mock).toHaveBeenCalledWith(['su-aaa', 'su-bbb']); // active locals
     expect(wakeabilityMock).toHaveBeenCalledWith(['su-aaa', 'su-bbb', 'su-ccc']); // all locals
+    expect(snap.summary.active).toBe(2);
+    expect(snap.summary.stale).toBe(1);
+  });
+
+  it('skips desktop-only enrichment when building the compact rebootstrap snapshot', async () => {
+    const snap = await assemblePresenceSnapshot(RESOLVED, { includeDesktopEnrichment: false });
+
+    expect(desktopSessionsMock).not.toHaveBeenCalled();
+    expect(snap.active.map((r) => r.ownerId)).toEqual(['su-aaa', 'su-bbb', 'su-ccc']);
     expect(snap.summary.active).toBe(2);
     expect(snap.summary.stale).toBe(1);
   });

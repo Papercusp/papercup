@@ -694,7 +694,9 @@ it.each(['codex', 'anthropic'].flatMap(protocol => ['complete', 'malformed-tail'
     const port = await gateway.listen(0);
     const response = protocol === 'anthropic' ? await sendAnthropicTrial(port) : await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
-      body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK', stream: true }) });
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK', stream: true, client_metadata: {
+        'x-codex-turn-metadata': JSON.stringify({ thread_id: '11111111-1111-1111-1111-111111111111',
+          turn_id: '22222222-2222-2222-2222-222222222222', private_extra: 'PRIVATE_NOT_RETAINED' }) } }) });
     await response.text().catch(() => '');
     expect(closed).toHaveBeenCalledTimes(1);
     expect(closed.mock.calls[0]![0]).toMatchObject({ ...headers[0],
@@ -704,6 +706,8 @@ it.each(['codex', 'anthropic'].flatMap(protocol => ['complete', 'malformed-tail'
     if (mode === 'complete') expect(closed.mock.calls[0]![0]).toMatchObject({ providerCompletion: {
       responseId: provider.id, model: provider.model, usage: { inputTokens: 100, inputTokenBasis: 'inclusive',
         outputTokens: 9, cacheReadTokens: 20, cacheCreationTokens: 0 } } });
+    if (protocol === 'codex') expect(closed.mock.calls[0]![0]).toMatchObject({
+      nativeSessionId: '11111111-1111-1111-1111-111111111111', nativeTurnId: '22222222-2222-2222-2222-222222222222' });
     expect(JSON.stringify(closed.mock.calls)).not.toMatch(/PRIVATE_|costUsd"/);
   });
 

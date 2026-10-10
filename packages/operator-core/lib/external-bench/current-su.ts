@@ -19,21 +19,107 @@ import { canonicalJson } from './reproducibility/canonical-json';
 import { createNativeGymGatewayController, type NativeGymProviderAuthorization } from '../gym/proposer';
 import type { GovernorGlueDeps } from '../learning-governor/registrants';
 import type { GatewayCarryTrialAttempt } from '../inference-gateway/gateway';
-import type { LearningReservationResourceBudget } from '../learning-governor/store';
+import type { LearningReservationResourceBudget, LearningSpendReservationCensus } from '../learning-governor/store';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import type { CredentialResolver } from '../inference-gateway/credential-store';
 import type { ClosedCodexSessionUsage } from '../session-transcript-resolvers';
 import { priceRun } from '@papercusp/bench-metrics';
 import { currentProtocolPriceTable } from './reproducibility/schema';
+import { readGatewayNativeCorrelation } from '../inference-gateway/request-stage-telemetry';
 
 interface NativeCostParticipant { taskId: string; ownerId: string; codexHome: string; terminal: boolean }
+export interface CurrentBenchAccountingBinding {
+  readonly workspaceId: string; readonly loopId: string; readonly runId: string;
+  readonly preregHash: string; readonly assignmentId: string;
+}
+interface NativeAccountingSource {
+  participant: NativeCostParticipant; nativeSessionId: string;
+  usage: Extract<ClosedCodexSessionUsage, { ok: true }>;
+}
+interface NativeAccountingPopulation {
+  participants: readonly NativeCostParticipant[]; sources: readonly NativeAccountingSource[];
+}
+
+/** Reconcile the complete reservation population with individually identified
+ * native usage requests. Caller IDs alone, aggregate totals, ambiguous equal
+ * requests and failed sends with unknown usage cannot establish completeness.
+ * This proves the observed populations agree; actual provider bills and route
+ * confinement remain separate requirements. */
+export function currentBenchAttemptPopulationMatches(binding: CurrentBenchAccountingBinding,
+  population: NativeAccountingPopulation, before: LearningSpendReservationCensus,
+  after: LearningSpendReservationCensus): boolean {
+  try {
+    if (!binding.workspaceId.trim() || !binding.loopId.trim() || !binding.runId.trim() ||
+        !/^[a-f0-9]{64}$/.test(binding.preregHash) || !binding.assignmentId.startsWith('bench-assignment:') ||
+        before.status !== 'complete' || after.status !== 'complete' ||
+        before.populationSha256 !== after.populationSha256 ||
+        canonicalJson(before.reservations) !== canonicalJson(after.reservations) ||
+        !population.participants.length || population.participants.some(p => !p.terminal) || !population.sources.length) return false;
+    const expected = new Map<string, string[]>(), keys = new Set<string>(), sessions = new Set<string>();
+    const signature = (session: string, turn: string, model: string, input: number, output: number, read: number, write: number) =>
+      canonicalJson([session, turn, model, input, output, read, write]);
+    for (const source of population.sources) {
+      if (!population.participants.some(p => canonicalJson(p) === canonicalJson(source.participant)) ||
+          sessions.has(source.nativeSessionId) || !source.usage.ok || !/^[a-f0-9]{64}$/.test(source.usage.sourceSha256)) return false;
+      sessions.add(source.nativeSessionId);
+      for (const event of source.usage.events) {
+        if (!event.turnId || event.inputTotalTokens == null || keys.has(event.usageEventKey)) return false;
+        keys.add(event.usageEventKey);
+        const key = signature(source.nativeSessionId, event.turnId, event.model, event.inputTotalTokens,
+          event.usage.outputTokens, event.usage.cacheReadTokens, event.usage.cacheCreationTokens);
+        expected.set(key, [...(expected.get(key) ?? []), event.usageEventKey]);
+      }
+    }
+    const reservations = new Set<string>(), responses = new Set<string>();
+    for (const row of before.reservations) {
+      if (row.workspaceId !== binding.workspaceId || row.loopId !== binding.loopId || reservations.has(row.id)) return false;
+      reservations.add(row.id);
+      const note = JSON.parse(row.note ?? 'null'), attempt = note?.nativeGatewayAttempt;
+      if (!attempt || attempt.manifestSha256 !== binding.preregHash || attempt.armId !== row.resources?.armId ||
+          attempt.attemptId !== row.id || row.runRef !== `manifest:${binding.preregHash}/attempt:${row.id}`) return false;
+      if (attempt.armId !== binding.assignmentId) {
+        // Other frozen assignments share this loop, but cannot borrow a native
+        // request belonging to this assignment's host-owned source census.
+        if (sessions.has(attempt.nativeSessionId)) return false;
+        continue;
+      }
+      const result = note.nativeGatewayAttemptResult as GatewayCarryTrialAttemptResult | undefined;
+      if (!result || result.reservationRef !== row.id ||
+          Object.entries(attempt).some(([key, value]) => result[key as keyof GatewayCarryTrialAttemptResult] !== value)) return false;
+      if (result.outcome === 'send-refused') {
+        if (result.costUsd !== 0 || result.costUsdMeasurementMissing !== false || result.responseStatus !== null ||
+            row.status !== 'cancelled' || row.usedUsd !== 0) return false;
+        continue;
+      }
+      if (result.outcome !== 'response-completed' || !result.nativeSessionId || !result.nativeTurnId ||
+          !sessions.has(result.nativeSessionId) || result.responseStatus < 200 || result.responseStatus >= 300 ||
+          !/^[a-f0-9]{64}$/.test(result.responseSha256) || !Number.isSafeInteger(result.responseBytes) || result.responseBytes <= 0 ||
+          !['bearer-http', 'oauth-http'].includes(result.transport)) return false;
+      const provider = result.providerCompletion, u = provider.usage;
+      if (!provider.responseId || responses.has(provider.responseId) || u.inputTokenBasis !== 'inclusive' ||
+          ![u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheCreationTokens].every(n =>
+            typeof n === 'number' && Number.isSafeInteger(n) && n >= 0) ||
+          u.cacheReadTokens! + u.cacheCreationTokens! > u.inputTokens) return false;
+      responses.add(provider.responseId);
+      const key = signature(result.nativeSessionId, result.nativeTurnId, provider.model,
+        u.inputTokens, u.outputTokens, u.cacheReadTokens!, u.cacheCreationTokens!);
+      const matches = expected.get(key);
+      // Token equality cannot distinguish two native requests with the same
+      // signature. Refuse rather than assigning a provider ID arbitrarily.
+      if (matches?.length !== 1) return false;
+      expected.delete(key);
+    }
+    return keys.size > 0 && expected.size === 0;
+  } catch { return false; }
+}
+
 export interface CurrentBenchNativeCostReaderPorts {
   readParticipants(): Promise<NativeCostParticipant[]>;
   readRuntime(participant: NativeCostParticipant): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] }>;
   readBilled(participant: NativeCostParticipant, nativeSessionId: string, usage: Extract<ClosedCodexSessionUsage, { ok: true }>): Promise<{ knownSubtotalUsd: number; complete: boolean }>;
   /** Full source-bound gateway attempt reconciliation is separate from a native
    * transcript census. Omission keeps efficiency claims closed. */
-  readAttemptAccountingComplete?(): Promise<boolean>;
+  readAttemptAccountingComplete?(population: NativeAccountingPopulation): Promise<boolean>;
 }
 
 /** Reuses native source proofs and frozen pricing. Actual provider cost stays
@@ -47,6 +133,7 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
     let complete = participants.length > 0 && participants.length < 1000;
     const ids = new Set<string>(), bindings = new Set<string>(), homes = new Map<string, string>(), eventKeys = new Set<string>(), nativeSessions = new Set<string>();
     const sources: { nativeSessionId: string; sourceSha256: string }[] = [];
+    const accountingSources: NativeAccountingSource[] = [];
     let missingSources = 0, missingBills = 0, billedKnownSubtotalUsd = 0;
     for (const participant of participants) {
       const binding = canonicalJson([participant.taskId, participant.ownerId, participant.codexHome]);
@@ -86,13 +173,16 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
         }
         result.turns += usage.nativeTurnIds.length; result.costUsd += priced;
         sources.push({ nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256 });
+        if (source.usage.ok) accountingSources.push({ participant, nativeSessionId: source.nativeSessionId, usage });
         const billed = await io.readBilled(participant, source.nativeSessionId, usage).catch(() => ({ knownSubtotalUsd: 0, complete: false }));
         if (!Number.isFinite(billed.knownSubtotalUsd) || billed.knownSubtotalUsd < 0) missingBills++;
         else { billedKnownSubtotalUsd += billed.knownSubtotalUsd; if (!billed.complete) missingBills++; }
       }
     }
     if (canonicalJson(participants) !== canonicalJson(await io.readParticipants())) complete = false;
-    const attemptsComplete = await io.readAttemptAccountingComplete?.().catch(() => false) ?? false;
+    const attemptsComplete = complete && !missingSources &&
+      (await io.readAttemptAccountingComplete?.({ participants, sources: accountingSources }).catch(() => false) ?? false);
+    if (canonicalJson(participants) !== canonicalJson(await io.readParticipants())) complete = false;
     result.costUsdMeasurementMissing = !complete || missingSources > 0 || missingBills > 0 || !attemptsComplete;
     result.armMeta = { nativeCostAccounting: { basis: 'frozen-normalized-native-source', priceTableVersion: protocol.priceSchedule.version,
       normalizedCostUsd: result.costUsd, billedKnownSubtotalUsd,
@@ -105,12 +195,19 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
 
 /** Bind the maintained native source reader to the complete task subtree and
  * host-allocated homes. No task argument may supply a transcript path or bill.
- * Gateway attempt reconciliation remains explicit and incomplete here. */
+ * Gateway attempt reconciliation requires the exact host controller binding. */
 export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
-  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration'>, db: Pick<DbScope, 'sql'> = {}): () => Promise<BenchRunCost> {
+  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration'>, db: Pick<DbScope, 'sql'> = {},
+  accounting?: CurrentBenchAccountingBinding): () => Promise<BenchRunCost> {
   const workspaceId = resolveBenchWorkspace(opts.workspaceId);
   const protocol = currentBenchmarkProtocolSchema.parse(opts.preregistration.config);
   if (protocol.runId !== opts.runId) throw new Error('Native accounting protocol/run binding mismatch.');
+  const binding = accounting ? Object.freeze({ ...accounting }) : undefined;
+  const allowedAssignments = protocol.arms.flatMap(arm => protocol.taskIds.flatMap(taskId =>
+    protocol.seeds.map(seed => currentBenchAssignmentId(protocol.runId, arm.id, taskId, seed))));
+  if (binding && (binding.workspaceId !== workspaceId || binding.runId !== opts.runId ||
+      binding.preregHash !== opts.preregistration.preregHash || !binding.loopId.trim() ||
+      !allowedAssignments.includes(binding.assignmentId))) throw new Error('Native accounting requires its exact frozen controller binding.');
   const labelPrefix = attemptLabel(opts.runId, handle);
   const io: CurrentBenchNativeCostReaderPorts = {
     async readParticipants() {
@@ -170,6 +267,28 @@ export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
       }
       return { knownSubtotalUsd, complete };
     },
+    ...(binding ? { async readAttemptAccountingComplete(population: NativeAccountingPopulation) {
+      const { resolveDb } = await import('./reproducibility/db');
+      const { getLearningSpendPositions } = await import('../learning-governor/store');
+      const { sql } = resolveDb({ ...db, workspaceId });
+      const query = { workspaceId, loopId: binding.loopId, includeReservations: true };
+      const before = (await getLearningSpendPositions(sql, query)).census;
+      if (!before || before.status !== 'complete') return false;
+      // Re-read every host runtime while the reservation population is bracketed.
+      // A changed carry file, new request or failed native frontier invalidates
+      // an earlier token snapshot even when task identities remain unchanged.
+      for (const home of new Set(population.participants.map(p => p.codexHome))) {
+        const participant = population.participants.find(p => p.codexHome === home)!;
+        const current = await io.readRuntime(participant);
+        const expected = population.sources.filter(s => s.participant.codexHome === home)
+          .map(s => [s.nativeSessionId, s.usage.sourceSha256]).sort();
+        if (!current.complete || current.sessions.some(s => !s.usage.ok) ||
+            canonicalJson(current.sessions.map(s => [s.nativeSessionId, s.usage.ok ? s.usage.sourceSha256 : null]).sort()) !==
+              canonicalJson(expected)) return false;
+      }
+      const after = (await getLearningSpendPositions(sql, query)).census;
+      return !!after && currentBenchAttemptPopulationMatches(binding, population, before, after);
+    } } : {}),
   };
   return currentBenchNativeCostReader(protocol, io);
 }
@@ -235,9 +354,12 @@ export function currentBenchOpenAiInputContract(model: string, inputTokens: numb
  * Counting and sending must refer to the same complete, immutable input. */
 function selfContainedOpenAiInput(body: Record<string, unknown>): boolean {
   if (Object.keys(body).some(key => ![...openAiCountFields, ...openAiGenerationFields,
-    'previous_response_id', 'conversation'].includes(key as never)) ||
+    'previous_response_id', 'conversation', 'client_metadata'].includes(key as never)) ||
     body.previous_response_id != null || body.conversation != null ||
     body.service_tier != null && body.service_tier !== 'default' || body.background === true) return false;
+  if (body.client_metadata !== undefined) {
+    if (readGatewayNativeCorrelation(body).status !== 'observed' || Object.keys(body.client_metadata as object).some(key => key !== 'x-codex-turn-metadata')) return false;
+  }
   const object = (value: unknown): value is Record<string, unknown> =>
     value !== null && typeof value === 'object' && !Array.isArray(value);
   if (body.tools !== undefined && (!Array.isArray(body.tools) ||
@@ -422,7 +544,7 @@ export function currentBenchGatewayController(input: {
   protocol: CurrentBenchmarkProtocol; armId: string; taskId: string; seed: number;
   resources: LearningReservationResourceBudget;
   authenticateProvider: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>;
-}, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> {
+}, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> & { readonly accountingBinding: CurrentBenchAccountingBinding } {
   const protocol = currentBenchmarkProtocolSchema.parse(input.protocol);
   const arm = protocol.arms.find(arm => arm.id === input.armId);
   resolveBenchWorkspace(input.workspaceId);
@@ -445,7 +567,7 @@ export function currentBenchGatewayController(input: {
     throw new Error('Benchmark gateway resource policy differs from the frozen protocol.');
   }
   const rate = protocol.priceSchedule.rates.find(rate => rate.model === arm.model)!;
-  return createNativeGymGatewayController({ workspaceId, loopId, token, manifestSha256: preregHash, armId: assignmentId,
+  const controller = createNativeGymGatewayController({ workspaceId, loopId, token, manifestSha256: preregHash, armId: assignmentId,
     outputTokenLimit: Math.min(resources.outputTokens, arm.generationBudget.maxTokens ?? resources.outputTokens),
     exact: { binding: preregHash, budgetUsd: protocol.aggregateBudgetUsd, resourceBudget: resources },
     async authorizeProviderAttempt(attempt) {
@@ -480,6 +602,7 @@ export function currentBenchGatewayController(input: {
       } catch { return null; }
     },
   }, governor);
+  return { ...controller, accountingBinding: Object.freeze({ workspaceId, loopId, runId: protocol.runId, preregHash, assignmentId }) };
 }
 
 type LaunchArgs = Parameters<typeof launchAgentTool.handler>[0];
@@ -715,6 +838,8 @@ export interface CurrentSuBenchObservations {
   /** Host-owned startNativeGymGateway transport. Identity reads may precede
    * setup; an actual launch refuses without this route. */
   nativeGateway?: ScopedInferenceGateway;
+  /** Exact host controller scope; omission keeps request accounting incomplete. */
+  nativeAccountingBinding?: CurrentBenchAccountingBinding;
   admit(handle: BenchHarnessHandle, budget: GenerationBudget): Promise<{ admitted: boolean; receiptRef: string }>;
   observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
@@ -905,9 +1030,10 @@ export function liveCurrentSuBenchPorts(
   const workspaceId = resolveBenchWorkspace(ctx.workspaceId);
   if (ctx.workspaceId !== workspaceId || opts.workspaceId !== workspaceId) throw new Error('Current benchmark launch requires an explicitly isolated caller context.');
   const gateway = observations.nativeGateway === undefined ? null : snapshotScopedInferenceGateway(observations.nativeGateway);
+  const accounting = observations.nativeAccountingBinding === undefined ? undefined : Object.freeze({ ...observations.nativeAccountingBinding });
   return {
     admit: (handle, budget) => observations.admit(handle, budget),
-    collectCost: input => liveCurrentBenchNativeCostReader(input.handle, opts, db)(),
+    collectCost: input => liveCurrentBenchNativeCostReader(input.handle, opts, db, accounting)(),
     readIdentity: async task => {
       const observation = await observations.observeIdentity(task);
       return observation ? currentBenchIdentityFromObservation(task, observation) : null;

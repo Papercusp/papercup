@@ -469,7 +469,7 @@ async function readCapacityForProvider(
   // and the SAME report, so it cannot disagree with the fields beside it.
   const capacityVerdict = deriveCapacityVerdict({
     provider,
-    pool: await poolVerdictFor(rows, provider),
+    pool: await poolVerdictFor(rows, provider, args.account),
     admission: {
       reachable: report.reachable,
       blind: report.blind,
@@ -477,16 +477,29 @@ async function readCapacityForProvider(
       inFlight: report.inFlight,
     },
   });
+  // The gateway headroom read is provider-wide; its health count is for a
+  // representative model. Echoing a requested model cannot establish that
+  // model's availability, even when the provider has spare admission slots.
+  if (args.model) {
+    const modelUnknown = `model '${args.model}': availability is UNMEASURED; the gateway headroom and account windows are provider-level observations`;
+    capacityVerdict.unknown.push(modelUnknown);
+    capacityVerdict.reason = `${modelUnknown}. ${capacityVerdict.reason}`;
+  }
   return {
     provider,
     model: args.model ?? null,
     account: args.account ?? null,
-    verdict: report.blind
-      ? 'blind'
-      : accountAvailability || hasMeasuredCodexTierCapacity(provider, report)
-        ? 'measured'
-        : 'unknown',
+    verdict: args.model
+      ? 'unknown'
+      : report.blind
+        ? 'blind'
+        : accountAvailability || hasMeasuredCodexTierCapacity(provider, report)
+          ? 'measured'
+          : 'unknown',
     ...report,
+    // Do not turn the provider's spare slots into a proposed model-specific
+    // launch allowance without a measurement for that requested model.
+    recommendedHeadroom: args.model ? null : report.recommendedHeadroom,
     accountPool,
     capacityVerdict,
     // The RESULT-level unknown channel the `capacity.verdict` cell hoists (axis 2). A caller
@@ -516,10 +529,13 @@ async function readAccountRowsForVerdict(): Promise<AccountStatusRow[] | undefin
 async function poolVerdictFor(
   rows: AccountStatusRow[] | undefined,
   provider: AccountProvider,
+  accountId?: string,
 ): Promise<ProviderPoolVerdict | null> {
   if (!rows) return null;
+  const pinnedId = accountPin(accountId);
+  const scopedRows = rows.filter((row) => row.provider === provider && (!pinnedId || row.id === pinnedId));
   const { poolVerdictByProvider } = await import('../../deployment/account-pool-store');
-  return poolVerdictByProvider(rows).find((v) => v.provider === provider) ?? null;
+  return poolVerdictByProvider(scopedRows).find((v) => v.provider === provider) ?? null;
 }
 
 export default defineTool({
@@ -539,7 +555,7 @@ export default defineTool({
   args: z.object({
     headroom: z.number().int().min(0).max(10000).optional().describe('A proposed fresh-spawn count to clamp to spare capacity.'),
     provider: z.enum(['claude', 'codex']).optional().describe('Inference provider to inspect; defaults to Claude for backward compatibility.'),
-    model: z.string().min(1).max(120).optional().describe('Requested model family; gpt/o/codex models select the Codex backend when provider is omitted.'),
+    model: z.string().min(1).max(120).optional().describe('Requested model family; gpt/o/codex models select the Codex backend when provider is omitted. Model-specific availability is unmeasured and returns unknown; provider headroom alone cannot establish it.'),
     account: z.string().min(1).max(200).optional().describe('Optional pinned account id. An account-only request resolves its provider from accounts:status.'),
     fleet: z.string().min(1).max(200).optional().describe('Optional named fleet to scope capacity to. Without an explicit backend, a caller in a fleet uses its current live member providers.'),
   }),

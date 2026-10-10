@@ -174,6 +174,15 @@ describe('P-001 complete queue comparison and same-snapshot recovery', () => {
       needsHuman: 146, blocked: 440, claimHeld: 279,
       inFlight: 496, claimable: 9, otherUnclaimable: 773,
     };
+    metrics.snapshot.intakeStages = {
+      population: 2143, unit: 'work-item rows', remainingBugs: 605, verifiedCompletions: 20,
+      mutuallyExclusive: true, writer: 'deriveWorkItemPresentationStage',
+      scope: 'current-spec issue-family rows including observation evidence', window: 'current stock at generatedAt',
+      counts: {
+        observation: 1000, unknown: 200, candidate: 300, 'accepted-ready': 9,
+        'accepted-active': 496, 'accepted-blocked': 100, 'verified-completion': 20, 'terminal-other': 18,
+      },
+    };
     const itemIds = Array.from({ length: 2143 }, (_, index) => `WI-census-${index}`);
     return {
       ok: true,
@@ -192,12 +201,15 @@ describe('P-001 complete queue comparison and same-snapshot recovery', () => {
     expect(preview?.fleetMetrics).toMatchObject({
       ok: true,
       snapshot: {
+        schemaVersion: source.fleetMetrics.snapshot.schemaVersion,
+        generatedAt: source.fleetMetrics.snapshot.generatedAt,
         scope: source.fleetMetrics.snapshot.scope,
         quality: source.fleetMetrics.snapshot.quality,
         flow: source.fleetMetrics.snapshot.flow,
         remaining: source.fleetMetrics.snapshot.remaining,
         authority: source.fleetMetrics.snapshot.authority,
         issueUnits: source.fleetMetrics.snapshot.issueUnits,
+        intakeStages: source.fleetMetrics.snapshot.intakeStages,
         admissionParity: source.fleetMetrics.snapshot.admissionParity,
       },
     });
@@ -257,6 +269,7 @@ describe('P-001 complete queue comparison and same-snapshot recovery', () => {
       expect(complete.exceptionalActions).toHaveLength(2143);
       expect(complete.summary.claimable_now.population.itemIds).toEqual(source.summary.claimable_now.population.itemIds);
       expect(complete.fleetMetrics.snapshot.generatedAt).toBe(source.fleetMetrics.snapshot.generatedAt);
+      expect(complete.fleetMetrics.snapshot.intakeStages).toEqual(source.fleetMetrics.snapshot.intakeStages);
     } finally {
       if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
       else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
