@@ -28,6 +28,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { JSONValue } from 'postgres';
 import {
   getWorkItem as defaultGetWorkItem,
   mergeWorkItemPayload as defaultMergeWorkItemPayload,
@@ -80,13 +81,13 @@ export interface LifecycleWorkItem {
   payload: unknown;
 }
 
-interface AdmissionStandingPr {
+type AdmissionStandingPr = {
   schemaVersion: 'admission-standing-pr-v1';
   url: string;
   number: number;
   testedSha: string;
   targetSha: string;
-}
+};
 
 function standingPrOf(payload: unknown): AdmissionStandingPr | null {
   if (!payload || typeof payload !== 'object') return null;
@@ -117,7 +118,7 @@ export async function correlateAdmissionStandingPr(
     testedSha: input.testedSha, targetSha: input.targetSha,
   };
   if (!standingPrOf({ standingPr: pr })) throw new Error('invalid tested standing PR correlation');
-  const rows = await sql<{ feature_id: string; harness_slug: string; payload: Record<string, unknown> }[]>`
+  const rows = await sql<{ feature_id: string; harness_slug: string; payload: Record<string, JSONValue> }[]>`
     SELECT DISTINCT w.feature_id, w.harness_slug, w.payload
       FROM harness_shared.work_admissions a
       JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id
