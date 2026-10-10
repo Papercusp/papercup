@@ -150,6 +150,8 @@ describe('managed-pty integration evidence isolation', () => {
     const inputFile = join(root, 'input.txt');
     const ownerId = `su-initial-native-${process.pid}-${Math.floor(performance.now())}`;
     const nativeId = '01a117cf-6942-7bc3-9aee-1ff8ac3963b7';
+    const resolveNativeId = vi.fn((_pid: number) => nativeId);
+    const signalSource = new EventEmitter();
     let confirm: (() => void) | undefined;
     const onRespawn = vi.fn((_id: string, options: { onConfirmed: () => void }) => {
       confirm = options.onConfirmed;
@@ -158,7 +160,7 @@ describe('managed-pty integration evidence isolation', () => {
     const { io } = fakeIo();
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.exit(0),2000);"],
+      args: ['-e', "const fs=require('fs');let input='';process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>{input+=d;fs.appendFileSync(process.env.INPUT_FILE,d);if(input.includes('BEGIN_ACCEPTED_OPERATION'))process.exit(0);});"],
       cwd: root,
       env: {
         ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', INPUT_FILE: inputFile,
@@ -167,11 +169,14 @@ describe('managed-pty integration evidence isolation', () => {
         PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
       },
       ownerId, io, bridgeTty: false, kickoff: 'BEGIN_ACCEPTED_OPERATION',
-      resolveRespawnNativeId: () => nativeId,
-      onRespawn, signalSource: new EventEmitter(), onExit: () => undefined,
+      resolveRespawnNativeId: resolveNativeId,
+      onRespawn, signalSource, onExit: () => undefined,
     });
     try {
       await vi.waitFor(() => expect(onRespawn).toHaveBeenCalledOnce());
+      const discovery = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+      expect(discovery.nativeSessionId).toBe(nativeId);
+      expect(resolveNativeId).toHaveBeenCalledWith(discovery.ptyPid);
       await new Promise(resolve => setTimeout(resolve, 50));
       expect(existsSync(inputFile)).toBe(false);
       confirm!();
@@ -181,6 +186,7 @@ describe('managed-pty integration evidence isolation', () => {
       expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
         .not.toContain('codex-starting-stuck-snapshot');
     } finally {
+      signalSource.emit('SIGTERM');
       await done.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }

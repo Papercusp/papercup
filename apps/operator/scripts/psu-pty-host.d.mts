@@ -699,6 +699,13 @@ export function waitForNativeTurnStart({ probe, isCurrent, timeoutMs, pollMs }: 
     started: boolean;
     reason: string;
 }>;
+/** Observe the exact current child's writer, never the launch argv or a cached
+ * predecessor. Missing evidence is unknown, including while the child is parked.
+ * @param {number|null|undefined} childPid
+ * @param {((pid:number)=>string|null)|null|undefined} resolveNativeId
+ * @returns {string|null}
+ */
+export function currentNativeSessionId(childPid: number | null | undefined, resolveNativeId: ((pid: number) => string | null) | null | undefined): string | null;
 /** An ordinary warm Codex wake may use the CURRENT native turn's settled state
  * as its prompt boundary when idle TUI repaint prevents OUTPUT_QUIET_MS from
  * ever elapsing. Unlike the carry-specific probe above, this follows the newest

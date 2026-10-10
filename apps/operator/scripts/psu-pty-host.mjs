@@ -1830,6 +1830,22 @@ export async function waitForNativeTurnStart({ probe, isCurrent, timeoutMs = 10_
   return { started: false, reason: 'native-turn-start-unverified' };
 }
 
+/** Observe the exact current child's writer, never the launch argv or a cached
+ * predecessor. Missing evidence is unknown, including while the child is parked.
+ * @param {number|null|undefined} childPid
+ * @param {((pid:number)=>string|null)|null|undefined} resolveNativeId
+ * @returns {string|null}
+ */
+export function currentNativeSessionId(childPid, resolveNativeId) {
+  if (!Number.isSafeInteger(childPid) || childPid <= 0 || !resolveNativeId) return null;
+  try {
+    const id = resolveNativeId(childPid);
+    return typeof id === 'string' ? id.trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Return the newest regular native transcript beneath this session's ISOLATED
  * root (D-002). A resumed/carry chain can contain several native threads in the
  * same home, so an ordinary warm wake must follow the current writer rather
@@ -9321,6 +9337,10 @@ export function hostThroughPty(o) {
   let lastMachineTurnSubmittedAtMs = 0;
   let ownerComposerGate;
   let ownerStopRequested = false;
+  // The first discovery write observes execution before the rest of the host
+  // is wired. Initialize its retained state before that synchronous write.
+  let nativeExecutionFence = null;
+  let lastNativeExecution = null;
   // WI-10005178: the child's PTY size, so its cursor-positioned output can be
   // replayed onto the same grid (renderTerminalScreen). onResize keeps the child
   // at these dims too.
@@ -9655,6 +9675,9 @@ export function hostThroughPty(o) {
       // corrupt each other's staging file.
       const tmp = `${metaPath}.${process.pid}.tmp`;
       writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
+        ...(env.PAPERCUSP_AGENT === 'codex' ? {
+          nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+        } : {}),
         execution: currentNativeExecution(),
       }));
       renameSync(tmp, metaPath);
@@ -9907,8 +9930,6 @@ export function hostThroughPty(o) {
   // A machine submit and real owner input both advance the observation floor.
   // The host/process and child generation travel with the snapshot so readers
   // can reject predecessor observations after a resume or host replacement.
-  let nativeExecutionFence = null;
-  let lastNativeExecution = null;
   function currentNativeExecution() {
     const receivedAtMs = Math.max(childStartedAtMs,
       Number(activity.snapshot().lastInputAt ?? 0), lastMachineTurnSubmittedAtMs);

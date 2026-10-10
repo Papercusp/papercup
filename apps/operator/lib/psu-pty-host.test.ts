@@ -9,6 +9,24 @@ import { readFileSync } from 'node:fs';
 import * as realHost from '../scripts/psu-pty-host.mjs';
 import { resolvePtoolOperatorBase } from '../scripts/ptool.mjs';
 
+describe('currentNativeSessionId', () => {
+  it('observes each current child without retaining a predecessor UUID', () => {
+    const resolve = vi.fn((pid: number) => pid === 11 ? 'original-native' : 'carry-successor');
+    expect(realHost.currentNativeSessionId(11, resolve)).toBe('original-native');
+    expect(realHost.currentNativeSessionId(12, resolve)).toBe('carry-successor');
+    expect(resolve.mock.calls).toEqual([[11], [12]]);
+  });
+
+  it('keeps a missing, parked or unreadable writer unknown', () => {
+    const resolve = vi.fn(() => null);
+    expect(realHost.currentNativeSessionId(null, resolve)).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(realHost.currentNativeSessionId(12, resolve)).toBeNull();
+    expect(realHost.currentNativeSessionId(12, () => { throw new Error('writer unavailable'); })).toBeNull();
+    expect(realHost.currentNativeSessionId(12, null)).toBeNull();
+  });
+});
+
 describe('operatorPinEvidence', () => {
   it('persists only the direct-3170 enum for a loopback operator URL, not URL credentials', () => {
     expect(
