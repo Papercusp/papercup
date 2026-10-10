@@ -404,11 +404,11 @@ export default defineTool({
   description:
     'Create a plan in the plan STORE; never write a plan file. Pass `content` for the body or omit it for an empty starter. Slug uniqueness is lock-enforced. See /internal/docs/spec/plan-format.',
   guidance: {
-    when: 'Starting a plan: plans:new { slug, title, content }. ' + PRODUCT_SHAPING_GUIDANCE + ' Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and a Design BAR-to-work map. See /internal/docs/spec/plan-format.',
+    when: 'Starting a plan: plans:new { slug, title, content }. ' + PRODUCT_SHAPING_GUIDANCE + ' Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design "### Bar-to-work map for this plan". See /internal/docs/spec/plan-format.',
     notWhen:
-      'Editing an existing plan? Use plans:set-content / set-now / add-decision / add-item. Never create one by writing docs/plans/*.md; use this tool.',
+      'Editing an existing plan: plans:set-content / set-now / add-decision / add-item. Never hand-write docs/plans/*.md.',
     chaining:
-      'Shape the product → requirement JSON + Design BAR map + P-NNN items → activation audit/spec quality → plans:start. Incremental edits use plans:set-content or structured item/decision verbs.',
+      'Shape the product → requirement JSON + Bar-to-work map for this plan + P-NNN items → activation audit/spec quality → plans:start. Incremental edits use plans:set-content or structured item/decision verbs.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',

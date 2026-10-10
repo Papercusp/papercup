@@ -868,7 +868,7 @@ describe('quota recovery envelope identity (measured-agent-productivity P-004)',
       ownerId: valid.ownerId,
       deliveryId: valid.operationId,
       quotaRecovery: valid,
-    })).toEqual({ quotaRecovery: valid });
+    })).toEqual({ quotaRecovery: { ...valid, cause: 'quota' } });
   });
 
   it.each([

@@ -48,6 +48,23 @@ export const LEGACY_AGENT_REVIEW_SUBMITTER = 'system:legacy-agent-review' as con
  */
 export const STRANDED_SWEEP_OWNER = 'system:stranded-tool-failure-sweep' as const;
 
+/**
+ * WHY a review was sent back (bug-queue-legitimacy D-006 / D-007). Meaningful only while
+ * `status === 'revision-requested'`; every other status drops it on read.
+ *
+ *  - `content`: the independent grade failed — the REPORT needs revising, which is its
+ *    submitter's (or an orphan-rebind adopter's) job.
+ *  - `reproduction`: the grade PASSED and the only refusal is a missing or unaccepted
+ *    current-build reproduction receipt. That is VALIDATION work owned by the drain lane,
+ *    not a revision owed by the submitter: the intake-stage claim floor admits it, and its
+ *    claimant may resubmit it. The implementation guard is unchanged — readiness stays
+ *    `not-ready` until a reviewer round accepts a verified receipt.
+ *
+ * Absent on rows written before D-006; such rows keep the pre-D-006 hold.
+ */
+export const AGENT_REVIEW_REVISION_KINDS = ['content', 'reproduction'] as const;
+export type AgentReviewRevisionKind = (typeof AGENT_REVIEW_REVISION_KINDS)[number];
+
 export interface AgentReviewState {
   status: AgentReviewStatus;
   submittedBy: string;
@@ -55,6 +72,8 @@ export interface AgentReviewState {
   round: number;
   /** Current-round timing, written by the lifecycle; ledger routing may predate review. */
   timing?: { round: number; enteredAt: string; decidedAt?: string };
+  /** Why a `revision-requested` round was sent back; see {@link AGENT_REVIEW_REVISION_KINDS}. */
+  revisionKind?: AgentReviewRevisionKind;
 }
 
 /**
@@ -1139,7 +1158,22 @@ export function readAgentReviewState(payload: unknown): AgentReviewState | null 
           ...(typeof timing.decidedAt === 'string' ? { decidedAt: timing.decidedAt } : {}),
         } }
       : {}),
+    ...(row.status === 'revision-requested' &&
+      (AGENT_REVIEW_REVISION_KINDS as readonly unknown[]).includes(row.revisionKind)
+      ? { revisionKind: row.revisionKind as AgentReviewRevisionKind }
+      : {}),
   };
+}
+
+/**
+ * Is this row reproduction-validation work (D-006): a revision requested ONLY because a
+ * current-build reproduction receipt is missing or unaccepted? The one predicate claim
+ * doors, briefs and P-010's census share — the SQL leg in
+ * {@link intakeStageClaimFloorFromFragmentsSql} is its twin.
+ */
+export function agentReviewIsReproductionValidation(payload: unknown): boolean {
+  const review = record(record(payload).agentReview);
+  return review.status === 'revision-requested' && review.revisionKind === 'reproduction';
 }
 
 /**
@@ -1611,9 +1645,14 @@ export const INTAKE_STAGE_REVIEW_IN_PROGRESS_STATUSES = ['pending', 'revision-re
  *
  *  1. legacy-revision: a revision requested of {@link LEGACY_AGENT_REVIEW_SUBMITTER}
  *     was seeded by the pre-agent-review migration, not a live review, so it passes.
- *  2. review-in-progress: otherwise a pending or revision-requested review holds the
+ *  2. reproduction-validation (bug-queue-legitimacy D-006/D-007): a revision requested
+ *     ONLY for a missing/unaccepted current-build reproduction receipt
+ *     (`revisionKind = 'reproduction'`) is validation work for the drain lane, so it
+ *     passes. Readiness stays `not-ready`; the claimant reproduces and resubmits, or
+ *     closes it not-reproducible — no fix starts without an accepted receipt.
+ *  3. review-in-progress: otherwise a pending or revision-requested review holds the
  *     row; the review lane is its clearer.
- *  3. readiness floor ({@link implementationReadinessFloorSql}): accepted (current
+ *  4. readiness floor ({@link implementationReadinessFloorSql}): accepted (current
  *     `ready` with a qualifying acceptance) or, for rows created before the
  *     enforcement cutover, legacy-admitted.
  *
@@ -1626,15 +1665,21 @@ export function intakeStageClaimFloorFromFragmentsSql(
     reviewStatus: postgres.Fragment;
     /** `agentReview ->> 'submittedBy'` of the row. */
     reviewSubmittedBy: postgres.Fragment;
+    /** `agentReview ->> 'revisionKind'` of the row (NULL before D-006). */
+    reviewRevisionKind: postgres.Fragment;
     /** A readiness floor over the same row (`implementationReadiness*FloorSql`). */
     readinessFloor: postgres.Fragment;
   },
 ) {
-  const { reviewStatus, reviewSubmittedBy, readinessFloor } = fragments;
+  const { reviewStatus, reviewSubmittedBy, reviewRevisionKind, readinessFloor } = fragments;
   return sql`(
     (
       COALESCE(${reviewStatus} = 'revision-requested', FALSE)
       AND COALESCE(${reviewSubmittedBy} = ${LEGACY_AGENT_REVIEW_SUBMITTER}, FALSE)
+    )
+    OR (
+      COALESCE(${reviewStatus} = 'revision-requested', FALSE)
+      AND COALESCE(${reviewRevisionKind} = 'reproduction', FALSE)
     )
     OR (
       ${reviewStatus} IS DISTINCT FROM 'pending'
@@ -1658,6 +1703,7 @@ export function intakeStageClaimFloorSql(
   return intakeStageClaimFloorFromFragmentsSql(sql, {
     reviewStatus: sql`(${review} ->> 'status')`,
     reviewSubmittedBy: sql`(${review} ->> 'submittedBy')`,
+    reviewRevisionKind: sql`(${review} ->> 'revisionKind')`,
     readinessFloor: shape
       ? implementationReadinessNormalExclusionSql(sql, payloadCol, shape)
       : implementationReadinessNormalExclusionSql(sql, payloadCol),
@@ -1680,6 +1726,8 @@ export function intakeStageAdmitsClaim(input: {
   // `->>` renders any JSON scalar as text; a non-string status can never equal a literal.
   const status = typeof review.status === 'string' ? review.status : null;
   if (status === 'revision-requested' && review.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER) return true;
+  // D-006: SQL's `->>` renders a non-string revisionKind as text that never equals the literal.
+  if (status === 'revision-requested' && review.revisionKind === 'reproduction') return true;
   if ((INTAKE_STAGE_REVIEW_IN_PROGRESS_STATUSES as readonly string[]).includes(status ?? '')) return false;
   return implementationReadinessAdmitsClaim(input);
 }

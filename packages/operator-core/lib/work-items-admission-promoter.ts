@@ -2863,6 +2863,7 @@ export async function readWorkItemReadinessProjection(opts: {
                ${intakeStageClaimFloorFromFragmentsSql(sql, {
                  reviewStatus: sql`(p.agent_review ->> 'status')`,
                  reviewSubmittedBy: sql`(p.agent_review ->> 'submittedBy')`,
+                 reviewRevisionKind: sql`(p.agent_review ->> 'revisionKind')`,
                  readinessFloor: implementationReadinessProjectedFloorSql(sql, {
                    readiness: sql`p.implementation_readiness`,
                    enrolled: sql`p.readiness_enrolled`,

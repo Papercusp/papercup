@@ -650,6 +650,21 @@ export async function resubmitAgentReview(
   if (isLegacyRebind && workItem.assignee !== input.submittedBy) {
     return { resubmitted: false, state: current, reason: 'legacy-revision-not-claimant' };
   }
+  // VALIDATION REBIND (bug-queue-legitimacy D-006/D-007). A revision requested ONLY for a
+  // missing/unaccepted reproduction receipt is admitted to ordinary claimers by the intake
+  // floor, so — like a legacy rebind — its CLAIMANT may resubmit it without proving the
+  // original submitter gone. Anyone else falls through to the submitter/orphan path below,
+  // so the holder fence is unchanged. Resubmitting with no receipt on the row would only buy
+  // another review round that refuses for the same reason, so that is refused up front;
+  // whether the receipt VERIFIES on the current build stays the reviewer round's job.
+  const isValidationRebind = !isLegacyRebind &&
+    current.status === 'revision-requested' &&
+    current.revisionKind === 'reproduction' &&
+    effectiveSubmitter !== input.submittedBy &&
+    workItem.assignee === input.submittedBy;
+  if (isValidationRebind && !readBugReproductionReceipt(approvalReproduction(workItem.payload))) {
+    return { resubmitted: false, state: current, reason: 'validation-receipt-missing' };
+  }
   // ORPHAN REBIND (WI-41689). A 'revision-requested' row can only leave that state through
   // this function, and until now only its ORIGINAL submitter could call it. That submitter
   // is routinely gone by review time — a session that filed a report hours earlier is
@@ -660,7 +675,7 @@ export async function resubmitAgentReview(
   // So: when the original submitter is PROVABLY gone, another agent may adopt the row.
   // "Provably" is doing real work in that sentence — see the two guards below.
   let isOrphanRebind = false;
-  if (!isLegacyRebind && effectiveSubmitter !== input.submittedBy) {
+  if (!isLegacyRebind && !isValidationRebind && effectiveSubmitter !== input.submittedBy) {
     // A row that is not resubmittable anyway refuses on identity exactly as before,
     // rather than spending an oracle read to reach the same answer by a new name.
     if (current.status !== 'revision-requested') {
@@ -709,10 +724,14 @@ export async function resubmitAgentReview(
   if (current.status !== 'revision-requested') {
     return { resubmitted: false, state: current, reason: `not-revision-requested:${current.status}` };
   }
+  // A pending round carries no revision kind; the next grade stamps a fresh one.
+  const { revisionKind: _resolvedRevisionKind, ...currentWithoutKind } = current;
   const next: AgentReviewState = {
-    ...current,
+    ...currentWithoutKind,
     status: 'pending',
-    submittedBy: isLegacyRebind || isOrphanRebind || isProvenanceRepair ? input.submittedBy : current.submittedBy,
+    submittedBy: isLegacyRebind || isOrphanRebind || isProvenanceRepair || isValidationRebind
+      ? input.submittedBy
+      : current.submittedBy,
     round: current.round + 1,
     timing: { round: current.round + 1, enteredAt: new Date().toISOString() },
   };
@@ -933,6 +952,9 @@ export async function reconcileAgentReviewGrade(
     const next: AgentReviewState = {
       ...current,
       status: 'revision-requested',
+      // D-006/D-007: a failed grade is a CONTENT revision — never validation work, even
+      // when an earlier round of this row was refused only for its reproduction receipt.
+      revisionKind: 'content',
       ...(current.timing ? { timing: {
         ...current.timing,
         decidedAt: current.status === 'revision-requested' ? current.timing.decidedAt : new Date().toISOString(),
@@ -1050,9 +1072,13 @@ export async function reconcileAgentReviewGrade(
       if (!isAcceptedReproductionStatus(result.status)) reproductionRefusal = result.detail;
     }
   }
+  // D-006/D-007: the grade passed, so a refusal here is ONLY the reproduction receipt —
+  // validation work the intake floor admits for the drain lane. An approval drops the kind.
+  const { revisionKind: _priorRevisionKind, ...currentWithoutKind } = current;
   const next: AgentReviewState & { status: AgentReviewReconcileOutcome['status'] } = {
-    ...current,
+    ...currentWithoutKind,
     status: reproductionRefusal ? 'revision-requested' : 'approved',
+    ...(reproductionRefusal ? { revisionKind: 'reproduction' as const } : {}),
     ...(current.timing ? { timing: {
       ...current.timing,
       decidedAt: current.status === (reproductionRefusal ? 'revision-requested' : 'approved')
