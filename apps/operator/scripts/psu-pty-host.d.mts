@@ -857,7 +857,7 @@ export function carryTurnProofRequiresNativeId(agent: any): boolean;
  * @param {number} [opts.retryCount]
  * @param {number} [opts.maxRetries]
  */
-export function shouldRetryCarryOnFreshEpoch({ drillId, reason, proofReason, retryCount, maxRetries, }?: {
+export function shouldRetryCarryOnFreshEpoch({ drillId, reason, proofReason, retryCount, maxRetries, unboundPastWindow, }?: {
     drillId?: string | undefined;
     reason?: string | undefined;
     proofReason?: string | null | undefined;
@@ -901,14 +901,14 @@ export function codexLaunchStartingRetryMax(value: unknown, fallback?: number): 
  * @param {number} [opts.retryCount]
  * @param {number} [opts.maxRetries]
  */
-export function shouldRetryLaunchKickoffOnFreshChild({ agent, reason, managedKickoff, isResume, retryCount, maxRetries, }?: {
+export function shouldRetryLaunchKickoffOnFreshChild({ agent, reason, managedKickoff, isResume, retryCount, maxRetries, unboundPastWindow, }?: {
     agent?: string | undefined;
     reason?: string | undefined;
     managedKickoff?: boolean | undefined;
     isResume?: boolean | undefined;
     retryCount?: number | undefined;
     maxRetries?: number | undefined;
-}): boolean;
+}): any;
 /** EI-24818010361425604: should an undelivered launch kickoff be re-delivered to
  *  the successor of a same-host respawn? `superseded` means THIS host replaced the
  *  child the kickoff targeted (a managed carry-respawn, a loop recycle) while the
