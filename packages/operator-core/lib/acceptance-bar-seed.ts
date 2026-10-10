@@ -33,6 +33,7 @@ import {
   computeAcceptanceBarSetHash,
   DEFAULT_RATING_SCALE,
   normalizeAcceptanceBarCriterion,
+  planStatusToRubricStatus,
   type ProposeRubricCriterion,
 } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
@@ -838,6 +839,58 @@ interface RubricRow {
   template_data: unknown;
 }
 
+/** Share the seed writer's exact workspace/harness and live-rubric selection with
+ * activation. A retired subject pin must not hide a newly authored successor. */
+export async function discoverAcceptanceBarSeedRubrics(input: {
+  executor: SpecClauseSql; workspaceId: string; harnessSlug: string; planSlug: string;
+}): Promise<RubricRow[]> {
+  const sql = input.executor;
+  return sql<RubricRow[]>`
+    SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, title,
+           template, template_slug, archived, template_data
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${input.workspaceId}
+       AND template = 'rubric'
+       AND template_slug IS NULL
+       AND archived = false
+       AND status IN ('active', 'ready')
+       AND template_data->>'kind' = 'acceptance'
+       AND template_data->>'subjectPlan' = ${input.planSlug}
+       AND (template_data->>'subjectHarnessSlug' = ${input.harnessSlug}
+         OR (template_data->>'subjectHarnessSlug' IS NULL AND (
+           SELECT count(*) = 1 AND bool_and(subject.harness_slug = ${input.harnessSlug})
+             FROM harness_shared.harness_plans AS subject
+            WHERE subject.workspace_id = ${input.workspaceId}
+              AND subject.plan_slug = ${input.planSlug}
+         )))
+     ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
+     LIMIT 2`;
+}
+
+/** Only a reopened draft with an intact retired contract can leave the historical
+ * amendment behind. Live contracts and already-started successors still owe the
+ * canonical amendment path. This only selects a route: the transactional seeder
+ * retains all validation, locks, revision writes and proof invalidation. */
+export function canSeedAcceptanceBarSuccessor(input: {
+  planStatus: string | null; planSlug: string;
+  pinnedRubricSlug: string; pinnedRubricStatus: string | null;
+  pinnedRubricArchived: boolean; pinnedTemplateData: unknown;
+  activeRubrics: ReadonlyArray<Pick<RubricRow, 'plan_slug' | 'template_data'>>;
+}): boolean {
+  if (input.planStatus !== 'draft' ||
+      planStatusToRubricStatus(input.pinnedRubricStatus, input.pinnedRubricArchived) !== 'retired' ||
+      input.activeRubrics.length !== 1) return false;
+  const successor = input.activeRubrics[0]!;
+  if (successor.plan_slug === input.pinnedRubricSlug) return false;
+  const pinned = rubricTemplateDataAuthoringSchema.safeParse(input.pinnedTemplateData);
+  const next = rubricTemplateDataAuthoringSchema.safeParse(successor.template_data);
+  return pinned.success && next.success &&
+    pinned.data.kind === 'acceptance' && pinned.data.subjectPlan === input.planSlug &&
+    pinned.data.barContract != null &&
+    next.data.kind === 'acceptance' && next.data.subjectPlan === input.planSlug &&
+    next.data.barContract == null;
+}
+
 /**
  * The live-rubric discovery query intentionally excludes historical rows. When
  * the deterministic slug is already occupied, however, the locked row may be
@@ -930,26 +983,7 @@ export async function seedAcceptanceBarsInTransaction(
   input: TransactionalAcceptanceBarSeedInput,
 ): Promise<TransactionalAcceptanceBarSeedResult> {
   const sql = input.executor;
-  const rubrics = await sql<RubricRow[]>`
-    SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, title,
-           template, template_slug, archived, template_data
-      FROM harness_shared.harness_plans
-     WHERE workspace_id = ${input.workspaceId}
-       AND template = 'rubric'
-       AND template_slug IS NULL
-       AND archived = false
-       AND status IN ('active', 'ready')
-       AND template_data->>'kind' = 'acceptance'
-       AND template_data->>'subjectPlan' = ${input.planSlug}
-       AND (template_data->>'subjectHarnessSlug' = ${input.harnessSlug}
-         OR (template_data->>'subjectHarnessSlug' IS NULL AND (
-           SELECT count(*) = 1 AND bool_and(subject.harness_slug = ${input.harnessSlug})
-             FROM harness_shared.harness_plans AS subject
-            WHERE subject.workspace_id = ${input.workspaceId}
-              AND subject.plan_slug = ${input.planSlug}
-         )))
-     ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
-     LIMIT 2`;
+  const rubrics = await discoverAcceptanceBarSeedRubrics(input);
   if (rubrics.length > 1) {
     return refusal([{
       code: 'bar_rubric_conflict',

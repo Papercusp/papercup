@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAcceptanceBarSeed,
+  canSeedAcceptanceBarSuccessor,
   parseBarMappings,
   acceptanceBarProjectedBehavior,
   acceptanceBarBehaviorClass,
@@ -54,6 +55,53 @@ const input = {
   rubricSlug: 'acceptance-seed-target',
   rubricRevision: 1,
 };
+
+describe('reopened draft successor adoption', () => {
+  function adoption() {
+    const built = buildAcceptanceBarSeed({ ...input, planContent: plan() });
+    if (!built.ok) throw new Error('valid retired contract fixture required');
+    const { barContract: _contract, barSetHash: _hash, ...unstarted } = built.templateData;
+    return {
+      planStatus: 'draft', planSlug: 'seed-target',
+      pinnedRubricSlug: 'acceptance-seed-target', pinnedRubricStatus: 'superseded',
+      pinnedRubricArchived: false, pinnedTemplateData: built.templateData,
+      activeRubrics: [{ plan_slug: 'acceptance-successor', template_data: unstarted }],
+    };
+  }
+
+  it('routes an intact retired contract and one unstarted successor to the seeder without mutation', () => {
+    const args = adoption();
+    const before = JSON.stringify(args);
+    expect(canSeedAcceptanceBarSuccessor(args)).toBe(true);
+    expect(JSON.stringify(args)).toBe(before);
+  });
+
+  it.each(['active', 'ready', 'shipped', 'superseded', null])('keeps subject status %s on its existing contract path', (planStatus) => {
+    expect(canSeedAcceptanceBarSuccessor({ ...adoption(), planStatus })).toBe(false);
+  });
+
+  it.each(['active', 'ready', 'draft', null])('does not bypass a pinned rubric with status %s', (pinnedRubricStatus) => {
+    expect(canSeedAcceptanceBarSuccessor({ ...adoption(), pinnedRubricStatus })).toBe(false);
+  });
+
+  it('refuses absent, ambiguous, pinned, started or unrelated successor identities', () => {
+    const args = adoption();
+    const candidate = args.activeRubrics[0]!;
+    const variants = [
+      [],
+      [candidate, { ...candidate, plan_slug: 'acceptance-second-successor' }],
+      [{ ...candidate, plan_slug: args.pinnedRubricSlug }],
+      [{ ...candidate, template_data: args.pinnedTemplateData }],
+      [{ ...candidate, template_data: { ...candidate.template_data, subjectPlan: 'another-plan' } }],
+      [{ ...candidate, template_data: {} }],
+    ];
+    for (const activeRubrics of variants) {
+      expect(canSeedAcceptanceBarSuccessor({ ...args, activeRubrics })).toBe(false);
+    }
+    expect(canSeedAcceptanceBarSuccessor({ ...args, pinnedTemplateData: candidate.template_data })).toBe(false);
+    expect(canSeedAcceptanceBarSuccessor({ ...args, pinnedTemplateData: {} })).toBe(false);
+  });
+});
 
 describe('Requirements BAR parser', () => {
   it('parses every explicit R-N record and refuses malformed partial records', () => {

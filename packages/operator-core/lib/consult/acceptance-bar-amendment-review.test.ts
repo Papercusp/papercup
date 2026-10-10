@@ -618,6 +618,21 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'observed' });
   });
 
+  it('reports a synthetic gateway rate-limit reply as a blocked review', async () => {
+    const text = 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s';
+    const analysis = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'rate_limit',
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] } }),
+    ].join('\n'));
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn(() => analysis) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({
+      state: 'blocked', reason: 'account-walled', evidence: text,
+      taskId: 'task-1', ownerId: 'judge-1',
+    });
+  });
+
   it.each(['Prompt is too long', "API Error: 400 Tool reference 'mcp__papercusp_su__old' not found in available tools"])(
     'reports the existing transcript rejection class: %s', async (text) => {
       const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),

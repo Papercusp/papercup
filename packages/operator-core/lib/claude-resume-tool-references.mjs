@@ -182,7 +182,7 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     const contextEvidence = synthetic && CONTEXT_LIMIT_RE.test(text) ? text.trim().slice(0, 200) : null;
     trailingContextLimitTurns = contextEvidence ? trailingContextLimitTurns + 1 : 0;
     lastContextLimitEvidence = contextEvidence;
-    const accountEvidence = synthetic && (record.error === 'billing_error' || ACCOUNT_WALL_RE.test(text))
+    const accountEvidence = synthetic && (record.error === 'billing_error' || record.error === 'rate_limit' || ACCOUNT_WALL_RE.test(text))
       ? text.trim().slice(0, 200) : null;
     trailingAccountWallTurns = accountEvidence ? trailingAccountWallTurns + 1 : 0;
     lastAccountWallEvidence = accountEvidence;

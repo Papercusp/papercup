@@ -52,11 +52,11 @@ describe('offline content bundle installer', () => {
       '    listingRef: base',
       'templates:',
       '  - id: papercusp-data-layer',
-      `    githubUrl: ${url}`,
+      `    githubUrl: ${url}.git/`,
       '    listingRef: papercusp-data-layer',
       'rubrics:',
       '  - id: checks',
-      `    githubUrl: ${url}`,
+      `    githubUrl: ${url.toLowerCase()}`,
       '    listingRef: checks',
     ].join('\n'));
     write('base/blueprint.yaml', 'id: base\n');
@@ -98,6 +98,68 @@ describe('offline content bundle installer', () => {
     expect(readFileSync(join(home, 'templates/papercusp-data-layer/GUIDE.md'), 'utf8'))
       .toBe('content from the manifest snapshot\n');
     expect(cloneDestinations.every((path) => !existsSync(path))).toBe(true);
+  });
+
+  it('fails closed and removes its snapshot when the initial repository fetch fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'offline-content-fetch-failure-'));
+    roots.push(root);
+    process.env.PAPERCUSP_HOME = root;
+    const actual = await vi.importActual<typeof import('./bundle-manifest-io')>('./bundle-manifest-io');
+    fetchBundleManifestMock.mockImplementation(actual.fetchBundleManifest);
+    let cloneDestination = '';
+    spawnMock.mockImplementation((_command, args: string[]) => {
+      cloneDestination = args.at(-1)!;
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
+      queueMicrotask(() => {
+        child.stderr.end('initial repository unavailable');
+        child.emit('close', 128);
+      });
+      return child;
+    });
+
+    await expect(installOfflineContentBundleAppFromCupboard(
+      { githubUrl: 'https://github.com/Papercusp/templates' },
+      { workspaceId: 'workspace-host', offlineContentOnly: true },
+    )).resolves.toMatchObject({ ok: false, error: 'manifest fetch failed', detail: expect.stringContaining('initial repository unavailable') });
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(existsSync(join(cloneDestination, '..'))).toBe(false);
+    expect(existsSync(join(root, 'templates'))).toBe(false);
+  });
+
+  it('fetches distinct repositories separately instead of substituting manifest content', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'offline-content-distinct-repos-'));
+    roots.push(root);
+    const manifestRepo = join(root, 'manifest');
+    const contentRepo = join(root, 'content');
+    const home = join(root, 'home');
+    mkdirSync(manifestRepo); mkdirSync(home);
+    mkdirSync(join(contentRepo, 'other'), { recursive: true });
+    process.env.PAPERCUSP_HOME = home;
+    const manifestUrl = 'https://github.com/Papercusp/templates';
+    const contentUrl = 'https://github.com/Other/templates';
+    writeFileSync(join(manifestRepo, 'bundle.yaml'),
+      `name: distinct\ntemplates:\n  - id: other\n    githubUrl: ${contentUrl}\n    listingRef: other\n`);
+    writeFileSync(join(contentRepo, 'other/template.yaml'), 'id: other\nscope: aspect\n');
+    writeFileSync(join(contentRepo, 'other/GUIDE.md'), 'other repository\n');
+    const actual = await vi.importActual<typeof import('./bundle-manifest-io')>('./bundle-manifest-io');
+    fetchBundleManifestMock.mockImplementation(actual.fetchBundleManifest);
+    const cloneDestinations: string[] = [];
+    spawnMock.mockImplementation((_command, args: string[]) => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
+      cloneDestinations.push(args.at(-1)!);
+      queueMicrotask(() => {
+        cpSync(args.at(-2) === manifestUrl ? manifestRepo : contentRepo, args.at(-1)!, { recursive: true });
+        child.emit('close', 0);
+      });
+      return child;
+    });
+
+    await expect(installOfflineContentBundleAppFromCupboard(
+      { githubUrl: manifestUrl }, { workspaceId: 'workspace-host', offlineContentOnly: true },
+    )).resolves.toMatchObject({ ok: true, result: { ok: true } });
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(readFileSync(join(home, 'templates/other/GUIDE.md'), 'utf8')).toBe('other repository\n');
+    expect(cloneDestinations.every((path) => !existsSync(join(path, '..')))).toBe(true);
   });
 
   it('passes a working tmpDir to manifest and content installers before PG exists', async () => {

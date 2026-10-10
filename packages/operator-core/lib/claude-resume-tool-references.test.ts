@@ -61,6 +61,34 @@ describe('Claude resume tool-reference recovery', () => {
     });
   });
 
+  it('detects a structured rate-limit rejection without depending on provider wording', () => {
+    const text = 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s';
+    const rejected = JSON.stringify({ ...JSON.parse(apiError(text, 429)), error: 'rate_limit' });
+    expect(analyzeClaudeResumeTranscript(rejected)).toMatchObject({
+      trailingAccountWallTurns: 1,
+      lastAccountWallEvidence: text,
+      assistantTurnsSinceLastPrompt: 1,
+    });
+  });
+
+  it('does not treat ordinary structured rate-limit discussion as a provider rejection', () => {
+    const discussed = JSON.stringify({ ...JSON.parse(assistant('The gateway returned rate_limit; I am reviewing.')), error: 'rate_limit' });
+    expect(analyzeClaudeResumeTranscript(discussed)).toMatchObject({
+      trailingAccountWallTurns: 0,
+      lastAccountWallEvidence: null,
+    });
+  });
+
+  it('a new kickoff clears a structured rate-limit rejection', () => {
+    const rejected = JSON.stringify({ ...JSON.parse(apiError('Gateway temporarily throttled', 429)), error: 'rate_limit' });
+    const kickoff = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Retry the same review.' } });
+    expect(analyzeClaudeResumeTranscript([rejected, kickoff].join('\n'))).toMatchObject({
+      trailingAccountWallTurns: 0,
+      lastAccountWallEvidence: null,
+      assistantTurnsSinceLastPrompt: 0,
+    });
+  });
+
   it('keeps copied billing errors and ordinary model discussion out of current account-wall evidence', () => {
     const kickoff = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Answer the current consult.' } });
     for (const recovery of [kickoff, assistant('Credit balance is too low')]) {

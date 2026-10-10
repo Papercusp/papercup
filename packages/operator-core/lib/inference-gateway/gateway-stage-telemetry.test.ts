@@ -32,8 +32,9 @@ async function listen(server: http.Server): Promise<number> {
   return (server.address() as { port: number }).port;
 }
 
-it.each(['json', 'sse', 'sse-without-final-newline'] as const)(
-  'finalizes Responses provider evidence before downstream completion (%s)', async framing => {
+it.each((['bearer', 'oauth'] as const).flatMap(transport =>
+  (['json', 'sse', 'sse-without-final-newline'] as const).map(framing => ({ transport, framing }))))(
+  'finalizes Responses provider evidence before downstream completion ($transport/$framing)', async ({ transport, framing }) => {
     resetGovernorRegistry();
     const completed = { id: 'resp-tail-proof', model: 'gpt-6-sol', status: 'completed', output: [],
       usage: { input_tokens: 10, output_tokens: 2, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } };
@@ -45,20 +46,50 @@ it.each(['json', 'sse', 'sse-without-final-newline'] as const)(
       });
     });
     const upstreamPort = await listen(upstream);
+    const home = transport === 'oauth' ? await mkdtemp(join(tmpdir(), 'gateway-tail-oauth-')) : undefined;
+    const dispatcher = transport === 'oauth' ? new Agent({ connect: (_options, callback) => {
+      const socket = net.connect(upstreamPort, '127.0.0.1');
+      const failed = (error: Error) => callback(error, null);
+      socket.once('error', failed);
+      socket.once('connect', () => { socket.off('error', failed); callback(null, socket); });
+    } }) : undefined;
+    try {
+    if (home) {
+      const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const jwt = `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+      await writeFile(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+        access_token: jwt, refresh_token: 'PRIVATE_TAIL_REFRESH', account_id: 'tail-account',
+      } }));
+    }
     gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
-      codexPool: createFailoverPool([{ accountId: 'tail-account', token: async () => 'PRIVATE_TAIL_TOKEN' }]),
+      ...(home && dispatcher ? { codexCliAccounts: () => [{ accountId: 'tail-account', home }], codexOAuthProxy: true,
+        fetchImpl: ((target, init) => fetch(target, { ...init, dispatcher } as RequestInit)) as typeof fetch }
+        : { codexPool: createFailoverPool([{ accountId: 'tail-account', token: async () => 'PRIVATE_TAIL_TOKEN' }]) }),
       openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`, requestAbsorbMs: 0, selfHeal: { enabled: false } });
     const port = await gateway.listen(0);
     const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
       headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-tail-proof' },
-      body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TAIL_PROMPT', stream: framing !== 'json',
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TAIL_PROMPT', stream: transport === 'oauth' || framing !== 'json',
         reasoning: { effort: 'high' } }) });
-    expect(response.status).toBe(200); await response.text();
+    await response.text();
     const { timeline } = await recentTimeline(port);
+    if (transport === 'oauth' && framing === 'sse-without-final-newline') {
+      // The maintained OAuth kernel requires a terminated terminal SSE frame.
+      // Flushing observational bytes must not make this failed send successful.
+      expect(response.status).toBe(502);
+      expect(timeline).toMatchObject({ outcome: 'upstream-error', finalStatus: 502 });
+      return;
+    }
+    expect(response.status).toBe(200);
     expect(timeline).toMatchObject({ outcome: 'ok', finalStatus: 200, attempts: 1,
       providerIdentity: { responseId: completed.id, model: completed.model, accountId: 'tail-account', effort: null },
       cache: { providerRequestId: completed.id, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 } });
     expect(JSON.stringify(timeline)).not.toContain('PRIVATE_TAIL');
+    } finally {
+      await gateway?.close(); gateway = undefined;
+      await dispatcher?.close();
+      if (home) await rm(home, { recursive: true, force: true });
+    }
   },
 );
 

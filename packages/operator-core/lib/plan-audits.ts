@@ -74,6 +74,8 @@ import {
 } from './agent-tools/plans/activation-audit-repair';
 import {
   AcceptanceBarSeedAbort,
+  canSeedAcceptanceBarSuccessor,
+  discoverAcceptanceBarSeedRubrics,
   parseBarMappings,
   parseRequirementBars,
   seedAcceptanceBarsInTransaction,
@@ -2606,10 +2608,13 @@ export async function recordCurrentActivationAudit(
         const [previous] = await executor<Array<{
           content_snapshot: string; content_hash: string; subject_version: string | null;
           previous_activation: ActivationAuditPayload;
+          rubric_status: string | null; rubric_archived: boolean; rubric_template_data: unknown;
         }>>`
           SELECT r.content_snapshot, r.content_hash,
                  rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version,
-                 a.activation AS previous_activation
+                 a.activation AS previous_activation,
+                 rubric.status AS rubric_status, rubric.archived AS rubric_archived,
+                 rubric.template_data AS rubric_template_data
             FROM (
               SELECT activation, audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash
                 FROM harness_shared.plan_audits
@@ -2624,8 +2629,25 @@ export async function recordCurrentActivationAudit(
              AND r.plan_slug = ${input.planSlug}
             JOIN harness_shared.harness_plans rubric
               ON rubric.workspace_id = ${input.workspaceId} AND rubric.harness_slug = ${input.harnessSlug}
-             AND rubric.plan_slug = ${current.acceptance_bar_rubric_slug}`;
-        if (previous && hashPlanContent(previous.content_snapshot) === previous.content_hash) {
+             AND rubric.plan_slug = ${current.acceptance_bar_rubric_slug}
+            FOR SHARE OF rubric`;
+        const adoptingSuccessor = previous && current.status === 'draft' &&
+          hashPlanContent(previous.content_snapshot) === previous.content_hash &&
+          canSeedAcceptanceBarSuccessor({
+            planStatus: current.status, planSlug: input.planSlug,
+            pinnedRubricSlug: current.acceptance_bar_rubric_slug,
+            pinnedRubricStatus: previous.rubric_status,
+            pinnedRubricArchived: previous.rubric_archived,
+            pinnedTemplateData: previous.rubric_template_data,
+            activeRubrics: await discoverAcceptanceBarSeedRubrics({
+              executor, workspaceId: input.workspaceId,
+              harnessSlug: input.harnessSlug, planSlug: input.planSlug,
+            }),
+          });
+        // A historical pending amendment cannot rewrite its retired rubric. A
+        // distinct unstarted successor instead gets a fresh canonical seed; old
+        // audit/proof/rubric revisions remain historical and are never repinned.
+        if (!adoptingSuccessor && previous && hashPlanContent(previous.content_snapshot) === previous.content_hash) {
           const priorPending = previous.previous_activation?.barSeedPendingAmendment;
           const [previousSource, currentSource] = await Promise.all([
             acceptanceBarSourceFingerprint(previous.content_snapshot),

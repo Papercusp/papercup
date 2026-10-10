@@ -787,6 +787,76 @@ describe('migration 938 activation-audit ledger', () => {
     expect(afterDecision!.template_data).toEqual(expectedNeutral);
   });
 
+  it('adopts an unstarted successor for a reopened draft without rewriting retired validation history', async () => {
+    await seedPostEpochPlan();
+    const input = {
+      workspaceId: 'activation-audit-test', harnessSlug: 'papercusp',
+      planSlug: 'post-epoch-seed-target', createdBy: 'su-seeder',
+      classRef: evaluatedClassRef,
+      activation: { ...payload, mappings: [{ ...payload.mappings[0],
+        planTargets: ['P-001', 'P-002', 'section:Requirements'] }] },
+    };
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({ ok: true });
+    const source = postEpochContent.replace(postEpochR1.acceptance.condition, 'The continuation has its own acceptance contract.');
+    const sourceHash = hashPlanContent(source);
+    await db.sql`UPDATE harness_shared.harness_plans SET content = ${source},
+      content_hash = ${sourceHash}, version = 8 WHERE plan_slug = 'post-epoch-seed-target'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
+      VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 8, ${sourceHash}, ${source})`;
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({
+      ok: true, barSeed: null,
+      barSeedPendingAmendment: { rubricSlug: 'acceptance-post-epoch-seed-target' },
+    });
+    await db.sql`UPDATE harness_shared.harness_plans SET status = 'superseded'
+      WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    const [historical] = await db.sql<Array<Record<string, unknown>>>`
+      SELECT content, content_hash, version, status, template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    const successor = rubricTemplateDataSchema.parse(historical!.template_data);
+    delete successor.barContract;
+    delete successor.barSetHash;
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
+       version, template, template_data)
+      VALUES ('activation-audit-test', 'papercusp', 'acceptance-continuation', 'Continuation',
+        'active', 'Successor authoring', ${hashPlanContent('Successor authoring')}, 1, 'rubric',
+        ${JSON.stringify(successor)}::text::jsonb)`;
+
+    const result = await recordCurrentActivationAudit(input);
+    expect(result, JSON.stringify(result)).toMatchObject({
+      ok: true, barSeed: { rubricSlug: 'acceptance-continuation', rubricRevision: 2, bars: 2 },
+    });
+    expect(result).not.toHaveProperty('barSeedPendingAmendment');
+    const [after] = await db.sql<Array<Record<string, unknown>>>`
+      SELECT content, content_hash, version, status, template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    expect(after).toEqual(historical);
+    const historicalWrites = await db.sql<Array<{ count: string }>>`
+      SELECT count(*) FROM harness_shared.plan_revisions
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    expect(Number(historicalWrites[0]!.count)).toBe(1);
+    const [subject] = await db.sql<Array<Record<string, unknown>>>`
+      SELECT acceptance_bar_rubric_slug, acceptance_bar_rubric_revision
+        FROM harness_shared.harness_plans WHERE plan_slug = 'post-epoch-seed-target'`;
+    expect(subject).toMatchObject({ acceptance_bar_rubric_slug: 'acceptance-continuation', acceptance_bar_rubric_revision: 2 });
+    const projections = await db.sql<Array<{ source_rubric_slug: string }>>`
+      SELECT r.source_rubric_slug FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+         AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id
+         AND r.revision = c.current_revision
+       WHERE c.plan_slug = 'post-epoch-seed-target'`;
+    expect(projections).toHaveLength(3);
+    expect(projections.every((row) => row.source_rubric_slug === 'acceptance-continuation')).toBe(true);
+    const prior = await db.sql<Array<{ activation: any }>>`
+      SELECT activation FROM harness_shared.plan_audits WHERE audit_seq = 2`;
+    expect(prior[0]!.activation.barSeedPendingAmendment.rubricSlug).toBe('acceptance-post-epoch-seed-target');
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({
+      ok: true, barSeed: { rubricSlug: 'acceptance-continuation', rubricRevision: 2, rubricChanged: false },
+    });
+  });
+
   it('does not resurrect a pending amendment after the rubric already pins the changed source', async () => {
     await seedPostEpochPlan();
     const input = {
