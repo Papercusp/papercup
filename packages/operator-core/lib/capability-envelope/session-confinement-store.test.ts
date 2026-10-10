@@ -63,6 +63,43 @@ describe('session-confinement store — installation', () => {
   });
 });
 
+describe('exact native launch ceilings', () => {
+  const confinement = { denyTools: [], denyOutside: ['coord:whoami', 'work_items:get'],
+    reason: 'metered native gateway', imposedBy: 'benchmark-host' };
+  it('reads a declaration written by another host even with an empty warm cache', async () => {
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement }) } };
+    expect(await readSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).toEqual(confinement);
+    expect(await checkSessionConfinement({ toolName: 'capability:bash', ctx: {
+      isSuperuser: true, workspaceId: 'bench-private', uiClientId: IMPLEMENTER_OWNER,
+    } as UnifiedToolContext })).toMatchObject({ decision: 'deny' });
+  });
+  it('fails closed after expiry and retains the strict row across refresh/pruning', async () => {
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement, expiresAt: 'invalid' }) } };
+    await refreshSessionConfinements();
+    expect(sessionConfinementFor(IMPLEMENTER_OWNER)?.denyOutside).toEqual([]);
+    await declareSessionConfinement({ ownerId: 'su-another', confinement: CONFINEMENT });
+    expect((pgState.payload as { sessions: Record<string, unknown> }).sessions[IMPLEMENTER_OWNER]).toBeDefined();
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyOutside).toEqual([]);
+  });
+  it('snapshots the declaration and refuses a wider replacement', async () => {
+    const ceiling = ['coord:whoami'];
+    await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement: { ...confinement, denyOutside: ceiling } });
+    ceiling.push('capability:bash');
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyOutside).toEqual(['coord:whoami']);
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement }))
+      .rejects.toThrow(/cannot be replaced/);
+  });
+  it('denies an authoritative store failure instead of using an unconfined cache miss', async () => {
+    const pg = await import('../operator-state-pg');
+    vi.mocked(pg.readOperatorState).mockRejectedValueOnce(new Error('store down'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await checkSessionConfinement({ toolName: 'capability:bash', ctx: {
+      isSuperuser: true, workspaceId: 'bench-private', uiClientId: IMPLEMENTER_OWNER,
+    } as UnifiedToolContext })).toMatchObject({ decision: 'deny' });
+    log.mockRestore();
+  });
+});
+
 // ── D-017 §2: the hazard — a population id must never carry a confinement ─────────
 describe('session-confinement store — refuses population-shaped ids', () => {
   it('refuses to WRITE a confinement keyed on the superuser transport fallback', async () => {

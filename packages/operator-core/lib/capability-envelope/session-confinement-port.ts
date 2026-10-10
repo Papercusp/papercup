@@ -103,11 +103,8 @@ export async function checkSessionConfinement(input: {
   try {
     confinement = await resolver(input.ctx);
   } catch {
-    // A resolver that throws must not fail OPEN into "unconfined", but it also must not
-    // take down every dispatch on the box. Denying everything would do the latter, so the
-    // narrow, honest behaviour is: treat it as unconfined and let the ordinary envelope
-    // still run — while making the fault loud, because a silently-broken resolver is the
-    // one way this gate quietly stops existing.
+    // Unknown confinement is unknown authority. A rejected read must never turn
+    // a confined caller into an ordinary unconfined session, including on restart.
     console.error('[session-confinement] resolver failed — refusing dispatch until policy is readable');
     return { decision: 'deny', posture: 'rejected', applied: true,
       reason: 'Session confinement policy is unavailable; refusing the call until its authority can be read.' };

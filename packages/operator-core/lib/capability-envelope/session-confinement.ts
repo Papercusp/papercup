@@ -45,7 +45,8 @@
  *     is no privilege check to get wrong, and no future edit can "just add one" without
  *     failing the guard test that pins this module's imports and identifiers.
  *  B. It CANNOT widen, because there is no allow dimension. `SessionToolConfinement`
- *     has `denyTools` and nothing else. The worst a malformed or hostile confinement
+ *     has `denyTools` and an optional additional `denyOutside` ceiling. Neither
+ *     can lift an ordinary gate or a denial. The worst a malformed or hostile confinement
  *     can do is deny more. (Same invariant `dynamic-tool-confinement` holds, reached
  *     the same way: remove the widening vocabulary rather than police its use.)
  *
@@ -65,7 +66,7 @@ import { matchesAny } from './policy';
 /**
  * A denial declared by whatever launched the session, travelling WITH the session.
  *
- * Deliberately has no `allowTools`: see guarantee (B). Deliberately carries `imposedBy`
+ * Deliberately has no grant dimension: see guarantee (B). Deliberately carries `imposedBy`
  * and `reason` so a refusal can tell the agent who bound it and why — a wall with no
  * explanation gets probed, a wall with a reason gets respected and reported upward,
  * which is the behaviour the directed pair actually wants.

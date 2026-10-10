@@ -38,8 +38,9 @@
  * Ordering closes the window in the launch case — the launch writes the confinement, which
  * primes this process's cache, BEFORE the implementer is spawned. It does not close the
  * OPERATOR-RESTART case, where the cache starts empty with a confined session already live.
- * So the first consult awaits one priming read; every later consult reads the sync cache.
- * That is one await per process, not one per dispatch.
+ * Dispatch now reads authoritative state for its verified workspace on EACH call.
+ * A warm cache miss on another serving process cannot prove absence. The cache
+ * remains a local boundary hint, while exact ceilings survive expiry as denials.
  */
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -101,6 +102,9 @@ export async function readSessionConfinement(ownerId: string | null | undefined,
   workspaceId?: string): Promise<SessionToolConfinement | null> {
   if (!ownerId || isTransportOnlyIdentity(ownerId)) return null;
   const payload = await readOperatorState<SessionConfinementsPayload>(STATE_TABLE, workspaceId, { fresh: true });
+  if (payload !== null && (typeof payload !== 'object' || Array.isArray(payload) ||
+      payload.sessions !== undefined && (payload.sessions === null || typeof payload.sessions !== 'object' || Array.isArray(payload.sessions))))
+    throw new Error('Stored session confinement population is malformed');
   const row = payload?.sessions?.[ownerId];
   if (row === undefined) return null;
   if (!row?.confinement || !Array.isArray(row.confinement.denyTools) ||
