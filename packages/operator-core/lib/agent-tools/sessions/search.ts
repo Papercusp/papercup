@@ -511,10 +511,14 @@ export default defineTool({
               '⚠ TOOL-CONTENT NOT CHECKED: the owner indexes for tool_use/tool_result are not ready, so the ' +
               'supplementary probe was skipped instead of scanning the full parts table. Zero plain-text hits do not rule out a match inside a tool call or result.';
           } else {
-            // Split the part kinds so PostgreSQL can prove each partial-index predicate.
-            const partHits = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', async () => {
-              const [toolUse] = await tx<Array<{ hits: string }>>`
-                SELECT COUNT(*)::text AS hits
+            // This is an existence caveat, not a count: EXISTS lets PostgreSQL
+            // stop after the first matching payload instead of reading every
+            // owner-scoped tool part just to report an exact occurrence total.
+            // Keep the partial-index predicates explicit as an OR so the
+            // planner can BitmapOr the tool_use and tool_result owner indexes.
+            const [toolParts] = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', () => tx<Array<{ found: boolean }>>`
+              SELECT EXISTS (
+                SELECT 1
                   FROM harness_shared.session_turn_parts p
                  WHERE (p.workspace_id = ${workspaceId} OR p.workspace_id = 'default')
                    AND NOT ${restrictedTurnSql(tx, 'p', selfOwnerIds)}
@@ -523,29 +527,18 @@ export default defineTool({
                    AND (${pf.sourceKind ?? null}::text IS NULL OR p.source_kind = ${pf.sourceKind ?? null})
                    AND (${pf.since ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) >= ${pf.since ?? null}::timestamptz)
                    AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) < ${pf.until ?? null}::timestamptz)
-                   AND p.part_kind = 'tool_use'
-                   AND p.text ILIKE '%' || ${args.query} || '%'
-              `;
-              const [toolResult] = await tx<Array<{ hits: string }>>`
-                SELECT COUNT(*)::text AS hits
-                  FROM harness_shared.session_turn_parts p
-                 WHERE (p.workspace_id = ${workspaceId} OR p.workspace_id = 'default')
-                   AND NOT ${restrictedTurnSql(tx, 'p', selfOwnerIds)}
-                   AND p.owner = ANY(${pOwners}::text[])
-                   AND (${pf.sessionId ?? null}::text IS NULL OR p.session_id = ${pf.sessionId ?? null})
-                   AND (${pf.sourceKind ?? null}::text IS NULL OR p.source_kind = ${pf.sourceKind ?? null})
-                   AND (${pf.since ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) >= ${pf.since ?? null}::timestamptz)
-                   AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) < ${pf.until ?? null}::timestamptz)
-                   AND p.part_kind = 'tool_result'
-                   AND p.text ILIKE '%' || ${args.query} || '%'
-              `;
-              return Number(toolUse?.hits ?? 0) + Number(toolResult?.hits ?? 0);
-            });
+                   AND (
+                     (p.part_kind = 'tool_result' AND p.text ILIKE '%' || ${args.query} || '%')
+                     OR
+                     (p.part_kind = 'tool_use' AND p.text ILIKE '%' || ${args.query} || '%')
+                   )
+              ) AS found
+            `);
 
-            if (partHits > 0) {
+            if (toolParts?.found) {
               toolPartCaveat =
                 `⚠ FOUND, JUST NOT IN A TEXT TURN: 0 hits among plain conversational turns, but the exact string ` +
-                `occurs ${partHits} time(s) inside a tool call or tool result in this scope (session_turn_parts, the ` +
+                `appears inside a tool call or tool result in this scope (session_turn_parts, the ` +
                 `faithful-render store, kept 14 days). session_turns deliberately excludes tool_use/tool_result content ` +
                 `so recall is not flooded with tool noise — this 0 is NOT evidence the text was never written, only that ` +
                 `it is not sitting in a plain user/assistant text turn. Read the raw transcript or the specific turn ` +

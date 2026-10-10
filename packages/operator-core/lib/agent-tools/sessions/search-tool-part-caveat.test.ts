@@ -106,18 +106,20 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
         [], // main verbatim ILIKE over session_turns -> zero rows
         [{ session_count: '1', earliest: null }], // owner-scope aggregate: only this session, so no QUERY-MATCH-MISS caveat
         [{ tool_use_ready: true, tool_result_ready: true }], // both owner indexes are valid
-        [{ hits: '1' }], // tool_use branch
-        [{ hits: '1' }], // tool_result branch
+        [{ found: true }], // the existence probe stops at the first matching part
       ],
     );
 
     expect(parsed.total_hits).toBe(0);
-    expect(sqls.filter((s) => TOOL_PART_PROBE_QUERY.test(s))).toHaveLength(2);
-    expect(sqls.some((s) => s.includes("part_kind = 'tool_use'"))).toBe(true);
-    expect(sqls.some((s) => s.includes("part_kind = 'tool_result'"))).toBe(true);
+    const partProbe = sqls.find((s) => TOOL_PART_PROBE_QUERY.test(s)) ?? '';
+    expect(sqls.filter((s) => TOOL_PART_PROBE_QUERY.test(s))).toHaveLength(1);
+    expect(partProbe).toMatch(/SELECT EXISTS\s*\(/i);
+    expect(partProbe).toContain("part_kind = 'tool_use'");
+    expect(partProbe).toContain("part_kind = 'tool_result'");
+    expect(partProbe).not.toMatch(/COUNT\s*\(/i);
     expect(parsed.zeroHitCaveat).toBeDefined();
     expect(parsed.zeroHitCaveat).toMatch(/FOUND, JUST NOT IN A TEXT TURN/);
-    expect(parsed.zeroHitCaveat).toMatch(/2 time\(s\)/);
+    expect(parsed.zeroHitCaveat).toMatch(/appears inside a tool call or tool result/);
     expect(parsed.zeroHitCaveat).toMatch(/tool call or tool result/);
     expect(parsed.zeroHitCaveat).not.toMatch(/UNVERIFIABLE, NOT ABSENT/); // refresh was fresh
   });
@@ -143,8 +145,7 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
         [],
         [{ session_count: '1', earliest: null }],
         [{ tool_use_ready: true, tool_result_ready: true }],
-        [{ hits: '0' }],
-        [{ hits: '0' }],
+        [{ found: false }],
       ],
     );
 
@@ -181,8 +182,7 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
         [],
         [{ session_count: '1', earliest: null }],
         [{ tool_use_ready: true, tool_result_ready: true }],
-        [{ hits: '1' }],
-        [{ hits: '0' }],
+        [{ found: true }],
       ],
     );
 
@@ -199,8 +199,7 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
         [],
         [{ session_count: '1', earliest: null }],
         [{ tool_use_ready: true, tool_result_ready: true }],
-        [{ hits: '0' }],
-        [{ hits: '0' }],
+        [{ found: false }],
       ],
     );
 
