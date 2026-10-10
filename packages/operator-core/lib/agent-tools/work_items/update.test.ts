@@ -438,6 +438,23 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       expect(mergeM).toHaveBeenCalledWith('EI-upstream', { needsOwnerAction: true }, expect.any(Object));
     });
 
+    it.each(['issue', 'feature'])('reports a condition race for %s without claiming that the flag landed', async (family) => {
+      const rawConditions = [{ ...OWNER_CONDITION, legacyEvidence: { generation: 7 } }];
+      getM.mockResolvedValue(workItemFixture({ id: 'WI-race', payload: { externalBlockers: rawConditions } }));
+      if (family === 'issue') mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'WI-race' }) });
+      else updM.mockResolvedValue({ ok: false, reason: 'unsupported_family' } as never);
+      mergeM.mockResolvedValue(null);
+
+      const b = await body({ id: 'WI-race', needsHuman: true });
+
+      expect(mergeM).toHaveBeenCalledWith('WI-race', { needsOwnerAction: true }, {
+        harness: undefined, unset: ['needsHuman'], expectedExternalBlockers: rawConditions, requireNonTerminal: true,
+      });
+      expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-race' });
+      expect(b.results[0].error).toContain('owner-condition-changed');
+      expect(b.results[0].error).toContain(family === 'issue' ? 'earlier field or payload edits may have applied' : 'No admission flags or plan stamp were applied');
+    });
+
     it('true: writes needsOwnerAction and removes the legacy needsHuman key', async () => {
       updM.mockResolvedValue({ ok: true, item: { id: 'EI-12519', title: 'human item' } } as never);
       mergeM.mockResolvedValue({ id: 'EI-12519', title: 'human item', payload: { needsOwnerAction: true } } as never);
@@ -445,7 +462,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       expect(mergeM).toHaveBeenCalledWith(
         'EI-12519',
         { needsOwnerAction: true },
-        { harness: undefined, unset: ['needsHuman'] },
+        { harness: undefined, unset: ['needsHuman'], expectedExternalBlockers: [OWNER_CONDITION], requireNonTerminal: true },
       );
       expect(b.results[0]).toMatchObject({
         ok: true,
@@ -533,7 +550,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
         expect(mergeM).toHaveBeenCalledWith(
           'WI-3496',
           { needsOwnerAction: true },
-          { harness: undefined, unset: ['needsHuman'] },
+          { harness: undefined, unset: ['needsHuman'], expectedExternalBlockers: [OWNER_CONDITION], requireNonTerminal: true },
         );
         expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3496' });
       });
@@ -546,7 +563,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
         expect(mergeM).toHaveBeenCalledWith(
           'WI-3500',
           { needs_2_machine_rig: true, needsOwnerAction: true },
-          { harness: undefined, unset: ['needsHuman'] },
+          { harness: undefined, unset: ['needsHuman'], expectedExternalBlockers: [OWNER_CONDITION], requireNonTerminal: true },
         );
         expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3500' });
       });

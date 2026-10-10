@@ -453,8 +453,13 @@ export default defineTool({
         // requests; otherwise an unsupported flag can strand executable work.
         // Ignore both the old flag and caller-supplied payload when establishing
         // authority. Product decisions retain their agent-review route.
+        let expectedOwnerConditions: unknown;
         if (it.needsHuman === true) {
           const current = await getWorkItem(it.id, it.harness);
+          const payload = current?.payload;
+          expectedOwnerConditions = payload && typeof payload === 'object' && !Array.isArray(payload)
+            ? (payload as Record<string, unknown>).externalBlockers
+            : undefined;
           const supported = activeExternalBlockers(current?.payload).some((blocker) =>
             hasStrictOwnerAction({ externalBlockers: [blocker] }) &&
             Boolean(blocker.summary.trim() && blocker.nextVerb?.trim()) &&
@@ -525,7 +530,16 @@ export default defineTool({
             const merged = await mergeWorkItemPayload(it.id, payloadFlagPatch({ needsHuman: it.needsHuman }), {
               harness: it.harness,
               unset: payloadFlagUnset({ needsHuman: it.needsHuman }),
+              ...(it.needsHuman === true ? { expectedExternalBlockers: expectedOwnerConditions, requireNonTerminal: true } : {}),
             });
+            if (!merged && it.needsHuman === true) {
+              return {
+                ok: false as const,
+                id: it.id,
+                error: 'owner-condition-changed: the typed condition changed or the item closed before the flag write. ' +
+                  'The owner-action flag was not applied; earlier field or payload edits may have applied. Re-read before retrying.',
+              };
+            }
             if (merged) item = merged;
           }
           // EI-20189734665644353: an existing item needs a member-writable plan stamp before
@@ -670,7 +684,16 @@ export default defineTool({
               ...((clearingStamp || flagUnset.length > 0)
                 ? { unset: [...flagUnset, ...(clearingStamp ? ['plan_item'] : [])] }
                 : {}),
+              ...(it.needsHuman === true ? { expectedExternalBlockers: expectedOwnerConditions, requireNonTerminal: true } : {}),
             });
+            if (!merged && it.needsHuman === true) {
+              return {
+                ok: false as const,
+                id: it.id,
+                error: 'owner-condition-changed: the typed condition changed or the item closed before the flag write. ' +
+                  'No admission flags or plan stamp were applied. Re-read before retrying.',
+              };
+            }
             if (merged) {
               if (clearingStamp) await unlinkPlanItemCoverage(it.id, outgoing, planHarness);
               else await linkPlanItemCoverage(
