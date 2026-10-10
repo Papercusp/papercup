@@ -22,8 +22,38 @@ export function verifyPrivateHudHostDenial(status: number, body: string) {
   assert.equal(JSON.parse(body).error?.code, 'host_not_allowed', 'HUD denial must identify the host guard');
 }
 
+/** Other mounted components subscribe to the global roster; arrival order is not scope. */
+export function verifyPrivateHudCapturedRoster(reads: Array<Record<string, unknown>>, scope: {
+  workspace: string; selected: string; neighbor: string; foreign: string;
+}) {
+  const read = reads.find(value => value.status === 200 && value.name === 'advRoster.list'
+    && typeof value.url === 'string' && typeof value.args === 'string'
+    && JSON.parse(value.args).workspaceId === scope.workspace);
+  assert.ok(read, 'HUD must read the actual private roster endpoint with its exact workspace');
+  const roster = (read.body as { rows: Array<{ active: Array<{ ownerId: string }> }> }).rows[0];
+  assert.ok(roster?.active.some(row => row.ownerId === scope.selected), 'scoped roster must contain the selected owner');
+  assert.ok(roster.active.some(row => row.ownerId === scope.neighbor), 'scoped roster must contain the neighbor owner');
+  assert.equal(roster.active.some(row => row.ownerId === scope.foreign), false, 'scoped roster must exclude the foreign owner');
+  return read;
+}
+
+/** Pin the measured global-first response shape cheaply before the private worker. */
+export function verifyPrivateHudCapturePreflight() {
+  const scope = { workspace: 'preflight-workspace', selected: 'selected', neighbor: 'neighbor', foreign: 'foreign' };
+  const capture = (workspaceId: string | null, owners: string[]) => ({ status: 200, name: 'advRoster.list',
+    url: 'http://127.0.0.1/api/zero-harness/rest-query', args: JSON.stringify({ workspaceId, endedLimit: 50 }),
+    body: { rows: [{ active: owners.map(ownerId => ({ ownerId })) }] } });
+  const global = capture(null, [scope.foreign, scope.neighbor, scope.selected]);
+  const scoped = capture(scope.workspace, [scope.neighbor, scope.selected]);
+  assert.equal(verifyPrivateHudCapturedRoster([global, scoped], scope), scoped);
+  assert.equal(verifyPrivateHudCapturedRoster([scoped, global], scope), scoped);
+  assert.throws(() => verifyPrivateHudCapturedRoster([global], scope), /exact workspace/);
+  return { scopedCaptureVerified: true };
+}
+
 /** Exercise the production middleware order before allocating a private PG. */
 export async function verifyPrivateHudReadPolicy() {
+  verifyPrivateHudCapturePreflight();
   const { Hono } = await import('hono');
   const { hostRebindingGuard } = await import('../../../apps/operator/bin/host-rebinding-guard');
   const { requireLoopbackOr403 } = await import('../lib/endpoint-route/loopback-guard');
@@ -501,6 +531,10 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       await selectedCard.waitFor();
       await neighborCard.waitFor({ state: 'hidden' });
       const filteredUrl = page.url();
+      await Promise.all([...syncReadCaptures]);
+      const scope = { workspace, selected, neighbor, foreign: input.foreign };
+      verifyPrivateHudCapturedRoster(syncReads, scope);
+      const readsBeforeReload = syncReads.length;
       await page.reload();
       await selectedCard.waitFor();
       assert.equal(await search.inputValue(), selected);
@@ -508,13 +542,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       assert.equal(page.url(), filteredUrl);
       assert.equal(new URL(page.url()).searchParams.get('q'), 'retained-shell-search');
       await Promise.all([...syncReadCaptures]);
-      const read = syncReads.find(value => value.status === 200 && typeof value.url === 'string');
-      assert.ok(read, 'HUD must read the actual private roster endpoint');
-      assert.equal(JSON.parse(read.args as string).workspaceId, workspace, 'HUD prop must scope the actual roster request');
-      const scopedRoster = (read.body as { rows: Array<{ active: Array<{ ownerId: string }> }> }).rows[0];
-      assert.ok(scopedRoster.active.some(row => row.ownerId === selected));
-      assert.ok(scopedRoster.active.some(row => row.ownerId === neighbor));
-      assert.equal(scopedRoster.active.some(row => row.ownerId === input.foreign), false);
+      const read = verifyPrivateHudCapturedRoster(syncReads.slice(readsBeforeReload), scope);
       // This native read seam is auth:loopback, not cookie workspace authorization.
       // The intentionally global query is the positive control for the seeded row.
       const globalUrl = new URL(read.url as string);

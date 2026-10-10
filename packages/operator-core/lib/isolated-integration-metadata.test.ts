@@ -13,13 +13,37 @@ import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateSt
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
-import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial } from '../test/portal-roster-browser-fixture';
+import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight } from '../test/portal-roster-browser-fixture';
 
 it('preflights native HUD read policy and the exact host denial before private PG', async () => {
   expect(await verifyPrivateHudReadPolicy()).toEqual({ denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 });
   expect(() => verifyPrivateHudHostDenial(200, JSON.stringify({ rows: [] }))).toThrow();
   expect(() => verifyPrivateHudHostDenial(403, JSON.stringify({ error: 'loopback_only' }))).toThrow();
   expect(() => verifyPrivateHudHostDenial(403, JSON.stringify({ error: { code: 'unrelated_denial' } }))).toThrow();
+});
+
+it('selects exact HUD workspace reads among global subscriptions and rejects missing or contaminated scope', () => {
+  expect(verifyPrivateHudCapturePreflight()).toEqual({ scopedCaptureVerified: true });
+  const scope = { workspace: 'private-hud', selected: 'selected', neighbor: 'neighbor', foreign: 'foreign' };
+  const capture = (workspaceId: string | null, owners: string[], name = 'advRoster.list', status = 200) => ({
+    status, name, url: 'http://127.0.0.1/api/zero-harness/rest-query', args: JSON.stringify({ workspaceId, endedLimit: 50 }),
+    body: { rows: [{ active: owners.map(ownerId => ({ ownerId })) }] },
+  });
+  const global = capture(null, [scope.foreign, scope.neighbor, scope.selected]);
+  const scoped = capture(scope.workspace, [scope.neighbor, scope.selected]);
+  expect(verifyPrivateHudCapturedRoster([global, scoped], scope)).toBe(scoped);
+  expect(verifyPrivateHudCapturedRoster([scoped, global], scope)).toBe(scoped);
+  for (const read of [global, capture('other-workspace', [scope.selected, scope.neighbor]),
+    capture(scope.workspace, [scope.selected, scope.neighbor], 'advRoster.list.other'),
+    capture(scope.workspace, [scope.selected, scope.neighbor], 'advRoster.list', 403)]) {
+    expect(() => verifyPrivateHudCapturedRoster([read], scope)).toThrow('exact workspace');
+  }
+  expect(() => verifyPrivateHudCapturedRoster([capture(scope.workspace, [scope.neighbor])], scope)).toThrow('selected owner');
+  expect(() => verifyPrivateHudCapturedRoster([capture(scope.workspace, [scope.selected])], scope)).toThrow('neighbor owner');
+  expect(() => verifyPrivateHudCapturedRoster([capture(scope.workspace, [scope.selected, scope.neighbor, scope.foreign])], scope))
+    .toThrow('foreign owner');
+  // Reload evidence must stand alone; the prior epoch cannot rescue a global-only reload.
+  expect(() => verifyPrivateHudCapturedRoster([scoped, global].slice(1), scope)).toThrow('exact workspace');
 });
 
 it('checks private socket capacity in bytes before runtime allocation, including multibyte scratch roots', () => {
