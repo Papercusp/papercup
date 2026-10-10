@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 import { browserCachePath } from '../../../scripts/ensure-playwright-browsers.mjs';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
@@ -85,7 +86,8 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/isolated-runtime-cleanup.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'scripts/test-files.mjs', 'scripts/lib/batch-watchdog.mjs',
-      'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/process-identity.ts'],
+      'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/process-identity.ts',
+      'libs/generic/verification-harness/src/evidence-root.ts'],
     execute: async (observe, evidenceDir) => {
       await mkdir(join(evidenceDir, 'tmp'));
       const evidenceEnv = {
@@ -107,7 +109,7 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const expectedBrowserCache = browserCachePath(env);
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
-        '--isolated-runtime', '--', process.execPath, '-e', `
+        '--isolated-runtime', '--', process.execPath, '--import', 'tsx', '-e', `
           const assert = require('node:assert/strict');
           const postgres = require('postgres');
           (async () => {
@@ -120,6 +122,17 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
             assert.notEqual(process.env.PAPERCUSP_WORKSPACE_ID, process.env.PAPERCUSP_TEST_RUN_WORKSPACE);
             assert.notEqual(process.env.HARNESS_ADMIN_DATABASE_URL, process.env.PAPERCUSP_TEST_RUNS_DB_URL);
             console.log('isolated-reporter-env-control');
+            const { defaultEvidenceRoot, runHarness } = await import('@papercusp/verification-harness');
+            const artifactRoot = defaultEvidenceRoot('isolated-integration');
+            const proof = await runHarness({
+              contract: { name: 'isolated-integration', phases: [{ id: 'retention-control' }] },
+              evidenceRoot: artifactRoot,
+              runPhase: async () => ({ ok: true }),
+            });
+            console.log('ISOLATED_RETAINED_ARTIFACT ' + JSON.stringify({
+              root: artifactRoot, runId: proof.runId, home: process.env.HOME,
+              state: process.env.XDG_STATE_HOME,
+            }));
             const { chromium } = require('playwright-core');
             const path = require('node:path');
             assert.equal(process.env.PLAYWRIGHT_BROWSERS_PATH, ${JSON.stringify(expectedBrowserCache)});
@@ -156,6 +169,14 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
       expect(result.output).toContain('isolated-cleanup-control');
       expect(result.output).toContain('private-integration-admin-control');
       expect(result.output).toContain('isolated-reporter-env-control');
+      const artifactLine = result.output.split('\n').find(line => line.startsWith('ISOLATED_RETAINED_ARTIFACT '));
+      expect(artifactLine, result.output.slice(-4000)).toBeTruthy();
+      const artifact = JSON.parse(artifactLine!.slice('ISOLATED_RETAINED_ARTIFACT '.length));
+      expect(existsSync(artifact.home)).toBe(false);
+      expect(artifact.root, JSON.stringify(artifact)).toBe(defaultEvidenceRoot('isolated-integration'));
+      expect(JSON.parse(readFileSync(join(artifact.root, artifact.runId, 'result.json'), 'utf8')).verdict).toBe('pass');
+      expect(artifact.state).toBeDefined();
+      expect(existsSync(artifact.state)).toBe(false);
       expect(stages).toEqual(expect.arrayContaining(['start', 'pg-stop', 'pg-stopped', 'remove-private-state', 'complete']));
     },
   });

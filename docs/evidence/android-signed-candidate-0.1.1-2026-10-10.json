@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Android signed 0.1.1 candidate build and immutable retention",
+  "workItem": "WI-10007202",
+  "command": ["python3 tools/android-ci.py --exclusive-command bash -c <release, verify, signature audit, immutable capture>"],
+  "exitCode": 0,
+  "releaseVersion": "0.1.1",
+  "versionCode": 101,
+  "sourceCommit": "3c11a340f9eb857ede22b52a793876793e665e29",
+  "sourceDirty": false,
+  "sourceFingerprint": "ba21e959437509e6ee7969da75135e69a812f6bb477cb7a6411fd61a1fc4758e",
+  "builtAt": "2026-10-10T04:48:15Z",
+  "nativeQualification": {
+    "attempt": "20261010T040401Z-242031a2",
+    "resultSha256": "0b162b1ba391d55f276019f7c126c2bb78049aeb502722d9e5492c614d815172",
+    "currentSourceAndSuccessReceiptMatched": true
+  },
+  "custody": {
+    "grantMessage": "coord-send-627147df5b6c6655fcda903e659c73183d848b4ecdb3a79d5ed9aa5f962a0069",
+    "expiresAt": "2026-10-10T05:44:20Z",
+    "returnedMessage": "coord-send-a0aabc4540aa631084daad4b948d4ee2841216b8444b2f92345e22daed4217b1",
+    "executorFreeAfterCommand": true,
+    "ownedTemporaryDirectoryRemoved": true
+  },
+  "retainedDirectory": "$HOME/.local/state/papercusp/android-release/0.1.1-3c11a340-20261010",
+  "log": "$HOME/.local/state/papercusp/android-release/0.1.1-3c11a340-20261010.log",
+  "logSha256": "ea14f81b4232f43b9330693b44b2b911b149e7b748e89c88b540b3277da91b9e",
+  "retainedFiles": {
+    "app-release.apk": "ea698c658ebe9032b48c53890241db62b30e5d9182e2322411a1dd2acb075ec9",
+    "app-release.aab": "5de90c10aa8cacf04a4634085b10726c244b54d08e349f672f16938b905720bb",
+    "papercusp-release-provenance.json": "c77a519b2f0349979f5db81afb53c41d31dadda08187c193399a8ee71198d565",
+    "papercusp-mobile-source.tar.gz": "0817e0f8f27658613232493177e29ea3ee8f582439f1e2860589cda9e29c8af9",
+    "RELEASE-CANDIDATE.md": "559d81731de4d3eaa3e4d345ef58816d804b4ca49f779c2d549f84f0f1be4ccd"
+  },
+  "verification": {
+    "releaseProvenanceVerify": "passed 0.1.1",
+    "packagedAbis": ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"],
+    "uniFfiChecksumSymbols": 59,
+    "alignment": "16 KB APK and 14 packaged 64-bit shared libraries passed",
+    "apkSignature": "apksigner verify --print-certs passed",
+    "signerCertificateSha256": "efeb65c4e03a7eb6a1c445ea6d0361e95edf1e7509fc25cb4072d3f202912b93",
+    "retainedHashes": "five files verified inside custody; capture made read-only",
+    "actualJvmTemporaryDirectory": "matched owned command directory",
+    "storagePreflight": "passed"
+  },
+  "scope": "Signed local candidate production only. No claim of public availability, Play approval, physical-phone acceptance, hosted adoption, BYOC target/IAM acceptance, release-key approval, or proof of the original ENOSPC filesystem."
+}

@@ -856,6 +856,19 @@ function fixture(opts = options) {
   return { row, ports, lifecycle, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
 describe('current native benchmark execution', () => {
+  it.each([false, true])('releases the host gateway after cost collection even when lifecycle teardown fails=%s', async fails => {
+    const f = fixture(), events: string[] = [];
+    vi.mocked(f.lifecycle.collectCost).mockImplementation(async () => {
+      events.push('cost'); return { costUsd: 0.25, tokensIn: 20, tokensOut: 10, turns: 1 };
+    });
+    vi.mocked(f.lifecycle.teardown).mockImplementation(async () => {
+      events.push('teardown'); if (fails) throw new Error('private lifecycle teardown failed');
+    });
+    f.ports.releaseGateway = vi.fn(async () => { events.push('release'); });
+    expect((await f.run()).telemetry.costUsd).toBe(0.25);
+    expect(events).toEqual(['cost', 'teardown', 'release']);
+    expect(f.ports.releaseGateway).toHaveBeenCalledOnce();
+  });
   it('verifies the frozen protocol before reserving budget or launching', async () => {
     const f = fixture();
     const result = await f.run();
@@ -1089,6 +1102,13 @@ describe('current benchmark restart and live binding', () => {
     expect(stop).toHaveBeenCalledOnce();
     await expect(ports.launch(args)).rejects.toThrow(/host-owned gateway/);
     await hosted.stop(); expect(stop).toHaveBeenCalledOnce();
+  });
+  it('refuses an unsupported native client before starting a service', async () => {
+    const f = budgetFixture(); f.input.protocol.arms[0].agent = 'claude';
+    const controller = currentBenchGatewayController(f.input, f.governor), start = vi.fn();
+    try { await expect(controller.startNativeGateway(() => {}, start)).rejects.toThrow(/unsupported/);
+      expect(start).not.toHaveBeenCalled();
+    } finally { controller.revoke(); f.revoke(); }
   });
   it('refuses a production launch without the host private route before invoking the native handler', async () => {
     const ctx = { workspaceId: 'bench-private' } as PapercuspUnifiedToolContext;

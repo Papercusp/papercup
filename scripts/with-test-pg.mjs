@@ -37,6 +37,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 import { browserCachePath } from './ensure-playwright-browsers.mjs';
+import { defaultEvidenceRoot } from '../libs/generic/verification-harness/src/evidence-root.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -332,7 +333,12 @@ if (runtimeRoot && runtimeId) {
     XDG_DATA_HOME: join(runtimeRoot, 'xdg-data'),
     XDG_CACHE_HOME: join(runtimeRoot, 'xdg-cache'),
     XDG_CONFIG_HOME: join(runtimeRoot, 'xdg-config'),
+    XDG_STATE_HOME: join(runtimeRoot, 'xdg-state'),
     XDG_RUNTIME_DIR: join(runtimeRoot, 'xdg-runtime'),
+    // Original proof receipts must survive this private HOME's teardown.
+    // Pin the caller's maintained root before isolating product state; nested
+    // wrappers inherit this same absolute root instead of nesting it in HOME.
+    VH_EVIDENCE_ROOT_BASE: resolve(dirname(defaultEvidenceRoot('isolated-integration'))),
     // Browser installations are maintained executable assets, not mutable
     // operator state. Pin their original cache before isolating HOME/XDG;
     // otherwise Playwright silently resolves an empty runtime-local cache.

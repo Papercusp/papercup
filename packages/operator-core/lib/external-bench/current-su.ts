@@ -549,6 +549,7 @@ const currentBenchHostGateways = new WeakMap<ScopedInferenceGateway, {
   arm: CurrentBenchmarkProtocol['arms'][number];
   taskId: string;
   active(): boolean;
+  stop(): Promise<void>;
 }>();
 
 /** Private host authority authenticates the FINAL credential, payer and native
@@ -635,13 +636,13 @@ export function currentBenchGatewayController(input: {
         if (!live) throw new Error('Benchmark host gateway was revoked during startup.');
         const nativeGateway = snapshotScopedInferenceGateway(service.transport.statelessGateway);
         let stopped = false, stopping: Promise<void> | undefined;
+        const stop = () => {
+          stopped = true; revoke();
+          return stopping ??= Promise.resolve().then(() => service!.stop());
+        };
         currentBenchHostGateways.set(nativeGateway, { binding: accountingBinding,
-          protocol: canonicalJson(protocol), arm, taskId, active: () => live && !stopped });
-        return Object.freeze({ nativeGateway, nativeAccountingBinding: accountingBinding,
-          stop() {
-            stopped = true; revoke();
-            return stopping ??= Promise.resolve().then(() => service!.stop());
-          } });
+          protocol: canonicalJson(protocol), arm, taskId, active: () => live && !stopped, stop });
+        return Object.freeze({ nativeGateway, nativeAccountingBinding: accountingBinding, stop });
       } catch (error) {
         revoke();
         await service?.stop();
@@ -890,6 +891,7 @@ export interface CurrentSuBenchObservations {
   observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
 export interface CurrentSuBenchPorts extends Pick<CurrentSuBenchObservations, 'admit'> {
+  releaseGateway?(): Promise<void>;
   collectCost?: BenchHarnessOps['collectCost'];
   readIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentity | null>;
   verifyPreregistration(): Promise<{ preregHash: string; gitCommitSha: string; receiptRef: string }>;
@@ -1047,7 +1049,10 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
       // while full source-bound native accounting is implemented in this lane.
       return { ...await lifecycle.collectCost(input), costUsdMeasurementMissing: true };
     },
-    async teardown(input) { registeredTasks.delete(input.handle.slug); await lifecycle.teardown(input); },
+    async teardown(input) {
+      registeredTasks.delete(input.handle.slug);
+      try { await lifecycle.teardown(input); } finally { await ports.releaseGateway?.(); }
+    },
   };
   return liveBenchHarnessDriver(ops, { ...opts, workspaceId, maxTransientRetries: 0 });
 }
@@ -1098,6 +1103,7 @@ export function liveCurrentSuBenchPorts(
     }
   };
   return {
+    releaseGateway: async () => { await host?.stop(); },
     admit: async (handle, budget, taskId) => {
       const host = requireBinding();
       if (taskId !== host.taskId || canonicalJson(budget) !== canonicalJson(host.arm.generationBudget)) {

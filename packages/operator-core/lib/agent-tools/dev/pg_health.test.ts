@@ -75,7 +75,7 @@ describe('dev:pg_health completed-result delivery', () => {
     expect(diagnostic).toMatchObject({
       source: 'current-process',
       pid: process.pid,
-      coverage: 'completed-results-in-selected-pools-only',
+      coverage: 'completed-results-and-recent-failures-in-selected-pools-only',
       resultLimitPerPool: 4,
     });
     expect(Number.isFinite(Date.parse(diagnostic.capturedAt))).toBe(true);
@@ -204,6 +204,50 @@ describe('dev:pg_health completed-result delivery', () => {
       expect(pool.results).toHaveLength(4);
       expect(pool.results[3]).toMatchObject({ queryId: 6, status: 'error', errorCode: '42p01' });
     }
+  });
+
+  it('surfaces a classified failure after successful-query churn through the local-only reader', async () => {
+    const correlation = {
+      processInstanceId: '11111111-1111-4111-8111-111111111111',
+      buildSha: null,
+      rowId: null,
+      attemptId: '22222222-2222-4222-8222-222222222222',
+      hopId: null,
+      stage: null,
+      boundary: null,
+      requestId: '33333333-3333-4333-8333-333333333333',
+      operation: 'activity.report',
+    };
+    recordPgResult('org-admin', {
+      connectionId: 2,
+      queryId: 1,
+      backendPid: 8123,
+      query: "INSERT INTO harness_shared.agent_activity (summary) VALUES ('never-retain-failure-secret')",
+      command: 'INSERT',
+      rowCount: 0,
+      wireBytes: 0,
+      elapsedMs: 25,
+      status: 'error',
+      errorCode: 'XX000',
+      context: { state: 'linked', correlation },
+    });
+    for (let queryId = 2; queryId <= 40; queryId += 1) recordResult('org-admin', queryId);
+
+    const { data } = await run({ localOnly: true, resultLimitPerPool: 2 });
+    const pool = data.processDiagnostics.pools[1];
+
+    expect(pgHealth).not.toHaveBeenCalled();
+    expect(pool).toMatchObject({ failureCapacity: 16, totalFailures: 1, droppedFailures: 0 });
+    expect(pool.failures[0]).toMatchObject({
+      queryId: 1,
+      status: 'error',
+      errorCode: 'xx000',
+      failurePhase: 'statement',
+      queryFamily: 'insert:harness_shared.agent_activity',
+      correlation: { requestId: correlation.requestId, operation: 'activity.report' },
+    });
+    expect(pool.results.map((result: { queryId: number }) => result.queryId)).toEqual([39, 40]);
+    expect(JSON.stringify(pool)).not.toContain('never-retain-failure-secret');
   });
 
   it('does not treat an acquired connection as a completed-query observation', async () => {

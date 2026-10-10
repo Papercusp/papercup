@@ -276,13 +276,17 @@ describe('production native accounting with private PG and full source bytes', (
     const controller = currentBenchGatewayController({ workspaceId, loopId, token: 'h'.repeat(64),
       preregHash: f.opts.preregistration.preregHash, protocol, resources, armId: 'papercusp', taskId: 't1', seed: 1,
       authenticateProvider: authenticate }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    const providerEvidence: Array<{ target: string; credentialMatches: boolean; model: string; outputLimit: number;
+      beforeSend: Awaited<ReturnType<typeof getLearningSpendPositions>> }> = [];
     const provider = vi.fn<typeof fetch>(async (target, init) => {
-      expect(String(target)).toBe('https://api.openai.com/v1/responses');
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer PRIVATE_HOST_PROVIDER_CREDENTIAL');
-      expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'configured-alias', max_output_tokens: 10 });
-      const beforeSend = await getLearningSpendPositions(sql, { workspaceId, loopId, includeReservations: true });
-      expect(beforeSend.positions.unsettledUsd).toBe(0.00012);
-      expect(beforeSend.census).toMatchObject({ status: 'complete', reservations: [{ status: 'open' }] });
+      // The maintained bearer adapter forwards Uint8Array, whose String()
+      // representation is comma-separated byte values, not the JSON text.
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body :
+        new TextDecoder().decode(init?.body as Uint8Array));
+      providerEvidence.push({ target: String(target),
+        credentialMatches: new Headers(init?.headers).get('authorization') === 'Bearer PRIVATE_HOST_PROVIDER_CREDENTIAL',
+        model: body.model, outputLimit: body.max_output_tokens,
+        beforeSend: await getLearningSpendPositions(sql, { workspaceId, loopId, includeReservations: true }) });
       return Response.json({ id: 'host-http-provider-response', model: 'configured-alias', status: 'completed',
         reasoning: { effort: 'high' }, output: [],
         usage: { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: 20, cache_write_tokens: 0 } } });
@@ -310,8 +314,14 @@ describe('production native accounting with private PG and full source bytes', (
         transport: lastAttempt?.transport, accountId: lastAttempt?.accountId,
         bodyFields: lastAttempt ? Object.keys(JSON.parse(lastAttempt.body)) : [],
         authority: authority ? { inputTokens: authority.inputTokens, outputTokens: authority.outputTokens, requestedUsd: authority.requestedUsd } : null,
-        positions: (await getLearningSpendPositions(sql, { workspaceId, loopId })).positions })).toBe(200);
+        providerCalls: provider.mock.calls.length,
+        providerBodyKind: provider.mock.calls[0]?.[1]?.body?.constructor.name,
+        providerEvidence, positions: (await getLearningSpendPositions(sql, { workspaceId, loopId })).positions })).toBe(200);
       expect(provider).toHaveBeenCalledOnce();
+      expect(providerEvidence).toHaveLength(1);
+      expect(providerEvidence[0]).toMatchObject({ target: 'https://api.openai.com/v1/responses', credentialMatches: true,
+        model: 'configured-alias', outputLimit: 10, beforeSend: { positions: { unsettledUsd: 0.00012 },
+          census: { status: 'complete', reservations: [{ status: 'open' }] } } });
       expect(await ports.collectCost!({ handle, workspaceId })).toMatchObject({ costUsdMeasurementMissing: false,
         armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: 0.002 } } });
       const denied = await send(); expect(denied.status).toBe(403); await denied.text();

@@ -12,6 +12,7 @@ it('reply and decline acknowledge persisted posts before the private production 
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/consult/consult-cascade-http.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/consult-cascade-http-fixture.ts',
+      'libs/generic/verification-harness/src/evidence-root.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/consult/cascade-core.ts', 'packages/operator-core/lib/consult/consult-dispatch.ts',
       'packages/operator-core/lib/consult/consult-verbs-core.ts',

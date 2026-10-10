@@ -537,14 +537,34 @@ describe('dispatchPendingGradingAudits', () => {
 
   it('can dispatch the same deferred card from its exact evaluator build and pins the fresh judge to that host', async () => {
     const issueId = 'EI-cross-runtime-replay';
-    const rerunRecipe = {
+    const rerunRecipe: NonNullable<ScorecardRow['rerunRecipe']> = {
       schemaVersion: 1,
       evaluator: 'plans:evaluate-spec-test-adequacy',
       evaluatorBuild: { sha: 'staging-evaluator-sha', version: '1.2.3' },
       evaluatorRevision: 20,
-      args: { harness: 'papercusp' },
-      selection: { bindingIds: [] },
-    } as NonNullable<ScorecardRow['rerunRecipe']>;
+      classRef: 'plan-class-bugfix',
+      args: {
+        harness: 'papercusp',
+        slug: 'runtime-replay',
+        classRef: 'plan-class-bugfix',
+        specIds: ['SPEC-RUNTIME-REPLAY'],
+        includeDraft: true,
+      },
+      selection: {
+        planSlug: 'runtime-replay',
+        specId: 'SPEC-RUNTIME-REPLAY',
+        specRevision: 1,
+        specFingerprint: 'runtime-replay-fingerprint',
+        bindingIds: [],
+        evidence: [],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
     const target = card(issueId, { rerunRecipe });
     const foreign = deps();
     foreign.listScorecards.mockResolvedValue([target]);

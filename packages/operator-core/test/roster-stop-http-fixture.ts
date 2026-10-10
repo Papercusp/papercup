@@ -1,8 +1,8 @@
 /** Private HTTP/native acceptance fixture, launched by its registered integration suite. */
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -121,9 +121,26 @@ async function coordCanary(health: unknown) {
   const foreign = `su-coord-${process.pid}-foreign`;
   const stale = `su-coord-${process.pid}-stale`;
   const foreignWorkspace = workspace + '-foreign';
+  const historySessions = new Map<string, { id: number; marker: string }>();
   for (const [owner, scope] of [[selected, workspace], [neighbor, workspace], [foreign, foreignWorkspace], [stale, workspace]]) {
-    const id = await recordAdvSession({ workspaceId: scope, mode: 'console', agent: 'codex', role: 'su', coordOwnerId: owner });
+    const nativeId = randomUUID();
+    const id = await recordAdvSession({ workspaceId: scope, mode: 'console', agent: 'codex', role: 'su', coordOwnerId: owner,
+      ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { pid: process.pid, sessionId: nativeId } : {}) });
     assert.ok(id);
+    if (process.env.ROSTER_HISTORY_BROWSER_PROOF === '1') {
+      const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+      const directory = join(codexHomeForSessionKey(id), 'sessions');
+      assert.ok(directory.startsWith(process.env.HOME! + '/'), 'native transcript must be inside the disposable runtime home');
+      mkdirSync(directory, { recursive: true });
+      const timestamp = new Date().toISOString();
+      const marker = 'private-history-' + owner;
+      writeFileSync(join(directory, `rollout-${timestamp.replaceAll(':', '-')}-${nativeId}.jsonl`), [
+        { type: 'session_meta', timestamp, payload: { id: nativeId, timestamp, cwd: root } },
+        { type: 'event_msg', timestamp, payload: { type: 'user_message', message: 'Read the private canary transcript' } },
+        { type: 'response_item', timestamp, payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: marker }] } },
+      ].map(value => JSON.stringify(value)).join('\n') + '\n');
+      historySessions.set(owner, { id, marker });
+    }
     if (owner === stale) await markAdvSessionEnded(id, 0, 'self', { throwOnError: true });
   }
   const username = `coord_${process.pid}`;
@@ -149,6 +166,10 @@ async function coordCanary(health: unknown) {
     const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
     const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected, neighbor, portalSourceRoot: portalSourceRoot!,
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
+      ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {
+        selectedSessionId: historySessions.get(selected)!.id, neighborSessionId: historySessions.get(neighbor)!.id,
+        selectedMarker: historySessions.get(selected)!.marker, neighborMarker: historySessions.get(neighbor)!.marker,
+      } } : {}),
       verifyReceipt: (value, summary, wake) => verifyReceipt(value, selected, wake, summary) });
     console.log('ROSTER_COORD_BROWSER_RECEIPT ' + JSON.stringify({ ...receipt, health,
       apiBundleSha256: createHash('sha256').update(readFileSync(join(evidence, 'hono-host.mjs'))).digest('hex') }));

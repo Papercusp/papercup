@@ -10,8 +10,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import { link, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import path from 'node:path';
+export { defaultEvidenceRoot } from './evidence-root.js';
 import {
   type HarnessContract,
   type HarnessRunResult,
@@ -198,18 +198,6 @@ export async function linkLatest(evidenceRoot: string, runDir: string): Promise<
   await rm(tmp, { force: true });
   await symlink(path.relative(evidenceRoot, runDir), tmp);
   await rename(tmp, path.join(evidenceRoot, 'latest'));
-}
-
-/**
- * Where a harness keeps its runs when the caller names no root: `$VH_EVIDENCE_ROOT_BASE/<harness>`,
- * else the XDG state dir (`$XDG_STATE_HOME`, default `~/.local/state`) `/verification-harness/<harness>`.
- * vh.sh's `vh_default_root` resolves the same path.
- */
-export function defaultEvidenceRoot(harness: string, env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.VH_EVIDENCE_ROOT_BASE?.trim();
-  if (explicit) return path.join(explicit, harness);
-  const state = env.XDG_STATE_HOME?.trim() || path.join(env.HOME?.trim() || homedir(), '.local', 'state');
-  return path.join(state, 'verification-harness', harness);
 }
 
 /** Run dirs are named by newRunId (and vh.sh): `<yyyymmddThhmmssZ>-<pid>`, `.N` on a same-second collision. */

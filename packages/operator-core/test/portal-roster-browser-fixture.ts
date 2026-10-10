@@ -15,6 +15,7 @@ type PortalRosterBrowserInput = {
   evidence: string; base: string; workspace: string; selected: string; neighbor: string;
   portalSourceRoot: string;
   cookieName: string; ownToken: string; foreignToken: string;
+  history?: { selectedSessionId: number; neighborSessionId: number; selectedMarker: string; neighborMarker: string };
   verifyReceipt?: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
   stop?: {
     selected: { id: number; startedAt: string }; neighbor: { id: number; startedAt: string };
@@ -36,7 +37,33 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       launchStartedAt: (ownerId === selected ? input.stop.selected : input.stop.neighbor).startedAt } : {}) }));
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
-  const entry = `
+  const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
+  const entry = input.history ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { parseAsString, useQueryState } from 'nuqs';
+    import { PortalAgentsPopover, usePortalSessionHistoryActions } from './packages/ui/src/agents-popover.tsx';
+    import SessionHistoryModal from ${JSON.stringify(join(operatorRoot, 'app/adv/sessions/SessionHistoryModal.tsx'))};
+    function Fixture() {
+      const actions = usePortalSessionHistoryActions();
+      const [panel] = useQueryState('panel', parseAsString);
+      const [conversation] = useQueryState('agentConversation', parseAsString);
+      return React.createElement(React.Fragment, null,
+        React.createElement(PortalAgentsPopover, {
+          agents: ${JSON.stringify(rows)}, open: panel === 'agents', onClose: () => {},
+          onInspectSession: actions.inspectAgentSession, onOpenEndedSession: actions.openEndedSession,
+          loadEndedSessions: async () => ({ sessions: ${JSON.stringify([{ id: input.history.selectedSessionId,
+            agent: 'codex', coordOwnerId: selected, mode: 'console', label: 'Pinned private session',
+            startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), exitCode: 0 }])}, hasMore: false, nextBefore: null }),
+        }),
+        React.createElement(SessionHistoryModal),
+        React.createElement('output', { 'data-testid': 'private-conversation-selection' }, conversation || 'none'));
+    }
+    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(Fixture))));
+  ` : `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { PortalAgentsPopover } from './packages/ui/src/agents-popover.tsx';
@@ -48,7 +75,10 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const result = await build({ absWorkingDir: portal,
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
-    alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
+    alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom'),
+      nuqs: resolve(portal, 'node_modules/nuqs') },
+    tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
+    loader: { '.css': 'empty' },
     bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false,
     plugins: [{ name: 'retain-executed-browser-inputs', setup(builder) {
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, ({ path }) => {
@@ -89,6 +119,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page.on('pageerror', error => pageErrors.push(error.message));
     const url = new URL('/?panel=agents', base); url.searchParams.set('ws', workspace);
     await page.goto(url.href);
+    if (input.history) {
+      const receipt = await runHistoryPage(page, input);
+      assert.deepEqual(pageErrors, [], 'real history components must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     const select = page.getByTestId(`agent-select-${selected}`);
     await select.check();
     assert.equal(await page.getByTestId(`agent-select-${neighbor}`).isChecked(), false);
@@ -153,6 +190,43 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(receipt, null, 2));
     return receipt;
   } finally { await context.close(); await browser.close(); }
+}
+
+async function runHistoryPage(page: Page, input: PortalRosterBrowserInput) {
+  const history = input.history!;
+  const streams: Array<{ url: string; status: number }> = [];
+  page.on('response', response => {
+    if (new URL(response.url()).pathname === '/api/adv/session/thinking') streams.push({ url: response.url(), status: response.status() });
+  });
+  await page.getByTestId('agent-row-' + input.selected).click();
+  await page.waitForURL(url => url.searchParams.get('agentHistory') === input.selected && !url.searchParams.has('panel'));
+  assert.equal(new URL(page.url()).searchParams.has('agentConversation'), false, 'history activation must not silently open the HUD conversation');
+  await page.getByText(history.selectedMarker, { exact: true }).waitFor();
+  assert.equal(await page.getByText(history.neighborMarker, { exact: true }).count(), 0, 'selected history cannot render the neighbor transcript');
+  const historyUrl = page.url();
+  await page.reload();
+  await page.getByText(history.selectedMarker, { exact: true }).waitFor();
+  assert.equal(page.url(), historyUrl, 'history selection and workspace must survive reload');
+  await page.getByRole('button', { name: 'Open in GUI', exact: true }).click();
+  await page.waitForURL(url => url.searchParams.get('agentConversation') === input.selected
+    && url.searchParams.get('hudsession') === input.selected && url.searchParams.get('app') === 'hud'
+    && !url.searchParams.has('agentHistory') && !url.searchParams.has('agentHistorySession'));
+  assert.equal(await page.getByTestId('private-conversation-selection').innerText(), input.selected);
+  const conversationUrl = page.url();
+  await page.reload();
+  assert.equal(await page.getByTestId('private-conversation-selection').innerText(), input.selected);
+  assert.equal(page.url(), conversationUrl);
+  const observed = streams.filter(value => {
+    const query = new URL(value.url).searchParams;
+    return query.get('codexSessionKey') === String(history.selectedSessionId) && query.get('historyOwner') === input.selected;
+  });
+  assert.ok(observed.some(value => value.status === 200), 'real stream must correlate the selected native row and owner');
+  assert.ok(!streams.some(value => new URL(value.url).searchParams.get('codexSessionKey') === String(history.neighborSessionId)), 'no neighbor stream may be requested');
+  return { workspace: input.workspace, selected: input.selected, neighbor: input.neighbor,
+    selectedSessionId: history.selectedSessionId, authMethod: 'cookie-session', historyUrl, conversationUrl,
+    historyKeptSeparate: true, historyReload: true, explicitGuiSelection: true, conversationSelectionReload: true,
+    neighborIsolated: true, streams,
+    scope: 'Actual Portal roster URL action, operator history modal, owner-session resolver and private native transcript SSE; HUD target selection only, no full HUD rendering or parked-turn proof' };
 }
 
 async function runConfirmedStopPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
