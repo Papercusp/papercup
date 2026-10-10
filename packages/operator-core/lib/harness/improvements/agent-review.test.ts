@@ -139,6 +139,7 @@ function harness(initial: WorkItem = issue()) {
     readLedgerGrade: vi.fn(async () => state.ledger),
     deliverRevision,
     resolveSubmitterLiveness,
+    resolveVerifiedSubmitterAlias: vi.fn(async () => null),
     healOwnNodeOrigin,
   } as unknown as AgentReviewDeps;
 
@@ -1064,6 +1065,49 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
       },
     });
   }
+
+  it.each([null, 'system:judge/su-gone', 'su-other'])('adopts a proven signed-spawn alias held by %s without accepting a bug', async (assignee) => {
+    const h = harness({ ...orphanRow({ assignee }), kind: 'bug', payload: {
+      agentReview: { status: 'revision-requested', submittedBy: 'system:judge/su-gone', ledgerIdeaId: 'WI-7', round: 1 },
+    } });
+    h.deps.resolveVerifiedSubmitterAlias = vi.fn(async () => 'su-gone');
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    const result = await resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps);
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: assignee === 'system:judge/su-gone' });
+    if (assignee === 'su-other') {
+      expect(result).toMatchObject({ resubmitted: false, reason: 'orphan-revision-held-by-other' });
+      expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    } else {
+      expect(result).toMatchObject({ resubmitted: true, state: { submittedBy: 'su-newcomer', status: 'pending' } });
+      expect(h.state.issue.payload).toMatchObject({ implementationReadiness: { status: 'unknown' } });
+      expect(h.state.issue.payload).not.toHaveProperty('intakeReproduction');
+      if (assignee) expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', { harness: 'papercusp', expectedAssignee: assignee });
+    }
+  });
+
+  it.each([null, { sessionState: 'parked' } as const])('preserves the signed submitter when liveness is %j', async (verdict) => {
+    const h = harness({ ...orphanRow(), payload: {
+      agentReview: { status: 'revision-requested', submittedBy: 'system:judge/su-gone', ledgerIdeaId: 'WI-7', round: 1 },
+    } });
+    h.deps.resolveVerifiedSubmitterAlias = vi.fn(async () => 'su-gone');
+    h.state.submitterLiveness = verdict;
+    expect(await resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps))
+      .toMatchObject({ resubmitted: false, reason: verdict ? 'not-submitter' : 'not-submitter:liveness-unknown' });
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('refuses namespaced system authority without signed alias evidence even if a liveness stub says ended', async () => {
+    const h = harness({ ...orphanRow(), payload: {
+      agentReview: { status: 'revision-requested', submittedBy: 'system:judge/su-gone', ledgerIdeaId: 'WI-7', round: 1 },
+    } });
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    expect(await resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps))
+      .toMatchObject({ resubmitted: false, reason: 'not-submitter:authority-unknown' });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
 
   it('refuses while the original submitter can still act', async () => {
     const h = harness(orphanRow());
