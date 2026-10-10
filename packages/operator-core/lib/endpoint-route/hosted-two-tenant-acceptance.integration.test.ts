@@ -8,14 +8,11 @@
  * deployed control plane uses.
  */
 import { EventEmitter, once } from 'node:events';
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import postgres, { type Sql } from 'postgres';
+import type { Sql } from 'postgres';
 import { serve } from '@hono/node-server';
 import { WORKSPACE_HOST_CANARY_TAG_KEYS } from '@papercusp/deployment-driver';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   deriveTenantContext,
   type VerifiedTenantServerContext,
@@ -44,8 +41,6 @@ import {
   authenticateHostedConnectorSocket,
 } from './routes/hosted-workspace-connector';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = path.resolve(HERE, '../../../../libs/papercusp/libs/db/sql');
 const ORIGIN = 'https://app.papercusp.com';
 const CONTROL = 'p030-control-plane';
 const USER_A = '11111111-1111-4111-8111-111111111111';
@@ -59,25 +54,6 @@ const HOST_B = 'host-tenant-b';
 const CONNECTION_A = 'connection-tenant-a';
 const CONNECTION_B = 'connection-tenant-b';
 
-const MIGRATIONS = [
-  '887-workspace-host-observability.sql',
-  '902-hosted-session-webhook-receipts.sql',
-  '903-customer-organization-boundary.sql',
-  '904-hosted-identity-links.sql',
-  '906-customer-workspace-directory.sql',
-  '907-hosted-governance.sql',
-  '978-hosted-customer-rls.sql',
-  '979-workspace-host-tenant-rls.sql',
-  '997-hosted-app-role-membership.sql',
-  '1002-workos-sealed-session-vault.sql',
-  '1005-hosted-service-lifecycle-runtime.sql',
-  '1009-hosted-workspace-reverse-connectors.sql',
-  '1010-hosted-provider-delegation-metadata.sql',
-  '1126-hosted-two-tenant-boundary-repair.sql',
-  '1127-workspace-host-domain-contracts.sql',
-  '1188-hosted-self-signup.sql',
-] as const;
-
 const CONFIGURATION = {
   publicOrigin: ORIGIN,
   controlPlaneWorkspaceId: CONTROL,
@@ -87,42 +63,6 @@ const CONFIGURATION = {
   workosCookiePasswordRef: 'test:workos-cookie-password',
   workosWebhookSecretRef: 'test:workos-webhook-secret',
 } as const;
-
-function migration(name: string): string {
-  const armed = path.join(SQL_DIR, name);
-  if (existsSync(armed)) return readFileSync(armed, 'utf8');
-  const draft = `${armed}.DRAFT`;
-  if (existsSync(draft)) return readFileSync(draft, 'utf8');
-  throw new Error(`missing hosted acceptance migration ${name}`);
-}
-
-async function provisionDatabase(sql: Sql): Promise<void> {
-  await sql.unsafe(`
-    DO $roles$
-    DECLARE target_role text;
-    BEGIN
-      FOREACH target_role IN ARRAY ARRAY['harness_admin', 'harness_app', 'harness_zero']
-      LOOP
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = target_role) THEN
-          EXECUTE format(
-            'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
-            target_role
-          );
-        END IF;
-      END LOOP;
-      EXECUTE format('GRANT harness_admin, harness_app, harness_zero TO %I', current_user);
-    END
-    $roles$;
-    CREATE SCHEMA harness_shared;
-    CREATE OR REPLACE FUNCTION harness_shared.emit_change_notify()
-    RETURNS trigger LANGUAGE plpgsql AS $$
-    BEGIN
-      RETURN COALESCE(NEW, OLD);
-    END
-    $$;
-  `);
-  for (const name of MIGRATIONS) await sql.unsafe(migration(name));
-}
 
 async function seedTenants(sql: Sql): Promise<void> {
   await sql`
@@ -338,7 +278,7 @@ class FakeSocket extends EventEmitter implements HostedWorkspaceRelaySocket {
   }
 }
 
-let db: MigratedTestDb;
+let db: OrgTestDb;
 let sql: Sql;
 let runService: HostedServiceContextRunner;
 let runTenant: HostedTenantContextRunner;
@@ -370,9 +310,10 @@ function runtimeDependencies(): HostedRuntimeDependencies {
 }
 
 beforeAll(async () => {
-  db = await createFreshTestDb({ prefix: 'hostedtwotenant' });
-  sql = postgres(db.url, { max: 8, onnotice: () => {} });
-  await provisionDatabase(sql);
+  // Clone the maintained production schema instead of a hand-picked migration
+  // subset that misses fields read by the current hosted routes.
+  db = await createOrgTestDb({ adminPoolMax: 8 });
+  sql = db.adminSql;
   await seedTenants(sql);
   runService = serviceRunner(sql);
   runTenant = tenantRunner(sql);
@@ -382,8 +323,7 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  await sql?.end({ timeout: 5 }).catch(() => {});
-  await db?.drop().catch(() => {});
+  await db?.cleanup().catch(() => {});
 });
 
 describe.sequential('assembled hosted two-tenant acceptance', () => {
@@ -440,7 +380,7 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
       const foreignHost = await fetch(`${base}${provision}`, {
         method: 'POST', headers, body: JSON.stringify({ ...body, desired: { ...body.desired, hostId: HOST_B } }),
       });
-      expect(foreignHost.status).toBe(403);
+      expect(foreignHost.status, await foreignHost.clone().text()).toBe(403);
       await expect(foreignHost.json()).resolves.toMatchObject({ error: 'workspace_host_not_bound' });
       const forgedCanary = await fetch(`${base}${provision}`, {
         method: 'POST', headers,
@@ -576,7 +516,7 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
         body: JSON.stringify({ hostId: HOST_B, routeLabel: 'tenant-b', transport: 'websocket' }),
       },
     );
-    expect(crossTenantEnroll.status).toBe(403);
+    expect(crossTenantEnroll.status, await crossTenantEnroll.clone().text()).toBe(403);
 
     const enrollment = await request(
       plane,
@@ -711,7 +651,7 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
       sessionA,
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
     );
-    expect(foreign.status).toBe(403);
+    expect(foreign.status, await foreign.clone().text()).toBe(403);
 
     const onboard = await request(
       plane,
