@@ -84,6 +84,17 @@ async function main() {
   const identity = await call('coord:whoami', {});
   assert.equal(identity.workspaceId, workspace);
   assert.ok(identity.ownerId, 'HTTP actor identity required');
+  const catalog = await call('agent_tools:list', {
+    filter: 'consult:|plans:start', onlyAllowed: false, limit: 100,
+  });
+  assert.ok(Array.isArray(catalog.tools), 'production catalog must return tool entries');
+  assert.equal(catalog.count, catalog.tools.length, 'catalog receipt must retain every returned entry');
+  assert.ok(catalog.count < 100, 'bounded catalog must not reach its truncation limit');
+  const catalogNames = catalog.tools.map((tool: { name: string }) => tool.name).sort();
+  for (const name of ['consult:get_feedback', 'consult:reply', 'consult:decline', 'consult:close', 'plans:start']) {
+    assert.ok(catalogNames.includes(name), `production catalog positive control ${name}`);
+  }
+  assert.ok(!catalogNames.includes('consult:reconcile'), 'retired reporting callable remains registered');
   const { sql } = getOrgPg();
   const lockKey = 741101;
   // Hold ONLY the background lease transition. The queued intent/post and
@@ -162,7 +173,7 @@ async function main() {
   }
   await stopHost();
   console.log('CONSULT_CASCADE_HTTP_RECEIPT ' + JSON.stringify({ workspace, identity,
-    hostPid: host.pid, hostStopped: true, bundleSha256, health, requests }));
+    hostPid: host.pid, hostStopped: true, bundleSha256, health, catalogNames, requests }));
 }
 
 try { await main(); }

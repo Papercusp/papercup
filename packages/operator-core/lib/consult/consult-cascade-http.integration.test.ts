@@ -16,6 +16,7 @@ it('reply and decline acknowledge persisted posts before the private production 
       'packages/operator-core/lib/consult/cascade-core.ts', 'packages/operator-core/lib/consult/consult-dispatch.ts',
       'packages/operator-core/lib/consult/consult-verbs-core.ts',
       'packages/operator-core/lib/agent-tools/consult/reply.ts', 'packages/operator-core/lib/agent-tools/consult/decline.ts',
+      'packages/operator-core/lib/agent-tools/index.ts', 'packages/operator-core/lib/agent-tools/agent_tools/list.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
@@ -44,6 +45,10 @@ it('reply and decline acknowledge persisted posts before the private production 
       const receipt = JSON.parse(line!.slice('CONSULT_CASCADE_HTTP_RECEIPT '.length));
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/), health: { service: 'papercusp-operator' } });
+      expect(receipt.catalogNames).toEqual(expect.arrayContaining([
+        'consult:get_feedback', 'consult:reply', 'consult:decline', 'consult:close', 'plans:start',
+      ]));
+      expect(receipt.catalogNames).not.toContain('consult:reconcile');
       expect(receipt.requests.map((request: any) => [request.kind, request.pending, request.leaseWaitObserved,
         request.persistedPosts, request.afterRelease])).toEqual([
         ['reply', true, true, 1, 'no-launch-refusal'], ['decline', true, true, 1, 'no-launch-refusal'],
