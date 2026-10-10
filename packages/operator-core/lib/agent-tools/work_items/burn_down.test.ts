@@ -932,6 +932,56 @@ describe('work_items:burn_down', () => {
         examples: { ...health.releaseConditions.examples, omitted: 0 } } } } }).success).toBe(false);
   });
 
+  // SPEC-BQL-P-004-CLEARER: every durable park in the census carries an accountable next action
+  // and a recheck. That includes the broad-trigger 'satisfied' stamp the WAKE guard downgrades:
+  // it must route to contract repair, never to "reconcile now".
+  it('SPEC-BQL-P-004-CLEARER: routes missing, unreachable, broad-satisfied, specific-satisfied and tracked parks to distinct owned actions', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const park = (id: string, release?: Record<string, unknown>) => item({ id, kind: 'bug',
+      assignee: 'member-live', createdAt: FLEET_START, payload: {
+        _claimHold: true, claim_hold_by: 'su-parker', claim_hold_reason: 'parked pending condition',
+        claim_hold_at: FLEET_START, ...(release ? { claim_hold_release: release } : {}),
+      } });
+    const contract = { condition: 'the dependency reaches a terminal state', owner: 'su-clearer',
+      evidence: 'resolver evidence' };
+    const rows = [
+      park('WI-clear-missing'),
+      park('WI-clear-unreachable', { ...contract, trigger: 'work-item:done:WI-dep', reachability: 'unreachable' }),
+      park('WI-clear-broad', { ...contract, trigger: 'coord:inbox-wake:su-parker', reachability: 'satisfied' }),
+      park('WI-clear-specific', { ...contract, trigger: 'work-item:done:WI-dep', reachability: 'satisfied' }),
+      park('WI-clear-tracked', { ...contract, trigger: 'work-item:done:WI-dep', reachability: 'reachable' }),
+    ];
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts,
+      explainFloors: async (_h, ids) => ids.map(id => ({ id, admissible: false, refusedBy: 'claim-hold', detail: null })),
+    });
+    expect(result.ok).toBe(true); if (!result.ok) return;
+    const examples = result.snapshot.queueHealth!.releaseConditions.examples;
+    expect(examples).toMatchObject({ total: 5, omitted: 0 });
+    const byId = new Map(examples.rows.map(row => [row.id, row]));
+    expect(byId.get('WI-clear-missing')).toMatchObject({ clearer: null, trigger: null,
+      nextAction: expect.stringContaining('Repair the missing or unverified release contract'),
+      recheck: expect.stringContaining('No recheck trigger recorded') });
+    expect(byId.get('WI-clear-unreachable')).toMatchObject({ clearer: 'su-clearer', reachability: 'unreachable',
+      nextAction: expect.stringContaining('Escalate or reframe'),
+      recheck: expect.stringContaining('work-item:done:WI-dep') });
+    // The WAKE downgrade: a generic inbox wake is not condition proof, so this park is repair work.
+    const broad = byId.get('WI-clear-broad')!;
+    expect(broad).toMatchObject({ clearer: 'su-clearer', reachability: 'blocked',
+      nextAction: expect.stringContaining('Repair the missing or unverified release contract') });
+    expect(broad.findings).toContain('reachability-unverified');
+    expect(broad.nextAction).not.toContain('Reconcile');
+    expect(byId.get('WI-clear-specific')).toMatchObject({ clearer: 'su-clearer', reachability: 'satisfied',
+      nextAction: expect.stringContaining('Reconcile this park with condition evidence') });
+    expect(byId.get('WI-clear-tracked')).toMatchObject({ clearer: 'su-clearer', reachability: 'reachable',
+      nextAction: expect.stringContaining('Retain the park') });
+    for (const row of examples.rows) {
+      expect(row.nextAction.length).toBeGreaterThan(0);
+      expect(row.recheck.length).toBeGreaterThan(0);
+    }
+  });
+
   it('names only a runnable independent verifier as the clearer of an overdue round', async () => {
     const resolution = fleetResolution('current-spec');
     resolution.claimSpec.current.lane = 'verification';
