@@ -987,7 +987,7 @@ function projectRow(
   operationalBriefChars: number,
   dropped: Set<string>,
   includeCompletionEvidence = true,
-  compactOperationalBrief = false,
+  compactIdentity = false,
 ): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
   if (r.reportAttachments !== undefined) return r; // producer bounds one metadata list + a <=2048-byte page
@@ -1002,7 +1002,7 @@ function projectRow(
     caps,
     operationalBriefChars,
     dropped,
-    compactOperationalBrief,
+    compactIdentity,
   );
   // Disclose the summary's fate in the SAME two shapes used for the checkpoint:
   // a full drop and a clip are different losses and a reader acts differently on
@@ -1063,6 +1063,29 @@ function projectRow(
         ? { eventsTruncated: { shown: keptEvents.length, total: events.length } }
         : {}),
     };
+  }
+
+  // A compact candidate-identity row exists to preserve id/title/state after
+  // all the ordinary detail rungs failed. Prior-attempt records are valuable
+  // when requested, but their per-row compiler budget still multiplies across
+  // a five-row read and can make this last identity-preserving rung exceed the
+  // result door too. Keep the omission explicit and let an id-only re-read
+  // recover the history for a row that needs it.
+  const priorAttempts = compactIdentity
+    ? undefined
+    : r.priorAttempts
+      ? projectPriorAttempts(r.priorAttempts, caps, dropped)
+      : undefined;
+  if (compactIdentity && r.priorAttempts !== undefined && r.priorAttempts !== null) {
+    dropped.add("priorAttempts");
+  }
+  const priorAttemptRefResolution = compactIdentity
+    ? undefined
+    : r.priorAttemptRefResolution
+      ? projectPriorAttemptRefResolution(r.priorAttemptRefResolution, caps, dropped)
+      : undefined;
+  if (compactIdentity && r.priorAttemptRefResolution !== undefined && r.priorAttemptRefResolution !== null) {
+    dropped.add("priorAttemptRefResolution");
   }
 
   return {
@@ -1138,12 +1161,8 @@ function projectRow(
     ...(r.planItemTextDrift ? { planItemTextDrift: r.planItemTextDrift } : {}),
     ...(r.holder ? { holder: r.holder } : {}),
     ...(shapedLifecycle ? { lifecycle: shapedLifecycle } : {}),
-    ...(r.priorAttempts ? { priorAttempts: projectPriorAttempts(r.priorAttempts, caps, dropped) } : {}),
-    ...(r.priorAttemptRefResolution
-      ? {
-          priorAttemptRefResolution: projectPriorAttemptRefResolution(r.priorAttemptRefResolution, caps, dropped),
-        }
-      : {}),
+    ...(priorAttempts !== undefined ? { priorAttempts } : {}),
+    ...(priorAttemptRefResolution !== undefined ? { priorAttemptRefResolution } : {}),
   };
 }
 

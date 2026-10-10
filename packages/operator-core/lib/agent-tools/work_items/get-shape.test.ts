@@ -852,6 +852,24 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
         },
         completion,
         checkpoint: "C".repeat(8_000),
+        priorAttempts: {
+          schemaVersion: "prior-attempts-v1",
+          authority: Array.from({ length: 8 }, (_, attempt) => ({
+            ref: `authority-${attempt}`,
+            text: "A".repeat(2_000),
+          })),
+          attempts: Array.from({ length: 8 }, (_, attempt) => ({
+            ref: `attempt-${attempt}`,
+            text: "P".repeat(2_000),
+          })),
+          rawRefs: Array.from({ length: 20 }, (_, attempt) => `raw-${attempt}`),
+        },
+        priorAttemptRefResolution: {
+          records: Array.from({ length: 5 }, (_, attempt) => ({
+            ref: `resolved-${attempt}`,
+            text: "R".repeat(2_000),
+          })),
+        },
       }),
     );
     const out = shapeWorkItemsGet(
@@ -887,6 +905,9 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
       "open",
     ]);
     expect(out._shapeNote?.dropped).toContain("completion");
+    expect(out._shapeNote?.dropped).toContain("priorAttempts");
+    expect(out._shapeNote?.dropped).toContain("priorAttemptRefResolution");
+    expect(out.results.every((result) => result.priorAttempts === undefined)).toBe(true);
   });
 
   it("tries all five compact identities before the trimmed three-row stub rung", () => {
