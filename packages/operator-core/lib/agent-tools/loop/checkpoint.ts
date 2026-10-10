@@ -341,11 +341,11 @@ export default defineTool({
     "Default rowsMode:'merge' preserves rows; rowsMode:'replace' retires rows (empty list with replace clears). `confirmShrink` is accepted by `work_items:checkpoint` only; use `confirmRetire` here. Probe rows: kind:'tool' or kind:'state-cell', args, schemaRevision.",
   guidance: {
     when:
-      "COLD: save facts; pair with work_items:checkpoint; carry mode belongs to loop:arm, not loop:checkpoint — do not retry a rejected `carry` argument here. Add same-line [turn:<session>@<iso-ts>] refs; never invent a ref. Mark [self-imposed], [peer:<sid>], or [inferred]. Default merge mode preserves them; rowsMode:'replace' retires rows. Probe rows: kind:'tool' or kind:'state-cell', args, schemaRevision. Before `session:request-compaction`, if `next` names an immediately runnable action, execute it or a bounded progress read; writing this checkpoint alone is not post-note progress. `cold-successor-no-progress` refuses compaction; scheduled loop fire/compaction is the narrow boundary exception.",
+      "COLD: save facts; pair with work_items:checkpoint. Use same-line [turn:<session>@<iso-ts>] refs; don't invent. Label claims [self-imposed], [peer:<sid>], [inferred]. Merge keeps rows; replace retires them. Before compaction, advance runnable `next` or read progress; this write alone doesn't count. `cold-successor-no-progress` may refuse; scheduled fire/compaction is exempt. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered.",
     notWhen: "WARM (carry:'warm', default) use live transcript; work_items:checkpoint for state.",
     chaining:
       'Retune: read loop:status, then ' +
-      "then loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes.",
+      "loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes.",
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',
