@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
@@ -26,6 +26,7 @@ import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/w
 import {
   buildImageArtifact,
   composeRequest,
+  main,
   parseGcpImageReleaseRequestCliArgs,
   type GcpImageReleaseRequestDeps,
 } from "./gcp-image-release-request-cli";
@@ -505,6 +506,18 @@ describe("parseGcpImageReleaseRequestCliArgs", () => {
 });
 
 describe("buildImageArtifact", () => {
+  it("constructs the image artifact before release readiness exists", async () => {
+    const input = inputDocument();
+    delete input.readiness;
+    const { args } = await fixture(input, publicationManifest());
+    const { artifact } = await buildImageArtifact(args, MEASURED);
+    expect(artifact.image.id).toBe(
+      `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
+    );
+    expect(artifact.release.bundleSha256).toBe(BUNDLE_SHA);
+    expect(artifact.buildManifest.baseImage.sha256).toBe(BASE_SHA);
+  });
+
   it("pins the packer builder kind and MEASURES the template digest", async () => {
     const { args } = await fixture();
     const { artifact } = await buildImageArtifact(args, MEASURED);
@@ -722,6 +735,42 @@ describe("buildImageArtifact", () => {
     await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(
       /at least one build input/,
     );
+  });
+});
+
+describe("pre-build CLI pairing", () => {
+  it("emits the same measured artifact and clean-room input without release readiness", async () => {
+    const input = inputDocument();
+    delete input.readiness;
+    const { args } = await fixture(input, publicationManifest());
+    const output: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      const argv = [
+        "--input-file", args.inputFile,
+        "--repo-root", args.repoRoot,
+        "--source-root", args.sourceRoot!,
+      ];
+      await main([...argv, "--emit", "artifact"], MEASURED);
+      await main([...argv, "--emit", "clean-room-input"], MEASURED);
+    } finally {
+      stdout.mockRestore();
+    }
+    expect(output).toHaveLength(2);
+    const artifact = JSON.parse(output[0]!).artifact;
+    const cleanRoom = JSON.parse(output[1]!);
+    expect(cleanRoom.artifact).toEqual(artifact);
+    expect(cleanRoom.placement).toEqual(input.placement);
+    expect(cleanRoom.spec).toEqual(input.spec);
+    expect(artifact.image.id).toBe(
+      `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18`,
+    );
+    expect(artifact.release.bundleSha256).toBe(BUNDLE_SHA);
+    expect(artifact.buildManifest.baseImage.sha256).toBe(BASE_SHA);
+    expect(artifact.buildManifest.builder.kind).toBe("hashicorp-packer");
   });
 });
 
