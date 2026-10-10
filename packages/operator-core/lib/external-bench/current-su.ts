@@ -1002,6 +1002,7 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
       const record: Record<string, unknown> = {
         configured: { agent: opts.agent, model: opts.model, effort: opts.effort, account: opts.account },
         identityStatus: 'unknown', measured: null, launchReceipt: null, terminalReceipt: null,
+        protocolIdentity: { status: 'unobserved' },
       };
       let result: DriveResult = { disposition: 'error', detail: 'Current benchmark launch did not complete.' };
       let started = false;
@@ -1009,7 +1010,9 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
         if (opts.signal?.aborted) return { disposition: 'timeout', detail: 'Benchmark cancelled before launch.', armMeta: { currentExecution: record } };
         const task = registeredTasks.get(handle.slug);
         if (!task) throw new Error('Current benchmark task has no registered assignment.');
-        requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId, budget });
+        const frozen = requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId, budget });
+        const frozenArm = frozen.arms.find(arm => arm.id === opts.armId)!;
+        const expectedIdentity = { ...frozenArm.runtime, effort: frozenArm.effort };
         const protocol = await ports.verifyPreregistration();
         record.preregistration = protocol;
         if (protocol.preregHash !== opts.preregistration.preregHash || !protocol.gitCommitSha?.trim() || !protocol.receiptRef?.trim()) {
@@ -1036,10 +1039,22 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
           if (!task || task.workspaceId !== workspaceId || task.detail.label !== `${labelPrefix}solver`) throw new Error('Native benchmark task identity/scope could not be verified.');
           record.terminalReceipt = task;
           const identity = measuredIdentity(await ports.readIdentity(task));
-          if (identity) { record.measured = identity; record.identityStatus = 'measured'; }
+          record.measured = identity;
+          record.identityStatus = identity ? 'measured' : 'unknown';
+          // Compare actual request exposure, including the post-confinement
+          // tool catalog, to the committed pins on every observed turn. A prior
+          // matching observation cannot fill a missing completion measurement.
+          const mismatchFields = identity ? (Object.keys(expectedIdentity) as Array<keyof typeof expectedIdentity>)
+            .filter(field => identity[field] !== expectedIdentity[field]) : [];
+          record.protocolIdentity = { status: identity ? (mismatchFields.length ? 'mismatch' : 'matched') : 'unobserved',
+            expected: expectedIdentity, mismatchFields };
           if (opts.signal?.aborted) { result = { disposition: 'timeout', detail: 'Benchmark cancelled during generation.' }; break; }
           if (lifecycle.now() >= deadline) { result = { disposition: 'timeout', detail: 'Benchmark generation wall-clock cap reached.' }; break; }
+          if (mismatchFields.length) throw new Error(`Benchmark observed identity differs from the frozen protocol: ${mismatchFields.join(', ')}.`);
           const completion = await ports.readCompletion(handle);
+          if ((completion === 'done' || task.state === 'exited' && task.exitCode === 0) && !identity) {
+            throw new Error('Benchmark completion identity is unobserved; the frozen protocol could not be verified.');
+          }
           if (completion === 'done') { result = { disposition: 'done' }; break; }
           if (completion === 'failed') { result = { disposition: 'escalate', detail: 'Benchmark task ended without completion.' }; break; }
           if (task.state !== 'running' && task.state !== 'pending') {

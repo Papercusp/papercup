@@ -743,9 +743,9 @@ const request = {
   budget: { maxUsd: 3, maxWallClockMs: 100 },
 };
 const identity: CurrentBenchIdentity = {
-  measuredBy: 'runtime-observation', runtimeRevision: 'served-revision', sourceRevision: 'source-revision',
-  model: 'served-model', effort: 'medium', clientVersion: 'native-client/1',
-  promptHash: 'measured-prompt', toolsHash: 'measured-tools', observedAt: '2026-10-09T20:00:00Z', evidenceRefs: ['usage:actual-task'],
+  measuredBy: 'runtime-observation', runtimeRevision: 'fixture-runtime', sourceRevision: 'fixture-source',
+  model: 'served-model', effort: 'high', clientVersion: 'fixture-client',
+  promptHash: 'a'.repeat(64), toolsHash: 'b'.repeat(64), observedAt: '2026-10-09T20:00:00Z', evidenceRefs: ['usage:actual-task'],
 };
 function observedFixture() {
   const nativeSessionId = '00000000-0000-0000-0000-000000000001';
@@ -951,12 +951,48 @@ describe('current native benchmark execution', () => {
     expect(f.lifecycle.driveToDone).not.toHaveBeenCalled();
     expect(f.lifecycle.teardown).toHaveBeenCalledOnce();
   });
+  it.each(['sourceRevision', 'runtimeRevision', 'clientVersion', 'promptHash', 'toolsHash', 'effort'] as const)(
+    'rejects observed %s drift from the frozen arm and retains cleanup/cost evidence', async field => {
+      const f = fixture();
+      vi.mocked(f.ports.readIdentity).mockResolvedValue({ ...identity, [field]: 'different-observation' });
+      const result = await f.run();
+      expect(result.telemetry.stopReason).toBe('error');
+      expect(result.telemetry.generationError).toMatch(/observed identity.*frozen protocol/i);
+      expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
+        identityStatus: 'measured', protocolIdentity: { status: 'mismatch', mismatchFields: [field] },
+        measured: { [field]: 'different-observation' }, retiredTaskIds: ['task-own'],
+      });
+      expect(result.telemetry.costUsd).toBe(0.25);
+      expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
+    },
+  );
+  it('detects changed tool exposure after an earlier matching native turn', async () => {
+    const f = fixture(); f.row.state = 'running'; f.row.exitCode = null;
+    vi.mocked(f.ports.readIdentity).mockResolvedValueOnce(identity).mockResolvedValue({ ...identity, toolsHash: 'c'.repeat(64) });
+    const result = await f.run();
+    expect(result.telemetry.generationError).toMatch(/toolsHash/);
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
+      protocolIdentity: { status: 'mismatch', mismatchFields: ['toolsHash'] }, retiredTaskIds: ['task-own'],
+    });
+  });
+  it('does not reuse an earlier matching observation when completion has no current identity', async () => {
+    const f = fixture(); f.row.state = 'running'; f.row.exitCode = null;
+    vi.mocked(f.ports.readIdentity).mockResolvedValueOnce(identity).mockResolvedValue(null);
+    vi.mocked(f.ports.readCompletion).mockResolvedValueOnce(null).mockResolvedValue('done');
+    const result = await f.run();
+    expect(result.telemetry.generationError).toMatch(/identity.*unobserved/i);
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
+      identityStatus: 'unknown', measured: null, protocolIdentity: { status: 'unobserved' }, retiredTaskIds: ['task-own'],
+    });
+  });
   it.each([null, { ...identity, measuredBy: 'configuration' }, { ...identity, toolsHash: '' }, { ...identity, evidenceRefs: [] }])(
     'does not convert missing or configured identity into a runtime measurement: %j', async value => {
       const f = fixture();
       vi.mocked(f.ports.readIdentity).mockResolvedValue(value as CurrentBenchIdentity | null);
       const result = await f.run();
       expect(result.telemetry.armMeta?.currentExecution).toMatchObject({ identityStatus: 'unknown', measured: null });
+      expect(result.telemetry.stopReason).toBe('error');
+      expect(result.telemetry.generationError).toMatch(/identity.*unobserved/i);
     },
   );
   it('refuses production workspace before registration or process launch', () => {

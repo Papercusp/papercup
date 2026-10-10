@@ -69,8 +69,9 @@ async function execution(committed = true) {
     preregistration: { preregHash: frozen.preregHash, config, repoRoot }, pollIntervalMs: 1, driveTimeoutMs: 100,
   };
   const admit = vi.fn(async () => ({ admitted: true, receiptRef: 'budget:private-fixture' }));
-  // Unknown native identity stays unknown; these tests prove protocol/SQL binding,
-  // while actual native client/serving observation has its own acceptance clause.
+  // Unknown native identity stays unknown and cannot establish a verified
+  // completion. These tests exercise protocol/SQL binding and that refusal;
+  // actual native client/serving observation has its own acceptance clause.
   const controller = currentBenchGatewayController({ workspaceId, loopId: 'private-host-loop', token: 'a'.repeat(64),
     preregHash: frozen.preregHash, protocol: config, armId: opts.armId, taskId: 't1', seed: opts.seed,
     resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
@@ -599,12 +600,11 @@ afterAll(async () => { for (const gateway of gateways) await gateway.stop();
   await sql?.end({ timeout: 5 }); for (const root of roots) rmSync(root, { recursive: true, force: true }); });
 
 describe('production current benchmark protocol and private completion bindings', () => {
-  it('uses the committed protocol, native receipt, private work-item completion and scoped cleanup together', async () => {
+  it('rejects private work-item completion without native identity while retaining committed protocol, receipt and cleanup', async () => {
     const f = await execution();
     const result = await f.run();
-    // Surface the originating driver failure before the derived stop reason.
-    expect(result.telemetry.generationError ?? null).toBeNull();
-    expect(result.telemetry.stopReason).toBe('done');
+    expect(result.telemetry.generationError).toMatch(/identity.*unobserved/i);
+    expect(result.telemetry.stopReason).toBe('error');
     expect(f.admit).toHaveBeenCalledOnce();
     expect(native.launch).toHaveBeenCalledWith(expect.objectContaining({ harness: handle.slug, workItem: handle.featureId }),
       expect.objectContaining({ ...ctx, [Symbol.for('benchmark-test-private-route')]: {
@@ -613,7 +613,8 @@ describe('production current benchmark protocol and private completion bindings'
     expect(native.kill).toHaveBeenCalledWith('private-native', { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });
     expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
       preregistration: { preregHash: f.frozen.preregHash, gitCommitSha: expect.stringMatching(/^[a-f0-9]{40}$/) },
-      identityStatus: 'unknown', measured: null, terminalReceipt: { taskId: 'private-native' }, retiredTaskIds: ['private-native'],
+      identityStatus: 'unknown', measured: null, protocolIdentity: { status: 'unobserved' },
+      terminalReceipt: { taskId: 'private-native' }, retiredTaskIds: ['private-native'],
     });
   });
   it('rejects an uncommitted protocol before budget reservation or native launch', async () => {
