@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { OperatorSettingsSlotsProvider } from '@papercusp/operator-ui/settings-slots';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 
-const h = vi.hoisted(() => ({ catalogReads: vi.fn(), writeProfile: vi.fn() }));
+const h = vi.hoisted(() => ({ catalogReads: vi.fn(), writeProfile: vi.fn(), savedPromptsMount: vi.fn() }));
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => {
     h.catalogReads();
@@ -20,7 +20,10 @@ vi.mock('@papercusp/operator-core/lib/profile-pref', () => ({
 }));
 vi.mock('nuqs', () => ({ useQueryState: () => useState(null), parseAsString: {} }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
-vi.mock('../../harness/SavedPromptsSection', () => ({ default: () => null }));
+vi.mock('../../harness/SavedPromptsSection', () => ({ default: (props: unknown) => {
+  h.savedPromptsMount(props);
+  return <h2>Native saved prompts</h2>;
+} }));
 vi.mock('./ThemeEditor', () => ({ default: () => null }));
 
 import PersonalizationSettingsPage from './page';
@@ -58,10 +61,29 @@ beforeEach(() => {
   document.getElementById('pc-custom-themes')?.remove();
   h.catalogReads.mockClear();
   h.writeProfile.mockClear();
+  h.savedPromptsMount.mockClear();
 });
 afterEach(cleanup);
 
 describe('Personalization theme ownership', () => {
+  it('keeps the desktop saved-prompt component inert when the host replaces its slot', () => {
+    render(<OperatorSettingsSlotsProvider slots={{
+      theme: <p>Host theme</p>,
+      'saved-prompts': <p>Manage saved prompts in the desktop app.</p>,
+    }}><PersonalizationSettingsPage /></OperatorSettingsSlotsProvider>);
+    expect(screen.getByText('Manage saved prompts in the desktop app.')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Native saved prompts', exact: true })).toBeNull();
+    expect(h.savedPromptsMount).not.toHaveBeenCalled();
+  });
+
+  it('mounts the workspace saved-prompt component when the host supplies no replacement', () => {
+    render(<OperatorSettingsSlotsProvider slots={{ theme: <p>Host theme</p> }}>
+      <PersonalizationSettingsPage />
+    </OperatorSettingsSlotsProvider>);
+    expect(screen.getByRole('heading', { name: 'Native saved prompts', exact: true })).toBeTruthy();
+    expect(h.savedPromptsMount).toHaveBeenCalledWith({ scope: { kind: 'workspace' } });
+  });
+
   it('preserves the host theme on mount, selection and remount without starting the desktop theme writer', async () => {
     window.localStorage.setItem(wsLocalKey(THEME_STORAGE_KEY), 'frost');
     const mounted = render(<HostedPersonalization />);

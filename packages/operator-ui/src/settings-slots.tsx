@@ -21,6 +21,9 @@ export type OperatorSettingsSlotName =
   // Replaces the native picker and its theme-writing hooks. A host theme
   // must have one owner even when the canonical Settings page is mounted.
   | "theme"
+  // Hosted profiles cannot use the desktop's saved-prompt API. A replacement
+  // keeps that component and its fetch effects unmounted.
+  | "saved-prompts"
   | "papercup-agent";
 
 export type OperatorSettingsSlots = Partial<

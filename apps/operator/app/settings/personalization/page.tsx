@@ -349,7 +349,10 @@ export default function PersonalizationSettingsPage() {
       </section>
 
       <section className="pc-settings-section">
-        <SavedPromptsSection scope={{ kind: 'workspace' }} />
+        <OperatorSettingsSlot
+          name="saved-prompts"
+          fallback={<SavedPromptsSection scope={{ kind: 'workspace' }} />}
+        />
       </section>
     </div>
   );
