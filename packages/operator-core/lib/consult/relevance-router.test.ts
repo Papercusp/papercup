@@ -47,6 +47,22 @@ const ids = (s: SelectedResponder[]) => s.map((x) => x.candidate.ownerId);
 const vias = (s: SelectedResponder[]) => s.map((x) => x.via);
 
 describe('problem-specific expertise qualification', () => {
+  it('compares the registered primary action without unrelated operational notes', () => {
+    expect(subjectEvidenceQuery('db:migrate',
+      'Apply a SQL migration file, coordinated. DRY RUN unless confirm:true; drain before applying.'))
+      .toBe('db:migrate\nApply a SQL migration file, coordinated.');
+    expect(subjectEvidenceQuery('gateway:owner_report',
+      'Report inference routing outcomes. Uses the shared SQL ledger for durable history.'))
+      .toBe('gateway:owner_report\nReport inference routing outcomes.');
+    expect(subjectEvidenceQuery('computer:observe',
+      'Read org.example.Widget v2.1 roles and state. Returns activation references.'))
+      .toBe('computer:observe\nRead org.example.Widget v2.1 roles and state.');
+    expect(subjectEvidenceQuery('tools:read', 'x'.repeat(2_000)))
+      .toBe(`tools:read\n${'x'.repeat(1_500)}`);
+    expect(subjectEvidenceQuery('db:migrate', '  ')).toBeNull();
+    expect(subjectEvidenceQuery('src/schema.sql', 'Operational notes.')).toBe('src/schema.sql');
+  });
+
   it('requires measured contract evidence to beat a competing system, rather than trusting a high absolute score', async () => {
     expect(contrastedSubjectScore(0.74, [0.91])).toBeLessThan(0.5);
     expect(contrastedSubjectScore(0.81, [0.65])).toBeGreaterThan(0.5);

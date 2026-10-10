@@ -475,11 +475,14 @@ export function expertiseSubject(question: string): string | null {
   return tool ?? extractPathTokens(question, 1)[0] ?? null;
 }
 
-/** Registered tool descriptions disambiguate generic names such as observe or
- * migrate. A missing contract is unknown, never a bare-name expertise proof. */
+/** Compare the registered primary action, excluding operational notes that can
+ * make an unrelated system look like expertise. Names and dotted versions stay
+ * intact; a sentence boundary needs punctuation followed by a new capitalised
+ * sentence. A missing contract is unknown, never a bare-name expertise proof. */
 export function subjectEvidenceQuery(subject: string, toolDescription?: string | null): string | null {
   if (!subject.includes(':')) return subject;
-  return toolDescription?.trim() ? `${subject}\n${toolDescription.trim().slice(0, 1_500)}` : null;
+  const action = toolDescription?.trim().split(/(?<=[.!?])\s+(?=[A-Z])/u, 1)[0];
+  return action ? `${subject}\n${action.slice(0, 1_500)}` : null;
 }
 
 export const SUBJECT_EVIDENCE_CONTRAST_LIMIT = 3;
