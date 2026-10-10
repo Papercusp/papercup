@@ -551,9 +551,13 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     // its iteration. Both pending and host-parked loop work must survive cleanup.
     for (const summary of ['loop-pending', 'loop-parked']) {
       const loopAwaits = await store.fireAwaitsForKey({ eventKey: key });
-      await store.insertDeliveries({ awaits: loopAwaits, summary, source: 'loop:fixture-routine', payload: { routineId: 'fixture-routine' } });
+      // Distinct source routines avoid the legitimate older-loop supersession.
+      const routineId = 'fixture-' + summary;
+      await store.insertDeliveries({ awaits: loopAwaits, summary, source: 'loop:' + routineId, payload: { routineId } });
     }
     const loopRows = await store.listRecentDeliveries('su-settle', 10);
+    expect(loopRows.find(d => d.summary === 'loop-pending')?.status).toBe('pending');
+    expect(loopRows.find(d => d.summary === 'loop-parked')?.status).toBe('pending');
     await store.markDeliveryParked(loopRows.find(d => d.summary === 'loop-parked')!.id, 'host accepted', 60_000);
 
     // A peer's own standing wake, fired at the same moment — must NEVER be touched by
