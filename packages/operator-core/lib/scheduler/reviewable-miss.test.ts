@@ -17,7 +17,13 @@ describe('reviewableMiss (WI-10004358)', () => {
       pendingAgentReview: 24,
       list: {
         tool: 'work_items:claimable',
-        args: { harness: 'papercusp', spec: 'goal-drain-x', breakdownOnly: true, sampleExcluded: REVIEWABLE_MISS_SAMPLE },
+        args: {
+          harness: 'papercusp',
+          spec: 'goal-drain-x',
+          breakdownOnly: true,
+          sampleExcluded: REVIEWABLE_MISS_SAMPLE,
+          projection: { pick: ['excludedSample.queueControl.agentReview'] },
+        },
         idsAt: 'excludedSample.queueControl.agentReview[].id',
       },
       claim: {
@@ -29,13 +35,18 @@ describe('reviewableMiss (WI-10004358)', () => {
       grade: { tool: 'blender:grade-idea', ideaIdFrom: 'ledgerIdeaId' },
     });
     expect(r!.route.claim.idFrom).toBe(r!.route.list.idsAt);
+    expect(r!.route.list.args.projection).toEqual({ pick: ['excludedSample.queueControl.agentReview'] });
     expect(r!.advice).toContain("work_items:claimable { harness:'papercusp', spec:'goal-drain-x', breakdownOnly:true");
     expect(r!.advice).toContain("improvements:agent-review { mode:'claim', id:<listed id>, harness:'papercusp' }");
   });
 
   it('omits absent scope keys instead of emitting empty strings', () => {
     const r = reviewableMiss({ pendingAgentReview: 1 }, { harness: '  ', spec: null });
-    expect(r!.route.list.args).toEqual({ breakdownOnly: true, sampleExcluded: REVIEWABLE_MISS_SAMPLE });
+    expect(r!.route.list.args).toEqual({
+      breakdownOnly: true,
+      sampleExcluded: REVIEWABLE_MISS_SAMPLE,
+      projection: { pick: ['excludedSample.queueControl.agentReview'] },
+    });
     expect(r!.route.claim).toEqual({
       tool: 'improvements:agent-review',
       mode: 'claim',

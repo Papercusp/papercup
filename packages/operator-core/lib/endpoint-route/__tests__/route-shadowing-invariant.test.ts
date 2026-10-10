@@ -14,13 +14,17 @@
  * a literal route it would shadow. It fails if anyone removes the
  * specificity sort or adds a colliding route the sort can't separate.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 // A route can load before the registry in a shared fork. Exercise that entry
 // order: the plugin catch-all imports the 405 resolver, which reads the registry.
 import pluginCatchall from '../routes/plugins/catchall';
 import { ALL_ROUTES } from '../routes';
 import { routeRegistrationOrder, registerAllRoutes } from '../register';
+
+// The route stack records PostgreSQL telemetry in its finally block. This
+// invariant test exercises real route responses but must not open a real DB write.
+vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 /** Path → segment list (basePath-relative). */
 function segs(p: string): string[] {
