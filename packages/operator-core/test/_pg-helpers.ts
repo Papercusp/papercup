@@ -553,6 +553,8 @@ export const EVENT_SUBSTRATE_MIGRATIONS = [
   '953-event-announcement-logical-gate.sql',
   '1216-event-await-fired-delivery-intent-marker.sql',
   '1250-predicate-watch-evaluator-baselines.sql',
+  // WI-10008157 (P-006 / D-004): additive turn_proof / pickup columns on event_wake_deliveries.
+  '1441-wake-delivery-turn-proof.sql',
 ] as const;
 
 /** PURE — merge migration lists into apply order (number, then file name), deduplicated. */
