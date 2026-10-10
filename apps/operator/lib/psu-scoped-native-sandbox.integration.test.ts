@@ -154,8 +154,10 @@ it('delivers restored frozen context to installed Codex through the real managed
       model: 'gpt-6-sol:medium', promptText: `${roleMarker}\n${restored.contextText}`, headless: true, trustDir: cwd, denyAmbientContext: true });
     expect(home.codexHome).toBe(codexHome);
     probe = new Client({ name: 'native-fixture-preflight', version: '1' });
-    await probe.connect(new StreamableHTTPClientTransport(new URL(`${baseURL}/mcp`)));
-    expect((await probe.listTools()).tools.map(tool => tool.name)).toEqual(['capability_read']);
+    await probe.connect(new StreamableHTTPClientTransport(new URL(`${baseURL}/mcp`)),
+      { timeout: 5_000, signal: AbortSignal.timeout(5_000) });
+    expect((await probe.listTools(undefined, { timeout: 5_000, signal: AbortSignal.timeout(5_000) }))
+      .tools.map(tool => tool.name)).toEqual(['capability_read']);
     await probe.close(); probe = undefined;
     // The child must read the exact delivered AGENTS file and restored bytes.
     // Keep fixture-only provider and tool choices in CLI overrides, so a
