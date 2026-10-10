@@ -8,9 +8,19 @@ available unchanged from git commit `55230955c6e0083703b8bf3de664f2f5342a69c3`
 at `docs/evidence/pui-public-rubric16-repro-f2d9.json`. A byte-identical copy was
 saved and read back through `artifacts:load` with `slug:"papercusp"` and
 `rel_path:"evidence/pui-public-rubric16-plan147/raw-5041674afe02a088ef7eb562d8219d39d6409aa9c129e2252194d61277952b7f.json"`.
-The original reviewed bytes have not been recovered. The historical commands
-below deliberately retain their original checksum guard and therefore refuse
-the different retained edition. This document does not attest that edition.
+The original reviewed bytes were recovered on 2026-10-10 from the retained
+creation inputs and the exact textual bootstrap patch. Native session
+`codex:01a122f0-2996-71c0-8940-31ffda5328d5`, tool parts 77/78 and 110/111,
+records both the initial `b9a9a23f67d8d07036e4edb60c9c318e2be698b5807dfc69cf2ab58cf4d88657`
+and final reviewed `1737bde672cbdcc87fe01be3d45596cf95f829c9cdfc0903fff1a961d4e1838e`
+checksums. Replaying the creation and the patch's exact formatting matched both.
+The 133,792 original UTF-8 bytes were saved privately through `artifacts:save`
+and verified after `artifacts:load`, with an independent hash of the canonical
+stored content. Retrieve them with `artifacts:load { slug:"papercusp",
+rel_path:"evidence/pui-public-rubric16-plan147/raw-1737bde672cbdcc87fe01be3d45596cf95f829c9cdfc0903fff1a961d4e1838e.json" }`.
+The historical commands below retain their original checksum guard; use those
+archived original bytes as their input. This document does not attest the
+different tracked edition.
 Use [the independently reviewed plan-150 snapshot](pui-public-rubric16-repro-plan150.md)
 for current rubric evidence; neither edition supplies installed-product proof
 or final-candidate approval.
