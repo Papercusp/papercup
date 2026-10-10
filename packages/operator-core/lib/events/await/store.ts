@@ -22,6 +22,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { normalizeEventKey } from './announce-key';
 import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
+import { turnProofColumnsReady } from './turn-proof-schema';
 import {
   type TurnProof,
   initialTurnProof,
@@ -2418,6 +2419,16 @@ export async function markDeliveryDelivered(
   attested?: 'host-attested',
 ): Promise<void> {
   const { sql } = getOrgPg();
+  if (!(await turnProofColumnsReady())) {
+    // Migration 1441 not applied yet: book the channel only (turn-proof-schema.ts).
+    await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivered', channel = ${channel}, delivered_at = now(), last_error = NULL,
+             coalesced_count = ${coalescedCount}
+       WHERE id = ${id}
+    `;
+    return;
+  }
   // P-006/D-004: status='delivered' says only that the delivery reached its channel. The turn is
   // booked separately — attested now, superseded, or awaiting the pump's pickup sweep.
   const proof = initialTurnProof(channel, attested);
@@ -2441,6 +2452,15 @@ export async function markDeliveryDelivered(
 export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: number): Promise<void> {
   if (ids.length === 0) return;
   const { sql } = getOrgPg();
+  if (!(await turnProofColumnsReady())) {
+    await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
+             last_error = ${`coalesced into wake #${intoDeliveryId}`}
+       WHERE id = ANY(${ids})
+    `;
+    return;
+  }
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
@@ -2461,6 +2481,8 @@ export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: num
  * `tool_invocations_coord_owner_idx`. Returns how many rows were resolved.
  */
 export async function observeAwaitingTurnProofs(limit = 500): Promise<number> {
+  // Pre-1441 schema: nothing can be `awaiting` (turn-proof-schema.ts).
+  if (!(await turnProofColumnsReady())) return 0;
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const excludedAgentTools = [...TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS];
@@ -2517,6 +2539,7 @@ export interface ExpiredPickupRow {
 
 /** The expired `awaiting` rows, oldest deadline first. Read-only; settlement re-checks the proof. */
 export async function listExpiredPickups(limit = 200): Promise<ExpiredPickupRow[]> {
+  if (!(await turnProofColumnsReady())) return [];
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql<
@@ -2570,6 +2593,7 @@ export async function settleExpiredPickup(input: {
   turnStartedAtMs?: number | null;
   escalate?: boolean;
 }): Promise<SettleExpiredPickupResult> {
+  if (!(await turnProofColumnsReady())) return { settled: false, requeuedDeliveryId: null };
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const escalate = input.proof === 'not-picked-up' && input.escalate === true;
@@ -2904,11 +2928,20 @@ export type AckDeliveryResult = {
 export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<AckDeliveryResult> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  const rows = await sql`
+  const rows = (await turnProofColumnsReady())
+    ? await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
            -- The subscriber acked it from inside a running turn (P-006/D-004).
            turn_proof = 'observed', turn_started_at = now(),
+           last_error = 'acked by subscriber while awake'
+     WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
+       AND status IN ('pending', 'parked')
+     RETURNING id
+  `
+    : await sql`
+    UPDATE harness_shared.event_wake_deliveries
+       SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
            last_error = 'acked by subscriber while awake'
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
        AND status IN ('pending', 'parked')
@@ -2965,10 +2998,11 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const key = `${INBOX_WAKE_KEY_PREFIX}${input.subscriberId}`;
+  const proof = (await turnProofColumnsReady()) ? sql`turn_proof = 'superseded',` : sql``;
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
-           turn_proof = 'superseded',
+           ${proof}
            last_error = 'caught up at turn-end cursor settle — already seen in a bulk coord:inbox read (EI-9389)'
      WHERE workspace_id = ${ws} AND subscriber_id = ${input.subscriberId}
        AND event_key = ${key}
@@ -3136,14 +3170,17 @@ export async function wakeMeter(
 }>> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const hasProof = await turnProofColumnsReady();
+  const proofCol = hasProof ? sql`turn_proof` : sql`NULL::text`;
+  const proofGroup = hasProof ? sql`, turn_proof` : sql``;
   const rows = await sql`
-    SELECT subscriber_id, status, channel, turn_proof,
+    SELECT subscriber_id, status, channel, ${proofCol} AS turn_proof,
            COALESCE(channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]}), false) AS turn_invoked,
            count(*)::int AS count
       FROM harness_shared.event_wake_deliveries
      WHERE workspace_id = ${ws}
        AND created_at > now() - make_interval(hours => ${input.sinceHours ?? 24})
-     GROUP BY subscriber_id, status, channel, turn_proof
+     GROUP BY subscriber_id, status, channel${proofGroup}
      ORDER BY count DESC
      LIMIT 50
   `;
