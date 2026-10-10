@@ -16,6 +16,8 @@ it('reply and decline acknowledge persisted posts before the private production 
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/consult/cascade-core.ts', 'packages/operator-core/lib/consult/consult-dispatch.ts',
       'packages/operator-core/lib/consult/consult-verbs-core.ts',
+      'packages/operator-core/lib/consult/relevance-router.ts', 'libs/generic/memory/src/sidecar-embedder.ts',
+      'packages/operator-core/lib/consult/get-feedback-prod.ts', 'packages/operator-core/lib/endpoint-route/telemetry.ts',
       'packages/operator-core/lib/agent-tools/consult/reply.ts', 'packages/operator-core/lib/agent-tools/consult/decline.ts',
       'packages/operator-core/lib/agent-tools/index.ts', 'packages/operator-core/lib/agent-tools/agent_tools/list.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts',
@@ -53,6 +55,12 @@ it('reply and decline acknowledge persisted posts before the private production 
       expect(receipt.requests.map((request: any) => [request.kind, request.pending, request.leaseWaitObserved,
         request.persistedPosts, request.afterRelease])).toEqual([
         ['reply', true, true, 1, 'no-launch-refusal'], ['decline', true, true, 1, 'no-launch-refusal'],
+      ]);
+      expect(receipt.diagnosticRequests).toEqual([
+        expect.objectContaining({ control: 'healthy', embeddingOutcome: 'returned', embeddingErrorCode: null,
+          telemetryMatches: true }),
+        expect.objectContaining({ control: 'timeout', embeddingOutcome: 'threw', embeddingErrorCode: 'ABORT_ERR',
+          telemetryMatches: true }),
       ]);
       console.info('CONSULT_CASCADE_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
