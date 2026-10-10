@@ -70,33 +70,41 @@ it('enforces the scoped boundary through the actual launcher and final managed P
 }, 30_000);
 
 it('delivers restored frozen context to installed Codex through the real managed launcher and file-read handler', async () => {
-  const cwd = mkdtempSync('/tmp/psu-native-frozen-context-');
+  const fixtureRoot = mkdtempSync('/tmp/psu-native-frozen-context-');
+  const cwd = join(fixtureRoot, 'checkout');
   const codexHome = join(cwd, 'codex-home');
   const frozenMarker = `FROZEN_CONTEXT_${randomUUID()}`;
   const roleMarker = `FROZEN_ROLE_${randomUUID()}`;
   const ambientMarker = `AMBIENT_OUTSIDE_${randomUUID()}`;
   const owner = `test-scoped-frozen-${randomUUID()}`;
-  homeAllocation.key = owner; homeAllocation.path = codexHome;
   const providerCalls: Record<string, unknown>[] = [], reads: unknown[] = [], errors: unknown[] = [];
+  const requestPaths: string[] = [];
   const hosts: McpServer[] = [];
   let child: ReturnType<typeof spawn> | undefined;
+  let server: Server | undefined;
+  try {
+  mkdirSync(cwd);
+  homeAllocation.key = owner; homeAllocation.path = codexHome;
   const { writeSuCodexHome } = await import('../../../packages/operator-core/lib/role-codex-home');
   const { restoreBenchmarkContext } = await import('../../../packages/operator-core/lib/external-bench/reproducibility/context');
   const { currentProtocolFixture } = await import('../../../packages/operator-core/lib/external-bench/reproducibility/_protocol-test-fixture');
+  const { currentBenchAssignmentId } = await import('../../../packages/operator-core/lib/external-bench/current-su');
   const { codexCliResponsesBody, codexCliResponsesCompletionSse } = await import('../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge');
   const sourceRead = (await import('../../../packages/operator-core/lib/agent-tools/capability/read')).default;
-  const snapshotRoot = join(cwd, 'protocol'); mkdirSync(snapshotRoot);
+  const snapshotRoot = join(fixtureRoot, 'protocol'); mkdirSync(snapshotRoot);
   const snapshot = JSON.stringify({ entries: [{ key: 'permitted:fixture', text: frozenMarker }] });
   for (const name of ['corpus.json', 'memory.json']) writeFileSync(join(snapshotRoot, name), snapshot);
   const config = currentProtocolFixture(owner);
   config.context = { ...config.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
     corpusHash: createHash('sha256').update(snapshot).digest('hex'), memoryHash: createHash('sha256').update(snapshot).digest('hex') };
   const restored = restoreBenchmarkContext({ snapshotRoot, checkout: cwd, context: config.context,
-    binding: { workspaceId: 'native-frozen-private', runId: owner, preregHash: 'a'.repeat(64), assignmentId: 'fixture-task', harnessSlug: 'fixture' } });
+    binding: { workspaceId: 'native-frozen-private', runId: owner, preregHash: 'a'.repeat(64),
+      assignmentId: currentBenchAssignmentId(owner, config.arms[0].id, config.taskIds[0], config.seeds[0]), harnessSlug: 'fixture' } });
   // This server scripts the native protocol only. It is never a provider bill,
   // task-quality measurement, maintained work-item workflow or pilot result.
-  const server = createServer(async (req, res) => {
+  server = createServer(async (req, res) => {
     try {
+      requestPaths.push(`${req.method} ${req.url}`);
       if (req.url?.startsWith('/mcp')) {
         const host = new McpServer({ name: 'frozen-source-fixture', version: '1' }); hosts.push(host);
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -108,6 +116,11 @@ it('delivers restored frozen context to installed Codex through the real managed
           };
         });
         await host.connect(transport); await transport.handleRequest(req, res); return;
+      }
+      // The real launcher also posts operator lifecycle events. They are
+      // distinct from Responses generation and must never advance its script.
+      if (req.method !== 'POST' || req.url !== '/v1/responses') {
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); return;
       }
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -128,7 +141,6 @@ it('delivers restored frozen context to installed Codex through the real managed
       }
     } catch (error) { errors.push(String(error)); if (!res.headersSent) res.writeHead(500); res.end(); }
   });
-  try {
     const port = await listen(server);
     const baseURL = `http://127.0.0.1:${port}`;
     const home = writeSuCodexHome({ sessionKey: owner, sid: owner, mcpUrl: `${baseURL}/mcp`, token: 'offline-fixture',
@@ -145,7 +157,7 @@ it('delivers restored frozen context to installed Codex through the real managed
       'model_providers.frozen_fixture.supports_websockets': false,
       'model_providers.frozen_fixture.request_max_retries': 0,
       'model_providers.frozen_fixture.stream_max_retries': 0,
-      'features.apps': false, 'features.shell_tool': false, 'features.codex_hooks': false, web_search: 'disabled' };
+      'features.apps': false, 'features.shell_tool': false, 'features.hooks': false, web_search: 'disabled' };
     const args = ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
       ...Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]), 'Read the frozen assignment context.'];
     const env = hermeticEnv({ PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome, PAPERCUSP_SID: owner,
@@ -164,7 +176,11 @@ it('delivers restored frozen context to installed Codex through the real managed
       child!.once('error', e => { clearTimeout(timer); reject(e); });
       child!.once('close', c => { clearTimeout(timer); resolve(c); });
     });
-    expect(code, output).toBe(0); expect(errors).toEqual([]);
+    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, requestPaths,
+      providerRequestKeys: providerCalls.map(request => Object.keys(request)),
+      toolShapes: (providerCalls[0]?.tools as Array<Record<string, unknown>> | undefined)?.map(tool =>
+        ({ type: tool.type, name: tool.name, keys: Object.keys(tool) })) });
+    expect(code, diagnostics).toBe(0); expect(errors, diagnostics).toEqual([]);
     expect(providerCalls).toHaveLength(2); expect(reads).toHaveLength(1);
     expect(reads[0]).toEqual({ file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) });
     expect(JSON.stringify(providerCalls[0])).toContain(roleMarker);
@@ -174,9 +190,12 @@ it('delivers restored frozen context to installed Codex through the real managed
     expect(output).toContain('FROZEN_NATIVE_RECEIPT');
   } finally {
     if (child && child.exitCode === null) child.kill('SIGKILL');
-    await Promise.all(hosts.map(host => host.close()));
-    if (server.listening) await stop(server);
-    rmSync(cwd, { recursive: true, force: true }); homeAllocation.key = ''; homeAllocation.path = '';
+    try {
+      await Promise.allSettled(hosts.map(host => host.close()));
+      if (server?.listening) await stop(server);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true }); homeAllocation.key = ''; homeAllocation.path = '';
+    }
   }
 }, 60_000);
 
