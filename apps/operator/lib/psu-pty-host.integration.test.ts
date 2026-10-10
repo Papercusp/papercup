@@ -632,7 +632,13 @@ describe('plain launch kickoff turn-start proof', () => {
       "const appendNative=fs.appendFileSync;let padded=false;fs.appendFileSync=(file,data,...args)=>{if(!padded&&file===process.env.NATIVE_FILE&&String(data).includes('task_started')){padded=true;appendNative(file,JSON.stringify({type:'system',payload:{text:'x'.repeat(300*1024)}})+'\\n');}return appendNative(file,data,...args);};",
       "let input='',pending='',submitted=0,echoed=false;process.stdout.write('62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;pending+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}",
-      "if(d.includes('\\r')){if(pending.includes('BEGIN_DELAYED_KICKOFF')){submitted++;fs.appendFileSync(process.env.COUNT_FILE,submitted+'\\n');if(submitted===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}})+'\\n');const tick=setInterval(()=>process.stdout.write('MODEL_BUSY\\n'),10);setTimeout(()=>{clearInterval(tick);fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'delayed-1'}})+'\\n');process.stdout.write('MODEL_STARTED\\n');},1500);}else process.stdout.write('DUPLICATE_KICKOFF\\n');}else process.stdout.write('RESUBMIT_ACK\\n');pending='';}",
+      "if(d.includes('\\r')){if(pending.includes('BEGIN_DELAYED_KICKOFF')){submitted++;fs.appendFileSync(process.env.COUNT_FILE,submitted+'\\n');if(submitted===1){",
+      "fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}})+'\\n');",
+      "const tick=setInterval(()=>process.stdout.write('MODEL_BUSY\\n'),10);",
+      // Keep the TUI busy after task_started is persisted. The retry must notice
+      // the native start and abort from inside the busy gate without writing.
+      "const startWhenRetryQueued=setInterval(()=>{if(!fs.existsSync(process.env.EVENT_LOG_FILE)||!fs.readFileSync(process.env.EVENT_LOG_FILE,'utf8').includes('launch-kickoff-model-turn-absent'))return;clearInterval(startWhenRetryQueued);fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'delayed-1'}})+'\\n');process.stdout.write('MODEL_STARTED\\n');setTimeout(()=>clearInterval(tick),250);},10);",
+      "}else process.stdout.write('DUPLICATE_KICKOFF\\n');}else process.stdout.write('RESUBMIT_ACK\\n');pending='';}",
       "if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),8000);',
     ].join('');
@@ -643,6 +649,7 @@ describe('plain launch kickoff turn-start proof', () => {
         env: {
           ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, COUNT_FILE: countFile,
+          EVENT_LOG_FILE: eventLogPathForOwner(ownerId),
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',

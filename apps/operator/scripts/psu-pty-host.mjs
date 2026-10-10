@@ -4432,8 +4432,11 @@ export function makeAgentBusyGate({
      *    agent's native turn genuinely completed (see the `verifiedBoundary?.()`
      *    call below). The bare `= null` default alone made gen:declarations infer
      *    the LITERAL type `null`, which rejected every real caller — including
-     *    this file's own at the codex carry and verified-boundary sites. */
-    async waitAtPrompt(overrideCapMs, verifiedBoundary = null) {
+     *    this file's own at the codex carry and verified-boundary sites.
+     *  @param {(() => boolean) | null} [abortBoundary] predicate that makes an
+     *    in-flight inject obsolete. It exits the wait without claiming the
+     *    prompt is safe; the caller must return without writing. */
+    async waitAtPrompt(overrideCapMs, verifiedBoundary = null, abortBoundary = null) {
       const effectiveCapMs = overrideCapMs ?? capMs;
       const deadline = now() + effectiveCapMs;
       // EI-19480099650947832: track the LONGEST quiet window actually observed,
@@ -4449,6 +4452,13 @@ export function makeAgentBusyGate({
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        // A retry that became obsolete because its original native turn started
+        // must be canceled even while that turn is still busy. This predicate
+        // never declares the prompt safe; its caller returns without writing.
+        let shouldAbort = false;
+        try { shouldAbort = abortBoundary?.() === true; } catch { /* fail closed: keep waiting */ }
+        if (shouldAbort) return { deferred: false, boundary: 'abort-before-write' };
+
         const nativeBusy = nativeExecutionBlocksInjection(nativeExecution());
         if (!nativeBusy && verifiedBoundary?.()) {
           await new Promise((resolve) => setImmediate(resolve));
@@ -6480,6 +6490,39 @@ export function managedCodexStartupUpdateDialogEnabled(env = process.env) {
   return String(env?.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex';
 }
 
+/** WI-10008156: the root-level `-c` override that stops Codex rendering its
+ * optional startup update menu in a managed child at all. Measured 2026-10-10:
+ * 79 of the 81 homes behind a stuck `Starting` snapshot lacked
+ * `check_for_update_on_startup = false` in config.toml. Homes created before
+ * the role-codex-home fix are patched in place on resume and never rebuilt.
+ * An argv override reaches every child this host spawns (launch, resume, each
+ * respawn), whatever state the home's config is in. The Escape dismissal
+ * stays as the backstop. */
+export const CODEX_STARTUP_UPDATE_CHECK_OVERRIDE = 'check_for_update_on_startup=false';
+
+/** Prepend CODEX_STARTUP_UPDATE_CHECK_OVERRIDE to a managed Codex child's argv.
+ * Pure. Applies only when the agent is Codex AND the command is the Codex
+ * binary itself (the bin test of the launcher's codexManagedDaemonArgs), so a
+ * wrapper or another program run under PAPERCUSP_AGENT=codex never receives a
+ * foreign `-c`. Argv that already sets the key is returned unchanged, so an
+ * explicit caller choice always wins.
+ * @param {{command: string, args: readonly string[], env?: EnvironmentMap}} target
+ * @returns {string[]}
+ */
+export function withManagedCodexStartupConfig({ command, args, env = process.env }) {
+  const list = Array.isArray(args) ? [...args] : [];
+  if (!managedCodexStartupUpdateDialogEnabled(env)) return list;
+  if (!/(^|[\\/])codex(?:\.exe|\.cmd)?$/.test(String(command ?? ''))) return list;
+  for (let i = 0; i < list.length; i++) {
+    const arg = String(list[i] ?? '');
+    const assignment = arg === '-c' || arg === '--config'
+      ? String(list[i + 1] ?? '')
+      : arg.startsWith('--config=') ? arg.slice('--config='.length) : null;
+    if (assignment !== null && /^\s*check_for_update_on_startup\s*=/.test(assignment)) return list;
+  }
+  return ['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE, ...list];
+}
+
 /** Watch the current VT screen for Codex's exact optional update menu. Reading
  * the rendered screen avoids matching old transcript/scrollback text. The
  * caller owns the child-identity check and sends the returned Escape once. */
@@ -6518,7 +6561,13 @@ export function makeManagedCodexStartupUpdateDialogStateMachine({
       observed = `${observed}${String(chunk ?? '')}`.slice(-CODEX_STARTUP_UPDATE_DIALOG_BUFFER_CHARS);
       const rows = visibleRows().map(normalizeRow);
       const heading = rows.findIndex((row) => row.startsWith('update available'));
-      const rowIndex = (label) => rows.findIndex((row, index) => index > heading && row === label);
+      // WI-10008156: Codex 0.162.x renders the first choice as
+      // `Update now (runs \`npm install -g @openai/codex\`)`. An exact-equality
+      // match never fired on it (496 of 496 stuck snapshots since 2026-10-07).
+      // Accept a parenthetical suffix, but keep labels exact otherwise so that
+      // `skip` never matches `skip until next version`.
+      const isChoice = (row, label) => row === label || row.startsWith(`${label} (`);
+      const rowIndex = (label) => rows.findIndex((row, index) => index > heading && isChoice(row, label));
       const updateNow = rowIndex('update now');
       const skip = rowIndex('skip');
       const skipUntilNextVersion = rowIndex('skip until next version');
@@ -9491,7 +9540,12 @@ export function hostThroughPty(o) {
     rows: sanePtyDim(stdout.rows, 24, 500),
   });
   const spawnChild = (spawnArgs = args) => {
-    const target = resolveAgentPtyTarget({ command, args: spawnArgs, env, cwd });
+    // WI-10008156: every managed Codex child skips the startup update check.
+    // liveChildArgs below keeps the caller's argv, so park/recycle mints never
+    // see (or duplicate) this host-owned override.
+    const target = resolveAgentPtyTarget({
+      command, args: withManagedCodexStartupConfig({ command, args: spawnArgs, env }), env, cwd,
+    });
     prepareCodexSqliteHome({ env: target.env, cwd, args: target.args });
     const ptyOptions = {
       name: ptyName,
@@ -10599,11 +10653,16 @@ export function hostThroughPty(o) {
                 claudeKickoffReadiness === 'composer-unseen-ordinary-gate'
                   ? Math.max(0, deadline - Date.now())
                   : undefined,
+                null,
+                abortBeforeWrite,
               );
         if (claudeKickoffReadiness === 'wait-for-composer') {
           dropReason = 'headless-claude-composer-not-ready';
         }
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+        if (atPrompt.boundary === 'abort-before-write') {
+          return { delivered: false, reason: 'first-turn-started', attempts };
+        }
         if (!atPrompt.deferred) {
           // The menu can be painted while the ordinary quiet gate is settling.
           // Re-check immediately before the first byte so a stale quiet reading

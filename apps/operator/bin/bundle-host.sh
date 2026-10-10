@@ -325,7 +325,7 @@ GATE_PENDING=0
 FALLBACK_RC=1
 restricted_hold_gate() { # 0 = admitted · 1 = refused (the snapshot was restored)
   GATE_PENDING=0
-  local -a args=(gate --root "$REPO_ROOT" --base-dir "$PWD" --outdir "$OUTDIR" --snapshot-dir "$GATE_SNAPSHOT_DIR"
+  local -a args=(gate --root "$REPO_ROOT" --base-dir "$REPO_ROOT" --outdir "$OUTDIR" --snapshot-dir "$GATE_SNAPSHOT_DIR"
     --metafile "$BUNDLE_HOST_GATE_META_DIR/${OUTFILE##*/}.meta.json" --metafile-dir "$BUNDLE_HOST_GATE_META_DIR"
     --path "${PAPERCUSP_HARNESS_BLUEPRINTS_DIR:-../../libs/papercusp/packages/harness/blueprints}"
     --path "${PAPERCUSP_LOCKS_SQL_DIR:-../../libs/papercusp/packages/locks/src/sql}")
@@ -509,7 +509,7 @@ bundle_rc=0
   # tested compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
   # publishing the rejected bundle and returning success. Fail explicitly before the atomic swap.
   if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \
-    --metafile "$METAFILE" --base-dir "$OPERATOR_DIR"; then
+    --metafile "$METAFILE" --base-dir "$REPO_ROOT"; then
     exit 1
   fi
   # EI-25217214806027261: this bundler reads the LIVE shared tree, so a peer mid-edit can leave
@@ -518,7 +518,7 @@ bundle_rc=0
   # every repo-owned input changed since the last-known-good $OUTFILE (still in place here — the
   # atomic mv is below) for value references that reach global scope unbound. Findings keep LKG.
   if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundle-free-refs.mjs" \
-    --metafile "$METAFILE" --base-dir "$OPERATOR_DIR" --since "$OUTFILE" \
+    --metafile "$METAFILE" --base-dir "$REPO_ROOT" --since "$OUTFILE" \
     "${HOST_BANNER_DEFINES[@]}" --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
     "${BUNDLED_SOURCE_SHA_DEFINE[@]}"; then
     exit 1

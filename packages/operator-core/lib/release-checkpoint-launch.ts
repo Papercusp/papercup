@@ -34,7 +34,7 @@ import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
 import { restrictedTreeHoldRefusal, type RestrictedHoldRefusal } from './agent-tools/testing/restricted-hold-fence';
 import { CHECKPOINT_RUN_LOCK_STALE_MS } from './release-checkpoint-lock';
-import { greenCheckpointDbPoolSetenvArgs } from './release/checkpoint-db-pool';
+import { greenCheckpointDbPoolSetenvArgs, greenCheckpointDbTargetSetenvArgs } from './release/checkpoint-db-pool';
 import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './release/checkpoint-log-tags';
 import {
   GREEN_CHECKPOINT_SIGKILL_GRACE_MS,
@@ -2020,6 +2020,10 @@ export function buildCheckpointSystemdArgv(
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
     ...greenCheckpointDbPoolSetenvArgs(),
+    // WI-10006055: the detached unit does not inherit the launcher's DSN, so without this the
+    // gate resolves the discovery file (another install's DB on this host) and cannot see its
+    // own frozen repair queue. See greenCheckpointDbTargetEnv.
+    ...greenCheckpointDbTargetSetenvArgs(),
     `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
     ...routedEnv,
     ...verdictEnv,

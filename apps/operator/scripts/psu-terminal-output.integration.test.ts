@@ -68,5 +68,8 @@ describe.skipIf(process.platform === 'win32')('real terminal output congestion',
     expect(observed.asynchronous.inputWhileBlocked).toBe(true);
     expect(observed.asynchronous.ticksWhileBlocked).toBeGreaterThan(2);
     expect(observed.asynchronous.drained).toBe(2 * 1024 * 1024);
+    console.info('CUSTOMER_TERMINAL_STRESS_JSON=' + JSON.stringify({
+      kind: 'pty-stalled-reader', burstBytes: 2 * 1024 * 1024, observed,
+    }));
   }, 20_000);
 });

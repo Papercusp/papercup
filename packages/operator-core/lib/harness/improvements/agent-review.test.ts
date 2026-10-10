@@ -19,6 +19,7 @@ import {
   STRANDED_SWEEP_OWNER,
 } from './agent-review-policy';
 import {
+  adoptAgentReviewRevision,
   approvalAcceptance,
   claimAgentReview,
   enterAgentReview,
@@ -98,8 +99,11 @@ function harness(initial: WorkItem = issue()) {
     state.issue = { ...state.issue, assignee: null };
     return cloneIssue(state.issue);
   });
-  const claimWorkItem = vi.fn(async (_id: string, assignee: string, opts: { fromHolder?: string } = {}) => {
-    if (state.issue.assignee && state.issue.assignee !== assignee && state.issue.assignee !== opts.fromHolder) return null;
+  const claimWorkItem = vi.fn(async (_id: string, assignee: string, opts: { fromHolder?: string; expectedAssignee?: string } = {}) => {
+    if (
+      state.issue.assignee && state.issue.assignee !== assignee &&
+      state.issue.assignee !== opts.fromHolder && state.issue.assignee !== opts.expectedAssignee
+    ) return null;
     state.issue = { ...state.issue, assignee };
     return cloneIssue(state.issue);
   });
@@ -1664,5 +1668,167 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     });
     expect(h.deps.resolveVerifiedSubmitterAlias).toHaveBeenCalledWith(expectedSubmitter);
     expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+  });
+});
+
+describe('adoptAgentReviewRevision — discover and adopt a content revision under the orphan proof (bug-queue-legitimacy D-008)', () => {
+  function contentRevision(overrides: Partial<WorkItem> = {}, review: Record<string, unknown> = {}): WorkItem {
+    return issue({
+      kind: 'bug',
+      assignee: null,
+      payload: {
+        agentReview: {
+          status: 'revision-requested',
+          submittedBy: 'su-gone',
+          ledgerIdeaId: 'WI-7',
+          round: 2,
+          revisionKind: 'content',
+          ...review,
+        },
+      },
+      ...overrides,
+    });
+  }
+  function adopt(h: ReturnType<typeof harness>, adopter = 'su-adopter') {
+    return adoptAgentReviewRevision({ id: 'WI-7', adopter, harnessSlug: 'papercusp' }, h.deps);
+  }
+  function expectUntouched(h: ReturnType<typeof harness>) {
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(h.state.issue.payload).not.toHaveProperty('agentReviewAdoption');
+  }
+
+  it('adopts a proven orphan: claims it, rebinds the revision, records the proof, and briefs the adopter', async () => {
+    const h = harness(contentRevision());
+    h.state.submitterLiveness = { sessionState: 'ended' };
+
+    const result = await adopt(h);
+
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: false });
+    expect(result).toMatchObject({
+      adopted: true,
+      state: { status: 'revision-requested', submittedBy: 'su-adopter', round: 2, revisionKind: 'content' },
+      brief: { lane: 'revision-adoption', round: 2, previousSubmitter: 'su-gone' },
+    });
+    expect(h.state.issue.assignee).toBe('su-adopter');
+    expect(h.state.issue.payload).toMatchObject({
+      agentReviewAdoption: { from: 'su-gone', effectiveSubmitter: 'su-gone', sessionState: 'ended', round: 2, adoptedBy: 'su-adopter' },
+    });
+    expect(h.state.posts.some((post) => post.body.includes('adopted by su-adopter'))).toBe(true);
+
+    // The adopter IS the submitter now: the ordinary resubmit path applies, with no second proof.
+    h.resolveSubmitterLiveness.mockClear();
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-adopter' }, h.deps)).resolves.toMatchObject({
+      resubmitted: true,
+      state: { status: 'pending', submittedBy: 'su-adopter', round: 3 },
+    });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+  });
+
+  it('refuses a live original submitter however old or well-graded the row is', async () => {
+    const h = harness(contentRevision({ createdAt: '2025-01-01T00:00:00.000Z' }, { grade: 5 }));
+    h.state.submitterLiveness = { sessionState: 'live' };
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason: 'not-submitter' });
+    expectUntouched(h);
+  });
+
+  it.each(REBIND_BLOCKING_SESSION_STATES)('refuses a submitter whose session is %s', async (sessionState) => {
+    const h = harness(contentRevision());
+    h.state.submitterLiveness = { sessionState };
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason: 'not-submitter' });
+    expectUntouched(h);
+  });
+
+  it('fails closed when the submitter liveness is unmeasured', async () => {
+    const h = harness(contentRevision());
+    h.state.submitterLiveness = null;
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason: 'not-submitter:liveness-unknown' });
+    expectUntouched(h);
+  });
+
+  it('never presumes an unrecoverable synthetic submitter dead', async () => {
+    const h = harness(contentRevision({}, { submittedBy: STRANDED_SWEEP_OWNER }));
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason: 'not-submitter:authority-unknown' });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+    expectUntouched(h);
+  });
+
+  it.each([
+    ['ended', { adopted: true }],
+    ['live', { adopted: false, reason: 'not-submitter' }],
+  ] as const)('measures the RECOVERED reporter of a sweep row (reporter %s)', async (sessionState, expected) => {
+    const h = harness(issue({
+      kind: 'bug',
+      assignee: null,
+      createdBy: 'su-reporter',
+      payload: {
+        _ei: { created_by: 'su-reporter' },
+        strandedToolFailureSweep: { owner: STRANDED_SWEEP_OWNER, at: '2026-10-01T10:00:00.000Z', outcome: 'review' },
+        agentReview: { status: 'revision-requested', submittedBy: STRANDED_SWEEP_OWNER, ledgerIdeaId: 'WI-7', round: 1, revisionKind: 'content' },
+      },
+    }));
+    h.state.submitterLiveness = { sessionState };
+    await expect(adopt(h)).resolves.toMatchObject(expected);
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-reporter', { claimsHeld: false });
+  });
+
+  it('refuses a row a third party holds — adoption is never a claim-steal', async () => {
+    const h = harness(contentRevision({ assignee: 'su-other' }));
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason: 'orphan-revision-held-by-other' });
+    expectUntouched(h);
+  });
+
+  it('takes a row still held by the gone submitter through an expected-holder CAS', async () => {
+    const h = harness(contentRevision({ assignee: 'su-gone' }));
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: true });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: true });
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-adopter', { harness: 'papercusp', expectedAssignee: 'su-gone' });
+    expect(h.state.issue.assignee).toBe('su-adopter');
+  });
+
+  it('loses cleanly to a concurrent adopter whose claim landed first', async () => {
+    const h = harness(contentRevision());
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    h.claimWorkItem.mockImplementationOnce(async () => null);
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason: 'claim-refused' });
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it('releases and refuses when the review moved between the proof and the claim', async () => {
+    const h = harness(contentRevision());
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    const original = cloneIssue(h.state.issue);
+    vi.mocked(h.deps.getWorkItem)
+      .mockImplementationOnce(async () => original)
+      .mockImplementationOnce(async () => ({
+        ...cloneIssue(h.state.issue),
+        payload: { agentReview: { status: 'pending', submittedBy: 'su-gone', ledgerIdeaId: 'WI-7', round: 3 } },
+      }));
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason: 'state-changed' });
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', { harness: 'papercusp', expectedAssignee: 'su-adopter' });
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a reproduction-only revision (validation route)', { revisionKind: 'reproduction' }, 'reproduction-validation-route'],
+    ['a legacy-seeded revision (already claimable)', { submittedBy: LEGACY_AGENT_REVIEW_SUBMITTER }, 'legacy-revision-claimable'],
+    ['a pending review', { status: 'pending', revisionKind: undefined }, 'not-revision-requested:pending'],
+  ] as const)('routes %s elsewhere without a liveness read', async (_label, review, reason) => {
+    const h = harness(contentRevision({}, review));
+    h.state.submitterLiveness = { sessionState: 'ended' };
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: false, reason });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+    expectUntouched(h);
+  });
+
+  it("returns the adopter's own revision as alreadySubmitter without rebinding it", async () => {
+    const h = harness(contentRevision({}, { submittedBy: 'su-adopter' }));
+    await expect(adopt(h)).resolves.toMatchObject({ adopted: true, alreadySubmitter: true });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+    expect(h.state.issue.assignee).toBe('su-adopter');
+    expect(h.state.issue.payload).not.toHaveProperty('agentReviewAdoption');
   });
 });

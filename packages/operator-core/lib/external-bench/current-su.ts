@@ -802,6 +802,7 @@ export interface CurrentBenchIdentity {
   effort: string;
   clientVersion: string;
   promptHash: string;
+  promptTemplateHash?: string;
   toolsHash: string;
   observedAt: string;
   evidenceRefs: string[];
@@ -816,6 +817,7 @@ export interface CurrentBenchIdentity {
 export interface CurrentBenchIdentityObservation {
   worker: {
     taskId: string; workspaceId: string; ownerId: string; nativeSessionId: string;
+    codexHome?: string;
     runtimeRevision: string; sourceRevision: string; evidenceRef: string;
   };
   nativeTranscript: string;
@@ -899,7 +901,7 @@ export function currentBenchObservationReader(
       if (!timeline || io.measureRuntimes(await io.readRuntimes(), units) !== environment || host && !issuedHere()) return null;
       const observation: CurrentBenchIdentityObservation = {
         worker: { taskId: task.taskId, workspaceId: task.workspaceId, ownerId: binding.ownerId,
-          nativeSessionId: binding.nativeSessionId, runtimeRevision, sourceRevision: worker.treeSha,
+          nativeSessionId: binding.nativeSessionId, codexHome: binding.codexHome, runtimeRevision, sourceRevision: worker.treeSha,
           evidenceRef: `runtime-vintage:${worker.unit}:${worker.host}:${worker.extra.kernelProcessIdentity}:${environment}` },
         nativeTranscript, gateway: { processRef: `gateway:${report.process.identity}`, timeline },
       };
@@ -1000,6 +1002,10 @@ export function currentBenchIdentityFromObservation(
   const fullHash = (value: typeof row.cache.tools) => value && value.bytes > 0 &&
     value.bytes === value.hashedBytes && /^[a-f0-9]{64}$/.test(value.sha256) ? value.sha256 : null;
   const promptHash = fullHash(row.cache.instructions), toolsHash = fullHash(row.cache.tools);
+  const template = row.cache.nativeInstructionTemplate;
+  const promptTemplateHash = template?.version === 'codex-native-template-v1' ? fullHash(template.fingerprint) : null;
+  if (template?.skillsRootHash != null && (!worker.codexHome ||
+      template.skillsRootHash !== hash(`${worker.codexHome}/skills/.system`))) return null;
   if (row.cache.shape !== 'observed' || !promptHash || !toolsHash ||
       provider.responseId !== row.cache.providerRequestId || provider.accountId !== row.cache.servingAccountId ||
       !row.forwardedEffort || provider.effort !== null && provider.effort !== row.forwardedEffort ||
@@ -1023,7 +1029,7 @@ export function currentBenchIdentityFromObservation(
     measuredBy: 'runtime-observation', runtimeRevision: worker.runtimeRevision, sourceRevision: worker.sourceRevision,
     model: provider.model, effort: provider.effort ?? row.forwardedEffort,
     effortSource: provider.effort ? 'provider-response' : 'forwarded-request',
-    clientVersion: `codex/${version}`, promptHash, toolsHash, accountId: provider.accountId,
+    clientVersion: `codex/${version}`, promptHash, toolsHash, ...(promptTemplateHash ? { promptTemplateHash } : {}), accountId: provider.accountId,
     nativeSessionId: worker.nativeSessionId, providerResponseId: provider.responseId,
     observedAt: new Date(row.finalizedAt).toISOString(),
     evidenceRefs: [worker.evidenceRef, `${gateway.processRef}#request:${row.requestId}`, `codex:${worker.nativeSessionId}#turn:${correlation.turnId}`, `provider:${provider.responseId}`],
@@ -1184,7 +1190,8 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
         if (!task) throw new Error('Current benchmark task has no registered assignment.');
         const frozen = requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId, budget });
         const frozenArm = frozen.arms.find(arm => arm.id === opts.armId)!;
-        const expectedIdentity = { ...frozenArm.runtime, effort: frozenArm.effort };
+        const { promptHashMode = 'exact-request-v1', ...runtimePins } = frozenArm.runtime;
+        const expectedIdentity = { ...runtimePins, effort: frozenArm.effort };
         const protocol = await ports.verifyPreregistration();
         record.preregistration = protocol;
         if (protocol.preregHash !== opts.preregistration.preregHash || !protocol.gitCommitSha?.trim() || !protocol.receiptRef?.trim()) {
@@ -1235,10 +1242,12 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
           // Compare actual request exposure, including the post-confinement
           // tool catalog, to the committed pins on every observed turn. A prior
           // matching observation cannot fill a missing completion measurement.
-          const mismatchFields = identity ? (Object.keys(expectedIdentity) as Array<keyof typeof expectedIdentity>)
-            .filter(field => identity[field] !== expectedIdentity[field]) : [];
+          const comparedIdentity = identity && promptHashMode === 'codex-native-template-v1'
+            ? { ...identity, promptHash: identity.promptTemplateHash ?? '' } : identity;
+          const mismatchFields = comparedIdentity ? (Object.keys(expectedIdentity) as Array<keyof typeof expectedIdentity>)
+            .filter(field => comparedIdentity[field] !== expectedIdentity[field]) : [];
           record.protocolIdentity = { status: identity ? (mismatchFields.length ? 'mismatch' : 'matched') : 'unobserved',
-            expected: expectedIdentity, mismatchFields };
+            expected: expectedIdentity, promptHashMode, mismatchFields };
           if (opts.signal?.aborted) { result = { disposition: 'timeout', detail: 'Benchmark cancelled during generation.' }; break; }
           if (lifecycle.now() >= deadline) { result = { disposition: 'timeout', detail: 'Benchmark generation wall-clock cap reached.' }; break; }
           if (mismatchFields.length) throw new Error(`Benchmark observed identity differs from the frozen protocol: ${mismatchFields.join(', ')}.`);

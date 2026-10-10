@@ -129,6 +129,14 @@ async function coordCanary(health: unknown) {
     const id = await recordAdvSession({ workspaceId: scope, mode: 'console', agent: 'codex', role: 'su', coordOwnerId: owner,
       ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { pid: process.pid, sessionId: nativeId } : {}) });
     assert.ok(id);
+    if (process.env.ROSTER_HUD_BROWSER_PROOF === '1' && owner !== stale) {
+      const { writePresence } = await import('../lib/agent-tools/coordination/presence');
+      const hudRole = owner === selected ? 'selected' : owner === neighbor ? 'neighbor' : 'foreign';
+      await writePresence({ ownerId: owner, ownerLabel: `HUD ${hudRole} ${owner}`,
+        workspaceId: scope, source: 'omp-hook-session', userId: null },
+      { agentRole: 'su', intent: `HUD ${hudRole} ${owner}`,
+        host: 'private-hud-canary', pid: process.pid, capabilityTags: [] });
+    }
     if (process.env.ROSTER_HISTORY_BROWSER_PROOF === '1') {
       const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
       const directory = join(codexHomeForSessionKey(id), 'sessions');
@@ -228,11 +236,12 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-inbox-seed.json'), JSON.stringify(inbox, null, 2));
     }
     const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
-    const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected, neighbor, portalSourceRoot: portalSourceRoot!,
+    const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected, neighbor, foreign, portalSourceRoot: portalSourceRoot!,
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
       ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
+      ...(process.env.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
       ...(docs ? { docs } : {}),
       ...(plans ? { plans } : {}),
       ...(inbox ? { inbox } : {}),

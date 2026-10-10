@@ -964,6 +964,21 @@ describe('exact native benchmark identity observation', () => {
     observation.gateway.timeline.providerIdentity!.effort = 'high';
     expect(currentBenchIdentityFromObservation(task, observation)?.effortSource).toBe('provider-response');
   });
+  it('binds the instruction template to the host-owned native home while retaining the exact request hash', () => {
+    const { task, observation } = observedFixture();
+    observation.worker.codexHome = '/host/owned-native-home';
+    observation.gateway.timeline.cache.nativeInstructionTemplate = {
+      version: 'codex-native-template-v1', fingerprint: { sha256: 'e'.repeat(64), bytes: 100, hashedBytes: 100 },
+      skillsRootHash: createHash('sha256').update('/host/owned-native-home/skills/.system').digest('hex'),
+    };
+    const measured = currentBenchIdentityFromObservation(task, observation);
+    expect(measured?.promptTemplateHash).toBe('e'.repeat(64));
+    expect(measured?.promptHash).not.toBe(measured?.promptTemplateHash);
+    observation.worker.codexHome = '/host/foreign-native-home';
+    expect(currentBenchIdentityFromObservation(task, observation)).toBeNull();
+    delete observation.worker.codexHome;
+    expect(currentBenchIdentityFromObservation(task, observation)).toBeNull();
+  });
   it.each(['workspace', 'task', 'owner', 'native', 'response', 'account', 'effort', 'partial-prompt', 'partial-tools', 'missing-provider', 'runtime', 'native-version', 'native-turn', 'native-model', 'native-effort', 'malformed-transcript'])('leaves %s drift or incomplete evidence unknown', changed => {
     const { task, observation: o } = observedFixture();
     const row = o.gateway.timeline;
@@ -1231,6 +1246,21 @@ describe('current native benchmark execution', () => {
     });
     expect(f.lifecycle.driveToDone).not.toHaveBeenCalled();
     expect(f.lifecycle.teardown).toHaveBeenCalledOnce();
+  });
+  it('compares only an explicitly frozen, source-bound native template and never falls back to the request hash', async () => {
+    const opts = structuredClone(options);
+    const protocol = opts.preregistration.config as unknown as ReturnType<typeof currentProtocolFixture>;
+    const arm = protocol.arms.find(value => value.id === opts.armId)!;
+    arm.runtime.promptHashMode = 'codex-native-template-v1'; arm.runtime.promptHash = 'e'.repeat(64);
+    const f = fixture(opts);
+    vi.mocked(f.ports.readIdentity).mockResolvedValue({ ...identity, promptTemplateHash: 'e'.repeat(64) });
+    expect((await f.run()).telemetry.stopReason).toBe('done');
+    vi.mocked(f.ports.readIdentity).mockResolvedValue({ ...identity, promptHash: 'e'.repeat(64) });
+    const missing = await f.run();
+    expect(missing.telemetry.stopReason).toBe('error');
+    expect(missing.telemetry.generationError).toMatch(/promptHash/);
+    vi.mocked(f.ports.readIdentity).mockResolvedValue({ ...identity, promptTemplateHash: 'f'.repeat(64) });
+    expect((await f.run()).telemetry.stopReason).toBe('error');
   });
   it.each(['sourceRevision', 'runtimeRevision', 'clientVersion', 'promptHash', 'toolsHash', 'effort'] as const)(
     'rejects observed %s drift from the frozen arm and retains cleanup/cost evidence', async field => {

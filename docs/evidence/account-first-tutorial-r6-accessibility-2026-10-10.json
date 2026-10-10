@@ -93,9 +93,44 @@
     "scope": "One real hosted preference task; excludes pure Tab traversal, screen-reader/native-input/provider/novice/full-affected/production acceptance. Prior failed 20986701/20986801 and 4Lhr artifact preserved.",
     "runtimeCleanup": "Browser terminal0 and Portal Postgres shutdown observed. Private operator deliberately SIGTERM terminal1; maintained cleanup confirms runtimeRemoved and pgDataRemoved true."
   },
+  "qualifiedHostedPreferenceTask": {
+    "testRunId": 20987419,
+    "bindingId": 34637,
+    "bindingCurrentness": "current",
+    "bindingVerification": "Current-build3170 re-read the exact testing:runs:20987419 evidenceRef: spec, source, test and testRun current; no stale or unknown reasons. Registered Portal measurement pins the actual cc880 run commit. This is scoped task proof, not full R6 acceptance.",
+    "outcome": "pass",
+    "passed": 1,
+    "skipped": 0,
+    "retries": 0,
+    "worktreeDirty": false,
+    "portalCommit": "cc880c5d44f91e93325cb865956d4bfc3eff2c00",
+    "operatorCommit": "efdcd30aeff97d2775d71f26aa44b73ac000c90d",
+    "fixtureRoot": "/dev/shm/pcv/tutorial-preference-verifier-cc880-20261010T1702",
+    "independentSourceReceipt": "/dev/shm/tutorial-preference-verifier-cc880-20261010T1702.receipt.json",
+    "sourceFilesVerified": 586,
+    "buildId": "8Rok3v9QCvSEnGHPZfMb2",
+    "release": "/dev/shm/tutorial-preference-runtime-cc880-efdcd-20261010T1644/releases/8Rok3v9QCvSEnGHPZfMb2-20261010164624480-3141123-64f88c42",
+    "artifactCustody": "/dev/shm/tutorial-preference-8Rok-artifact-custody-20261010T1705.json",
+    "artifactCustodySha256": "0b18f5558d621a4f158f88c4ab70fae11142fcd9ad5b95babe3bf24517646bb1",
+    "artifactEntriesComparedAfter": 3693,
+    "artifactEntriesChanged": 0,
+    "log": "/dev/shm/tutorial-preference-qualified-served-20261010T1707.log",
+    "taskEvidence": "/dev/shm/tutorial-preference-qualified-results-20261010T1707/portal-product-tutorial-se-96d52-ion-and-keyboard-activation/served-preference-task.json",
+    "taskEvidenceSha256": "5a85d1bfd8e43eed062245f9a78d108147f79e03842a2b4cf044d3b368a117fd",
+    "verifiedBehavior": [
+      "Real authenticated non-Cloud theme PUT200 and persisted preference readback",
+      "Selected theme survives reload",
+      "Settings page picker and option operated through keyboard activation at 390px width, 32px root font and reduced motion",
+      "Contextual account Help, leave/resume and heading focus preserve the account lesson and reviewedLessonIds",
+      "Source receipt verified at both reporter boundaries and rendered immutable build identity unchanged"
+    ],
+    "sourceMechanism": "Existing prepareVerifierSource and captureTestSourceSnapshot verify the full archived source population against an independent external receipt. Dependencies resolve to retained operator efdcd and consumed guide bytes equal the serving source. No Git probe deadline increase or historical row relabel.",
+    "scope": "One genuine hosted non-Cloud preference task. This adds supported-runtime task completion to the earlier mounted/jsdom proof; it does not establish every full-product task, pure Tab traversal, screen-reader/native input, provider/human-heard voice, novice, full-affected or final production acceptance.",
+    "runtimeCleanup": "Browser terminal0 and Portal Postgres shutdown observed. Operator group SIGINT terminal130 stopped all exact owned processes and serving ports, but left private directories without the maintained cleanup-complete receipt. Manual directory cleanup is a temporary mitigation; lifecycle and startup PostgreSQL admission follow-up is owned as EI-25612926047410142."
+  },
   "limitations": [
-    "Mounted browser fixtures and jsdom composition only.",
-    "Supported-runtime screen-reader announcements and actual highlighted product task completion remain unproved.",
+    "The earlier integration and browser fields cover mounted fixtures/jsdom; the qualified hosted field covers one actual preference task.",
+    "Supported-runtime screen-reader announcements, pure Tab traversal and wider full-product accessibility task coverage remain unproved.",
     "No human-heard/provider/native-input/novice/full-affected/exact-production shipment claim."
   ]
 }

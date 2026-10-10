@@ -199,7 +199,7 @@ type LspRuntime = NonNullable<LspDaemonAnswer['daemonRuntime']>;
 function lspRuntime(overrides: Partial<LspRuntime> = {}): LspRuntime {
   return {
     enabled: true, overall: 'healthy', pid: 42, node: 'v24', entry: 'daemon', sampledAtMs: Date.now(),
-    provisioned: { typescript: true, rust: false },
+    provisioned: { typescript: true, rust: false, python: false, go: false },
     servers: [{
       language: 'typescript', rootPath: '/repo', taskId: 'server', health: 'healthy',
       coldStartMs: 10, openDocs: 1, pid: 43, everSettled: true, quiescent: true,

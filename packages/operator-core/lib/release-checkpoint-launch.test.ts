@@ -351,6 +351,35 @@ describe('buildCheckpointSystemdArgv', () => {
     }
   });
 
+  it('WI-10006055: forwards the launcher DB target so the detached gate never falls through to the discovery file', () => {
+    const keys = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL'] as const;
+    const previous = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    try {
+      for (const k of keys) delete process.env[k];
+      // No DSN in the launcher: nothing to forward (and no empty --setenv that would pin '').
+      const bare = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
+      expect(bare.filter((a) => keys.some((k) => a.startsWith(`--setenv=${k}=`)))).toEqual([]);
+
+      // :3070 carries HARNESS_ADMIN_DATABASE_URL; :3170 carries DATABASE_URL. Both must reach the unit.
+      process.env.HARNESS_ADMIN_DATABASE_URL = 'postgresql://admin:x@localhost:5432/papercusp';
+      process.env.DATABASE_URL = 'postgresql://admin:y@localhost:5432/papercusp';
+      process.env.HARNESS_DATABASE_URL = '   ';
+      const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
+      expect(argv).toContain('--setenv=HARNESS_ADMIN_DATABASE_URL=postgresql://admin:x@localhost:5432/papercusp');
+      expect(argv).toContain('--setenv=DATABASE_URL=postgresql://admin:y@localhost:5432/papercusp');
+      expect(argv.some((a) => a.startsWith('--setenv=HARNESS_DATABASE_URL='))).toBe(false);
+      // The DSN rides as systemd-run properties, before the command, never inside the shell string.
+      const bashAt = argv.indexOf('bash');
+      expect(argv.indexOf('--setenv=DATABASE_URL=postgresql://admin:y@localhost:5432/papercusp')).toBeLessThan(bashAt);
+      expect(argv.at(-1)).not.toContain('postgresql://');
+    } finally {
+      for (const k of keys) {
+        if (previous[k] === undefined) delete process.env[k];
+        else process.env[k] = previous[k];
+      }
+    }
+  });
+
   it('does NOT forward the partial-green-gate flag by default (whole-batch, back-compat)', () => {
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin').at(-1)!;
     expect(inner).not.toContain('PAPERCUSP_PARTIAL_GREEN_GATE');

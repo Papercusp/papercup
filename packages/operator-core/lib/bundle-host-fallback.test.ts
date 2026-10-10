@@ -162,7 +162,8 @@ describe('bundle-host.sh last-known-good fallback', () => {
     const bundle = readFileSync(outfile);
     const metadata = readFileSync(outfile + '.meta.json');
     const graph = JSON.parse(metadata.toString());
-    const inputPaths = Object.keys(graph.inputs).map(path => resolve(REPO_ROOT, 'apps/operator', path));
+    // npm-install-safe executes the compiler from repoRoot, regardless of the shell's cwd.
+    const inputPaths = Object.keys(graph.inputs).map(path => resolve(REPO_ROOT, path));
     expect(inputPaths, JSON.stringify({ inputs: graph.inputs, inputPaths, entry, dependency })).toContain(entry);
     expect(inputPaths).toContain(dependency);
     expect(readdirSync(join(dir, 'dist-host')).some(name => name.startsWith('.restricted-gate-meta.'))).toBe(false);
@@ -170,6 +171,28 @@ describe('bundle-host.sh last-known-good fallback', () => {
     writeFileSync(dependency, 'export const retainedGraphValue = ;\n');
     const rejected = runBundler(entry);
     expect(rejected.code, rejected.output).not.toBe(0);
+    expect(readFileSync(outfile)).toEqual(bundle);
+    expect(readFileSync(outfile + '.meta.json')).toEqual(metadata);
+  }, 260_000);
+
+  it('resolves compiler inputs from the repo root and restores bundle and metadata on a held import', () => {
+    const entry = join(dir, 'held-import-entry.ts');
+    const modulePath = join(REPO_ROOT, 'libs/generic/module-singleton/src/index.ts');
+    const source = (value: number) => `import * as maintained from ${JSON.stringify(modulePath)}; console.log(maintained.pinModuleState, ${value});\n`;
+    writeFileSync(entry, source(1));
+    const accepted = runBundler(entry);
+    expect(accepted.code, accepted.output).toBe(0);
+    const bundle = readFileSync(outfile);
+    const metadata = readFileSync(outfile + '.meta.json');
+    const inputs = Object.keys(JSON.parse(metadata.toString()).inputs).map(path => resolve(REPO_ROOT, path));
+    expect(inputs).toContain(modulePath);
+
+    const census = join(dir, 'held-import-census.json');
+    writeFileSync(census, JSON.stringify([{ path: modulePath, owner: 'fixture', intent: 'held-import regression', coordinationDomain: REPO_ROOT }]));
+    writeFileSync(entry, source(2));
+    const refused = runBundler(entry, { PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: census });
+    expect(refused.code, refused.output).not.toBe(0);
+    expect(refused.output).toContain('held restricted write');
     expect(readFileSync(outfile)).toEqual(bundle);
     expect(readFileSync(outfile + '.meta.json')).toEqual(metadata);
   }, 260_000);

@@ -537,6 +537,73 @@ describe('gather + execute against a real temporary repo', () => {
     expect(() => fs.lstatSync(tree)).toThrow();
   });
 
+  it('rediscovers failed physical deletion from the retained archive after the original path becomes prunable', async () => {
+    const parent = path.join(tmp, 'producer');
+    const tree = path.join(parent, 'source');
+    const offload = path.join(tmp, 'offload');
+    fs.mkdirSync(parent);
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.renameSync(parent, offload);
+    fs.symlinkSync(offload, parent);
+    const admin = g(tree, 'rev-parse', '--absolute-git-dir');
+    const rmrf = vi.fn(async () => { throw new Error('injected deletion failure'); });
+    const result = await executeCutReclaim(await gather(), [tree], {
+      scanHolders: () => verified,
+      archiveDir: path.join(ret, 'reclaim-archive'),
+      rmrf,
+    });
+    expect(result).toMatchObject({ ok: true, results: [{ removed: false, reason: expect.stringContaining('partial removal') }] });
+    expect(rmrf).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(admin)).toBe(true);
+    expect(fs.existsSync(tree)).toBe(false);
+    const next = await gather();
+    expect(next.skipped.prunable).toBe(1);
+    expect(next.interrupted).toHaveLength(1);
+    const residue = next.interrupted![0]!;
+    expect(residue).toMatchObject({ path: tree, realPath: path.join(offload, 'source'), adminDir: admin, state: 'trash-present' });
+    expect(fs.readFileSync(path.join(residue.trash, '.git'), 'utf8')).toContain(admin);
+    expect(fs.readFileSync(residue.archive, 'utf8')).toContain('## HEAD ');
+    expect(renderReclaimPlan(next)).toMatchObject({ interrupted: [residue] });
+    // A recovery receipt reports evidence; it does not confer deletion authority.
+    expect(await executeCutReclaim(next, [residue.trash])).toMatchObject({ ok: false, refused: true });
+    expect(fs.existsSync(residue.trash)).toBe(true);
+  });
+
+  it('keeps unfinished Git bookkeeping discoverable after physical deletion succeeds', async () => {
+    const tree = path.join(tmp, 'relcut-bookkeeping');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const admin = g(tree, 'rev-parse', '--absolute-git-dir');
+    const calls: string[] = [];
+    await executeCutReclaim(await gather(), [tree], {
+      scanHolders: () => verified,
+      archiveDir: path.join(ret, 'reclaim-archive'),
+      rmrf: async (p) => {
+        calls.push(p);
+        if (p === admin) throw new Error('injected bookkeeping failure');
+        await fs.promises.rm(p, { recursive: true, force: true });
+      },
+    });
+    expect(calls[0]).toContain('.reclaim-trash-');
+    expect(calls[1]).toBe(admin);
+    expect((await gather()).interrupted).toEqual([expect.objectContaining({ path: tree, state: 'bookkeeping-pending' })]);
+  });
+
+  it('refuses to rename when the retained removal receipt cannot be made durable', async () => {
+    const tree = path.join(tmp, 'relcut-receipt');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const rename = vi.fn(fs.renameSync);
+    const result = await executeCutReclaim(await gather(), [tree], {
+      scanHolders: () => verified,
+      archiveDir: path.join(ret, 'reclaim-archive'),
+      recordRemoval: () => { throw new Error('injected fsync failure'); },
+      rename,
+    });
+    expect(result).toMatchObject({ ok: true, results: [{ removed: false, reason: expect.stringContaining('removal receipt failed') }] });
+    expect(rename).not.toHaveBeenCalled();
+    expect(g(tree, 'rev-parse', 'HEAD')).toBe(g(repo, 'rev-parse', 'HEAD'));
+    expect((await gather()).interrupted).toEqual([]);
+  });
+
   it('removes an offloaded tree beneath a symlinked parent without unlinking the missing leaf', async () => {
     const parent = path.join(tmp, 'producer');
     const tree = path.join(parent, 'source');

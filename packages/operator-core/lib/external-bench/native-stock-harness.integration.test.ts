@@ -111,7 +111,7 @@ it('retains a real native UUID and terminal ingestion after local refusal withou
   await refusedAssignment('lifecycle', 'Describe the empty repository.');
 }, 45000);
 
-it('keeps frozen native instruction and tool fingerprints across distinct isolated assignments', async () => {
+it('keeps source-bound native instruction templates across distinct isolated assignments', async () => {
   const first = await refusedAssignment('fingerprint-first', 'Describe the first empty repository.');
   const second = await refusedAssignment('fingerprint-second', 'Describe the second empty repository.');
   expect(first.cache.shape).toBe('observed'); expect(second.cache.shape).toBe('observed');
@@ -119,19 +119,18 @@ it('keeps frozen native instruction and tool fingerprints across distinct isolat
   expect(first.cache.tools?.bytes).toBe(first.cache.tools?.hashedBytes);
   console.info('NATIVE_ASSIGNMENT_FINGERPRINTS', JSON.stringify({ first: first.cache, second: second.cache,
     checkoutInInput: [first.checkoutInInput, second.checkoutInInput] }));
-  const prefix = (body: Record<string, unknown>) => {
-    const parts: unknown[] = [body.system, body.instructions];
-    for (const item of body.input as Array<Record<string, unknown>>) {
-      if (!['developer', 'system'].includes(String(item.role))) break;
-      if (item.type === 'message') parts.push(item);
-    }
-    return JSON.stringify(parts).split('\\n');
-  };
-  const a = prefix(first.body), b = prefix(second.body);
-  console.info('NATIVE_INSTRUCTION_DIFF', JSON.stringify(a.flatMap((line, i) => line === b[i] ? [] :
-    [{ line: i, first: line.slice(0, 200), second: b[i]?.slice(0, 200) }]).slice(0, 20)));
   // This is native request-shape proof only: refusal supplies no provider answer,
   // metered success, preregistration pin or benchmark-performance evidence.
   expect(second.cache.tools).toEqual(first.cache.tools);
-  expect(second.cache.instructions).toEqual(first.cache.instructions);
+  expect(first.cache.instructions).not.toEqual(second.cache.instructions);
+  expect(first.cache.nativeInstructionTemplate?.fingerprint?.bytes).toBeGreaterThan(0);
+  expect(second.cache.nativeInstructionTemplate?.fingerprint).toEqual(first.cache.nativeInstructionTemplate?.fingerprint);
+  for (const assignment of [first, second]) {
+    const declaredRoot = `${String((assignment.body.input as Array<Record<string, unknown>>)
+      .flatMap(item => Array.isArray(item.content) ? item.content : [])
+      .find(part => String(part.text).includes('<skills_instructions>'))?.text)
+      .match(/^- [\x60]r0[\x60] = [\x60]([^\x60]+)[\x60]$/m)?.[1]}`;
+    expect(assignment.cache.nativeInstructionTemplate?.skillsRootHash)
+      .toBe(createHash('sha256').update(declaredRoot).digest('hex'));
+  }
 }, 90000);

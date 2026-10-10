@@ -33,8 +33,9 @@
  *      · locked worktrees, and a tree that contains another registered worktree.
  *
  * Removal (confirm path) archives the tracked diffs first, re-checks holders, renames the
- * tree aside on its own filesystem, deletes its worktree admin dir (exactly what
- * `git worktree prune` does for that one entry, without touching others), then deletes.
+ * tree aside on its own filesystem, deletes the tree, then its worktree admin dir.
+ * The existing retained diff archive records the exact removal identity before rename,
+ * so discovery can report interrupted removals even after Git marks the old path prunable.
  * Each removal is appended to the shared deletion-audit.tsv the release scripts write.
  */
 import { execFile, spawn } from 'node:child_process';
@@ -285,6 +286,100 @@ export interface ReclaimPlan {
   failClosed: string[];
   skipped: { autoManaged: string[]; prunable: number };
   verdicts: ReclaimVerdict[];
+  /** Diagnostic only: these paths never inherit permission to delete from a receipt. */
+  interrupted?: InterruptedCutReclaim[];
+}
+
+interface CutReclaimReceipt {
+  schema: 'papercusp-cut-reclaim/v1';
+  canonicalRoot: string;
+  path: string;
+  realPath: string;
+  trash: string;
+  adminDir: string;
+  device: string;
+  inode: string;
+}
+
+export interface InterruptedCutReclaim extends CutReclaimReceipt {
+  archive: string;
+  state: 'trash-present' | 'identity-mismatch' | 'bookkeeping-pending';
+}
+
+const RECLAIM_RECEIPT_PREFIX = '# papercusp-cut-reclaim ';
+
+/** Extend the retained archive, rather than creating a second reclamation ledger. */
+function recordCutReclaim(archive: string, receipt: CutReclaimReceipt): void {
+  const fd = fs.openSync(archive, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error('reclaim archive is not a regular file');
+    fs.writeFileSync(fd, `\n${RECLAIM_RECEIPT_PREFIX}${JSON.stringify(receipt)}\n`);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const parent = fs.openSync(path.dirname(archive), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+  try {
+    fs.fsyncSync(parent);
+  } finally {
+    fs.closeSync(parent);
+  }
+}
+
+/** Bounded archive-tail reads; no glob of disposable directories or automatic removal. */
+function readInterruptedCutReclaims(archiveDir: string, canonicalRoot: string): {
+  interrupted: InterruptedCutReclaim[];
+  errors: string[];
+} {
+  const interrupted: InterruptedCutReclaim[] = [];
+  const errors: string[] = [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(archiveDir, { withFileTypes: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') errors.push(`${archiveDir}:${errText(e)}`);
+    return { interrupted, errors };
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.patch')) continue;
+    const archive = path.join(archiveDir, entry.name);
+    try {
+      const fd = fs.openSync(archive, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      let tail: string;
+      try {
+        const size = fs.fstatSync(fd).size;
+        const bytes = Buffer.alloc(Math.min(size, 64 * 1024));
+        const read = fs.readSync(fd, bytes, 0, bytes.length, size - bytes.length);
+        tail = bytes.subarray(0, read).toString('utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      const line = tail.split('\n').findLast((value) => value.startsWith(RECLAIM_RECEIPT_PREFIX));
+      if (!line) continue; // older archives remain valid diff archives
+      const r = JSON.parse(line.slice(RECLAIM_RECEIPT_PREFIX.length)) as CutReclaimReceipt;
+      if (r.schema !== 'papercusp-cut-reclaim/v1' || r.canonicalRoot !== canonicalRoot) continue;
+      if (![r.path, r.realPath, r.trash, r.adminDir].every((p) => typeof p === 'string' && path.isAbsolute(p)) ||
+          path.dirname(r.trash) !== path.dirname(r.realPath) ||
+          !path.basename(r.trash).startsWith(`.reclaim-trash-${path.basename(r.realPath)}-`) ||
+          !/^\d+$/.test(r.device) || !/^\d+$/.test(r.inode)) {
+        throw new Error('invalid reclaim receipt identity');
+      }
+      let trashStat: fs.Stats | null = null;
+      try { trashStat = fs.lstatSync(r.trash); } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+      if (trashStat) {
+        const same = trashStat.isDirectory() && !trashStat.isSymbolicLink() &&
+          String(trashStat.dev) === r.device && String(trashStat.ino) === r.inode;
+        interrupted.push({ ...r, archive, state: same ? 'trash-present' : 'identity-mismatch' });
+      } else if (!fs.existsSync(r.realPath) && fs.existsSync(r.adminDir)) {
+        interrupted.push({ ...r, archive, state: 'bookkeeping-pending' });
+      }
+    } catch (e) {
+      errors.push(`${archive}:${errText(e)}`);
+    }
+  }
+  return { interrupted, errors };
 }
 
 export interface ReclaimPlanInput {
@@ -891,6 +986,13 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
     pending.forEach((tree, i) => authored.set(tree, results[i] as AuthoredWork));
   }
   const result = planCutReclaim({ ...base, authored });
+  if (canonicalRoot) {
+    const recovered = readInterruptedCutReclaims(
+      path.join(opts.retentionDir ?? defaultRetentionDir(), 'reclaim-archive'), canonicalRoot,
+    );
+    result.interrupted = recovered.interrupted.filter((r) => includes(r.path) || includes(r.trash));
+    result.failClosed.push(...recovered.errors.map((error) => `reclaim-receipt-unreadable:${error}`));
+  }
   if (selected === null) return result;
   const verdicts = result.verdicts.filter((v) => includes(v.path));
   const found = new Set(verdicts.map((v) => path.resolve(v.path)));
@@ -907,6 +1009,7 @@ export interface ReclaimExecDeps {
   nowMs?: () => number;
   scanHolders?: (targets: HolderTarget[]) => HolderScan | Promise<HolderScan>;
   archive?: (tree: string, outFile: string) => void | Promise<void>;
+  recordRemoval?: (archive: string, receipt: CutReclaimReceipt) => void;
   gitCommonDir?: (canonicalRoot: string) => string | Promise<string>;
   rename?: (from: string, to: string) => void;
   unlink?: (p: string) => void;
@@ -1059,6 +1162,17 @@ export async function executeCutReclaim(
     }
     const trash = path.join(path.dirname(real), `.reclaim-trash-${path.basename(real)}-${stamp}`);
     try {
+      const stat = fs.lstatSync(real);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('worktree identity changed');
+      (deps.recordRemoval ?? recordCutReclaim)(archive, {
+        schema: 'papercusp-cut-reclaim/v1', canonicalRoot, path: v.path, realPath: real,
+        trash, adminDir, device: String(stat.dev), inode: String(stat.ino),
+      });
+    } catch (e) {
+      done({ removed: false, archive, reason: `removal receipt failed: ${errText(e)}` });
+      continue;
+    }
+    try {
       (deps.rename ?? fs.renameSync)(real, trash);
     } catch (e) {
       done({ removed: false, archive, reason: `rename aside failed: ${errText(e)}` });
@@ -1066,9 +1180,11 @@ export async function executeCutReclaim(
     }
     const rmrf = deps.rmrf ?? ((p: string) => fs.promises.rm(p, { recursive: true, force: true }));
     try {
+      await rmrf(trash);
+      // Keep Git's identity until the physical allocation is gone. A failed tree
+      // deletion stays associated with its retained archive and admin metadata.
       if (leafSymlink) (deps.unlink ?? fs.unlinkSync)(v.path);
       await rmrf(adminDir);
-      await rmrf(trash);
     } catch (e) {
       done({ removed: false, archive, reason: `partial removal (tree moved to ${trash}): ${errText(e)}` });
       continue;
@@ -1116,5 +1232,6 @@ export function renderReclaimPlan(plan: ReclaimPlan) {
     reclaimable: pick('reclaimable').map(row),
     namedOnly: pick('named-only').map(row),
     protected: pick('protected').map((v) => ({ path: v.path, reasons: v.reasons })),
+    ...(plan.interrupted ? { interrupted: plan.interrupted } : {}),
   };
 }

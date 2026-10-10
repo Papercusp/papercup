@@ -1749,8 +1749,11 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
      *    agent's native turn genuinely completed (see the `verifiedBoundary?.()`
      *    call below). The bare `= null` default alone made gen:declarations infer
      *    the LITERAL type `null`, which rejected every real caller — including
-     *    this file's own at the codex carry and verified-boundary sites. */
-    waitAtPrompt(overrideCapMs?: number | null, verifiedBoundary?: (() => boolean) | null): Promise<{
+     *    this file's own at the codex carry and verified-boundary sites.
+     *  @param {(() => boolean) | null} [abortBoundary] predicate that makes an
+     *    in-flight inject obsolete. It exits the wait without claiming the
+     *    prompt is safe; the caller must return without writing. */
+    waitAtPrompt(overrideCapMs?: number | null, verifiedBoundary?: (() => boolean) | null, abortBoundary?: (() => boolean) | null): Promise<{
         deferred: boolean;
         boundary: string;
         reason?: undefined;
@@ -3418,6 +3421,20 @@ export function makeHeadlessCodexModelChoiceStateMachine({ enabled, startupMs, n
     };
 };
 export function managedCodexStartupUpdateDialogEnabled(env?: NodeJS.ProcessEnv): boolean;
+/** Prepend CODEX_STARTUP_UPDATE_CHECK_OVERRIDE to a managed Codex child's argv.
+ * Pure. Applies only when the agent is Codex AND the command is the Codex
+ * binary itself (the bin test of the launcher's codexManagedDaemonArgs), so a
+ * wrapper or another program run under PAPERCUSP_AGENT=codex never receives a
+ * foreign `-c`. Argv that already sets the key is returned unchanged, so an
+ * explicit caller choice always wins.
+ * @param {{command: string, args: readonly string[], env?: EnvironmentMap}} target
+ * @returns {string[]}
+ */
+export function withManagedCodexStartupConfig({ command, args, env }: {
+    command: string;
+    args: readonly string[];
+    env?: EnvironmentMap;
+}): string[];
 /** Watch the current VT screen for Codex's exact optional update menu. Reading
  * the rendered screen avoids matching old transcript/scrollback text. The
  * caller owns the child-identity check and sends the returned Escape once. */
@@ -4705,6 +4722,15 @@ export const HEADLESS_NORMALIZED_LOG_MAX_BYTES: number;
 export const HEADLESS_CODEX_MODEL_CHOICE_STARTUP_MS: 600000;
 export const CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS: 600000;
 export const CODEX_STARTUP_UPDATE_DIALOG_ESCAPE_KEY: "\u001B";
+/** WI-10008156: the root-level `-c` override that stops Codex rendering its
+ * optional startup update menu in a managed child at all. Measured 2026-10-10:
+ * 79 of the 81 homes behind a stuck `Starting` snapshot lacked
+ * `check_for_update_on_startup = false` in config.toml. Homes created before
+ * the role-codex-home fix are patched in place on resume and never rebuilt.
+ * An argv override reaches every child this host spawns (launch, resume, each
+ * respawn), whatever state the home's config is in. The Escape dismissal
+ * stays as the backstop. */
+export const CODEX_STARTUP_UPDATE_CHECK_OVERRIDE: "check_for_update_on_startup=false";
 /**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter

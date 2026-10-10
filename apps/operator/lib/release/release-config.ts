@@ -224,8 +224,13 @@ export function databaseEvidence(
    *  the runs that red-pin a pot unattended, so a reader has to be able to tell which path spoke. */
   emitter: 'gate-cli' | 'gate-run' = 'gate-cli',
 ): string {
-  const url = env.DATABASE_URL;
-  if (url) return `database: ${redactDsn(url)} (source=DATABASE_URL, emitter=${emitter})`;
+  // WI-10006055: same precedence as the db package's adminUrl() — an explicit HARNESS_* DSN beats
+  // DATABASE_URL. Reading only DATABASE_URL reported `<unset>` about a run pinned via
+  // HARNESS_ADMIN_DATABASE_URL (the variable the :3070 operator actually carries).
+  for (const key of ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL'] as const) {
+    const url = env[key];
+    if (url) return `database: ${redactDsn(url)} (source=${key}, emitter=${emitter})`;
+  }
   // libpq's own variables are what the client library reads when no URL is set. They select a
   // database just as effectively, so an evidence line that ignored them would report "unset"
   // about a run that is very much connected somewhere.
@@ -235,9 +240,10 @@ export function databaseEvidence(
     const port = env.PGPORT ? `:${env.PGPORT}` : '';
     return `database: ${host ?? '<default-host>'}${port}/${db ?? '<default-db>'} (source=PG*, emitter=${emitter})`;
   }
-  // NOT the boring case: it means the child falls back to libpq's own defaults (local socket,
-  // $USER as the database name), which is its own class of dialing-the-wrong-database.
-  return `database: <unset> (source=none, emitter=${emitter})`;
+  // NOT the boring case: with no DSN the db package resolves the `$PAPERCUSP_HOME/embedded-pg.json`
+  // discovery file, which ANY local desktop/server install can own (WI-10006055: the installed
+  // Papercusp Server sidecar on :24680, which has no gate routine row), then native :5432.
+  return `database: <unset> (source=none, emitter=${emitter}) — resolves via the embedded-pg discovery file, which another install may own`;
 }
 
 /**
