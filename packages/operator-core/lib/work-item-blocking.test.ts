@@ -143,6 +143,24 @@ describe('partitionReady', () => {
   });
 });
 
+describe('P-003 independent preparation', () => {
+  it.each(['credential', 'owner pause', 'destructive permission'])('keeps preparation ready while %s blocks dependent execution', (prerequisite) => {
+    const nodes: BlockingNode[] = [
+      { id: prerequisite, status: 'needs-human' },
+      { id: 'execution', status: 'todo' },
+      { id: 'preparation', status: 'todo' },
+    ];
+    const before = structuredClone(nodes);
+    const dependencies = new Map([['execution', [prerequisite]]]);
+    const result = partitionReady(nodes, dependencies, DISPATCHABLE);
+    expect(result.ready.map((node) => node.id)).toEqual(['preparation']);
+    expect(result.blocked.map((node) => node.id)).toEqual(['execution']);
+    expect(isReady('execution', nodes, dependencies, DISPATCHABLE)).toBe(false);
+    expect(isReady('preparation', nodes, dependencies, DISPATCHABLE, new Set(['preparation']))).toBe(false);
+    expect(nodes).toEqual(before);
+  });
+});
+
 describe('toReadinessNodes', () => {
   it('maps items to nodes with their blocker lists (empty when none)', () => {
     const nodes = toReadinessNodes([{ id: 'A', status: 'todo' }], new Map([['A', ['B']]]));

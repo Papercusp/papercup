@@ -114,6 +114,52 @@ try {
   const clears = await sql.unsafe('SELECT subject FROM harness_shared.audit_log WHERE workspace_id = $1 AND action = $2', [ws, 'work_items:durable_park:clear']);
   assert.deepEqual(clears.map(row => row.subject), ['WI-lease'], 'idempotent replay must not duplicate clears');
   assert.equal(JSON.parse(await loadTextArtifact(harness, reconciled.detail.artifactPath)).cleared, 1);
+  // P-003: a generic wake and completion of the pause task cannot substitute
+  // for the explicit owner resume. Exercise the real action and persisted CAS.
+  const pauseId = 'WI-owner-pause';
+  await sql.unsafe('INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts, payload) VALUES ($1,$2,$3,$4,$3,$5,0,0,$6::jsonb)',
+    [ws, harness, pauseId, 'bug', 'open', JSON.stringify({ sibling: 'keep', held_open_by: 'independent-reviewer', held_open_reason: 'independent lease' })]);
+  const pauseContract = await buildDurableParkReleaseContract({
+    condition: 'WI-pause-task reaches terminal done, ending this system-wide pause.',
+    owner: 'fixture-owner', trigger: 'work-item:done:WI-pause-task',
+  }, 'fixture-owner');
+  assert.equal(pauseContract.reachability, 'blocked');
+  await setWorkItemClaimHold(pauseId, true, { harness, parkedBy: 'pause-driver', reason: 'explicit owner pause', releaseContract: pauseContract });
+  const paused = (await readItems()).find(row => row.feature_id === pauseId);
+  for (const eventKey of ['work-item:claimable', 'work-item:done:WI-pause-task']) {
+    await recordKeyFire({ eventKey, firedBy: 'fixture-wake-producer' });
+    const runId = eventKey === 'work-item:claimable' ? 'pause-generic-wake' : 'pause-task-completed';
+    await invoke({ runId });
+    const report = await readRun(runId);
+    const pauseMatrix = JSON.parse(await loadTextArtifact(harness, report.detail.evidenceMatrix.artifactPath));
+    const row = pauseMatrix.rows.find(row => row.id === pauseId);
+    assert.ok(row);
+    await invoke({ mode: 'reconcile', runId: runId + '-reconcile', actor: 'fixture-operator', decisions: [{
+      id: pauseId, expectedParkFingerprint: row.parkFingerprint, reasonCode: 'condition-satisfied',
+      evidence: 'Observed fired event ' + eventKey,
+    }] });
+    const result = await readRun(runId + '-reconcile');
+    assert.equal(result.detail.result.cleared, 0);
+    assert.equal(result.detail.result.rows[0].outcome, 'unverified-condition');
+    assert.deepEqual((await readItems()).find(row => row.feature_id === pauseId), paused);
+  }
+  await invoke({ runId: 'pause-before-explicit-resume' });
+  const pauseBeforeResume = await readRun('pause-before-explicit-resume');
+  const resumeMatrix = JSON.parse(await loadTextArtifact(harness, pauseBeforeResume.detail.evidenceMatrix.artifactPath));
+  const resumeRow = resumeMatrix.rows.find(row => row.id === pauseId);
+  await invoke({ mode: 'reconcile', runId: 'pause-explicit-resume', actor: 'fixture-owner', decisions: [{
+    id: pauseId, expectedParkFingerprint: resumeRow.parkFingerprint, reasonCode: 'operator-directed',
+    evidence: 'Fixture owner explicitly authorizes resuming this exact operation; credential and destructive permissions remain separate.',
+  }] });
+  const resumed = (await readItems()).find(row => row.feature_id === pauseId);
+  assert.equal(resumed.payload.claim_hold_by, undefined);
+  assert.equal(resumed.payload.claim_hold_release, undefined);
+  assert.equal(resumed.payload._claimHold, true);
+  assert.equal(resumed.payload.held_open_by, 'independent-reviewer');
+  assert.equal(resumed.payload.sibling, 'keep');
+  assert.equal(resumed.taken_by, paused.taken_by);
+  console.log('P003_PAUSE_PROOF=' + JSON.stringify({ genericWakeCleared: false, pauseCompletionCleared: false,
+    explicitResumeCleared: true, independentLeaseRetained: true, unrelatedPayloadRetained: true }));
   const paths = ['packages/operator-core/lib/work-items-durable-park-audit.ts',
     'packages/operator-core/lib/harness/routines/work-item-durable-park-audit-action.ts'];
   console.log('P028_PRODUCTION_PROOF=' + JSON.stringify({
