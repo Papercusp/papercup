@@ -7,6 +7,42 @@ import { describe, expect, it } from 'vitest';
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, '../../..');
 
+describe('private PostgreSQL pool admission', () => {
+  it('bounds non-Vitest org pools to the owned server and serves a concurrent request burst without admission refusals', async () => {
+    const child = `
+      (async () => {
+        const assert = require('node:assert/strict');
+        assert.equal(process.env.VITEST, undefined);
+        const db = await import('./libs/papercusp/libs/db/src/connection.ts');
+        const { getOrgPg, processConnectionCeiling } = { ...db.default, ...db };
+        const { sql } = getOrgPg();
+        try {
+          const [settings] = await sql.unsafe("SELECT current_setting('max_connections')::int AS capacity, current_setting('superuser_reserved_connections')::int AS reserved");
+          const ceiling = processConnectionCeiling();
+          assert.ok(ceiling.poolMax >= 2, 'nested requests need more than one slot');
+          assert.ok(ceiling.poolMax * 2 * 3 + 13 * 3 + 32 + settings.reserved <= settings.capacity,
+            JSON.stringify({ settings, ceiling }));
+          await Promise.all(Array.from({ length: 12 }, () => sql.unsafe('SELECT pg_sleep(0.02)')));
+          console.log('PRIVATE_POOL_ADMISSION_CONTROL=' + JSON.stringify({ settings, ceiling, completed: 12 }));
+        } finally { await sql.end(); }
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `;
+    const { stdout, stderr } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--', process.execPath, '--import', 'tsx', '-e', child], {
+      cwd: root, env: { ...process.env, PAPERCUSP_DB_POOL_MAX: '1000' },
+      timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
+    });
+    const line = stdout.split('\n').find(line => line.startsWith('PRIVATE_POOL_ADMISSION_CONTROL='));
+    expect(line, stderr.slice(-1000)).toBeDefined();
+    const result = JSON.parse(line!.slice('PRIVATE_POOL_ADMISSION_CONTROL='.length));
+    expect(result.completed).toBe(12);
+    expect(result.settings.capacity).toBe(100);
+    expect(result.ceiling.poolMax).toBeLessThanOrEqual(4);
+    expect(stdout + stderr).not.toContain('remaining connection slots');
+    expect(stdout).toContain('"runtimeRemoved":true,"pgDataRemoved":true');
+  }, 200_000);
+});
+
 describe('isolated PostgreSQL mutation evidence', () => {
   it('preserves reporter provenance while replacing ambient product endpoints and identity', async () => {
     const probe = {

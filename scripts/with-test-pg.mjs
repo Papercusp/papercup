@@ -288,6 +288,25 @@ assertNotTerminating();
 console.log(`[with-test-pg] ready — ${pg.urls.admin.replace(/:[^:@]*@/, ':***@')}`);
 
 let runtimeEnv = {};
+if (isolatedRuntime) {
+  // This cluster uses its own settings, not the developer host's tuned PG.
+  // Non-Vitest request hosts otherwise size each org pool for that host (52
+  // here), exhausting the private cluster's 97 ordinary admission slots.
+  // Budget the profile helper, command and request host together; retain the
+  // existing policy's overhead reservation for browser/fixture connections.
+  const { default: postgres } = await import('postgres');
+  const { boundedOrgPoolMax, getResourceProfile } = await import('../libs/generic/resource-profile/src/index.ts');
+  const capacitySql = postgres(pg.urls.admin, { max: 1 });
+  try {
+    const [capacity] = await capacitySql.unsafe("SELECT current_setting('max_connections')::int AS max, current_setting('superuser_reserved_connections')::int AS reserved");
+    const poolMax = boundedOrgPoolMax({ desired: getResourceProfile().pgPoolMax,
+      maxConnections: capacity.max, superuserReserved: capacity.reserved, expectedProcesses: 3 });
+    runtimeEnv.PAPERCUSP_DB_POOL_MAX = String(poolMax);
+    console.log('[with-test-pg] private pool budget ' + JSON.stringify({
+      maxConnections: capacity.max, superuserReserved: capacity.reserved, expectedProcesses: 3, poolMax,
+    }));
+  } finally { await capacitySql.end(); }
+}
 if (runtimeRoot && runtimeId) {
   const home = join(runtimeRoot, 'home');
   const papercuspHome = join(home, '.papercusp');
@@ -312,6 +331,7 @@ if (runtimeRoot && runtimeId) {
     process.exit(1);
   }
   runtimeEnv = {
+    ...runtimeEnv,
     HOME: home,
     PAPERCUSP_HOME: papercuspHome,
     PAPERCUSP_IDENTITY_DIR: join(papercuspHome, 'identity'),
