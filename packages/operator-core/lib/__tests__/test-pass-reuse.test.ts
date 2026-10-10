@@ -717,6 +717,7 @@ describe('D-009: scripts-only workspace package.json changes reach only proofs t
         'the gate runner: runs task scripts by literal name (pinned runner-affecting above) and repo-wide guards, which are never reused (unitTasks = test + lane scripts)',
       'scripts/pc-heavy.sh': 'mentions npm run only in help text it echoes',
       'scripts/guard-shared-tree-install.mjs': 'mentions npm run only in its refusal message',
+      'scripts/npm-install-safe.mjs': 'the scan matches only the exported USAGE help string; --exec-under-lock forwards the explicit command argv already present in the task script',
       'scripts/install-onnxruntime-node.mjs': 'mentions npm run only in an error message',
     };
     const repo = realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
