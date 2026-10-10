@@ -28,6 +28,8 @@ import {
   parseUnified7dWindow,
   serviceableAdmissionFor,
   type GatewayCarryTrialBinding,
+  type GatewayDeps,
+  type GatewayGoalBudgetDecision,
   type InferenceGateway,
 } from './gateway';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
@@ -134,6 +136,14 @@ export async function resolvePriorityTiers(
 }
 
 export interface GatewayServiceOptions {
+  /** Trusted composition ports for the existing accepted-operation guard.
+   * Omission retains the production org-DB policy read and attestation sink;
+   * scoped hosts must bind both to their own authority, never disable the guard. */
+  readAcceptedOperationModelPolicy?: GatewayDeps['readAcceptedOperationModelPolicy'];
+  recordAcceptedOperationModelAttestation?: GatewayDeps['recordAcceptedOperationModelAttestation'];
+  /** Trusted host composition can scope this existing guard to its own DB.
+   * Omission retains the production org-DB goal preflight. */
+  checkGoalInferenceAdmission?: (ownerId: string) => Promise<GatewayGoalBudgetDecision>;
   /** Existing trusted, scoped provider-attempt binding. The service uses the
    * normal account pool and credential resolvers; the controller owns approval,
    * reservation/settlement and the synchronous final-send authority check. */
@@ -999,20 +1009,20 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
 
   const gateway = createInferenceGateway({
     ...(carryTrial === undefined ? {} : { carryTrial }),
-    readAcceptedOperationModelPolicy: async (ownerId, backend = 'claude') => {
+    readAcceptedOperationModelPolicy: opts.readAcceptedOperationModelPolicy ?? (async (ownerId, backend = 'claude') => {
       const [{ activeWorkspaceId }, { readActiveOperationModelPolicy }] = await Promise.all([
         import('../workspace-registry'),
         import('../blueprint/operation-worker-binding'),
       ]);
       return readActiveOperationModelPolicy(opts.workspace ?? activeWorkspaceId(), ownerId, backend);
-    },
-    recordAcceptedOperationModelAttestation: async (context, evidence) => {
+    }),
+    recordAcceptedOperationModelAttestation: opts.recordAcceptedOperationModelAttestation ?? (async (context, evidence) => {
       const [{ getOrgPg }, { recordDirectOperationModelAttestation }] = await Promise.all([
         import('@papercusp/db-org'), import('../blueprint/operation-service'),
       ]);
       await recordDirectOperationModelAttestation(getOrgPg().sql, context, evidence);
-    },
-    checkGoalInferenceAdmission: async (ownerId) => {
+    }),
+    checkGoalInferenceAdmission: opts.checkGoalInferenceAdmission ?? (async (ownerId) => {
       const [{ activeWorkspaceId }, { getOrgPg }, { checkGoalInferenceAdmission }] = await Promise.all([
         import('../workspace-registry'),
         import('@papercusp/db-org'),
@@ -1023,7 +1033,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
         ownerId,
         sql: getOrgPg().sql,
       });
-    },
+    }),
     pool,
     codexPool,
     codexCliPool,

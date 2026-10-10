@@ -844,7 +844,7 @@ export interface CurrentBenchObservationReaderOptions extends DbScope {
 }
 export function currentBenchObservationReader(
   options: CurrentBenchObservationReaderOptions,
-  ports: CurrentBenchObservationReaderPorts = liveCurrentBenchObservationReaderPorts(options),
+  ports?: CurrentBenchObservationReaderPorts,
   issuedGateway?: CurrentBenchHostGateway,
 ): (task: CurrentBenchTask) => Promise<CurrentBenchIdentityObservation | null> {
   // Copy before asynchronous reads; an options mutation cannot retarget proof.
@@ -867,7 +867,7 @@ export function currentBenchObservationReader(
     throw new Error('Benchmark observation requires explicit local execution and gateway runtimes.');
   }
   const gatewayPort = Number(endpoint.port || 80);
-  const io = { ...ports };
+  const io = { ...(ports ?? liveCurrentBenchObservationReaderPorts(opts, issuedGateway)) };
   return async task => {
     try {
       if (host && !issuedHere() || task.workspaceId !== opts.workspaceId || !task.sessionId || typeof task.detail.coordOwnerId !== 'string') return null;
@@ -910,8 +910,15 @@ export function currentBenchObservationReader(
 
 /** Read host-owned bindings and full native bytes. Never search another home,
  * restamp from HEAD, or use requested launch configuration as an observation. */
-export function liveCurrentBenchObservationReaderPorts(opts: CurrentBenchObservationReaderOptions): CurrentBenchObservationReaderPorts {
+export function liveCurrentBenchObservationReaderPorts(
+  opts: CurrentBenchObservationReaderOptions, issuedGateway?: CurrentBenchHostGateway,
+): CurrentBenchObservationReaderPorts {
   const scope = { ...opts };
+  const host = issuedGateway && currentBenchHostGateways.get(issuedGateway.nativeGateway);
+  const issuedHere = () => !!host && host.active() && host.binding.workspaceId === scope.workspaceId &&
+    canonicalJson(issuedGateway!.nativeAccountingBinding) === canonicalJson(host.binding) &&
+    new URL(issuedGateway!.nativeGateway.baseURL).href === new URL(scope.gatewayBaseUrl).href;
+  if (issuedGateway && !issuedHere()) throw new Error('Benchmark observation requires its active controller-issued gateway.');
   return {
     readBinding: async task => {
       const { resolveDb } = await import('./reproducibility/db');
@@ -959,8 +966,10 @@ export function liveCurrentBenchObservationReaderPorts(opts: CurrentBenchObserva
       } finally { await handle.close(); }
     },
     readGateway: async ownerId => {
+      if (issuedGateway && !issuedHere()) return null;
       const url = new URL('/admin/owner-report', scope.gatewayBaseUrl); url.searchParams.set('owner', ownerId);
-      const response = await fetch(url, { signal: AbortSignal.timeout(5000), redirect: 'error' });
+      const response = await fetch(url, { signal: AbortSignal.timeout(5000), redirect: 'error',
+        ...(issuedGateway ? { headers: { authorization: `Bearer ${issuedGateway.nativeGateway.token}` } } : {}) });
       if (!response.ok || !response.body) return null;
       const chunks: Uint8Array[] = []; let size = 0;
       for await (const chunk of response.body) {

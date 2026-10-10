@@ -10748,9 +10748,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
         Buffer.from(carryTrial.requestTokenSha256, 'hex'));
       const openaiAllowed = carryTrial.protocols.includes('openai-responses');
       const anthropicAllowed = carryTrial.protocols.includes('anthropic-messages');
+      // A scoped execution host must observe its own provider evidence. Keep
+      // this existing read authenticated and owner-specific; no fleet census
+      // or other admin route is admitted by the private inference credential.
+      const reportOwners = req.method === 'GET' && requestPath === '/admin/owner-report'
+        ? new URL(url, 'http://127.0.0.1').searchParams.getAll('owner') : [];
+      const ownerReport = reportOwners.length === 1 && reportOwners[0].trim().length > 0;
       const supported = (openaiAllowed && req.method === 'POST' && requestPath === '/v1/responses') ||
         (openaiAllowed && req.method === 'GET' && requestPath === '/v1/models') ||
-        (anthropicAllowed && req.method === 'POST' && requestPath === '/v1/messages');
+        (anthropicAllowed && req.method === 'POST' && requestPath === '/v1/messages') || ownerReport;
       if (!authenticated || !supported) {
         req.resume();
         sendJson(res, 403, { error: { message: 'carry trial request not authorized' } },

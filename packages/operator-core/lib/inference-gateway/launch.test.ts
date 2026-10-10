@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGatewayService, resolvePriorityTiers, type RunningGatewayService } from './launch';
-import type { GatewayCarryTrialAttempt } from './gateway';
+import type { GatewayCarryTrialAttempt, GatewayDeps } from './gateway';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
 import type { GatewayPayloadSpool } from './payload-spool';
@@ -62,6 +62,61 @@ const nativeFixtureReceipt = (attempt: GatewayCarryTrialAttempt) => ({ attemptId
   reservationRef: `native-fixture:${attempt.attemptId}`, clockId: attempt.clockId,
   validUntilMonotonicMs: processMonotonicClock.now() + 5_000 });
 
+test.each(['goal-denied', 'policy-unavailable', 'policy-throws', 'model-denied', 'attestation-fails', 'accepted'] as const)(
+  'startGatewayService scopes authorization IO without bypassing its guards (%s)', async state => {
+    tempDir = mkdtempSync(join(tmpdir(), 'gateway-service-authority-'));
+    const tokenPath = join(tempDir, 'provider.token');
+    writeFileSync(tokenPath, 'PRIVATE_SCOPED_PROVIDER_TOKEN', { mode: 0o600 });
+    const policy = vi.fn<NonNullable<GatewayDeps['readAcceptedOperationModelPolicy']>>(async () => {
+      if (state === 'policy-throws') throw new Error('private authority unavailable');
+      if (state === 'policy-unavailable') return { status: 'unavailable', reason: 'private authority unavailable' };
+      return { status: 'bound', policy: {
+        mode: 'exact', models: ['gpt-5.6-sol'], effort: 'high', onUnavailable: 'fail',
+      }, attestation: {
+        operationReceiptId: 12, advSessionId: 34, nativeSessionId: 'private-native-worker',
+        workspaceId: 'private-service-workspace', ownerId: 'private-service-owner', harnessSlug: 'private-harness',
+        workItemId: 'WI-private-service', operationId: 'run', specificationRevision: 'a'.repeat(64),
+      } };
+    });
+    const record = vi.fn<NonNullable<GatewayDeps['recordAcceptedOperationModelAttestation']>>(async () => {
+      if (state === 'attestation-fails') throw new Error('private attestation unavailable');
+    });
+    const provider = vi.fn<typeof fetch>(async (_target, init) => {
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer PRIVATE_SCOPED_PROVIDER_TOKEN');
+      return Response.json({ id: 'private-service-response', model: 'gpt-5.6-sol', status: 'completed',
+        output: [], usage: { input_tokens: 12, output_tokens: 3 } });
+    });
+    const goal = vi.fn<NonNullable<GatewayDeps['checkGoalInferenceAdmission']>>(async () => state === 'goal-denied'
+      ? { allowed: false, goalId: 'private-goal', status: 403, code: 'goal_budget_exhausted', message: 'Private goal denied.' }
+      : { allowed: true, goalId: null, reason: 'no-goal' });
+    svc = await startGatewayService({ port: 0, workspace: 'private-service-workspace', log: () => {},
+      checkGoalInferenceAdmission: goal, readAcceptedOperationModelPolicy: policy,
+      recordAcceptedOperationModelAttestation: record, fetchImpl: provider,
+      resolveAccounts: async () => [{ accountId: 'private-service-account', credentialRef: `token:${tokenPath}`, source: 'env' }],
+      observePool: () => () => {}, refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+    });
+    const response = await fetch(`http://127.0.0.1:${svc.port}/v1/responses`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'private-service-owner' },
+      body: JSON.stringify({ model: state === 'model-denied' ? 'gpt-5.6-luna' : 'gpt-5.6-sol',
+        input: 'private task', reasoning: { effort: 'high' } }),
+    });
+    const body = await response.text();
+    assert.equal(response.status, state === 'accepted' ? 200 : state === 'attestation-fails' ? 502
+      : state === 'goal-denied' || state === 'model-denied' ? 403 : 503, body);
+    assert.equal(goal.mock.calls.length, 1);
+    assert.deepEqual(goal.mock.calls[0], ['private-service-owner']);
+    assert.equal(policy.mock.calls.length, state === 'goal-denied' ? 0 : 1);
+    if (state !== 'goal-denied') assert.deepEqual(policy.mock.calls[0], ['private-service-owner', 'codex']);
+    const forwarded = state === 'accepted' || state === 'attestation-fails';
+    assert.equal(provider.mock.calls.length, forwarded ? 1 : 0);
+    assert.equal(record.mock.calls.length, forwarded ? 1 : 0);
+    if (forwarded) {
+      assert.equal(record.mock.calls[0]![0].workspaceId, 'private-service-workspace');
+      assert.equal(record.mock.calls[0]![1].actualModel, 'gpt-5.6-sol');
+    }
+  },
+);
+
 test.each(['authorized', 'revoked'] as const)('startGatewayService carries trial authority to the final provider send (%s)', async state => {
   const up = await startUpstream();
   let checks = 0;
@@ -90,6 +145,24 @@ test.each(['authorized', 'revoked'] as const)('startGatewayService carries trial
   assert.equal(response.status, state === 'authorized' ? 200 : 403);
   assert.doesNotMatch(await response.text(), /PRIVATE_/);
   assert.equal(checks, 1); assert.equal(authorize.mock.calls.length, 1);
+  assert.equal(up.requests(), state === 'authorized' ? 1 : 0);
+  // The same scoped credential permits exact owner evidence, while every
+  // unscoped report and other admin route stays outside its authority.
+  for (const [path, token, status] of [
+    ['/admin/owner-report?owner=private-native-owner', scopedGatewayToken, 200],
+    ['/admin/owner-report?owner=private-native-owner', 'wrong-token', 403],
+    ['/admin/owner-report', scopedGatewayToken, 403],
+    ['/admin/owner-report?owner=', scopedGatewayToken, 403],
+    ['/admin/owner-report?owner=a&owner=b', scopedGatewayToken, 403],
+    ['/admin/config', scopedGatewayToken, 403],
+    ['/admin/reload', scopedGatewayToken, 403],
+  ] as const) {
+    const report: Response = await fetch(`http://127.0.0.1:${svc.port}${path}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = await report.text(); assert.equal(report.status, status, body);
+    if (status === 200) assert.equal(JSON.parse(body).owner, 'private-native-owner');
+  }
   assert.equal(up.requests(), state === 'authorized' ? 1 : 0);
 });
 

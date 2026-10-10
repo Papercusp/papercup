@@ -19,7 +19,7 @@ import { readBenchRunCost, type BenchHarnessOps } from './bench-harness-live';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 import { readProcessIdentity } from '../process-identity';
-import { createInferenceGateway } from '../inference-gateway/gateway';
+import { createInferenceGateway, type GatewayDeps } from '../inference-gateway/gateway';
 import { createFailoverPool } from '../inference-gateway/account-failover';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
@@ -33,7 +33,10 @@ const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 // Goal admission is an independent boundary. Its production service binding
 // reads the host org DB; this fixture owns only the private benchmark DB.
 const goalAdmission = vi.hoisted(() => vi.fn());
-vi.mock('../goal-launch-settings', () => ({ checkGoalInferenceAdmission: goalAdmission }));
+// The private launch has no accepted operation receipt. Resolve that fact at
+// the trusted composition seam rather than querying an unrelated live org DB.
+const operationPolicy = vi.hoisted(() => vi.fn<NonNullable<GatewayDeps['readAcceptedOperationModelPolicy']>>());
+const operationAttestation = vi.hoisted(() => vi.fn<NonNullable<GatewayDeps['recordAcceptedOperationModelAttestation']>>());
 const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
   INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route'),
@@ -151,6 +154,8 @@ beforeAll(async () => {
 }, 90_000);
 beforeEach(async () => {
   goalAdmission.mockReset().mockResolvedValue({ allowed: true, goalId: null, reason: 'no-goal' });
+  operationPolicy.mockReset().mockResolvedValue({ status: 'none' });
+  operationAttestation.mockReset().mockResolvedValue(undefined);
   vi.clearAllMocks();
   hostHome.byId.clear();
   await sql`TRUNCATE harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
@@ -315,6 +320,9 @@ describe('production native accounting with private PG and full source bytes', (
         usage: { input_tokens: 100, output_tokens: 10, input_tokens_details: { cached_tokens: 20, cache_write_tokens: 0 } } });
     });
     const hosted = await controller.startNativeGateway(() => {}, options => startGatewayService({ ...options,
+      checkGoalInferenceAdmission: goalAdmission,
+      readAcceptedOperationModelPolicy: operationPolicy,
+      recordAcceptedOperationModelAttestation: operationAttestation,
       resolveAccounts: async () => [{ accountId: account.id, credentialRef: account.credentialRef, source: 'env' }],
       resolveLocalBackends: async () => [], observePool: () => () => {}, fetchImpl: provider,
       refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0 }));
@@ -333,9 +341,18 @@ describe('production native accounting with private PG and full source bytes', (
       expect(native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
       goalAdmission.mockResolvedValueOnce({ allowed: false, goalId: 'private-denied-goal', status: 403,
         code: 'goal_budget_exhausted', message: 'Private fixture goal allowance exhausted.' });
-      const withheld = await send(); expect(withheld.status).toBe(403); await withheld.text();
-      expect(goalAdmission).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, ownerId: f.solver.ownerId }));
+      const withheld = await send(), withheldBody = await withheld.text();
+      expect(goalAdmission).toHaveBeenCalledExactlyOnceWith(f.solver.ownerId);
+      expect(withheld.status, withheldBody).toBe(403); expect(withheldBody).toContain('goal_budget_exhausted');
       expect(count).not.toHaveBeenCalled(); expect(authenticate).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
+      expect(operationPolicy).not.toHaveBeenCalled();
+      operationPolicy.mockResolvedValueOnce({ status: 'unavailable', reason: 'private fixture policy unavailable' });
+      const unavailable = await send(), unavailableBody = await unavailable.text();
+      expect(unavailable.status, unavailableBody).toBe(503);
+      expect(unavailableBody).toContain('private fixture policy unavailable');
+      expect(operationPolicy).toHaveBeenCalledExactlyOnceWith(f.solver.ownerId, 'codex');
+      expect(count).not.toHaveBeenCalled(); expect(authenticate).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
+      expect((await getLearningSpendPositions(sql, { workspaceId, loopId })).positions.reservedUsd).toBe(0);
       await sql`INSERT INTO harness_shared.runtime_vintage VALUES
         ('private-current-runtime', 'private-current-worker', ${hostname()}, ${'a'.repeat(40)}, null, null, ${process.pid},
          ${sql.json({ kernelProcessIdentity: readProcessIdentity(process.pid) })},
@@ -352,6 +369,7 @@ describe('production native accounting with private PG and full source bytes', (
         providerBodyKind: provider.mock.calls[0]?.[1]?.body?.constructor.name,
         providerEvidence, positions: (await getLearningSpendPositions(sql, { workspaceId, loopId })).positions })).toBe(200);
       expect(provider).toHaveBeenCalledOnce();
+      expect(operationAttestation).not.toHaveBeenCalled();
       expect(providerEvidence).toHaveLength(1);
       expect(providerEvidence[0]).toMatchObject({ target: 'https://api.openai.com/v1/responses', credentialMatches: true,
         model: 'configured-alias', outputLimit: 10, beforeSend: { positions: { unsettledUsd: 0.00012 },
@@ -362,7 +380,34 @@ describe('production native accounting with private PG and full source bytes', (
         detail: { coordOwnerId: f.solver.ownerId } };
       const observationOptions = { ...scope(), runtimeWorkspaceId: 'private-current-runtime',
         workerUnit: 'private-current-worker', gatewayUnit: 'unregistered-private-gateway', gatewayBaseUrl: hosted.nativeGateway.baseURL };
-      const observed = await currentBenchObservationReader(observationOptions, undefined, hosted)(nativeTask);
+      // Diagnose the real IO prerequisites before the composite fail-closed
+      // reader can collapse them to null. This is the same acceptance boundary
+      // exercised below for a separately supervised gateway.
+      const observationIo = liveCurrentBenchObservationReaderPorts(observationOptions, hosted);
+      expect(await observationIo.readBinding(nativeTask), 'issued host stage: exact SQL binding').toEqual({
+        ownerId: f.solver.ownerId, nativeSessionId: f.solver.nativeSessionId, codexHome: f.solver.home });
+      const runtimeRows = await observationIo.readRuntimes();
+      expect(observationIo.measureRuntimes(runtimeRows, ['private-current-worker']), 'issued host stage: boot identity').toMatch(/^[a-f0-9]{64}$/);
+      expect(await observationIo.readTranscript(f.solver.nativeSessionId, f.solver.home), 'issued host stage: full native transcript')
+        .toBe(readFileSync(f.solver.file, 'utf8'));
+      const hostReport = await observationIo.readGateway(f.solver.ownerId);
+      expect(hostReport, 'issued host stage: process-matched HTTP report').toMatchObject({ owner: f.solver.ownerId,
+        process: { pid: process.pid, identity: readProcessIdentity(process.pid) }, stageTelemetry: { ownerId: f.solver.ownerId } });
+      const timeline = hostReport!.stageTelemetry.recent.filter(row => row.nativeCorrelation.status === 'observed' &&
+        row.nativeCorrelation.threadId === f.solver.nativeSessionId).sort((a, b) => b.finalizedAt - a.finalizedAt)[0];
+      expect(timeline, 'issued host stage: exact provider/native request').toMatchObject({
+        nativeCorrelation: { status: 'observed', threadId: f.solver.nativeSessionId, turnId: f.solver.nativeTurnId },
+        providerIdentity: { model: 'configured-alias', responseId: 'host-http-provider-response', accountId: account.id },
+        forwardedEffort: 'high', outcome: 'ok', finalStatus: 200 });
+      expect(timeline.startedAt, 'issued host stage: request after all pinned lifetimes').toBeGreaterThanOrEqual(Math.max(
+        Date.parse(nativeTask.startedAt!), Date.parse(runtimeRows[0].reportedAt), hostReport!.process.startedAt));
+      expect(currentBenchIdentityFromObservation(nativeTask, {
+        worker: { taskId: nativeTask.taskId, workspaceId, ownerId: f.solver.ownerId, nativeSessionId: f.solver.nativeSessionId,
+          runtimeRevision: observationIo.measureRuntimes(runtimeRows, ['private-current-worker'])!,
+          sourceRevision: 'a'.repeat(40), evidenceRef: 'runtime-vintage:private-issued-host' },
+        nativeTranscript: readFileSync(f.solver.file, 'utf8'), gateway: { processRef: `gateway:${hostReport!.process.identity}`, timeline },
+      }), 'issued host stage: native/provider identity agreement').not.toBeNull();
+      const observed = await currentBenchObservationReader(observationOptions, observationIo, hosted)(nativeTask);
       expect(observed, 'issued private HTTP service needs only the actual host boot record').not.toBeNull();
       expect(currentBenchIdentityFromObservation(nativeTask, observed!)).toMatchObject({ sourceRevision: 'a'.repeat(40),
         model: 'configured-alias', accountId: account.id, clientVersion: 'codex/0.162.0', providerResponseId: 'host-http-provider-response' });
