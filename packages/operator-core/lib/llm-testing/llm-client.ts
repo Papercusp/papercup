@@ -407,6 +407,7 @@ export async function llmCall(
       onTransportDiagnostic: diagnostic => {
         if (transportDiagnostics.length === 64) transportDiagnostics.shift();
         transportDiagnostics.push(diagnostic);
+        try { opts.onDiagnostic?.(diagnostic); } catch { /* Diagnostic observers must not change transport behavior. */ }
         // Synchronous output survives callers that throw before writing a
         // successful-call receipt. No credentials, text, bodies or arbitrary headers.
         writeSync(1, `[llm-transport] ${JSON.stringify({ ...diagnostic, promptSha256,

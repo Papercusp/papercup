@@ -675,11 +675,13 @@ describe('llmCall transport evidence (WI-10005738)', () => {
     events.push({ type: 'error', message: turn.message, turn });
     try {
       const { llmCall } = await import('../llm-client');
-      const err = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'secret-prompt' }] }).catch(e => e);
+      const onDiagnostic = vi.fn();
+      const err = await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'secret-prompt' }], onDiagnostic }).catch(e => e);
       expect(isLlmCallError(err)).toBe(true);
       expect(err.turn).toBe(turn);
       expect(err.message).toBe(turn.message);
       expect(err.transportDiagnostics).toEqual([diagnostic]);
+      expect(onDiagnostic).toHaveBeenCalledWith(diagnostic);
       expect(err.promptSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(JSON.stringify(err)).not.toContain('secret-prompt');
     } finally { diagnostics.length = 0; events.length = 0; }

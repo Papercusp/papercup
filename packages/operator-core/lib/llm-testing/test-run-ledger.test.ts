@@ -11,7 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseTestRunExecutionDetails, recordedTestLayer, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
 
 import { SCENARIOS } from './scenarios';
-import { beginLlmScenarioLedger, llmScenarioLedgerRow, prepareLlmScenarioRuntimeReader, recordLlmScenarioTestRun, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
+import type { LlmCallDiagnostic } from '@papercup/testing-shell/llm';
+import { beginLlmScenarioLedger, llmScenarioLedgerRow, prepareLlmScenarioRuntimeReader, recordLlmScenarioTestRun, recordLlmScenarioTestRunFailure, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
 import { captureWorktreeSnapshot } from '../testing-worktree';
 
 const ledger = vi.hoisted(() => ({ sql: vi.fn(), root: '', reportRuntime: vi.fn(), listRuntime: vi.fn(), measureRuntime: vi.fn() }));
@@ -60,6 +61,27 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
     vi.stubEnv('PAPERCUSP_WORKSPACE', 'papercusp-workspace');
     vi.stubEnv('PAPERCUSP_HARNESS_SLUG', 'papercusp');
     expect(await recordedScope()).toEqual({ harness: 'papercusp', workspace: 'papercusp-workspace' });
+  });
+  it('records a thrown runner failure with its bounded transport diagnostics', async () => {
+    const diagnostics = {
+      events: [{
+        callId: 'local-call', attempt: 1, phase: 'transport-error', observedAt: '2026-10-08T00:00:00Z',
+        label: 'anthropic-direct', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,
+        governorMode: 'shared-provider', requestedAccount: null, servedAccount: null,
+        providerRequestId: null, status: null, transportFailureCode: 'ETIMEDOUT', callerAborted: false,
+      }],
+      total: 1,
+      omitted: 0,
+    };
+    expect(await recordLlmScenarioTestRunFailure({
+      scenarioId: 'su-S01-harness-scope',
+      startedAt: new Date('2026-10-08T00:00:00Z'),
+      finishedAt: new Date('2026-10-08T00:00:10Z'),
+      llmCallDiagnostics: diagnostics,
+    }, file, null)).toBe(123);
+    const values = ledger.sql.mock.calls[0]!.slice(1);
+    expect(values[1]).toBe('error');
+    expect(values[5]).toContain('ETIMEDOUT');
   });
   it('preserves explicit ledger scope over an isolated runtime scope', async () => {
     vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'caller-workspace');
@@ -238,8 +260,13 @@ describe('resolveScenarioSourceFile', () => {
   });
 });
 
-function run(status: 'passed' | 'failed' | 'errored', startIso: string, endIso: string) {
-  return { status, summary: { startedAt: new Date(startIso), finishedAt: new Date(endIso) } };
+function run(
+  status: 'passed' | 'failed' | 'errored',
+  startIso: string,
+  endIso: string,
+  summary: Record<string, unknown> = {},
+) {
+  return { status, summary: { startedAt: new Date(startIso), finishedAt: new Date(endIso), ...summary } };
 }
 
 function report(runs: ReturnType<typeof run>[]) {
@@ -294,6 +321,25 @@ describe('llmScenarioLedgerRow', () => {
     const empty = llmScenarioLedgerRow(report([]), { ...ctx, now: new Date('2026-09-27T01:00:00Z') });
     expect(empty.status).toBe('skip');
     expect(empty.executionDetails.passed).toBe(0);
+  });
+
+  it('retains timeout stage and allowlisted transport cause in a bounded error tail', () => {
+    const diagnostic: LlmCallDiagnostic = {
+      callId: 'local-call', attempt: 1, phase: 'transport-error', observedAt: '2026-09-27T00:00:00Z',
+      label: 'anthropic-direct', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,
+      governorMode: 'shared-provider', requestedAccount: null, servedAccount: null,
+      providerRequestId: null, status: null, transportFailureCode: 'ETIMEDOUT', callerAborted: false,
+    };
+    const row = llmScenarioLedgerRow(report([run('errored', '2026-09-27T00:00:00Z', '2026-09-27T00:00:01Z', {
+      timeout: { cause: 'wallclock_deadline', stage: 'sim_user_next_action', turnIndex: 0 },
+      llmCallDiagnostics: { events: [diagnostic], total: 34, omitted: 2 },
+    })]), ctx);
+    expect(row.status).toBe('error');
+    expect(row.outputTail).toContain('sim_user_next_action');
+    expect(row.outputTail).toContain('ETIMEDOUT');
+    expect(row.outputTail).toContain('diagnosticsOmitted=2');
+    expect(row.outputTail).not.toContain('127.0.0.1');
+    expect(row.outputTail!.length).toBeLessThanOrEqual(1200);
   });
 });
 

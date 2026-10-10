@@ -20,7 +20,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { runScenario, type ScenarioVariant } from '@papercusp/testing-shell/llm';
+import {
+  LLM_CALL_DIAGNOSTICS_MAX_EVENTS,
+  runScenario,
+  type LlmCallDiagnostic,
+  type LlmCallDiagnosticSummary,
+  type ScenarioVariant,
+} from '@papercusp/testing-shell/llm';
 
 import { isLlmAvailable } from '@papercusp/operator-core/lib/llm-testing/llm-client';
 import { operatorRunnerDeps } from '@papercusp/operator-core/lib/llm-testing/deps';
@@ -41,6 +47,7 @@ import {
   beginLlmScenarioLedger,
   prepareLlmScenarioRuntimeReader,
   recordLlmScenarioTestRun,
+  recordLlmScenarioTestRunFailure,
   resolveScenarioSourceFile,
 } from '@papercusp/operator-core/lib/llm-testing/test-run-ledger';
 
@@ -410,12 +417,15 @@ async function main(): Promise<void> {
     const runtimeReader = args.noPersist ? undefined
       : await prepareLlmScenarioRuntimeReader(scenarioFilePath, scenario.transport);
     const ledgerBefore = args.noPersist ? null : await beginLlmScenarioLedger(scenarioFilePath, runtimeReader);
+    const diagnosticCapture = createLlmCallDiagnosticCapture();
+    const runnerStartedAt = new Date();
     try {
       report = await runScenario(scenario, {
         forceRepeat: args.noMatrix ? 1 : undefined,
         scenarioFilePath,
         ...(args.seed !== undefined && { seed: args.seed }),
         ...(variant !== undefined && { variant }),
+        onDiagnostic: (diagnostic) => diagnosticCapture.record(diagnostic),
       }, deps);
     } catch (err) {
       const msg = (err as Error).message ?? '';
@@ -425,6 +435,32 @@ async function main(): Promise<void> {
         // scenario measured nothing. The zero-executed guard below is what
         // keeps that from exiting 0 (EI-22032714687384561).
         return 'skipped';
+      }
+      const diagnostics = diagnosticCapture.snapshot();
+      const runnerErrorName = err instanceof Error ? err.name : 'NonErrorThrown';
+      writeFileSync(join(evidenceDir, 'report-summary.json'), `${JSON.stringify({
+        scenarioId: scenario.id,
+        verdict: 'errored',
+        runs: [{
+          status: 'errored',
+          costUsd: 0,
+          turns: 0,
+          assertErrors: [],
+          judgeErrors: [],
+          runnerErrorName,
+          llmCallDiagnostics: diagnostics,
+        }],
+      }, null, 2)}\n`);
+      if (!args.noPersist) {
+        const testRunId = await recordLlmScenarioTestRunFailure({
+          scenarioId: scenario.id,
+          startedAt: runnerStartedAt,
+          finishedAt: new Date(),
+          llmCallDiagnostics: diagnostics,
+        }, scenarioFilePath, ledgerBefore);
+        process.stdout.write(testRunId === null
+          ? `  ⚠ test_runs ledger row not recorded [${scenario.id}]\n`
+          : `  ledger test_runs.id=${testRunId} layer=llm\n`);
       }
       console.error(`  ✗ runner error [${scenario.id}]: ${msg}`);
       return 'failed';
@@ -493,7 +529,28 @@ function reportSummary(scenarioId: string, report: ReturnType<typeof runScenario
       turns: r.summary.turns.length,
       assertErrors: r.violations.filter((v) => v.severity === 'error').map((v) => `[${v.assertKind}] ${v.claim}`),
       judgeErrors: r.judge.findings.filter((f) => f.severity === 'error').map((f) => `${f.axis}: ${f.claim}`),
+      ...(r.summary.timeout ? { timeout: r.summary.timeout } : {}),
+      ...(r.summary.llmCallDiagnostics ? { llmCallDiagnostics: r.summary.llmCallDiagnostics } : {}),
     })),
+  };
+}
+
+function createLlmCallDiagnosticCapture() {
+  const events: LlmCallDiagnostic[] = [];
+  let total = 0;
+  let omitted = 0;
+  return {
+    record(diagnostic: LlmCallDiagnostic): void {
+      total += 1;
+      if (events.length === LLM_CALL_DIAGNOSTICS_MAX_EVENTS) {
+        events.shift();
+        omitted += 1;
+      }
+      events.push({ ...diagnostic });
+    },
+    snapshot(): LlmCallDiagnosticSummary {
+      return { events: events.map((diagnostic) => ({ ...diagnostic })), total, omitted };
+    },
   };
 }
 

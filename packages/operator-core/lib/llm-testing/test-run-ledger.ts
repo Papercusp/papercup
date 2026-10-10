@@ -18,7 +18,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, posix, relative } from 'node:path';
 
-import type { RunReport } from '@papercusp/testing-shell/llm';
+import type { LlmCallDiagnosticSummary, RunReport } from '@papercusp/testing-shell/llm';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -79,8 +79,33 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
   const startedAt = starts.length ? new Date(Math.min(...starts)) : now;
   const finishedAt = ends.length ? new Date(Math.max(...ends)) : now;
 
+  const diagnosticTail = report.runs.flatMap((run, index) => {
+    const parts: string[] = [];
+    if (run.summary.timeout) {
+      const timeout = run.summary.timeout;
+      parts.push(`run${index + 1}:timeout=${timeout.cause}/${timeout.stage}/turn=${timeout.turnIndex}`);
+    }
+    const diagnostics = run.summary.llmCallDiagnostics;
+    if (diagnostics) {
+      const failures = diagnostics.events.filter((event) =>
+        event.phase === 'transport-error' || event.phase === 'stream-error');
+      const recent = (failures.length > 0 ? failures : diagnostics.events).slice(-2);
+      for (const event of recent) {
+        const fields = [`run${index + 1}:${event.phase}`, `attempt=${event.attempt}`];
+        if (event.status !== null) fields.push(`status=${event.status}`);
+        if (event.transportFailureCode) fields.push(`code=${event.transportFailureCode}`);
+        if (event.callerAborted !== undefined && event.callerAborted !== null)
+          fields.push(`callerAborted=${event.callerAborted}`);
+        if (event.callerAbortReason) fields.push(`abortReason=${event.callerAbortReason}`);
+        parts.push(fields.join(' '));
+      }
+      if (diagnostics.omitted > 0) parts.push(`run${index + 1}:diagnosticsOmitted=${diagnostics.omitted}`);
+    }
+    return parts;
+  }).join('; ').slice(0, 800);
+  const outputTailBase = `llm-test ${report.scenarioId} verdict=${report.verdict} runs=${report.runs.length} passed=${passed} failed=${failed} errored=${errored}`;
   const outputTail = status === 'pass' ? null
-    : `llm-test ${report.scenarioId} verdict=${report.verdict} runs=${report.runs.length} passed=${passed} failed=${failed} errored=${errored}`;
+    : `${outputTailBase}${diagnosticTail ? `; ${diagnosticTail}` : ''}`.slice(0, 1200);
 
   return {
     filePath: ledger.filePath,
@@ -317,4 +342,34 @@ export async function recordLlmScenarioTestRun(
     console.warn('[llm-test] test-run ledger write failed', error instanceof Error ? error.message : String(error));
     return null;
   }
+}
+
+/** Record a runner exception that occurred before runScenario could return a RunReport. */
+export async function recordLlmScenarioTestRunFailure(
+  failure: {
+    scenarioId: string;
+    startedAt: Date;
+    finishedAt: Date;
+    llmCallDiagnostics: LlmCallDiagnosticSummary;
+  },
+  scenarioFilePath: string | undefined,
+  before: LlmScenarioLedgerStart | null,
+): Promise<number | null> {
+  // This synthetic report intentionally contains only the fields consumed by
+  // llmScenarioLedgerRow: state, timing, timeout, and the bounded diagnostics.
+  const report = {
+    scenarioId: failure.scenarioId,
+    verdict: 'errored',
+    runs: [{
+      status: 'errored',
+      summary: {
+        startedAt: failure.startedAt,
+        finishedAt: failure.finishedAt,
+        llmCallDiagnostics: failure.llmCallDiagnostics,
+      },
+    }],
+    varianceByAxis: {},
+    varianceFindings: [],
+  } as unknown as RunReport;
+  return recordLlmScenarioTestRun(report, scenarioFilePath, before);
 }
