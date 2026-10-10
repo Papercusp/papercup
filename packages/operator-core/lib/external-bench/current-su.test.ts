@@ -8,7 +8,7 @@ import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentSuBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
-  currentBenchObservationReader, type CurrentBenchObservationReaderPorts,
+  currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   currentBenchNativeCostReader, type CurrentBenchNativeCostReaderPorts,
@@ -1028,6 +1028,16 @@ describe('host-backed benchmark observation reader', () => {
       const observation = await currentBenchObservationReader(f.opts, f.ports, f.hosted)(f.task);
       expect(currentBenchIdentityFromObservation(f.task, observation!)).toMatchObject({ sourceRevision: 'b'.repeat(40), model: 'actual-provider-model' });
       expect(vi.mocked(f.ports.measureRuntimes).mock.calls.at(-1)?.[1]).toEqual(['worker']);
+    } finally { await f.hosted.stop(); }
+  });
+  it('refuses an unissued private credential and prevents report IO after revocation', async () => {
+    const f = await privateHostFixture();
+    try {
+      const forged = { ...f.hosted, nativeGateway: { ...f.hosted.nativeGateway } };
+      expect(() => liveCurrentBenchObservationReaderPorts(f.opts, forged)).toThrow(/controller-issued/);
+      const io = liveCurrentBenchObservationReaderPorts(f.opts, f.hosted);
+      await f.hosted.stop();
+      expect(await io.readGateway(f.task.detail.coordOwnerId as string)).toBeNull();
     } finally { await f.hosted.stop(); }
   });
   it.each(['forged', 'workspace', 'port', 'worker-process', 'gateway-process', 'revoked', 'revoked-during-read'])(
