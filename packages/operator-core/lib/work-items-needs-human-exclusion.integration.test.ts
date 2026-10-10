@@ -24,7 +24,10 @@ import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilitie
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  afterUpdate: undefined as ((id: string) => Promise<void>) | undefined,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -33,8 +36,21 @@ vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
+vi.mock('./agent-tools/coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'condition-tester' }) }));
+vi.mock('./work-items', async (orig) => {
+  const actual = await orig<typeof import('./work-items')>();
+  return {
+    ...actual,
+    updateWorkItem: async (...args: Parameters<typeof actual.updateWorkItem>) => {
+      const result = await actual.updateWorkItem(...args);
+      await h.afterUpdate?.(args[0]);
+      return result;
+    },
+  };
+});
 
 const wi = await import('./work-items');
+const updateTool = (await import('./agent-tools/work_items/update')).default;
 
 const H = 'papercup';
 const WS = 'default';
@@ -76,6 +92,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  h.afterUpdate = undefined;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
   setFlagOverridesForTest({
     [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
@@ -83,6 +100,84 @@ beforeEach(async () => {
   });
 });
 afterEach(() => setFlagOverridesForTest({}));
+
+describe('work_items:update requires persisted current owner authority (P-003)', () => {
+  const ownerCondition = {
+    kind: 'human', ref: 'credential:test-service', capability: 'credential', status: 'active',
+    summary: 'Provide the service credential.', nextVerb: 'Configure and verify the credential.',
+    defaultIfUnanswered: 'Keep the credential-dependent work parked.',
+    createdBy: 'requester', createdAt: '2026-10-10T00:00:00Z', updatedAt: '2026-10-10T00:00:00Z',
+    legacyEvidence: { generation: 7 },
+  };
+  const update = async (id: string, extra: Record<string, unknown> = {}) => {
+    const result = await updateTool.handler({ id, harness: H, needsHuman: true, ...extra } as never, { workspaceId: WS } as never);
+    return (result as { data: { results: Array<{ ok: boolean; error?: string }> } }).data;
+  };
+  const read = async (id: string) => (await db.sql<{
+    title: string; status: string; taken_by: string | null; payload: Record<string, unknown>;
+  }[]>`SELECT title, status, taken_by, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id}`)[0]!;
+
+  it.each(['bug', 'feature'])('refuses an unsupported %s flag before mixed edits and preserves the peer park', async (kind) => {
+    const id = `WI-bare-${kind}`;
+    const payload = { sibling: 'keep', needsHuman: true, _park: { ref: 'runtime:independent', owner: 'peer' } };
+    await seedIssue(id, { kind, takenBy: 'peer', payload });
+    const before = await read(id);
+
+    const result = await update(id, { title: 'must not change', payload: { sibling: 'must not change' } });
+
+    expect(result.results[0]).toMatchObject({ ok: false });
+    expect(result.results[0]?.error).toContain('current typed credential');
+    expect(await read(id)).toEqual(before);
+  });
+
+  it.each(['bug', 'feature'])('accepts a persisted credential for %s and preserves its raw condition and peer claim', async (kind) => {
+    const id = `WI-credential-${kind}`;
+    const payload = { sibling: 'keep', needsHuman: true, externalBlockers: [ownerCondition], _park: { ref: 'runtime:independent', owner: 'peer' } };
+    await seedIssue(id, { kind, takenBy: 'peer', payload });
+
+    expect((await update(id)).results[0]).toMatchObject({ ok: true });
+    const row = await read(id);
+    expect(row.taken_by).toBe('peer');
+    expect(row.status).toBe('open');
+    expect(row.payload).toMatchObject({ sibling: 'keep', needsOwnerAction: true });
+    expect(row.payload.externalBlockers).toEqual(payload.externalBlockers);
+    expect(row.payload._park).toEqual(payload._park);
+    expect(Object.hasOwn(row.payload, 'needsHuman')).toBe(false);
+  });
+
+  it.each([
+    ['bug', 'clear'], ['bug', 'close'], ['feature', 'clear'], ['feature', 'close'],
+  ])('fences a concurrent %s %s at the SQL write without restoring the owner flag', async (kind, change) => {
+    const id = `WI-race-${kind}-${change}`;
+    const payload = { sibling: 'keep', needsHuman: true, externalBlockers: [ownerCondition], _park: { ref: 'runtime:independent', owner: 'peer' } };
+    await seedIssue(id, { kind, takenBy: 'peer', payload });
+    h.afterUpdate = async (updatedId) => {
+      expect(updatedId).toBe(id);
+      if (change === 'clear') {
+        await db.sql`UPDATE harness_shared.work_items
+          SET payload = jsonb_set(payload, '{externalBlockers}', ${db.sql.json([{ ...ownerCondition, status: 'cleared' }])})
+          WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id}`;
+      } else {
+        await db.sql`UPDATE harness_shared.work_items SET status = 'done'
+          WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id}`;
+      }
+    };
+
+    const result = await update(id);
+
+    expect(result.results[0]).toMatchObject({ ok: false });
+    expect(result.results[0]?.error).toContain('owner-condition-changed');
+    const row = await read(id);
+    expect(row.taken_by).toBe('peer');
+    expect(row.payload.needsOwnerAction).toBeUndefined();
+    expect(row.payload.needsHuman).toBe(true);
+    expect(row.payload.sibling).toBe('keep');
+    expect(row.payload._park).toEqual(payload._park);
+    expect(row.status).toBe(change === 'close' ? 'done' : 'open');
+    expect(row.payload.externalBlockers).toEqual([{ ...ownerCondition, status: change === 'clear' ? 'cleared' : 'active' }]);
+  });
+});
 
 describe('claimNextWorkItem admits a legacy needsHuman:true OPEN issue after migration 864', () => {
   it('serves the legacy-tagged item normally when it is oldest', async () => {
