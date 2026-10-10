@@ -1271,13 +1271,15 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     if (reason) expect(readAgentReviewState(h.state.issue.payload)?.submittedBy).toBe('improvement-triage');
   });
 
-  it('never repairs triage provenance under a third-party implementation holder', async () => {
+  it.each(['su-original', 'su-newcomer'])('never repairs triage provenance under a third-party implementation holder for %s', async (submittedBy) => {
     const h = harness({ ...triageRow(), assignee: 'su-other' });
     h.state.submitterLiveness = { sessionState: 'ended' };
-    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy }, h.deps)).resolves.toMatchObject({
       resubmitted: false, reason: 'orphan-revision-held-by-other',
     });
+    expect(h.deps.mergeWorkItemPayload).not.toHaveBeenCalled();
     expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    expect(h.state.issue.assignee).toBe('su-other');
     expect(readAgentReviewState(h.state.issue.payload)?.status).toBe('revision-requested');
   });
 
