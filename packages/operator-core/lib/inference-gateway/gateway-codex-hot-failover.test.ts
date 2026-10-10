@@ -56,9 +56,10 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
       const frames = result.split('\n\n').filter(Boolean).map(frame =>
         JSON.parse(frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5)).join('\n')));
       expect(frames.filter(frame => frame.type === 'response.output_text.delta')).toHaveLength(1);
-      expect(frames.at(-1)).toMatchObject({ type: 'response.failed', response: {
-        status: 'failed', error: { code: 'context_length_exceeded', message: 'context window exceeded' },
+      expect(frames.at(-1)).toMatchObject({ type: 'error', error: {
+        code: 'context_length_exceeded', message: 'context window exceeded',
       } });
+      expect(frames.some(frame => frame.type === 'response.failed')).toBe(false);
       expect(frames.some(frame => frame.type === 'response.completed')).toBe(false);
     }
   });
@@ -147,9 +148,11 @@ describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
         id: 'resp_visible_eof', status: 'failed', error: { code: 'server_error', message: expect.stringContaining('EOF') },
       } });
     } else {
-      expect(frames.at(-1)).toMatchObject({ type: 'response.failed', response: {
-        id: null, status: 'failed', error: { code: 'server_error' },
+      expect(frames.at(-1)).toMatchObject({ type: 'error', error: {
+        code: 'server_error', message: expect.stringContaining('EOF'),
       } });
+      expect(frames.some(event => event.type === 'response.failed')).toBe(false);
+      expect(frames.at(-1)).not.toHaveProperty('response');
     }
     const report = await fetch('http://127.0.0.1:' + port + '/admin/owner-report?owner=visible-eof-owner');
     expect(report.status).toBe(200);
