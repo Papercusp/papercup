@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSyn
 import { hostname, tmpdir } from 'node:os';
 import http from 'node:http';
 import { join } from 'node:path';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { currentBenchObservationReader, currentBenchIdentityFromObservation, liveCurrentBenchObservationReaderPorts,
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
   type CurrentBenchTask } from './current-su';
@@ -81,7 +81,7 @@ beforeAll(async () => {
   const adminUri = await getTestPg();
   const dbName = `currentbench_${randomBytes(5).toString('hex')}`;
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try { await admin.unsafe(`CREATE DATABASE "${dbName}"`); } finally { await admin.end({ timeout: 5 }); }
+  try { await admin.unsafe(`CREATE DATABASE "${dbName}"`); await markManagedTestDatabase(admin, dbName); } finally { await admin.end({ timeout: 5 }); }
   const uri = new URL(adminUri); uri.pathname = `/${dbName}`;
   sql = postgres(uri.toString(), { max: 2, onnotice: () => {} });
   await sql.unsafe(`CREATE SCHEMA harness_shared;
