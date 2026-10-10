@@ -62,6 +62,8 @@ export interface ProducerSilenceProbe {
   output: string;
   /** Last-output epoch ms per pot slug (or {@link ANY_POT} for a workspace-level producer). */
   readLastOutput: (sql: Sql, workspaceId: string) => Promise<Map<string, number>>;
+  /** A recent, explicit producer-side gate that explains why no output was expected. */
+  readIntentionalSilence?: (sql: Sql, workspaceId: string, nowMs: number) => Promise<Map<string, string>>;
 }
 
 function prefixedLoop(prefix: string) {
@@ -122,6 +124,38 @@ export const PRODUCER_SILENCE_PROBES: Record<LearningProducer, ProducerSilencePr
         SELECT pot_slug AS pot, max(tick_at) AS last FROM harness_shared.scout_ticks
          WHERE workspace_id = ${ws} AND status = 'ran' AND coalesce(origin, 'scout') = 'scout'
          GROUP BY pot_slug`),
+    // Scout's generation-preflight records deliberate no-output cycles as gated ticks.
+    // When every scoped tick for the whole silence window is the deep-admission gate,
+    // the output gap is explained by backpressure rather than a wedged producer.
+    readIntentionalSilence: async (sql, ws, nowMs) => {
+      const since = new Date(nowMs - 24 * HOUR_MS);
+      const rows = await sql<Array<{
+        pot: string | null;
+        ticks: number | string;
+        latest: unknown;
+        all_deep_gated: boolean;
+      }>>`
+        SELECT pot_slug AS pot,
+               count(*)::int AS ticks,
+               max(tick_at) AS latest,
+               bool_and(status = 'gated' AND detail->>'reason' = 'admission-throttle-deep') AS all_deep_gated
+          FROM harness_shared.scout_ticks
+         WHERE workspace_id = ${ws}
+           AND coalesce(origin, 'scout') = 'scout'
+           AND tick_at >= ${since}::timestamptz
+         GROUP BY pot_slug`;
+      const suppressed = new Map<string, string>();
+      for (const row of rows) {
+        if (!row.pot || row.all_deep_gated !== true) continue;
+        const latestMs = msOf(row.latest);
+        if (latestMs === null) continue;
+        suppressed.set(
+          row.pot,
+          `all ${Number(row.ticks)} Scout ticks in the 24h window were gated by deep admission throttle; latest ${new Date(latestMs).toISOString()}`,
+        );
+      }
+      return suppressed;
+    },
   },
   gym: {
     loopPot: prefixedLoop('gym:'),
@@ -185,6 +219,8 @@ export interface ProducerSilenceFacts {
   routines: ReadonlyArray<{ name: string; installSlug: string; active: boolean }>;
   /** Last-output epoch ms keyed `${producer}:${pot}` (or `${producer}:*`). Absent = never produced. */
   lastOutputMs: ReadonlyMap<string, number>;
+  /** Explicit recent gates that make a producer's lack of output expected. */
+  intentionalSilence?: ReadonlyMap<string, string>;
   /** Producer-specific off-switches keyed `${producer}:${pot}` → why it is off. */
   switchedOff?: ReadonlyMap<string, string>;
   /** Likely-cause hints keyed `${producer}:${pot}`, folded into a silence signal's body. */
@@ -200,6 +236,7 @@ export interface ProducerSilenceFacts {
 
 export type ProducerCheckDisposition =
   | 'producing'
+  | 'intentionally-gated'
   | 'silent'
   | 'pot-paused'
   | 'routine-inactive'
@@ -294,6 +331,7 @@ export function producerSilenceVerdict(facts: ProducerSilenceFacts, opts: Produc
       const hours = opts.producerSilenceHours?.[producer] ?? probe.silenceHours;
       const last = facts.lastOutputMs.get(key) ?? facts.lastOutputMs.get(`${producer}:${ANY_POT}`) ?? null;
       if (last !== null && facts.nowMs - last <= hours * HOUR_MS) { record('producing'); continue; }
+      if (facts.intentionalSilence?.has(key)) { record('intentionally-gated'); continue; }
 
       record('silent');
       const since = last === null ? 'has never produced' : `last produced ${fmtAge(facts.nowMs - last)} ago (${new Date(last).toISOString()})`;
@@ -373,6 +411,7 @@ export async function readProducerSilenceFacts(sql: Sql, workspaceId: string, no
   ]);
 
   const lastOutputMs = new Map<string, number>();
+  const intentionalSilence = new Map<string, string>();
   const unmeasured = new Set<LearningProducer>();
   await Promise.all(
     LEARNING_PRODUCERS.map(async (producer) => {
@@ -382,6 +421,20 @@ export async function readProducerSilenceFacts(sql: Sql, workspaceId: string, no
       } catch (err) {
         unmeasured.add(producer);
         console.warn(`[producer-silence] ${producer} output read failed — reported unmeasured:`, err instanceof Error ? err.message : err);
+      }
+    }),
+  );
+
+  await Promise.all(
+    LEARNING_PRODUCERS.map(async (producer) => {
+      const readIntentionalSilence = PRODUCER_SILENCE_PROBES[producer].readIntentionalSilence;
+      if (!readIntentionalSilence) return;
+      try {
+        const byPot = await readIntentionalSilence(sql, workspaceId, nowMs);
+        for (const [pot, reason] of byPot) intentionalSilence.set(`${producer}:${pot}`, reason);
+      } catch (err) {
+        // A missing optional explanation must not suppress a real silence signal.
+        console.warn(`[producer-silence] ${producer} intentional-silence read failed — normal output check retained:`, err instanceof Error ? err.message : err);
       }
     }),
   );
@@ -410,6 +463,7 @@ export async function readProducerSilenceFacts(sql: Sql, workspaceId: string, no
     potScopes,
     routines: routineRows.map((r) => ({ name: r.name, installSlug: r.install_slug, active: r.active === true })),
     lastOutputMs,
+    intentionalSilence,
     switchedOff,
     hints,
     unmeasured,

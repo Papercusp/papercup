@@ -79,6 +79,29 @@ describe('producerSilenceVerdict', () => {
     expect(s.body).toContain("its 'bp-singleton-scout-0' routine is active");
   });
 
+  it('does not flag Scout silence when every tick in the window was explicitly deep-throttle gated', () => {
+    const v = producerSilenceVerdict(facts({
+      loops: [loop('blender:papercusp')],
+      routines: [{ name: 'bp-singleton-scout-0', installSlug: '@singleton', active: true }],
+      lastOutputMs: new Map([['scout:papercusp', NOW - 30 * H]]),
+      intentionalSilence: new Map([['scout:papercusp', 'all 48 Scout ticks were deep-throttle gated']]),
+    }));
+    expect(v.signals).toEqual([]);
+    expect(v.checked).toEqual([
+      { producer: 'scout', pot: 'papercusp', loopId: 'blender:papercusp', disposition: 'intentionally-gated' },
+    ]);
+    expect(producerSilenceNote(v)).toContain('intentionally-gated=1');
+  });
+
+  it('still flags silence when a recent gate does not cover every Scout tick in the window', () => {
+    const v = producerSilenceVerdict(facts({
+      loops: [loop('blender:papercusp')],
+      lastOutputMs: new Map([['scout:papercusp', NOW - 30 * H]]),
+    }));
+    expect(v.signals).toHaveLength(1);
+    expect(v.checked[0]?.disposition).toBe('silent');
+  });
+
   it('keeps the title stable across ticks (no counts or ages in it)', () => {
     const at = (age: number) => producerSilenceVerdict(facts({
       loops: [loop('blender:papercusp')],
