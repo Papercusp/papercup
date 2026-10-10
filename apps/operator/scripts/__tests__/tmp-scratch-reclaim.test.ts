@@ -1,9 +1,11 @@
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -16,6 +18,7 @@ const REPO_ROOT = resolve(__dirname, '../../../..');
 const SCRIPT = join(REPO_ROOT, 'scripts/reclaim-tmp-scratch-residue.sh');
 const SERVICE = join(REPO_ROOT, 'apps/operator/scripts/systemd/papercup-tmp-scratch-reclaim.service');
 const TIMER = join(REPO_ROOT, 'apps/operator/scripts/systemd/papercup-tmp-scratch-reclaim.timer');
+const WRAPPER = join(REPO_ROOT, 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh');
 
 function ageFileOrDirectory(path: string, ageMinutes: number): void {
   const timestamp = new Date(Date.now() - ageMinutes * 60_000);
@@ -108,6 +111,49 @@ describe('shared /tmp scratch reclaimer systemd contract', () => {
     expect(service).toContain('ReadWritePaths=/tmp');
     expect(service).toContain('NoNewPrivileges=yes');
     expect(service).toContain('TimeoutStartSec=600');
+    expect(service).toContain('RuntimeDirectory=papercup-tmp-scratch-reclaim');
+    expect(service).toContain('RuntimeDirectoryMode=0700');
+    expect(service).toContain('Environment=TMPDIR=%t/papercup-tmp-scratch-reclaim');
+  });
+
+  it('bootstraps cleanup when the target refuses temporary allocation', () => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-tmp-recovery-test-'));
+    try {
+      const target = join(root, 'full-target');
+      const runtimeBase = join(root, 'runtime');
+      const shim = join(root, 'shim');
+      mkdirSync(target);
+      mkdirSync(runtimeBase);
+      mkdirSync(shim);
+      const old = makeEntry(target, 'papercusp-affected-tests-old.log', 300);
+      const fresh = makeEntry(target, 'papercusp-affected-tests-fresh.log');
+      const realMktemp = spawnSync('bash', ['-c', 'command -v mktemp'], { encoding: 'utf8' }).stdout.trim();
+      expect(realMktemp).not.toBe('');
+      const mktempShim = join(shim, 'mktemp');
+      writeFileSync(mktempShim, `#!/usr/bin/env bash\nfor arg in "$@"; do\n  case "$arg" in "${target}"/*) echo 'No space left on device' >&2; exit 1;; esac\ndone\nexec "${realMktemp}" "$@"\n`);
+      chmodSync(mktempShim, 0o755);
+      const env = { ...process.env, PATH: `${shim}:${process.env.PATH}` };
+      delete env.PAPERCUSP_SCRIPT_SNAPSHOT_SELF_COPIED;
+      delete env.PAPERCUSP_SCRIPT_SNAPSHOT_SELF_DIR;
+      const args = [WRAPPER, SCRIPT, '--root', target, '--execute'];
+      const blocked = spawnSync('bash', args, { env: { ...env, TMPDIR: target }, encoding: 'utf8', timeout: 30_000 });
+      expect(blocked.status).toBe(73);
+      expect(blocked.stderr).toContain('unable to create self-snapshot directory');
+      expect(existsSync(old)).toBe(true);
+
+      const service = readFileSync(SERVICE, 'utf8');
+      const configuredTmp = /^Environment=TMPDIR=(.+)$/m.exec(service)?.[1];
+      expect(configuredTmp).toBeDefined();
+      const runtime = configuredTmp!.replace('%t', runtimeBase);
+      mkdirSync(runtime, { mode: 0o700 });
+      const recovered = spawnSync('bash', args, { env: { ...env, TMPDIR: runtime }, encoding: 'utf8', timeout: 30_000 });
+      expect(recovered.status).toBe(0);
+      expect(existsSync(old)).toBe(false);
+      expect(existsSync(fresh)).toBe(true);
+      expect(readdirSync(runtime)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('uses a persistent wall-clock timer rather than an in-process or monotonic loop', () => {
