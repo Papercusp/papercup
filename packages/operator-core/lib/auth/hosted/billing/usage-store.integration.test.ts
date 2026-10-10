@@ -622,6 +622,8 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
   async function lockedPrivateFunding(scope: OpenRouterGenerationBinding['scope'], options: {
     accountMismatch?: boolean;
     organizationMismatch?: boolean;
+    cashDrift?: boolean;
+    incompleteCensus?: boolean;
     fetchImpl?: typeof fetch;
     inspect?: (sql: Sql) => Promise<void>;
   } = {}) {
@@ -629,7 +631,7 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
     const customerId = 'cus_' + randomUUID().replaceAll('-', '');
     await runService(sql => sql`INSERT INTO papercusp_auth.hosted_billing_customers
       (organization_id, stripe_customer_id, livemode) VALUES (${scope.organizationId}::uuid, ${customerId}, true)`);
-    const calls: string[] = [];
+    const calls: string[] = []; let balanceReads = 0;
     const fetchImpl: typeof fetch = options.fetchImpl ?? (async (url, init) => {
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk_live_fixture');
       expect(init?.signal).toBeInstanceOf(AbortSignal); expect(init?.redirect).toBe('error');
@@ -638,16 +640,20 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
       if (path === '/v1/account') body = { object: 'account', id: options.accountMismatch ? 'acct_Foreign' : accountId };
       else if (path === '/v1/customers/' + customerId) body = { object: 'customer', id: customerId,
         livemode: true, metadata: { organizationId: options.organizationMismatch ? randomUUID() : scope.organizationId } };
-      else if (path === '/v1/balance') body = { object: 'balance', livemode: true, available: [], pending: [] };
+      else if (path === '/v1/balance') body = { object: 'balance', livemode: true,
+        available: options.cashDrift && ++balanceReads > 1 ? [{ currency: 'usd', amount: 1 }] : [], pending: [] };
       else if (['/v1/charges', '/v1/refunds', '/v1/disputes', '/v1/balance_transactions'].includes(path))
-        body = { object: 'list', data: [], has_more: false };
+        body = { object: 'list', data: [], has_more: options.incompleteCensus === true };
       else throw new Error('unexpected private funding fixture path');
       return new Response(JSON.stringify(body), { status: 200, headers: { 'request-id': 'req_PrivateSourceFixture' } });
     });
     const built = createLockedHostedStripeFundingReader({ pool: { controlWorkspaceId: scope.controlWorkspaceId,
       stripeAccountId: accountId }, journalWorkspaceId: 'fixture-private-model-journal',
       policy: { daoBasisPoints: 0, refundReserveBasisPoints: 0 }, maximumAgeMs: 1000 },
-    { secretKey: 'sk_live_fixture', liveModeAllowed: true, fetchImpl, now: () => T, maximumDurationMs: 150 });
+    // Stripe evidence is stamped by Date.now(), so use the same real server
+    // clock here; the budget fixture's historical T cannot qualify that read.
+    { secretKey: 'sk_live_fixture', liveModeAllowed: true, fetchImpl,
+      maximumDurationMs: options.fetchImpl ? 150 : 10_000 });
     if (!built.ok) throw new Error('invalid funding fixture');
     let fundingResult: Awaited<ReturnType<typeof built.read>> | undefined; let inspected = false;
     let settled!: () => void; const readSettled = new Promise<void>(resolve => { settled = resolve; });
@@ -702,6 +708,20 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
     const p = await privateCustomerModel(scope, { readContext: funding.readContext });
     expect((await p.consume()).at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
     expect(funding.result()).toMatchObject({ ok: false });
+    expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
+    expect(await db.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts
+      WHERE control_workspace_id = ${scope.controlWorkspaceId} AND organization_id = ${scope.organizationId}`)
+      .toEqual([]);
+  });
+
+  it.each(['cash-drift', 'incomplete-census'] as const)('refuses %s while composing locked funding with private admission', async fault => {
+    const scope = await tenant(); const funding = await lockedPrivateFunding(scope,
+      { cashDrift: fault === 'cash-drift', incompleteCensus: fault === 'incomplete-census' });
+    const p = await privateCustomerModel(scope, { readContext: funding.readContext });
+    expect((await p.consume()).at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
+    expect(funding.result()).toMatchObject({ ok: false,
+      reason: fault === 'cash-drift' ? 'stripe-read-changed' : 'unverified-stripe-read' });
+    expect(funding.inspected()).toBe(true);
     expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
     expect(await db.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts
       WHERE control_workspace_id = ${scope.controlWorkspaceId} AND organization_id = ${scope.organizationId}`)
