@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { RouteContext } from '@papercusp/agent-mcp';
+import { createHostedPrincipal } from '../auth/hosted-principal';
 import {
   HOSTED_CONNECTOR_LIVENESS_FRESH_MS,
   HostedWorkspaceConnectorGateway,
@@ -13,7 +15,37 @@ import {
 import {
   authenticateHostedConnectorSocket,
   authenticateHostedConnectorTransport,
+  createHostedWorkspaceConnectorRoutes,
 } from './routes/hosted-workspace-connector';
+
+describe('hosted connector route refusal identity', () => {
+  it.each([0, 1, 2, 3])('refuses a foreign workspace after Response constructor replacement on route %i', async (index) => {
+    const original = globalThis.Response;
+    class AlternateResponse extends original {}
+    vi.stubGlobal('Response', AlternateResponse);
+    const gatewayCalls = {
+      enroll: vi.fn(async () => null), rotate: vi.fn(async () => null),
+      revoke: vi.fn(async () => null), issueSessionTicket: vi.fn(async () => null),
+    };
+    try {
+      expect(Response.json({ denied: true })).not.toBeInstanceOf(AlternateResponse);
+      const route = createHostedWorkspaceConnectorRoutes(gatewayCalls as unknown as HostedWorkspaceConnectorGateway)[index];
+      const ctx: RouteContext = {
+        principal: createHostedPrincipal({ workspaceId: 'control', userId: 'user-1', activeOrganizationId: 'org-1',
+          selectedWorkspaceId: 'customer-1', sessionId: 'session-1', sessionVersion: 1, permissions: ['workspace:operate'] }),
+        input: undefined, params: { workspaceId: 'foreign' }, log: () => {}, signal: new AbortController().signal,
+      };
+      const response = await route.handler(new Request('https://app.papercusp.com/api/hosted/workspaces/foreign/connectors/enroll', {
+        method: 'POST', body: JSON.stringify({ hostId: 'foreign-host', routeLabel: 'foreign', transport: 'websocket' }),
+      }), ctx);
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ error: { code: 'workspace_binding_mismatch' } });
+      for (const call of Object.values(gatewayCalls)) expect(call).not.toHaveBeenCalled();
+    } finally {
+      vi.stubGlobal('Response', original);
+    }
+  });
+});
 
 class MemoryStore implements HostedWorkspaceConnectorStore {
   binding: HostedConnectorBinding | null = null;
