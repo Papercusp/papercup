@@ -24,6 +24,17 @@ import {
 import { WorkspaceHostProvisioningRequestError, type WorkspaceHostCanaryAdmission } from './provisioning-runner';
 import { WorkspaceHostControllerFenceError } from './observability-store';
 
+const bootstrapMocks = vi.hoisted(() => ({
+  resolveProfile: vi.fn(),
+  renderBootstrap: vi.fn(),
+}));
+
+vi.mock('./provision-bootstrap', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./provision-bootstrap')>()),
+  resolveWorkspaceHostProvisionBootstrapProfile: bootstrapMocks.resolveProfile,
+  renderWorkspaceHostProvisionBootstrap: bootstrapMocks.renderBootstrap,
+}));
+
 const vm = {
   target: 'gcp' as const,
   kind: 'vm',
@@ -327,6 +338,50 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(provider.plan).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'repair' }),
       expect.objectContaining({ hostBootstrapScript: '#!/usr/bin/env bash\necho repaired' }),
+    );
+  });
+
+  it('forwards an operation-scoped release pin through the lifecycle runner', async () => {
+    const bootstrapReleaseOverride = {
+      manifestPath: '/var/lib/papercusp/releases/gcp-live.json',
+      migrationId: '1102',
+    } as const;
+    const profile = {
+      release: {
+        version: '2026.10.10-gcp-live',
+        bundleSha256: 'c'.repeat(64),
+        signingKeySha256: 'd'.repeat(64),
+      },
+      migrationId: bootstrapReleaseOverride.migrationId,
+    };
+    const bootstrapScript = '#!/usr/bin/env bash\necho lifecycle release';
+    bootstrapMocks.resolveProfile.mockReset().mockResolvedValue(profile);
+    bootstrapMocks.renderBootstrap.mockReset().mockReturnValue(bootstrapScript);
+
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness(true);
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z',
+      resource: vm,
+    });
+
+    await runWorkspaceHostLifecycle({
+      ...input(provider, store),
+      action: 'repair',
+      bootstrapReleaseOverride,
+    });
+
+    expect(bootstrapMocks.resolveProfile).toHaveBeenCalledWith({ bootstrapReleaseOverride });
+    expect(bootstrapMocks.renderBootstrap.mock.calls[0]?.[0]).toBe('host-1');
+    expect(bootstrapMocks.renderBootstrap.mock.calls[0]?.[1]).toBe(profile);
+    expect(provider.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'repair' }),
+      expect.objectContaining({
+        hostBootstrapScript: bootstrapScript,
+      }),
     );
   });
 

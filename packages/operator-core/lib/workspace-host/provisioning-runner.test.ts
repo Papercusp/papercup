@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  fakeWorkspaceHostCapabilities,
   makeFakeWorkspaceHostProvider,
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
   workspaceHostCanaryIdentityLabels,
@@ -22,6 +23,17 @@ import {
   type WorkspaceHostProvisioningStore,
   type WorkspaceHostCanaryAdmission,
 } from './provisioning-runner';
+
+const bootstrapMocks = vi.hoisted(() => ({
+  resolveProfile: vi.fn(),
+  renderBootstrap: vi.fn(),
+}));
+
+vi.mock('./provision-bootstrap', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./provision-bootstrap')>()),
+  resolveWorkspaceHostProvisionBootstrapProfile: bootstrapMocks.resolveProfile,
+  renderWorkspaceHostProvisionBootstrap: bootstrapMocks.renderBootstrap,
+}));
 
 const desired: WorkspaceHostDesiredSpec = {
   hostId: 'host-1',
@@ -66,7 +78,7 @@ function providerPlan(steps: readonly WorkspaceHostPlanStep[]): WorkspaceHostPla
   };
 }
 
-function providerHarness(steps: readonly WorkspaceHostPlanStep[]) {
+function providerHarness(steps: readonly WorkspaceHostPlanStep[], hostBootstrap = false) {
   const apply = vi.fn<WorkspaceHostProvider['apply']>();
   const reconcile = vi.fn<WorkspaceHostProvider['reconcile']>();
   const observe = vi.fn<WorkspaceHostProvider['observe']>(async (host) => ({
@@ -83,6 +95,9 @@ function providerHarness(steps: readonly WorkspaceHostPlanStep[]) {
   // hand-written literal that used to sit here did (WI-2144032).
   const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
+    ...(hostBootstrap
+      ? { capabilities: fakeWorkspaceHostCapabilities({ lifecycle: { hostBootstrap: true } }) }
+      : {}),
     validateConnection: vi.fn(async () => ({
       ok: true,
       checkedAt: '2026-08-25T00:00:00Z',
@@ -139,6 +154,56 @@ function runInput(provider: WorkspaceHostProvider, store: WorkspaceHostProvision
     store,
   };
 }
+
+describe('workspace-host provisioning bootstrap release selection', () => {
+  it('forwards an operation-scoped release pin through the provision runner', async () => {
+    const bootstrapReleaseOverride = {
+      manifestPath: '/var/lib/papercusp/releases/aws-canary.json',
+      migrationId: '1101',
+    } as const;
+    const profile = {
+      release: {
+        version: '2026.10.10-aws-canary',
+        bundleSha256: 'a'.repeat(64),
+        signingKeySha256: 'b'.repeat(64),
+      },
+      migrationId: bootstrapReleaseOverride.migrationId,
+    };
+    const bootstrapScript = '#!/usr/bin/env bash\necho operation release';
+    bootstrapMocks.resolveProfile.mockReset().mockResolvedValue(profile);
+    bootstrapMocks.renderBootstrap.mockReset().mockReturnValue(bootstrapScript);
+
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness([planStep('create-instance')], true);
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'create-instance',
+      state: 'applied',
+      observedAt: '2026-08-25T00:00:05Z',
+      resource: { target: 'gcp', kind: 'vm', providerId: 'provider-create-instance' },
+    });
+    await runWorkspaceHostProvisioning({
+      ...runInput(provider, store),
+      bootstrapReleaseOverride,
+    });
+
+    expect(bootstrapMocks.resolveProfile).toHaveBeenCalledWith({ bootstrapReleaseOverride });
+    expect(provider.plan).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        hostBootstrapScript: bootstrapScript,
+      }),
+    );
+    expect(store.upsertHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeRelease: expect.objectContaining({
+          version: profile.release.version,
+          schemaVersion: bootstrapReleaseOverride.migrationId,
+        }),
+      }),
+    );
+  });
+});
 
 describe('workspace-host controller revision identity', () => {
   it('keeps one controller fence stable and advances it exactly once on takeover', () => {
