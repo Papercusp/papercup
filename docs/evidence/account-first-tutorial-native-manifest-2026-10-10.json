@@ -61,7 +61,7 @@
     "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-ui/src/browser-telemetry.tsx",
     "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-ui/src/browser-telemetry.tsx"
   ],
-  "observedAt": "2026-10-10T06:10:03.000Z",
+  "observedAt": "2026-10-10T06:17:42.002Z",
   "limitations": [
     "Readiness and source custody only; actual native review remains pending."
   ]
