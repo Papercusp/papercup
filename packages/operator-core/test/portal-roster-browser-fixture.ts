@@ -228,29 +228,31 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const selectedMessageIds: string[] = [];
   const marker = `private-browser-${process.pid}`;
   const pageErrors: string[] = [];
-  const inboxReads: Array<Record<string, unknown>> = [];
-  const inboxReadCaptures = new Set<Promise<void>>();
+  const syncReads: Array<Record<string, unknown>> = [];
+  const syncReadCaptures = new Set<Promise<void>>();
   let page: Page | undefined;
   try {
     await context.addCookies([cookie(input.ownToken)]);
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.message));
-    if (input.inbox) page.on('response', response => {
+    if (input.inbox || input.plans) page.on('response', response => {
       const url = new URL(response.url());
       const name = url.searchParams.get('name');
-      if (!url.pathname.endsWith('/rest-query') || !name?.startsWith('plans.attention')) return;
+      const queryName = input.plans ? 'plans.list' : 'plans.attention';
+      if (!url.pathname.endsWith('/rest-query') || !name?.startsWith(queryName)) return;
       const observation = { at: new Date().toISOString(), name, args: url.searchParams.get('args'),
         delta: url.searchParams.get('delta'), status: response.status() };
       const capture = response.json().then(body => {
-        inboxReads.push({ ...observation, body });
+        syncReads.push({ ...observation, body });
       }, error => {
-        inboxReads.push({ ...observation, error: String(error) });
+        syncReads.push({ ...observation, error: String(error) });
       }).then(() => {
-        writeFileSync(join(evidence, 'portal-inbox-reads.json'), JSON.stringify(inboxReads, null, 2));
+        writeFileSync(join(evidence, input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
+          JSON.stringify(syncReads, null, 2));
       });
-      inboxReadCaptures.add(capture);
-      void capture.finally(() => inboxReadCaptures.delete(capture));
+      syncReadCaptures.add(capture);
+      void capture.finally(() => syncReadCaptures.delete(capture));
     });
     const url = new URL(input.plans ? '/?app=plans&q=retained-shell-search'
       : input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
@@ -370,7 +372,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     throw error;
   } finally {
     await context.close(); await browser.close();
-    await Promise.allSettled([...inboxReadCaptures]);
+    await Promise.allSettled([...syncReadCaptures]);
   }
 }
 
@@ -621,11 +623,32 @@ async function runPrivatePlansPage(page: Page, context: BrowserContext, input: P
   const archive = page.getByTestId('plans-pane-archive-' + plans.selectedSlug);
   const endpoint = new URL('/api/admin/plans/set-archived', input.base).href;
   const writes: Array<{ status: number; target: string; harness: string; body: unknown }> = [];
+  const states: Array<{ at: string; expectedArchived: boolean; rows: unknown }> = [];
+  const cacheStats: Array<{ phase: string; at: string; status: number; body: unknown; l2Rows: unknown }> = [];
+  const captureCacheStats = async (phase: string) => {
+    const url = new URL('/api/agent-tools/dev/cache_stats', input.base);
+    url.searchParams.set('client', 'pc-admin-coord-ui');
+    const response = await page.request.post(url.href, { data: { tool: 'plans:list' },
+      headers: { 'x-papercusp-workspace': input.workspace } });
+    const l2Rows = await getOrgPg().sql`SELECT workspace_id, cache_key, tags, generation, expires_at,
+      jsonb_path_query_array(value, '$.plans[*].slug') AS plan_slugs,
+      jsonb_path_query_array(value, '$.plans[*].archived') AS archived_flags
+      FROM harness_shared.cache_l2 WHERE cache_key LIKE 'plans:list|%' LIMIT 10`;
+    cacheStats.push({ phase, at: new Date().toISOString(), status: response.status(), body: await response.json(), l2Rows });
+    writeFileSync(join(input.evidence, 'portal-plans-cache-stats.json'), JSON.stringify(cacheStats, null, 2));
+    assert.equal(response.status(), 200, 'passive Plans cache diagnostics must return measured counters');
+    assert.ok(l2Rows.some(row => row.workspace_id === input.workspace),
+      'the warm viewed Plans list must be cached in its concrete workspace');
+    assert.equal(l2Rows.some(row => row.workspace_id === '*'), false,
+      'private Plans reads must not escape scoped PG invalidation through a wildcard cache');
+  };
   const assertState = async (archived: boolean) => {
     const rows = await getOrgPg().sql<{ plan_slug: string; archived: boolean }[]>`
       SELECT plan_slug, archived FROM harness_shared.harness_plans
       WHERE workspace_id = ${input.workspace} AND harness_slug = ${plans.harness}
         AND plan_slug IN (${plans.selectedSlug}, ${plans.neighborSlug})`;
+    states.push({ at: new Date().toISOString(), expectedArchived: archived, rows });
+    writeFileSync(join(input.evidence, 'portal-plans-states.json'), JSON.stringify(states, null, 2));
     assert.equal(rows.length, 2, 'both exact private plan rows must exist');
     assert.equal(rows.find(row => row.plan_slug === plans.selectedSlug)!.archived, archived);
     assert.equal(rows.find(row => row.plan_slug === plans.neighborSlug)!.archived, false,
@@ -644,6 +667,7 @@ async function runPrivatePlansPage(page: Page, context: BrowserContext, input: P
   await selected.waitFor(); await neighbor.waitFor();
   assert.equal(await search.inputValue(), query);
   assert.equal(page.url(), filteredUrl, 'private Plans filter URL must survive reload');
+  await captureCacheStats('before-archive');
   const openArchive = async () => {
     await archive.focus(); await page.keyboard.press('Enter');
     const dialog = page.getByRole('dialog', { name: 'Archive this plan?' });
@@ -689,6 +713,7 @@ async function runPrivatePlansPage(page: Page, context: BrowserContext, input: P
     harnessSlug: plans.harness, archived: true }], counts: { ok: 1, failed: 0 } },
   'HTTP success must include the exact successful plan-archive receipt');
   await assertState(true);
+  await captureCacheStats('after-archive');
   await selected.waitFor({ state: 'detached' }); await neighbor.waitFor();
   await page.reload(); await neighbor.waitFor();
   assert.equal(await selected.count(), 0, 'archived selected plan must stay absent after reload');
