@@ -13,6 +13,22 @@ import { decodeNativeBridgeJson } from './_native-bridge-json';
 // records nothing when this owned, expensive verifier runs without retries.
 test.use({ trace: 'retain-on-failure' });
 
+function nativeCliArgs(command: string, pid: string, args: string[]) {
+  // PID selects the bridge; screenshots also need a DOM or window target.
+  return [command, '--pid', pid, ...(command === 'screenshot' ? ['--selector', 'html'] : []), ...args];
+}
+
+test('native screenshot command passes target validation without a running app', async ({}, info) => {
+  const run = promisify(execFile);
+  const args = nativeCliArgs('screenshot', '2147483647', ['--output', info.outputPath('absent-app.png')]);
+  const error = await run(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools', args, { timeout: 10_000 })
+    .then(() => null, (value: Error & { stderr?: string; killed?: boolean }) => value);
+  expect(error, 'an absent app cannot provide a screenshot').not.toBeNull();
+  expect(error?.killed, 'target validation must fail before waiting on an absent bridge').not.toBe(true);
+  expect(error?.message).not.toContain('Either --selector');
+  expect(error?.stderr).toMatch(/pid|process|bridge|app/i);
+});
+
 test('native CLI JSON boundary preserves scalar and JSON-looking string values', () => {
   // Captured CLI output from the real HUD assertion must remain a string.
   expect(decodeNativeBridgeJson('"hud"')).toBe('hud');
@@ -277,7 +293,7 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
   const sourceReceipt = JSON.parse(await readFile(sourceReceiptPath!, 'utf8'));
   async function native(command: string, ...args: string[]) {
     await run('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 10_000 });
-    const result = await run(bridge, [command, '--pid', process.env.VERIFY_TAURI_PID!, ...args], { timeout: 20_000 });
+    const result = await run(bridge, nativeCliArgs(command, process.env.VERIFY_TAURI_PID!, args), { timeout: 20_000 });
     if (command === 'screenshot') return result.stdout.trim();
     return decodeNativeBridgeJson(result.stdout);
   }
@@ -554,7 +570,7 @@ test('native declared collections persist controls and reject a barrier-controll
   expect(bridge).toBeTruthy();
   const evidence: unknown[] = [];
   async function native(command: string, ...args: string[]) {
-    const result = await run(bridge, [command, '--pid', process.env.VERIFY_TAURI_PID!, ...args], { timeout: 15_000 });
+    const result = await run(bridge, nativeCliArgs(command, process.env.VERIFY_TAURI_PID!, args), { timeout: 15_000 });
     if (command === 'screenshot') return result.stdout.trim();
     return decodeNativeBridgeJson(result.stdout);
   }
