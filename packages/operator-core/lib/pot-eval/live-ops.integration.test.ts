@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { readMemberSpawnRows, readMemberRunStats, countHivePlacementsInFlight, readQueenEkg, readBeeEkg } from './live-ops';
 
@@ -26,6 +26,7 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
     const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     try {
       await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+      await markManagedTestDatabase(admin, dbName);
     } finally {
       await admin.end({ timeout: 5 });
     }

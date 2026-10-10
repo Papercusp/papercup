@@ -24,7 +24,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import { listFleetAssignments } from './fleet/assignments';
@@ -86,6 +86,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }

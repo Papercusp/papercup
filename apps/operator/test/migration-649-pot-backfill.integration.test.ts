@@ -40,7 +40,7 @@ import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
 import { applyPendingMigrations, compareMigrationFilenames, defaultSkipFile } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -134,6 +134,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }

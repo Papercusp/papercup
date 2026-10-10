@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 const holder = vi.hoisted(() => ({ sql: null as postgres.Sql | null }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -20,6 +20,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1 });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }

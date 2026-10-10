@@ -27,7 +27,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { recordExpertiseRoutingInvocation, readExpertiseRoutingRecorderHealth, EXPERTISE_ROUTING_PATH } from '../endpoint-route/telemetry';
 import { readExpertiseExecutionHealth } from './consult-routing-health';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
@@ -101,6 +101,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }

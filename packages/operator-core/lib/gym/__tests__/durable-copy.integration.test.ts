@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, teardownTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { applyGymSchema } from '../schema';
 import {
   insertVariant,
@@ -75,7 +75,9 @@ beforeAll(async () => {
   const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
   try {
     await maint.unsafe(`CREATE DATABASE "${srcDb}"`);
+    await markManagedTestDatabase(maint, srcDb);
     await maint.unsafe(`CREATE DATABASE "${dstDb}"`);
+    await markManagedTestDatabase(maint, dstDb);
   } finally { await maint.end({ timeout: 5 }); }
 
   const srcUrl = new URL(containerUri); srcUrl.pathname = `/${srcDb}`;

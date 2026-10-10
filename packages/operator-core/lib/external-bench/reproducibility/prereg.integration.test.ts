@@ -21,7 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 const { preregister, verifyPreregistration, computePreregHash, requireCommittedPreregistration } = await import('./prereg');
 const { getPrereg } = await import('./store');
@@ -47,6 +47,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }

@@ -16,7 +16,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
@@ -253,6 +253,7 @@ describe('matched plan coverage phase benchmark', () => {
       const admin = postgres(uri, { max: 1, onnotice: () => {} });
       try {
         await admin.unsafe(`CREATE DATABASE "${name}"`);
+        await markManagedTestDatabase(admin, name);
         privateDb = { uri, name };
       } finally { await admin.end(); }
       const url = new URL(uri); url.pathname = '/' + name;

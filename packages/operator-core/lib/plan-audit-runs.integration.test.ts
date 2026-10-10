@@ -3,7 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 const h = vi.hoisted(() => ({ sql: undefined as unknown }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'audit-integration' }));
@@ -16,7 +16,7 @@ let sql: postgres.Sql;
 beforeAll(async () => {
   const uri = await getTestPg(), database = 'audit_' + randomBytes(6).toString('hex');
   const admin = postgres(uri, { max: 1, onnotice: () => {} });
-  try { await admin.unsafe('CREATE DATABASE "' + database + '"'); } finally { await admin.end({ timeout: 5 }); }
+  try { await admin.unsafe('CREATE DATABASE "' + database + '"'); await markManagedTestDatabase(admin, database); } finally { await admin.end({ timeout: 5 }); }
   const url = new URL(uri);url.pathname = '/' + database;
   sql = postgres(url.toString(), { max: 1, onnotice: () => {} });h.sql = sql;
   await sql.unsafe('CREATE SCHEMA harness_shared');

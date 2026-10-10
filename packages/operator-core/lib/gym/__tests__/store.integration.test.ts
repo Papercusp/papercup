@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, teardownTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { applyGymSchema } from '../schema';
 import { insertVariant, insertTask, insertRun, finishRun, insertScore, insertRunParams, compareVariants } from '../store';
 import type { GymScore } from '../judge';
@@ -23,7 +23,7 @@ const score = (composite: number, rubricHash = 'rh1'): GymScore => ({
 beforeAll(async () => {
   containerUri = await getTestPg();
   const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
-  try { await maint.unsafe(`CREATE DATABASE "${dbName}"`); } finally { await maint.end({ timeout: 5 }); }
+  try { await maint.unsafe(`CREATE DATABASE "${dbName}"`); await markManagedTestDatabase(maint, dbName); } finally { await maint.end({ timeout: 5 }); }
   const u = new URL(containerUri);
   u.pathname = `/${dbName}`;
   sql = postgres(u.toString(), { max: 1, onnotice: () => {}, prepare: false });
