@@ -1601,7 +1601,12 @@ function rawSubmitChildCode(ttlMs: number): string {
 }
 
 describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)', () => {
-  it.each(['settled', 'active'] as const)(
+  // WI-10008172: the boundary fence includes childStartedAtMs (bf8c3d1927 — "a
+  // predecessor's completion cannot certify a newly resumed child before that
+  // child has executed a turn"). So the CHILD's own turn rows must be written
+  // after it is up; a row written before spawn models a PREDECESSOR's
+  // completion, which must never certify the prompt boundary.
+  it.each(['settled', 'active', 'predecessor-settled'] as const)(
     'Codex idle repaint with a %s native turn uses only a verified completion boundary',
     async (state) => {
       const root = mkdtempSync(join(tmpdir(), 'codex-warm-turn-boundary-'));
@@ -1610,10 +1615,11 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       const eventLog = eventLogPathForOwner(ownerId);
       const transcript = join(root, 'sessions', '2026', '09', '12', 'rollout-current.jsonl');
       mkdirSync(join(root, 'sessions', '2026', '09', '12'), { recursive: true });
-      writeFileSync(transcript, JSON.stringify({
+      const writeTurnRow = (type: 'task_complete' | 'task_started') => writeFileSync(transcript, JSON.stringify({
         type: 'event_msg', timestamp: new Date().toISOString(),
-        payload: { type: state === 'settled' ? 'task_complete' : 'task_started', turn_id: 'turn-current' },
+        payload: { type, turn_id: 'turn-current' },
       }) + '\n');
+      if (state === 'predecessor-settled') writeTurnRow('task_complete');
       const { captured, io } = fakeIo();
       const childCode = [
         "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
@@ -1650,6 +1656,8 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
         // the same bounded READY-marker budget as the other loaded-host cases in
         // this file instead of turning a scheduler pause into a lifecycle red.
         expect(await waitForOutput(captured, 'READY', 10_000)).toBe(true);
+        if (state === 'settled') writeTurnRow('task_complete');
+        if (state === 'active') writeTurnRow('task_started');
         expect(await injectIntoHost(sock, { mode: 'turn', data: `warm-${state}`, ownerId })).toBe(true);
         if (state === 'settled') {
           // injectIntoHost acknowledges admission before the detached gate/write
@@ -1661,7 +1669,7 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
           expect(events).not.toContain('"kind":"busy-gate-expired"');
         } else {
           await sleep(700);
-          expect(captured()).not.toContain('SUBMITTED:warm-active');
+          expect(captured()).not.toContain(`SUBMITTED:warm-${state}`);
           const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
           expect(events).toContain('"kind":"busy-gate-expired"');
           expect(events).toContain('"mode":"turn"');
