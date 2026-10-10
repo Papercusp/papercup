@@ -19,7 +19,7 @@ const fixture = () => {
 
 it.each(['disabled managed PTY', 'missing required SRT'])('refuses %s before a native or plain-fallback process starts', mode => {
   const f = fixture(); let failed = 0;
-  const env = { ...f.env, ...(mode === 'disabled managed PTY' ? { PAPERCUSP_PSU_NO_PTY: '1' } : { PATH: f.cwd }) };
+  const env: NodeJS.ProcessEnv = { ...f.env, ...(mode === 'disabled managed PTY' ? { PAPERCUSP_PSU_NO_PTY: '1' } : { PATH: f.cwd }) };
   try {
     expect(existsSync(env.CODEX_HOME!)).toBe(true);
     expect(() => runWrapper({
