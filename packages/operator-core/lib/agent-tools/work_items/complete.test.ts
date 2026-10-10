@@ -2784,6 +2784,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
         workItem: linkedFeature,
         attestation: specAdequacy,
+        changedPaths: [behaviorChangePath],
       });
       expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
         targetIds: pendingTargets,
@@ -2887,6 +2888,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
         workItem: linkedFeature,
         attestation: specAdequacy,
+        changedPaths: [],
       });
       expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
         targetIds: pendingTargets,
@@ -2898,6 +2900,38 @@ describe('work_items:complete (keyed-array)', () => {
         specAdequacy: { gradingAuditDispatch: dispatchResult },
       });
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('forwards documentation inventory paths and surfaces the registered exemption on feature close', async () => {
+      getWorkItem.mockResolvedValue(linkedFeature);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedFeature, state: 'passed' }));
+      const exempted = [
+        'AUTO-BAR-R-1-P-004@1 — exempt (registered non-code inventory scope INVENTORY-P-004@1; item completion only, final shipment BAR proof remains required)',
+      ];
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: true,
+        applicable: false,
+        checked: [],
+        exempted,
+      });
+      const inventoryPath = 'docs/evidence/inventory.json';
+
+      const r = await one({
+        id: 'F-101',
+        state: 'passed',
+        completion: { summary: 'read-only inventory complete', filesChanged: [inventoryPath] },
+      });
+
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
+        workItem: linkedFeature,
+        attestation: undefined,
+        changedPaths: [inventoryPath],
+      });
+      expect(r).toMatchObject({
+        ok: true,
+        specAdequacy: { applicable: false, checked: [], exempted },
+      });
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
 
     it('keeps a deprecated feature close outside the spec-adequacy gate', async () => {

@@ -3,6 +3,7 @@ import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { preparePortalBrowserSource } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
@@ -11,9 +12,11 @@ const options = isolatedWorkerOptions(360_000);
 // never a pass; acceptance runs must select its canonical source checkout.
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal roster browser preserves denied draft, retries the exact private recipient and truthfully renders wake', async context => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+        'packages/operator-core/test/private-coord-receipt.ts',
         'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/auth.ts',
         'packages/operator-core/lib/endpoint-route/routes/admin/coord.ts',
@@ -24,7 +27,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1' };
         delete env.PC_HEAVY_PREEMPT_READY_FILE; delete env.PC_HEAVY_PSI_FINALIZATION_FILE; delete env.ROSTER_STOP_HTTP_MUTATION;
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts')],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))

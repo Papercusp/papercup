@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
-import { preparePrivateHttpWorkspaces } from './private-http-workspace-preflight';
+import { preparePortalBrowserSource, preparePrivateHttpWorkspaces } from './private-http-workspace-preflight';
+import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
@@ -19,6 +20,8 @@ assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
 assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
 assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)));
 assert.ok(evidence);
+const portalSourceRoot = process.env.ROSTER_COORD_BROWSER_PROOF === '1'
+  ? preparePortalBrowserSource(process.argv) : undefined;
 // Evidence paths are intentionally long; AF_UNIX addresses are bounded by bytes.
 // Keep the mutable socket namespace short and retain its identity in the receipt.
 const discovery = mkdtempSync(join(tmpdir(), 'rs-'));
@@ -140,23 +143,17 @@ async function coordCanary(health: unknown) {
         ...(wake ? { wake: 'required' } : {}) }), signal: AbortSignal.timeout(25_000) });
     return { status: response.status, body: await response.json() as any };
   };
-  const verifyReceipt = async (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean) => {
-    assert.equal(receipt.status, 200, JSON.stringify(receipt.body));
-    assert.equal(receipt.body.results?.length, 1);
-    const result = receipt.body.results[0];
-    assert.equal(result.ok, true, JSON.stringify(result));
-    assert.deepEqual(result.to, [expectedOwner], 'selected-recipient receipt correlation');
-    assert.equal(typeof result.msg_id, 'string');
-    const stored = await getMessageById(result.msg_id);
-    assert.ok(stored, 'HTTP receipt must identify a durable message');
-    assert.deepEqual(stored.to, [expectedOwner], 'persisted recipient correlation');
-    assert.equal(stored.summary, marker);
-    if (wake) {
-      assert.equal(result.wake?.pickupConfirmed, false, 'send-time wake cannot attest pickup');
-      assert.equal(stored.wake, true);
-    }
-    return result.msg_id as string;
-  };
+  const verifyReceipt = (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean, summary = marker) =>
+    verifyPrivateCoordReceipt(receipt, { ownerId: expectedOwner, summary, wake }, getMessageById);
+  if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
+    const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
+    const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected, neighbor, portalSourceRoot: portalSourceRoot!,
+      cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
+      verifyReceipt: (value, summary, wake) => verifyReceipt(value, selected, wake, summary) });
+    console.log('ROSTER_COORD_BROWSER_RECEIPT ' + JSON.stringify({ ...receipt, health,
+      apiBundleSha256: createHash('sha256').update(readFileSync(join(evidence, 'hono-host.mjs'))).digest('hex') }));
+    return;
+  }
   for (const wake of [false, true]) {
     const accepted = await post([selected], wake);
     receipts.push(accepted);
@@ -191,6 +188,11 @@ async function coordCanary(health: unknown) {
 }
 
 async function main() {
+  if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
+    // Use the existing static-serving seam on this private API origin. No
+    // cross-origin transport, API response interception or local-mode identity.
+    process.env.PAPERCUSP_SPA_DIST = join(evidence, 'portal-roster-spa');
+  }
   if (process.env.ROSTER_COORD_HTTP_PROOF === '1') {
     const prepared = preparePrivateHttpWorkspaces();
     assert.equal(prepared.workspace, workspace);

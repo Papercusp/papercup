@@ -12,12 +12,12 @@ const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).di
 
 export async function runPortalRosterBrowser(input: {
   evidence: string; base: string; workspace: string; selected: string; neighbor: string;
+  portalSourceRoot: string;
   cookieName: string; ownToken: string; foreignToken: string;
-  verifyReceipt: (receipt: { status: number; body: any }) => Promise<string>;
+  verifyReceipt: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
 }) {
   const { evidence, base, workspace, selected, neighbor } = input;
-  assert.ok(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT, 'Select the maintained Portal source checkout');
-  const portal = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
+  const portal = realpathSync(input.portalSourceRoot);
   const spa = join(evidence, 'portal-roster-spa');
   mkdirSync(spa, { recursive: true });
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -106,7 +106,7 @@ export async function runPortalRosterBrowser(input: {
 
     await context.addCookies([cookie(input.ownToken)]);
     const accepted = await send('agents-bulk-msg-send');
-    selectedMessageIds.push(await input.verifyReceipt(accepted));
+    selectedMessageIds.push(await input.verifyReceipt(accepted, marker, false));
     await page.getByTestId('agents-bulk-note').filter({ hasText: 'Sent to 1 agent' }).waitFor();
     assert.equal(await page.getByTestId('agents-bulk-compose').count(), 0);
     const stored = await getMessageById(selectedMessageIds[0]);
@@ -117,7 +117,7 @@ export async function runPortalRosterBrowser(input: {
     await page.getByTestId(`agent-select-${selected}`).check();
     assert.equal(await page.getByTestId(`agent-select-${neighbor}`).isChecked(), false);
     const wake = await send('agents-bulk-wake');
-    selectedMessageIds.push(await input.verifyReceipt(wake));
+    selectedMessageIds.push(await input.verifyReceipt(wake, '(nudge from the portal)', true));
     assert.equal(wake.body.results[0].wake.pickupConfirmed, false);
     const note = await readSettledNote(page);
     assert.match(note, /pickup not confirmed|wake not delivered|message is in inbox/);

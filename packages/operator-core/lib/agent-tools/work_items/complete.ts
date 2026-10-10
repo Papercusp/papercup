@@ -3784,12 +3784,13 @@ async function completeOne(
   // that P-013, not P-016, will turn into a refusal. Reporting it here is what makes it
   // a report at all: a report no caller receives is indistinguishable from none.
   let specAdequacyImpactReport: string | undefined;
+  let specAdequacyExempted: string[] | undefined;
   if (shouldEvaluateSpecAdequacyAtCompletion) {
     try {
       const gate = await specTestAdequacyCompletionGate({
         workItem: existing,
         attestation: it.specAdequacy,
-        ...(successfulTaskClose
+        ...(successfulTaskClose || successfulFeatureClose
           ? {
               changedPaths: [
                 ...(completionEvidenceForGate?.filesChanged ?? []),
@@ -3867,6 +3868,7 @@ async function completeOne(
         // populated from a failed verdict now that the refusal above no longer returns.
         specAdequacyImpactReport = gate.impactReport;
         if (gate.applicable) specAdequacyChecked = gate.checked;
+        if (gate.exempted?.length) specAdequacyExempted = gate.exempted;
         setContractRequirement('spec-test-adequacy', true);
       }
     } catch (error) {
@@ -5707,12 +5709,13 @@ async function completeOne(
     completion,
     reflect,
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
-    ...(specAdequacyChecked || specAdequacyImpactReport
+    ...(specAdequacyChecked || specAdequacyImpactReport || specAdequacyExempted?.length
       ? {
           specAdequacy: {
             applicable: Boolean(specAdequacyChecked),
             checked: specAdequacyChecked ?? [],
             ...(specAdequacyImpactReport ? { impactReport: specAdequacyImpactReport } : {}),
+            ...(specAdequacyExempted?.length ? { exempted: specAdequacyExempted } : {}),
           },
         }
       : {}),

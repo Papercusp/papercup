@@ -1760,6 +1760,7 @@ export async function tryBuildSpawnContext(
     const bearer = bearerFromExtra(extra);
     if (!isValidSuperuserBearer(bearer)) return { kind: 'failed', reason: 'superuser_invalid_bearer' };
     const wsParam = (url.searchParams.get('workspace') ?? '').trim();
+    const headerWs = (headers.get('x-papercusp-workspace') ?? '').trim();
     const harnessUrlParam = (url.searchParams.get('harness') ?? '').trim();
     const clientParam = (url.searchParams.get('client') ?? '').trim();
     // Per-session identity for SU agents (su-locks coordination), sourced
@@ -1845,7 +1846,11 @@ export async function tryBuildSpawnContext(
       try {
         const binding = await withNamedQueryDiagnosticContext(
           'mcp.nativeSessionVerifier',
-          () => classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId }),
+          () => classifyOwnerNativeSession({
+            ownerId: suIdentity,
+            sessionId: nativeSessionId,
+            workspaceId: headerWs || wsParam || undefined,
+          }),
           verifierTraceId,
         );
         if (binding.binding === 'foreign') {
@@ -1909,7 +1914,6 @@ export async function tryBuildSpawnContext(
     //      PAPERCUSP_WORKSPACE. SID sources only (mcp-session-id is a
     //      transport id, never an adv row key).
     //   4. '*' — unscoped, exactly the pre-fix behavior.
-    const headerWs = (headers.get('x-papercusp-workspace') ?? '').trim();
     let workspaceId = headerWs || wsParam;
     const sidForLookup = headerClient || clientParam;
     // Harness, same precedence as workspace above (WI-4393): `x-papercusp-harness`

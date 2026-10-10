@@ -13,7 +13,9 @@ import type postgres from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   SESSION_SEARCH_INDEXES,
+  SESSION_TURN_PARTS_TABLE,
   SESSION_TURN_TRGM_EXPR,
+  SESSION_TURNS_TABLE,
   createIndexConcurrentlySql,
   readSessionSearchReadiness,
   runSessionSearchIndexBuildOnce as runSessionSearchIndexBuildOnceRaw,
@@ -44,6 +46,7 @@ const GENERATED_SCHEMA = path.resolve(here, '../../../libs/papercusp/libs/db/src
 
 const TRGM = 'session_turns_text_trgm_idx';
 const TS_DESC = 'session_turns_ts_desc_idx';
+const TOOL_RESULT = 'session_turn_parts_owner_workspace_tool_result_idx';
 const VOCAB_TRGM = 'session_turn_vocab_word_trgm_idx';
 const OPTS = { minFreeDiskBytes: 0 };
 
@@ -198,16 +201,25 @@ describe('migration 1273 — replay safety + the index/EXPLAIN probe (SPEC-P002-
     expect(checks.map((c) => c.conname)).toContain('session_turn_vocab_state_status_check');
   });
 
-  it('spec table and migration text agree on every index name and definition (drift pin)', () => {
+  it('session_turns specs mirror migration 1273 and tool_result index stays online-built', () => {
     const migration = readFileSync(M1273, 'utf8').replace(/\s+/g, ' ');
     // Stage 'windows' indexes live in migration 1334 (pinned in session-turn-windows.integration.test.ts).
-    for (const spec of SESSION_SEARCH_INDEXES.filter((s) => s.stage !== 'windows')) {
+    for (const spec of SESSION_SEARCH_INDEXES.filter((s) => s.table === SESSION_TURNS_TABLE && s.stage !== 'windows')) {
       expect(migration).toContain(spec.name);
       // The migration splits the DDL over string literals; compare the definition body.
       expect(migration.replace(/' \|\| '/g, '')).toContain(spec.definition);
     }
     expect(createIndexConcurrentlySql(SESSION_SEARCH_INDEXES[0])).toBe(
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS session_turns_text_trgm_idx ON harness_shared.session_turns USING gin (lower(text) gin_trgm_ops)',
+    );
+    const toolResultIndex = SESSION_SEARCH_INDEXES.find(
+      (spec) => spec.name === 'session_turn_parts_owner_workspace_tool_result_idx',
+    )!;
+    expect(toolResultIndex.table).toBe(SESSION_TURN_PARTS_TABLE);
+    expect(toolResultIndex.definition).toBe("(owner, workspace_id) WHERE part_kind = 'tool_result'");
+    expect(createIndexConcurrentlySql(toolResultIndex)).toBe(
+      "CREATE INDEX CONCURRENTLY IF NOT EXISTS session_turn_parts_owner_workspace_tool_result_idx " +
+      "ON harness_shared.session_turn_parts (owner, workspace_id) WHERE part_kind = 'tool_result'",
     );
   });
 });
@@ -309,13 +321,35 @@ describe('runSessionSearchIndexBuildOnce', () => {
     expect(first.indexes.map((i) => [i.name, i.action])).toEqual([
       [TRGM, 'built'],
       [TS_DESC, 'built'],
+      [TOOL_RESULT, 'deferred-table-missing'],
       [VOCAB_TRGM, 'built'],
     ]);
     for (const n of [TRGM, TS_DESC, VOCAB_TRGM]) expect(await indexValid(n)).toBe(true);
+    expect(await indexValid(TOOL_RESULT)).toBeNull();
 
     const second = await runSessionSearchIndexBuildOnce(sql, OPTS);
-    expect(second.indexes.every((i) => i.action === 'present')).toBe(true);
+    expect(second.indexes.map((i) => [i.name, i.action])).toEqual([
+      [TRGM, 'present'],
+      [TS_DESC, 'present'],
+      [TOOL_RESULT, 'deferred-table-missing'],
+      [VOCAB_TRGM, 'present'],
+    ]);
     expect(second.vocab.every((v) => v.action === 'current')).toBe(true);
+  }, 60_000);
+
+  it('builds the tool_result owner index when session_turn_parts is present', async () => {
+    await sql.unsafe(`CREATE TABLE harness_shared.session_turn_parts (
+      owner text NOT NULL,
+      workspace_id text NOT NULL,
+      part_kind text NOT NULL
+    )`);
+    try {
+      const r = await runSessionSearchIndexBuildOnce(sql, OPTS);
+      expect(r.indexes.find((i) => i.name === TOOL_RESULT)?.action).toBe('built');
+      expect(await indexValid(TOOL_RESULT)).toBe(true);
+    } finally {
+      await sql.unsafe('DROP TABLE harness_shared.session_turn_parts CASCADE');
+    }
   }, 60_000);
 
   it('drops an invalid leftover (interrupted CONCURRENTLY build) and rebuilds it valid', async () => {
@@ -418,9 +452,11 @@ describe('runSessionSearchIndexBuildOnce', () => {
   it('dryRun reports what it would build and changes nothing', async () => {
     await seed('w1', ['dryrunword here']);
     const r = await runSessionSearchIndexBuildOnce(sql, { ...OPTS, dryRun: true });
-    expect(r.indexes.every((i) => i.action === 'would-build')).toBe(true);
+    expect(r.indexes.filter((i) => i.name !== TOOL_RESULT).every((i) => i.action === 'would-build')).toBe(true);
+    expect(r.indexes.find((i) => i.name === TOOL_RESULT)?.action).toBe('deferred-table-missing');
     expect(r.vocab.every((v) => v.action === 'would-build')).toBe(true);
     for (const n of [TRGM, TS_DESC, VOCAB_TRGM]) expect(await indexValid(n)).toBeNull();
+    expect(await indexValid(TOOL_RESULT)).toBeNull();
     expect((await vocabOf('w1')).size).toBe(0);
   }, 60_000);
 });

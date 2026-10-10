@@ -12,7 +12,7 @@
  * `adv:sessions_list` MCP tool (later).
  */
 
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
@@ -1905,17 +1905,19 @@ export async function classifyOwnerNativeSession(opts: {
   ownerId: string;
   sessionId: string;
   advSessionId?: number | null;
+  workspaceId?: string | null;
 }): Promise<{ binding: OwnerNativeSessionBinding; boundSessionId: string | null; advSessionId: number | null }> {
   if (opts.advSessionId != null && (!Number.isSafeInteger(opts.advSessionId) || opts.advSessionId <= 0)) {
     return { binding: 'foreign', boundSessionId: null, advSessionId: null };
   }
 
-  const key = JSON.stringify([opts.ownerId, opts.sessionId, opts.advSessionId ?? null]);
+  const workspaceId = opts.workspaceId?.trim() || null;
+  const key = JSON.stringify([opts.ownerId, opts.sessionId, opts.advSessionId ?? null, workspaceId]);
   const existing = ownerNativeSessionLookupsInFlight.get(key);
   if (existing) return existing;
 
   let shared!: Promise<OwnerNativeSessionClassification>;
-  shared = classifyOwnerNativeSessionUnshared(opts).finally(() => {
+  shared = classifyOwnerNativeSessionUnshared({ ...opts, workspaceId }).finally(() => {
     if (ownerNativeSessionLookupsInFlight.get(key) === shared) {
       ownerNativeSessionLookupsInFlight.delete(key);
     }
@@ -1928,11 +1930,12 @@ async function classifyOwnerNativeSessionUnshared(opts: {
   ownerId: string;
   sessionId: string;
   advSessionId?: number | null;
+  workspaceId?: string | null;
 }): Promise<OwnerNativeSessionClassification> {
 
   let phase: NativeSessionVerificationPhase = 'transaction_setup';
   try {
-    return await boundedOrgTxn(async (sql) => {
+    const classifyRows = async (sql: ReturnType<typeof getOrgPg>['sql']) => {
       let rows: OwnerNativeSessionRow[];
       if (opts.advSessionId != null) {
         phase = 'owner_row_lookup_by_id';
@@ -1956,7 +1959,23 @@ async function classifyOwnerNativeSessionUnshared(opts: {
       }
       phase = 'row_classification';
       return classifyOwnerNativeSessionRows(rows, opts.sessionId);
-    }, {
+    };
+
+    if (opts.workspaceId) {
+      // A bound match inside the request's RLS scope is sufficient. Negative
+      // results need the existing global read to preserve cross-workspace
+      // unbound/foreign semantics exactly.
+      const scoped = await withWorkspace(opts.workspaceId, classifyRows, {
+        readOnly: true,
+        acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
+        acquireRetries: 0,
+        statementTimeoutMs: NATIVE_SESSION_VERIFY_STATEMENT_TIMEOUT_MS,
+        lockTimeoutMs: NATIVE_SESSION_VERIFY_LOCK_TIMEOUT_MS,
+      });
+      if (scoped.binding === 'bound') return scoped;
+    }
+
+    return await boundedOrgTxn(classifyRows, {
       readOnly: true,
       acquireTimeoutMs: NATIVE_SESSION_VERIFY_ACQUIRE_TIMEOUT_MS,
       // postgres-js cannot cancel a begin that is still queued when the local

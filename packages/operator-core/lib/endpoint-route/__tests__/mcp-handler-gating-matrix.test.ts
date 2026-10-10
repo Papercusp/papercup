@@ -90,6 +90,7 @@ const h = vi.hoisted(() => {
     nativeSessionRows: null as Map<string, Array<{ id: number; session_id: string | null; active: boolean }>> | null,
     nativeSessionVerifierFailure: null as { sessionId: string; error: Error } | null,
     nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
+    nativeSessionWorkspaceScopes: [] as Array<string | undefined>,
     nativeSessionDiagnosticContexts: [] as unknown[],
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
@@ -411,8 +412,13 @@ vi.mock('../../adv-sessions', async (importOriginal) => {
   return {
     ...actual,
     workspaceForCoordOwner: h.workspaceForCoordOwner,
-    classifyOwnerNativeSession: async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
+    classifyOwnerNativeSession: async ({
+      ownerId,
+      sessionId,
+      workspaceId,
+    }: { ownerId: string; sessionId: string; workspaceId?: string }) => {
       h.nativeSessionCalls.push({ ownerId, sessionId });
+      h.nativeSessionWorkspaceScopes.push(workspaceId);
       const { capturePgDiagnosticContext } = await import('@papercusp/db-org');
       h.nativeSessionDiagnosticContexts.push(capturePgDiagnosticContext());
       if (h.nativeSessionVerifierFailure?.sessionId === sessionId) throw h.nativeSessionVerifierFailure.error;
@@ -2055,6 +2061,7 @@ beforeEach(() => {
   h.nativeSessionRows = null;
   h.nativeSessionVerifierFailure = null;
   h.nativeSessionCalls.length = 0;
+  h.nativeSessionWorkspaceScopes.length = 0;
   h.nativeSessionDiagnosticContexts.length = 0;
   h.workspaceAcquireError = null;
   h.getPresence.mockResolvedValue(null);
@@ -5746,6 +5753,7 @@ describe('successful native-session audit (get-feedback D-006)', () => {
     const extra = { ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>), _meta: meta };
     const res = await callTool('gatingtest:scoped', {}, extra, meta);
     expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.nativeSessionWorkspaceScopes).toEqual(['ws-test']);
     expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
       carrier: 'meta:threadId', binding: 'bound', candidateAdvSessionId: 541,
       callIdFingerprint: createHash('sha256').update(callId, 'utf8').digest('hex'),

@@ -64,9 +64,11 @@ async function readCompleteCodexSource(binding: { nativeSessionId: string; codex
   } finally { await handle.close(); }
 }
 
-export type ClosedCodexSessionUsage =
-  (Extract<ClosedCodexSessionPopulation, { ok: true }> & { readonly file: string; readonly sourceSha256: string }) |
-  Extract<ClosedCodexSessionPopulation, { ok: false }>;
+type ClosedCodexSourceSubtotal = Extract<ClosedCodexSessionPopulation, { ok: true }> & {
+  readonly file: string; readonly sourceSha256: string;
+};
+export type ClosedCodexSessionUsage = ClosedCodexSourceSubtotal |
+  (Extract<ClosedCodexSessionPopulation, { ok: false }> & { readonly knownSubtotal?: ClosedCodexSourceSubtotal });
 
 /** Complete session token census from native bytes plus the atomic ingest
  * frontier. Never promotes estimated/list-price costs to provider bills.
@@ -85,16 +87,40 @@ export async function readClosedCodexSessionUsage(sql: Sql, input: {
     const [frontier] = await sql<{ byte_offset: string; parser_state: { fileGeneration?: number; initialized?: boolean; bootstrapOffset?: number } }[]>`
       SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
       WHERE workspace_id = ${binding.workspaceId} AND file_path = ${source.file}`;
+    const offset = Number(frontier?.byte_offset), sourceBytes = Buffer.byteLength(source.transcript);
     if (!frontier || frontier.parser_state?.initialized !== true || frontier.parser_state.bootstrapOffset !== undefined ||
-        Number(frontier.byte_offset) !== Buffer.byteLength(source.transcript)) {
-      return fail('the canonical ingest frontier must cover the entire native source');
+        !Number.isSafeInteger(offset) || offset < 0 || offset > sourceBytes) {
+      return fail('the canonical ingest frontier must identify verified native source bytes');
     }
     const { closedCodexSessionPopulation } = await import('./interactive-usage/ingest-adapters');
-    const population = closedCodexSessionPopulation({ transcript: source.transcript, file: source.file,
-      fileGeneration: frontier.parser_state.fileGeneration ?? 0, nativeSessionId: binding.nativeSessionId });
-    if (!population.ok) return population;
+    const populationInput = { file: source.file, fileGeneration: frontier.parser_state.fileGeneration ?? 0,
+      nativeSessionId: binding.nativeSessionId };
+    const population = offset === sourceBytes ? closedCodexSessionPopulation({ ...populationInput, transcript: source.transcript }) :
+      fail('the canonical ingest frontier does not cover the entire native source');
     if (!await source.unchanged()) return fail('the native source changed while reconciling its frontier');
-    return { ...population, file: source.file, sourceSha256: source.sourceSha256 };
+    if (population.ok) return { ...population, file: source.file, sourceSha256: source.sourceSha256 };
+    // A later open turn or trailing partial record must not erase earlier
+    // closed work. Locate a complete prefix within the atomic frontier, then
+    // validate it through the SAME canonical population/key writer. The outer
+    // result remains incomplete; this is a known subtotal, never a total.
+    let start = 0, consumedBytes = 0, closedEnd = 0;
+    while (start < source.transcript.length) {
+      const end = source.transcript.indexOf('\n', start);
+      if (end < 0) break;
+      const line = source.transcript.slice(start, end);
+      consumedBytes += Buffer.byteLength(line + '\n');
+      if (consumedBytes > offset) break;
+      let record: { type?: unknown; payload?: { type?: unknown } };
+      try { record = JSON.parse(line); } catch { break; }
+      if (!record || typeof record !== 'object' || Array.isArray(record) || !record.payload || typeof record.payload !== 'object') break;
+      if (record.type === 'event_msg' && ['task_complete', 'turn_completed'].includes(String(record.payload.type))) closedEnd = end + 1;
+      start = end + 1;
+    }
+    if (!closedEnd) return population;
+    const known = closedCodexSessionPopulation({ ...populationInput, transcript: source.transcript.slice(0, closedEnd) });
+    if (!known.ok) return population;
+    return { ok: false, detail: population.detail,
+      knownSubtotal: { ...known, file: source.file, sourceSha256: source.sourceSha256 } };
   } catch { return fail('the complete native source and canonical frontier could not be verified'); }
 }
 
@@ -108,7 +134,7 @@ export async function readClosedCodexRuntimeUsage(sql: Sql, input: {
   const binding = { ...input };
   const list = async () => {
     const root = join(binding.codexHome, 'sessions');
-    const found: string[] = [];
+    const found: { nativeSessionId: string; sourceStamp: string }[] = [];
     let entries = 0;
     const walk = async (dir: string, depth: number): Promise<void> => {
       const children = await fs.readdir(dir, { withFileTypes: true });
@@ -119,19 +145,24 @@ export async function readClosedCodexRuntimeUsage(sql: Sql, input: {
         if (!child.isFile()) throw new Error('native source directory contains a noncanonical entry');
         const match = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(child.name);
         if (!match || depth !== 3) throw new Error('native source directory contains an unidentified source');
-        found.push(match[1].toLowerCase());
+        const file = join(dir, child.name), stat = await fs.lstat(file, { bigint: true });
+        if (!stat.isFile()) throw new Error('native source census changed file kind');
+        found.push({ nativeSessionId: match[1].toLowerCase(),
+          sourceStamp: [file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':') });
       }
     };
     await walk(root, 0);
-    if (!found.length || found.length > 1000 || new Set(found).size !== found.length) throw new Error('native source census is empty or ambiguous');
-    return found.sort();
+    if (!found.length || found.length > 1000 || new Set(found.map(source => source.nativeSessionId)).size !== found.length) throw new Error('native source census is empty or ambiguous');
+    return found.sort((a, b) => a.nativeSessionId.localeCompare(b.nativeSessionId));
   };
   try {
     if ([binding.workspaceId, binding.codexHome].some(v => typeof v !== 'string' || !v.trim())) throw new Error('missing runtime binding');
-    const ids = await list();
+    // ID equality alone misses changes to an earlier source during a later
+    // frontier read. Cover the whole read with physical content/identity stamps.
+    const census = await list();
     const sessions: { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] = [];
-    for (const nativeSessionId of ids) sessions.push({ nativeSessionId, usage: await readClosedCodexSessionUsage(sql, { ...binding, nativeSessionId }) });
-    return { complete: JSON.stringify(ids) === JSON.stringify(await list()) && sessions.every(source => source.usage.ok), sessions };
+    for (const { nativeSessionId } of census) sessions.push({ nativeSessionId, usage: await readClosedCodexSessionUsage(sql, { ...binding, nativeSessionId }) });
+    return { complete: JSON.stringify(census) === JSON.stringify(await list()) && sessions.every(source => source.usage.ok), sessions };
   } catch { return { complete: false, sessions: [] }; }
 }
 

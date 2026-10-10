@@ -43,6 +43,7 @@ import {
 import { shapeBurnDown } from './burn_down-shape';
 import { shapeLeaderBrief } from '../fleet/leader-brief-shape';
 import { computeAgentReviewService } from '../../harness/improvements/flow-metrics';
+import { updateExternalBlockerHistory } from '../../external-blockers';
 import { P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from '../../scheduler/p2p-lane-fence';
 import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 import {
@@ -322,6 +323,32 @@ describe('work_items:burn_down', () => {
     mockGetModes.mockResolvedValue([]);
     mockReadDrainFlow.mockResolvedValue(drainFlowReport);
     mockReadIssueOccurrenceCounts.mockResolvedValue(issueOccurrenceCounts);
+  });
+
+  it('carries reservation, progress, real waits and unknown attestation independently through the tool shaper', () => {
+    const generatedAt = '2026-10-10T04:00:00.000Z';
+    const result = buildBurnDownResult([
+      item({ id: 'WI-reserved', assignee: 'su-worker', takenAt: '2026-10-10T03:50:00.000Z' }),
+      item({ id: 'WI-progress', assignee: 'su-worker', takenAt: '2026-10-10T03:50:00.000Z',
+        lastProgressAt: '2026-10-10T03:59:00.000Z' }),
+      item({ id: 'WI-wait', assignee: 'su-worker', payload: { externalBlockers:
+        updateExternalBlockerHistory(null, { kind: 'event', ref: 'fixture:ready',
+          summary: 'Await the fixture', capability: 'live-dependency' }, 'su-worker', generatedAt).blockers } }),
+      item({ id: 'WI-park', assignee: 'su-worker', payload: { _claimHold: true } }),
+    ], new Set(['su-worker']), { harness: 'papercusp', generatedAt });
+    const rows = [...result.inFlight, ...result.parked];
+    expect(rows.find(r => r.id === 'WI-reserved')?.workEvidence).toMatchObject({
+      reservation: { owner: 'su-worker' }, recentItemWork: { status: 'unknown' }, nativeAttestation: { status: 'unknown' },
+    });
+    expect(rows.find(r => r.id === 'WI-progress')?.workEvidence.recentItemWork.status).toBe('recent');
+    expect(rows.find(r => r.id === 'WI-wait')?.workEvidence.waiting).toEqual({ status: 'registered', refs: ['event:fixture:ready'] });
+    expect(rows.find(r => r.id === 'WI-park')?.workEvidence.waiting.status).toBe('unknown');
+    const shaped = shapeBurnDown(result, 'trimmed');
+    expect(shaped).toMatchObject({ inFlight: [
+      expect.objectContaining({ workEvidence: expect.objectContaining({ nativeAttestation: { status: 'unknown',
+        reason: 'Owner-bound native execution was not attested by this item read' } }) }),
+      expect.objectContaining({ workEvidence: expect.objectContaining({ recentItemWork: expect.objectContaining({ status: 'recent' }) }) }),
+    ] });
   });
 
   it('classifies terminal, in-flight, parked, and unclaimed rows', () => {

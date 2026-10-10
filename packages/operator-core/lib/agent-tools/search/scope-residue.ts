@@ -59,6 +59,8 @@ export const SOURCE_CORPUS: Readonly<Record<string, string | undefined>> = {
   coord_message: 'coord:* inter-agent traffic (coord_event_log)',
   report:
     'published reports visible to the caller (latest non-retired edition per lineage), including titles, summaries, and body text',
+  plan: 'saved Papercusp and harness plans (titles, status, and plan content, including historical plans)',
+  doc: 'maintained Papercusp engineering and harness documentation (section titles and content)',
 };
 
 export interface ScopeResidue {

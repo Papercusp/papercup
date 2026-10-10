@@ -5,7 +5,7 @@ import {
   listWorkItemSpecRevisionEdges,
   type EvidenceCurrentInput,
 } from '../plans/spec-evidence-store';
-import { listSpecClauses } from '../plans/spec-clauses-store';
+import { listSpecClauses, type SpecClauseRevision } from '../plans/spec-clauses-store';
 import {
   enforcedClausesOf,
   ENFORCEABLE_LIFECYCLE_STATUSES,
@@ -160,6 +160,81 @@ export type SpecAdequacyCompletionGateResult =
  * precondition. Imported rather than re-declared so the two cannot drift.
  */
 type WorkItemForSpecGate = WorkItemForContract;
+
+/**
+ * A file suffix is only a contradiction signal; it never grants an exemption by itself.
+ * Scope authority comes from a current, registered INVENTORY-P-NNN clause below.
+ */
+function isExecutableSourcePath(path: string): boolean {
+  return /\.(?:[cm]?[jt]sx?|rs|py|go|sh|bash|zsh|sql|css|s[ac]ss|less|html?|vue|svelte|c|cc|cpp|cxx|h|hpp|java|kt|kts|swift|rb|php|ex|exs|erl|hs|lua|pl|ps1|bat|cmd)$/i
+    .test(path.trim());
+}
+
+function isDocumentationInventoryPath(path: string): boolean {
+  const segments = path.trim().replaceAll('\\', '/').split('/');
+  if (segments.length < 2 || segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    return false;
+  }
+  return segments[0] === 'docs' ||
+    (segments[0] === 'apps' && segments[1] === 'operator-docs' && segments[2] === 'src' &&
+      segments[3] === 'content' && segments[4] === 'docs');
+}
+
+function isPlanDecisionRef(value: string, planSlug: string): boolean {
+  const prefix = `${planSlug}#`;
+  return value.startsWith(prefix) && /^D-\d{3,}$/.test(value.slice(prefix.length));
+}
+
+function isRegisteredInventoryExemption(
+  clause: SpecClauseRevision,
+  planSlug: string,
+  planItemId: string,
+): boolean {
+  const provenance = typeof clause.exemption?.provenance === 'string'
+    ? clause.exemption.provenance.trim()
+    : '';
+  const justification = typeof clause.exemption?.justification === 'string'
+    ? clause.exemption.justification.trim()
+    : '';
+  return clause.planSlug === planSlug &&
+    clause.planItemId === planItemId &&
+    clause.specId === `INVENTORY-${planItemId}` &&
+    clause.currentRevision === clause.revision &&
+    clause.sourceValId === null &&
+    clause.sourceBar == null &&
+    clause.behavior.trim().length > 0 &&
+    clause.behaviorClass === 'non-automated' &&
+    clause.requiredEvidence.length === 0 &&
+    clause.requiredTestLayers.length === 0 &&
+    !clause.mutationRequired &&
+    clause.lifecycleStatus === 'exempt' &&
+    clause.falsifier == null &&
+    Boolean(justification) &&
+    isPlanDecisionRef(provenance, planSlug) &&
+    clause.acceptanceRef === provenance;
+}
+
+/** Resolve a current inventory exemption only when it owns the whole enforced item scope. */
+function registeredInventoryExemptionFor(
+  workItem: WorkItemForSpecGate,
+  contract: WorkItemBehaviorContract,
+  enforcedClauses: readonly SpecClauseRevision[],
+): SpecClauseRevision | undefined {
+  if (workItem.kind?.trim().toLowerCase() !== 'feature') return undefined;
+  const stamp = planStampOf(workItem);
+  if (!stamp || stamp.planItemIds.length !== 1) return undefined;
+  const [planItemId] = stamp.planItemIds;
+  if (enforcedClauses.some((clause) => clause.planSlug !== stamp.planSlug || clause.planItemId !== planItemId)) {
+    return undefined;
+  }
+  const group = contract.groups.find((candidate) =>
+    candidate.planSlug === stamp.planSlug && candidate.eligibility.enforcing,
+  );
+  if (!group) return undefined;
+  return group.clauses.find((clause) =>
+    isRegisteredInventoryExemption(clause, stamp.planSlug, planItemId),
+  );
+}
 
 /**
  * Re-exported from the resolver rather than re-declared. This was a local
@@ -503,6 +578,26 @@ export async function specTestAdequacyCompletionGate(
   const { planSlugs: enforcedPlanSlugs, clauses } = enforcedClausesOf(contract);
   if (clauses.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
 
+  const changedPaths = input.changedPaths ?? [];
+  const executableSourceChanges = changedPaths.filter(isExecutableSourcePath);
+  const documentationInventoryChanges = changedPaths.length > 0 &&
+    changedPaths.every(isDocumentationInventoryPath) && executableSourceChanges.length === 0;
+  const inventoryExemption = registeredInventoryExemptionFor(input.workItem, contract, clauses);
+  if (inventoryExemption && !input.attestation && documentationInventoryChanges) {
+    const inventoryRef = `${inventoryExemption.specId}@${inventoryExemption.revision}`;
+    return withReport({
+      ok: true,
+      applicable: false,
+      checked: [],
+      exempted: clauses.map((clause) =>
+        exemptionLabel(
+          clause,
+          `registered non-code inventory scope ${inventoryRef}; item completion only, final shipment BAR proof remains required`,
+        ),
+      ),
+    });
+  }
+
   // `task` is the canonical non-code kind (research was folded into it). A plan may
   // still carry projected clauses for a task deliverable, but executable L3/L4 proof
   // is not a meaningful completion obligation for that item. Resolve the contract first
@@ -515,10 +610,7 @@ export async function specTestAdequacyCompletionGate(
     // submission against test-requiring clauses. Refuse and require an intentional
     // re-kind; silently relabelling only the evaluator input would hide the bad
     // execution record and leave every other kind-sensitive gate exempt.
-    const sourceChanges = (input.changedPaths ?? []).filter((path) =>
-      /\.(?:[cm]?[jt]sx?|rs|py|go|sh|bash|zsh|sql|css|s[ac]ss|less|html?|vue|svelte|c|cc|cpp|cxx|h|hpp|java|kt|kts|swift|rb|php|ex|exs|erl|hs|lua|pl|ps1|bat|cmd)$/i
-        .test(path.trim()),
-    );
+    const sourceChanges = executableSourceChanges;
     const submitsExecutableProof = input.attestation && clauses.some((clause) =>
       requiredProofFloor(clause, input.attestation!.classRef) !== 'none',
     );

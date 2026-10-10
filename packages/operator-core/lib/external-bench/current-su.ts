@@ -68,8 +68,8 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
       for (const source of runtime.sessions) {
         if (nativeSessions.has(source.nativeSessionId)) { missingSources++; complete = false; continue; }
         nativeSessions.add(source.nativeSessionId);
-        if (!source.usage.ok) { missingSources++; complete = false; continue; }
-        const usage = source.usage;
+        if (!source.usage.ok) { missingSources++; complete = false; if (!source.usage.knownSubtotal) continue; }
+        const usage = source.usage.ok ? source.usage : source.usage.knownSubtotal!;
         if (usage.events.some(event => eventKeys.has(event.usageEventKey)) ||
             new Set(usage.events.map(event => event.usageEventKey)).size !== usage.events.length) {
           missingSources++; complete = false; continue;
@@ -391,7 +391,9 @@ export function currentBenchProviderAuthenticator(input: {
           ceiling.sourceSha256 !== rate.inputTokenCeilingSourceSha256 || typeof ceiling.validateAuthorization !== 'function' ||
           !Number.isFinite(ceiling.validUntilMonotonicMs)) return null;
       const requestedUsd = currentBenchRequestExposureUsd(rate, ceiling.inputTokens, output, claude);
-      if (requestedUsd === null || requestedUsd > arm.generationBudget.maxUsd) return null;
+      if (requestedUsd === null || requestedUsd > arm.generationBudget.maxUsd ||
+          !Number.isSafeInteger(ceiling.inputTokens + output) ||
+          arm.generationBudget.maxTokens !== undefined && ceiling.inputTokens + output > arm.generationBudget.maxTokens) return null;
       const validUntilMonotonicMs = Math.min(ceiling.validUntilMonotonicMs, processMonotonicClock.now() + 5000);
       const validateAuthorization = () => {
         const check = () => { if (!live || attempt.signal.aborted || processMonotonicClock.now() >= validUntilMonotonicMs) {
@@ -438,6 +440,7 @@ export function currentBenchGatewayController(input: {
   if (canonicalJson([...resources.armIds].sort()) !== canonicalJson(assignmentIds) ||
       resources.usdPerArm !== arm.generationBudget.maxUsd || resources.maxOpenUsd !== protocol.maxInFlightUsd ||
       resources.wallClockMsPerArm !== arm.generationBudget.maxWallClockMs ||
+      resources.totalTokensPerArm !== arm.generationBudget.maxTokens ||
       !Number.isSafeInteger(resources.wallClockMs) || resources.wallClockMs! <= 0) {
     throw new Error('Benchmark gateway resource policy differs from the frozen protocol.');
   }
@@ -462,6 +465,8 @@ export function currentBenchGatewayController(input: {
         if (!authenticated) return null;
         const authority = { ...authenticated };
         if (authority.outputTokens !== output || !Number.isSafeInteger(authority.inputTokens) || authority.inputTokens < 0 ||
+            !Number.isSafeInteger(authority.inputTokens + output) ||
+            arm.generationBudget.maxTokens !== undefined && authority.inputTokens + output > arm.generationBudget.maxTokens ||
             rate.inputTokenCeiling !== undefined && authority.inputTokens !== rate.inputTokenCeiling) return null;
         // Round each frozen rate upward to microUSD per million tokens, then
         // use integer arithmetic. Floating subtraction must never grant extra
@@ -848,9 +853,10 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
               { disposition: 'error', detail: `Native generation ended ${task.state}, exit=${task.exitCode ?? 'unobserved'}.` };
             break;
           }
-          const cost = await lifecycle.collectCost({ handle, workspaceId });
+          const cost = await (ports.collectCost ? ports.collectCost({ handle, workspaceId }) :
+            lifecycle.collectCost({ handle, workspaceId }));
           if ((budget.maxUsd != null && cost.costUsd >= budget.maxUsd) ||
-              (budget.maxTokens != null && cost.tokensIn + cost.tokensOut >= budget.maxTokens)) { result = { disposition: 'budget-exhausted' }; break; }
+              (budget.maxTokens != null && cost.tokensIn + cost.tokensOut + (cost.tokensCacheRead ?? 0) + (cost.tokensCacheWrite ?? 0) >= budget.maxTokens)) { result = { disposition: 'budget-exhausted' }; break; }
           await ports.sleep(Math.max(1, Math.min(pollMs, deadline - lifecycle.now())));
         }
       } catch (error) {

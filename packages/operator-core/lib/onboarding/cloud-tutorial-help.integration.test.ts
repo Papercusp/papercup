@@ -8,6 +8,7 @@ import { createTutorialState, confirmedTutorialSteps } from './cloud-tutorial-le
 import type { TutorialAssistanceRequest } from './cloud-tutorial-help';
 vi.mock('./cloud-tutorial-progress', () => ({ readAccountTutorialProgress: vi.fn() }));
 import { readAccountTutorialProgress } from './cloud-tutorial-progress';
+const NEVER_EMIT_MARKER = 'never-emit-me';
 const origin = 'https://app.papercusp.com';
 const scope = { tenantId: 'tenant-a', userId: 'user-a', workspaceId: 'customer-a' };
 const input = { expectedScope: scope, context: { step: 'connection', status: 'ready' }, question: 'Where do I connect my project?' };
@@ -17,7 +18,7 @@ const principal = (patch: Partial<Parameters<typeof createHostedPrincipal>[0]> =
 });
 function setup(withProviders = true) {
   const answer = vi.fn(async (_input: TutorialAssistanceRequest, _signal: AbortSignal, _workspaceId: string) => 'Use the app connection form. The app validates your project.');
-  const speech = vi.fn(async (_text: string, _engine: string, _voice: string | undefined) => ({ audio: new ArrayBuffer(16), contentType: 'audio/wav' }));
+  const speech = vi.fn(async (_text: string, _engine: string, _voice: string | undefined, _signal?: AbortSignal) => ({ audio: new ArrayBuffer(16), contentType: 'audio/wav' }));
   const runTenant = vi.fn(async <T>(_context: unknown, callback: (tx: Sql) => Promise<T>) => callback({} as Sql));
   // Vitest's spy return type erases a generic call signature. Preserve the
   // tenant runner's callback/result relationship at the route boundary.
@@ -42,7 +43,7 @@ describe('hosted lesson assistance boundary', () => {
     }
     expect(answer).not.toHaveBeenCalled(); expect(speech).not.toHaveBeenCalled();
   });
-  it('checks the account-owned current lesson before AI Help without granting workspace or speech authority', async () => {
+  it('checks the account-owned current lesson before AI Help without granting workspace authority', async () => {
     const { call, answer, speech, runTenant } = setup();
     const accountInput = { expectedScope: { tenantId: scope.tenantId, userId: scope.userId },
       context: { version: 3, step: 'billing', status: 'ready' }, question: 'Who bills cloud resources?' };
@@ -55,7 +56,6 @@ describe('hosted lesson assistance boundary', () => {
     answer.mockClear();
     expect((await call(accountInput, { principal: principal({ userId: 'foreign', selectedWorkspaceId: undefined }) })).status).toBe(403);
     expect((await call({ ...accountInput, context: { ...accountInput.context, transcript: 'private' } }, { principal: unselected })).status).toBe(400);
-    expect((await call({ ...accountInput, engine: 'openai' }, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, principal: unselected })).status).toBe(400);
     expect((await call(input, { principal: unselected })).status).toBe(403);
     expect(answer).not.toHaveBeenCalled(); expect(speech).not.toHaveBeenCalled();
     for (const saved of [null, { currentLessonId: 'account', disposition: 'active' }, { currentLessonId: 'billing', disposition: 'closed' }]) {
@@ -63,6 +63,29 @@ describe('hosted lesson assistance boundary', () => {
       expect((await call(accountInput, { principal: unselected })).status).toBe(409);
     }
     expect(answer).not.toHaveBeenCalled();
+  });
+  it('speaks the persisted account lesson without workspace selection and refuses foreign, obsolete or secret input before synthesis', async () => {
+    const { call, answer, speech } = setup();
+    const accountInput = { expectedScope: { tenantId: scope.tenantId, userId: scope.userId },
+      context: { version: 3, step: 'billing', status: 'ready' }, question: 'Your cloud provider bills cloud resources.', engine: 'kokoro' };
+    const unselected = principal({ selectedWorkspaceId: undefined, permissions: [] });
+    vi.mocked(readAccountTutorialProgress).mockResolvedValue({ currentLessonId: 'billing', disposition: 'active' } as never);
+    const response = await call(accountInput, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, principal: unselected });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('audio/wav');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(speech).toHaveBeenCalledWith(accountInput.question, 'kokoro', undefined, expect.any(AbortSignal));
+    expect(answer).not.toHaveBeenCalled(); speech.mockClear();
+    for (const body of [
+      { ...accountInput, expectedScope: { ...accountInput.expectedScope, userId: 'foreign' } },
+      { ...accountInput, question: `api_key=${NEVER_EMIT_MARKER}` },
+      { ...accountInput, context: { ...accountInput.context, transcript: 'private workspace content' } },
+    ]) expect((await call(body, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, principal: unselected })).status).toBeGreaterThanOrEqual(400);
+    for (const saved of [null, { currentLessonId: 'account', disposition: 'active' }, { currentLessonId: 'billing', disposition: 'closed' }]) {
+      vi.mocked(readAccountTutorialProgress).mockResolvedValue(saved as never);
+      expect((await call(accountInput, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, principal: unselected })).status).toBe(409);
+    }
+    expect(speech).not.toHaveBeenCalled(); expect(answer).not.toHaveBeenCalled();
   });
   it('keeps account progress-store failures private and never invokes assistance providers', async () => {
     const { call, answer, speech, runTenant } = setup();
@@ -105,7 +128,7 @@ describe('hosted lesson assistance boundary', () => {
   });
   it('refuses credentials and expanded state before provider invocation', async () => {
     const { call, answer } = setup();
-    expect((await call({ ...input, question: 'api_key=sk-verysecret123456' })).status).toBe(403);
+    expect((await call({ ...input, question: `api_key=${NEVER_EMIT_MARKER}` })).status).toBe(403);
     expect((await call({ ...input, context: { ...input.context, transcript: 'another tenant' } })).status).toBe(400);
     expect(answer).not.toHaveBeenCalled();
   });
@@ -119,6 +142,22 @@ describe('hosted lesson assistance boundary', () => {
     const { call, speech, answer } = setup();
     const response = await call({ ...input, engine: 'openai', voiceId: 'nova' }, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH });
     expect(response.status).toBe(200); expect(response.headers.get('content-type')).toBe('audio/wav');
-    expect(speech).toHaveBeenCalledWith(input.question, 'openai', 'nova'); expect(answer).not.toHaveBeenCalled();
+    expect(speech).toHaveBeenCalledWith(input.question, 'openai', 'nova', expect.any(AbortSignal)); expect(answer).not.toHaveBeenCalled();
+  });
+  it('propagates cancellation into synthesis and never returns late audio', async () => {
+    const { call, speech } = setup();
+    let finish!: (result: { audio: ArrayBuffer; contentType: string }) => void;
+    speech.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const controller = new AbortController();
+    const pending = call({ ...input, engine: 'kokoro' }, { path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, signal: controller.signal });
+    await vi.waitFor(() => expect(speech).toHaveBeenCalledOnce());
+    const forwarded = speech.mock.calls[0][3]!;
+    expect(forwarded.aborted).toBe(false);
+    controller.abort();
+    expect(forwarded.aborted).toBe(true);
+    finish({ audio: new ArrayBuffer(16), contentType: 'audio/wav' });
+    const response = await pending;
+    expect(response.status).toBe(408);
+    expect(await response.json()).toMatchObject({ error: 'tutorial_speech_cancelled' });
   });
 });

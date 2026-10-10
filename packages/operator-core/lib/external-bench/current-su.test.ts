@@ -10,10 +10,99 @@ import {
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   currentBenchObservationReader, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
+  currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
+  currentBenchNativeCostReader, type CurrentBenchNativeCostReaderPorts,
   type CurrentBenchNativeInputCeiling,
   type CurrentBenchIdentity, type CurrentBenchTask, type CurrentSuBenchOptions, type CurrentSuBenchPorts,
 } from './current-su';
+import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import type { BenchHarnessOps } from './bench-harness-live';
+
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
+describe('source-bound current benchmark cost', () => {
+  function costFixture() {
+    const protocol = currentProtocolFixture('run-1');
+    const transcript = [
+      { type: 'session_meta', payload: { id: 'native-cost-1' } },
+      { type: 'turn_context', payload: { turn_id: 'turn-cost-1', model: 'configured-alias' } },
+      { type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: { input_tokens: 100, output_tokens: 10 },
+        last_token_usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 },
+      } } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-cost-1' } },
+    ].map(record => JSON.stringify(record) + '\n').join('');
+    const population = closedCodexSessionPopulation({ transcript, file: '/private/native-cost-1.jsonl', fileGeneration: 0, nativeSessionId: 'native-cost-1' });
+    if (!population.ok) throw new Error(population.detail);
+    const usage = { ...population, file: '/private/native-cost-1.jsonl', sourceSha256: createHash('sha256').update(transcript).digest('hex') };
+    const participant = { taskId: 'solver-task', ownerId: 'solver-owner', codexHome: '/private/home', terminal: true };
+    const runtime = { complete: true, sessions: [{ nativeSessionId: 'native-cost-1', usage }] };
+    const ports: CurrentBenchNativeCostReaderPorts = {
+      readParticipants: vi.fn(async () => [participant]), readRuntime: vi.fn(async () => runtime),
+      readBilled: vi.fn(async () => ({ knownSubtotalUsd: 0.002, complete: true })),
+      readAttemptAccountingComplete: vi.fn(async () => true),
+    };
+    return { protocol, participant, runtime, usage, ports, read: () => currentBenchNativeCostReader(protocol, ports)() };
+  }
+  it('keeps frozen normalized tokens and actual billed cost separately labelled', async () => {
+    const f = costFixture(), result = await f.read();
+    expect(result).toMatchObject({ tokensIn: 80, tokensOut: 10, tokensCacheRead: 20, tokensCacheWrite: 0, turns: 1, costUsdMeasurementMissing: false });
+    expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result.armMeta).toMatchObject({ nativeCostAccounting: { basis: 'frozen-normalized-native-source',
+      normalizedCostUsd: result.costUsd, billedCostUsd: 0.002, billedKnownSubtotalUsd: 0.002, missingSources: 0, missingBills: 0 } });
+  });
+  it('preserves a known billed subtotal without treating an incomplete provider bill as complete', async () => {
+    const f = costFixture(); vi.mocked(f.ports.readBilled).mockResolvedValue({ knownSubtotalUsd: 0.001, complete: false });
+    const result = await f.read();
+    expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result).toMatchObject({ costUsdMeasurementMissing: true, armMeta: { nativeCostAccounting: { billedCostUsd: null, billedKnownSubtotalUsd: 0.001, missingBills: 1 } } });
+  });
+  it('keeps efficiency claims closed when native usage is complete but gateway attempts are unreconciled', async () => {
+    const f = costFixture(); delete f.ports.readAttemptAccountingComplete;
+    expect(await f.read()).toMatchObject({ costUsdMeasurementMissing: true,
+      armMeta: { nativeCostAccounting: { sourceCensusComplete: true, attemptAccountingComplete: false, billedCostUsd: null } } });
+  });
+  it('retains known sources while a recovered predecessor source is unavailable', async () => {
+    const f = costFixture(); f.runtime.complete = false;
+    f.runtime.sessions.push({ nativeSessionId: 'old-native', usage: { ok: false, detail: 'source missing' } as never });
+    const result = await f.read(); expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result).toMatchObject({ costUsdMeasurementMissing: true, armMeta: { nativeCostAccounting: { missingSources: 1, billedCostUsd: null } } });
+  });
+  it('retains source-proven closed-turn tokens and bills while a later turn remains unknown', async () => {
+    const f = costFixture();
+    vi.mocked(f.ports.readRuntime).mockResolvedValue({ complete: false,
+      sessions: [{ nativeSessionId: 'native-cost-1', usage: { ok: false, detail: 'later turn incomplete', knownSubtotal: f.usage } }] });
+    const result = await f.read();
+    expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result).toMatchObject({ tokensIn: 80, tokensOut: 10, tokensCacheRead: 20, costUsdMeasurementMissing: true,
+      armMeta: { nativeCostAccounting: { billedCostUsd: null, billedKnownSubtotalUsd: 0.002, missingSources: 1 } } });
+    expect(f.ports.readBilled).toHaveBeenCalledWith(f.participant, 'native-cost-1', f.usage);
+  });
+  it('charges one shared recovery home once while retaining each participating task', async () => {
+    const f = costFixture(); vi.mocked(f.ports.readParticipants).mockResolvedValue([f.participant, { ...f.participant, taskId: 'recovery-task' }]);
+    const result = await f.read(); expect(result.costUsd).toBeCloseTo(0.00011, 10); expect(f.ports.readRuntime).toHaveBeenCalledOnce();
+    expect(result.armMeta).toMatchObject({ nativeCostAccounting: { participantTaskIds: ['recovery-task', 'solver-task'] } });
+  });
+  it.each(['live', 'changed-census', 'foreign-owner-home', 'duplicate-source', 'unknown-price', 'invalid-bill'] as const)('refuses completeness for %s', async changed => {
+    const f = costFixture();
+    if (changed === 'live') f.participant.terminal = false;
+    if (changed === 'changed-census') vi.mocked(f.ports.readParticipants).mockResolvedValueOnce([f.participant]).mockResolvedValueOnce([]);
+    if (changed === 'foreign-owner-home') vi.mocked(f.ports.readParticipants).mockResolvedValue([f.participant, { ...f.participant, taskId: 'other-task', ownerId: 'foreign-owner' }]);
+    if (changed === 'duplicate-source') f.runtime.sessions.push(f.runtime.sessions[0]);
+    if (changed === 'unknown-price') f.usage.events[0].model = 'unregistered-model';
+    if (changed === 'invalid-bill') vi.mocked(f.ports.readBilled).mockResolvedValue({ knownSubtotalUsd: NaN, complete: true });
+    expect(await f.read()).toMatchObject({ costUsdMeasurementMissing: true, armMeta: { nativeCostAccounting: { billedCostUsd: null } } });
+  });
+  it('passes native cache and source metadata through the maintained driver without consulting the legacy subtotal', async () => {
+    const f = fixture();
+    f.ports.collectCost = vi.fn(async () => ({ tokensIn: 80, tokensOut: 10, tokensCacheRead: 20, tokensCacheWrite: 5,
+      costUsd: 0.00012, turns: 1, costUsdMeasurementMissing: true, armMeta: { nativeCostAccounting: { billedCostUsd: null } } }));
+    const result = await f.run();
+    expect(result.telemetry).toMatchObject({ tokensIn: 80, tokensCacheRead: 20, tokensCacheWrite: 5, costUsd: 0.00012,
+      armMeta: { costUsdMeasurementMissing: true, nativeCostAccounting: { billedCostUsd: null }, currentExecution: expect.any(Object) } });
+    expect(f.lifecycle.collectCost).not.toHaveBeenCalled();
+  });
+});
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
@@ -51,7 +140,7 @@ function budgetFixture() {
   const body = JSON.stringify({ model: 'configured-alias', reasoning: { effort: 'high' }, max_output_tokens: 10 });
   const attempt: GatewayCarryTrialAttempt = { attemptId: randomUUID(), manifestSha256: input.preregHash,
     armId: controller.gateway.carryTrial.armId, transport: 'bearer-http', accountId: 'authenticated-account',
-    credentialHeader: 'authorization', credentialSha256: digest('Bearer PRIVATE_PROVIDER_KEY'),
+    credentialHeader: 'authorization', credentialSha256: digest(`Bearer ${NEVER_EMIT_MARKER}`),
     target: 'https://provider.invalid/v1/responses', body, bodySha256: digest(body),
     clockId: processMonotonicClock.id, signal: new AbortController().signal };
   const result = (request: GatewayCarryTrialAttempt, reservationRef: string, outcome: 'send-refused' | 'fetch-failed' | 'response-headers') => {
@@ -63,6 +152,62 @@ function budgetFixture() {
 }
 
 describe('frozen benchmark native provider admission', () => {
+  it('requires the atomic combined-token policy to match the frozen generation cap', () => {
+    const f = budgetFixture();
+    const protocol = structuredClone(f.input.protocol);
+    for (const arm of protocol.arms) arm.generationBudget.maxTokens = 110;
+    for (const totalTokensPerArm of [undefined, 109, 111]) {
+      expect(() => currentBenchGatewayController({ ...f.input, protocol,
+        resources: { ...f.input.resources, totalTokensPerArm } }, f.governor)).toThrow(/frozen protocol/);
+    }
+    f.revoke();
+  });
+
+  it('refuses a request whose complete input plus output exceeds the frozen assignment token cap', async () => {
+    const f = budgetFixture();
+    for (const limit of [109, 110]) {
+      const protocol = structuredClone(f.input.protocol);
+      for (const arm of protocol.arms) arm.generationBudget.maxTokens = limit;
+      const totalTokensPerArm = limit;
+      const controller = currentBenchGatewayController({ ...f.input, protocol,
+        resources: { ...f.input.resources, totalTokensPerArm } }, f.governor);
+      try {
+        const receipt = await controller.gateway.carryTrial.authorizeAttempt(f.attempt);
+        if (limit === 109) expect(receipt).toBeNull();
+        else expect(receipt).not.toBeNull();
+      } finally { controller.revoke(); }
+    }
+  });
+
+  it('preserves count provenance on the existing reservation and excludes extra host credential fields', async () => {
+    const f = budgetFixture();
+    f.authority.inputEvidence = { kind: 'provider-input-count', sourceSha256: f.digest('contract'),
+      bodySha256: f.attempt.bodySha256, countBodySha256: f.digest('count-body'), responseSha256: f.digest('count-response'),
+      requestId: 'req_provider_count', measuredInputTokens: 100, secret: 'DO_NOT_RECORD_HOST_SECRET' } as never;
+    try {
+      const receipt = await f.gateway.carryTrial.authorizeAttempt(f.attempt);
+      expect(receipt).not.toBeNull();
+      const note = JSON.parse(f.reserve.mock.calls[0][1].note!);
+      expect(note.inputEvidence).toEqual({ kind: 'provider-input-count', sourceSha256: f.digest('contract'),
+        bodySha256: f.attempt.bodySha256, countBodySha256: f.digest('count-body'), responseSha256: f.digest('count-response'),
+        requestId: 'req_provider_count', measuredInputTokens: 100 });
+      expect(f.reserve.mock.calls[0][1].note).not.toContain('DO_NOT_RECORD_HOST_SECRET');
+    } finally { f.revoke(); }
+  });
+  it.each(['body', 'over-cap', 'source', 'request-id'] as const)('rejects %s count evidence before a reservation', async changed => {
+    const f = budgetFixture();
+    const proof = { kind: 'provider-input-count' as const, sourceSha256: f.digest('contract'), bodySha256: f.attempt.bodySha256,
+      countBodySha256: f.digest('count-body'), responseSha256: f.digest('count-response'), requestId: 'req_count', measuredInputTokens: 100 };
+    if (changed === 'body') proof.bodySha256 = f.digest('foreign-body');
+    if (changed === 'over-cap') proof.measuredInputTokens = 101;
+    if (changed === 'source') proof.sourceSha256 = 'not-a-digest';
+    if (changed === 'request-id') proof.requestId = 'secret unsafe\nheader';
+    f.authority.inputEvidence = proof;
+    try {
+      expect(await f.gateway.carryTrial.authorizeAttempt(f.attempt)).toBeNull();
+      expect(f.reserve).not.toHaveBeenCalled();
+    } finally { f.revoke(); }
+  });
   it('binds the host native output ceiling to the frozen resource allowance', () => {
     const f = budgetFixture();
     expect(f.gateway.carryTrial.outputTokenLimit).toBe(1000);
@@ -83,7 +228,7 @@ describe('frozen benchmark native provider admission', () => {
       }));
       expect(f.reserve.mock.calls[0][1].cycle).toBeUndefined();
       const note = f.reserve.mock.calls[0][1].note!;
-      expect(note).not.toContain('PRIVATE_PROVIDER_KEY'); expect(note).not.toContain('configured-alias');
+      expect(note).not.toContain(NEVER_EMIT_MARKER); expect(note).not.toContain('configured-alias');
       receipt!.validateAuthorization!();
       await receipt!.observeAttemptResult!(f.result(f.attempt, receipt!.reservationRef, 'response-headers'));
       expect(f.settle).not.toHaveBeenCalled();
@@ -196,7 +341,7 @@ function providerAuthFixture() {
     sourceSha256: rate.inputTokenCeilingSourceSha256, validUntilMonotonicMs: processMonotonicClock.now() + 10_000,
     validateAuthorization: vi.fn(() => {}) };
   const account = { id: f.attempt.accountId, provider: 'codex' as const, credentialRef: 'token:fixture-private-key' };
-  const resolver = { current: vi.fn(async () => 'PRIVATE_PROVIDER_KEY'), invalidate: vi.fn(),
+  const resolver = { current: vi.fn(async () => NEVER_EMIT_MARKER), invalidate: vi.fn(),
     kind: 'token' as const, authMode: 'oauth' as const };
   const ports = { readAccount: vi.fn(async () => account), credentialResolver: vi.fn(() => resolver) };
   const input = { workspaceId: f.input.workspaceId, preregHash: f.input.preregHash, protocol: f.input.protocol,
@@ -207,12 +352,117 @@ function providerAuthFixture() {
   return { ...f, ...auth, input, ports, ceiling, account, resolver, attempt };
 }
 
+describe('provider-counted complete native input', () => {
+  function fixture() {
+    const f = providerAuthFixture();
+    const input = { model: f.ceiling.model, inputTokens: f.ceiling.inputTokens };
+    const body = JSON.stringify({ model: input.model, input: [{ role: 'user', content: 'native input' }],
+      instructions: 'same instructions', reasoning: { effort: 'high' },
+      tools: [{ type: 'function', name: 'shell', parameters: { type: 'object' } }], max_output_tokens: 10, stream: true });
+    const attempt = { ...f.attempt, body, bodySha256: f.digest(body) };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ object: 'response.input_tokens', input_tokens: 100 }));
+    const reader = currentBenchOpenAiInputReader(input, { fetch });
+    return { ...f, input, attempt, fetch, reader, credential: { secret: NEVER_EMIT_MARKER } };
+  }
+  it('counts the entire native payload with the final registered credential and reserves the frozen ceiling', async () => {
+    const f = fixture();
+    try {
+      const proof = await f.reader.read(f.attempt, f.credential);
+      expect(proof).toMatchObject({ model: f.input.model, inputTokens: 10_000,
+        sourceSha256: currentBenchOpenAiInputContract(f.input.model, 10_000) });
+      const [target, init] = f.fetch.mock.calls[0];
+      expect(target).toBe('https://api.openai.com/v1/responses/input_tokens');
+      expect(init).toMatchObject({ redirect: 'error', method: 'POST', headers: { authorization: `Bearer ${NEVER_EMIT_MARKER}` } });
+      expect(JSON.parse(init!.body as string)).toEqual({ model: f.input.model, input: [{ role: 'user', content: 'native input' }],
+        instructions: 'same instructions', reasoning: { effort: 'high' },
+        tools: [{ type: 'function', name: 'shell', parameters: { type: 'object' } }] });
+      expect(JSON.stringify(proof)).not.toContain(NEVER_EMIT_MARKER);
+      expect(proof!.evidence).toMatchObject({ kind: 'provider-input-count', measuredInputTokens: 100,
+        bodySha256: f.attempt.bodySha256, requestId: null });
+      proof!.validateAuthorization(); f.reader.revoke(); expect(() => proof!.validateAuthorization()).toThrow(/revoked/);
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
+  it.each(['previous', 'conversation', 'remote-image', 'remote-file', 'reference', 'hosted-tool', 'unknown-field',
+    'paid-tier', 'background', 'credential', 'target', 'body', 'aborted'] as const)('refuses %s before the counting request', async changed => {
+    const f = fixture();
+    try {
+      const body = JSON.parse(f.attempt.body);
+      if (changed === 'previous') body.previous_response_id = 'mutable';
+      if (changed === 'conversation') body.conversation = { id: 'mutable' };
+      if (changed === 'remote-image') body.input[0].content = [{ type: 'input_image', image_url: 'https://mutable.invalid/img' }];
+      if (changed === 'remote-file') body.input[0].content = [{ type: 'input_file', file_id: 'mutable' }];
+      if (changed === 'reference') body.input = [{ type: 'item_reference', id: 'mutable' }];
+      if (changed === 'hosted-tool') body.tools = [{ type: 'web_search' }];
+      if (changed === 'unknown-field') body.new_context_field = 'uncounted';
+      if (changed === 'paid-tier') body.service_tier = 'priority';
+      if (changed === 'background') body.background = true;
+      const text = JSON.stringify(body), attempt = { ...f.attempt, body: text, bodySha256: f.digest(text) };
+      if (changed === 'credential') attempt.credentialSha256 = f.digest('Bearer another');
+      if (changed === 'target') attempt.target = 'https://api.openai.com.evil.invalid/v1/responses';
+      if (changed === 'body') attempt.bodySha256 = f.digest('another body');
+      if (changed === 'aborted') attempt.signal = AbortSignal.abort();
+      expect(await f.reader.read(attempt, f.credential)).toBeNull(); expect(f.fetch).not.toHaveBeenCalled();
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
+  it.each([10_001, -1, 1.5, '100', null] as const)('refuses incomplete or over-cap provider input %s', async input_tokens => {
+    const f = fixture();
+    try {
+      f.fetch.mockImplementation(async () => Response.json({ object: 'response.input_tokens', input_tokens }));
+      expect(await f.reader.read(f.attempt, f.credential)).toBeNull();
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
+  it.each(['http', 'object', 'oversize', 'network', 'revoked'] as const)('refuses %s counting evidence', async changed => {
+    const f = fixture();
+    try {
+      if (changed === 'http') f.fetch.mockImplementation(async () => new Response('{}', { status: 503 }));
+      if (changed === 'object') f.fetch.mockImplementation(async () => Response.json({ input_tokens: 100 }));
+      if (changed === 'oversize') f.fetch.mockImplementation(async () => new Response(' '.repeat(4097)));
+      if (changed === 'network') f.fetch.mockRejectedValue(new Error('network unavailable'));
+      if (changed === 'revoked') f.fetch.mockImplementation(async () => { f.reader.revoke(); return Response.json({ object: 'response.input_tokens', input_tokens: 100 }); });
+      expect(await f.reader.read(f.attempt, f.credential)).toBeNull();
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
+  it('expires or aborts a counted proof synchronously before generation', async () => {
+    const f = fixture(); const abort = new AbortController();
+    try {
+      const proof = await f.reader.read({ ...f.attempt, signal: abort.signal }, f.credential);
+      expect(proof).not.toBeNull(); abort.abort(); expect(() => proof!.validateAuthorization()).toThrow(/revoked/);
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
+  it('binds the default production reader to the preregistered source and final credential', async () => {
+    const f = fixture();
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(f.fetch);
+    try {
+      const protocol = currentProtocolFixture();
+      protocol.priceSchedule.rates[0].inputTokenCeiling = 10_000;
+      protocol.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract(protocol.arms[0].model, 10_000);
+      const auth = currentBenchProviderAuthenticator({ workspaceId: 'bench-private', preregHash: f.attempt.manifestSha256,
+        protocol, armId: 'papercusp', taskId: 't1', seed: 1 }, f.ports);
+      try {
+        const authority = await auth.authenticateProvider(f.attempt);
+        expect(authority).toMatchObject({ inputTokens: 10_000, requestedUsd: 0.01002,
+          inputEvidence: { kind: 'provider-input-count', measuredInputTokens: 100 } });
+        expect(fetch).toHaveBeenCalledTimes(1);
+      } finally { auth.revoke(); }
+    } finally { fetch.mockRestore(); f.reader.revoke(); f.revoke(); }
+  });
+});
+
 describe('registered benchmark provider authentication', () => {
+  it('refuses complete native input plus output beyond the frozen token cap before granting authority', async () => {
+    const f = providerAuthFixture();
+    const protocol = structuredClone(f.input.protocol);
+    for (const arm of protocol.arms) arm.generationBudget.maxTokens = 10_009;
+    const auth = currentBenchProviderAuthenticator({ ...f.input, protocol }, f.ports);
+    try { expect(await auth.authenticateProvider(f.attempt)).toBeNull(); }
+    finally { auth.revoke(); f.revoke(); }
+  });
+
   it('uses the maintained physical credential-file resolver and refuses a changed credential', async () => {
     const f = providerAuthFixture();
     const root = mkdtempSync(join(tmpdir(), 'benchmark-provider-credential-'));
     const path = join(root, 'provider-key');
-    writeFileSync(path, 'PRIVATE_PROVIDER_KEY', { mode: 0o600 });
+    writeFileSync(path, NEVER_EMIT_MARKER, { mode: 0o600 });
     const account = { ...f.account, credentialRef: `token:${path}` };
     f.ports.readAccount.mockResolvedValue(account);
     const auth = currentBenchProviderAuthenticator(f.input, { readAccount: f.ports.readAccount,
@@ -249,7 +499,7 @@ describe('registered benchmark provider authentication', () => {
     f.ports.credentialResolver.mockReturnValue({ ...f.resolver, kind: 'apikey', authMode: 'api-key' } as never);
     const body = JSON.stringify({ model: 'configured-alias', output_config: { effort: 'high' }, max_tokens: 10 });
     const attempt = { ...f.attempt, target: 'https://api.anthropic.com/v1/messages', transport: 'anthropic-http' as const,
-      credentialHeader: 'x-api-key' as const, credentialSha256: f.digest('PRIVATE_PROVIDER_KEY'), body, bodySha256: f.digest(body) };
+      credentialHeader: 'x-api-key' as const, credentialSha256: f.digest(NEVER_EMIT_MARKER), body, bodySha256: f.digest(body) };
     const auth = currentBenchProviderAuthenticator(f.input, f.ports);
     try {
       expect(await auth.authenticateProvider(attempt)).toMatchObject({ inputTokens: 10_000, requestedUsd: 0.25002 });
@@ -263,7 +513,7 @@ describe('registered benchmark provider authentication', () => {
       expect(authority).toMatchObject({ inputTokens: 10_000, outputTokens: 10, requestedUsd: 0.01002 });
       expect(f.ports.readAccount).toHaveBeenCalledTimes(2);
       expect(f.ports.readAccount).toHaveBeenCalledWith('bench-private', f.attempt.accountId);
-      expect(JSON.stringify(authority)).not.toContain('PRIVATE_PROVIDER_KEY');
+      expect(JSON.stringify(authority)).not.toContain(NEVER_EMIT_MARKER);
       expect(authority!.validUntilMonotonicMs).toBeLessThanOrEqual(processMonotonicClock.now() + 5000);
       authority!.validateAuthorization();
       f.revoke(); expect(() => authority!.validateAuthorization()).toThrow(/revoked/);
@@ -622,8 +872,23 @@ describe('current native benchmark execution', () => {
     const result = await f.run();
     expect(result.telemetry.stopReason).toBe('budget-exhausted');
     expect(result.telemetry.costUsd).toBe(3);
+    expect(result.telemetry.armMeta).toMatchObject({ costUsdMeasurementMissing: true });
     expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
     expect(f.ports.launch).toHaveBeenCalledOnce();
+  });
+  it('stops at the complete native token cap including cache reads and writes', async () => {
+    const protocol = currentProtocolFixture();
+    for (const arm of protocol.arms) arm.generationBudget.maxTokens = 100;
+    const capped = { ...options, preregistration: { ...options.preregistration, config: protocol } };
+    const f = fixture(capped); f.row.state = 'running'; f.row.exitCode = null;
+    f.ports.collectCost = vi.fn(async () => ({ costUsd: 0.001, tokensIn: 20, tokensOut: 10,
+      tokensCacheRead: 60, tokensCacheWrite: 10, turns: 1 }));
+    const result = await currentSuBenchHarnessDriver(f.lifecycle, f.ports, capped).spinRunAndCost({
+      ...request, budget: { ...request.budget, maxTokens: 100 } });
+    expect(result.telemetry.stopReason).toBe('budget-exhausted');
+    expect(result.telemetry).toMatchObject({ tokensIn: 20, tokensOut: 10, tokensCacheRead: 60, tokensCacheWrite: 10 });
+    expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
+    expect(f.ports.sleep).not.toHaveBeenCalled();
   });
   it('refuses a task receipt pointing to another workspace', async () => {
     const f = fixture(); f.row.workspaceId = 'papercusp-workspace';

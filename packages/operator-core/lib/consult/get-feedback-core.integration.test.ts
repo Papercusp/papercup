@@ -25,6 +25,7 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
 import { routingHealthFromRows, type RoutingHealthConsultRow } from './consult-routing-health';
+import { appendDispatchRecord } from './consult-dispatch';
 import {
   resolveProseProfileSelection,
   type ProseProfileSelection,
@@ -937,6 +938,82 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
+  it('keeps one request per retry while expired feedback and launch failures remain separate cohorts', async () => {
+    const workspaceId = `${WS}-cohort-regression`;
+    const fixture = makeDeps(routeOf([cand('cohort-expert')]));
+    const requests = [
+      { ...baseReq, workspaceId, requestKey: 'cohort-answer' },
+      { ...baseReq, workspaceId, requestKey: 'cohort-pending' },
+      { ...baseReq, workspaceId, requestKey: 'cohort-retrieval', allowDispatch: false },
+      { ...baseReq, workspaceId, requestKey: 'cohort-legacy' },
+    ];
+    const accepted = [];
+    for (const request of requests) {
+      const result = await acceptFeedbackRequestCore(request, fixture.deps);
+      if ('error' in result) throw new Error(result.error);
+      accepted.push(result);
+    }
+    const conversationId = accepted[0].conversation_id;
+    // Acceptance uses the database clock. Pin this isolated fixture population
+    // to the reader's explicit window rather than the test helper's clock seam.
+    await rootSql`UPDATE harness_shared.consult_state SET created_at = ${NOW.toISOString()}::timestamptz
+      WHERE workspace_id = ${workspaceId}`;
+    await rootSql`UPDATE harness_shared.consult_state SET routing = routing - 'deliveryIntent'
+      WHERE workspace_id = ${workspaceId} AND conversation_id = ${accepted[3].conversation_id}`;
+    const sinceMs = NOW.getTime() - 60_000;
+    const untilMs = NOW.getTime() + 60_000;
+    const read = async () => {
+      const { rows, truncated } = await readRoutingHealthRows(rootSql, workspaceId,
+        new Date(sinceMs).toISOString(), new Date(untilMs).toISOString(), 5000,
+        new Date(NOW.getTime() + 30_000).toISOString());
+      expect(truncated).toBe(false);
+      expect(rows).toHaveLength(4);
+      return routingHealthFromRows(rows, { sinceMs, untilMs, nowMs: NOW.getTime() + 30_000 });
+    };
+    const initial = await read();
+    expect(initial.requestCohort.totals).toMatchObject({ requests: 4, dispatchRequested: 2,
+      retrievalOnly: 1, legacyIntentUnknown: 1, outcomes: { pending: 2, received: 0, failed: 0 } });
+    expect(initial.totals).toMatchObject({ launched: 0, failed: 0 });
+
+    for (let retry = 0; retry < 3; retry++) {
+      expect((await acceptFeedbackRequestCore(requests[0], fixture.deps)).conversation_id).toBe(conversationId);
+    }
+    // Persist both walks through the production writer. They are two launch
+    // attempts for the same request, not two additional requests or a terminal
+    // delivery failure once a typed responder receipt exists.
+    await appendDispatchRecord(rootSql, { workspaceId, conversationId, sourceOwnerId: 'cohort-expert',
+      result: { dispatched: false, answeringOwnerId: null, operation: null, agent: null,
+        model: null, verified: null, detail: 'fixture failed first launch', attempts: [
+          { rank: 0, agent: 'codex', model: 'sol', operation: 'fork', outcome: 'failed',
+            reason: 'launch-failed', detail: 'fixture failed first launch' },
+        ] },
+    }, NOW.toISOString());
+    await appendDispatchRecord(rootSql, { workspaceId, conversationId, sourceOwnerId: 'cohort-expert',
+      result: { dispatched: true, answeringOwnerId: 'cohort-answerer', operation: 'fork', agent: 'codex',
+        model: 'sol', verified: true, detail: 'fixture recovered launch', attempts: [
+          { rank: 1, agent: 'codex', model: 'sol', operation: 'fork', outcome: 'dispatched',
+            detail: 'fixture recovered launch' },
+        ] },
+    }, new Date(NOW.getTime() + 1000).toISOString());
+    await rootSql`UPDATE harness_shared.consult_state SET state = 'expired', cascade_digest = '[]'::jsonb
+      WHERE workspace_id = ${workspaceId} AND conversation_id IN
+        (${conversationId}, ${accepted[2].conversation_id})`;
+    await rootSql`INSERT INTO harness_shared.consult_post_meta
+      (workspace_id, post_id, conversation_id, author_id, kind, created_at)
+      VALUES (${workspaceId}, 991001, ${conversationId}, 'cohort-answerer', 'answer',
+        ${new Date(NOW.getTime() + 2000).toISOString()}::timestamptz)`;
+    const final = await read();
+    expect(final.requestCohort.totals).toMatchObject({ requests: 4, dispatchRequested: 2,
+      retrievalOnly: 1, legacyIntentUnknown: 1,
+      outcomes: { received: 1, pending: 1, declined: 0, unavailable: 0, failed: 0, unmeasured: 0 } });
+    expect(final.totals).toMatchObject({ launched: 1, failed: 1 });
+    expect(final.totals.failedReasons).toEqual({ 'launch-failed': 1 });
+    expect(final.requestCohort.window.cohort).toBe('request-time');
+    expect(final.window.cohort).toBe('launch-time');
+    expect(fixture.routeCalls).toHaveLength(0);
+    expect(fixture.reached).toHaveLength(0);
+  });
+
   it.each([undefined, false] as const)('records request intent and pending classification before routing (%s)', async (allowDispatch) => {
     const fixture = makeDeps(routeOf([cand('accepted-expert')]));
     const request = { ...baseReq, requestKey: `accepted-cohort-${allowDispatch ?? 'default'}`, allowDispatch };

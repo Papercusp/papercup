@@ -2,14 +2,52 @@
 import { expect, it, vi } from 'vitest';
 import { ChildProcess, fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
-import { preparePrivateHttpWorkspaces } from '../test/private-http-workspace-preflight';
+import { preparePortalBrowserSource, preparePrivateHttpWorkspaces } from '../test/private-http-workspace-preflight';
+import { verifyPrivateCoordReceipt } from '../test/private-coord-receipt';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
+
+it.each([{ summary: 'private-browser-message', wake: false }, { summary: '(nudge from the portal)', wake: true }])(
+  'correlates the actual private action payload $summary instead of the HTTP-only marker', async expected => {
+    const result = { ok: true, to: ['selected'], msg_id: 'action-message',
+      ...(expected.wake ? { wake: { pickupConfirmed: false } } : {}) };
+    const receipt = { status: 200, body: { results: [result] } };
+    const stored = { to: ['selected'], ...expected };
+    expect(await verifyPrivateCoordReceipt(receipt, { ownerId: 'selected', ...expected }, async () => stored)).toBe('action-message');
+    await expect(verifyPrivateCoordReceipt(receipt, { ownerId: 'selected', ...expected, summary: 'private-coord-marker' }, async () => stored))
+      .rejects.toThrow('persisted action payload correlation');
+    await expect(verifyPrivateCoordReceipt(receipt, { ownerId: 'neighbor', ...expected }, async () => stored))
+      .rejects.toThrow('selected-recipient receipt correlation');
+  });
+
+it('refuses a synchronous private wake receipt that fabricates observed pickup', async () => {
+  await expect(verifyPrivateCoordReceipt({ status: 200, body: { results: [{ ok: true, to: ['selected'], msg_id: 'wake',
+    wake: { pickupConfirmed: true } }] } }, { ownerId: 'selected', summary: 'nudge', wake: true },
+  async () => ({ to: ['selected'], summary: 'nudge', wake: true }))).rejects.toThrow('send-time wake cannot attest pickup');
+});
+
+it('validates explicit Portal source before a private runtime even after ambient selection is stripped', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-portal-source-'));
+  try {
+    for (const file of ['packages/ui/src/agents-popover.tsx', 'app/tokens.css', 'app/globals.css',
+      'node_modules/react/package.json', 'node_modules/react-dom/package.json']) {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      writeFileSync(join(root, file), '{}');
+    }
+    vi.stubEnv('PAPERCUSP_TEST_PORTAL_SOURCE_ROOT', undefined);
+    expect(preparePortalBrowserSource(['node', 'fixture.ts', '--portal-source=' + root])).toBe(realpathSync(root));
+    expect(() => preparePortalBrowserSource(['node', 'fixture.ts'])).toThrow('exactly one explicit');
+    expect(() => preparePortalBrowserSource(['--portal-source=relative'])).toThrow('absolute maintained');
+    expect(() => preparePortalBrowserSource(['--portal-source=' + root, '--portal-source=' + root])).toThrow('exactly one explicit');
+    rmSync(join(root, 'packages/ui/src/agents-popover.tsx'));
+    expect(() => preparePortalBrowserSource(['--portal-source=' + root])).toThrow();
+  } finally { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); }
+});
 
 it('prepares a private foreign workspace before the real HTTP middleware checks it', async () => {
   const root = mkdtempSync(join(tmpdir(), 'private-http-registry-'));

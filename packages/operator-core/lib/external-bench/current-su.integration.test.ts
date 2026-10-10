@@ -192,6 +192,18 @@ describe('production native accounting with private PG and full source bytes', (
     const result = await f.read(); expect(result.costUsd).toBeCloseTo(0.00011, 10);
     expect(result.armMeta).toMatchObject({ nativeCostAccounting: { billedCostUsd: null, billedKnownSubtotalUsd: 0, missingBills: 1 } });
   });
+  it.each(['open turn', 'partial record'] as const)('preserves a source-proven closed subtotal before an incomplete %s without certifying a total', async tail => {
+    const f = await costFixture();
+    const source = readFileSync(f.solver.file, 'utf8');
+    const suffix = tail === 'open turn' ? JSON.stringify({ type: 'turn_context', payload: {
+      turn_id: randomUUID(), model: 'configured-alias' } }) + '\n' : '{"type":"event_msg"';
+    writeFileSync(f.solver.file, source + suffix);
+    const result = await f.read();
+    expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result).toMatchObject({ tokensIn: 80, tokensOut: 10, tokensCacheRead: 20, turns: 1,
+      costUsdMeasurementMissing: true, armMeta: { nativeCostAccounting: { sourceCensusComplete: false,
+        billedKnownSubtotalUsd: 0.002, billedCostUsd: null, missingSources: 1, missingBills: 0 } } });
+  });
   it('marks an incomplete ingest frontier as missing usage without guessing free work', async () => {
     const f = await costFixture(); await sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = 0`;
     expect(await f.read()).toMatchObject({ costUsdMeasurementMissing: true,

@@ -55,6 +55,25 @@ describe('complete closed Codex source accounting', () => {
       if (result.ok) expect(result.events[0].usage).toMatchObject({ inputTokens: 80, cacheReadTokens: 20, cacheCreationTokens: 0 });
     });
   });
+  it.each(['open turn', 'partial record', 'malformed tail'] as const)('retains the proven closed-turn subtotal with an incomplete %s', async tail => {
+    await fixture(async ({ home, file, sql }) => {
+      const suffix = tail === 'open turn' ? line({ type: 'turn_context', payload: { turn_id: 'turn-2', model: 'configured-alias' } }) :
+        tail === 'partial record' ? '{"type":"event_msg"' : 'unreadable\n';
+      await fs.appendFile(file, suffix);
+      const result = await read(sql, home);
+      expect(result).toMatchObject({ ok: false, knownSubtotal: { ok: true, nativeTurnIds: ['turn-1'],
+        closedByteOffset: Buffer.byteLength(transcript), file,
+        sourceSha256: createHash('sha256').update(transcript + suffix).digest('hex') } });
+      if (!result.ok && result.knownSubtotal) expect(result.knownSubtotal.events[0].usage).toMatchObject({ inputTokens: 80, outputTokens: 10, cacheReadTokens: 20 });
+    });
+  });
+  it('does not infer a known closed subtotal from a frontier before closure', async () => {
+    await fixture(async ({ home, sql }) => {
+      const result = await read(sql, home);
+      expect(result).toMatchObject({ ok: false });
+      expect(result).not.toHaveProperty('knownSubtotal');
+    }, { byte_offset: String(Buffer.byteLength(transcript) - 1), parser_state: { initialized: true, fileGeneration: 0 } });
+  });
   it.each([
     ['missing', null],
     ['partial', { byte_offset: '0', parser_state: { initialized: true } }],
@@ -99,6 +118,24 @@ describe('complete closed Codex source accounting', () => {
       const result = await readClosedCodexRuntimeUsage(sql, { workspaceId: 'bench-private', codexHome: home });
       expect(result.complete).toBe(true);
       expect(result.sessions.map(source => source.nativeSessionId)).toEqual([session, old]);
+    });
+  });
+  it.each(['append', 'same-size rewrite'] as const)('refuses completeness when an earlier source changes by %s during a later source read', async change => {
+    await fixture(async ({ home, file, sql, calls }) => {
+      const old = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      await fs.writeFile(file.replace(session, old), transcript.replace(session, old));
+      const changing = (async (...args: unknown[]) => {
+        const rows = await (sql as unknown as (...args: unknown[]) => Promise<unknown>)(...args);
+        if (calls.length === 2) {
+          if (change === 'append') await fs.appendFile(file, line({ type: 'response_item', payload: { type: 'message' } }));
+          else await fs.writeFile(file, transcript.replaceAll('"output_tokens":10', '"output_tokens":20'));
+        }
+        return rows;
+      }) as unknown as Sql;
+      const result = await readClosedCodexRuntimeUsage(changing, { workspaceId: 'bench-private', codexHome: home });
+      expect(calls).toHaveLength(2);
+      expect(result.sessions).toHaveLength(2);
+      expect(result.complete).toBe(false);
     });
   });
   it('retains complete sources while marking an open predecessor incomplete', async () => {

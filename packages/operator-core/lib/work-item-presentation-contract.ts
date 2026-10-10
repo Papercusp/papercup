@@ -15,6 +15,7 @@ export interface WorkItemPresentation {
   reason: string;
   evidenceRefs: string[];
   completionRef: string | null;
+  workEvidence?: import('./item-activity').ItemWorkEvidence;
 }
 
 export const WORK_ITEM_PRESENTATION_REASONS: Record<string, string> = {
@@ -27,16 +28,17 @@ export const WORK_ITEM_PRESENTATION_REASONS: Record<string, string> = {
   'acceptance-revision-stale': 'Source changed since acceptance; review again',
   'awaiting-qualifying-acceptance': 'Awaiting an acceptance decision or revision',
   'accepted-work-held': 'Accepted work is held by a dependency, blocker or lifecycle state',
-  'accepted-work-in-progress': 'Accepted work is assigned or running',
+  'accepted-work-in-progress': 'Accepted work has a reservation or an in-progress lifecycle; execution is unverified',
+  'accepted-work-reserved': 'Accepted work is reserved; recent item updates and execution evidence are separate',
   'accepted-work-with-verified-success': 'Accepted work completed with verified authority',
   'terminal-without-verified-accepted-success': 'Terminal history without verified accepted delivery',
 };
 
 export const WORK_ITEM_PRESENTATION_LABELS: Record<WorkItemPresentationStage, string> = {
   observation: 'Observation evidence',
-  candidate: 'Candidates awaiting decision or revision',
+  candidate: 'Reproduction or review candidates',
   'accepted-ready': 'Accepted ready work',
-  'accepted-active': 'Active accepted work',
+  'accepted-active': 'Reserved accepted work',
   'accepted-blocked': 'Blocked accepted work',
   'verified-completion': 'Verified accepted completions',
   'terminal-other': 'Other terminal history',

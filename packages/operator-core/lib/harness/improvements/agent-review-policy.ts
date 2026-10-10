@@ -725,8 +725,10 @@ export function deriveWorkItemPresentationStage(input: WorkItemPresentationInput
     || !['open', 'wip', 'in_progress', 'in-progress', 'active', 'running'].includes(input.status);
   if (blocked) return { stage: 'accepted-blocked', reason: 'accepted-work-held', intake };
   const assigned = Boolean(input.assignee?.trim() && input.assignee.trim().toLowerCase() !== 'unassigned');
-  if (assigned || ['wip', 'in_progress', 'in-progress', 'active', 'running'].includes(input.status)) {
-    return { stage: 'accepted-active', reason: 'accepted-work-in-progress', intake };
+  if (assigned) {
+    // Stable stage key, now explicitly a reservation. Lifecycle/assignment alone
+    // cannot attest native work; that evidence is carried independently.
+    return { stage: 'accepted-active', reason: 'accepted-work-reserved', intake };
   }
   return { stage: 'accepted-ready', reason: 'qualifying-acceptance', intake };
 }

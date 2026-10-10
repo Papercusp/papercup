@@ -471,38 +471,92 @@ export default defineTool({
     // just not in a plain text turn.
     let toolPartCaveat: string | undefined;
     if (mode === 'verbatim' && pageHits.length === 0) {
-      try {
-        const pf = filters ?? {};
-        const pOwners = pf.owners && pf.owners.length ? pf.owners : null;
-        // D-006 / P-013: a count over another agent's restricted tool parts is a
-        // substring ORACLE on its content, so those parts never count — the same
-        // SQL rule as the turn queries. A ledger read failure fails the probe
-        // (caught below), which shows no caveat.
-        const [row] = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', () => tx<Array<{ hits: string }>>`
-          SELECT COUNT(*)::text AS hits
-            FROM harness_shared.session_turn_parts p
-           WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
-             AND NOT ${restrictedTurnSql(tx, 'p', selfOwnerIds)}
-             AND (${pOwners}::text[] IS NULL OR owner = ANY(${pOwners}::text[]))
-             AND (${pf.sessionId ?? null}::text IS NULL OR session_id = ${pf.sessionId ?? null})
-             AND (${pf.sourceKind ?? null}::text IS NULL OR source_kind = ${pf.sourceKind ?? null})
-             AND (${pf.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${pf.since ?? null}::timestamptz)
-             AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${pf.until ?? null}::timestamptz)
-             AND part_kind IN ('tool_use', 'tool_result')
-             AND text ILIKE '%' || ${args.query} || '%'
-        `);
-        const partHits = row ? Number(row.hits) : 0;
-        if (partHits > 0) {
+      const pf = filters ?? {};
+      const pOwners = pf.owners && pf.owners.length ? pf.owners : null;
+      if (!pOwners) {
+        toolPartCaveat =
+          '⚠ TOOL-CONTENT NOT CHECKED: this search has no owner filter, so the supplementary probe was skipped ' +
+          'to avoid scanning tool content across the workspace. Zero plain-text hits do not rule out a match inside a tool call or result.';
+      } else {
+        try {
+          // The probe is deliberately bounded to owner-scoped searches. Its tool_use branch uses
+          // the existing owner/time partial index; the tool_result branch uses the online-built
+          // owner/workspace index below. Never run the old whole-table fallback while either
+          // index is absent or invalid.
+          const [indexes] = await measureSearchPhase(ctx, 'zero_hit_tool_part_index_readiness', () => tx<Array<{
+            tool_use_ready: boolean;
+            tool_result_ready: boolean;
+          }>>`
+            SELECT
+              EXISTS (
+                SELECT 1 FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'harness_shared'
+                  AND c.relname = 'session_turn_parts_owner_ts_tool_use_idx'
+                  AND i.indisvalid AND i.indisready
+              ) AS tool_use_ready,
+              EXISTS (
+                SELECT 1 FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'harness_shared'
+                  AND c.relname = 'session_turn_parts_owner_workspace_tool_result_idx'
+                  AND i.indisvalid AND i.indisready
+              ) AS tool_result_ready
+          `);
+
+          if (!indexes?.tool_use_ready || !indexes?.tool_result_ready) {
+            toolPartCaveat =
+              '⚠ TOOL-CONTENT NOT CHECKED: the owner indexes for tool_use/tool_result are not ready, so the ' +
+              'supplementary probe was skipped instead of scanning the full parts table. Zero plain-text hits do not rule out a match inside a tool call or result.';
+          } else {
+            // Split the part kinds so PostgreSQL can prove each partial-index predicate.
+            const partHits = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', async () => {
+              const [toolUse] = await tx<Array<{ hits: string }>>`
+                SELECT COUNT(*)::text AS hits
+                  FROM harness_shared.session_turn_parts p
+                 WHERE (p.workspace_id = ${workspaceId} OR p.workspace_id = 'default')
+                   AND NOT ${restrictedTurnSql(tx, 'p', selfOwnerIds)}
+                   AND p.owner = ANY(${pOwners}::text[])
+                   AND (${pf.sessionId ?? null}::text IS NULL OR p.session_id = ${pf.sessionId ?? null})
+                   AND (${pf.sourceKind ?? null}::text IS NULL OR p.source_kind = ${pf.sourceKind ?? null})
+                   AND (${pf.since ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) >= ${pf.since ?? null}::timestamptz)
+                   AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) < ${pf.until ?? null}::timestamptz)
+                   AND p.part_kind = 'tool_use'
+                   AND p.text ILIKE '%' || ${args.query} || '%'
+              `;
+              const [toolResult] = await tx<Array<{ hits: string }>>`
+                SELECT COUNT(*)::text AS hits
+                  FROM harness_shared.session_turn_parts p
+                 WHERE (p.workspace_id = ${workspaceId} OR p.workspace_id = 'default')
+                   AND NOT ${restrictedTurnSql(tx, 'p', selfOwnerIds)}
+                   AND p.owner = ANY(${pOwners}::text[])
+                   AND (${pf.sessionId ?? null}::text IS NULL OR p.session_id = ${pf.sessionId ?? null})
+                   AND (${pf.sourceKind ?? null}::text IS NULL OR p.source_kind = ${pf.sourceKind ?? null})
+                   AND (${pf.since ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) >= ${pf.since ?? null}::timestamptz)
+                   AND (${pf.until ?? null}::timestamptz IS NULL OR COALESCE(p.ts, p.ingested_at) < ${pf.until ?? null}::timestamptz)
+                   AND p.part_kind = 'tool_result'
+                   AND p.text ILIKE '%' || ${args.query} || '%'
+              `;
+              return Number(toolUse?.hits ?? 0) + Number(toolResult?.hits ?? 0);
+            });
+
+            if (partHits > 0) {
+              toolPartCaveat =
+                `⚠ FOUND, JUST NOT IN A TEXT TURN: 0 hits among plain conversational turns, but the exact string ` +
+                `occurs ${partHits} time(s) inside a tool call or tool result in this scope (session_turn_parts, the ` +
+                `faithful-render store, kept 14 days). session_turns deliberately excludes tool_use/tool_result content ` +
+                `so recall is not flooded with tool noise — this 0 is NOT evidence the text was never written, only that ` +
+                `it is not sitting in a plain user/assistant text turn. Read the raw transcript or the specific turn ` +
+                `(sessions:read) to see the tool call/result directly before concluding anything from this 0.`;
+            }
+          }
+        } catch {
           toolPartCaveat =
-            `⚠ FOUND, JUST NOT IN A TEXT TURN: 0 hits among plain conversational turns, but the exact string ` +
-            `occurs ${partHits} time(s) inside a tool call or tool result in this scope (session_turn_parts, the ` +
-            `faithful-render store, kept 14 days). session_turns deliberately excludes tool_use/tool_result content ` +
-            `so recall is not flooded with tool noise — this 0 is NOT evidence the text was never written, only that ` +
-            `it is not sitting in a plain user/assistant text turn. Read the raw transcript or the specific turn ` +
-            `(sessions:read) to see the tool call/result directly before concluding anything from this 0.`;
+            '⚠ TOOL-CONTENT NOT CHECKED: the supplementary tool-content probe failed, so zero plain-text hits do not ' +
+            'rule out a match inside a tool call or result.';
         }
-      } catch {
-        /* best-effort supplementary probe only — never fail the search over it */
       }
     }
 

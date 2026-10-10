@@ -34,6 +34,7 @@ import {
   CHAT_PLAN_POPUP_PARAM,
 } from '../../_components/chat/chat-ref-popup-params';
 import { WORK_ITEM_PRESENTATION_LABELS, WORK_ITEM_PRESENTATION_REASONS } from '@papercusp/operator-core/lib/work-item-presentation-contract';
+import { formatItemWorkEvidence } from '@papercusp/operator-core/lib/item-activity';
 
 // work-item-status-full-unify P-007: the settable feature statuses are the UNIFIED
 // lifecycle tokens (feature `todo`→`open`, `passed`→`done`, `deprecated`→`dropped`;
@@ -530,6 +531,7 @@ export function WorkItemDetail({
       ),
     ],
     ['Acceptance', workItem.presentation ? WORK_ITEM_PRESENTATION_LABELS[workItem.presentation.stage] : '—'],
+    ['Work evidence', formatItemWorkEvidence(workItem.presentation?.workEvidence)],
     ['Reason', workItem.presentation ? (() => {
       const [reason, ...detail] = workItem.presentation.reason.split(': ');
       return `${WORK_ITEM_PRESENTATION_REASONS[reason] ?? reason}${detail.length ? `: ${detail.join(': ')}` : ''}`;

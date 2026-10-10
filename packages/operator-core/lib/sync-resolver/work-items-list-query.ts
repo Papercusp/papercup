@@ -27,6 +27,8 @@ import {
 } from '../work-items';
 import { deriveWorkItemPresentationStage, readImplementationReadiness } from '../harness/improvements/agent-review-policy';
 import type { WorkItemPresentation } from '../work-item-presentation-contract';
+import { deriveItemWorkEvidence } from '../item-activity';
+import { activeExternalBlockers } from '../external-blockers';
 import { activeWorkItemDependencyRefsSql } from '../dbos/work-item-deps-store';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 import { withNamedQueryDiagnosticLeg } from '../agent-tools/db-diagnostic-correlation-wiring';
@@ -575,10 +577,12 @@ export async function readWorkItemPresentations(
     title: string; summary: string | null; payload: unknown;
     assignee: string | null; terminalOwner: string | null;
     terminalCompletionRef: string | null; completionAuthority: string | null; blocked: boolean;
+    takenAt: Date | string | null; lastProgressAt: Date | string | null; waitRefs: string[];
   }[]>`
     WITH active_dependencies AS (${activeWorkItemDependencyRefsSql(sql, {
       itemWorkspaceId: workspaceId,
       successfulStates: [...ALL_SUCCESSFUL_STATUSES], terminalStates: [...ALL_TERMINAL_STATUSES],
+      includeBlockerRefs: true,
     })})
     SELECT wi.feature_id AS id, wi.harness_slug AS "harnessSlug",
            wi.item_kind AS kind, wi.status, wi.title, wi.summary,
@@ -591,7 +595,10 @@ export async function readWorkItemPresentations(
              'needsOwnerAction', wi.payload->'needsOwnerAction',
              'humanCapability', wi.payload->'humanCapability',
              'externalBlockers', wi.payload->'externalBlockers') AS payload,
-           wi.taken_by AS assignee, wi.terminal_owner AS "terminalOwner",
+           wi.taken_by AS assignee, wi.taken_at AS "takenAt", wi.last_progress_at AS "lastProgressAt",
+           ARRAY(SELECT DISTINCT d.blocker_ref FROM active_dependencies d
+             WHERE d.blocked_ref IN (wi.feature_id, wi.harness_slug || '#' || wi.feature_id)) AS "waitRefs",
+           wi.terminal_owner AS "terminalOwner",
            wi.terminal_completion_ref AS "terminalCompletionRef", wi.authority AS "completionAuthority",
            EXISTS (SELECT 1 FROM active_dependencies d
              WHERE d.blocked_ref IN (wi.feature_id, wi.harness_slug || '#' || wi.feature_id)) AS blocked
@@ -609,6 +616,10 @@ export async function readWorkItemPresentations(
       reason: decision.reason + (readiness?.reason ? `: ${readiness.reason.slice(0, 500)}` : ''),
       evidenceRefs: evidenceRefs.filter((ref): ref is string => typeof ref === 'string').slice(0, 8).map(ref => ref.slice(0, 500)),
       completionRef: row.terminalCompletionRef?.slice(0, 500) ?? null,
+      workEvidence: deriveItemWorkEvidence({
+        takenBy: row.assignee, takenAt: row.takenAt, lastProgressAt: row.lastProgressAt,
+        registeredWaitRefs: [...(row.waitRefs ?? []), ...activeExternalBlockers(row.payload).map(b => `${b.kind}:${b.ref}`)],
+      }, { now: Date.now() }),
     }];
   }));
 }

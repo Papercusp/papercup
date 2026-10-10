@@ -2425,6 +2425,76 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
+  it('uses the exact retained Claude session transcript to recover a gateway failure without a PTY footer', async () => {
+    const d = deps();
+    const sessionId = 'native-retained-session';
+    const ownerId = 'su-retained-auditor';
+    const nativeTranscript = JSON.stringify({
+      type: 'assistant',
+      sessionId,
+      isSidechain: false,
+      isApiErrorMessage: true,
+      apiErrorStatus: 429,
+      message: { role: 'assistant', stop_reason: 'stop_sequence', content: [{ type: 'text', text: 'API error' }] },
+    });
+    const task = {
+      taskId: 'task-retained-native',
+      sessionId,
+      workspaceId: 'ws-test',
+      class: 'agent-session',
+      state: 'running',
+      startedAt: new Date().toISOString(),
+      logPath: '/tmp/grading-retained-native.log',
+      detail: { label: 'grading-audit:EI-retained-native', coordOwnerId: ownerId },
+    } as unknown as TaskRow;
+    d.listScorecards.mockResolvedValue([card('EI-retained-native')]);
+    d.listTasks.mockResolvedValue([task]);
+    d.launch.mockResolvedValueOnce(launchResult({
+      deduped: false,
+      launch: { tasks: [{ taskId: 'task-retained-fallback', logPath: '/tmp/grading-retained-fallback.log' }] },
+    }));
+    const listNativeSessions = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['listNativeSessionsByTranscriptHandles']>>()
+      .mockResolvedValue([{ sessionId, coordOwnerId: ownerId, agent: 'claude' }]);
+    const resolveTranscript = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['findSessionTranscript']>>()
+      .mockResolvedValue('/tmp/grading-retained-native.jsonl');
+    const nowMs = Date.now();
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+    const ptyLog =
+      'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s';
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-retained-native'], ctx, harness: 'papercusp' },
+      {
+        ...d,
+        listNativeSessionsByTranscriptHandles: listNativeSessions,
+        findSessionTranscript: resolveTranscript,
+        killTask,
+        providerCanServe: vi.fn(async () => true),
+        isCurrentSourceAuditResponder: vi.fn(async () => true),
+        readLogTail: (path) => path.endsWith('.jsonl')
+          ? nativeTranscript
+          : path.includes('fallback') ? 'healthy fallback boot' : ptyLog,
+        readLogMtimeMs: () => nowMs,
+        now: () => nowMs,
+        terminalLogRecheckDelayMs: 0,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(listNativeSessions).toHaveBeenCalledExactlyOnceWith([sessionId]);
+    expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, { owner: ownerId });
+    expect(killTask).toHaveBeenCalledWith(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.launch).toHaveBeenCalledOnce();
+    expect(result.receipts[0]).toMatchObject({
+      issueId: 'EI-retained-native',
+      state: 'launched',
+      terminalRecovery: {
+        retiredTaskIds: [task.taskId],
+        codes: ['inference_gateway_error'],
+      },
+    });
+  });
+
   it('stops after one recovery when the fallback is quota-terminal too', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-double-quota')]);

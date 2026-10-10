@@ -113,6 +113,35 @@ describe('strict benchmark aggregate reservation bounds', () => {
       .toMatchObject({ ok: false, reason: 'resource-cap-exceeded' });
   });
 
+  it('rejects combined input/output beyond an assignment cap even when each global ceiling has room', async () => {
+    const budget = caps({ totalTokensPerArm: 19 }), loop = await setup(budget);
+    expect(await reserveLearningSpend(sql, request(loop, budget, budget.armIds[0], 1, 'solver', { inputTokens: 10, outputTokens: 10 })))
+      .toMatchObject({ ok: false, reason: 'resource-cap-exceeded' });
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId: loop })).toEqual([]);
+  });
+
+  it('serializes combined token bounds and retains them across failure and recovery without charging another assignment', async () => {
+    const budget = caps({ totalTokensPerArm: 19, maxOpenUsd: 60 }), loop = await setup(budget);
+    const attempts = ['solver', 'reviewer'].map(role => request(loop, budget, budget.armIds[0], 1, role, { inputTokens: 6, outputTokens: 4 }));
+    const receipts = await Promise.all(attempts.map(q => reserveLearningSpend(sql, q)));
+    expect(receipts.filter(r => r.ok)).toHaveLength(1);
+    expect(receipts.filter(r => !r.ok)).toEqual([expect.objectContaining({ reason: 'resource-cap-exceeded' })]);
+    const accepted = attempts[receipts.findIndex(r => r.ok)];
+    expect((await settle(accepted, 0, 'failed')).ok).toBe(true);
+    expect(await reserveLearningSpend(sql, request(loop, budget, budget.armIds[0], 1, 'recovered', { inputTokens: 6, outputTokens: 4 })))
+      .toMatchObject({ ok: false, reason: 'resource-cap-exceeded' });
+    expect((await reserveLearningSpend(sql, request(loop, budget, budget.armIds[1], 1, 'solver', { inputTokens: 6, outputTokens: 4 }))).ok).toBe(true);
+  });
+
+  it('binds the combined assignment token cap into immutable policy and the existing cycle fingerprint', async () => {
+    const budget = caps({ totalTokensPerArm: 19 }), loop = await setup(budget);
+    const drift = { ...budget, totalTokensPerArm: 20 };
+    expect(await reserveLearningSpend(sql, request(loop, drift))).toMatchObject({ ok: false, reason: 'stale-binding' });
+    const cycle = { runId: randomUUID(), budgetUsd: 60, resources: { armId: budget.armIds[0], inputTokens: 1, outputTokens: 1 }, expectedResourceBudget: budget };
+    const id = randomUUID();
+    expect(cycleReservationRunRef(cycle, id)).not.toBe(cycleReservationRunRef({ ...cycle, expectedResourceBudget: drift }, id));
+  });
+
   it.each(['wallClockMs', 'wallClockMsPerArm'] as const)('persists %s across settlement/recovery', async field => {
     const budget = caps({ wallClockMs: 60_000, wallClockMsPerArm: 60_000, [field]: 1000 }), loop = await setup(budget);
     const first = request(loop, budget); expect((await reserveLearningSpend(sql, first)).ok).toBe(true);

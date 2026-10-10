@@ -15,7 +15,9 @@
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import launchAgentTool from './agent-tools/capability/launch-agent';
+import { advSessionsByTranscriptHandles, type AdvSessionRow } from './adv-sessions';
 import { getBuildInfo, type BuildInfo } from './build-info';
+import { findSessionTranscript } from './claude-sessions';
 import {
   classifyAcceptanceGraderNoFirstTurnStall,
   isAcceptanceGraderNoFirstTurnLivenessCandidate,
@@ -308,6 +310,12 @@ export interface DispatchPendingGradingAuditsDeps {
   release?: typeof releasePendingGradingAudit;
   /** Check for a still-live task from an earlier reservation epoch. */
   listTasks?: typeof listTasks;
+  /** Exact native session bindings for the retained tasks' recorded session ids. */
+  listNativeSessionsByTranscriptHandles?: (
+    sessionIds: readonly string[],
+  ) => Promise<Array<Pick<AdvSessionRow, 'agent' | 'coordOwnerId' | 'sessionId'>>>;
+  /** Resolve a Claude transcript under the retained task's exact owner identity. */
+  findSessionTranscript?: typeof findSessionTranscript;
   /** A live task is viable only while it remains the active consult answerer for its lease. */
   isCurrentSourceAuditResponder?: typeof isCurrentSourceAuditResponder;
   getTask?: typeof getTask;
@@ -1213,6 +1221,9 @@ export async function dispatchPendingGradingAudits(
   const confirmReservation = deps.confirmReservation ?? confirmPendingGradingAuditReservation;
   const release = deps.release ?? releasePendingGradingAudit;
   const readTasks = deps.listTasks ?? listTasks;
+  const listNativeSessionsByTranscriptHandles = deps.listNativeSessionsByTranscriptHandles ??
+    ((sessionIds: readonly string[]) => advSessionsByTranscriptHandles({ sessionIds }));
+  const resolveSessionTranscript = deps.findSessionTranscript ?? findSessionTranscript;
   const workspaceId = input.ctx.workspaceId?.trim();
   const pausedOwners = workspaceId
     ? await readActiveLoopStanddownOwners(workspaceId, deps.listWorkspaceWideLoopStanddownOwners, Date.now())
@@ -1720,9 +1731,34 @@ export async function dispatchPendingGradingAudits(
         labelPrefix: idempotencyKey,
         limit: 10,
       });
+      const nativeSessionIds = [...new Set(liveTasks.flatMap((task) => {
+        const sessionId = task.sessionId?.trim();
+        return sessionId ? [sessionId] : [];
+      }))];
+      let nativeSessionBindings: Array<Pick<AdvSessionRow, 'agent' | 'coordOwnerId' | 'sessionId'>> = [];
+      if (nativeSessionIds.length) {
+        try {
+          nativeSessionBindings = await listNativeSessionsByTranscriptHandles(nativeSessionIds);
+        } catch {
+          // Missing binding evidence is unknown, never proof that a retained task failed.
+        }
+      }
       const viableLiveTasks = [] as typeof liveTasks;
       for (const task of liveTasks) {
         const taskLogPath = task.logPath ?? null;
+        const taskOwnerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
+        const taskSessionId = typeof task.sessionId === 'string' ? task.sessionId.trim() : '';
+        const nativeSession = nativeSessionBindings.find((session) =>
+          session.sessionId === taskSessionId && session.coordOwnerId === taskOwnerId && session.agent === 'claude');
+        let nativeProof: { nativeTranscriptPath: string; nativeSessionId: string } | undefined;
+        if (taskOwnerId && taskSessionId && nativeSession) {
+          try {
+            const nativeTranscriptPath = await resolveSessionTranscript(taskSessionId, { owner: taskOwnerId });
+            if (nativeTranscriptPath) nativeProof = { nativeTranscriptPath, nativeSessionId: taskSessionId };
+          } catch {
+            // The existing log-only classifier remains authoritative when native proof is unavailable.
+          }
+        }
         // EI-23148617450190529: a headless CLI can return to its interactive
         // prompt after a delayed gateway/quota failure while its PTY and task
         // ledger row stay live. The old guard treated process liveness as mission
@@ -1732,11 +1768,12 @@ export async function dispatchPendingGradingAudits(
         let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = null;
         if (taskLogPath) {
           try {
-            // A delayed live-task check requires Claude's completed-turn footer.
-            // Unlike the launch transaction, this log may now contain tool output
-            // derived from the scorecard, so the error headline alone is no longer
-            // safe evidence that the auditor itself failed.
-            terminalFailure = await detectTerminalFailure(taskLogPath, 0, false);
+            // A delayed live-task check normally requires Claude's completed-turn
+            // footer. If the task ledger's exact native session and owner bind to
+            // a Claude adv-session, the shared detector can also prove a completed
+            // API error from that session's transcript. The PTY headline alone may
+            // now contain scorecard-derived tool output and remains insufficient.
+            terminalFailure = await detectTerminalFailure(taskLogPath, 0, false, nativeProof);
           } catch {
             // An unreadable task log cannot prove the mission terminal. Preserve
             // the existing fail-open dedupe until a later sweep can read it.

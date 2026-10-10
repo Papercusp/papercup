@@ -158,6 +158,21 @@ export function resolveDependencyGenerationRoot(
   );
 }
 
+/** Current first-line readers stay compatible; additional absolute lines retain
+ * discovery of stores left behind by an environment-configured root move. */
+export function resolveDependencyGenerationRetentionRoots(
+  integrationRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const current = resolveDependencyGenerationRoot(integrationRoot, env);
+  let recorded: string[] = [];
+  try {
+    recorded = readFileSync(dependencyGenerationRootRecord(integrationRoot), 'utf8')
+      .split('\n').filter((value) => isAbsolute(value)).map((value) => resolve(value));
+  } catch { /* No record means only the current store is known. */ }
+  return [...new Set([current, ...recorded])];
+}
+
 export interface DependencyPrebuildFailedState extends DependencyPrebuildBase {
   status: 'failed';
   completedAtMs: number;

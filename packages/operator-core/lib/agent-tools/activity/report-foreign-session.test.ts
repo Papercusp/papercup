@@ -55,8 +55,8 @@ const { classifyOwnerNativeSessionRows } = await vi.importActual<typeof import('
 );
 const tool = (await import('./report')).default;
 const ctx = { principal: { workspaceId: '*' } } as unknown as Parameters<typeof tool.handler>[1];
-const run = (args: Record<string, unknown>) =>
-  tool.handler(args as Parameters<typeof tool.handler>[0], ctx);
+const run = (args: Record<string, unknown>, context = ctx) =>
+  tool.handler(args as Parameters<typeof tool.handler>[0], context);
 const body = (res: Awaited<ReturnType<typeof run>>) =>
   JSON.parse((res as { content: Array<{ text: string }> }).content[0].text) as Record<string, unknown>;
 
@@ -87,6 +87,26 @@ beforeEach(() => {
 });
 
 describe('activity:report — a FOREIGN native session never acts as the owner (WI-10003957)', () => {
+  it('passes the concrete request workspace into native-session classification', async () => {
+    const scopedCtx = {
+      workspaceId: 'ws-activity-report',
+      principal: { workspaceId: 'ws-activity-report' },
+    } as unknown as Parameters<typeof tool.handler>[1];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await run({ ...END, session_id: PROBE }, scopedCtx);
+
+      expect(h.classify).toHaveBeenCalledWith(expect.objectContaining({
+        ownerId: OWNER,
+        sessionId: PROBE,
+        workspaceId: 'ws-activity-report',
+      }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('foreign SessionEnd: no lease/lock release, no inbox-wake cancel, no carry-marker consume, disposition=foreign', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await run({ ...END, session_id: PROBE, cwd: '/tmp' });

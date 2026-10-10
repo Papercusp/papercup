@@ -938,11 +938,13 @@ export function activeWorkItemDependencyRefsSql(
     successfulStates: readonly string[];
     terminalStates: readonly string[];
     edgeWorkspaceId?: string;
+    /** Bounded item presentation needs the actual active wait identities. */
+    includeBlockerRefs?: boolean;
   },
 ) {
   const edgeWorkspaceId = input.edgeWorkspaceId ?? DEFAULT_COORD_WORKSPACE;
   return sql`
-    SELECT d.blocked_ref
+    SELECT d.blocked_ref ${input.includeBlockerRefs ? sql`, d.blocker_ref` : sql``}
       FROM harness_shared.work_item_deps d
       JOIN harness_shared.work_items blocker
         ON position('#' in d.blocker_ref) = 0
@@ -958,7 +960,7 @@ export function activeWorkItemDependencyRefsSql(
          )
        )
     UNION
-    SELECT d.blocked_ref
+    SELECT d.blocked_ref ${input.includeBlockerRefs ? sql`, d.blocker_ref` : sql``}
       FROM harness_shared.work_item_deps d
       JOIN harness_shared.work_items blocker
         ON position('#' in d.blocker_ref) > 0

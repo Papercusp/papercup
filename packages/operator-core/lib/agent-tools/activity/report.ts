@@ -222,6 +222,7 @@ export default defineTool({
     const harnessSlug =
       resolveConcreteHarnessSlug(args.harness_slug, ctx) ??
       resolveConcreteHarnessSlug(undefined, ctx);
+    const workspaceId = resolveConcreteWorkspaceId(ctx.workspaceId, ctx.principal?.workspaceId);
 
     // Normalize the raw cross-CLI report + append it through the PG-backed
     // TelemetryStore seam (@papercusp/activity-bridge). The host-domain `scope`
@@ -257,7 +258,7 @@ export default defineTool({
         // Never persist that sentinel: concrete workspace reads (including
         // activity:recent) cannot see it. Prefer the request context and fall
         // back to the active workspace through the shared resolver.
-        workspaceId: resolveConcreteWorkspaceId(ctx.workspaceId, ctx.principal?.workspaceId),
+        workspaceId,
       });
     } catch (e) {
       if (!isWorkspaceContended(e)) throw e; // a real fault must still surface
@@ -308,6 +309,7 @@ export default defineTool({
           ownerId: owner,
           sessionId: reportedSessionId,
           advSessionId: args.adv_session_id ?? null,
+          workspaceId: workspaceId ?? undefined,
         }).catch((e) => {
           console.warn(
             `[activity:report] native-session binding check for ${owner} failed, treating the session as the owner's: ${e instanceof Error ? e.message : e}`,

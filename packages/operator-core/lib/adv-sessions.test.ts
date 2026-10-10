@@ -2,12 +2,31 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 
-const { advSessionRowsMock, advSessionBeginMock, acquireTimeouts, acquireRetries } = vi.hoisted(() => {
+const {
+  advSessionRowsMock,
+  advSessionBeginMock,
+  appSessionRowsMock,
+  workspaceCalls,
+  acquireTimeouts,
+  acquireRetries,
+} = vi.hoisted(() => {
   const sql = vi.fn(async () => [] as unknown[]);
   const begin = vi.fn(async (fn: (tx: typeof sql) => unknown) => fn(sql));
+  const appSql = vi.fn(async () => [] as unknown[]);
   return {
     advSessionRowsMock: sql,
     advSessionBeginMock: begin,
+    appSessionRowsMock: appSql,
+    workspaceCalls: [] as Array<{
+      workspaceId: string;
+      options?: {
+        readOnly?: boolean;
+        acquireTimeoutMs?: number;
+        acquireRetries?: number;
+        statementTimeoutMs?: number;
+        lockTimeoutMs?: number;
+      };
+    }>,
     acquireTimeouts: [] as Array<number | undefined>,
     acquireRetries: [] as Array<number | undefined>,
   };
@@ -17,6 +36,20 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return {
     ...actual,
     getOrgPg: () => ({ sql: Object.assign(advSessionRowsMock, { begin: advSessionBeginMock }) }),
+    withWorkspace: (async (
+      workspaceId: string,
+      fn: (tx: unknown) => Promise<unknown>,
+      options?: {
+        readOnly?: boolean;
+        acquireTimeoutMs?: number;
+        acquireRetries?: number;
+        statementTimeoutMs?: number;
+        lockTimeoutMs?: number;
+      },
+    ) => {
+      workspaceCalls.push({ workspaceId, options });
+      return fn(appSessionRowsMock);
+    }) as typeof actual.withWorkspace,
     retryOnRetryableDbDeadline: ((...args: Parameters<typeof actual.retryOnRetryableDbDeadline>) => {
       acquireRetries.push(args[1]?.retries);
       return actual.retryOnRetryableDbDeadline(...args);
@@ -54,6 +87,9 @@ const SOURCE = readFileSync(new URL('./adv-sessions.ts', import.meta.url), 'utf8
 beforeEach(() => {
   advSessionRowsMock.mockReset();
   advSessionRowsMock.mockResolvedValue([]);
+  appSessionRowsMock.mockReset();
+  appSessionRowsMock.mockResolvedValue([]);
+  workspaceCalls.length = 0;
   advSessionBeginMock.mockReset();
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
   acquireTimeouts.length = 0;
@@ -66,10 +102,86 @@ function advSessionTableReads(): unknown[][] {
   );
 }
 
+function appAdvSessionTableReads(): unknown[][] {
+  return (appSessionRowsMock.mock.calls as unknown[][]).filter(([template]) =>
+    Array.isArray(template) && template.join(' ').includes('FROM harness_shared.adv_sessions'),
+  );
+}
+
 describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', () => {
   const ownerId = 'su-incarnation-source';
   const nativeId = 'native-source';
   const rejected = { binding: 'foreign', boundSessionId: null, advSessionId: null };
+
+  it('accepts a bound match from the read-only RLS-scoped app pool', async () => {
+    appSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      return query.includes('FROM harness_shared.adv_sessions')
+        ? [{ id: 541, session_id: nativeId, active: true }]
+        : [];
+    });
+
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, workspaceId: 'ws-fast-path' }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId: 541 });
+
+    expect(workspaceCalls).toHaveLength(1);
+    expect(workspaceCalls[0]).toMatchObject({
+      workspaceId: 'ws-fast-path',
+      options: {
+        readOnly: true,
+        acquireTimeoutMs: 7_500,
+        acquireRetries: 0,
+        statementTimeoutMs: 2_000,
+        lockTimeoutMs: 1_000,
+      },
+    });
+    expect(appAdvSessionTableReads()).toHaveLength(1);
+    expect(advSessionTableReads()).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      label: 'unbound',
+      rows: [] as unknown[],
+      expected: { binding: 'unbound', boundSessionId: null, advSessionId: null },
+    },
+    {
+      label: 'foreign',
+      rows: [{ id: 542, session_id: 'native-other', active: true }],
+      expected: { binding: 'foreign', boundSessionId: 'native-other', advSessionId: 542 },
+    },
+  ])('uses the global classifier fallback for a scoped $label result', async ({ rows, expected }) => {
+    appSessionRowsMock.mockResolvedValue(rows);
+    advSessionRowsMock.mockResolvedValue(rows);
+
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, workspaceId: 'ws-fallback' }))
+      .resolves.toEqual(expected);
+
+    expect(workspaceCalls).toHaveLength(1);
+    expect(advSessionTableReads()).toHaveLength(1);
+  });
+
+  it('does not coalesce in-flight reads across different workspace scopes', async () => {
+    appSessionRowsMock.mockImplementation(async (...args: unknown[]) => {
+      const template = args[0];
+      const query = Array.isArray(template) ? template.join(' ') : String(template ?? '');
+      return query.includes('FROM harness_shared.adv_sessions')
+        ? [{ id: 541, session_id: nativeId, active: true }]
+        : [];
+    });
+
+    const results = await Promise.all([
+      classifyOwnerNativeSession({ ownerId, sessionId: nativeId, workspaceId: 'ws-a' }),
+      classifyOwnerNativeSession({ ownerId, sessionId: nativeId, workspaceId: 'ws-b' }),
+    ]);
+
+    expect(results).toEqual([
+      { binding: 'bound', boundSessionId: nativeId, advSessionId: 541 },
+      { binding: 'bound', boundSessionId: nativeId, advSessionId: 541 },
+    ]);
+    expect(workspaceCalls.map(({ workspaceId }) => workspaceId)).toEqual(['ws-a', 'ws-b']);
+  });
 
   it('uses a measured-queue acquisition budget and explicit statement bounds', async () => {
     advSessionRowsMock.mockImplementation(async (...args: unknown[]) => {

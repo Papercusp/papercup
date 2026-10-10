@@ -46,6 +46,7 @@
 import type postgres from 'postgres';
 
 export const SESSION_TURNS_TABLE = 'harness_shared.session_turns';
+export const SESSION_TURN_PARTS_TABLE = 'harness_shared.session_turn_parts';
 export const SESSION_TURN_VOCAB_TABLE = 'harness_shared.session_turn_vocab';
 export const SESSION_TURN_VOCAB_STATE_TABLE = 'harness_shared.session_turn_vocab_state';
 export const SESSION_TURN_WINDOWS_TABLE = 'harness_shared.session_turn_windows';
@@ -84,7 +85,11 @@ export interface SessionSearchIndexSpec {
   stage: SessionSearchIndexStage;
 }
 
-/** Names + definitions are mirrored by migration 1273's size-guarded inline block. */
+/**
+ * Online index definitions. The session_turns indexes are mirrored by migration 1273's
+ * size-guarded inline block; the session_turn_parts owner index stays builder-only so it
+ * never adds a lock-heavy build to a migration transaction.
+ */
 export const SESSION_SEARCH_INDEXES = [
   {
     name: 'session_turns_text_trgm_idx',
@@ -96,6 +101,14 @@ export const SESSION_SEARCH_INDEXES = [
     name: 'session_turns_ts_desc_idx',
     table: SESSION_TURNS_TABLE,
     definition: '(ts DESC NULLS LAST)',
+    stage: 'corpus',
+  },
+  {
+    // The tool-part caveat is owner-scoped and split by part_kind. This partial index bounds
+    // the tool_result branch; tool_use already has session_turn_parts_owner_ts_tool_use_idx.
+    name: 'session_turn_parts_owner_workspace_tool_result_idx',
+    table: SESSION_TURN_PARTS_TABLE,
+    definition: "(owner, workspace_id) WHERE part_kind = 'tool_result'",
     stage: 'corpus',
   },
   {
@@ -300,7 +313,7 @@ const DEFAULTS = {
 
 export interface IndexBuildEntry {
   name: string;
-  action: 'built' | 'present' | 'would-build' | 'failed' | 'deferred-budget' | 'in-flight';
+  action: 'built' | 'present' | 'would-build' | 'failed' | 'deferred-budget' | 'deferred-table-missing' | 'in-flight';
   elapsedMs: number;
   /** Windows backfill only: turns written to session_turn_windows this pass. */
   turns?: number;
@@ -442,6 +455,13 @@ export async function runSessionSearchIndexBuildOnce(
 
   const ensureIndexes = async (stage: SessionSearchIndexStage): Promise<void> => {
     for (const spec of SESSION_SEARCH_INDEXES.filter((i) => i.stage === stage)) {
+      const [table] = await sql<Array<{ present: boolean }>>`
+        SELECT to_regclass(${spec.table}) IS NOT NULL AS present
+      `;
+      if (!table?.present) {
+        result.indexes.push({ name: spec.name, action: 'deferred-table-missing', elapsedMs: 0 });
+        continue;
+      }
       const started = Date.now();
       const [have] = await sql<Array<{ valid: boolean }>>`
         SELECT i.indisvalid AS valid

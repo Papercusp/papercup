@@ -44,6 +44,8 @@ import {
 } from '../../work-items-durable-park-audit';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { getOrgPg } from '@papercusp/db-org';
+import { deriveItemWorkEvidence, type ItemWorkEvidence } from '../../item-activity';
+import { activeExternalBlockers } from '../../external-blockers';
 import {
   FLEET_METRIC_ADMISSION_PARITY,
   FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS,
@@ -187,6 +189,7 @@ export interface BurnDownRow {
   assigneeLive?: boolean;
   takenAt: string | null;
   lastProgressAt: string | null;
+  workEvidence: ItemWorkEvidence;
   updatedAt: string;
   severity: string | null;
   priority: number | null;
@@ -750,6 +753,10 @@ function toRow(item: WorkItem, assigneeLive: boolean | undefined, nowMs: number)
     ...(item.assignee ? { assigneeLive: Boolean(assigneeLive) } : {}),
     takenAt: item.takenAt,
     lastProgressAt: item.lastProgressAt,
+    workEvidence: deriveItemWorkEvidence({
+      takenBy: item.assignee, takenAt: item.takenAt, lastProgressAt: item.lastProgressAt,
+      registeredWaitRefs: activeExternalBlockers(item.payload).map(b => `${b.kind}:${b.ref}`),
+    }, { now: nowMs }),
     updatedAt: item.updatedAt,
     severity: item.severity,
     priority: item.priority,
@@ -1852,6 +1859,13 @@ const rowSchema = z.object({
   assigneeLive: z.boolean().optional(),
   takenAt: z.string().nullable(),
   lastProgressAt: z.string().nullable(),
+  workEvidence: z.object({
+    reservation: z.object({ owner: z.string(), claimedAt: z.string().nullable() }).nullable(),
+    recentItemWork: z.object({ status: z.enum(['recent', 'stale', 'unknown']), at: z.string().nullable(),
+      windowMs: z.number().positive(), writer: z.literal('work_items.last_progress_at') }),
+    waiting: z.object({ status: z.enum(['registered', 'unknown']), refs: z.array(z.string()) }),
+    nativeAttestation: z.object({ status: z.literal('unknown'), reason: z.string() }),
+  }).optional(),
   updatedAt: z.string(),
   severity: z.string().nullable(),
   priority: z.number().nullable(),

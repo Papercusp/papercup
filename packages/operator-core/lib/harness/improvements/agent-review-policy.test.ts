@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { WORK_ITEM_PRESENTATION_LABELS } from '../../work-item-presentation-contract';
 
 import {
   acceptanceSourceRevision,
@@ -108,6 +109,9 @@ describe('P-010 shared intake presentation', () => {
       status: 'wip', assignee: 'su-worker' }).stage).toBe('candidate');
     expect(deriveWorkItemPresentationStage(accepted()).stage).toBe('accepted-ready');
     expect(deriveWorkItemPresentationStage({ ...accepted(), assignee: 'su-worker' }).stage).toBe('accepted-active');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), assignee: 'su-worker' }).reason).toBe('accepted-work-reserved');
+    expect(WORK_ITEM_PRESENTATION_LABELS['accepted-active']).toBe('Reserved accepted work');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), status: 'wip' }).stage).toBe('accepted-ready');
     expect(deriveWorkItemPresentationStage({ ...accepted(), assignee: 'su-worker', blocked: true }).stage).toBe('accepted-blocked');
     expect(deriveWorkItemPresentationStage({ ...accepted(), payload: { ...accepted().payload, _claimHold: true } }).stage)
       .toBe('accepted-blocked');

@@ -7,6 +7,7 @@ import { TrustBadge, trustBadgeState } from '../../harness/TrustBadge';
 import type { HarnessStatus } from '../../harness/theme';
 import type { WorkItemRow } from './WorkItemsPanel';
 import { WORK_ITEM_PRESENTATION_LABELS, WORK_ITEM_PRESENTATION_REASONS } from '@papercusp/operator-core/lib/work-item-presentation-contract';
+import { formatItemWorkEvidence } from '@papercusp/operator-core/lib/item-activity';
 
 /**
  * SHARED work-item column + filter definitions (dependency-health-pane-2026-08-02
@@ -76,6 +77,16 @@ export function buildWorkItemColumns({
         return <span style={CELL_TRUNCATE} title={`${WORK_ITEM_PRESENTATION_REASONS[reason] ?? reason}${detail.length ? `: ${detail.join(': ')}` : ''} · Select this row for evidence and decisions`}>
           {WORK_ITEM_PRESENTATION_LABELS[row.presentation.stage]}
         </span>;
+      },
+    },
+    {
+      key: 'workEvidence', header: 'Work evidence', width: 3.2,
+      toCopyText: row => formatItemWorkEvidence(row.presentation?.workEvidence),
+      render: ({ row }) => {
+        const evidence = row.presentation?.workEvidence;
+        const label = formatItemWorkEvidence(evidence);
+        const details = [evidence?.recentItemWork.at, ...(evidence?.waiting.refs ?? [])].filter(Boolean).join(' · ');
+        return <span style={CELL_TRUNCATE} title={details ? `${label} · ${details}` : label}>{label}</span>;
       },
     },
     {

@@ -20,6 +20,7 @@ import {
   encodeWorkItemsCursor,
   normalizeWorkItemsListArgs,
   readWorkItemsPageFromStore,
+  readWorkItemPresentations,
   readWorkItemsSummaryFromStore,
   workItemsPageSql,
   workItemsSummarySelection,
@@ -210,6 +211,40 @@ afterAll(async () => {
 });
 
 describe('workItems.byHarness + workItems.summary real-PG contract', () => {
+  it('reads item progress and exact registered wait refs without turning reservations into native work', async () => {
+    const id = rowFor(DEEP).id;
+    const blocker = rowFor(DEEP - 1).id;
+    const previous = await sql`SELECT taken_at, last_progress_at, payload FROM harness_shared.work_items
+      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+    const now = new Date().toISOString();
+    try {
+      await sql`UPDATE harness_shared.work_items SET taken_at = ${now}::timestamptz, last_progress_at = NULL,
+        payload = payload || '{"_claimHold":true}'::jsonb
+        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+      await sql`INSERT INTO harness_shared.work_item_deps (workspace_id, blocked_kind, blocked_ref,
+        blocker_kind, blocker_ref, dep_type, created_by, satisfaction)
+        VALUES ('default', 'issue', ${harnessSlug + '#' + id}, 'issue', ${harnessSlug + '#' + blocker},
+        'blocks', 'fixture', 'settled')`;
+      const read = async () => (await readWorkItemPresentations(sql, workspaceId,
+        [{ id, harnessSlug }])).get(`${harnessSlug}#${id}`)!;
+      const reserved = await read();
+      expect(reserved.workEvidence).toMatchObject({ reservation: { owner: rowFor(DEEP).assignee },
+        recentItemWork: { status: 'unknown' }, nativeAttestation: { status: 'unknown' },
+        waiting: { status: 'registered', refs: [harnessSlug + '#' + blocker] } });
+      await sql`UPDATE harness_shared.work_items SET last_progress_at = ${now}::timestamptz
+        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+      expect((await read()).workEvidence?.recentItemWork.status).toBe('recent');
+      expect((await read()).workEvidence?.nativeAttestation.status).toBe('unknown');
+      expect(await readWorkItemPresentations(sql, `${workspaceId}-foreign`, [{ id, harnessSlug }])).toEqual(new Map());
+    } finally {
+      await sql`DELETE FROM harness_shared.work_item_deps WHERE workspace_id = 'default'
+        AND blocked_ref = ${harnessSlug + '#' + id} AND created_by = 'fixture'`;
+      await sql`UPDATE harness_shared.work_items SET taken_at = ${previous[0]!.taken_at},
+        last_progress_at = ${previous[0]!.last_progress_at}, payload = ${sql.json(previous[0]!.payload)}
+        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+    }
+  });
+
   it('preserves mobile harness and summary details on the existing scoped cursor reader', async () => {
     const predicate = buildWorkItemsPredicate(normalizeWorkItemsListArgs({
       harnessSlug, filters: { id: rowFor(DEEP).id }, limit: 200,

@@ -53,6 +53,28 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   };
 }
 
+function inventoryExemptionClause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
+  return clause({
+    specId: 'INVENTORY-P-003',
+    sourceValId: null,
+    planItemId: 'P-003',
+    behavior: 'Read-only caller, gate, test-suite and registered component inventory.',
+    behaviorClass: 'non-automated',
+    requiredEvidence: [],
+    requiredTestLayers: [],
+    mutationRequired: false,
+    lifecycleStatus: 'exempt',
+    exemption: {
+      provenance: 'reconnect-plan#D-006',
+      justification: 'This item changes no runtime behavior; implementation and shipment obligations remain on their owning items.',
+    },
+    falsifier: null,
+    acceptanceRef: 'reconnect-plan#D-006',
+    sourceBar: null,
+    ...over,
+  });
+}
+
 function passingExecution(): NonNullable<ListedEvidence['testRunExecution']> {
   return {
     status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
@@ -802,6 +824,156 @@ describe('specTestAdequacyCompletionGate', () => {
       checked: [],
       exempted: ['SPEC-003-01@1 — exempt (non-automated clause declaring no required test layer)'],
     });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('honors a current registered inventory exemption for a docs-only feature close without proof', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['docs/evidence/inventory.json'],
+    }, deps);
+
+    expect(result).toEqual({
+      ok: true,
+      applicable: false,
+      checked: [],
+      exempted: [
+        'SPEC-003-01@1 — exempt (registered non-code inventory scope INVENTORY-P-003@1; item completion only, final shipment BAR proof remains required)',
+      ],
+    });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps runtime adequacy enforced when an inventory feature claims executable source changes', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['packages/operator-core/lib/example.ts'],
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'runtime configuration paths', changedPaths: ['packages/operator-core/package.json'] },
+    { label: 'paths outside the documentation tree', changedPaths: ['config/runtime.json'] },
+  ])('keeps runtime adequacy enforced for inventory changes in $label', async ({ changedPaths }) => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths,
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('does not infer a documentation inventory exemption without changed-path evidence', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps runtime adequacy enforced when the stamped feature covers a sibling plan item', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([
+      clause(),
+      inventoryExemptionClause(),
+      clause({ specId: 'SPEC-004-01', planItemId: 'P-004', contentHash: 'sha256:sibling-v1' }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: {
+        ...WORK_ITEM,
+        kind: 'feature',
+        sourcePlanItemIds: ['P-003', 'P-004'],
+      },
+      changedPaths: ['docs/evidence/inventory.json'],
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
+    expect(!result.ok && result.reason).toContain('SPEC-004-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps cross-plan runtime adequacy enforced alongside a registered inventory exemption', async () => {
+    const deps = passingDeps();
+    const crossPlanClause = clause({
+      planSlug: 'other-plan',
+      specId: 'SPEC-900-01',
+      planItemId: 'P-900',
+      contentHash: 'sha256:other-v1',
+    });
+    deps.listEdges.mockResolvedValue([{
+      workItemId: WORK_ITEM.id,
+      planSlug: 'other-plan',
+      specId: 'SPEC-900-01',
+      specRevision: 1,
+      specFingerprint: 'sha256:edge',
+    }]);
+    deps.listClauses.mockImplementation(async ({ planSlug }) =>
+      planSlug === 'other-plan' ? [crossPlanClause] : [clause(), inventoryExemptionClause()],
+    );
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['docs/evidence/inventory.json'],
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-900-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps runtime adequacy enforced when an inventory feature submits proof', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['docs/evidence/inventory.json'],
+      attestation: ATTESTATION,
+    }, deps);
+
+    expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+    expect(deps.listEvidence).toHaveBeenCalled();
+  });
+
+  it('does not infer inventory authority from an unregistered or mismatched exemption clause', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([
+      clause(),
+      inventoryExemptionClause({
+        exemption: { provenance: 'unregistered', justification: 'looks like inventory' },
+        acceptanceRef: 'reconnect-plan#D-006',
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['docs/evidence/inventory.json'],
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
     expect(deps.listEvidence).not.toHaveBeenCalled();
   });
 
