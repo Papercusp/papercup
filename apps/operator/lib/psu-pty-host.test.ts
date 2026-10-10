@@ -5006,6 +5006,9 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
   // pid the samples described (the integration test asserted ended.pid ===
   // selected.pid and flaked whenever the child won that race).
   it('names the last traced pid on the terminal row after the target exits', () => {
+    // The fakes stand in for /proc readers and timers; the cast keeps this test
+    // type-clean against the generated declaration (in-file `as unknown as Fake*`).
+    type TraceOptions = NonNullable<Parameters<typeof startCodexStartupProcessTrace>[0]>;
     let elapsedMs = 0;
     let alive = true;
     let tick: (() => void) | undefined;
@@ -5018,7 +5021,7 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
       emit: (_owner: string, kind: string, data: Record<string, unknown>) => { events.push({ kind, data }); return true; },
       interval: (fn: () => void) => { tick = fn; return { unref: vi.fn() }; },
       clear: vi.fn(),
-    });
+    } as unknown as TraceOptions);
     elapsedMs = 500;
     tick?.();
     alive = false;
@@ -5041,7 +5044,7 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
       emit: (_owner: string, kind: string, data: Record<string, unknown>) => { events.push({ kind, data }); return true; },
       interval: () => ({ unref: vi.fn() }),
       clear: vi.fn(),
-    })('host-cleanup');
+    } as unknown as TraceOptions)('host-cleanup');
     expect(events.at(-1)).toMatchObject({
       kind: 'codex-startup-process-trace-ended', data: { pid: null, samples: 0 },
     });
