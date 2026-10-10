@@ -189,6 +189,29 @@ describe('test-files router', () => {
     expect(route.requested).toBe('src/strict-args.test.ts');
   });
 
+  it('honors negated workspace patterns when resolving package-relative test paths', () => {
+    const root = mkdtempSync(join(tmpdir(), 'test-file-router-workspace-exclude-'));
+    try {
+      const active = join(root, 'packages', 'active');
+      const checkpoint = join(root, 'packages', 'ignored-checkpoint');
+      for (const pkg of [active, checkpoint]) {
+        mkdirSync(join(pkg, 'lib'), { recursive: true });
+        writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: basename(pkg) }));
+        writeFileSync(join(pkg, 'vitest.config.ts'), 'export default {};\n');
+        writeFileSync(join(pkg, 'lib', 'same.test.ts'), '');
+      }
+      writeFileSync(join(root, 'package.json'), JSON.stringify({
+        workspaces: ['packages/*', '!packages/*-checkpoint'],
+      }));
+
+      const route = discoverVitestRoute('lib/same.test.ts', root);
+      expect(route.cwd).toBe(active);
+      expect(route.requested).toBe(join('lib', 'same.test.ts'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // EI-24442044145393058: the recorded test layer is the ROUTED config's runtime label, so a
   // `*.e2e.test.*` file must reach the package's e2e config or it records as 'unit'.
   it('routes *.e2e.test.* files to the package e2e config, and everything else stays on unit', () => {
