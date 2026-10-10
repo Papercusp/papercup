@@ -33,6 +33,7 @@ import {
 } from 'node:fs';
 import net from 'node:net';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { mapWithConcurrency } from '../../gym/concurrency';
 
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
 // Keep discovery aligned with the host writer, while allowing integration tests
@@ -511,9 +512,9 @@ const defaultReadCmdline: ReadPidCmdline = (pid) => {
   }
 };
 
-/** The verify-identity seam findLiveHost/listLiveHostsAsync accept (default `pidIsPsuHost`).
- *  A test writing `process.pid` as a live-host stand-in injects `() => true`. Local type
- *  (not exported): callers pass an inline `{ verifyIdentity: () => … }`. */
+/** The synchronous verify seam used by findLiveHost and janitor callers. The async
+ *  find/list variants also accept an async verifier and default to pidIsPsuHostAsync.
+ *  A test writing `process.pid` as a live-host stand-in injects `() => true`. */
 type VerifyPidIdentity = (pid: number) => boolean;
 type VerifyPidIdentityAsync = (pid: number) => boolean | Promise<boolean>;
 
@@ -744,30 +745,43 @@ export async function findLiveHostAsync(
  * The synchronous `listLiveHosts` was deleted so that a new caller cannot reach for
  * it; `psu-pty-dir-async-sweeps.test.ts` guards against its return.
  */
+const LIVE_HOST_SCAN_CONCURRENCY = 8;
+
 export async function listLiveHostsAsync(
   dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+  opts: { verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync } = {},
 ): Promise<PsuPtyHost[]> {
   startJanitor();
-  const verify = opts.verifyIdentity ?? pidIsPsuHost;
+  const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
   let files: string[];
   try {
     files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.json'));
   } catch {
     return [];
   }
-  const out: PsuPtyHost[] = [];
-  for (const f of files) {
+  // Desktop presence may scan thousands of lingering host records. Keep each
+  // host's async metadata/socket/proc checks parallel but bounded; a serial
+  // loop multiplied slow filesystem probes, while Promise.all would flood them.
+  const out = await mapWithConcurrency(files, LIVE_HOST_SCAN_CONCURRENCY, async (f): Promise<PsuPtyHost | null> => {
     try {
       const h = JSON.parse(await fsp.readFile(join(dir, f), 'utf8')) as PsuPtyHost;
-      if (h && h.ownerId && h.sock && h.pid && (await pathExistsAsync(h.sock)) && pidAlive(h.pid) && verify(h.pid)) {
-        out.push(h);
+      if (
+        h &&
+        h.ownerId &&
+        h.sock &&
+        h.pid &&
+        (await pathExistsAsync(h.sock)) &&
+        pidAlive(h.pid) &&
+        (await verify(h.pid))
+      ) {
+        return h;
       }
     } catch {
       /* unreadable / partial write — skip this host */
     }
-  }
-  return out;
+    return null;
+  });
+  return out.filter((h): h is PsuPtyHost => h !== null);
 }
 
 async function safeUnlinkAsync(p: string): Promise<void> {

@@ -149,6 +149,35 @@ describe('psu-pty directory sweeps never touch the directory synchronously (WI-1
     expect(syncCallsUnder(dir)).toEqual([]);
   });
 
+  it('bounds concurrent per-host checks while preserving every live result', async () => {
+    const owners = Array.from({ length: 24 }, (_, i) => `su-bulk-${i}`);
+    for (const ownerId of owners) {
+      const sock = join(dir, `${ownerId}.sock`);
+      writeFileSync(sock, '');
+      writeFileSync(
+        join(dir, `${ownerId}.json`),
+        JSON.stringify({ ownerId, sock, pid: process.pid, startedAt: NOW, advSessionId: null }),
+      );
+    }
+
+    let activeChecks = 0;
+    let maxActiveChecks = 0;
+    const hosts = await listLiveHostsAsync(dir, {
+      verifyIdentity: async () => {
+        activeChecks += 1;
+        maxActiveChecks = Math.max(maxActiveChecks, activeChecks);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        activeChecks -= 1;
+        return true;
+      },
+    });
+
+    expect(hosts.filter((host) => owners.includes(host.ownerId))).toHaveLength(owners.length);
+    expect(maxActiveChecks).toBeGreaterThan(1);
+    expect(maxActiveChecks).toBeLessThanOrEqual(8);
+    expect(syncCallsUnder(dir)).toEqual([]);
+  });
+
   it('pruneDeadDiscoveryFilesAsync (the janitor)', async () => {
     expect(await pruneDeadDiscoveryFilesAsync(dir, { verifyIdentity })).toBe(2); // su-dead + su-corrupt
     expect(syncCallsUnder(dir)).toEqual([]);
