@@ -541,7 +541,7 @@ DBOS.registerScheduled(sessionDirGcWorkflow, { name: 'sessionDirGc', crontab: '0
 async function dependencyGenerationRetentionTick(): Promise<void> {
   await DBOS.runStep(async () => {
     const { runDependencyGenerationRetention } = await import('../release/dependency-generation-retention');
-    await runDependencyGenerationRetention();
+    return await runDependencyGenerationRetention();
   }, { name: 'dependency-generation-retention' });
 }
 

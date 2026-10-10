@@ -1999,6 +1999,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // citations before persisting; preserve the typed result beyond ptool's
   // ordinary 30s client cutoff on both transport routes.
   ['plans:audit', PTOOL_PLANS_AUDIT_TIMEOUT_MS],
+  // EI-25634460854216048: a successful evidence binding took 30.227s
+  // server-side and committed its row after the ordinary 30s client cutoff.
+  // Observe the bounded dispatch receipt before the client deadline, including
+  // through tools:invoke, using the existing foreground transport allowance.
+  ['plans:bind-spec-evidence', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-22722799928417577: by-id claims perform admission, claim, and several
   // claim-time advisory reads. The ordinary 30s client deadline can expire
   // before the idempotent claim's MCP result settles, reporting outcome-unknown

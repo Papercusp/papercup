@@ -629,12 +629,15 @@ export default defineTool({
             bindingIds: args.bindingIds ?? null,
             planItemIds: args.planItemIds ?? null,
           },
-          remedy:
+          remedy: (
             args.bindingIds !== undefined
               ? 'No current evidence binding matches the selected bindingIds. The row may be absent, retracted, or outside the pinned clause; inspect the target history before changing the selector.'
               : args.evidenceRefs !== undefined
                 ? 'No current evidence binding matches the selected workItemIds/evidenceRefs. The binding may be absent, retracted, or superseded, or the selectors may not identify a bound proof. Check the target evidence history before changing them; pass specIds without a binding selector to evaluate intended uncovered clauses.'
-                : 'No current evidence edge exists for the selected work item(s). The work item may lack a binding, or its proof may have been retracted or superseded. Check the target history; pass specIds to evaluate intended uncovered clauses.',
+                : 'No current evidence edge exists for the selected work item(s). The work item may lack a binding, or its proof may have been retracted or superseded. Check the target history; pass specIds to evaluate intended uncovered clauses.'
+          ) + (args.planItemIds !== undefined
+            ? ' A binding may exist only outside the selected planItemIds; inspect its clause mapping and the intersection of selectors. Nothing was graded.'
+            : ''),
         },
       };
     }

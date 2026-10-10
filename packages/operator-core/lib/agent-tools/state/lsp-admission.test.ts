@@ -9,7 +9,7 @@ import type { LspDaemonAnswer } from '../../code-intelligence/lsp-daemon-protoco
 
 function runtime(): NonNullable<LspDaemonAnswer['daemonRuntime']> {
   return { enabled: true, overall: 'healthy', pid: 42, node: 'v24', entry: 'daemon', sampledAtMs: Date.now(),
-    provisioned: { typescript: true, rust: false }, servers: [{ language: 'typescript', rootPath: '/repo', taskId: 'server',
+    provisioned: { typescript: true, rust: false, python: false, go: false }, servers: [{ language: 'typescript', rootPath: '/repo', taskId: 'server',
       health: 'healthy', coldStartMs: 10, openDocs: 1, pid: 43, everSettled: true, quiescent: null,
       pendingProgress: 0, progressGeneration: 1, certifiedReadiness: ['definition'], unprovenReadiness: ['references'] }] };
 }

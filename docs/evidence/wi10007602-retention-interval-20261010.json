@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10007602",
+  "plan": "durable-disk-and-checkpoint-recovery-2026-10-09",
+  "edition": "2026-10-10T23:29Z",
+  "verdict": "OPEN",
+  "scope": "Observed capacity, reservation, recorder, SQLite and retention receipts; no full-interval or shipment claim.",
+  "r2": {
+    "specId": "AUTO-BAR-R-2-P-002",
+    "revision": 3,
+    "observedAt": "2026-10-10T23:02:04Z",
+    "verdict": "pass",
+    "bindingIds": [
+      35259,
+      35260,
+      35294,
+      35295
+    ],
+    "generationRun": {
+      "taskId": "0mv2zmorxwgjc3d13pt",
+      "testRunId": 21009245,
+      "commit": "bba734d034b34b8bb333973bb1a5772a5dd6bf37",
+      "passed": 12,
+      "skipped": 0,
+      "dirty": false
+    },
+    "reclaimRun": {
+      "taskId": "0mv2zx4f415xsyd31wz",
+      "testRunId": 21009301,
+      "commit": "9d2d9c91304f4f1c7239743528e80d66a22bcb71",
+      "passed": 51,
+      "skipped": 0,
+      "dirty": false
+    },
+    "limits": [
+      "Prior eight-file capture has28 late-original gaps and2 opaque child-input closures.",
+      "New D010 reservation guard still needs committed-source proof; no local-dirty source-ready claim."
+    ]
+  },
+  "reservationRepair": {
+    "workItem": "EI-25635536055511804",
+    "decision": "D-010",
+    "counterexample": {
+      "testRunId": 21009849,
+      "passed": 14,
+      "failed": 1,
+      "expected": 95,
+      "actual": 0
+    },
+    "verification": {
+      "testRunId": 21009855,
+      "passed": 15,
+      "skipped": 0,
+      "dirty": true,
+      "shellSelftest": "PASS",
+      "taskId": "0mv30ijyj9yf5yl1iem"
+    },
+    "live": {
+      "at": "2026-10-10T23:16:07.518Z",
+      "taskId": "0mv30jf641biyxv53v5",
+      "rows": [
+        {
+          "path": "/",
+          "device": 66307,
+          "key": "dev-66307",
+          "availableBytes": 114227601408,
+          "reservedBytes": 10737418240
+        },
+        {
+          "path": "/mnt/data",
+          "device": 66304,
+          "key": "dev-66304",
+          "availableBytes": 277201723392,
+          "reservedBytes": 82678120448
+        },
+        {
+          "path": "/tmp/pcv",
+          "device": 66304,
+          "key": "dev-66304",
+          "availableBytes": 277201715200,
+          "reservedBytes": 82678120448
+        }
+      ]
+    },
+    "completionKey": "work-item:done:EI-25635536055511804",
+    "contract": "Committed shell helper and matching root desktop gitlink plus immutable15-case source proof.",
+    "syncAwaitId": 266037
+  },
+  "recorder": {
+    "at": "2026-10-10T23:04:30.007Z",
+    "taskId": "0mv304g1013mmq2i1yn",
+    "pid": 1525229,
+    "origin": "http://127.0.0.1:3270",
+    "indexed": true,
+    "loaded": true,
+    "events": 250,
+    "oldOriginWalBytes": 0,
+    "oldOriginQuickCheck": "ok",
+    "activeOriginWalBytes": 2925232,
+    "activeOriginQuickCheck": "ok",
+    "activeOriginPerfKeyHash": "e17a25ab8500cef33d2b7a3cb2cd0f2f1169c5d94e1a9ceaa4a2e91493b9341d",
+    "limits": [
+      "No desktop restart or reload by this continuation.",
+      "Replacement/recovery actor and consent unmeasured.",
+      "Performance key unchanged from22:49..23:04; active WAL includes other writers."
+    ]
+  },
+  "generationDemand": {
+    "at": "2026-10-10T23:18:07Z",
+    "taskId": "0mv30lzqkvf6lxz1g32",
+    "generation": "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+    "recordedTreeCount": 99,
+    "recordedSumBytes": 26031611904,
+    "limits": [
+      "Existing .tree-bytes records; an upper bound over this recorded generation set, not physical exclusive reclaim or every candidate."
+    ]
+  },
+  "retention": {
+    "registeredSchedule": "sessionDirGc: 0 50 * * * *",
+    "workflowId": "sched-.sessionDirGc-2026-10-10T22:50:00.000Z",
+    "status": "SUCCESS",
+    "executor": "bg-host-3270",
+    "step": {
+      "name": "dependency-generation-retention",
+      "startedAt": "2026-10-10T22:50:14.389Z",
+      "completedAt": "2026-10-10T23:12:28.064Z",
+      "error": null,
+      "output": "void"
+    },
+    "nativeJournal": {
+      "taskId": "0mv310fp9y2a0wpepbv",
+      "window": "22:45Z..23:15Z",
+      "matchingWarnings": 9
+    },
+    "limits": [
+      "Outer success does not prove each store prune succeeded; investigate owned per-store failure finding.",
+      "Complete observed registered interval and removal/preservation receipts remain open."
+    ]
+  },
+  "runtimePolicy": {
+    "taskId": "0mv30z8rvmwr345kim3",
+    "pid": 1543918,
+    "overrides": {
+      "PAPERCUSP_DISK_ALARM_FREE_GB": "100"
+    },
+    "limits": [
+      "Warning thresholds are distinct from critical write floors. No current all-floor acceptance claim."
+    ]
+  },
+  "preservation": [
+    "Legacy trash, Git admin and archival evidence retained.",
+    "No manual commit/push, desktop restart, release force or LIVE_GATE_OPS."
+  ]
+}

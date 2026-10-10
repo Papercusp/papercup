@@ -12,6 +12,7 @@ import {
   reserveStoredQualificationRunner,
   retargetPreSuiteAttemptToOwningRepairHead,
   settleQualificationTransaction,
+  waitQualificationTransaction,
 } from './checkpoint-qualification-transaction';
 import {
   createFrozenCandidateQueue,
@@ -452,6 +453,48 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
     expect(attachedHarness.statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines')))
       .toBe(false);
   });
+
+  it.each(['required-ancestor-missing', 'required-ancestor-unverifiable'] as const)(
+    'corrects %s only to its own untested repair head without replacing the attempt', async reason => {
+      const begun = beginQualificationTransaction(null, {
+        attemptId: 'attempt-1', requiredAncestorSha: 'temporary-precheck',
+        declaredPaths: ['fixed.ts'], candidate: 'candidate-1', nowMs: 100,
+      }).transaction;
+      const current = waitQualificationTransaction(begun, {
+        attemptId: 'attempt-1', reason, nowMs: 200,
+      }).transaction;
+      const queue = markFrozenRepairAdmitted(markFrozenCandidateVerificationRed(safeQueue(), {
+        failingTests: ['broken.test.ts'], nowMs: 150,
+      }), {
+        atMs: 175, actor: 'fixer', source: { ref: 'staging', sha: 'repair-1' },
+        fromRepairHead: 'candidate-1', toRepairHead: 'repair-1',
+        paths: ['fixed.ts'], unchanged: [], blobs: { 'fixed.ts': 'blob-1' },
+      });
+      const request = { ...successor, requiredAncestorSha: 'repair-1', declaredPaths: ['fixed.ts'],
+        incumbentLiveness: 'live' as const };
+      const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+      expect(await beginStoredQualification(target, request, { reconcileTerminalRepairQueueForSuccessor: true }))
+        .toMatchObject({ status: 'updated', transaction: {
+          attemptId: 'attempt-1', requiredAncestorSha: 'repair-1', candidate: 'repair-1',
+          phase: 'ready', outcome: { kind: 'pending' }, currentPhysicalRunner: null,
+        } });
+      expect(statements.some(s => s.text.includes('UPDATE harness_shared.routines'))).toBe(true);
+
+      for (const [saved, savedQueue, next] of [
+        [current, { ...queue, qualificationAttemptId: 'other-attempt' }, request],
+        [current, queue, { ...request, requiredAncestorSha: 'different-repair' }],
+        [current, queue, { ...request, declaredPaths: ['other.ts'] }],
+        [{ ...current, currentPhysicalRunner: reserveQualificationRunner(begun, {
+          attemptId: 'attempt-1', runnerId: 'live-runner', leaseDurationMs: 10000, nowMs: 150,
+        }).transaction.currentPhysicalRunner }, queue, request],
+      ] as const) {
+        const refused = transactionHarness({ qualificationTransaction: saved, repair_queue: savedQueue });
+        expect(await beginStoredQualification(target, next, { reconcileTerminalRepairQueueForSuccessor: true }))
+          .toMatchObject({ status: 'conflict', transaction: { attemptId: 'attempt-1' } });
+        expect(refused.statements.some(s => s.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+      }
+    },
+  );
 
   it('does not resume a repair wait from a ready queue owned by another qualification', async () => {
     const begun = beginQualificationTransaction(null, {

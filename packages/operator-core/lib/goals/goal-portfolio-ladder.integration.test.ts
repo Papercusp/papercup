@@ -1,3 +1,4 @@
+import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { readGoalPortfolioBrief } from '../goal-launch-settings';
@@ -263,6 +264,61 @@ describe('opt-in active workspace plan pool (P-003, real Postgres)', () => {
         property: 'worklist_policy', value, expectedVersion, actorId: 'private-owner', provenance: 'owner-edit' }));
     return { workspace, goal, sql, plan, read, policy, properties };
   }
+
+  it('attaches each plan\'s newest fleet once, decoding a JSON-string headcount_config (WI-10008214)', async () => {
+    const fx = await fixture('fleet');
+    const fleet = async (workspace: string, slug: string, config: Record<string, unknown> | null,
+      encoding: 'object' | 'string', updatedAt: number, target: number) => {
+      const text = config === null ? null : JSON.stringify(config);
+      await fx.sql`INSERT INTO harness_shared.agent_fleets
+        (workspace_id, fleet_slug, created_at, updated_at, headcount_target, headcount_config)
+        VALUES (${workspace}, ${slug}, ${updatedAt}, ${updatedAt}, ${target},
+          CASE WHEN ${text}::text IS NULL THEN NULL
+               WHEN ${encoding} = 'string' THEN to_jsonb(${text}::text)
+               ELSE ${text}::jsonb END)`;
+    };
+    await fleet(fx.workspace, 'one-older', { plan: 'one', harness: 'p003' }, 'object', 1_000, 1);
+    await fleet(fx.workspace, 'one-newest', { plan: 'one', harness: 'p003' }, 'string', 3_000, 2);
+    await fleet(fx.workspace, 'two-other-harness', { plan: 'two', harness: 'elsewhere' }, 'object', 4_000, 3);
+    await fleet('different-workspace', 'two-foreign', { plan: 'two', harness: 'p003' }, 'object', 5_000, 4);
+    await fleet(fx.workspace, 'unscoped', null, 'object', 6_000, 5);
+    await fleet(fx.workspace, 'no-plan-key', { harness: 'p003' }, 'string', 7_000, 6);
+
+    // Capture the worklist statement so its plan shape can be checked below.
+    const statements: Array<{ text: string; params: unknown[] }> = [];
+    const capture = postgres(db.adminDsn, { max: 1, debug: (_c, text, params) => {
+      statements.push({ text, params: [...(params ?? [])] });
+    } });
+    try {
+      const brief = await readGoalPortfolioBrief({ workspaceId: fx.workspace, goalId: fx.goal,
+        sql: capture as unknown as typeof fx.sql, claimability: 'skip',
+        launch: { goalBrief: { title: 'Private discovery fixture', body: null, killCriterion: 'Stop when done',
+          budgetCents: null, budgetWindowSec: null, standing: false }, settings: null, budget: null,
+          ceilings: { maxAgents: 12, maxPerFleet: 5 }, headcount: { total: 0, fleet: 0 } } });
+      expect(brief?.degradedReasons.filter((r) => r.includes('portfolio read failed'))).toEqual([]);
+      const byRef = new Map(brief?.worklist.map((p) => [p.ref, p.placement.fleet]));
+      expect(byRef.get('plan:p003/one')).toMatchObject({ slug: 'one-newest', target: 2 });
+      expect(byRef.get('plan:p003/two')).toBeNull();
+
+      // The plans subquery is pulled up into its aggregate. Any second reference to its
+      // jsonb_build_object (an ORDER BY over plan_row, say) makes Postgres plan, and run,
+      // every per-plan SubPlan twice. Each per-plan relation must appear exactly once.
+      const worklist = statements.find((s) => /WITH goal_row AS/.test(s.text));
+      expect(worklist).toBeDefined();
+      const [row] = await db.adminSql.unsafe(`EXPLAIN (FORMAT JSON) ${worklist!.text}`, worklist!.params as never[]);
+      const relations: Record<string, number> = {};
+      const walk = (node: Record<string, unknown>) => {
+        const name = node['Relation Name'];
+        if (typeof name === 'string') relations[name] = (relations[name] ?? 0) + 1;
+        for (const child of (node.Plans as Array<Record<string, unknown>> | undefined) ?? []) walk(child);
+      };
+      walk(((Object.values(row)[0] as Array<{ Plan: Record<string, unknown> }>)[0]).Plan);
+      expect({ plan_items: relations.plan_items, plan_item_claims: relations.plan_item_claims,
+        cup_claim_specs: relations.cup_claim_specs }).toEqual({ plan_items: 1, plan_item_claims: 1, cup_claim_specs: 1 });
+    } finally {
+      await capture.end();
+    }
+  });
 
   it('discovers newly active plans after saved order without changing any stored worklist or attribution', async () => {
     const fx = await fixture('append');

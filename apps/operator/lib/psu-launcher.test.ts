@@ -15158,6 +15158,60 @@ describe("announceAdoptedCarryRespawn (EI-21567375926533125 — report before wa
 // whose transcript the archive-at-death lifecycle deletes ~15s after every
 // session end (WI-3859 F4) — NOT just a stale/swept one.
 describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the archive-at-death hook deleted)", () => {
+  it.each([false, true])("uses the verified archive root for a tracked Claude source (timeout recovery: %s)", async (afterTimeout) => {
+    const root = mkdtempSync(join(tmpdir(), "psu-restored-root-"));
+    const sid = "0123abcd-1234-5678-9abc-def012345678";
+    const archiveRoot = join(root, "archive-owner");
+    const projects = join(archiveRoot, "projects", "project");
+    mkdirSync(projects, { recursive: true });
+    writeFileSync(join(projects, `${sid}.jsonl`), JSON.stringify({ sessionId: sid }) + "\n");
+    const source = { id: 29708, agent: "claude", sessionId: sid, coordOwnerId: "su-tracked-owner", configDir: join(root, "tracked-owner") };
+    const restored = { ok: true, ready: true, sourceKind: "claude", written: 1, root: archiveRoot };
+    const fetchImpl = async (_url, opts) => {
+      if (afterTimeout && opts.method === "POST") {
+        const error = new Error("request timed out");
+        error.name = "TimeoutError";
+        throw error;
+      }
+      return { json: async () => restored };
+    };
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(sessionHasTranscript(source, { home: root })).toBe(false);
+      await tryRematerializeFromArchive(sid, "claude", { fetchImpl, operatorUrl: "http://op:1", token: "tok", sourceSession: source, home: root });
+      expect(sessionHasTranscript(source, { home: root })).toBe(true);
+      expect(source).toEqual({ id: 29708, agent: "claude", sessionId: sid, coordOwnerId: "su-tracked-owner", configDir: archiveRoot });
+    } finally {
+      errSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("does not adopt an archive root without the tracked source's exact Claude transcript (shared copy: %s)", async (sharedCopy) => {
+    const root = mkdtempSync(join(tmpdir(), "psu-restored-miss-"));
+    const source = { agent: "claude", sessionId: "exact-native-id", coordOwnerId: "su-source", configDir: join(root, "original") };
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const projects = join(root, "archive", "projects", "project");
+      mkdirSync(projects, { recursive: true });
+      writeFileSync(join(projects, "other-native-id.jsonl"), "{}\n");
+      if (sharedCopy) {
+        const shared = join(root, ".claude", "projects", "project");
+        mkdirSync(shared, { recursive: true });
+        writeFileSync(join(shared, `${source.sessionId}.jsonl`), "{}\n");
+      }
+      await tryRematerializeFromArchive(source.sessionId, "claude", {
+        fetchImpl: async () => ({ json: async () => ({ ok: true, sourceKind: "claude", written: 1, root: join(root, "archive") }) }),
+        operatorUrl: "http://op:1", token: "tok", sourceSession: source, home: root,
+      });
+      expect(source.configDir).toBe(join(root, "original"));
+      expect(sessionHasTranscript(source, { home: root })).toBe(sharedCopy);
+    } finally {
+      errSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("waits for an in-flight archive restore after the POST times out", async () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const timeout = new Error("request timed out");

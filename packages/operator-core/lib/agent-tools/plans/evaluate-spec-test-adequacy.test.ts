@@ -911,6 +911,44 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     }));
   });
 
+  it.each([
+    { workItemIds: ['WI-selected'] },
+    { evidenceRefs: ['test:selected'] },
+    { bindingIds: [1] },
+  ])('refuses a binding cohort outside the selected plan items with an honest remedy %j', async (selector) => {
+    const selected = clause('active');
+    const unrelated = { ...selected, specId: 'SPEC-OTHER', planItemId: 'P-002' };
+    listClauses.mockImplementation(async (options) => [selected, unrelated].filter((row) =>
+      (!options.planItemIds || options.planItemIds.includes(row.planItemId)) &&
+      (!options.specIds || options.specIds.includes(row.specId)),
+    ));
+    // The requested cohort has a real binding, but only on P-002. P-001 also has
+    // evidence, from a different cohort. Neither side alone is the requested proof.
+    const pool = [
+      { id: 1, specId: unrelated.specId, workItemId: 'WI-selected', evidenceRef: 'test:selected' },
+      { id: 2, specId: selected.specId, workItemId: 'WI-other', evidenceRef: 'test:other' },
+    ];
+    listEvidence.mockImplementation(async (options) => pool.filter((row) =>
+      (!options.specIds || options.specIds.includes(row.specId)) &&
+      (!options.workItemIds || options.workItemIds.includes(row.workItemId)) &&
+      (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)) &&
+      (!options.bindingIds || options.bindingIds.includes(row.id)),
+    ) as never);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], ...selector,
+    });
+
+    expect(result).toMatchObject({
+      ok: false, error: 'selection_empty', count: 0, selectedEvidenceCount: 0,
+      selection: { planItemIds: ['P-001'], ...selector },
+    });
+    expect(result.rows).toBeUndefined();
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ specIds: [selected.specId], ...selector }));
+    expect(result.remedy).toContain('outside the selected planItemIds');
+    expect(result.remedy).toContain('Nothing was graded');
+  });
+
   it('retains the hit-limit refusal when the selected plan item itself has too much evidence', async () => {
     listClauses.mockResolvedValue([clause('active')]);
     listEvidence.mockImplementation(async (options) => Array.from({ length: options.limit ?? 1000 },

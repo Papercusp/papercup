@@ -14,7 +14,7 @@
  * worth a test, because it disables the guard while every test still passes.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,6 +60,46 @@ function seedReservation(
 }
 
 describe('disk reservation ledger — Node reader', () => {
+  it('counts live legacy claims across mount aliases before admitting another build', () => {
+    const ledger = scratch();
+    const a = scratch();
+    const b = scratch();
+    const fakeBin = scratch();
+    const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+    writeFileSync(join(fakeBin, 'df'), '#!/bin/sh\nprintf "%s\\n" ' + [
+      'Filesystem 1024-blocks Used Available Capacity Mounted on',
+      `same-device 209715200 104857600 104857600 50% ${a}`,
+      `same-device 209715200 104857600 104857600 50% ${b}`,
+    ].map(quote).join(' ') + '\nexit 1 # an unrelated inaccessible mount must not hide readable mount rows\n');
+    chmodSync(join(fakeBin, 'df'), 0o755);
+    const fields = { pid: process.pid, start: currentStart(process.pid), expires: Math.floor(Date.now() / 1000) + 3600 };
+    seedReservation(ledger, a.replace(/[^A-Za-z0-9]/g, '_'), 'a.res', { ...fields, gb: 60 });
+    seedReservation(ledger, b.replace(/[^A-Za-z0-9]/g, '_'), 'b.res', { ...fields, gb: 35 });
+    seedReservation(ledger, 'dev-0', 'other.res', { ...fields, gb: 500 });
+    const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, PAPERCUSP_DISK_RESERVATION_DIR: ledger };
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = env.PATH;
+      expect(mountKeyForPath(a)).toBe(mountKeyForPath(b));
+      expect(readReservedGb(a, { env })).toBe(95);
+      expect(readReservedGb(b, { env })).toBe(95);
+    } finally { process.env.PATH = originalPath; }
+    const refusal = execFileSync('bash', ['-c', 'source "$1"; papercusp_require_free_gb "$2" 10 alias >/dev/null 2>&1; printf "%s" "$?"', '--', SHELL_LIB, a], { env, encoding: 'utf8', timeout: 30_000 });
+    expect(refusal).toBe('28'); // 100 free - 95 reserved cannot admit ten.
+  });
+
+  it('a new shell claim is visible to the Node reader through a filesystem alias', () => {
+    const ledger = scratch();
+    const a = scratch();
+    const b = scratch();
+    const reader = join(REPO_ROOT, 'scripts/lib/disk-reservations.mjs');
+    const script = 'source "$1"; papercusp_free_gb() { printf 100; }; papercusp_require_free_gb "$2" 12 alias >/dev/null || exit $?; ' +
+      '"$4" --input-type=module -e \'import(process.argv[2]).then(m=>process.stdout.write(String(m.readReservedGb(process.argv[1]))))\' "$3" "$5"';
+    expect(execFileSync('bash', ['-c', script, '--', SHELL_LIB, a, b, process.execPath, reader], {
+      env: { ...process.env, PAPERCUSP_DISK_RESERVATION_DIR: ledger }, encoding: 'utf8', timeout: 30_000,
+    })).toBe('12');
+  });
+
   it('agrees with the shell writer on the ledger key for the same path', () => {
     // The load-bearing cross-language property. Executes BOTH derivations rather
     // than asserting a hardcoded string, so a change to either side is caught.

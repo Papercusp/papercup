@@ -1040,6 +1040,35 @@ describe('ptool timeoutForTool — continuity/control-plane calls outlive the fl
   });
 });
 
+describe('ptool evidence-binding receipt deadline (EI-25634460854216048)', () => {
+  it.each(['plans:bind-spec-evidence', 'tools:invoke'])('%s observes a committed receipt beyond the ordinary client wall without replay', async name => {
+    vi.useFakeTimers();
+    try {
+      const args = name === 'tools:invoke'
+        ? { name: 'plans:bind-spec-evidence', args: { binding: { fromTestRun: 123 } } }
+        : { binding: { fromTestRun: 123 } };
+      const receipt = { content: [{ type: 'text', text: '{"ok":true,"id":35416}' }] };
+      const callTool = vi.fn((_params: unknown, _schema: unknown, options: { timeout: number }) =>
+        new Promise((resolve, reject) => {
+          const clientWall = setTimeout(() => reject(new Error('MCP request timed out; mutation outcome unknown')), options.timeout);
+          setTimeout(() => {
+            clearTimeout(clientWall);
+            resolve(receipt);
+          }, PTOOL_CALL_TOOL_TIMEOUT_MS + 227);
+        }));
+      const result = callToolWithPressureRetry({ callTool }, { name, arguments: args }, {
+        timeoutMs: timeoutForTool(name, args),
+      }).then(value => ({ value }), error => ({ error }));
+      await vi.advanceTimersByTimeAsync(PTOOL_CALL_TOOL_TIMEOUT_MS + 227);
+      expect(await result).toEqual({ value: receipt });
+      expect(callTool).toHaveBeenCalledTimes(1);
+      expect(timeoutForTool(name, args)).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('ptool timeoutForTool — coord:declare-intent and loop:arm outlive the flat client deadline (EI-21863905839650704)', () => {
   // Both tools declare no timeoutSec, so the server bounds them only at the
   // flat 55s MCP_DEADLINE_MS floor. A reporter observed ptool's flat 30s

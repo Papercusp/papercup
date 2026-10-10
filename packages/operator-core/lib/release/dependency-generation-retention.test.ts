@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -63,6 +63,55 @@ function pruneArguments(): string[] {
 }
 
 describe('hourly dependency-generation retention discovery', () => {
+  it('skips an absent integration even when the environment names a live shared store', async () => {
+    const store = join(fixture, 'global-store');
+    mkdirSync(store);
+    vi.stubEnv('PAPERCUSP_DEPENDENCY_GENERATION_ROOT', store);
+    const missing = join(fixture, 'retired-project');
+    registry.contentPath.mockReturnValue(missing);
+    const result = await runDependencyGenerationRetention();
+    expect(result.skippedIntegrations).toEqual([{ root: missing, reason: 'integration is absent or not a directory' }]);
+    expect(pruneArguments()).toEqual([]);
+    expect(governed.run).not.toHaveBeenCalled();
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it('sweeps one physical store once and lets a current alias override retired mode', async () => {
+    const shared = join(fixture, 'shared');
+    const replacement = join(fixture, 'replacement');
+    const alias = join(fixture, 'shared-alias');
+    const other = join(fixture, 'other-integration');
+    mkdirSync(shared); mkdirSync(replacement); mkdirSync(join(other, '.papercusp'), { recursive: true });
+    symlinkSync(shared, alias, 'dir');
+    recordStore(replacement, [shared]);
+    writeFileSync(join(other, '.papercusp/dependency-generation-root'), `${alias}\n`);
+    registry.load.mockResolvedValue({ projects: [{ slug: 'first' }, { slug: 'second' }] });
+    registry.contentPath.mockImplementation((_registry, slug) => slug === 'first' ? integration : other);
+    const result = await runDependencyGenerationRetention();
+    expect(result.stores).toHaveLength(2);
+    expect(result.stores.find((row) => row.generationRoot === alias)).toMatchObject({ retired: false, status: 'pruned' });
+    expect(pruneArguments()).toEqual([
+      '--integration', integration, '--generation-root', replacement, '--prune-only',
+      '--integration', other, '--generation-root', alias, '--prune-only',
+    ]);
+    expect(governed.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns failed prune diagnostics while continuing an independent store', async () => {
+    const current = join(fixture, 'current');
+    const former = join(fixture, 'former');
+    mkdirSync(current); mkdirSync(former); recordStore(current, [former]);
+    writeFileSync(script, 'if [ "$4" = "$PAPERCUSP_RETENTION_FAIL_STORE" ]; then printf "pin kept\\n"; printf "refused fixture\\n" >&2; exit 7; fi\nprintf "retained independent store\\n"\n');
+    vi.stubEnv('PAPERCUSP_RETENTION_FAIL_STORE', current);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await runDependencyGenerationRetention();
+    expect(result.status).toBe('partial');
+    expect(result.stores[0]).toMatchObject({ status: 'failed', exitCode: 7, stdout: 'pin kept\n', stderr: 'refused fixture\n' });
+    expect(result.stores[1]).toMatchObject({ status: 'pruned', generationRoot: former, stdout: 'retained independent store\n' });
+    expect(existsSync(current)).toBe(true);
+    expect(existsSync(former)).toBe(true);
+  });
+
   it('sweeps recorded former stores with their existing pin/lease guard, preserving first-line selection', async () => {
     const current = join(fixture, 'current');
     const old = join(fixture, 'old');

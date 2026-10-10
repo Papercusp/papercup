@@ -539,7 +539,11 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
   };
 
   const memberSlugForTask = (prefix: string, instanceId: string): string => `${prefix}-${instanceId.substring(0, 20)}`;
-  const featureIdForTask = (instanceId: string): string => `xbench-${instanceId}`;
+  // scope-unique-identifiers-2026-07-26 P-009 (D-004 writer #2): a work-item id names one row
+  // per workspace, and every run seeds a fresh member harness. A bare `xbench-${instanceId}`
+  // re-used the same id in each run's member, minting one twin per run; the run's unique
+  // hive prefix (`xbench-su-<nanoid>`) makes the id unique to this run.
+  const featureIdForTask = (instanceId: string): string => `${hivePrefix}-${instanceId}`;
 
   return {
     now: () => Date.now(),

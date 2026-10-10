@@ -892,7 +892,11 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(await getIssue('EI-11-no-provenance')).not.toBeNull();
   });
 
-  it('a harness-qualified tombstone deletes only the exact authored twin', async () => {
+  // scope-unique-identifiers-2026-07-26 P-009: one row per id per workspace. This test used
+  // to build a sibling-hive TWIN and prove a qualified tombstone deleted only one of them;
+  // the projection no longer mints the twin, so it now proves the resident-row landing and
+  // that each author's qualified tombstone still touches only a row that author wrote.
+  it('a second harness put for a resident id lands on the resident row, and qualified tombstones stay author-scoped (P-009)', async () => {
     const p = proj();
     const sameId = 'EI-826-twin';
     await p.writeToPg(issueRow({ issue_id: sameId, storage_harness_slug: SLUG }), {
@@ -905,24 +909,100 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
         issue_id: sameId,
         scope: 'harness:sibling-hive',
         storage_harness_slug: 'sibling-hive',
+        title: 'sibling edit',
       }),
-      { ts: 100, origin: 'remote', authorPubkey: 'peer-sibling' },
+      { ts: 150, origin: 'remote', authorPubkey: 'peer-sibling' },
     );
 
+    expect(await getIssueBaseRows(sameId)).toEqual([
+      { feature_id: sameId, harness_slug: SLUG, status: 'open', origin: 'remote' },
+    ]);
+    expect((await getIssue(sameId))?.title).toBe('sibling edit');
+
+    // The resident row is now authored by peer-sibling, so peer-papercup's tombstone for its
+    // own key leaves it alone ...
     await p.deleteFromPg(`${SLUG}/${sameId}`, 200, undefined, {
       ts: 200,
       origin: 'remote',
       authorPubkey: 'peer-papercup',
     });
+    expect(await getIssueBaseRows(sameId)).toHaveLength(1);
 
-    expect(await getIssueBaseRows(sameId)).toEqual([
-      {
-        feature_id: sameId,
-        harness_slug: 'sibling-hive',
-        status: 'open',
-        origin: 'remote',
-      },
+    // ... and peer-sibling's tombstone, keyed on the harness it wrote under, follows the row.
+    await p.deleteFromPg(`sibling-hive/${sameId}`, 300, undefined, {
+      ts: 300,
+      origin: 'remote',
+      authorPubkey: 'peer-sibling',
+    });
+    expect(await getIssueBaseRows(sameId)).toHaveLength(0);
+  });
+
+  it('an operator-scope op for an id resident under a concrete harness updates that row in place (P-009)', async () => {
+    const p = proj();
+    const id = 'EI-P009-operator';
+    await p.writeToPg(issueRow({ issue_id: id }), { ts: 100, origin: 'remote', authorPubkey: 'peer-a' });
+    await p.writeToPg(issueRow({ issue_id: id, scope: 'operator', title: 'operator edit' }), {
+      ts: 200,
+      origin: 'remote',
+      authorPubkey: 'peer-b',
+    });
+
+    expect(await getIssueBaseRows(id)).toEqual([{ feature_id: id, harness_slug: SLUG, status: 'open', origin: 'remote' }]);
+    expect((await getIssue(id))?.title).toBe('operator edit');
+  });
+
+  it('a concrete-harness op for an id resident under operator:<ws> updates that row in place (P-009)', async () => {
+    const p = proj();
+    const id = 'EI-P009-concrete';
+    await p.writeToPg(issueRow({ issue_id: id, scope: 'operator' }), { ts: 100, origin: 'remote', authorPubkey: 'peer-a' });
+    await p.writeToPg(issueRow({ issue_id: id, title: 'harness edit' }), { ts: 200, origin: 'remote', authorPubkey: 'peer-b' });
+
+    expect(await getIssueBaseRows(id)).toEqual([
+      { feature_id: id, harness_slug: `operator:${WS}`, status: 'open', origin: 'remote' },
     ]);
+    expect((await getIssue(id))?.title).toBe('harness edit');
+  });
+
+  it('refuses an op whose id is resident under another harness as a DIFFERENT issue (created_ts disagrees) (P-009 + EI-13285)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      const id = 'EI-P009-distinct';
+      await p.writeToPg(issueRow({ issue_id: id, title: 'resident' }), { ts: 100, origin: 'remote', authorPubkey: 'peer-a' });
+      await p.writeToPg(issueRow({ issue_id: id, scope: 'operator', title: 'impostor', created_ts: 9_000_000 }), {
+        ts: 200,
+        origin: 'remote',
+        authorPubkey: 'peer-b',
+      });
+
+      expect(await getIssueBaseRows(id)).toEqual([{ feature_id: id, harness_slug: SLUG, status: 'open', origin: 'remote' }]);
+      expect((await getIssue(id))?.title).toBe('resident');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('EI-13285 id collision'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('refuses rather than guesses when the id is already twinned across two other harnesses (P-009)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const id = 'EI-P009-twinned';
+      for (const slug of ['twin-a', 'twin-b']) {
+        await db.sql`
+          INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, title, status)
+          VALUES (${WS}, ${slug}, ${id}, 'bug', 'pre-P-011 residue', 'open')`;
+      }
+      await proj().writeToPg(issueRow({ issue_id: id, scope: 'operator', title: 'third copy' }), {
+        ts: 200,
+        origin: 'remote',
+        authorPubkey: 'peer-b',
+      });
+
+      expect((await getIssueBaseRows(id)).map((r) => r.harness_slug)).toEqual(['twin-a', 'twin-b']);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('P-009 resident-row refusal'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('a legacy bare tombstone cannot erase a same-id row from another author', async () => {
@@ -1008,7 +1088,9 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       expect(await getIssueBaseRows('EI-826-rekeyed')).toHaveLength(0);
 
       // The same identity on a qualified post-829 key is authoritative and is
-      // therefore allowed even though survivor evidence exists.
+      // therefore allowed even though survivor evidence exists. Since
+      // scope-unique-identifiers P-009 it lands on the resident survivor row in place
+      // (one row per id per workspace) instead of recreating the sibling-hive twin.
       await p.writeToPg(
         issueRow({
           issue_id: 'EI-826-merged',
@@ -1020,8 +1102,8 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       );
       expect(await getIssueBaseRows('EI-826-merged')).toEqual([
         { feature_id: 'EI-826-merged', harness_slug: SLUG, status: 'open', origin: 'remote' },
-        { feature_id: 'EI-826-merged', harness_slug: 'sibling-hive', status: 'open', origin: 'remote' },
       ]);
+      expect((await getIssue('EI-826-merged'))?.title).toBe('current qualified source row');
       expect(warnSpy).toHaveBeenCalledTimes(2);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('suppressing legacy replay'));
     } finally {

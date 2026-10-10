@@ -500,7 +500,9 @@ function memberSlugForTask(homePrefix: string, instanceId: string): string {
 /** Mint a regex-safe (`FEATURE_ID_RE`) feature id — the bee recognizes its feature ONLY for `F-<UPPERHEX>`. */
 function featureIdForTask(instanceId: string): string {
   const safe = instanceId.replace(/[^a-zA-Z0-9]+/g, '').toUpperCase().slice(0, 16) || 'TASK';
-  return `F-${safe}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+  // scope-unique-identifiers-2026-07-26 P-009 (D-004 writer #3): see hive-backlog-live.ts —
+  // a 10-hex-char suffix keeps cross-run re-mints of one instance from colliding.
+  return `F-${safe}${globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()}`;
 }
 
 /**

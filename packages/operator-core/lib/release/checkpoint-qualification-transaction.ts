@@ -385,6 +385,14 @@ function isUnstartedDeadRepairRunner(
  * at the new head instead of letting every tick reserve the old candidate and conflict at CLI
  * activation. Unknown/live runners remain exclusive.
  */
+function isUnstartedAncestryRefusal(current: CheckpointQualificationTransaction | null): boolean {
+  return Boolean(current && current.phase === 'waiting' &&
+    current.outcome.kind === 'pre-suite-no-verdict' &&
+    ['required-ancestor-missing', 'required-ancestor-unverifiable'].includes(current.outcome.reason) &&
+    current.currentPhysicalRunner === null &&
+    !(current.consumedPhysicalRuns ?? []).some(run => run.outcome.kind !== 'pre-suite-no-verdict'));
+}
+
 function isRetryableUnownedWait(
   current: CheckpointQualificationTransaction | null,
   resumeUnownedRepairVerification = false,
@@ -400,7 +408,8 @@ function isRetryableUnownedWait(
   )
     return false;
   if (current.outcome.reason === 'wait-for-eligibility-unavailable') return true;
-  return resumeUnownedRepairVerification && current.outcome.reason === 'repair-in-progress';
+  return resumeUnownedRepairVerification &&
+    (current.outcome.reason === 'repair-in-progress' || isUnstartedAncestryRefusal(current));
 }
 
 /**
@@ -1942,7 +1951,13 @@ export function beginStoredQualification(
         current && queue && queueOwnsUntestedRepairHead && (
           (current.phase === 'waiting' &&
             current.outcome.kind === 'pre-suite-no-verdict' &&
-            current.outcome.reason === 'repair-in-progress' &&
+            (current.outcome.reason === 'repair-in-progress' ||
+              // A rejected ancestry request never launched a suite. Correct its
+              // pin only to the untested head owned by this same locked queue,
+              // retaining its attempt and declared-path policy.
+              (isUnstartedAncestryRefusal(current) &&
+                input.requiredAncestorSha === queue.repairHead &&
+                sameStrings(current.candidatePolicy.declaredPaths, input.declaredPaths ?? []))) &&
             current.currentPhysicalRunner === null) ||
           (current.pendingRepairHead === queue.repairHead &&
             isUnstartedDeadRepairRunner(current, incumbentLiveness, input.nowMs ?? Date.now()))

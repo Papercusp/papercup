@@ -8,6 +8,13 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('daemon cost observation identity', () => {
+  it('bounds external-reference candidate detection across streamed chunk boundaries', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lsp-cost-reference-')); roots.push(root);
+    writeFileSync(join(root, 'source.ts'), ' '.repeat(64 * 1024 - 1) + '/// <reference lib="dom" />');
+    const snapshot = await captureLspDaemonInputs(root);
+    expect(snapshot.measured).toBe(true);
+    if (snapshot.measured) expect(snapshot.externalReferenceCandidates).toEqual(['source.ts']);
+  });
   it('distinguishes cursor, operation and actual document contents', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lsp-cost-key-'));
     roots.push(root);

@@ -15268,9 +15268,25 @@ export async function tryRematerializeFromArchive(
     statusAttempts = 10,
     statusDelayMs = 250,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    sourceSession = null,
+    home = homedir(),
   } = {},
 ) {
   if (!sessionId) return null;
+  const finishRestore = (restored) => {
+    // Archive bytes can live under a different physical root from the tracked
+    // owner's directory. Pin the source to that root only after resolving its
+    // exact native transcript there; keep its coordination/native identity.
+    if (sourceSession?.agent === "claude" && sourceSession.sessionId === sessionId &&
+        restored.sourceKind === "claude" && typeof restored.root === "string" && isAbsolute(restored.root)) {
+      const transcript = claudeSessionTranscriptFile(sessionId, { home, configDir: restored.root });
+      const location = transcript && relative(restored.root, transcript);
+      if (location && (location.startsWith("projects/") || location.startsWith("projects\\"))) {
+        sourceSession.configDir = restored.root;
+      }
+    }
+    return restored;
+  };
   try {
     const tok = token ?? readToken();
     const res = await fetchImpl(
@@ -15293,7 +15309,7 @@ export async function tryRematerializeFromArchive(
     console.error(
       `psu: transcript restored from the session archive (${r.sourceKind}, ${r.written} file(s) → ${r.root}).`,
     );
-    return r;
+    return finishRestore(r);
   } catch (error) {
     // AbortSignal.timeout only cancels the client request. The synchronous
     // operator handler can still be decompressing/writing a large archive.
@@ -15318,7 +15334,7 @@ export async function tryRematerializeFromArchive(
       console.error(
         `psu: transcript restored from the session archive (${restored.sourceKind}, ${restored.written} file(s) → ${restored.root ?? "session store"}).`,
       );
-      return restored;
+      return finishRestore(restored);
     }
     // A completed status read can disprove an in-flight restore even though
     // the original POST timed out. Missing/failed archives are terminal;
@@ -16055,6 +16071,7 @@ async function resumeFlow(args = {}) {
         const restored = await tryRematerializeFromArchive(
           tracked.sessionId || tracked.ompThreadId,
           tracked.agent,
+          { sourceSession: tracked },
         );
         if (restored?.pending) {
           console.error(
@@ -16274,7 +16291,7 @@ async function resumeFlow(args = {}) {
   // actually absent (a live/on-disk session skips this); best-effort — launchResume
   // still surfaces a real miss.
   if (!sessionHasTranscript(picked)) {
-    await tryRematerializeFromArchive(picked.sessionId, picked.agent);
+    await tryRematerializeFromArchive(picked.sessionId, picked.agent, { sourceSession: picked });
   }
   await launchResolvedResume(picked, args, { tracked: true });
 }

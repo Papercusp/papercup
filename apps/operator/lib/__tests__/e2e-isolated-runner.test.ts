@@ -178,10 +178,14 @@ describe('run-operator-e2e-isolated.sh', () => {
       });
       try {
         await new Promise<void>((ready, reject) => {
-          const deadline = setTimeout(() => reject(new Error(`Rig did not start: ${output}`)), 5000);
+          // Signal only after the stub's readiness event. The enclosing test
+          // deadline bounds startup; a second five-second clock incorrectly
+          // counted real evidence initialization as an interruption failure.
+          const exited = () => reject(new Error(`Rig exited before readiness: ${output}`));
+          child.once('close', exited);
           child.stdout.on('data', chunk => {
             output += chunk;
-            if (output.includes('RIG_WAITING')) { clearTimeout(deadline); ready(); }
+            if (output.includes('RIG_WAITING')) { child.off('close', exited); ready(); }
           });
         });
         if (wholeGroup) process.kill(-child.pid!, signal);

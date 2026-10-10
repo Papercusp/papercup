@@ -22,6 +22,7 @@ import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-re
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import type { SpecClauseSql } from './spec-clauses-store';
 import { resolvePlanScope } from './source';
+import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
   defaultBlobBatchReader,
@@ -125,6 +126,8 @@ export const repoFilesEvidenceMeasurementSchema = z
     fixtureRootHarnessSlug: z.string().trim().min(1).max(120).optional(),
     /** Local runtime units observed around execution; evidence reads independently remeasure them. */
     runtimeUnits: runtimeUnitsSchema.optional(),
+    /** Final package environment, independently rehashed from a measured operational receipt. */
+    artifactReceiptPath: repoMeasurementPathSchema.optional(),
     /** Completed isolated tests certify retained source/lifecycle artifacts, not a live deployment. */
     completedRuntime: z.discriminatedUnion('kind', [z.object({
       kind: z.literal('verification-harness'),
@@ -142,6 +145,12 @@ export const repoFilesEvidenceMeasurementSchema = z
   })
   .strict()
   .superRefine((measurement, ctx) => {
+    if (measurement.artifactReceiptPath && (!measurement.artifactReceiptPath.startsWith('docs/evidence/') ||
+      !measurement.sourcePaths.includes(measurement.artifactReceiptPath) ||
+      measurement.runtimeUnits || measurement.completedRuntime)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['artifactReceiptPath'],
+        message: 'artifact receipt must be an explicit docs/evidence source path and cannot also select a process runtime' });
+    }
     if (measurement.completedRuntime && !measurement.runtimeUnits) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['completedRuntime'],
         message: 'completedRuntime requires original execution runtimeUnits' });
@@ -646,12 +655,16 @@ export async function measureRepoFilesEvidenceAtRoot(
   measurement: RepoFilesEvidenceMeasurement,
   options: { fixtureRoot?: string; fixtureRootHarnessSlug?: string } = {},
 ): Promise<MeasuredRepoEvidenceFingerprints> {
-  const { sourceFingerprint, testFingerprint, fixtureFingerprint } =
-    await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement, options);
+  const detailed = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement, options);
+  const { sourceFingerprint, testFingerprint, fixtureFingerprint } = detailed;
   return {
     sourceFingerprint,
     testFingerprint,
     ...(fixtureFingerprint !== undefined ? { fixtureFingerprint } : {}),
+    ...(measurement.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
+      repoRoot, measurement.artifactReceiptPath,
+      detailed.files.find(file => file.path === measurement.artifactReceiptPath && file.dimension === 'source')!.sha256,
+      { verifyExpectations: true }) } : {}),
   };
 }
 
@@ -682,6 +695,10 @@ export async function measureAndPinRepoFilesEvidenceAtRoot(
     sourceFingerprint: detailed.sourceFingerprint,
     testFingerprint: detailed.testFingerprint,
     ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+    ...(measurement.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
+      root, measurement.artifactReceiptPath,
+      detailed.files.find(file => file.path === measurement.artifactReceiptPath && file.dimension === 'source')!.sha256,
+      { verifyExpectations: true }) } : {}),
     pin,
   };
 }
@@ -720,6 +737,10 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
     sourceFingerprint: detailed.sourceFingerprint,
     testFingerprint: detailed.testFingerprint,
     ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+    ...(measurement.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
+      root, measurement.artifactReceiptPath,
+      detailed.files.find(file => file.path === measurement.artifactReceiptPath && file.dimension === 'source')!.sha256,
+      { verifyExpectations: true }) } : {}),
     pin,
   };
 }
@@ -3110,6 +3131,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             sourceFingerprint: detailed.sourceFingerprint,
             testFingerprint: detailed.testFingerprint,
             ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+            ...(recipe.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
+              measurementRoot, recipe.artifactReceiptPath,
+              detailed.files.find(file => file.path === recipe.artifactReceiptPath && file.dimension === 'source')!.sha256) } : {}),
             ...(recipe.runtimeUnits ? { environmentFingerprint: recipe.completedRuntime
               ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot,
                 { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })

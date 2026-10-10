@@ -21,7 +21,7 @@ import { launchBenchRun, cancelBenchRun, type LaunchBenchRunInput } from '../../
 import { gradeBenchRun } from '../../../external-bench/grade-runner';
 import { deleteBenchRun } from '../../../external-bench/run-store';
 import { buildExportBundle } from '../../../external-bench/export-bundle';
-import { estimateBenchLaunch } from '../../../external-bench/estimate';
+import { estimateBenchLaunch, estimateCurrentBenchLaunch } from '../../../external-bench/estimate';
 
 const launch = defineTool({
   method: 'POST',
@@ -104,6 +104,10 @@ const estimate = defineTool({
   auth: 'loopback',
   async handler(req) {
     const params = new URL(req.url).searchParams;
+    if (params.has('protocolRunId')) return Response.json(await estimateCurrentBenchLaunch({
+      workspaceId: params.get('workspaceId') ?? 'benchmarks', protocolRunId: params.get('protocolRunId') ?? '',
+      arm: params.get('arm') ?? 'papercusp', seed: Number(params.get('seed') ?? 1),
+    }));
     const taskSetId = params.get('taskSetId') || '11-task-pilot';
     const cap = Number(params.get('cap') ?? 5) || 5;
     return Response.json(estimateBenchLaunch({ taskSetId, cap }));

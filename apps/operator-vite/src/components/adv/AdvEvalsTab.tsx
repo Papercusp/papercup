@@ -270,6 +270,8 @@ interface LaunchRunArgs {
   maxUsdPerTask?: number;
   maxTokensPerTask?: number;
   maxUsdPerRun?: number;
+  current?: { workspaceId: string; protocolRunId: string; preregHash: string; seed: number;
+    observation: { runtimeWorkspaceId: string; workerUnit: string; gatewayUnit: string } };
 }
 interface LaunchRunResult {
   ok: boolean;
@@ -974,12 +976,7 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
 // above a spend threshold (D-004); disabled while a run is in flight. opus is
 // pinned (fail-closed). The launch is gated server-side on papercusp-external-bench
 // (default OFF) — a 403 surfaces the "enable the flag" message honestly.
-const LAUNCH_ARMS = ['hive-realqueen', 'fifo-noqueen', 'mini-swe-agent'] as const;
-const LAUNCH_TASK_SETS = [
-  { id: '11-task-pilot', label: '11-task pilot (public SWE-bench Pro)' },
-  { id: 'swe-bench-pro-full', label: 'Full SWE-bench Pro (~731)' },
-  { id: 'custom', label: 'Custom instance ids' },
-] as const;
+const LAUNCH_ARMS = ['papercusp', 'baseline'] as const;
 const OWNER_CONFIRM_USD = 20;
 const fieldStyle: CSSProperties = {
   background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg)',
@@ -987,23 +984,28 @@ const fieldStyle: CSSProperties = {
 };
 
 interface LaunchEstimate {
+  ready?: boolean;
+  arm?: string;
+  error?: string;
   taskCount: number;
   estCostUsd: number;
   estWallMin: number;
   perTaskUsd: number;
   basis: string;
+  aggregateBudgetUsd?: number;
+  model?: string;
+  effort?: string;
+  account?: string;
+  current?: LaunchRunArgs['current'];
 }
 
 function LaunchRunView() {
-  const [armRaw, setArm] = useQueryState('launchArm', parseAsStringEnum([...LAUNCH_ARMS]).withDefault('hive-realqueen'));
-  const [taskSetRaw, setTaskSet] = useQueryState('launchTaskSet', parseAsStringEnum(LAUNCH_TASK_SETS.map((t) => t.id)).withDefault('11-task-pilot'));
-  const [capRaw, setCap] = useQueryState('launchCap', parseAsString);
-  const arm = armRaw ?? 'hive-realqueen';
-  const taskSet = taskSetRaw ?? '11-task-pilot';
-  const capNum = Math.max(1, Number(capRaw) || 5);
-
-  const [maxUsd, setMaxUsd] = useState('10');
-  const [customIds, setCustomIds] = useState('');
+  const [armRaw, setArm] = useQueryState('launchArm', parseAsStringEnum([...LAUNCH_ARMS]).withDefault('papercusp'));
+  const [protocolRunId, setProtocolRunId] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('benchmarks');
+  const [seedText, setSeedText] = useState('1');
+  const arm = LAUNCH_ARMS.includes(armRaw as typeof LAUNCH_ARMS[number]) ? armRaw! : 'papercusp';
+  const seed = Number(seedText);
   const [confirmed, setConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1022,26 +1024,24 @@ function LaunchRunView() {
   // Cost+time estimate (D-004) — shared sync read so the launch form stays on the audited data path.
   const estimateSync = useSyncQuery<LaunchEstimate>({
     queryName: 'evals.benchEstimate',
-    args: { taskSetId: taskSet, cap: capNum },
+    args: { workspaceId, protocolRunId, arm, seed: Number.isSafeInteger(seed) && seed >= 0 ? seed : 1 },
   });
   const estimate = estimateSync.data?.[0] ?? null;
 
-  const needsConfirm = (estimate?.estCostUsd ?? 0) >= OWNER_CONFIRM_USD;
-  const customMissing = taskSet === 'custom' && customIds.trim().length === 0;
-  const canLaunch = !activeRun && !submitting && (!needsConfirm || confirmed) && !customMissing;
+  // A previous query result cannot authorize a newly typed protocol/seed.
+  const selection = estimate?.current;
+  const ready = estimate?.ready === true && estimate.arm === arm && selection?.workspaceId === workspaceId &&
+    selection.protocolRunId === protocolRunId && selection.seed === seed &&
+    !estimateSync.loading && !estimateSync.fetching && !estimateSync.error;
+  const needsConfirm = (estimate?.aggregateBudgetUsd ?? 0) >= OWNER_CONFIRM_USD;
+  const canLaunch = ready && !activeRun && !submitting && (!needsConfirm || confirmed);
 
   async function launch() {
     setSubmitting(true);
     setError(null);
     try {
-      const body: LaunchRunArgs = {
-        arm,
-        taskSetId: taskSet,
-        cap: capNum,
-        model: 'opus',
-        maxUsdPerTask: Number(maxUsd) || undefined,
-      };
-      if (taskSet === 'custom') body.taskIds = customIds.split(',').map((s) => s.trim()).filter(Boolean);
+      if (!canLaunch || !selection) throw new Error('The selected committed protocol is not ready.');
+      const body: LaunchRunArgs = { arm, taskSetId: 'custom', current: selection };
       const json = await launchRun(body);
       if (!json.ok || !json.runId) {
         setError(json.error || 'launch failed');
@@ -1059,7 +1059,8 @@ function LaunchRunView() {
   return (
     <section className="pc-evals__section">
       <p className="pc-evals__lede">
-        Launch a managed SWE-bench Pro run with the selected arm, task set, and spend ceiling.
+        Launch one arm and seed of a committed matched protocol. The protocol fixes the model,
+        task roster, context and spending limits for both arms.
       </p>
 
       {activeRun ? (
@@ -1079,79 +1080,56 @@ function LaunchRunView() {
                 ariaLabel="Benchmark arm"
                 value={arm}
                 onChange={(v: string) => void setArm(v as (typeof LAUNCH_ARMS)[number])}
-                options={LAUNCH_ARMS.map((a) => ({ value: a, label: armLabel(a) }))}
+                options={LAUNCH_ARMS.map((a) => ({ value: a, label: a === 'papercusp' ? 'Current Papercusp su' : 'Stock Codex' }))}
               />
             </label>
 
             <label className="pc-evals__suitepick">
-              <span className="pc-evals__suitelabel">task set</span>
-              <Select
-                ariaLabel="Task set"
-                value={taskSet}
-                onChange={(v: string) => void setTaskSet(v as (typeof LAUNCH_TASK_SETS)[number]['id'])}
-                options={LAUNCH_TASK_SETS.map((t) => ({ value: t.id, label: t.label }))}
-              />
+              <span className="pc-evals__suitelabel">protocol</span>
+              <input aria-label="Committed protocol run ID" value={protocolRunId}
+                onChange={e => { setProtocolRunId(e.target.value); setConfirmed(false); }} style={{ ...fieldStyle, width: '100%' }} />
             </label>
 
-            {taskSet === 'custom' ? (
-              <label className="pc-evals__suitepick pc-launch__wide">
-                <span className="pc-evals__suitelabel">ids</span>
-                <input
-                  aria-label="Custom instance ids (comma-separated)"
-                  value={customIds}
-                  onChange={(e) => setCustomIds(e.target.value)}
-                  placeholder="instance_a, instance_b"
-                  style={{ ...fieldStyle, width: '100%' }}
-                />
-              </label>
-            ) : null}
+            <label className="pc-evals__suitepick pc-launch__wide">
+              <span className="pc-evals__suitelabel">workspace</span>
+              <input aria-label="Benchmark workspace" value={workspaceId}
+                onChange={e => { setWorkspaceId(e.target.value); setConfirmed(false); }} style={{ ...fieldStyle, width: '100%' }} />
+            </label>
 
             <div className="pc-launch__model" aria-label="Model policy">
               <span className="pc-evals__suitelabel">model</span>
-              <strong>opus</strong>
-              <span>fail-closed</span>
+              <strong>{ready ? estimate?.model : 'From committed protocol'}</strong>
+              {ready ? <span>{estimate?.effort} · {estimate?.account}</span> : null}
             </div>
 
             <label className="pc-evals__suitepick">
-              <span className="pc-evals__suitelabel">fleet cap</span>
+              <span className="pc-evals__suitelabel">seed</span>
               <input
-                aria-label="Fleet concurrency cap"
+                aria-label="Registered seed"
                 type="number"
-                min={1}
-                value={capRaw ?? '5'}
-                onChange={(e) => void setCap(e.target.value)}
+                min={0}
+                value={seedText}
+                onChange={(e) => { setSeedText(e.target.value); setConfirmed(false); }}
                 style={fieldStyle}
               />
             </label>
 
-            <label className="pc-evals__suitepick">
-              <span className="pc-evals__suitelabel">$/task cap</span>
-              <input
-                aria-label="Per-task budget cap (USD)"
-                type="number"
-                min={0}
-                step={0.5}
-                value={maxUsd}
-                onChange={(e) => setMaxUsd(e.target.value)}
-                style={fieldStyle}
-              />
-            </label>
           </div>
         </div>
 
         <div className="pc-launch__panel pc-launch__panel--estimate">
           <div className="pc-evals__sectionhead"><h2>Estimate</h2></div>
-          {estimate ? (
+          {ready && estimate ? (
             <div className="pc-evals__scoreboard pc-launch__estimate" aria-label="Run cost estimate">
               <div className="pc-evals__stat">
-                <span className="pc-evals__statlabel"><DollarSign size={12} aria-hidden /> est. cost</span>
-                <span className="pc-evals__statvalue">≈ ${estimate.estCostUsd.toFixed(2)}</span>
+                <span className="pc-evals__statlabel"><DollarSign size={12} aria-hidden /> generation ceiling</span>
+                <span className="pc-evals__statvalue">≤ ${estimate.estCostUsd.toFixed(2)}</span>
                 <span className="pc-evals__statsub">{estimate.basis}</span>
               </div>
               <div className="pc-evals__stat">
                 <span className="pc-evals__statlabel"><Gauge size={12} aria-hidden /> wall</span>
-                <span className="pc-evals__statvalue">~{estimate.estWallMin} min</span>
-                <span className="pc-evals__statsub">rough projection</span>
+                <span className="pc-evals__statvalue">≤ {estimate.estWallMin} min</span>
+                <span className="pc-evals__statsub">generation time ceiling</span>
               </div>
               <div className="pc-evals__stat">
                 <span className="pc-evals__statlabel">tasks</span>
@@ -1160,14 +1138,15 @@ function LaunchRunView() {
               </div>
             </div>
           ) : (
-            <p className="pc-evals__empty">Estimate unavailable.</p>
+            <p className="pc-evals__empty" role="status">{estimate?.error ?? 'Select a committed protocol to check its account and loaded runtime.'}</p>
           )}
 
-          {needsConfirm ? (
+          {ready && needsConfirm ? (
             <label className="pc-evals__confirm">
               <Checkbox checked={confirmed} onChange={setConfirmed} ariaLabel="Approve this spend" />
               <span>
-                Estimated at <strong>≈ ${estimate?.estCostUsd.toFixed(2)}</strong> of opus. Confirm to unlock launch.
+                This protocol permits up to <strong>${estimate?.aggregateBudgetUsd?.toFixed(2)}</strong> across
+                its assignments. Confirm to unlock launch.
               </span>
             </label>
           ) : null}

@@ -132,6 +132,30 @@ describe('readCell — the happy path', () => {
     expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.lastProgressAt', value: '2026-08-27T04:30:00.000Z' });
   });
 
+  it('reads target-pot ownership through the target dispatch context', async () => {
+    registerCell(GATE_OWNERSHIP_CELL);
+    dispatchReadOnlyTool.mockImplementation(async (_tool, _args, env) => ({
+      gate: { ownership: {
+        eventKey: `green-stall:${env.harnessSlug}`, claimState: 'no-object',
+        workItem: null, takenBy: null, takenAt: null, lastProgressAt: null,
+        duplicates: [], expiresAt: null, holderSessionState: null,
+      } },
+      assessments: { gateOwnership: 'unowned' },
+      verdictUnknown: [],
+    }));
+    const harnessSlug = 'slack-asana-bug-drill';
+    const result = await readCell(GATE_OWNERSHIP_CELL.cell,
+      { ...READER, harnessSlug }, { ...ENV, harnessSlug });
+    expect(result.status).toBe('value');
+    expect(dispatchReadOnlyTool).toHaveBeenCalledWith('dev:gate_ownership', {},
+      expect.objectContaining({ harnessSlug }));
+    if (result.status === 'value' && result.assessment?.status === 'resolved') {
+      expect(result.assessment.evidence).toContainEqual({
+        path: 'gate.ownership.eventKey', value: `green-stall:${harnessSlug}`,
+      });
+    } else throw new Error('Target ownership assessment was not measured');
+  });
+
   it('projects a declared stage order without a second resolver call', async () => {
     const stages = ['committedLocal', 'onStaging', 'inMain', 'deployed', 'serving'];
     registerCell(spec({ ordered: { stages } }));

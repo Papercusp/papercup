@@ -78,7 +78,11 @@ import {
  */
 async function loadTestRunReporter() {
   try {
-    return await import('../libs/test-config/src/admin-test-runs-reporter.ts');
+    // Source-only checkouts have TypeScript helpers whose relative .js imports
+    // name .ts source files. Reuse tsx's resolver explicitly instead of relying
+    // on the CLI caller to preload it or silently recording clean runs as dirty.
+    const { tsImport } = await import('tsx/esm/api');
+    return await tsImport('../libs/test-config/src/admin-test-runs-reporter.ts', import.meta.url);
   } catch (err) {
     console.error(`[report-cargo-tests] WARNING: shared test-run reporter helpers unavailable (${err instanceof Error ? err.message : String(err)}); rows are recorded dirty and mutation-probe receipts cannot be written.`);
     return null;

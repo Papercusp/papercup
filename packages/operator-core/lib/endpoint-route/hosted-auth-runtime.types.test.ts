@@ -44,4 +44,25 @@ describe('hosted auth prebundle compiler boundary', () => {
     expect(imports).not.toContain('./hosted-auth-runtime');
     expect(imports.some(specifier => /assistance-runtime|agent-tools|agent-mcp/.test(specifier))).toBe(false);
   });
+
+  it('keeps transitive declaration imports out of the operator execution and evidence graph', () => {
+    const options = { module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler,
+      resolvePackageJsonExports: true };
+    const cache = ts.createModuleResolutionCache(packageRoot, path => path, options);
+    const parents = new Map<string, string | null>([[declaration, null]]);
+    const queue = [declaration];
+    const forbidden = /\/(?:agent-tools\/|scorecards\.ts$|rubrics\.ts$|testing-run-store\.ts$|operator-state-pg\.ts$)/;
+    for (let index = 0; index < queue.length; index++) {
+      const file = queue[index];
+      for (const imported of ts.preProcessFile(readFileSync(file, 'utf8'), true, true).importedFiles) {
+        const result = ts.resolveModuleName(imported.fileName, file, options, ts.sys, cache).resolvedModule;
+        if (!result || result.resolvedFileName.includes('/node_modules/') || parents.has(result.resolvedFileName)) continue;
+        parents.set(result.resolvedFileName, file);
+        queue.push(result.resolvedFileName);
+      }
+    }
+    const offenders = queue.filter(file => forbidden.test(file)).map(file => `${file} via ${parents.get(file)}`);
+    expect(offenders).toEqual([]);
+    expect(queue.some(file => file.endsWith('/hosted-billing-runtime.ts'))).toBe(true);
+  });
 });

@@ -284,7 +284,7 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
       vi.fn(async (url: string, init?: RequestInit) => {
         if (String(url).includes('/runs/launch')) {
           expect(init?.method).toBe('POST');
-          return { ok: true, json: async () => ({ ok: true, runId: 'ui-hive-realqueen-123' }) } as Response;
+          return { ok: true, text: async () => JSON.stringify({ ok: true, runId: 'current-study-result' }) } as Response;
         }
         return { ok: false, status: 404, json: async () => ({}) } as Response;
       }),
@@ -294,13 +294,36 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
 
   it('renders the arm picker + a launch button when no run is in flight', async () => {
     nuqsState.evalView = 'launch';
-    H.results['evals.benchEstimate'] = { ...blank(), data: [{ taskCount: 11, estCostUsd: 38.5, estWallMin: 36, perTaskUsd: 3.5, basis: 'm3' }] };
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: false, error: 'Register an OpenAI API bearer account.' }] };
     render(<AdvEvalsTab />);
     expect(screen.getByLabelText('Benchmark arm')).toBeTruthy();
     expect(screen.getByLabelText('Launch benchmark run')).toBeTruthy();
     expect(H.mutatePaths).toContain('externalBench.launchRun');
-    // The cost estimate (≥$20) requires an owner-confirm before launch is enabled.
-    await screen.findByLabelText('Approve this spend');
+    expect(screen.getByLabelText('Committed protocol run ID')).toBeTruthy();
+    expect(screen.queryByText('opus')).toBeNull();
+    expect(screen.getByText('Register an OpenAI API bearer account.')).toBeTruthy();
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('submits verified protocol controls and refuses a stale result after the seed changes', async () => {
+    nuqsState.evalView = 'launch';
+    const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
+      observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', current,
+      taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 60,
+      model: 'frozen-model', effort: 'high', account: 'api', basis: 'Frozen caps' }] };
+    render(<AdvEvalsTab />);
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Committed protocol run ID'), { target: { value: 'study' } });
+    fireEvent.click(screen.getByLabelText('Approve this spend'));
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByLabelText('Launch benchmark run'));
+    // This fixture replaces setter spies on each render; observe its stored URL
+    // state after the asynchronous mutation rather than a replacement spy.
+    await vi.waitFor(() => expect(nuqsState.evalRun).toBe('current-study-result'));
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({ arm: 'papercusp', taskSetId: 'custom', current });
+    fireEvent.change(screen.getByLabelText('Registered seed'), { target: { value: '2' } });
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
   });
 

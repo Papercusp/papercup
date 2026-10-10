@@ -595,6 +595,39 @@ afterAll(async () => {
 });
 
 describe('repo-backed server measurement', () => {
+  it('remeasures a final package on the deployed plane without caller testimony or a live PID', async () => {
+    const receiptPath = 'docs/evidence/shipment.json';
+    const artifacts = await mkdtemp(join(tmpdir(), 'spec-final-package-'));
+    try {
+      await mkdir(join(measurementRoot, 'docs/evidence'), { recursive: true });
+      await writeFile(join(artifacts, 'app.deb'), 'original');
+      await writeFile(join(measurementRoot, receiptPath), JSON.stringify({
+        schemaVersion: 1, kind: 'operational-test-evidence', exitCode: 0,
+        assertions: [{ passed: true }], artifactRoot: artifacts,
+        runtimeArtifacts: [{ path: 'app.deb', bytes: 8,
+          sha256: createHash('sha256').update('original').digest('hex') }],
+      }));
+      const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+        sourcePaths: [receiptPath], artifactReceiptPath: receiptPath };
+      const measured = await measureAndPinRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      h.rows = [{ id: 91, work_item_id: 'WI-package', plan_slug: 'plan-one', spec_id: 'SPEC-package',
+        source_val_id: null, spec_revision: 1, current_revision: 1, spec_fingerprint: 'sha256:spec',
+        evidence_kind: 'manual', evidence_ref: receiptPath, source_fingerprint: measured.sourceFingerprint,
+        test_fingerprint: null, fixture_fingerprint: null, rubric_fingerprint: null,
+        environment_fingerprint: measured.environmentFingerprint, coverage_evidence_ref: null,
+        coverage_evidence_present: false, test_run_id: null, test_run_present: false,
+        details: { currentMeasurement: recipe, evidencePlane: 'deployed', runtime: 'desktop-shell' },
+        observed_at: '2026-10-10T00:00:00Z', created_at: '2026-10-10T00:00:00Z', created_by: 'su-test',
+        binding_fingerprint: 'binding', spec_is_current: true }];
+      const read = async () => (await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] }))[0];
+      expect((await read()).currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+        dimensions: { environment: 'current' } });
+      await writeFile(join(artifacts, 'app.deb'), 'replaced');
+      expect((await read()).currentness.dimensions.environment).toBe('stale');
+      await rm(join(artifacts, 'app.deb'));
+      expect((await read()).currentness.overall).toBe('unknown');
+    } finally { await rm(artifacts, { recursive: true, force: true }); }
+  });
   it('independently remeasures runtime identity, ignores matching caller testimony and detects drift', async () => {
     configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
     try {

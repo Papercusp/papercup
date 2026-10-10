@@ -83,7 +83,7 @@ describe('live-ops DB reads (P-063, synthetic hive rows)', () => {
       (${ws}, ${member}, 'w1', 'passed'),
       (${ws}, ${member}, 'w2', 'validating'),
       (${ws}, ${member}, 'w3', 'todo'),
-      (${ws}, 'other-harness', 'w0', 'passed')`; // a different harness — must be excluded
+      (${ws}, 'other-harness', 'w0-other', 'passed')`; // a different harness — must be excluded (its own id: a work-item id names one row per workspace, scope-unique-identifiers P-009)
     const stats = await readMemberRunStats(sql, member, ws);
     expect(stats).toEqual({ costUsd: 0, workItemsTotal: 4, workItemsCompleted: 2 });
   });

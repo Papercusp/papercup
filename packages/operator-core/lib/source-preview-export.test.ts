@@ -26,6 +26,7 @@ import {
   materializeCommit,
   measureVerifierSourceBytes,
   prepareVerifierSource,
+  validateVerifierInputs,
   runCli,
   verifyVerifierSource,
   releasesPageUrl,
@@ -475,6 +476,20 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     rmSync(join(dest, 'apps/operator-vite/src/routeTree.gen.ts'));
     symlinkSync(join(dest, input), join(dest, 'apps/operator-vite/src/routeTree.gen.ts'));
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent file');
+  });
+
+  it('checks committed inputs without allocating a snapshot and rejects later source edits', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-input-check-fixture'));
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const before = readdirSync(tmp).sort();
+    const result = await validateVerifierInputs({ repo: fixture.repo, ref: fixture.commit, inputs: [input] });
+    expect(result.sha).toBe(fixture.commit);
+    expect(result.paths).toEqual([input]);
+    expect(readdirSync(tmp).sort()).toEqual(before);
+    writeFileSync(join(fixture.repo, input), 'changed after commit');
+    await expect(validateVerifierInputs({ repo: fixture.repo, ref: fixture.commit, inputs: [input] }))
+      .rejects.toThrow(`dirty tested-input mismatch: ${input}`);
+    expect(readdirSync(tmp).sort()).toEqual(before);
   });
 
   it('refuses tracked source symlinks that read outside the immutable export', async () => {

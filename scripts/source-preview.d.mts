@@ -104,13 +104,24 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
  * The caller retains this receipt outside the export, then verifies it before execution.
  * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
  */
-export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout }: {
+export function validateVerifierInputs({ repo, ref, inputs, inputsFile }: {
     repo: string;
     ref: string;
     dest: string;
     inputs?: string[];
     inputsFile?: string;
     gitCheckout?: boolean;
+}): Promise<{
+    sha: string;
+    paths: string[];
+}>;
+export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout }: {
+    repo: any;
+    ref: any;
+    dest: any;
+    inputs?: never[] | undefined;
+    inputsFile: any;
+    gitCheckout?: boolean | undefined;
 }): Promise<{
     testedInputs: {
         path: string;

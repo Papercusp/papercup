@@ -3991,7 +3991,7 @@ export function formatSessionPortInspection(result: any): any[];
  * @param {string | null | undefined} sessionId
  * @param {'claude' | 'codex' | 'omp' | null} [sourceKind]
  */
-export function tryRematerializeFromArchive(sessionId: string | null | undefined, sourceKind?: "claude" | "codex" | "omp" | null, { fetchImpl, operatorUrl, token, timeoutMs, statusTimeoutMs, statusAttempts, statusDelayMs, sleep, }?: {
+export function tryRematerializeFromArchive(sessionId: string | null | undefined, sourceKind?: "claude" | "codex" | "omp" | null, { fetchImpl, operatorUrl, token, timeoutMs, statusTimeoutMs, statusAttempts, statusDelayMs, sleep, sourceSession, home, }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
@@ -4000,6 +4000,8 @@ export function tryRematerializeFromArchive(sessionId: string | null | undefined
     statusAttempts?: number | undefined;
     statusDelayMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
+    sourceSession?: null | undefined;
+    home?: string | undefined;
 }): Promise<any>;
 /**
  * Re-verify — and if necessary RESTORE — a resume's transcript in the last

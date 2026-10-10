@@ -450,7 +450,7 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
  * The caller retains this receipt outside the export, then verifies it before execution.
  * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
  */
-export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false }) {
+export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFile }) {
   if (inputsFile !== undefined) {
     const listed = JSON.parse(await fs.readFile(inputsFile, 'utf8'));
     if (!Array.isArray(listed) || !listed.length || listed.some((path) => typeof path !== 'string')) {
@@ -466,7 +466,6 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
       throw new PreviewError(`invalid tested input: ${path}`, 2);
     }
   }
-  if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
   const sha = resolveCommit(repo, ref);
   // Refuse initial mismatches before creating a destination, cloning or
   // archiving. Keep the post-copy comparison below as the race guard.
@@ -485,6 +484,12 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
       throw new PreviewError(`dirty tested-input mismatch: ${path}`, 2);
     }
   }
+  return { sha, paths };
+}
+
+export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false }) {
+  if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
+  const { sha, paths } = await validateVerifierInputs({ repo, ref, inputs, inputsFile });
   if (gitCheckout) {
     // Reuse the guarded local clone: detached exact ref, borrowed objects, local
     // submodule pins, no origins, and cleanup only of its own new destination.
@@ -1460,6 +1465,14 @@ function printGate(verdict) {
 async function main(argv) {
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
+  if (cmd === 'verifier-inputs-check') {
+    if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {
+      throw new PreviewError('verifier input check requires --repo, --ref and --inputs or --inputs-file', 2);
+    }
+    console.log(JSON.stringify(await validateVerifierInputs({ repo: opts.repo, ref: opts.ref,
+      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'] })));
+    return 0;
+  }
   if (cmd === 'verifier-measure') {
     if (!opts.repo || !opts.ref) throw new PreviewError('verifier measurement requires explicit --repo and --ref', 2);
     console.log(measureVerifierSourceBytes({ repo: opts.repo, ref: opts.ref }));

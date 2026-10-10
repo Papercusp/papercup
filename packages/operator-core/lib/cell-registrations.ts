@@ -1078,9 +1078,8 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
   nullable: true,
   unknownHoist: VERDICT_HOIST,
 
-  /** Axis 3. GLOBAL: the gate's incident is one condition for the whole workspace —
-   *  every caller asking "who owns this red" gets the same answer, unlike cell 2's
-   *  per-path containment question. */
+  /** Axis 3. GLOBAL within the caller's harness: dev:gate_ownership resolves the
+   *  concrete harness from the dispatch context, independently of a file path. */
   callerRelativity: { kind: 'global' },
 
   provenance: {
@@ -1093,7 +1092,9 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
 
   resolver: 'readGateOwnership() @ packages/operator-core/lib/coord/gate-ownership.ts',
 
-  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  // Unlike the operator-home pipeline lenses, this resolver reads the caller's
+  // own harness. Target-pot fixers must be able to check their gate's owner.
+  visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:gate_ownership', path: 'gate.ownership.claimState' },
   shape:

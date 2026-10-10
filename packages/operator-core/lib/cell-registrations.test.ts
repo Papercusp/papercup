@@ -41,7 +41,6 @@ const OPERATOR_PIPELINE_CELLS = [
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_RETRIAGE_CELL,
-  GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
 ];
@@ -170,6 +169,13 @@ describe('P-007: the four verdict cells', () => {
       expect(getCell(id, { ownerId: 'su-outside', harnessSlug: 'sidestage' })).toBeUndefined();
     },
   );
+
+  it('allows a target-harness fixer to discover its scoped ownership cell', () => {
+    registerBuiltinCells();
+    expect(getCell(GATE_OWNERSHIP_CELL.cell, {
+      ownerId: 'su-target-fixer', roles: ['operator'], harnessSlug: 'slack-asana-bug-drill',
+    })?.changeSignal).toEqual(GATE_OWNERSHIP_CELL.changeSignal);
+  });
 
   it.each(NEW_CELLS.map((c) => [c.cell, c] as const))('%s validates with zero rejections', (_id, spec) => {
     expect(validateCellSpec(spec)).toEqual([]);

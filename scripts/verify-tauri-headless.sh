@@ -1309,6 +1309,7 @@ verify_operator_source_lock_census() {
     echo "FATAL: verifier source snapshot overlaps active source-file locks ($phase):" >&2
     printf '%s\n' "$blocking_rows" | sed 's/^/  /' >&2
     echo "Let those edits finish, then rerun the verifier." >&2
+    echo "If your own change is already committed, verify the committed source instead (it never reads peers' in-flight edits): VERIFY_TAURI_SOURCE_REF=\$(git rev-parse HEAD) VERIFY_TAURI_SOURCE_INPUTS=<your changed files> $0 ..." >&2
     return 1
   fi
   log "verified no active source-file locks in the verifier inputs ($phase)"

@@ -30,47 +30,61 @@ Every task is a self-contained Docker env with a uniform contract:
 Our TS grader reads **`reward.txt`** (falls back to `reward.json` `reward`/`score`). A
 present-and-numeric reward (incl. `0`) is SCORED; an absent reward is a `graderError`.
 
-## Prerequisites (provision on a dedicated grading volume, NOT the shared dev box)
+## FrontierSWE v2 (plan benchmark-coverage-frontierswe-v2-2026-10-10, D-002)
+
+> ⚠ **v2 supersedes the v1 material below.** v2 is a SEPARATE repository, `Proximal-Labs/frontier-swe-v2`,
+> pinned at `da83f84f8fbcec3cbf0f2b17c98ebc811355c2df` (2026-09-19): 34 tasks, Harbor `task.toml` schema 1.3,
+> every agent AND verifier image digest-pinned at `us-west1-docker.pkg.dev/proximal-core-0/proximal-evals-public`,
+> the verifier in a SEPARATE fresh container (`environment_mode = "separate"`), offline verifiers spelled
+> `network_mode = "no-network"`, and five tasks needing a `job.yaml` runtime profile (Modal VM runtime and/or a
+> `px-evals-gcr-secret` registry secret). No LICENSE (research/eval only). The smoke, envelope table and
+> `ghcr.io/...:vN` images further down are the **v1 history** until P-003 moves the grader to v2.
+
+**Vendor (data only — nothing from the checkout is ever executed).** A sparse, shallow fetch of just the task
+definitions (~2 MB); the GB-scale images are a separate, later step:
+
+```bash
+D=~/.papercusp/bench-harnesses/frontier-swe-v2
+mkdir -p "$D" && cd "$D" || exit 1
+git init -q && git remote add origin https://github.com/Proximal-Labs/frontier-swe-v2
+git config core.hooksPath /dev/null
+git sparse-checkout set --no-cone '/tasks/*/task.toml' '/tasks/*/instruction.md' \
+  '/tasks/*/solution/solve.sh' '/tasks/*/oracle.yaml' '/tasks/*/job.yaml' '/LICENSE*' '/README.md' '/CHANGELOG.md'
+git fetch -q --depth 1 --filter=blob:none origin da83f84f8fbcec3cbf0f2b17c98ebc811355c2df
+git -c advice.detachedHead=false checkout -q FETCH_HEAD
+```
+
+**Ingest (committed + tested: `frontier-swe-ingest.ts`, `scripts/frontier-swe-ingest.ts`).** Run from the repo
+root; the commit is read from the checkout's own `.git/HEAD`, never typed:
+
+```bash
+npx tsx scripts/frontier-swe-ingest.ts --root ~/.papercusp/bench-harnesses/frontier-swe-v2 \
+  --v1-corpus ~/.papercusp/bench-results/frontier-swe/tasks.jsonl
+# → FRONTIER_SWE_INGEST ok commit=da83f84f… tasks=34 license=none out=~/.papercusp/bench-results/frontier-swe-v2 v1History=17 retiredInV2=11
+```
+
+It writes, under `~/.papercusp/bench-results/frontier-swe-v2/` (`--out` to override):
+
+- `tasks.jsonl` — one row per task: category, tier, `corpusVersion: 'v2'`, `upstreamCommit`, agent + verifier
+  images, agent/verifier timeouts, CPU/memory/storage, GPU count + types, `networkMode` / `verifierNetworkMode` /
+  `allowInternet`, `externalNeeds` (from `job.yaml`), and gold availability (`solutionCmd`).
+- `manifest.json` — upstream repo, commit, license status, and for EVERY task its commit plus agent and verifier
+  image digests.
+- `v1-history.jsonl` — the old 17-row corpus labelled `corpusVersion: 'v1'` with `retiredInV2` (exact-id match:
+  a renamed v2 successor counts as a different task). Its own file, so it can never aggregate with v2.
+
+The ingest REFUSES (exit 1, every problem listed) a non-40-hex commit, an empty checkout, an unparseable
+`task.toml` or `job.yaml`, and any task whose agent or verifier image is not digest-pinned.
+
+## Prerequisites — v1 (history; provision on a dedicated grading volume, NOT the shared dev box)
 
 1. **Docker** (daemon up). 5 tasks additionally need a **datacenter GPU** (see the table).
 2. **The vendored repo** — `git clone --depth 1 https://github.com/Proximal-Labs/frontier-swe
    ~/.papercusp/bench-harnesses/frontier-swe` (~1.3 GB; **no LICENSE** → research/eval only,
    D-005). Set `PAPERCUSP_FRONTIER_SWE_DIR` to it.
 3. **ghcr access** to pull `ghcr.io/proximal-labs/frontier-swe/<task>:vN` (GB-scale images).
-4. **The corpus JSONL** (the ingest below).
-
-## Ingest the corpus (P-001) — reproducible
-
-Builds `~/.papercusp/bench-results/frontier-swe/tasks.jsonl` (17 rows) from the vendored
-`task.toml` + `instruction.md`. Re-run after re-vendoring:
-
-```bash
-python3 - <<'PY'
-import tomllib, json, os, pathlib, collections
-root = pathlib.Path(os.path.expanduser("~/.papercusp/bench-harnesses/frontier-swe/tasks"))
-out = pathlib.Path(os.path.expanduser("~/.papercusp/bench-results/frontier-swe")); out.mkdir(parents=True, exist_ok=True)
-def bucket(c,tags):
-    c=(c or "").lower(); t=" ".join(tags or []).lower()
-    if c in ("ml-research","rl-post-training"): return "research"
-    if any(x in c for x in ("optim","simd","performance")) or c=="systems-research" or any(x in t for x in ("performance","optimization","compression")): return "performance"
-    return "implementation"
-rows=[]
-for d in sorted(root.iterdir()):
-    if not (d/"task.toml").exists(): continue
-    cfg=tomllib.loads((d/"task.toml").read_text())
-    md=cfg.get("metadata",{}); env=cfg.get("environment",{}); ag=cfg.get("agent",{}); vf=cfg.get("verifier",{})
-    prompt=(d/"instruction.md").read_text() if (d/"instruction.md").exists() else ""
-    rows.append({"instanceId":d.name,"category":md.get("category"),"tier":bucket(md.get("category"),md.get("tags")),
-      "difficulty":md.get("difficulty"),"tags":md.get("tags",[]),"prompt":prompt,"dockerImage":env.get("docker_image"),
-      "agentTimeoutSec":ag.get("timeout_sec"),"verifierTimeoutSec":vf.get("timeout_sec"),"cpus":env.get("cpus"),
-      "memoryMb":env.get("memory_mb"),"storageMb":env.get("storage_mb"),"gpus":env.get("gpus",0),"gpuTypes":env.get("gpu_types",[]),
-      "allowInternet":env.get("allow_internet",False),"verifierCmd":"bash /tests/test.sh","rewardPath":"/logs/verifier/reward.txt",
-      "rewardJsonPath":"/logs/verifier/reward.json","solutionCmd":"bash /solution/solve.sh" if (d/"solution"/"solve.sh").exists() else None,
-      "hasOracle":(d/"oracle.yaml").exists()})
-(out/"tasks.jsonl").write_text("".join(json.dumps(r)+"\n" for r in rows))
-print("wrote",len(rows),"rows; tiers:",dict(collections.Counter(r["tier"] for r in rows)))
-PY
-```
+4. **The corpus JSONL** — the v1 corpus at `~/.papercusp/bench-results/frontier-swe/tasks.jsonl` is kept as
+   history; its hand-pasted Python ingest is retired in favour of the committed ingest above.
 
 ## Preflight (no spend)
 
