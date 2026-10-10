@@ -615,16 +615,21 @@ describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI
 });
 
 describe("EI-21175363643337524: real disk-headroom admission", () => {
-  const gcResult = (bytesFreed = 0, errors = 0) => ({
+  const gcResult = (bytesUnlinked = 0, errors = 0) => ({
     dryRun: false,
+    scanComplete: true,
     dirs: [
       {
         dir: "/tmp/fleet-logs",
         scanned: 4,
-        removedByAge: bytesFreed > 0 ? 1 : 0,
+        removedByAge: bytesUnlinked > 0 ? 1 : 0,
         removedByCeiling: 0,
-        bytesFreed,
+        bytesUnlinked,
+        allocatedBytesUnlinked: bytesUnlinked,
+        wouldUnlinkBytes: 0,
         bytesRemaining: 100,
+        skippedOpen: 0,
+        skippedRaced: 0,
         errors: Array.from({ length: errors }, (_, i) => ({
           path: `/tmp/fleet-logs/error-${i}.log`,
           error: "unlink failed",
@@ -794,7 +799,7 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
 
     expect(result?.ok).toBe(true);
     expect(result?.summary).toContain("automatic headroom recovery succeeded");
-    expect(result?.summary).toContain("freed 29.00 GiB");
+    expect(result?.summary).toContain("unlinked 29.00 GiB");
     expect(result?.summary).toContain("after cleanup: /tmp 30.0 GiB free");
     expect(gcCount).toBe(1);
     expect(samples).toHaveLength(0);
@@ -1013,16 +1018,21 @@ describe("WI-10007424: dependency-copy headroom joins disk admission", () => {
     };
     return { exec, probes };
   };
-  const gcResult = (bytesFreed = 0) => ({
+  const gcResult = (bytesUnlinked = 0) => ({
     dryRun: false,
+    scanComplete: true,
     dirs: [
       {
         dir: "/tmp/fleet-logs",
         scanned: 1,
-        removedByAge: bytesFreed > 0 ? 1 : 0,
+        removedByAge: bytesUnlinked > 0 ? 1 : 0,
         removedByCeiling: 0,
-        bytesFreed,
+        bytesUnlinked,
+        allocatedBytesUnlinked: bytesUnlinked,
+        wouldUnlinkBytes: 0,
         bytesRemaining: 0,
+        skippedOpen: 0,
+        skippedRaced: 0,
         errors: [],
       },
     ],

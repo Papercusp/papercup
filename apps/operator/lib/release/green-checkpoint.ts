@@ -19246,8 +19246,10 @@ export function realCheckpointDeps(
           (sum, dir) => sum + dir.removedByAge + dir.removedByCeiling,
           0,
         );
-        const bytesFreed = reclaimed.dirs.reduce(
-          (sum, dir) => sum + dir.bytesFreed,
+        // Logical bytes unlinked — NOT measured reclaim (an open file keeps its
+        // blocks). The measured result is the post-cleanup free-space probe.
+        const bytesUnlinked = reclaimed.dirs.reduce(
+          (sum, dir) => sum + dir.bytesUnlinked,
           0,
         );
         const errors = reclaimed.dirs.reduce(
@@ -19255,8 +19257,8 @@ export function realCheckpointDeps(
           0,
         );
         reclamationParts.push(
-          `fleet logs scanned ${scanned} file(s), removed ${removed}, freed ` +
-            `${(bytesFreed / gib).toFixed(2)} GiB${errors ? `, with ${errors} error(s)` : ""}`,
+          `fleet logs scanned ${scanned} file(s), removed ${removed}, unlinked ` +
+            `${(bytesUnlinked / gib).toFixed(2)} GiB${errors ? `, with ${errors} error(s)` : ""}`,
         );
       } catch (error) {
         reclamationParts.push(
