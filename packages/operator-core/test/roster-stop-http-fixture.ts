@@ -168,6 +168,7 @@ async function coordCanary(health: unknown) {
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
       ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
+      ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
       ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {
         selectedSessionId: historySessions.get(selected)!.id, neighborSessionId: historySessions.get(neighbor)!.id,
         selectedRolloutId: historySessions.get(selected)!.rolloutId, neighborRolloutId: historySessions.get(neighbor)!.rolloutId,

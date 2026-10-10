@@ -10,6 +10,56 @@ const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real private Portal Quick Panel prompts persist title and note, retain qp deep links and recover from a denied create', async context => {
+    preparePrivateRosterSocketRoot();
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor', prompts: true });
+    await verifyPrivateProfileOriginControl();
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+        'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/saved-prompts-client.ts',
+        'packages/operator-core/lib/saved-prompts-store.ts', 'packages/operator-core/lib/saved-prompts-tree.ts',
+        'packages/operator-core/lib/saved-prompts-materialize.ts', 'packages/operator-core/lib/cross-origin-url.ts',
+        'packages/operator-core/lib/endpoint-route/routes/agent-mcp/saved-prompts.ts',
+        'apps/operator/app/quick-panel/PromptsTab.tsx', 'apps/operator/app/harness/useDebouncedSave.tsx',
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+      execute: async (observe, evidenceDir) => {
+        await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1',
+          ROSTER_PROMPTS_BROWSER_PROOF: '1' };
+        for (const key of ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION',
+          'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
+          'ROSTER_SETTINGS_BROWSER_PROOF']) delete env[key];
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+        { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
+          if (line.startsWith('ROSTER_STOP_HTTP_PHASE ')) console.info(line); });
+        let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+        try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+        finally { await rm(join(evidenceDir, 'node_modules')); }
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
+          exitWaitTimedOut: false, stdioDrainTimedOut: false, code: 0 });
+        expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
+        const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_BROWSER_RECEIPT '));
+        expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+        const receipt = JSON.parse(line!.slice('ROSTER_COORD_BROWSER_RECEIPT '.length));
+        expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
+          authMethod: 'private-loopback-prompts-with-cookie', savedExactValue: true, bodySavedByKeyboard: true,
+          deepLinkReload: true, shellQueryPreserved: true, denialStatus: 403, deniedWriteIsolated: true,
+          existingOutlineRetained: true, retryPersisted: true, denialTransport: 'real-upstream-response-forwarded' });
+        expect(receipt.writes.map((write: { status: number }) => write.status)).toEqual([200, 200, 200, 403, 200]);
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ROSTER_PROMPTS_BROWSER_PROOF_RUN ' + runId);
+  }, options.testTimeoutMs);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private Portal Settings Profile saves across reload, retains a denied draft and persists its retry', async context => {
     preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);

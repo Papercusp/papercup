@@ -19,6 +19,7 @@ type PortalRosterBrowserInput = {
   cookieName: string; ownToken: string; foreignToken: string;
   shortcuts?: boolean;
   settings?: boolean;
+  prompts?: boolean;
   history?: { selectedSessionId: number; neighborSessionId: number; selectedRolloutId: string; neighborRolloutId: string;
     selectedMarker: string; neighborMarker: string };
   verifyReceipt?: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
@@ -31,7 +32,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -43,7 +44,18 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.settings ? `
+  const entry = input.prompts ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { Toaster } from 'sonner';
+    import PromptsTab from ${JSON.stringify(join(operatorRoot, 'app/quick-panel/PromptsTab.tsx'))};
+    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(React.Fragment, null, React.createElement(PromptsTab, { queryPrefix: 'qp' }),
+          React.createElement(Toaster)))));
+  ` : input.settings ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -122,8 +134,9 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const bundle = result.outputFiles[0].contents;
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.settings
-    ? '/apps/operator/app/settings/profile/page.tsx' : input.shortcuts
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.prompts
+    ? '/apps/operator/app/quick-panel/PromptsTab.tsx' : input.settings
+      ? '/apps/operator/app/settings/profile/page.tsx' : input.shortcuts
       ? '/packages/ui/src/portal-shortcuts.tsx' : '/packages/ui/src/agents-popover.tsx')),
     'Executed bundle must contain the actual product control');
   return { portal, entry, bundle, originals };
@@ -151,7 +164,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   mkdirSync(spa, { recursive: true });
   writeFileSync(join(spa, 'portal-roster.js'), bundle);
   writeFileSync(join(spa, 'portal-roster.css'), readFileSync(join(portal, 'app/tokens.css'), 'utf8') + '\n'
-    + readFileSync(join(portal, 'app/globals.css'), 'utf8'));
+    + readFileSync(join(portal, 'app/globals.css'), 'utf8')
+    + (input.prompts ? '\n' + readFileSync(resolve(import.meta.dirname, '../../../apps/operator/app/quick-panel/quick-panel.css'), 'utf8') : ''));
   writeFileSync(join(spa, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="/portal-roster.css"></head>'
     + '<body><div id="root"></div><script src="/portal-roster.js"></script></body></html>');
   const sourceIdentity = { portal, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: portal, encoding: 'utf8' }).trim(),
@@ -173,8 +187,16 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.message));
-    const url = new URL(input.settings || input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
+    const url = new URL(input.prompts ? '/?app=overview&panel=quick&q=retained-shell-search'
+      : input.settings || input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
     await page.goto(url.href);
+    if (input.prompts) {
+      const receipt = await runPrivatePromptsTab(page, context, input);
+      assert.deepEqual(pageErrors, [], 'real saved-prompt controls must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.settings) {
       const receipt = await runPrivateProfilePage(page, context, input);
       assert.deepEqual(pageErrors, [], 'real Profile form must complete without browser errors');
@@ -266,6 +288,93 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     throw error;
   } finally { await context.close(); await browser.close(); }
+}
+
+/** Actual workspace prompts outline and its production sync/write clients. */
+async function runPrivatePromptsTab(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
+  const endpoint = '/api/agent-mcp/saved-prompts';
+  const marker = `private-prompt-${process.pid}`;
+  const body = `Saved private prompt body ${process.pid}`;
+  const initialUrl = page.url();
+  const writes: Array<{ path: string; status: number; body: any }> = [];
+  const post = async (path: string, action: () => Promise<unknown>, expectedStatus = 200) => {
+    const pending = page.waitForResponse(response => new URL(response.url()).pathname === endpoint + path
+      && response.request().method() === 'POST');
+    await action();
+    const response = await pending;
+    const receipt = { path, status: response.status(), body: await response.json() };
+    writes.push(receipt);
+    writeFileSync(join(input.evidence, 'portal-prompt-writes.json'), JSON.stringify(writes, null, 2));
+    assert.equal(receipt.status, expectedStatus, JSON.stringify(receipt.body));
+    return receipt;
+  };
+  const stored = async () => {
+    const response = await page.request.get(input.base + endpoint);
+    assert.equal(response.status(), 200);
+    return (await response.json()).prompts as Array<{ id: string; title: string | null; body: string }>;
+  };
+  const create = page.getByRole('button', { name: 'New prompt', exact: true });
+  await page.getByRole('tree', { name: 'Saved prompts outline' }).waitFor();
+  assert.deepEqual(await stored(), [], 'disposable workspace must begin without saved prompts');
+  const first = await post('/node', () => create.click());
+  const id = first.body.prompt.id as string;
+  const title = page.locator('.pc-qp__nodetitle');
+  await title.waitFor();
+  await post('/node/update', async () => { await title.fill(marker); await title.blur(); });
+  assert.equal((await stored()).find(row => row.id === id)?.title, marker);
+  await title.press('Shift+Enter');
+  const note = page.locator('.pc-qp__note');
+  await note.waitFor();
+  await post('/node/update', async () => { await note.fill(body); await note.blur(); });
+  assert.equal((await stored()).find(row => row.id === id)?.body, body);
+  await page.reload();
+  await page.getByRole('textbox', { name: `Title of ${marker}`, exact: true }).waitFor();
+  assert.equal(await note.inputValue(), body, 'exact saved body must survive reload');
+  const filter = page.getByRole('textbox', { name: 'Filter prompts', exact: true });
+  await filter.fill(marker);
+  await page.waitForFunction(value => new URL(location.href).searchParams.get('qpq') === value, marker);
+  await page.getByRole('button', { name: `Zoom into ${marker} (drag to move)`, exact: true }).click();
+  await page.waitForFunction(value => new URL(location.href).searchParams.get('qpzoom') === value, id);
+  const deepLink = page.url();
+  await page.reload();
+  await page.getByRole('textbox', { name: 'Zoomed node title', exact: true }).waitFor();
+  assert.equal(page.url(), deepLink);
+  assert.equal(await page.getByRole('textbox', { name: 'Zoomed node title', exact: true }).inputValue(), marker);
+  assert.equal(await note.inputValue(), body);
+  const params = new URL(page.url()).searchParams;
+  assert.equal(params.get('q'), 'retained-shell-search');
+  assert.equal(params.get('qpsel'), id);
+  assert.equal(params.get('qpq'), marker);
+  assert.equal(params.get('ws'), input.workspace);
+  assert.equal(params.get('panel'), 'quick');
+  await page.goto(initialUrl);
+  await page.getByRole('textbox', { name: `Title of ${marker}`, exact: true }).waitFor();
+  const beforeDenial = await stored();
+  // As with Profile, relay a real upstream Origin denial unchanged. Ordinary
+  // positive writes remain the production browser fetch; no fake API result.
+  await context.route('**/api/agent-mcp/saved-prompts/node', async route => {
+    const response = await route.fetch({ headers: { ...route.request().headers(), origin: 'https://unapproved.invalid' } });
+    await route.fulfill({ response });
+  });
+  const denied = await post('/node', () => create.click(), 403);
+  await page.getByText(/^Create failed:/).waitFor();
+  assert.deepEqual(await stored(), beforeDenial,
+    'denied create must preserve exactly the existing prompt');
+  assert.equal(await title.inputValue(), marker, 'denied create must preserve the existing outline');
+  await context.unroute('**/api/agent-mcp/saved-prompts/node');
+  const retry = await post('/node', () => create.click());
+  assert.notEqual(retry.body.prompt.id, id);
+  const finalRows = await stored();
+  assert.equal(finalRows.length, 2);
+  assert.equal(finalRows.find(row => row.id === id)?.body, body);
+  const result = { workspace: input.workspace, authMethod: 'private-loopback-prompts-with-cookie',
+    createdId: id, retryId: retry.body.prompt.id, savedExactValue: true, bodySavedByKeyboard: true,
+    deepLinkReload: true, shellQueryPreserved: true, denialStatus: denied.status,
+    deniedWriteIsolated: true, existingOutlineRetained: true, retryPersisted: true, writes,
+    denialTransport: 'real-upstream-response-forwarded',
+    scope: 'Actual qp-prefixed PromptsTab with production polling sync and saved-prompt clients on a disposable private loopback API; exact create/title/note persistence, zoom/filter/selection reload and real upstream Origin-denial recovery. Host panel geometry is supplied; hosted tenant authorization and complete Quick Panel navigation are unmeasured' };
+  writeFileSync(join(input.evidence, 'portal-prompts-dom.html'), await page.content());
+  return result;
 }
 
 /** The same Profile page the maintained Settings surface selects by default. */
