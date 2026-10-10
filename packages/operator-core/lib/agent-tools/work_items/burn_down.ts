@@ -22,7 +22,7 @@ import {
   type WorkItemKind,
 } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
-import { countsTowardBurnDown } from '../../work-item-completion-authority';
+import { countsTowardBurnDown, isWorkItemCompletionAuthority } from '../../work-item-completion-authority';
 import { classifyTerminalOwner } from '../../completion-audit';
 import { resolveSelfRef } from '../coordination/self-marker';
 import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
@@ -61,12 +61,14 @@ import {
 } from '../fleet/fleet-metrics-contract';
 import {
   resolveFleetMetricScope,
-  readFleetMetricSourceItems,
+  readFleetMetricSource,
+  withFleetMetricReadSql,
   selectFleetMetricCurrentItems,
   selectFleetMetricFlowEvents,
   type FleetMetricFlowMode,
   type FleetMetricScopeResolution,
   type ResolvedFleetMetricScope,
+  type FleetMetricTerminalContribution,
 } from '../fleet/fleet-metrics-scope';
 import {
   COUNT_EVIDENCE_COMPARISON_RULE,
@@ -1179,6 +1181,7 @@ export async function buildFleetMetricsResult(
     readHistory?: FleetMetricHistoryReader;
     readPauseSource?: FleetMetricPauseReader;
     readReviewService?: typeof readAgentReviewService;
+    terminalContributions?: PromiseLike<readonly FleetMetricTerminalContribution[]>;
   },
 ): Promise<FleetMetricsResult> {
   if (!resolution.ok) return parseFleetMetricsResult(resolution);
@@ -1227,13 +1230,14 @@ export async function buildFleetMetricsResult(
   const terminalItems = terminalSelection.events.map((event) => event.item);
   const featureCloses = featureTerminalSelection.events.map((event) => event.item);
   const remainingItems = currentCanonical.filter((item) => !TERMINAL_STATES.has(item.state));
-  const explainFloors = opts.explainFloors ?? explainIssueClaimFloors;
+  const explainFloors = opts.explainFloors ?? ((harness, ids, options) =>
+    withFleetMetricReadSql(sql => explainIssueClaimFloors(harness, ids, options, sql)));
   // The occurrence census and claim-floor explanation are independent reads. Keep
   // the caller's occurrence promise deferred until this point so the two expensive
   // legs overlap instead of consuming the metric budget back-to-back.
   const workspaceId = opts.workspaceId ?? null;
   const readPauseSource = opts.readPauseSource ?? readFleetMetricPauseSource;
-  const [floorRows, issueOccurrences, featureOutcomes, pausedTime] = await Promise.all([
+  const [floorRows, issueOccurrences, featureOutcomes, pausedTime, terminalContributions] = await Promise.all([
     explainFloors(
       resolution.scope.harness,
       remainingItems.map((item) => item.id),
@@ -1271,6 +1275,7 @@ export async function buildFleetMetricsResult(
         };
       }
     })(),
+    Promise.resolve(opts.terminalContributions ?? []),
   ]);
   const floorById = new Map(floorRows.map((row: ClaimFloorAttribution) => [row.id, row]));
   const buckets = {
@@ -1311,6 +1316,47 @@ export async function buildFleetMetricsResult(
 
   const members = new Set(resolution.everMemberIds);
   const authority = authorityPartition(terminalItems);
+  const openedBy = partitionActors(openedItems, item => item.createdBy, members);
+  const terminalBy = partitionActors(terminalItems, item => item.terminalOwner, members);
+  let opened = openedItems.length;
+  let terminalLifecycle = terminalItems.length;
+  let canonicalBugs = currentCanonical.filter(item => item.kind === 'bug').length;
+  let observationCount = observations.length;
+  const intakeStages = countWorkItemPresentationStages(currentMatched.filter(item => item.family === 'issue').map(item => ({
+    kind: item.kind, title: item.title, summary: item.summary, payload: item.payload,
+    status: item.state, assignee: item.assignee, terminalOwner: item.terminalOwner,
+    terminalCompletionRef: item.terminalCompletionRef, completionAuthority: item.completionAuthority,
+    blocked: ['blocked-dep', 'external-blocker', 'claim-hold', 'needs-owner-action']
+      .includes(floorById.get(item.id)?.refusedBy ?? ''),
+  })));
+  const terminalServiceIds: string[] = [];
+  const addActor = (partition: FleetActorPartition, owner: string | null, count: number) => {
+    const classification = classifyTerminalOwner(owner);
+    const key = classification === 'unattributed' ? 'unattributed' : classification === 'system' ? 'system'
+      : owner && members.has(owner) ? 'fleet' : 'otherAgents';
+    partition[key] += count;
+  };
+  for (const group of terminalContributions) {
+    intakeStages.counts[group.stage] += group.n;
+    intakeStages.population += group.n;
+    if (group.stage === 'verified-completion') intakeStages.verifiedCompletions += group.n;
+    if (group.observation) { observationCount += group.n; continue; }
+    canonicalBugs += group.n;
+    for (const id of group.ids) terminalServiceIds.push(id);
+    opened += group.opened;
+    terminalLifecycle += group.closed;
+    addActor(openedBy, group.created_by, group.opened);
+    addActor(terminalBy, group.terminal_owner, group.closed);
+    const value = isWorkItemCompletionAuthority(group.authority) ? group.authority : null;
+    authority.lifecycleTerminal += group.closed;
+    if (countsTowardBurnDown(value, true)) authority.counted += group.closed;
+    const key = value === null ? 'legacy' : value === 'pending_human' ? 'pendingHuman' : value;
+    authority[key] += group.closed;
+    if (featureOutcomes.status === 'measured') {
+      featureOutcomes.supporting.bugs += group.closed;
+      featureOutcomes.supporting.total += group.closed;
+    }
+  }
   const priorExactness = resolution.quality.exactness;
   const quality = {
     ...resolution.quality,
@@ -1381,7 +1427,7 @@ export async function buildFleetMetricsResult(
       const service = await (opts.readReviewService ?? readAgentReviewService)({ workspaceId,
         harnessSlug: resolution.scope.harness, sinceMs: windowStart, nowMs: windowEnd, verifierIds,
         verificationSpecs: [{ specId: resolution.claimSpec.current.specId, revision: resolution.scope.stock.revision }] },
-      { itemIds: currentCanonical.map(item => item.id) });
+      { itemIds: [...currentCanonical.map(item => item.id), ...terminalServiceIds] });
       if (service.status !== 'known') return { status: 'unknown' as const, reason: service.reason, recoverVia };
       const history = service.history;
       const pickupReasons = Object.entries(service.pickups?.noClaimReasons ?? {})
@@ -1412,14 +1458,14 @@ export async function buildFleetMetricsResult(
       scope: resolution.scope,
       quality,
       flow: {
-        opened: openedItems.length,
-        terminalLifecycle: terminalItems.length,
+        opened,
+        terminalLifecycle,
         terminalCounted: authority.counted,
-        netLifecycle: openedItems.length - terminalItems.length,
-        netCounted: openedItems.length - authority.counted,
+        netLifecycle: opened - terminalLifecycle,
+        netCounted: opened - authority.counted,
         unit: FLEET_METRIC_UNITS.workItems,
-        openedBy: partitionActors(openedItems, (item) => item.createdBy, members),
-        terminalBy: partitionActors(terminalItems, (item) => item.terminalOwner, members),
+        openedBy,
+        terminalBy,
       },
       remaining: {
         total: remainingItems.length,
@@ -1430,8 +1476,8 @@ export async function buildFleetMetricsResult(
       },
       authority,
       issueUnits: {
-        canonicalBugs: currentCanonical.filter((item) => item.kind === 'bug').length,
-        observations: observations.length,
+        canonicalBugs,
+        observations: observationCount,
         occurrences: issueOccurrences.rawOccurrences,
         duplicateOccurrences: issueOccurrences.duplicateOccurrences,
         separateUnits: true,
@@ -1448,13 +1494,7 @@ export async function buildFleetMetricsResult(
         },
       },
       intakeStages: {
-        ...countWorkItemPresentationStages(currentMatched.filter(item => item.family === 'issue').map(item => ({
-          kind: item.kind, title: item.title, summary: item.summary, payload: item.payload,
-          status: item.state, assignee: item.assignee, terminalOwner: item.terminalOwner,
-          terminalCompletionRef: item.terminalCompletionRef, completionAuthority: item.completionAuthority,
-          blocked: ['blocked-dep', 'external-blocker', 'claim-hold', 'needs-owner-action']
-            .includes(floorById.get(item.id)?.refusedBy ?? ''),
-        }))),
+        ...intakeStages,
         scope: 'current-spec issue-family rows including observation evidence',
         window: 'current stock at generatedAt',
       },
@@ -2205,7 +2245,7 @@ export default defineTool({
     // hydrate metric rows after resolving their predicate, while the ordinary
     // display census and presence reads continue independently.
     const fleetMetricSourceItemsPromise = fleetMetricResolutionPromise.then(resolution =>
-      resolution?.ok ? readFleetMetricSourceItems(resolution) : null);
+      resolution?.ok ? readFleetMetricSource(resolution) : null);
     const [items, presence, fleetMetricResolution, fleetMetricSourceItems] = await Promise.all([
       requestedIds
         ? Promise.all(requestedIds.map((id) => getWorkItem(id, args.harness))).then(
@@ -2290,12 +2330,13 @@ export default defineTool({
       if (!fleetMetricResolution) return null;
       if (!fleetMetricResolution.ok) return parseFleetMetricsResult(fleetMetricResolution);
       if (!fleetMetricSourceItems) return null;
-      const metricOccurrences = readIssueOccurrenceCounts({
+      const metricOccurrences = withFleetMetricReadSql(sql => readIssueOccurrenceCounts({
         workspaceId: occurrenceWorkspaceId,
         harnessSlug: args.harness,
         since: fleetMetricResolution.scope.window.startAt,
-      });
-      return buildFleetMetricsResult(fleetMetricResolution, fleetMetricSourceItems, {
+      }, sql));
+      return buildFleetMetricsResult(fleetMetricResolution, fleetMetricSourceItems.items, {
+        terminalContributions: fleetMetricSourceItems.terminalContributions,
         issueOccurrences: metricOccurrences,
         sourceCapExhausted: false,
         assignee: self?.ownerId,

@@ -366,6 +366,12 @@ export interface LearningReservationResourceBudget {
   outputTokens: number;
   requestsPerArm: number;
   armIds: string[];
+  /** Optional strict monetary/time bounds, shared by every role/retry on an arm.
+   * Benchmark controllers use an assignment identity as the arm id. */
+  usdPerArm?: number;
+  maxOpenUsd?: number;
+  wallClockMs?: number;
+  wallClockMsPerArm?: number;
 }
 
 const resourceCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
@@ -381,7 +387,21 @@ function resourceBudgetValid(value: unknown): value is LearningReservationResour
   const v = value as LearningReservationResourceBudget;
   return resourceCount(v.inputTokens) && resourceCount(v.outputTokens) && resourceCount(v.requestsPerArm) &&
     v.requestsPerArm > 0 && Array.isArray(v.armIds) && v.armIds.length > 0 && v.armIds.length <= 1000 &&
-    v.armIds.every(resourceArm) && new Set(v.armIds).size === v.armIds.length;
+    v.armIds.every(resourceArm) && new Set(v.armIds).size === v.armIds.length &&
+    [v.usdPerArm, v.maxOpenUsd].every(n => n === undefined || (exactUsdMicros(n) !== null && n > 0)) &&
+    [v.wallClockMs, v.wallClockMsPerArm].every(n => n === undefined || (resourceCount(n) && n > 0));
+}
+
+function resourceBudgetFingerprint(budget: LearningReservationResourceBudget): string {
+  return createHash('sha256').update(JSON.stringify({ inputTokens: budget.inputTokens,
+    outputTokens: budget.outputTokens, requestsPerArm: budget.requestsPerArm,
+    armIds: [...budget.armIds].sort(),
+    // Preserve the original cycle identity when additive bounds are absent.
+    ...(budget.usdPerArm === undefined ? {} : { usdPerArm: budget.usdPerArm }),
+    ...(budget.maxOpenUsd === undefined ? {} : { maxOpenUsd: budget.maxOpenUsd }),
+    ...(budget.wallClockMs === undefined ? {} : { wallClockMs: budget.wallClockMs }),
+    ...(budget.wallClockMsPerArm === undefined ? {} : { wallClockMsPerArm: budget.wallClockMsPerArm }),
+  })).digest('hex');
 }
 
 function mapReservation(r: Row): LearningSpendReservation {
@@ -460,9 +480,7 @@ export function cycleReservationRunRef(cycle: CycleSpendReservationScope, reserv
     // Retain the frozen policy in the existing run identity. A registration
     // change cannot renew a running cycle's token/request allowance. Arm order
     // is immaterial, just as it is in the registered-policy equality check.
-    const hash = createHash('sha256').update(JSON.stringify({ inputTokens: budget.inputTokens,
-      outputTokens: budget.outputTokens, requestsPerArm: budget.requestsPerArm,
-      armIds: [...budget.armIds].sort() })).digest('hex');
+    const hash = resourceBudgetFingerprint(budget);
     resourcePolicy = `/resources:${hash}`;
   }
   return `cycle:${cycle.runId.toLowerCase()}/cap:${exactUsdMicros(cycle.budgetUsd)}${resourcePolicy}/attempt:${reservationId.toLowerCase()}`;
@@ -595,10 +613,7 @@ export async function reserveLearningSpend(
     const resourceBudget = reg?.meta?.reservationResourceBudget;
     if (resourceBudget != null || resources) {
       if (!resources || !expectedResources || !resourceBudgetValid(resourceBudget)) return refuse('resource-binding-required');
-      if (resourceBudget.inputTokens !== expectedResources.inputTokens || resourceBudget.outputTokens !== expectedResources.outputTokens ||
-        resourceBudget.requestsPerArm !== expectedResources.requestsPerArm ||
-        resourceBudget.armIds.length !== expectedResources.armIds.length ||
-        resourceBudget.armIds.some(id => !expectedResources.armIds.includes(id))) return refuse('stale-binding');
+      if (resourceBudgetFingerprint(resourceBudget) !== resourceBudgetFingerprint(expectedResources)) return refuse('stale-binding');
       if (!resourceBudget.armIds.includes(resources.armId)) return refuse('resource-cap-exceeded');
       const attemptPrefix = exact ? `manifest:${exact.binding}/attempt:` : cycleRef!.slice(0, -reservationId.length);
       // No status filter: a failed/cancelled/settled request may have spent
@@ -608,7 +623,11 @@ export async function reserveLearningSpend(
       const history = (await tx`
         SELECT arm_id, SUM(reserved_input_tokens) AS inputs, SUM(reserved_output_tokens) AS outputs,
           COUNT(*) AS requests,
+          SUM(CASE WHEN status = 'open' THEN GREATEST(reserved_usd, used_usd) ELSE used_usd END) AS committed_usd,
+          SUM(CASE WHEN status = 'open' THEN GREATEST(reserved_usd, used_usd) ELSE 0 END) AS open_usd,
+          EXTRACT(EPOCH FROM (clock_timestamp() - MIN(created_at))) * 1000 AS age_ms,
           BOOL_AND(reserved_input_tokens IS NOT NULL AND reserved_output_tokens IS NOT NULL
+            AND reserved_usd >= 0 AND used_usd >= 0
             AND run_ref IS NOT DISTINCT FROM ${attemptPrefix} || id::text) AS complete
         FROM harness_shared.learning_spend_reservations
         WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
@@ -616,16 +635,31 @@ export async function reserveLearningSpend(
         GROUP BY arm_id`) as Row[];
       let inputs = resources.inputTokens, outputs = resources.outputTokens;
       let armRequests = 1;
+      const requestedMicros = micros(q.requestedUsd);
+      if (requestedMicros === null) return refuse('invalid-exact-request');
+      let armMicros = requestedMicros, openMicros = requestedMicros, oldestAgeMs = 0;
       for (const row of history) {
         const input = Number(row.inputs), output = Number(row.outputs), requests = Number(row.requests);
+        const committed = micros(Number(row.committed_usd)), open = micros(Number(row.open_usd)), ageMs = Number(row.age_ms);
         if (row.complete !== true || !resourceArm(row.arm_id) || !resourceBudget.armIds.includes(row.arm_id) ||
-          !resourceCount(input) || !resourceCount(output) || !resourceCount(requests)) return refuse('resource-accounting-incomplete');
+          !resourceCount(input) || !resourceCount(output) || !resourceCount(requests) || committed === null || open === null ||
+          !Number.isFinite(ageMs) || ageMs < 0) return refuse('resource-accounting-incomplete');
         inputs += input; outputs += output;
-        if (row.arm_id === resources.armId) armRequests += requests;
+        openMicros += open;
+        oldestAgeMs = Math.max(oldestAgeMs, ageMs);
+        if (row.arm_id === resources.armId) {
+          armRequests += requests; armMicros += committed;
+          if (resourceBudget.wallClockMsPerArm !== undefined && ageMs >= resourceBudget.wallClockMsPerArm) return refuse('resource-cap-exceeded');
+        }
+        if (resourceBudget.usdPerArm !== undefined && committed > micros(resourceBudget.usdPerArm)!) return refuse('resource-cap-exceeded');
         if (requests > resourceBudget.requestsPerArm) return refuse('resource-cap-exceeded');
       }
       if (![inputs, outputs, armRequests].every(resourceCount) || inputs > resourceBudget.inputTokens ||
-        outputs > resourceBudget.outputTokens || armRequests > resourceBudget.requestsPerArm) return refuse('resource-cap-exceeded');
+        outputs > resourceBudget.outputTokens || armRequests > resourceBudget.requestsPerArm ||
+        !Number.isSafeInteger(armMicros) || !Number.isSafeInteger(openMicros) ||
+        resourceBudget.usdPerArm !== undefined && armMicros > micros(resourceBudget.usdPerArm)! ||
+        resourceBudget.maxOpenUsd !== undefined && openMicros > micros(resourceBudget.maxOpenUsd)! ||
+        resourceBudget.wallClockMs !== undefined && oldestAgeMs >= resourceBudget.wallClockMs) return refuse('resource-cap-exceeded');
     }
     const openReserved = await sumOpenReservedUsd(tx as Sql, {
       workspaceId: q.workspaceId,

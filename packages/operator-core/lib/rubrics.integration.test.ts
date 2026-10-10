@@ -2288,6 +2288,55 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, workspaceId, subject };
   }
 
+  it('authors an unstarted successor without changing the historical subject pin, and still refuses a pinned orphan', async () => {
+    const seeded = await seedBarContract('successor-authoring-subject');
+    await db.adminSql`UPDATE harness_shared.harness_plans SET status='superseded'
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [historicalBefore] = await db.adminSql`SELECT content, version, status, template_data
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+      AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [subjectBefore] = await db.adminSql`SELECT version, acceptance_bar_rubric_slug,
+      acceptance_bar_rubric_revision, acceptance_bar_set_hash FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const successor = await rubrics.proposeRubric({
+      rubricId: 'acceptance-successor-authoring',
+      kind: 'acceptance',
+      subjectPlan: seeded.subject,
+      subjectHarnessSlug: 'papercusp',
+      classRef: 'plan-class-feature-ship',
+      characteristic: 'successor-authoring',
+      title: 'Successor author preparation',
+      criteria: [{
+        key: 'successor-state', title: 'Successor state', model: 'The successor preserves its author procedure.',
+        method: 'Read the preserved procedure.', driftMarkers: 'The preserved procedure is missing.',
+        check: { kind: 'tests', files: ['packages/operator-core/lib/agent-tools/plans/rubric-loss-guard.test.ts'] },
+      }],
+      by: 'successor-author',
+    });
+    const amendment = {
+      rubricId: successor.rubricId,
+      criterion: { key: 'successor-state', field: 'method' as const, mode: 'append' as const,
+        text: 'REPLICATION DRILL: read the stored author procedure through rubrics:get.' },
+      expectedRubricRevision: successor.revision,
+    };
+    const authored = await rubrics.amendRubric(amendment);
+    expect(authored?.criteria[0]?.method).toContain('REPLICATION DRILL');
+    expect(authored?.barContract).toBeUndefined();
+    const [historicalAfter] = await db.adminSql`SELECT content, version, status, template_data
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+      AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const [subjectAfter] = await db.adminSql`SELECT version, acceptance_bar_rubric_slug,
+      acceptance_bar_rubric_revision, acceptance_bar_set_hash FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(historicalAfter).toEqual(historicalBefore);
+    expect(subjectAfter).toEqual(subjectBefore);
+
+    await db.adminSql`UPDATE harness_shared.harness_plans SET acceptance_bar_rubric_slug=${successor.rubricId}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    await expect(rubrics.amendRubric({ ...amendment, expectedRubricRevision: authored?.revision }))
+      .rejects.toThrow(/missing its server-owned barContract/);
+  });
+
   it('resolves a legacy current revision after an in-place subject pin advance, still failing closed on grading drift (WI-10006667)', async () => {
     const seeded = await seedBarContract('legacy-subject-pin-advance');
     const current = await rubrics.getRubric(seeded.rubricSlug);

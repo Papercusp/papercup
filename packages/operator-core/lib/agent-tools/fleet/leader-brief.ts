@@ -182,7 +182,7 @@ import {
   parseFleetMetricsResult,
   type FleetMetricsResult,
 } from './fleet-metrics-contract';
-import { readFleetMetricSourceItems, resolveFleetMetricScope, type FleetMetricScopeResolution, type ResolvedFleetMetricScope } from './fleet-metrics-scope';
+import { readFleetMetricSource, withFleetMetricReadSql, resolveFleetMetricScope, type FleetMetricSource, type FleetMetricScopeResolution, type ResolvedFleetMetricScope } from './fleet-metrics-scope';
 import { buildFleetMetricsResult } from '../work_items/burn_down';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
@@ -266,7 +266,7 @@ export interface LeaderBriefFleetMetricsDeps {
     fleet: string;
     flowMode: 'current-spec';
   }): Promise<FleetMetricScopeResolution>;
-  listItems(input: { harness: string; includeObservations: true; resolution: ResolvedFleetMetricScope }): Promise<WorkItem[]>;
+  listItems(input: { harness: string; includeObservations: true; resolution: ResolvedFleetMetricScope }): Promise<WorkItem[] | FleetMetricSource>;
   readOccurrences(input: { workspaceId: string; harnessSlug: string; since: string }): Promise<IssueOccurrenceCounts>;
   build(
     resolution: FleetMetricScopeResolution,
@@ -277,14 +277,15 @@ export interface LeaderBriefFleetMetricsDeps {
       assignee?: string;
       /** P-001: scopes the feature-close claim history and fleet pause reads. */
       workspaceId?: string | null;
+      terminalContributions?: FleetMetricSource['terminalContributions'];
     },
   ): Promise<FleetMetricsResult>;
 }
 
 const LEADER_BRIEF_FLEET_METRICS_DEPS: LeaderBriefFleetMetricsDeps = {
   resolveScope: resolveFleetMetricScope,
-  listItems: input => readFleetMetricSourceItems(input.resolution),
-  readOccurrences: readIssueOccurrenceCounts,
+  listItems: input => readFleetMetricSource(input.resolution),
+  readOccurrences: input => withFleetMetricReadSql(sql => readIssueOccurrenceCounts(input, sql)),
   build: buildFleetMetricsResult,
 };
 
@@ -347,8 +348,9 @@ export async function readLeaderBriefFleetMetrics(
     // The builder consumes this promise after it has started its floor read, so
     // the two independent aggregate queries can overlap.
     void issueOccurrences.catch(() => undefined);
-    const items = await itemsPromise;
-    return await deps.build(resolution, items, {
+    const source = await itemsPromise;
+    return await deps.build(resolution, Array.isArray(source) ? source : source.items, {
+      ...(Array.isArray(source) ? {} : { terminalContributions: source.terminalContributions }),
       issueOccurrences,
       sourceCapExhausted: false,
       assignee: input.assignee,

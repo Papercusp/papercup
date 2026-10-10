@@ -145,6 +145,9 @@ export default defineTool({
         .object({
           active: z.boolean(),
           carry: z.enum(['warm', 'cold']),
+          intervalSec: z.number().nullable(),
+          lastDeliveryOutcome: z.string().nullable(),
+          nextFireAt: z.string().nullable(),
         })
         .passthrough()
         .nullable()

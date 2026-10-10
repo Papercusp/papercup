@@ -63,6 +63,21 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     ]));
   });
 
+  it('keeps the fleet lane recheck recipe aligned with the published loop status fields', async () => {
+    const catalog = [
+      tool('loop:status', z.toJSONSchema(loopStatusTool.args), z.toJSONSchema(zodResult(loopStatusTool.result))),
+    ];
+    const script =
+      'const l = await tools.loop.status({ ownerId: "self" });\n' +
+      'return { loop: { active: l.loop && l.loop.active, intervalSec: l.loop && l.loop.intervalSec, ' +
+      'carry: l.loop && l.loop.carry, rewakeGuaranteed: l.rewake && l.rewake.rewakeGuaranteed, ' +
+      'rewakeReason: l.rewake && l.rewake.reason, lastDeliveryOutcome: l.loop && l.loop.lastDeliveryOutcome, ' +
+      'nextFireAt: l.loop && l.loop.nextFireAt } };';
+
+    const result = await validateRecipeScriptAgainstCatalog(script, catalog);
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['loop:status'] });
+  });
+
   it('accepts guarded reads through nullable result branches but still rejects unguarded reads', async () => {
     const catalog = [tool('loop:status', { type: 'object', properties: {}, additionalProperties: false }, {
       type: 'object',

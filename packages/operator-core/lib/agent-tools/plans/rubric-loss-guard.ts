@@ -266,6 +266,8 @@ export interface AcceptanceBarSubjectState {
   cohort?: 'post-epoch' | 'legacy-backfilled' | null;
   seededAt?: string | null;
   seededBy?: string | null;
+  /** Server-owned rubric identity pinned by the subject, never caller template_data. */
+  rubricSlug?: string | null;
 }
 
 export interface AcceptanceBarWriteGuardInput {
@@ -433,13 +435,19 @@ export function guardAcceptanceBarTemplateDataWrite(
   // strands the plan short of ship.  Require the same seeding evidence
   // acceptance-bar-contract-snapshot.ts already treats as adoption.
   const subjectSeeded = Boolean(args.subjectPlan?.seededAt && args.subjectPlan?.seededBy);
+  const pinnedRubricSlug = args.subjectPlan?.rubricSlug?.trim();
+  // Seeding another rubric does not start this successor's contract. Authoring it
+  // leaves the subject pin untouched; adoption still uses the canonical seed writer.
+  // An unreadable/blank pin remains fail-closed, as does the pinned orphan itself.
+  const distinctUnstartedSuccessor = Boolean(pinnedRubricSlug && pinnedRubricSlug !== args.slug);
   const adoptedSubjectHasOrphanedContract =
     storedParsed.success &&
     storedParsed.data.kind === 'acceptance' &&
     !storedParsed.data.barContract &&
     args.subjectPlan?.adoptionEpoch != null &&
     args.subjectPlan.adoptionEpoch > 0 &&
-    subjectSeeded;
+    subjectSeeded &&
+    !distinctUnstartedSuccessor;
   if (adoptedSubjectHasOrphanedContract) {
     throw new Error(
       `invalid_args: rubric '${args.slug}' belongs to a subject that already adopted an acceptance BAR ` +

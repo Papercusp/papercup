@@ -257,6 +257,7 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
           cohort: 'post-epoch',
           seededAt: '2026-09-06T00:00:00.000Z',
           seededBy: 'seed-author',
+          rubricSlug: 'acceptance-subject-plan',
         },
       }),
     ).toThrow(/already adopted an acceptance BAR contract.*missing its server-owned barContract/);
@@ -269,6 +270,41 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
         subjectPlan: { adoptionEpoch: null },
       }).started,
     ).toBe(false);
+  });
+
+  it('allows authoring an unstarted successor while another rubric remains pinned', () => {
+    const { barContract: _contract, barSetHash: _setHash, ...successor } = started();
+    const next = { ...successor, criteria: [criterion({ method: 'Successor replication procedure.' })] };
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-successor',
+      storedTemplateData: successor,
+      nextTemplateData: next,
+      subjectPlan: {
+        adoptionEpoch: 1,
+        cohort: 'post-epoch',
+        seededAt: '2026-09-06T00:00:00.000Z',
+        seededBy: 'seed-author',
+        rubricSlug: 'acceptance-subject-plan',
+      },
+    });
+    expect(result.started).toBe(false);
+    expect(result.data).not.toHaveProperty('barContract');
+    expect(result.data.criteria).toEqual(next.criteria);
+  });
+
+  it.each([undefined, null, '', '   '])('keeps an unknown seeded rubric pin fail-closed (%s)', (rubricSlug) => {
+    const { barContract: _contract, barSetHash: _setHash, ...orphaned } = started();
+    expect(() => guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-successor',
+      storedTemplateData: orphaned,
+      nextTemplateData: orphaned,
+      subjectPlan: {
+        adoptionEpoch: 1,
+        seededAt: '2026-09-06T00:00:00.000Z',
+        seededBy: 'seed-author',
+        rubricSlug,
+      },
+    })).toThrow(/missing its server-owned barContract/);
   });
 
   // A cohort backfill stamps acceptance_bar_epoch/_cohort onto plans it never seeded

@@ -1006,7 +1006,11 @@ describe('governorCheck — the unattended-refusal lifecycle on live rows', () =
   });
 
   it('registered but unbudgeted ⇒ refuse (frontier:replay has no cap yet)', async () => {
-    const v = await governorCheck(sql, { workspaceId: WS, loopId: 'frontier:replay' });
+    // A focused run must establish the registration itself; another test's
+    // frontier:replay fixture is deliberately outside this case's authority.
+    const loopId = `frontier:unbudgeted:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetUsd: null });
+    const v = await governorCheck(sql, { workspaceId: WS, loopId });
     expect(v.reason).toBe('unbudgeted');
   });
 

@@ -622,6 +622,7 @@ export async function withPlanLock<T>(
             cohort: 'post-epoch' | 'legacy-backfilled' | null;
             seededAt: string | null;
             seededBy: string | null;
+            rubricSlug: string | null;
           }
         | undefined;
       const subjectPlan = storedTemplate.success ? storedTemplate.data.subjectPlan : undefined;
@@ -634,10 +635,11 @@ export async function withPlanLock<T>(
             acceptance_bar_cohort: 'post-epoch' | 'legacy-backfilled' | null;
             acceptance_bar_seeded_at: string | Date | null;
             acceptance_bar_seeded_by: string | null;
+            acceptance_bar_rubric_slug: string | null;
           }>
         >`
           SELECT status, version, acceptance_bar_epoch, acceptance_bar_cohort,
-                 acceptance_bar_seeded_at, acceptance_bar_seeded_by
+                 acceptance_bar_seeded_at, acceptance_bar_seeded_by, acceptance_bar_rubric_slug
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId}
              AND harness_slug = ${harnessSlug}
@@ -658,6 +660,7 @@ export async function withPlanLock<T>(
                   ? subject.acceptance_bar_seeded_at.toISOString()
                   : String(subject.acceptance_bar_seeded_at),
             seededBy: subject.acceptance_bar_seeded_by,
+            rubricSlug: subject.acceptance_bar_rubric_slug,
           };
         }
       }
