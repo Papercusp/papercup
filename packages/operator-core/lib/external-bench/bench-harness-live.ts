@@ -576,11 +576,11 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
       // Read the live cost + bail if the iso-budget cap is already hit. Shared by the pre-decider and
       // pre-dispatch guards so a cap-blowing run never spawns another agent.
       const budgetExhausted = async (): Promise<boolean> => {
-        const cost = await readBenchRunCost(sql, handle.slug, workspaceId).catch(
+        const cost: BenchRunCost = await readBenchRunCost(sql, handle.slug, workspaceId).catch(
           () => ({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 }),
         );
         if (budget.maxUsd != null && cost.costUsd >= budget.maxUsd) return true;
-        if (budget.maxTokens != null && cost.tokensIn + cost.tokensOut >= budget.maxTokens) return true;
+        if (budget.maxTokens != null && cost.tokensIn + cost.tokensOut + (cost.tokensCacheRead ?? 0) + (cost.tokensCacheWrite ?? 0) >= budget.maxTokens) return true;
         return false;
       };
 

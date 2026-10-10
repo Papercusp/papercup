@@ -372,6 +372,9 @@ export interface LearningReservationResourceBudget {
   maxOpenUsd?: number;
   wallClockMs?: number;
   wallClockMsPerArm?: number;
+  /** Combined complete input (including cache) and output reservation bounds
+   * across every role, failed request, retry and recovery on an assignment. */
+  totalTokensPerArm?: number;
 }
 
 const resourceCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
@@ -389,7 +392,7 @@ function resourceBudgetValid(value: unknown): value is LearningReservationResour
     v.requestsPerArm > 0 && Array.isArray(v.armIds) && v.armIds.length > 0 && v.armIds.length <= 1000 &&
     v.armIds.every(resourceArm) && new Set(v.armIds).size === v.armIds.length &&
     [v.usdPerArm, v.maxOpenUsd].every(n => n === undefined || (exactUsdMicros(n) !== null && n > 0)) &&
-    [v.wallClockMs, v.wallClockMsPerArm].every(n => n === undefined || (resourceCount(n) && n > 0));
+    [v.wallClockMs, v.wallClockMsPerArm, v.totalTokensPerArm].every(n => n === undefined || (resourceCount(n) && n > 0));
 }
 
 function resourceBudgetFingerprint(budget: LearningReservationResourceBudget): string {
@@ -401,6 +404,7 @@ function resourceBudgetFingerprint(budget: LearningReservationResourceBudget): s
     ...(budget.maxOpenUsd === undefined ? {} : { maxOpenUsd: budget.maxOpenUsd }),
     ...(budget.wallClockMs === undefined ? {} : { wallClockMs: budget.wallClockMs }),
     ...(budget.wallClockMsPerArm === undefined ? {} : { wallClockMsPerArm: budget.wallClockMsPerArm }),
+    ...(budget.totalTokensPerArm === undefined ? {} : { totalTokensPerArm: budget.totalTokensPerArm }),
   })).digest('hex');
 }
 
@@ -634,6 +638,7 @@ export async function reserveLearningSpend(
           ${cycle ? tx`AND run_ref LIKE ${`cycle:${cycle.runId.toLowerCase()}/%`}` : tx``}
         GROUP BY arm_id`) as Row[];
       let inputs = resources.inputTokens, outputs = resources.outputTokens;
+      let armTokens = inputs + outputs;
       let armRequests = 1;
       const requestedMicros = micros(q.requestedUsd);
       if (requestedMicros === null) return refuse('invalid-exact-request');
@@ -648,14 +653,18 @@ export async function reserveLearningSpend(
         openMicros += open;
         oldestAgeMs = Math.max(oldestAgeMs, ageMs);
         if (row.arm_id === resources.armId) {
+          armTokens += input + output;
           armRequests += requests; armMicros += committed;
           if (resourceBudget.wallClockMsPerArm !== undefined && ageMs >= resourceBudget.wallClockMsPerArm) return refuse('resource-cap-exceeded');
         }
         if (resourceBudget.usdPerArm !== undefined && committed > micros(resourceBudget.usdPerArm)!) return refuse('resource-cap-exceeded');
         if (requests > resourceBudget.requestsPerArm) return refuse('resource-cap-exceeded');
+        if (resourceBudget.totalTokensPerArm !== undefined &&
+          (!resourceCount(input + output) || input + output > resourceBudget.totalTokensPerArm)) return refuse('resource-cap-exceeded');
       }
-      if (![inputs, outputs, armRequests].every(resourceCount) || inputs > resourceBudget.inputTokens ||
+      if (![inputs, outputs, armRequests, armTokens].every(resourceCount) || inputs > resourceBudget.inputTokens ||
         outputs > resourceBudget.outputTokens || armRequests > resourceBudget.requestsPerArm ||
+        resourceBudget.totalTokensPerArm !== undefined && armTokens > resourceBudget.totalTokensPerArm ||
         !Number.isSafeInteger(armMicros) || !Number.isSafeInteger(openMicros) ||
         resourceBudget.usdPerArm !== undefined && armMicros > micros(resourceBudget.usdPerArm)! ||
         resourceBudget.maxOpenUsd !== undefined && openMicros > micros(resourceBudget.maxOpenUsd)! ||

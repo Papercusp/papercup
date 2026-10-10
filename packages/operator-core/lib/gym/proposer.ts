@@ -173,6 +173,7 @@ export function createNativeGymGatewayController(input: {
       !/^[a-f0-9]{64}$/.test(binding!) || binding !== manifestSha256) || !usd(budgetUsd) ||
     !count(resourceBudget.inputTokens) || !count(resourceBudget.outputTokens) || resourceBudget.outputTokens === 0 ||
     !count(resourceBudget.requestsPerArm) || resourceBudget.requestsPerArm === 0 ||
+    resourceBudget.totalTokensPerArm !== undefined && (!count(resourceBudget.totalTokensPerArm) || resourceBudget.totalTokensPerArm === 0) ||
     outputTokenLimit !== undefined && (!count(outputTokenLimit) || outputTokenLimit === 0 || outputTokenLimit > resourceBudget.outputTokens) ||
     resourceBudget.armIds.length > 1000 || !resourceBudget.armIds.every(text) ||
     new Set(resourceBudget.armIds).size !== resourceBudget.armIds.length || !resourceBudget.armIds.includes(armId) ||
@@ -204,6 +205,8 @@ export function createNativeGymGatewayController(input: {
           !count(authority.inputTokens) || authority.inputTokens > resourceBudget.inputTokens ||
           !count(authority.outputTokens) || authority.outputTokens === 0 || output !== authority.outputTokens ||
           authority.outputTokens > resourceBudget.outputTokens ||
+          resourceBudget.totalTokensPerArm !== undefined &&
+            (!count(authority.inputTokens + authority.outputTokens) || authority.inputTokens + authority.outputTokens > resourceBudget.totalTokensPerArm) ||
           typeof authority.validateAuthorization !== 'function' ||
           !Number.isFinite(authority.validUntilMonotonicMs) || processMonotonicClock.now() >= authority.validUntilMonotonicMs) return null;
         const resources = { armId, inputTokens: authority.inputTokens, outputTokens: authority.outputTokens };
