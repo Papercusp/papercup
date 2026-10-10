@@ -67,6 +67,7 @@ export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount:
  */
 export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, options: {
   timeoutMs?: number; phaseTimeouts?: WorkerDeadlines; killGraceMs?: number; drainGraceMs?: number;
+  cleanupFromStdout?: boolean;
 }) {
   assert.ok((options.timeoutMs === undefined) !== (options.phaseTimeouts === undefined), 'one deadline contract is required');
   const deadlines = options.phaseTimeouts;
@@ -108,9 +109,27 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     const bootStages = new Set<string>();
     const cleanupStages = new Set<string>();
     const cleanupIo = new Map<string, { writes: bigint; bytes: bigint }>();
+    let cleanupLine = '';
     const capture = (chunk: Buffer) => {
       output += String(chunk); writeSync(fd, chunk);
       if (phase === 'execute') progressWatchdog?.noteProgress();
+      if (options.cleanupFromStdout && deadlines) {
+        cleanupLine += String(chunk);
+        const lines = cleanupLine.split('\n');
+        cleanupLine = lines.pop()!;
+        for (const line of lines) {
+          if (!line.startsWith('[with-test-pg] cleanup ')) continue;
+          try {
+            const value = JSON.parse(line.slice('[with-test-pg] cleanup '.length));
+            if (value.kind !== 'isolated-runtime-cleanup' || value.supervisorPid !== child.pid) continue;
+            // Ordinary CLI runs have no original-worker IPC admission. Their
+            // structured cleanup start still separates boot from teardown;
+            // this controls deadlines only and creates no lifetime proof.
+            if (value.stage === 'start' && phase !== 'teardown') armPhase('teardown');
+            message(value);
+          } catch { /* incomplete or unrelated output is not lifecycle evidence */ }
+        }
+      }
     };
     const armPhase = (next: WorkerPhase) => {
       clearTimeout(timeout);

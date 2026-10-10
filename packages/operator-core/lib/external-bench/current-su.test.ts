@@ -352,6 +352,37 @@ describe('frozen benchmark native provider admission', () => {
     expect(f.gateway.carryTrial.outputTokenLimit).toBe(1000);
     f.revoke();
   });
+  it('keeps a tighter per-request output ceiling independent of the aggregate allowance', async () => {
+    const f = budgetFixture();
+    const input = { ...f.input, outputTokenLimit: 10 };
+    const controller = currentBenchGatewayController(input, f.governor);
+    try {
+      expect(controller.gateway.carryTrial.outputTokenLimit).toBe(10);
+      input.outputTokenLimit = 1000;
+      expect(controller.gateway.carryTrial.outputTokenLimit).toBe(10);
+      expect(await controller.gateway.carryTrial.authorizeAttempt(f.attempt)).not.toBeNull();
+      expect(f.reserve).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        exact: expect.objectContaining({ expectedResourceBudget: f.input.resources,
+          resources: expect.objectContaining({ outputTokens: 10 }) }),
+      }));
+    } finally { controller.revoke(); f.revoke(); }
+  });
+  it.each([0, -1, 1.5, NaN, Infinity, 1001])('refuses invalid per-request output ceiling %s before admission', outputTokenLimit => {
+    const f = budgetFixture();
+    try {
+      expect(() => currentBenchGatewayController({ ...f.input, outputTokenLimit }, f.governor)).toThrow(/output ceiling/);
+      expect(f.reserve).not.toHaveBeenCalled();
+    } finally { f.revoke(); }
+  });
+  it('refuses a per-request output ceiling beyond the frozen combined token cap', () => {
+    const f = budgetFixture();
+    const protocol = structuredClone(f.input.protocol);
+    for (const arm of protocol.arms) arm.generationBudget.maxTokens = 110;
+    try {
+      expect(() => currentBenchGatewayController({ ...f.input, protocol, outputTokenLimit: 111,
+        resources: { ...f.input.resources, totalTokensPerArm: 110 } }, f.governor)).toThrow(/output ceiling/);
+    } finally { f.revoke(); }
+  });
   it('binds every provider attempt to the existing exact lifetime ledger and assignment cap', async () => {
     const f = budgetFixture();
     try {

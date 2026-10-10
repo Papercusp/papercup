@@ -400,6 +400,37 @@ it('extends cleanup for measured original PG writes but refuses logs, counter re
     await vi.advanceTimersByTimeAsync(90);
     sample('1', '1'); sample('1', '0'); sample('1', '1'); sample('2', '100');
     child.emit('message', { kind: 'isolated-runtime-cleanup', stage: 'pg-log', message: 'noisy shutdown output' });
+    // Ordinary CLI visibility must not turn elapsed waiting into measured I/O
+    // progress or grant extra time to the original-worker proof route.
+    child.emit('message', { kind: 'isolated-runtime-cleanup', stage: 'pg-stop-waiting', elapsedMs: 190 });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+    Object.assign(child, { exitCode: 1 }); child.emit('exit', 1, null); child.emit('close', 1, null);
+    expect(await captured).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+  } finally { vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('separates ordinary cleanup stdout from bootstrap and refuses incomplete, foreign or elapsed-only progress', async () => {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), 'ordinary-cleanup-deadlines-'));
+  const child = new ChildProcess();
+  Object.assign(child, { pid: 123, stdout: new PassThrough(), stderr: new PassThrough() });
+  const kill = vi.spyOn(child, 'kill').mockReturnValue(true);
+  const line = (supervisorPid: number, stage: string) => '[with-test-pg] cleanup ' + JSON.stringify({
+    kind: 'isolated-runtime-cleanup', supervisorPid, stage, elapsedMs: 90,
+  }) + '\n';
+  try {
+    const captured = captureIsolatedWorker(child, dir, { cleanupFromStdout: true,
+      phaseTimeouts: { bootstrapMs: 100, executeMs: 100, teardownMs: 100, teardownMaxMs: 300 }, killGraceMs: 50 });
+    child.stdout!.emit('data', Buffer.from(line(999, 'start')));
+    await vi.advanceTimersByTimeAsync(90);
+    const start = line(123, 'start');
+    child.stdout!.emit('data', Buffer.from(start.slice(0, -1)));
+    await vi.advanceTimersByTimeAsync(5);
+    child.stdout!.emit('data', Buffer.from('\n'));
+    await vi.advanceTimersByTimeAsync(90);
+    expect(kill).not.toHaveBeenCalled();
+    child.stdout!.emit('data', Buffer.from(line(999, 'pg-stopped') + line(123, 'pg-stop-waiting')));
     await vi.advanceTimersByTimeAsync(10);
     expect(kill).toHaveBeenCalledWith('SIGTERM');
     Object.assign(child, { exitCode: 1 }); child.emit('exit', 1, null); child.emit('close', 1, null);

@@ -202,7 +202,7 @@ it.each([0, 7])('reports real private PG cleanup for an ordinary no-IPC isolated
   ], { cwd: root, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
   try {
     expect(child.connected).toBe(false);
-    const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 120_000, killGraceMs: 45_000 });
+    const result = await captureIsolatedWorker(child, evidenceDir, { ...workerOptions, cleanupFromStdout: true });
     expect(result, result.output.slice(-8000)).toMatchObject({ code: exitCode, signal: null, timedOut: false,
       exitWaitTimedOut: false, stdioDrainTimedOut: false });
     expect(result.output).toContain('ordinary-cli-child-finished');
@@ -234,7 +234,7 @@ it.each([0, 7])('reports real private PG cleanup for an ordinary no-IPC isolated
     }
     await rm(evidenceDir, { recursive: true, force: true });
   }
-}, 180_000);
+}, workerOptions.testTimeoutMs);
 
 it('cleans owned state when cancelled during real initdb before runtime-start', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-bootstrap-cancel-'));
