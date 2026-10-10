@@ -554,21 +554,38 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
     await seedFeature('F-contention-retry', { admission: 'auto' });
 
     const originalSql = h.sql;
-    let injectedFailures = 0;
-    h.sql = new Proxy(originalSql, {
+    const injectedFailures = { issue: 0, feature: 0 };
+    const interceptSql = (client: typeof originalSql): typeof originalSql => new Proxy(client, {
       apply(target, thisArg, args) {
         const strings = args[0];
-        const statement = Array.isArray(strings) ? strings.join('') : '';
-        if (
-          injectedFailures < 2 &&
-          /UPDATE harness_shared\.(engineer_issues|harness_features_consolidated)/.test(statement)
-        ) {
-          injectedFailures += 1;
+        const statement = Array.isArray(strings) ? strings.join('').replace(/\s+/g, ' ') : '';
+        const family = statement.includes('UPDATE harness_shared.engineer_issues')
+          ? 'issue'
+          : statement.includes('UPDATE harness_shared.harness_features_consolidated')
+            ? 'feature'
+            : null;
+        if (family && injectedFailures[family] === 0) {
+          injectedFailures[family] += 1;
           throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
         }
         return Reflect.apply(target, thisArg, args);
       },
-    }) as typeof h.sql;
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== 'begin') return value;
+        // Claim writes run on the transaction client supplied by boundedOrgTxn.
+        // Intercept that client too, so both claim families actually encounter contention.
+        return (...args: unknown[]) => {
+          const callback = args.at(-1);
+          if (typeof callback === 'function') {
+            args[args.length - 1] = (transaction: postgres.TransactionSql) =>
+              callback(interceptSql(transaction as unknown as typeof originalSql));
+          }
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+    h.sql = interceptSql(originalSql);
 
     try {
       expect((await wi.claimWorkItem('EI-contention-retry', 'issue-agent', { harness: H }))?.assignee).toBe(
@@ -581,7 +598,7 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       h.sql = originalSql;
     }
 
-    expect(injectedFailures).toBe(2);
+    expect(injectedFailures).toEqual({ issue: 1, feature: 1 });
   });
 
   it('two competing claims on one item ⇒ exactly one wins', async () => {
