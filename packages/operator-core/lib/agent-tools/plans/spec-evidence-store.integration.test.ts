@@ -83,6 +83,7 @@ const CTX = {
   uiClientId: 'su-spec-evidence-integration',
   workspaceId: WORKSPACE,
   harnessSlug: HARNESS,
+  metadata: () => undefined,
 } as never;
 
 let db: FreshPgDb;
@@ -673,6 +674,153 @@ describe('exact spec evidence bindings', () => {
     const [historical] = await db.sql`SELECT environment_fingerprint FROM harness_shared.spec_evidence_bindings
       WHERE evidence_ref = 'test/reconnect.test.ts#historical'`;
     expect(historical.environment_fingerprint).toBeNull();
+  });
+
+  it('keeps the first test-run measurement when the same evidence is rebound to a later spec revision', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const measurement = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/reconnect.ts'],
+      testPaths: ['test/reconnect.test.ts'],
+    };
+    const firstMeasurement = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    const binding = {
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.test.ts#same-run',
+      testRunId,
+      actorId: 'su-test',
+    };
+    const first = await evidenceStore.bindSpecEvidence({
+      ...binding,
+      specRevision: 1,
+      sourceFingerprint: firstMeasurement.sourceFingerprint,
+      testFingerprint: firstMeasurement.testFingerprint,
+      details: { currentMeasurement: measurement, measurementPin: firstMeasurement.pin },
+    });
+    expect(first).toMatchObject({ status: 'created', specRevision: 1 });
+
+    await writeFile(path.join(h.repoRoot, 'src', 'reconnect.ts'), 'export const reconnect = false;\n');
+    const revised = await specs.setSpecClause(clause({
+      expectedRevision: 1,
+      mutationRequired: false,
+      behavior: 'A later revision still requires evidence from its original execution state.',
+    }));
+    expect(revised).toMatchObject({ status: 'revised', revision: 2 });
+    const reboundMeasurement = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    expect(reboundMeasurement.sourceFingerprint).not.toBe(firstMeasurement.sourceFingerprint);
+
+    const rebound = await evidenceStore.bindSpecEvidence({
+      ...binding,
+      specRevision: 2,
+      sourceFingerprint: reboundMeasurement.sourceFingerprint,
+      testFingerprint: reboundMeasurement.testFingerprint,
+      details: { currentMeasurement: measurement, measurementPin: reboundMeasurement.pin },
+    });
+    expect(rebound).toMatchObject({ status: 'created', specRevision: 2 });
+
+    const rows = await db.sql<Array<{
+      spec_revision: number;
+      source_fingerprint: string;
+      details: Record<string, unknown>;
+    }>>`
+      SELECT spec_revision, source_fingerprint, details
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE}
+         AND harness_slug = ${HARNESS}
+         AND work_item_id = 'WI-101'
+         AND plan_slug = 'reconnect-plan'
+         AND spec_id = 'SPEC-003-01'
+         AND evidence_ref = 'test/reconnect.test.ts#same-run'
+         AND test_run_id = ${testRunId}
+       ORDER BY spec_revision`;
+    expect(rows).toHaveLength(2);
+    expect(rows[1]!.source_fingerprint).toBe(firstMeasurement.sourceFingerprint);
+    expect(rows[1]!.details.measurementPin).toEqual(firstMeasurement.pin);
+
+    const evidence = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      specIds: ['SPEC-003-01'],
+    });
+    const revisionTwo = evidence.find((row) => row.specRevision === 2);
+    expect(revisionTwo?.currentness).toMatchObject({
+      dimensions: { source: 'stale' },
+      staleReasons: expect.arrayContaining(['source-stale']),
+    });
+  });
+
+  it('refuses a same-run rebind when its measurement recipe changes', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const measurement = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/reconnect.ts'],
+      testPaths: ['test/reconnect.test.ts'],
+    };
+    const firstMeasurement = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    const binding = {
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.test.ts#recipe-change',
+      testRunId,
+      actorId: 'su-test',
+    };
+    expect(await evidenceStore.bindSpecEvidence({
+      ...binding,
+      specRevision: 1,
+      sourceFingerprint: firstMeasurement.sourceFingerprint,
+      testFingerprint: firstMeasurement.testFingerprint,
+      details: { currentMeasurement: measurement, measurementPin: firstMeasurement.pin },
+    })).toMatchObject({ status: 'created' });
+
+    const revised = await specs.setSpecClause(clause({
+      expectedRevision: 1,
+      mutationRequired: false,
+      behavior: 'The new revision requires source that the original test did not measure.',
+    }));
+    expect(revised).toMatchObject({ status: 'revised', revision: 2 });
+    await writeFile(path.join(h.repoRoot, 'src', 'other.ts'), 'export const other = true;\n');
+    const changedMeasurement = {
+      ...measurement,
+      sourcePaths: ['src/other.ts', 'src/reconnect.ts'],
+    };
+    const changed = await evidenceStore.measureAndPinRepoFilesEvidenceAtRoot(h.repoRoot, changedMeasurement);
+    const refused = await evidenceStore.bindSpecEvidence({
+      ...binding,
+      specRevision: 2,
+      sourceFingerprint: changed.sourceFingerprint,
+      testFingerprint: changed.testFingerprint,
+      details: { currentMeasurement: changedMeasurement, measurementPin: changed.pin },
+    });
+
+    expect(refused).toMatchObject({
+      status: 'test_run_measurement_recipe_changed',
+      testRunId,
+      previousSpecRevision: 1,
+      specRevision: 2,
+    });
+    const rows = await db.sql<Array<{ spec_revision: number }>>`
+      SELECT spec_revision
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE}
+         AND harness_slug = ${HARNESS}
+         AND work_item_id = 'WI-101'
+         AND plan_slug = 'reconnect-plan'
+         AND spec_id = 'SPEC-003-01'
+         AND evidence_ref = 'test/reconnect.test.ts#recipe-change'
+         AND test_run_id = ${testRunId}`;
+    expect(rows.map((row) => row.spec_revision)).toEqual([1]);
   });
 
   it('binds and remeasures a work-items live runtime from the server witness', async () => {
@@ -2368,6 +2516,7 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
         skipped: false,
         executed: true,
         outcome: 'passed',
+        targeted: 'SPEC-003-01',
         testLayer: 'integration',
         pathReachable: true,
         testCases: [exactTitle],
