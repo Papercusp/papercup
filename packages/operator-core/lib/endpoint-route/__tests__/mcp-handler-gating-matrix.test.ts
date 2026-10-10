@@ -5578,6 +5578,48 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(h.nativeVerifierSampling).toHaveLength(0);
   });
 
+  it.each([
+    ['statement timeout', 'canceling statement due to statement timeout', true],
+    ['caller cancellation', 'canceling statement due to user request', false],
+  ] as const)('fingerprints native verifier SQLSTATE 57014 failures and samples only %s', async (_case, message, shouldSample) => {
+    const nativeThread = 'native-query-timeout-session';
+    const traceId = '8bc88a29-a84c-4c90-a10e-620e682fd841';
+    const requestFingerprint = createHash('sha256').update(traceId, 'utf8').digest('hex').slice(0, 16);
+    h.nativeSessionVerifierFailure = {
+      sessionId: nativeThread,
+      error: Object.assign(new Error(message), {
+        name: 'PostgresError',
+        code: '57014',
+        nativeSessionVerificationPhase: 'owner_candidate_rows_lookup',
+      }),
+    };
+    const meta = { threadId: nativeThread };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': 'native-inherited-session',
+        [MCP_REQUEST_TRACE_HEADER]: traceId,
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+
+    expect(res.isError).toBe(true);
+    expect(h.nativeVerifierSampling).toEqual(shouldSample ? [[
+      'native-session-verifier-statement-timeout',
+      { pid: process.pid, requestFingerprint },
+    ]] : []);
+    expect(h.invocations[0]).toMatchObject({
+      metadataJson: {
+        mcpAuthFailure: {
+          nativeSession: {
+            verifierFailure: { name: 'PostgresError', code: '57014', requestFingerprint },
+          },
+        },
+      },
+    });
+  });
+
   it('redacts identifiers and connection URLs in typed native verifier deadline fields', async () => {
     const { DbCallDeadlineError } = await import('@papercusp/db-org');
     const nativeThread = 'native-redacted-deadline-session';

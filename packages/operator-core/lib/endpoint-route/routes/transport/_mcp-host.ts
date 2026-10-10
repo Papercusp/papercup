@@ -1563,6 +1563,7 @@ type NativeSessionAuthFailureMetadata = {
     code?: string;
     message: string;
     durationMs: number;
+    requestFingerprint?: string;
     phase?: NativeSessionVerificationPhase;
     acquisition?: {
       label: string;
@@ -1599,6 +1600,7 @@ function describeNativeSessionVerifierFailure(
   ownerId: string,
   sessionId: string,
   durationMs: number,
+  requestFingerprint?: string,
 ): NonNullable<NativeSessionAuthFailureMetadata['verifierFailure']> {
   const failure = error as {
     name?: unknown;
@@ -1684,6 +1686,7 @@ function describeNativeSessionVerifierFailure(
     ...(code ? { code } : {}),
     message: message || 'Native-session verifier failed',
     durationMs: Math.max(0, Math.round(durationMs)),
+    ...(requestFingerprint ? { requestFingerprint } : {}),
     ...(phase ? { phase } : {}),
     ...(acquisition ? { acquisition } : {}),
   };
@@ -1886,18 +1889,28 @@ export async function tryBuildSpawnContext(
         // A supplied native-session claim is meaningful only when the binding
         // check succeeds. Failing open here would restore the inherited-SID bug
         // exactly when its verifier is unavailable.
-        if (error instanceof DbCallDeadlineError &&
-            Number.isFinite(error.deadlineMs) && Number.isFinite(error.elapsedMs)) {
-          const requestFingerprint = typeof verifierTraceId === 'string' && verifierTraceId.length <= 256
-            ? createHash('sha256').update(verifierTraceId, 'utf8').digest('hex').slice(0, 16)
-            : undefined;
+        const requestFingerprint = typeof verifierTraceId === 'string' && verifierTraceId.length <= 256
+          ? createHash('sha256').update(verifierTraceId, 'utf8').digest('hex').slice(0, 16)
+          : undefined;
+        const boundedAcquisitionDeadline = error instanceof DbCallDeadlineError &&
+          Number.isFinite(error.deadlineMs) && Number.isFinite(error.elapsedMs);
+        const verifierError = error as { code?: unknown; pgCode?: unknown; message?: unknown } | null;
+        const isStatementTimeout = (verifierError?.pgCode ?? verifierError?.code) === '57014' &&
+          typeof verifierError?.message === 'string' &&
+          /statement timeout/i.test(verifierError.message);
+        if (boundedAcquisitionDeadline || isStatementTimeout) {
           try {
             // Start out-of-band sampling before returning the auth failure; never await a
             // diagnostic whose purpose is to observe a potentially blocked DB path.
-            void samplePgBouncerPools('native-session-verifier-deadline', {
-              pid: process.pid,
-              ...(requestFingerprint ? { requestFingerprint } : {}),
-            }).catch(() => {});
+            void samplePgBouncerPools(
+              boundedAcquisitionDeadline
+                ? 'native-session-verifier-deadline'
+                : 'native-session-verifier-statement-timeout',
+              {
+                pid: process.pid,
+                ...(requestFingerprint ? { requestFingerprint } : {}),
+              },
+            ).catch(() => {});
           } catch {
             /* diagnostic trigger failures must not alter fail-closed auth behavior */
           }
@@ -1912,6 +1925,7 @@ export async function tryBuildSpawnContext(
               suIdentity,
               nativeSessionId,
               Date.now() - verificationStartedAt,
+              requestFingerprint,
             ),
           ),
         };
