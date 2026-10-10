@@ -6,7 +6,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer, type Server } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -100,11 +100,22 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
   const requestPaths: string[] = [];
   const mcpMethods: unknown[] = [];
   const hosts: McpServer[] = [];
+  const dependencyPreflight: Array<{ name: string; status: number | null; signal: string | null; error?: string; path: string }> = [];
   let probe: Client | undefined;
   let child: ReturnType<typeof spawn> | undefined;
   let server: Server | undefined;
   try {
   mkdirSync(cwd);
+  // Match installed SRT's bounded `which` precondition before allocating the
+  // database. File existence alone cannot establish that its child probe works.
+  const preflightEnv = hermeticEnv({ HOME: codexHome });
+  for (const name of ['codex', 'node', 'srt', 'bwrap', 'socat']) {
+    const result = spawnSync('which', [name], { env: preflightEnv, encoding: 'utf8', timeout: 1_000 });
+    dependencyPreflight.push({ name, status: result.status, signal: result.signal,
+      error: result.error?.message, path: result.stdout?.trim() ?? '' });
+    expect(result.status, JSON.stringify(dependencyPreflight)).toBe(0);
+    expect(result.stdout?.trim(), JSON.stringify(dependencyPreflight)).toBeTruthy();
+  }
   homeAllocation.key = owner; homeAllocation.path = codexHome;
   const { writeSuCodexHome } = await import('../../../packages/operator-core/lib/role-codex-home');
   const { restoreBenchmarkContext } = await import('../../../packages/operator-core/lib/external-bench/reproducibility/context');
@@ -294,6 +305,7 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
       return [];
     };
     const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, requestPaths, mcpMethods, workflowCalls,
+      dependencyPreflight, executablePath: env.PATH, discoveryRoot: env.PAPERCUSP_PSU_PTY_DIR,
       inputShapes: inputShapes(providerCalls[0]?.input),
       providerRequestKeys: providerCalls.map(request => Object.keys(request)),
       toolShapes: (providerCalls[0]?.tools as Array<Record<string, unknown>> | undefined)?.map(tool =>
