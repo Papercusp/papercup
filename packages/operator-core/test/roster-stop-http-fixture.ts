@@ -166,6 +166,7 @@ async function coordCanary(health: unknown) {
     const { runPortalRosterBrowser } = await import('./portal-roster-browser-fixture');
     const receipt = await runPortalRosterBrowser({ evidence, base, workspace, selected, neighbor, portalSourceRoot: portalSourceRoot!,
       cookieName: SESSION_COOKIE, ownToken: ownSession.token, foreignToken: foreignSession.token,
+      ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
       ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {
         selectedSessionId: historySessions.get(selected)!.id, neighborSessionId: historySessions.get(neighbor)!.id,
         selectedRolloutId: historySessions.get(selected)!.rolloutId, neighborRolloutId: historySessions.get(neighbor)!.rolloutId,

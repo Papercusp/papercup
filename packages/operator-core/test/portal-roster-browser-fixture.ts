@@ -16,6 +16,7 @@ type PortalRosterBrowserInput = {
   evidence: string; base: string; workspace: string; selected: string; neighbor: string;
   portalSourceRoot: string;
   cookieName: string; ownToken: string; foreignToken: string;
+  shortcuts?: boolean;
   history?: { selectedSessionId: number; neighborSessionId: number; selectedRolloutId: string; neighborRolloutId: string;
     selectedMarker: string; neighborMarker: string };
   verifyReceipt?: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
@@ -28,7 +29,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -40,7 +41,25 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.history ? `
+  const entry = input.shortcuts ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { parseAsString, useQueryState } from 'nuqs';
+    import { PortalShortcuts } from './packages/ui/src/portal-shortcuts.tsx';
+    import ShortcutsSettingsPage from ${JSON.stringify(join(operatorRoot, 'app/settings/shortcuts/page.tsx'))};
+    function Fixture() {
+      const [panel, setPanel] = useQueryState('panel', parseAsString);
+      const [active, setActive] = useQueryState('app', parseAsString.withDefault('settings'));
+      return React.createElement(React.Fragment, null,
+        React.createElement(PortalShortcuts, { panel, setPanel, active, setActive,
+          railKinds: ['overview', 'plans', 'inbox'], openCreatePot: () => setActive('overview') }),
+        React.createElement(ShortcutsSettingsPage),
+        React.createElement('output', { 'data-testid': 'private-shortcut-panel' }, panel || 'none'),
+        React.createElement('output', { 'data-testid': 'private-shortcut-app' }, active));
+    }
+    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null, React.createElement(Fixture)));
+  ` : input.history ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -93,7 +112,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const bundle = result.outputFiles[0].contents;
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith('/packages/ui/src/agents-popover.tsx')),
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.shortcuts
+    ? '/packages/ui/src/portal-shortcuts.tsx' : '/packages/ui/src/agents-popover.tsx')),
     'Executed bundle must contain the actual Portal control');
   return { portal, entry, bundle, originals };
 }
@@ -142,8 +162,15 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.message));
-    const url = new URL('/?panel=agents', base); url.searchParams.set('ws', workspace);
+    const url = new URL(input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
     await page.goto(url.href);
+    if (input.shortcuts) {
+      const receipt = await runPrivateShortcutsPage(page, context, input);
+      assert.deepEqual(pageErrors, [], 'real shortcut settings and dispatcher must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.history) {
       const receipt = await runHistoryPage(page, input);
       assert.deepEqual(pageErrors, [], 'real history components must complete without browser errors');
@@ -221,6 +248,70 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     throw error;
   } finally { await context.close(); await browser.close(); }
+}
+
+/** Real settings mutation and shortcut bus; only host navigation geometry is supplied. */
+async function runPrivateShortcutsPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
+  const profile = new URL('/api/profile', input.base).href;
+  const panel = page.getByTestId('private-shortcut-panel');
+  const row = page.locator('.kbd-settings-row').filter({ has: page.getByRole('textbox', {
+    name: 'Combo for Open or close the command palette', exact: true }) });
+  const combo = row.getByRole('textbox');
+  await combo.waitFor();
+  const defaultCombo = await combo.inputValue();
+  assert.match(defaultCombo, /mod\+k/);
+  const writes: Array<{ status: number; body: unknown }> = [];
+  const change = async (action: () => Promise<unknown>) => {
+    const response = page.waitForResponse(r => r.url() === profile && r.request().method() === 'POST');
+    await action();
+    const r = await response;
+    const receipt = { status: r.status(), body: await r.json() };
+    writes.push(receipt);
+    assert.equal(receipt.status, 200, JSON.stringify(receipt.body));
+  };
+  await change(() => combo.fill('alt+k'));
+  await page.locator('h1').click();
+  await page.keyboard.press('Control+k');
+  assert.equal(await panel.innerText(), 'none', 'old default must stop dispatching after remap');
+  await page.keyboard.press('Alt+k');
+  await panel.filter({ hasText: /^launcher$/ }).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get('panel'), 'launcher');
+  await page.keyboard.press('Alt+k');
+  await panel.filter({ hasText: /^none$/ }).waitFor();
+  const stored = await page.request.get(profile);
+  assert.equal(stored.status(), 200);
+  const storedBody = await stored.json();
+  assert.equal(storedBody.shortcut_overrides['palette.toggle'], 'alt+k', 'real private profile must retain remap');
+  const reloadUrl = page.url();
+  await page.reload();
+  assert.equal(page.url(), reloadUrl);
+  assert.equal(new URL(page.url()).searchParams.get('ws'), input.workspace);
+  await combo.waitFor();
+  assert.equal(await combo.inputValue(), 'alt+k');
+  await page.locator('h1').click();
+  await page.keyboard.press('Alt+k');
+  await panel.filter({ hasText: /^launcher$/ }).waitFor();
+  await page.keyboard.press('Alt+k');
+  await panel.filter({ hasText: /^none$/ }).waitFor();
+  // Profile POST uses the real loopback boundary, not roster cookie auth.
+  const denied = await page.request.post(profile, { headers: { origin: 'https://unapproved.invalid' },
+    data: { shortcut_overrides: { 'palette.toggle': 'alt+x' } } });
+  assert.equal(denied.status(), 403);
+  assert.equal((await (await page.request.get(profile)).json()).shortcut_overrides['palette.toggle'], 'alt+k');
+  await change(() => row.getByRole('button', { name: 'Reset', exact: true }).click());
+  assert.equal(await combo.inputValue(), defaultCombo);
+  await page.locator('h1').click();
+  await page.keyboard.press('Alt+k');
+  assert.equal(await panel.innerText(), 'none', 'reset must retire the customized chord');
+  await page.keyboard.press('Control+k');
+  await panel.filter({ hasText: /^launcher$/ }).waitFor();
+  const reset = await page.request.get(profile);
+  assert.equal(reset.status(), 200);
+  assert.equal((await reset.json()).shortcut_overrides['palette.toggle'], undefined);
+  return { workspace: input.workspace, authMethod: 'private-loopback-profile-with-cookie', remapImmediate: true, remapPersisted: true,
+    deepLinkReload: true, resetRestoredDefault: true, denialStatus: denied.status(), deniedWriteIsolated: true,
+    oldChordFalsifier: true, writes,
+    scope: 'Actual Portal shortcut bindings, shared settings/dispatcher and private loopback profile HTTP with Origin denial; host navigation geometry is a fixture, no hosted tenant-profile or full Portal acceptance' };
 }
 
 async function runHistoryPage(page: Page, input: PortalRosterBrowserInput) {
