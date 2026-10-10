@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, join } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -48,4 +48,52 @@ describe('isolated PostgreSQL mutation evidence', () => {
     expect(dataDir).toBeDefined();
     expect(existsSync(dataDir!)).toBe(false);
   }, 200_000);
+});
+
+describe('isolated PostgreSQL signal cleanup', () => {
+  it.each(['supervisor', 'process-group'] as const)('finishes owned cleanup after SIGINT to %s', async target => {
+    const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--', process.execPath, '-e',
+      "console.log('SIGNAL_CLEANUP_WORKER_READY');setInterval(() => {}, 1000)"], {
+      cwd: root, env: process.env, detached: target === 'process-group', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    let errors = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { errors += chunk; });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done, fail) => {
+      child.once('error', fail);
+      child.once('close', (code, signal) => done({ code, signal }));
+    });
+    let finished = false;
+    try {
+      const deadline = Date.now() + 180_000;
+      while (!output.includes('SIGNAL_CLEANUP_WORKER_READY') && child.exitCode === null && child.signalCode === null && Date.now() < deadline) {
+        await new Promise(done => setTimeout(done, 100));
+      }
+      expect(output, errors.slice(-1500)).toContain('SIGNAL_CLEANUP_WORKER_READY');
+      if (target === 'process-group') process.kill(-child.pid!, 'SIGINT');
+      else child.kill('SIGINT');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([closed, new Promise<never>((_, fail) => {
+        timer = setTimeout(() => fail(new Error('Private signal cleanup did not close: ' + output.slice(-2000) + errors.slice(-500))), 30_000);
+      })]).finally(() => clearTimeout(timer));
+      finished = true;
+      expect(result.code === 130 || result.signal === 'SIGINT').toBe(true);
+      const receipt = output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
+        .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)))
+        .find(row => row.stage === 'complete');
+      expect(receipt, output.slice(-2000) + errors.slice(-500)).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
+      expect(existsSync(receipt.dataDir)).toBe(false);
+      expect(existsSync(receipt.runtimeRoot)).toBe(false);
+    } finally {
+      if (!finished && child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM');
+        const timer = setTimeout(() => {
+          try { target === 'process-group' ? process.kill(-child.pid!, 'SIGKILL') : child.kill('SIGKILL'); } catch { /* already closed */ }
+        }, 5000);
+        await closed.finally(() => clearTimeout(timer));
+      }
+    }
+  }, 220_000);
 });
