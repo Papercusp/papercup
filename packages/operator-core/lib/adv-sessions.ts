@@ -1485,8 +1485,9 @@ export async function releaseAdvSessionResume(id: number, resumeClaimKey: string
  * Throws on a genuine datastore fault instead of swallowing it, so a caller can
  * tell "could not evaluate the claim" apart from "lost the race". Returning
  * `false` for an unreachable database would report a race that never happened.
- * When expectedOwnerId is supplied, the row must also be the latest row for that
- * owner; delayed wake handles cannot reactivate a superseded session.
+ * An owner-bound row must be the latest registration for that owner, including
+ * legacy callers without expectedOwnerId. Registration id is immutable;
+ * started_at is bumped by resumes and cannot establish successor identity.
  */
 export async function claimAdvSessionResume(
   id: number,
@@ -1509,18 +1510,14 @@ export async function claimAdvSessionResume(
              started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.adv_sessions AS successor
+            WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
+              AND successor.id > adv_sessions.id
+         )
          AND (
            ${ownerId}::text IS NULL
-           OR (
-             coord_owner_id = ${ownerId}
-             AND id = (
-               SELECT id
-                 FROM harness_shared.adv_sessions
-                WHERE coord_owner_id = ${ownerId}
-                ORDER BY started_at DESC, id DESC
-                LIMIT 1
-             )
-           )
+           OR coord_owner_id = ${ownerId}
          )
          AND (
            ended_at IS NOT NULL
@@ -1550,6 +1547,11 @@ export async function claimAdvSessionResume(
       SELECT workspace_id, coord_owner_id
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.adv_sessions AS successor
+            WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
+              AND successor.id > adv_sessions.id
+         )
     `;
     if (!target) return false;
     if (ownerId && target.coord_owner_id !== ownerId) return false;
@@ -1579,18 +1581,14 @@ export async function claimAdvSessionResume(
              started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.adv_sessions AS successor
+            WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
+              AND successor.id > adv_sessions.id
+         )
          AND (
            ${ownerId}::text IS NULL
-           OR (
-             coord_owner_id = ${ownerId}
-             AND id = (
-               SELECT id
-                 FROM harness_shared.adv_sessions
-                WHERE coord_owner_id = ${ownerId}
-                ORDER BY started_at DESC, id DESC
-                LIMIT 1
-             )
-           )
+           OR coord_owner_id = ${ownerId}
          )
          AND (
            ended_at IS NOT NULL

@@ -282,7 +282,12 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
     expect(await claimAdvSessionResume(99999999)).toBe(false);
   });
 
-  it('does not reactivate a stale row when a newer adv-session exists for the same owner', async () => {
+  it.each([
+    ['legacy unkeyed', false, false],
+    ['legacy keyed', true, false],
+    ['owner unkeyed', false, true],
+    ['owner keyed', true, true],
+  ] as const)('%s does not reactivate a superseded row even after its started_at was bumped', async (_label, keyed, explicitOwner) => {
     const ownerId = `s-claim-current-${randomBytes(6).toString('hex')}`;
     const [predecessor] = await admin`
       INSERT INTO harness_shared.adv_sessions
@@ -295,8 +300,15 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
       VALUES (${WS}, 'claude', 'console', ${ownerId}, now() - interval '2 days', NULL, NULL, NULL)
       RETURNING id`;
 
-    expect(await claimAdvSessionResume(Number(predecessor.id), null, undefined, ownerId)).toBe(false);
-    expect(await claimAdvSessionResume(Number(successor.id), null, undefined, ownerId)).toBe(true);
+    // A delayed legacy resumer may already have bumped the predecessor. A
+    // mutable activity timestamp must not make that row the latest incarnation.
+    await admin`
+      UPDATE harness_shared.adv_sessions SET started_at = now()
+       WHERE id = ${Number(predecessor.id)}`;
+    const key = keyed ? `superseded-${predecessor.id}` : null;
+    const expectedOwner = explicitOwner ? ownerId : null;
+    expect(await claimAdvSessionResume(Number(predecessor.id), key, undefined, expectedOwner)).toBe(false);
+    expect(await claimAdvSessionResume(Number(successor.id), key, undefined, expectedOwner)).toBe(true);
 
     const [oldRow] = await admin`
       SELECT ended_at, ended_by
@@ -304,6 +316,17 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
        WHERE workspace_id = ${WS} AND id = ${Number(predecessor.id)}`;
     expect(oldRow.ended_at).not.toBeNull();
     expect(oldRow.ended_by).toBe('signal');
+  });
+
+  it('does not replay a successful keyed predecessor claim after a successor registers', async () => {
+    const predecessorId = await seedRow('2 days', false);
+    const key = `superseded-replay-${predecessorId}`;
+    expect(await claimAdvSessionResume(predecessorId, key)).toBe(true);
+    const [predecessor] = await admin`
+      SELECT coord_owner_id FROM harness_shared.adv_sessions WHERE id = ${predecessorId}`;
+    await seedAdv({ coordOwnerId: predecessor.coord_owner_id, startedAgoSec: 60 });
+
+    expect(await claimAdvSessionResume(predecessorId, key)).toBe(false);
   });
 });
 
