@@ -20,6 +20,7 @@ import {
   _resetSinglePrimaryDebounce,
 } from './single-primary-check';
 import { readCutStatus, readCutStatusAsync } from '../release-cut-launch';
+import type { EscalationRecord } from '../agent-tools/coordination/escalations';
 
 // EI-20517156511202200 fixture: `systemctl --user is-active` for the CUT unit. Node's
 // execFileSync throws on a non-zero exit but still captures stdout on the thrown error —
@@ -666,7 +667,16 @@ describe('assertPgReadAllStatsCapabilityAtBoot (EI-19447868110362941)', () => {
     const sql = vi.fn(async (_query: TemplateStringsArray) => [
       { role_name: 'harness_admin', can_read_all_stats: true },
     ]);
-    const listOpenEscalations = vi.fn(async (_subject: string) => [{ msg_id: 'stats-missing' }]);
+    const listOpenEscalations = vi.fn(async (_subject: string) => [{
+      ts: '2026-10-10T10:00:00.000Z',
+      msg_id: 'stats-missing',
+      from: 'system-health',
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'blocker',
+      summary: 'stats visibility missing',
+      resolved: null,
+    } satisfies EscalationRecord]);
     const resolveEscalation = vi.fn(async (_msgId: string, _note: string) => ({ kind: 'resolved' }));
 
     await expect(
