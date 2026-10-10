@@ -18,7 +18,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => ({
   calls: [] as Array<{ pathname: string; body: Record<string, unknown>; headers: Record<string, string | undefined> }>,
+  invalidate: vi.fn(async (_name: string, _args?: unknown) => {}),
 }));
+
+vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: H.invalidate }));
 
 vi.mock('@papercusp/agent-mcp', async (importActual) => {
   const actual = await importActual<typeof import('@papercusp/agent-mcp')>();
@@ -57,6 +60,7 @@ const ctxFor = (verb: string) => ({ params: { verb } }) as unknown as Parameters
 
 beforeEach(() => {
   H.calls = [];
+  H.invalidate.mockClear();
 });
 
 describe('admin plans read dispatch — payload-tier contract (WI-5520 / WI-5078)', () => {
@@ -72,6 +76,8 @@ describe('admin plans read dispatch — payload-tier contract (WI-5520 / WI-5078
     else await routes[1].handler(request, context as Parameters<typeof dispatchRead>[1]);
     expect(H.calls).toHaveLength(1);
     expect(H.calls[0].headers['x-papercusp-workspace']).toBe('admitted-private-workspace');
+    if (method === 'POST') expect(H.invalidate).toHaveBeenCalledWith('plans.get', { slug: 'demo' });
+    else expect(H.invalidate).not.toHaveBeenCalled();
   });
 
   it('get requests the EXPLICIT full tier so the hard ceiling cannot trim the UI read', async () => {
