@@ -2580,7 +2580,12 @@ teardown() {
   # tauri-agent-tools uses for discovery).
   # The bridge is dead after stop.sh, so retaining that credential serves no
   # consumer and turns every verifier run into a stale-secret leak.
-  [ -n "${BRIDGE_PID:-}" ] && rm -f -- "${TMPDIR:-/tmp}/tauri-dev-bridge-$BRIDGE_PID.token"
+  if [ -n "${BRIDGE_PID:-}" ]; then
+    rm -f -- "${TMPDIR:-/tmp}/tauri-dev-bridge-$BRIDGE_PID.token"
+    if [ "${TMPDIR:-/tmp}" != "/tmp" ]; then
+      rm -f -- "/tmp/tauri-dev-bridge-$BRIDGE_PID.token"
+    fi
+  fi
   wait_owned_ports_free   # EI-11559: hold the advisory lock until our sidecar releases the port
   fed_release_port_locks
   # EI-21617008171422271: only release the per-display reservation after Xvfb,
