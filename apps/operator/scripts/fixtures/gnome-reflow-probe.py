@@ -155,7 +155,9 @@ def run_child(args):
             if args.prepare_profile_module:
                 program = "const m=await import(process.argv[1]);console.log(JSON.stringify(await m.prepareGnomeTerminal({bin:'gnome-terminal',args:['--wait','--']})));"
                 result = subprocess.run(['node', '--input-type=module', '-e', program, args.prepare_profile_module],
-                                        capture_output=True, text=True, check=True, timeout=12)
+                                        capture_output=True, text=True, timeout=20)
+                if result.returncode != 0:
+                    raise RuntimeError('real launcher preparation failed: ' + result.stderr[-4000:])
                 prepared = json.loads(result.stdout)
                 flags = [flag for flag in prepared['args'] if flag.startswith('--profile=')]
                 if len(flags) != 1:

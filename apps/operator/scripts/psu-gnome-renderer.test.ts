@@ -45,6 +45,7 @@ describe.skipIf(!nativeAvailable)('isolated GNOME renderer reproduction', () => 
       expect(row.baseline_ping_ms).toHaveLength(5);
       expect(row.sibling_ping_after_resize_ms).toHaveLength(4);
       expect(row.sibling_ping_after_resize_ms.every((ms: number) => Number.isFinite(ms) && ms >= 0)).toBe(true);
+      if (!row.unlimited) expect(Math.max(...row.sibling_ping_after_resize_ms)).toBeLessThan(250);
     }
   }, 50_000);
 
