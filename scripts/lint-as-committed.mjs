@@ -111,6 +111,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 
 /** Child environment for commands executing against the isolated committed clone. */
 export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null) {
@@ -1058,6 +1059,13 @@ function main() {
     console.log(`  note: your working tree differs from this ref in ${dirtyTracked} tracked file(s) — those edits are NOT under test here.`);
   }
 
+  // Materialisation happens before the test launcher can relocate TMPDIR. Reuse
+  // its headroom policy here so a full device cannot produce checkout failures.
+  ensurePapercuspTmpdir();
+  if (!tmpdirHasCriticalHeadroom(tmpdir())) {
+    console.error(`lint-as-committed: no temporary directory has critical disk headroom (${tmpdir()}); refusing to materialise the committed tree.`);
+    process.exit(2);
+  }
   const swept = sweepStaleWorkRoots();
   if (swept.removed.length > 0) {
     console.log(`  swept ${swept.removed.length} stale extracted tree(s): ${swept.removed.map((r) => `${r.name} (${r.reason})`).join(', ')}`);
