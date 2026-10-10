@@ -514,7 +514,9 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
       }),
     );
     expect(out.kind).toBe('park');
-    expect(out.kind === 'park' && out.reason).toMatch(/won by another resumer/);
+    // 64f9133915 reworded the lost-claim reason when it added the owner election: a claim
+    // can now be lost to a competing resumer OR superseded by a newer owner session.
+    expect(out.kind === 'park' && out.reason).toMatch(/was lost or superseded/);
     expect(spawned).toBe(0); // the entire point of the claim
   });
 
@@ -542,7 +544,7 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     const reason = out.kind === 'park' ? out.reason : '';
     expect(reason).toMatch(/could not be evaluated/);
     expect(reason).toContain('ECONNREFUSED writing the claim');
-    expect(reason).not.toMatch(/won by another resumer/);
+    expect(reason).not.toMatch(/was lost or superseded/);
     expect(spawned).toBe(0); // an unevaluable claim is still never a second writer
   });
 
