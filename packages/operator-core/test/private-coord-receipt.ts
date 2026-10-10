@@ -38,7 +38,7 @@ export function verifyPrivateStopReceipt(
 export async function verifyPrivateCoordReceipt(
   receipt: { status: number; body: any },
   expected: { ownerId: string; summary: string; wake: boolean },
-  getStored: (id: string) => Promise<Pick<CoordEnvelope, 'to' | 'summary' | 'wake'> | null>,
+  getStored: (id: string) => Promise<(Pick<CoordEnvelope, 'to' | 'summary'> & { wake?: unknown }) | null>,
 ) {
   assert.equal(receipt.status, 200, JSON.stringify(receipt.body));
   assert.equal(receipt.body.results?.length, 1);
