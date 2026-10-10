@@ -26,6 +26,7 @@ type PortalRosterBrowserInput = {
   shortcuts?: boolean;
   settings?: boolean;
   prompts?: boolean;
+  overview?: boolean;
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
   markdownPreflight?: { value: string; heading: string };
   plans?: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string };
@@ -42,7 +43,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -54,7 +55,27 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.docs ? `
+  const entry = input.overview ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { parseAsString, useQueryState } from 'nuqs';
+    import { SyncProvider } from '@papercusp/sync';
+    import { configureOperatorUi } from '@papercusp/operator-ui/seam';
+    import { ADV_TAB_SURFACE_KINDS } from '@papercusp/operator-ui/adv-navigation';
+    import AdvOverviewTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvOverviewTab.tsx'))};
+    import AdvCreateDock from ${JSON.stringify(join(operatorRoot, 'app/adv/create/AdvCreateDock.tsx'))};
+    configureOperatorUi({ advNavigation: { param: 'app', targets: ADV_TAB_SURFACE_KINDS } });
+    function Fixture() {
+      const [app] = useQueryState('app', parseAsString.withDefault('overview'));
+      return React.createElement(React.Fragment, null,
+        React.createElement(app === 'overview' ? AdvOverviewTab : AdvCreateDock),
+        React.createElement('output', { 'data-testid': 'overview-destination' }, app));
+    }
+    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(Fixture))));
+  ` : input.docs ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -161,7 +182,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans || input.docs
+  const boundary = input.inbox || input.plans || input.docs || input.overview
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
@@ -197,7 +218,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const css = result.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.docs
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.overview
+    ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.docs
     ? '/apps/operator/app/adv/harnesses/AdvDocsTab.tsx' : input.plans
     ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
@@ -274,6 +296,54 @@ export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof bui
     assert.deepEqual(errors, [], 'actual Docs module initialization must be browser-safe');
     assert.match(await page.locator('body').innerText(), /Select a /);
     return { sourceCount: built.originals.size, mounted: true };
+  } finally {
+    await browser.close();
+    await new Promise<void>(done => server.close(() => done()));
+  }
+}
+
+/** Actual Overview/Create controls and maintained Portal bundle boundary.
+ * Host navigation configuration, empty reads and shell geometry are fixtures;
+ * this is navigation evidence, not private API or whole-shell acceptance. */
+export async function verifyPortalOverviewNavigation(portalSourceRoot: string) {
+  const built = await buildPortalRosterBrowser({ portalSourceRoot, selected: 'overview-selected',
+    neighbor: 'overview-neighbor', overview: true });
+  const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://overview.invalid');
+    if (url.pathname === '/overview.js') {
+      response.writeHead(200, { 'content-type': 'text/javascript' }); response.end(built.bundle);
+    } else if (url.pathname === '/') {
+      response.writeHead(200, { 'content-type': 'text/html' });
+      response.end('<div id="root"></div><script src="/overview.js"></script>');
+    } else {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(url.pathname.endsWith('/rest-query') ? { rows: [] } : { ok: true }));
+    }
+  });
+  const errors: string[] = [];
+  try {
+    await new Promise<void>((done, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', done); });
+    const address = server.address(); assert.ok(address && typeof address === 'object');
+    const page = await browser.newPage();
+    page.on('pageerror', error => errors.push(error.stack ?? error.message));
+    await page.goto(`http://127.0.0.1:${address.port}/?app=overview&q=retained-shell-search`);
+    const button = page.getByRole('button', { name: 'Open Plans', exact: true });
+    await button.waitFor({ timeout: 20_000 });
+    await button.focus(); await page.keyboard.press('Enter');
+    try {
+      await page.waitForFunction(() => new URL(location.href).searchParams.get('app') === 'create', undefined, { timeout: 10_000 });
+    } catch (error) {
+      throw new Error(`Overview navigation failed at ${page.url()}; browser errors=${JSON.stringify(errors)}; ${String(error)}`);
+    }
+    assert.equal(new URL(page.url()).searchParams.get('q'), 'retained-shell-search');
+    assert.equal(await page.locator('.pc-overview').count(), 0, 'Overview must be replaced by the selected destination');
+    await page.reload();
+    await page.getByTestId('overview-destination').filter({ hasText: /^create$/ }).waitFor({ timeout: 20_000 });
+    assert.equal(await page.locator('.pc-overview').count(), 0, 'reload must retain the destination');
+    assert.deepEqual(errors, [], 'actual Portal surface graph must stay browser-safe');
+    return { keyboardNavigation: true, deepLinkReload: true, destination: 'create', shellQueryPreserved: true,
+      browserBundleSha256: digest(built.bundle), originalSourceCount: built.originals.size };
   } finally {
     await browser.close();
     await new Promise<void>(done => server.close(() => done()));

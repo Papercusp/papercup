@@ -4,10 +4,18 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
-import { buildPortalRosterBrowser, verifyPrivateDocsBrowserMount, verifyPrivateProfileOriginControl } from '../../../test/portal-roster-browser-fixture';
+import { buildPortalRosterBrowser, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateProfileOriginControl } from '../../../test/portal-roster-browser-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Overview opens its destination by keyboard and preserves it across reload', async () => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    expect(await verifyPortalOverviewNavigation(portalSource)).toMatchObject({
+      keyboardNavigation: true, deepLinkReload: true, destination: 'create', shellQueryPreserved: true,
+    });
+  }, 180_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private ADV Docs selects by keyboard, retains a denied article and persists its exact anchored verification retry', async context => {
