@@ -40,6 +40,7 @@ import {
   governedProcessIdempotencyKey,
   isRetryableAdmissionFailure,
   loadGovernedExecutionModule,
+  resolveGovernedProcessTree,
   runGovernedTestProcess,
 } from './lib/governed-test-process.mjs';
 import {
@@ -2399,6 +2400,64 @@ function printTestFinalizationError(result) {
  *
  * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
  */
+/** Capture bounded identities before a collection watchdog destroys its evidence.
+ * This is an identity snapshot, not a measurement of progress or a causal verdict.
+ * Reuse the governed tree walker, with a bounded children reader that never falls
+ * back to a host-wide proc scan. Do not retain argv or environment credentials.
+ */
+export function readTestChildDiagnostic(rootPid, {
+  readFileImpl = readFileSync,
+  readdirImpl = readdirSync,
+  platform = process.platform,
+} = {}) {
+  if (platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) {
+    return { status: 'unavailable', reason: 'procfs-or-pid-unavailable', processes: [], truncated: false };
+  }
+  const maxProcesses = 16;
+  const maxTasksPerProcess = 32;
+  const admitted = new Set([rootPid]);
+  let unreadableFields = 0;
+  let truncated = false;
+  const read = (path) => {
+    try { return readFileImpl(path, 'utf8'); } catch { unreadableFields += 1; return null; }
+  };
+  const tree = resolveGovernedProcessTree(rootPid, {
+    pidCap: maxProcesses,
+    readChildren: (pid) => {
+      let tasks;
+      try { tasks = readdirImpl(`/proc/${pid}/task`); } catch { unreadableFields += 1; return []; }
+      if (tasks.length > maxTasksPerProcess) truncated = true;
+      const children = [];
+      for (const tid of tasks.slice(0, maxTasksPerProcess)) {
+        if (!/^\d+$/.test(tid)) continue;
+        const text = read(`/proc/${pid}/task/${tid}/children`);
+        for (const token of text?.split(/\s+/) ?? []) {
+          if (!/^\d+$/.test(token)) continue;
+          const childPid = Number(token);
+          if (!Number.isSafeInteger(childPid) || childPid <= 0 || admitted.has(childPid)) continue;
+          if (admitted.size >= maxProcesses) { truncated = true; continue; }
+          admitted.add(childPid);
+          children.push(childPid);
+        }
+      }
+      return children;
+    },
+  });
+  const processes = tree.pids.map((pid) => {
+    const status = read(`/proc/${pid}/status`);
+    const parent = status?.match(/^PPid:\s*(\d+)/m)?.[1];
+    const waitChannel = read(`/proc/${pid}/wchan`);
+    return {
+      pid,
+      parentPid: parent == null ? null : Number(parent),
+      name: boundedDiagnosticText(status?.match(/^Name:\s*(.*)/m)?.[1], 48) || null,
+      state: status?.match(/^State:\s*(\w)/m)?.[1] ?? null,
+      waitChannel: waitChannel?.trim() === '0' ? null : boundedDiagnosticText(waitChannel, 64) || null,
+    };
+  });
+  return { status: unreadableFields > 0 ? 'partial' : 'measured', rootPid, truncated, unreadableFields, processes };
+}
+
 export function runCapturedTestProcess(command, args, options = {}) {
   const {
     cwd,
@@ -2420,6 +2479,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     spawnImpl = spawn,
     killProcessImpl = defaultKillOwnedProcess,
     stopScopeImpl = stopTestScope,
+    readProcessDiagnosticImpl = null,
     onProgress = (line) => console.error(line),
     onAllFilesComplete = () => null,
     // Tests may replace this narrow governance seam; production callers leave
@@ -2485,6 +2545,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     let forceTimer = null;
     let progressWatchdog = null;
     let allFilesCompleteObserved = false;
+    let processDiagnostic = null;
     const signalForwarders = new Map();
 
     const normalized = (file) => String(file).replaceAll('\\', '/');
@@ -2533,6 +2594,16 @@ export function runCapturedTestProcess(command, args, options = {}) {
       terminationStarted = true;
       if (state === 'timeout') timedOut = true;
       emitProgress(state);
+      if (state === 'timeout' && readProcessDiagnosticImpl) {
+        try {
+          processDiagnostic = readProcessDiagnosticImpl(child.pid);
+        } catch {
+          processDiagnostic = { status: 'unavailable', reason: 'reader-error', processes: [], truncated: false };
+        }
+        // Emit before SIGTERM as well as retaining it in the terminal result:
+        // a child that never closes its pipes must not erase this snapshot.
+        onProgress(`TEST_FILE_CHILD_DIAGNOSTIC ${JSON.stringify({ scope: scopeUnit, ...processDiagnostic })}`);
+      }
       killOwned('SIGTERM');
       forceTimer = setTimeout(() => {
         if (settled) return;
@@ -2662,6 +2733,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
         stderr: Buffer.concat(stderr).toString('utf8'),
         error: spawnError ?? captureError,
         timedOut,
+        processDiagnostic,
         actualDemand: sampler.stop({ diskBytes: capturedBytes }),
         admissionReceiptId: admissionContext?.receiptId ?? null,
         admissionInherited: inherited,
@@ -2729,6 +2801,7 @@ export function runVitestList(command, args, options = {}) {
     spawnImpl,
     killProcessImpl,
     stopScopeImpl,
+    readProcessDiagnosticImpl = readTestChildDiagnostic,
     onProgress,
   } = options;
   return runCapturedTestProcess(command, args, {
@@ -2749,6 +2822,7 @@ export function runVitestList(command, args, options = {}) {
     ...(spawnImpl ? { spawnImpl } : {}),
     ...(killProcessImpl ? { killProcessImpl } : {}),
     ...(stopScopeImpl ? { stopScopeImpl } : {}),
+    readProcessDiagnosticImpl,
     ...(onProgress
       ? { onProgress }
       : { onProgress: (line) => console.error(line.replace(/^TEST_FILE_PROGRESS\b/, 'TEST_FILE_LIST_PROGRESS')) }),
@@ -3071,6 +3145,7 @@ export async function main(
         freezeMs: listed.freezeMs ?? null,
         errorCode: listed.error?.code ?? null,
         errorMessage: boundedDiagnosticText(listed.error?.message, 384) || null,
+        processDiagnostic: listed.processDiagnostic ?? null,
         ...channels,
       })}`);
     }

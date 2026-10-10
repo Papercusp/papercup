@@ -63,6 +63,7 @@ import {
   runGovernedTestFileProcess,
   runTestFilesCli,
   runVitestList,
+  readTestChildDiagnostic,
   stopTestScope,
   testScopeRuntimeMaxSec,
   suppressInjectedJsonReportNotice,
@@ -679,6 +680,48 @@ describe('vitestRunFailed — exit code and summary must agree (EI-2112468250477
   });
 });
 
+describe('collection child identity evidence (WI-10007991)', () => {
+  it('retains only bounded identities from the owned tree without reading argv or scanning the host', () => {
+    const readFileImpl = vi.fn((path: string) => {
+      if (path.endsWith('/children')) return path.includes('/4100/') ? '4101 4102' : '';
+      if (path.endsWith('/status')) return 'Name:\tnpm exec vitest\nState:\tS (sleeping)\nPPid:\t4000\n';
+      if (path.endsWith('/wchan')) return 'do_wait\n';
+      throw new Error('unexpected read');
+    });
+    const readdirImpl = vi.fn((path: string) => [path.split('/')[2]]);
+    expect(readTestChildDiagnostic(4100, { readFileImpl, readdirImpl })).toMatchObject({
+      status: 'measured', rootPid: 4100, truncated: false, unreadableFields: 0,
+      processes: [4100, 4101, 4102].map(pid => ({ pid, parentPid: 4000,
+        name: 'npm exec vitest', state: 'S', waitChannel: 'do_wait' })),
+    });
+    expect(readdirImpl.mock.calls.every(([path]) => /^\/proc\/410[012]\/task$/.test(path))).toBe(true);
+    expect(readFileImpl.mock.calls.some(([path]) => /cmdline|environ/.test(path))).toBe(false);
+  });
+
+  it('caps both tree residents and per-process task reads and marks the omitted population', () => {
+    const readFileImpl = vi.fn((path: string) => {
+      if (path.endsWith('/children')) return Array.from({ length: 30 }, (_, i) => String(4201 + i)).join(' ');
+      return path.endsWith('/wchan') ? '0' : 'Name:\tnode\nState:\tR (running)\nPPid:\t4200\n';
+    });
+    const readdirImpl = vi.fn(() => Array.from({ length: 80 }, (_, i) => String(4200 + i)));
+    const snapshot = readTestChildDiagnostic(4200, { readFileImpl, readdirImpl });
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.processes).toHaveLength(16);
+    expect(snapshot.processes[0].waitChannel).toBeNull();
+    expect(readFileImpl.mock.calls.filter(([path]) => path.endsWith('/children'))).toHaveLength(16 * 32);
+    expect(readdirImpl).not.toHaveBeenCalledWith('/proc');
+  });
+
+  it('preserves unknowns when procfs is unreadable rather than claiming an empty healthy tree', () => {
+    const unavailable = () => { throw new Error('EACCES'); };
+    expect(readTestChildDiagnostic(4300, { readFileImpl: unavailable, readdirImpl: unavailable })).toMatchObject({
+      status: 'partial', unreadableFields: 3,
+      processes: [{ pid: 4300, parentPid: null, name: null, state: null, waitChannel: null }],
+    });
+    expect(readTestChildDiagnostic(undefined)).toMatchObject({ status: 'unavailable', processes: [] });
+  });
+});
+
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
   it('prefers a detached systemd user scope while keeping the owned process-group watchdog', async () => {
     vi.useFakeTimers();
@@ -849,7 +892,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     }
   });
 
-  it('bounds a silent Vitest collection preflight and reaps its owned process group', async () => {
+  it.each([false, true])('bounds a silent Vitest collection preflight and reaps its owned process group (reader throws: %s)', async (readerThrows) => {
     vi.useFakeTimers();
     try {
       const child = new EventEmitter() as EventEmitter & {
@@ -865,6 +908,12 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       const spawnImpl = vi.fn((..._args: unknown[]) => child);
       const killProcessImpl = vi.fn(() => 'group');
       const progress = vi.fn();
+      const processDiagnostic = { status: 'partial', rootPid: 4240, truncated: false,
+        processes: [{ pid: 4240, name: 'npm exec vitest', state: 'S', waitChannel: 'do_wait' }] };
+      const readProcessDiagnosticImpl = vi.fn(() => {
+        if (readerThrows) throw new Error('diagnostic reader failed');
+        return processDiagnostic;
+      });
 
       const resultPromise = runVitestList(
         'npx',
@@ -883,6 +932,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           spawnImpl,
           killProcessImpl,
           onProgress: progress,
+          readProcessDiagnosticImpl,
         },
       );
 
@@ -892,6 +942,9 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
       );
       await vi.advanceTimersByTimeAsync(100);
+      expect(readProcessDiagnosticImpl).toHaveBeenCalledWith(4240);
+      expect(readProcessDiagnosticImpl.mock.invocationCallOrder[0]).toBeLessThan(killProcessImpl.mock.invocationCallOrder[0]);
+      expect(progress.mock.calls.map(([line]) => String(line)).join('\n')).toContain('TEST_FILE_CHILD_DIAGNOSTIC');
       expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGTERM', true);
       await vi.advanceTimersByTimeAsync(20);
       expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGKILL', true);
@@ -901,6 +954,9 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         status: null,
         signal: 'SIGKILL',
         timedOut: true,
+        processDiagnostic: readerThrows
+          ? { status: 'unavailable', reason: 'reader-error', processes: [], truncated: false }
+          : processDiagnostic,
       });
       expect(progress.mock.calls.map(([line]) => String(line)).join('\n')).toContain('state=timeout');
     } finally {
@@ -1249,6 +1305,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       error: scenario.error,
       timedOut: scenario.timedOut,
       freezeMs: 73,
+      processDiagnostic: { status: 'partial', rootPid: 4240, processes: [{ pid: 4240, name: 'npm exec vitest' }] },
     }));
     const runCapturedTestProcessMock = vi.fn();
     try {
@@ -1269,6 +1326,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       const diagnostic = JSON.parse(diagnosticLine!.slice('TEST_FILE_LIST_DIAGNOSTIC '.length));
       expect(diagnostic).toMatchObject({ cwd: 'packages/operator-core', signal: 'SIGKILL',
         exitStatus: 'none', freezeMs: 73, errorCode: scenario.error?.code ?? null,
+        processDiagnostic: { status: 'partial', rootPid: 4240, processes: [{ pid: 4240, name: 'npm exec vitest' }] },
         files: ['lib/__tests__/test-file-router.test.ts'] });
       for (const channel of ['stdout', 'stderr'] as const) {
         const captured = scenario[channel];
