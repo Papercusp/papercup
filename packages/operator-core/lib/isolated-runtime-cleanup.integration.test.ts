@@ -1,6 +1,6 @@
 /** EI-25449368540823559: exercise teardown without rerunning security journeys. */
 import { fork } from 'node:child_process';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -53,6 +53,33 @@ it('pins plain-mode integration setup to its real private PG without injecting p
     await rm(evidenceDir, { recursive: true, force: true });
   }
 }, workerOptions.testTimeoutMs);
+
+it('returns failure and tears down private PG when an executable passes preflight but its interpreter is missing', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'private-pg-late-spawn-'));
+  const command = join(evidenceDir, 'missing-interpreter-command');
+  await writeFile(command, `#!${join(evidenceDir, 'absent-interpreter')}\n`, { mode: 0o700 });
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: evidenceDir };
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--', command], {
+    cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  try {
+    const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 120_000, killGraceMs: 45_000 });
+    expect(result, result.output.slice(-8000)).toMatchObject({ code: 1, signal: null, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(result.output).toContain('[with-test-pg] ready');
+    expect(result.output).toContain('child failed to start');
+    expect(result.output).not.toContain('child preflight failed');
+    expect(result.output).toContain('database system is shut down');
+    const dataDir = result.output.match(/\(datadir (.+)\)/)?.[1];
+    expect(dataDir).toBeDefined();
+    expect(existsSync(dataDir!)).toBe(false);
+    expect(() => process.kill(child.pid!, 0)).toThrow();
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true });
+  }
+}, 180_000);
 
 it('stops real private PG and removes its runtime after an ordinary child exit', async context => {
   const runId = await recordIsolatedIntegrationProof({ root,

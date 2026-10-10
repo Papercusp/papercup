@@ -28,12 +28,12 @@
  */
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { access, stat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { constants, existsSync, readFileSync } from 'node:fs';
 import AsyncExitHook from 'async-exit-hook';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 import { browserCachePath } from './ensure-playwright-browsers.mjs';
@@ -48,6 +48,28 @@ const isolatedRuntime = operatorApi || (options.length === 1 && options[0] === '
 if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime)) {
   console.error('usage: node scripts/with-test-pg.mjs [--isolated-runtime[=operator-api]] -- <command> [args...]');
   process.exit(2);
+}
+
+// spawn below runs from ROOT. Resolve that SAME executable before allocating
+// or migrating Postgres, and pin the path used by spawn. A package-relative
+// command must not burn an entire bootstrap before discovering ENOENT.
+try {
+  const candidates = /[/\\]/.test(cmd[0]) ? [resolve(ROOT, cmd[0])] :
+    (process.env.PATH ?? '').split(delimiter).map(dir => resolve(ROOT, dir, cmd[0]));
+  let executable;
+  for (const candidate of candidates) {
+    try {
+      if (!(await stat(candidate)).isFile()) continue;
+      await access(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
+      executable = candidate;
+      break;
+    } catch { /* try the next PATH entry */ }
+  }
+  if (!executable) throw new Error('child executable is missing or not executable from repository root: ' + cmd[0]);
+  cmd[0] = executable;
+} catch (error) {
+  console.error('[with-test-pg] child preflight failed: ' + error.message);
+  process.exit(1);
 }
 
 /** The migrations dir: the monorepo path, else the packaged sidecar's copy. */
@@ -506,8 +528,11 @@ if (observedRuntime) {
 
 child.on('error', async (error) => {
   console.error(`[with-test-pg] child failed to start: ${error.message}`);
-  await cleanup();
+  // Cleanup may release the last event-loop handle. Set failure BEFORE it can
+  // trigger a natural/exit-hook exit, and explicitly propagate it afterward.
   process.exitCode = 1;
+  await cleanup();
+  process.exit(1);
 });
 
 child.on('exit', async (code, signal) => {
