@@ -382,13 +382,26 @@ describe('turn-origin envelope grammar — one definition across four languages'
       ['psu-pty-host.mjs', read(PTY_HOST)],
     ];
     for (const [file, src] of producerLiterals) {
-      const matches = [...src.matchAll(/`⟦turn-origin:([A-Za-z0-9:._@-]+) nonce:\$\{(\w+)\}⟧/g)];
+      // A producer may use a literal origin or a locally-normalized origin
+      // variable. Keep the dynamic domain bounded to literal choices so a
+      // new producer shape cannot silently escape this grammar guard.
+      const matches = [...src.matchAll(/[\x60]⟦turn-origin:([A-Za-z0-9:._@-]+|[$][{]([A-Za-z_$][\w$]*)[}]) nonce:[$][{](\w+)[}]⟧/g)];
       expect(matches.length, `${file}: expected at least one envelope producer literal`).toBeGreaterThan(0);
       for (const m of matches) {
-        const emitted = `⟦turn-origin:${m[1]} nonce:acc293aaced4a1d8⟧\npayload`;
-        const parsed = ENVELOPE_RE.exec(emitted);
-        expect(parsed, `${file}: emits an envelope the canonical grammar rejects: ${emitted}`).not.toBeNull();
-        expect(parsed![1]).toBe(m[1]);
+        const originVariable = m[2];
+        let origins = [m[1]];
+        if (originVariable) {
+          const binding = new RegExp('(?:const|let)\\s+' + originVariable + '\\s*=\\s*([^;\\n]+);').exec(src);
+          expect(binding, file + ': could not find a bounded binding for origin ' + originVariable).not.toBeNull();
+          origins = [...new Set([...binding![1].matchAll(/["']([A-Za-z0-9:._@-]+)["']/g)].map((value) => value[1]))];
+          expect(origins.length, file + ': interpolated origin has no finite string-literal values').toBeGreaterThan(0);
+        }
+        for (const origin of origins) {
+          const emitted = '⟦turn-origin:' + origin + ' nonce:acc293aaced4a1d8⟧\npayload';
+          const parsed = ENVELOPE_RE.exec(emitted);
+          expect(parsed, file + ': emits an envelope the canonical grammar rejects: ' + emitted).not.toBeNull();
+          expect(parsed![1]).toBe(origin);
+        }
       }
     }
   });
