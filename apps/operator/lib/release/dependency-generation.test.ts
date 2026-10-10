@@ -342,6 +342,49 @@ function commitAllFixture(integration: string, message: string): string {
   }).trim();
 }
 
+describe('dependency source checkout boundaries', () => {
+  it('excludes unrelated nested checkouts while retaining tracked submodule inputs and trees', () => {
+    const integration = makeIntegration();
+    commitFixture(integration, 'seed source repository');
+    const vendor = join(integration, 'libs/vendor');
+    mkdirSync(join(vendor, 'node_modules/vendor'), { recursive: true });
+    writeFileSync(join(vendor, 'node_modules/vendor/index.js'), 'vendor\n');
+    writeFileSync(join(vendor, 'package-lock.json'), '{"name":"vendor","lockfileVersion":3,"packages":{}}\n');
+    const vendorCommit = commitAllFixture(vendor, 'seed submodule inputs');
+    writeFileSync(join(integration, '.gitmodules'), '[submodule "vendor"]\n\tpath = libs/vendor\n\turl = ./vendor\n');
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${vendorCommit},libs/vendor`], { cwd: integration });
+    const sourceCommit = commitAllFixture(integration, 'record submodule');
+
+    const foreign = join(integration, 'apps/unrelated-checkpoint');
+    mkdirSync(join(foreign, 'node_modules/foreign'), { recursive: true });
+    writeFileSync(join(foreign, 'node_modules/foreign/index.js'), 'unrelated\n');
+    writeFileSync(join(foreign, 'package-lock.json'), '{"name":"foreign","lockfileVersion":3,"packages":{}}\n');
+    commitAllFixture(foreign, 'separate checkout');
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_input_manifest "$INTEGRATION"',
+      'printf "LIVE_INPUT="; dependency_generation_input_fingerprint "$INTEGRATION"',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+      'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(libs/vendor apps/unrelated-checkpoint)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, INTEGRATION: integration },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('libs/vendor/package-lock.json');
+    expect(result.stdout).toContain('packages/a/node_modules');
+    expect(result.stdout.match(/libs\/vendor\/node_modules/g)).toHaveLength(2);
+    expect(result.stdout).not.toContain('unrelated-checkpoint');
+    const exact = fingerprintRef(integration, sourceCommit);
+    expect(exact.status, exact.stderr).toBe(0);
+    expect(result.stdout).toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
+    expect(readFileSync(join(foreign, 'node_modules/foreign/index.js'), 'utf8')).toBe('unrelated\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
 describe('WI-10002299: patch-package patches are dependency inputs', () => {
   // The root package.json postinstall runs `patch-package`, so a patches/*.patch
   // change alters the produced node_modules closure exactly as a lockfile change
