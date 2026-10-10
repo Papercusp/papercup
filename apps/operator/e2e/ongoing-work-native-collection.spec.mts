@@ -149,6 +149,118 @@ test('native collection fixture writer graph loads under the Playwright Node loa
   expect(typeof defaultEvidenceRoot).toBe('function');
 });
 
+test('real Work on Everything goal exposes its saved picks in the native progress table without writes', async ({ request }, info) => {
+  test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the maintained native rig');
+  test.setTimeout(240_000);
+  expect(process.env.VERIFY_TAURI_ISOLATED_DB).not.toBe('1');
+  const workspaceId = 'papercusp-workspace';
+  const goalId = 'work-on-everything-fresh-grading-and-improvement-60d3a8';
+  const panel = '[data-testid="work-on-everything-console"]';
+  const { default: postgres } = await import('postgres');
+  const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL ?? process.env.DATABASE_URL!, {
+    max: 1, connect_timeout: 5, idle_timeout: 5,
+  });
+  const run = promisify(execFile), bridge = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!;
+  const native = async (command: string, ...args: string[]) => {
+    await run('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 10_000 });
+    const result = await run(bridge, [command, '--pid', process.env.VERIFY_TAURI_PID!, ...args], { timeout: 20_000 });
+    return decodeNativeBridgeJson(result.stdout);
+  };
+  const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
+  const ready = (expression: string) => expect.poll(() => measure(expression), {
+    timeout: 90_000, intervals: [500, 1000],
+  }).toBe(true);
+  try {
+    await recordJourney(info, async () => {
+      // The independent oracle is the saved goal, not the collection renderer.
+      // This connection only performs bounded SELECTs in read-only transactions.
+      const readSaved = () => sql.begin('read only', async tx => {
+        const [goal] = await tx`SELECT property_schema, properties FROM harness_shared.goals
+          WHERE workspace_id=${workspaceId} AND id=${goalId}`;
+        expect(goal, 'The actual owner goal must exist; never seed a substitute').toBeTruthy();
+        return goal;
+      });
+      const before = await readSaved();
+      const refs = before.properties.worklist.value as string[];
+      expect(refs).toHaveLength(10);
+      expect(before.property_schema.worklist.collection.defaultSelected).toBe(false);
+      const plans = await sql.begin('read only', tx => tx`SELECT plan_slug, title
+        FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
+          AND harness_slug='papercusp' AND plan_slug=ANY(${refs.map(ref => ref.split('/').slice(1).join('/'))})`);
+      const expected = refs.map(id => ({ id, label: plans.find(p => p.plan_slug === id.split('/').slice(1).join('/'))?.title }));
+      expect(expected.every(row => typeof row.label === 'string')).toBe(true);
+      const migration = await sql.begin('read only', tx => tx`SELECT filename, sha256
+        FROM harness_shared.schema_migrations WHERE filename='1430-woe-worklist-only-picked-plans.sql'`);
+      expect(migration).toHaveLength(1);
+      const detailResponse = await request.get(`${process.env.VERIFY_TAURI_DEV_URL}/api/zero-harness/rest-query`, {
+        params: { name: 'goals.detail', args: JSON.stringify({ workspaceId, goalId }) },
+        headers: { 'x-papercusp-workspace': workspaceId },
+      });
+      expect(detailResponse.ok()).toBe(true);
+      const detail = (await detailResponse.json()).rows[0];
+      expect(detail.goal.id).toBe(goalId);
+      expect(detail.goalData.collections.worklist.selection.selected.slice().sort()).toEqual(refs.slice().sort());
+
+      await native('navigate', `${process.env.VERIFY_TAURI_DEV_URL}/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${workspaceId}&hudgoal=${goalId}&hudwoeedit=false&hudwoescope=all&hudwoesearch=&hudwoestate=&hudwoeempty=true`, '--json');
+      await ready(`!!document.querySelector('${panel} [aria-label="Goal health"]') && !!document.querySelector('${panel} .woe__header button[aria-pressed="false"]')`);
+      await measure(`(() => {
+        const original = window.fetch.bind(window);
+        window.__realWoeWrites = [];
+        window.fetch = (input, init) => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+          if (!['GET', 'HEAD'].includes(method) && new URL(url, location.href).pathname.startsWith('/api/admin/goals/')) {
+            window.__realWoeWrites.push({ url, method });
+            return Promise.reject(new Error('Read-only actual-goal verification refuses goal writes'));
+          }
+          return original(input, init);
+        };
+        return true;
+      })()`);
+      // Edit priorities changes URL view state. Do not click membership,
+      // reorder, review/apply, pause or any other live mutation control.
+      await native('click', `${panel} .woe__header button[aria-pressed="false"]`, '--json');
+      await ready(`new URL(location.href).searchParams.get('hudwoeedit') === 'true' && document.querySelectorAll('${panel} [data-testid="ongoing-worklist-row"]').length > 0`);
+      const dom = await measure(`(() => {
+        const root = document.querySelector('${panel}');
+        return {
+          url: location.pathname + location.search,
+          rows: root.querySelectorAll('[data-testid="ongoing-worklist-row"]').length,
+          selected: Array.from(root.querySelectorAll('.woe__scope--in')).map(button => ({
+            id: button.closest('[data-worklist-id]').dataset.worklistId,
+            label: button.getAttribute('aria-label').replace(/^Remove /, ''),
+          })),
+          inScope: Array.from(root.querySelectorAll('[aria-label="Scope"] button')).find(b => /^In worklist/.test(b.textContent))?.textContent,
+          totals: root.querySelector('[aria-label="Totals"]')?.children.length ?? 0,
+          chart: root.querySelector('.woe__chart svg[role="img"]')?.getAttribute('aria-label'),
+          unavailable: !!root.querySelector('.woe__unavailable'),
+          pending: !!root.querySelector('[aria-label="Pending changes"]'),
+          writes: window.__realWoeWrites,
+        };
+      })()`);
+      const after = await readSaved();
+      await info.attach('real-goal-table-readback', { body: JSON.stringify({ goalId, before, expected, dom, after, migration }), contentType: 'application/json' });
+      expect(dom.rows).toBeGreaterThan(0);
+      expect(dom.selected.sort((a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id)))
+        .toEqual(expected.sort((a, b) => a.id.localeCompare(b.id)));
+      expect(dom.inScope).toMatch(/In worklist\s*·\s*10\s*$/);
+      expect(dom.totals).toBe(6);
+      expect(dom.chart).toMatch(/work items finished in the last \d+ days/);
+      expect(dom.unavailable).toBe(false);
+      expect(dom.pending).toBe(false);
+      expect(dom.writes).toEqual([]);
+      expect(after).toEqual(before);
+      // Capture this owned display directly: the platform window title differs
+      // between desktop builds, while DISPLAY is verifier-provenanced.
+      const screenshot = info.outputPath('real-goal-progress-table.png');
+      await run('import', ['-display', process.env.VERIFY_TAURI_DISPLAY!, '-window', 'root', screenshot], { timeout: 20_000 });
+      await info.attach('real-goal-progress-table', { path: screenshot, contentType: 'image/png' });
+    });
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+});
+
 test('Work on Everything Design C cockpit and priority editor stay readable in the native viewport', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the maintained isolated native rig');
   await recordJourney(info, async () => {
@@ -318,18 +430,38 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     expect(layout.totals).toBe(true);
     expect(layout.chart).toBe(true);
     for (const next of layout.nextSteps) expect(next.trim().length).toBeGreaterThan(0);
-    const rowGeometry = [];
-    for (const id of ids) {
-      const selector = `${panel} [data-testid="ongoing-worklist-row"][data-worklist-id="${id}"]`;
-      await native('eval', `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'center' })`);
-      const geometry = await measure(nativeWorklistRowGeometry(selector));
-      rowGeometry.push({ id, ...geometry });
+    const captureRows = async () => {
+      const rows = [];
+      for (const id of ids) {
+        const selector = `${panel} [data-testid="ongoing-worklist-row"][data-worklist-id="${id}"]`;
+        await native('eval', `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'center' })`);
+        rows.push({ id, ...await measure(nativeWorklistRowGeometry(selector)) });
+      }
+      return rows;
+    };
+    const rowGeometry = await captureRows();
+    const firstRow = `${panel} [data-testid="ongoing-worklist-row"]`;
+    const table = `document.querySelector(${JSON.stringify(firstRow)}).closest('.woe__table-wrap')`;
+    const originalShrink = await measure(`${table}.style.flexShrink`);
+    expect(await measure(`getComputedStyle(${table}).flexShrink`)).toBe('0');
+    let oldShrinkRows;
+    try {
+      // Restore the original CSS in the same native renderer. DOM row counts
+      // still pass, while the visibility detector must catch the regression.
+      await native('eval', `${table}.style.flexShrink = '1'`);
+      oldShrinkRows = await captureRows();
+      await native('screenshot', '--output', info.outputPath(`worklist-old-shrink-${expectedWidth}.png`));
+    } finally {
+      await native('eval', `${table}.style.flexShrink = ${JSON.stringify(originalShrink)}`);
     }
     await info.attach('native-worklist-row-geometry', {
-      body: JSON.stringify({ viewport: { width: layout.width, height: layout.height }, rows: rowGeometry, sourceReceipt }),
+      body: JSON.stringify({ viewport: { width: layout.width, height: layout.height },
+        rows: rowGeometry, oldShrinkRows, sourceReceipt }),
       contentType: 'application/json',
     });
     await native('screenshot', '--output', info.outputPath(`worklist-${expectedWidth}.png`));
+    expect(oldShrinkRows.some(row => row.visibleHeight < Math.min(row.height, 32) - 1),
+      'the original flex shrink clips a row despite its presence in the DOM').toBe(true);
     for (const row of rowGeometry) {
       expect(row.height, `plan ${row.id} has a rendered row`).toBeGreaterThan(0);
       expect(row.visibleHeight, `plan ${row.id} is visible beyond all clipping ancestors`)
