@@ -531,10 +531,25 @@ describe('pruneStaleForeign (WI-10007424: hand-named entries beside the runs)', 
     const root = tmp();
     for (const n of ['20260101T000000Z-1', '20260102T000000Z-2', '20260103T000000Z-3']) {
       mkdirSync(path.join(root, n));
-      writeFileSync(path.join(root, n, 'result.json'), '{}');
+      writeFileSync(path.join(root, n, 'result.json'), JSON.stringify({
+        schemaVersion: 1,
+        runId: n,
+        startedAt: '2026-01-01T00:00:00.000Z',
+        endedAt: '2026-01-01T00:01:00.000Z',
+        verdict: 'fail',
+        phases: [],
+      }));
     }
     oldTree(root, 'old-scratch');
-    const r = await pruneEvidenceRoot(root, { VH_KEEP_RUNS: '1', VH_FOREIGN_MAX_AGE_HOURS: '72' }, NOW);
+    const r = await pruneEvidenceRoot(
+      root,
+      { VH_KEEP_RUNS: '1', VH_FOREIGN_MAX_AGE_HOURS: '72' },
+      NOW,
+      {
+        measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }),
+        reserveBytes: () => 400,
+      },
+    );
     expect(r.runs.sort()).toEqual(['20260101T000000Z-1', '20260102T000000Z-2']);
     expect(r.foreign).toEqual({ removed: ['old-scratch'], unjudged: [] });
     expect(formatForeignPruneLine(r.foreign)).toBe('VH_PRUNED_FOREIGN removed=old-scratch unjudged=-');

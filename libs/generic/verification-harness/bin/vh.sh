@@ -53,7 +53,8 @@
 # block the harness it instruments. It does not override a measured release-local disk-reserve
 # refusal. VH_KEEP_RUNS bounds the run count (default 30); low disk
 # pressure can remove older valid terminal runs below that count to restore the disk alarm's
-# critical reserve. latest, live/incomplete runs, and .vh-keep runs are protected. A
+# critical reserve. latest, incomplete evidence, and .vh-keep runs are protected; emergency
+# cleanup requires a valid terminal result. A
 # release-local shell run stops with ENOSPC when safe retention cannot restore the measured
 # reserve, instead of starting another expensive write-heavy cut.
 # Anything else in the evidence root (a hand-named scratch or investigation dir, a stray file) is

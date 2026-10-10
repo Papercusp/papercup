@@ -217,7 +217,7 @@ export async function linkLatest(evidenceRoot: string, runDir: string): Promise<
 /** Run dirs are named by newRunId (and vh.sh): `<yyyymmddThhmmssZ>-<pid>`, `.N` on a same-second collision. */
 const RUN_DIR_RE = /^\d{8}T\d{6}Z-\d+(\.\d+)?$/;
 export const DEFAULT_KEEP_RUNS = 30;
-/** A run dir with no result.json yet is in progress unless it is older than this. */
+/** Count retention keeps an incomplete run until its evidence dir is older than this. */
 const IN_PROGRESS_GRACE_MS = 24 * 60 * 60 * 1000;
 const GIB = 1024 ** 3;
 /** An entry with this file at its top level is kept regardless of age. */
@@ -292,18 +292,6 @@ async function latestRunId(evidenceRoot: string): Promise<string | null> {
   }
 }
 
-function originatingPidAlive(runId: string): boolean {
-  const match = /^\d{8}T\d{6}Z-(\d+)(?:\.\d+)?$/.exec(runId);
-  const pid = match ? Number(match[1]) : NaN;
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 async function hasKeepMarker(runDir: string): Promise<boolean> {
   return lstat(path.join(runDir, VH_KEEP_MARKER)).then(() => true, () => false);
 }
@@ -337,10 +325,8 @@ async function removeRunIfEligible(
   const terminal = await hasTerminalResult(evidenceRoot, runId);
   if (await hasKeepMarker(runDir)) return false;
   if (requireTerminal && !terminal) return false;
-  // A valid terminal receipt is authoritative even when the producing process is still
-  // alive (a long-lived process may have started several sequential harness runs). PID liveness
-  // protects incomplete checkpoints, whose result.json may be rewritten after every phase.
-  if (!terminal && originatingPidAlive(runId)) return false;
+  // An incomplete checkpoint has no terminal receipt and receives the existing 24-hour
+  // grace before count retention can remove it.
   if (!terminal) {
     const born = await stat(runDir).then((s) => s.mtimeMs, () => now);
     if (now - born < IN_PROGRESS_GRACE_MS) return false;
@@ -359,7 +345,8 @@ async function removeRunIfEligible(
 /**
  * Retention keeps the newest `keep` run dirs by count, then removes the oldest completed runs
  * only as needed to restore the shared critical write-headroom reserve. It always preserves
- * `latest`, a live originating PID, an unfinished run, and a `.vh-keep` marker. If disk pressure
+ * `latest` and a `.vh-keep` marker. Disk-pressure cleanup removes only valid terminal results;
+ * count retention keeps incomplete runs through the existing 24-hour grace. If disk pressure
  * remains but no completed run is eligible, the report says unresolved rather than deleting
  * partial or unrecognized evidence. `VH_KEEP_RUNS=0` disables count pruning only; the emergency
  * disk-pressure floor still applies.
