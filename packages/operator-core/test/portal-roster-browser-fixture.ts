@@ -17,6 +17,7 @@ type PortalRosterBrowserInput = {
   portalSourceRoot: string;
   cookieName: string; ownToken: string; foreignToken: string;
   shortcuts?: boolean;
+  settings?: boolean;
   history?: { selectedSessionId: number; neighborSessionId: number; selectedRolloutId: string; neighborRolloutId: string;
     selectedMarker: string; neighborMarker: string };
   verifyReceipt?: (receipt: { status: number; body: any }, summary: string, wake: boolean) => Promise<string>;
@@ -29,7 +30,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -41,7 +42,15 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.shortcuts ? `
+  const entry = input.settings ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { Toaster } from 'sonner';
+    import ProfilePage from ${JSON.stringify(join(operatorRoot, 'app/settings/profile/page.tsx'))};
+    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null,
+      React.createElement(React.Fragment, null, React.createElement(ProfilePage), React.createElement(Toaster))));
+  ` : input.shortcuts ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -112,9 +121,10 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const bundle = result.outputFiles[0].contents;
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.shortcuts
-    ? '/packages/ui/src/portal-shortcuts.tsx' : '/packages/ui/src/agents-popover.tsx')),
-    'Executed bundle must contain the actual Portal control');
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.settings
+    ? '/apps/operator/app/settings/profile/page.tsx' : input.shortcuts
+      ? '/packages/ui/src/portal-shortcuts.tsx' : '/packages/ui/src/agents-popover.tsx')),
+    'Executed bundle must contain the actual product control');
   return { portal, entry, bundle, originals };
 }
 
@@ -162,8 +172,15 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.message));
-    const url = new URL(input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
+    const url = new URL(input.settings || input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
     await page.goto(url.href);
+    if (input.settings) {
+      const receipt = await runPrivateProfilePage(page, context, input);
+      assert.deepEqual(pageErrors, [], 'real Profile form must complete without browser errors');
+      const result = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(result, null, 2));
+      return result;
+    }
     if (input.shortcuts) {
       const receipt = await runPrivateShortcutsPage(page, context, input);
       assert.deepEqual(pageErrors, [], 'real shortcut settings and dispatcher must complete without browser errors');
@@ -248,6 +265,61 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     throw error;
   } finally { await context.close(); await browser.close(); }
+}
+
+/** The same Profile page the maintained Settings surface selects by default. */
+async function runPrivateProfilePage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
+  const profile = new URL('/api/profile', input.base).href;
+  const name = page.getByPlaceholder('Your name', { exact: true });
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  const marker = `private-settings-${process.pid}`;
+  const draft = marker + '-retry';
+  const writes: Array<{ status: number; origin: string | undefined; body: unknown }> = [];
+  const submit = async (expectedStatus: number) => {
+    const pending = page.waitForResponse(r => r.url() === profile && r.request().method() === 'POST');
+    await save.click();
+    const response = await pending;
+    const receipt = { status: response.status(), origin: response.request().headers().origin, body: await response.json() };
+    writes.push(receipt);
+    assert.equal(receipt.status, expectedStatus, JSON.stringify(receipt.body));
+    return receipt;
+  };
+  await name.waitFor();
+  await name.fill(marker);
+  await submit(200);
+  await page.getByText('Profile saved', { exact: true }).waitFor();
+  assert.equal((await (await page.request.get(profile)).json()).display_name, marker,
+    'actual Profile submit must persist the exact displayed name');
+  const reloadUrl = page.url();
+  await page.reload();
+  assert.equal(page.url(), reloadUrl);
+  assert.equal(new URL(page.url()).searchParams.get('ws'), input.workspace);
+  assert.equal(new URL(page.url()).searchParams.get('app'), 'settings');
+  await name.waitFor();
+  assert.equal(await name.inputValue(), marker);
+  await name.fill(draft);
+  // Chromium sends this header to the real API; no request interception or
+  // response substitution is used to manufacture a denied save.
+  await context.setExtraHTTPHeaders({ origin: 'https://unapproved.invalid' });
+  const denied = await submit(403);
+  assert.equal(denied.origin, 'https://unapproved.invalid');
+  await page.getByText('save failed: HTTP 403', { exact: true }).waitFor();
+  assert.equal(await name.inputValue(), draft, 'denied Profile save must retain the form draft');
+  await context.setExtraHTTPHeaders({});
+  assert.equal((await (await page.request.get(profile)).json()).display_name, marker,
+    'denied Profile save must leave stored state untouched');
+  await submit(200);
+  assert.equal((await (await page.request.get(profile)).json()).display_name, draft,
+    'retry must persist the retained draft');
+  await page.reload();
+  await name.waitFor();
+  assert.equal(await name.inputValue(), draft);
+  const result = { workspace: input.workspace, authMethod: 'private-loopback-profile-with-cookie',
+    savedExactValue: true, deepLinkReload: true, denialStatus: denied.status, draftRetained: true,
+    deniedWriteIsolated: true, retryPersisted: true, retryReload: true, writes,
+    scope: 'Actual default Settings Profile page and private loopback profile HTTP with real Origin denial; host geometry is a fixture, no full Settings navigation or hosted tenant-profile acceptance' };
+  writeFileSync(join(input.evidence, 'portal-profile-dom.html'), await page.content());
+  return result;
 }
 
 /** Real settings mutation and shortcut bus; only host navigation geometry is supplied. */
