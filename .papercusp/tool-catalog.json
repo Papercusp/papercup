@@ -909,7 +909,7 @@
           "POST"
         ]
       },
-      "description": "Read recent worker-activity rows (native tool calls / lifecycle / todos) from the cross-CLI activity bridge. Filter by owner (one worker's pane), session_id (one CLI run of it), harness, agent (claude/codex/omp), kind (tool/lifecycle/todos); since_id pages forward from a cursor. The curator + fleet view read this; the live push is /api/activity/stream.",
+      "description": "Read recent worker-activity rows (native tool calls / lifecycle / todos) from the cross-CLI activity bridge. Filter by owner (one worker's pane), session_id (one CLI run of it), harness, agent (claude/codex/omp), kind (tool/lifecycle/todos); since_id pages forward from an unsigned decimal activity-row ID cursor, not a timestamp. Use activity:tool-log for absolute ISO 8601 wall-clock bounds. The curator + fleet view read this; the live push is /api/activity/stream.",
       "capabilities": [
         "activity:read"
       ],
@@ -928,7 +928,7 @@
         "kettle"
       ],
       "guidance": {
-        "when": "You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner for one pane, session_id for one CLI run of it, harness for one project, since_id to page forward.",
+        "when": "You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner for one pane, session_id for one CLI run of it, harness for one project, or an unsigned decimal activity-row ID as since_id to page forward (not a timestamp; use activity:tool-log for wall-clock windows).",
         "notWhen": "For a LIVE feed subscribe to the /api/activity/stream SSE (the pui does this). To report activity (you almost never need to) use `activity:report`. For coord messages use `coord:inbox`."
       }
     },
@@ -28784,7 +28784,7 @@
           "POST"
         ]
       },
-      "description": "Publish a finished owner-facing report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. Returns a stable `report_id` and UI path. `body_md` is Markdown (Mermaid allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the old body remains resolvable. After publishing, call `reports:get { id: report_id }` and verify the complete body and visibility before citing a descriptive Markdown link to the GUI report page. Use the returned same-origin path directly as its Markdown target in Papercusp/Tauri; use an absolute HTTP(S) URL only when a verified GUI origin is available. Never guess or ask the owner for an origin solely to format the link, or give a bare id. Reports preserve dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with `docs:get`, and link the maintained procedure from the report without copying private incident details.",
+      "description": "Publish a finished owner-facing report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. Returns a stable `report_id` and UI path. `body_md` is Markdown (Mermaid allowed), max 512KB; oversized bodies are refused with the exact overage, never truncated. The server stamps author, pot, and session. Use `supersedes` to publish a correction in the same lineage; the old body remains resolvable. After publishing, call `reports:get { id: report_id }` and verify the complete body and visibility before citing a descriptive Markdown link to the GUI report page. Use the returned same-origin path directly as its Markdown target in Papercusp/Tauri; use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link, or give a bare id. Reports preserve dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with `docs:get`, and link the maintained procedure from the report without copying private incident details.",
       "capabilities": [
         "reports:write"
       ],

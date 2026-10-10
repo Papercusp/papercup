@@ -727,7 +727,8 @@ describe('registered benchmark provider authentication', () => {
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
-  INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route') }));
+  INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route'),
+  INTERNAL_SCOPED_SESSION_CONFINEMENT: Symbol.for('benchmark-test-server-ceiling') }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 
 const options: CurrentSuBenchOptions = {
@@ -1153,6 +1154,9 @@ describe('current benchmark restart and live binding', () => {
     expect(forwarded.authenticatedPrincipal).toBe((ctx as unknown as { authenticatedPrincipal: unknown }).authenticatedPrincipal);
     expect(forwarded.workspaceId).toBe(ctx.workspaceId);
     expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
+    expect(forwarded[Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({
+      denyTools: [], denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint'],
+      imposedBy: expect.stringContaining('benchmark-host') });
     expect(Object.getOwnPropertySymbols(ctx)).not.toContain(Symbol.for('benchmark-test-private-route'));
     await ports.killTask('task-own');
     expect(native.kill).toHaveBeenCalledWith('task-own', { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });

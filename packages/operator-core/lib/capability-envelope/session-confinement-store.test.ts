@@ -66,6 +66,10 @@ describe('session-confinement store — installation', () => {
 describe('exact native launch ceilings', () => {
   const confinement = { denyTools: [], denyOutside: ['coord:whoami', 'work_items:get'],
     reason: 'metered native gateway', imposedBy: 'benchmark-host' };
+  it.each(['double-encoded JSONB', 'invalid population'])('rejects %s as unreadable authority', async kind => {
+    pgState.payload = kind === 'double-encoded JSONB' ? JSON.stringify({ sessions: {} }) : { sessions: [] };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).rejects.toThrow(/population is malformed/);
+  });
   it('reads a declaration written by another host even with an empty warm cache', async () => {
     pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement }) } };
     expect(await readSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).toEqual(confinement);

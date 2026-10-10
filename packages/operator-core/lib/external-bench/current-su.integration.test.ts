@@ -31,7 +31,8 @@ import { makeBearerCredentialResolver } from '../inference-gateway/credential-st
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
-  INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route') }));
+  INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route'),
+  INTERNAL_SCOPED_SESSION_CONFINEMENT: Symbol.for('benchmark-test-server-ceiling') }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 // Only the private home allocator is substituted. SQL bindings, filesystem
 // bytes, process pins, request observation and HTTP reads use production IO.

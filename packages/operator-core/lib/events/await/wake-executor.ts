@@ -2596,6 +2596,12 @@ export interface ExecuteWakeDeps {
   /** WI-10002854: is this live recorded pid a headless resume turn of the same
    *  session? When it is, the wake parks. It never force-interrupts that turn. */
   isHeadlessResumeTurn?: (pid: number, resumeId: string | null) => boolean;
+  /** Restore the standing inbox-wake after a successful resume claim and before
+   *  the resumed process starts. Injected so the executor stays hermetic in tests. */
+  ensureInboxWakeArmedForActiveSession?: (input: {
+    ownerId: string;
+    forceRecheck?: boolean;
+  }) => Promise<boolean>;
   kill?: typeof killPty;
   presence?: typeof getPresence;
   /** EI-203843: durable release-latch read, before any wake reanimation. */
@@ -3564,6 +3570,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const isHeadlessResumeTurn = deps.isHeadlessResumeTurn ?? defaultIsHeadlessResumeTurn;
   const accountHeadlessResumeTurn = deps.accountHeadlessResumeTurn ?? defaultAccountHeadlessResumeTurn;
   const claimResume = deps.claimResume ?? claimAdvSessionResume;
+  const ensureInboxWakeArmedForActiveSession = deps.ensureInboxWakeArmedForActiveSession ?? (async (input: {
+    ownerId: string;
+    forceRecheck?: boolean;
+  }) => {
+    const { ensureInboxWakeArmedForActiveSession: ensureArmed } = await import('./inbox-wake-arm');
+    return ensureArmed(input);
+  });
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
@@ -4948,6 +4961,23 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
             })();
           }
         : undefined;
+      // A resume claim advances adv_sessions.started_at to the new incarnation.
+      // Re-arm just before spawn so the first native tool call cannot beat the
+      // activity:report self-heal. forceRecheck bypasses only that helper's
+      // process-local throttle; its live-session and same-incarnation cancel
+      // checks still protect an explicit inbox-wake opt-out. This is best-effort
+      // and bounded so a PG stall does not strand the wake before process start.
+      try {
+        await withWakeTimeout(
+          ensureInboxWakeArmedForActiveSession({ ownerId: d.subscriberId, forceRecheck: true }),
+          `re-arm inbox wake for resumed session ${d.subscriberId}`,
+          2_000,
+        );
+      } catch (err) {
+        console.warn(
+          `[wake-executor] inbox-wake re-arm failed for ${d.subscriberId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env }, onExit);
       if (!pid2) return { kind: 'error', error: 'headless resume spawn failed' };
       // With no exit observer the ledger row is not closed here. The reconciler

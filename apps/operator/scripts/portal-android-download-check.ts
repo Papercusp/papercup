@@ -2,9 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { tsImport } from 'tsx/esm/api';
 
 export type PhaseReceipt = { phase: string; outcome: 'passed' | 'failed' };
+// The executable runs under tsx already. A second tsImport namespace corrupts
+// import.meta.url in the fixture's own tsImport calls (path?namespace=...).
+export async function loadPortalModule(path: string) {
+  const mod = await import(pathToFileURL(path).href);
+  return { ...mod.default, ...mod };
+}
 export async function assertAuthenticatedArtifact(oracle: any, response: any, options: any, root: string, expectedRelease: string) {
   const release = oracle.resolveServedRelease({ ...options, html: await response.text() });
   if (release.release !== expectedRelease) throw new Error('authenticated_artifact_changed');
@@ -49,8 +54,7 @@ export async function main() {
   const envFile = process.env.PORTAL_ANDROID_DOWNLOAD_ENV;
   if (!origin || !expectedRelease || !expectedHash || !output || !envFile) throw new Error('explicit_candidate_inputs_required');
   const load = async (path: string) => {
-    const mod = await tsImport(pathToFileURL(join(root, path)).href, import.meta.url);
-    return { ...mod.default, ...mod };
+    return loadPortalModule(join(root, path));
   };
   const admission = await load('e2e/hosted-test-user.ts');
   const oracle = await load('e2e/served-artifact.ts');
@@ -65,8 +69,8 @@ export async function main() {
       const release = oracle.resolveServedRelease({ html: await (await fetch(origin)).text(), releasesDir: runtime.standaloneRuntimePaths(root).releasesRoot, journeyStartedAt: new Date(), expectedBuildId: expectedRelease.split('-2026')[0] });
       if (release.release !== expectedRelease) throw new Error('artifact_changed');
       oracle.assertTutorialSourceCustody(release, root);
-      kit = await admission.loadHostedTestUserKit(root);
     } },
+    { phase: 'fixture-preflight', run: async () => { kit = await admission.loadHostedTestUserKit(root); } },
     { phase: 'test-admission', run: async () => {
       const nonce = randomUUID();
       user = await kit.create({ email: `android-click-${nonce}@example.test`, attemptId: `android-click-${nonce}`, firstName: 'Android TEST', lastName: 'Download', displayName: 'Android download TEST' });

@@ -1148,7 +1148,16 @@ export function liveCurrentSuBenchPorts(
       requireHost(args);
       const module = await import('../agent-tools/capability/launch-agent');
       requireHost(args);
-      return module.default.handler(args, { ...ctx, [module.INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway } as PapercuspUnifiedToolContext);
+      // Server-side operations run outside the native OS boundary. Only local
+      // progress/identity reads are admitted here; the native sandbox supplies
+      // coding tools. Discovery, remote brains, arbitrary server execution and
+      // lifecycle fan-out cannot cause unmetered inference for this assignment.
+      const confinement = Object.freeze({ denyTools: Object.freeze([] as string[]),
+        denyOutside: Object.freeze(['coord:whoami', 'work_items:get', 'work_items:checkpoint']),
+        imposedBy: `benchmark-host ${accounting!.assignmentId}`,
+        reason: 'All benchmark inference must cross the assignment\'s private metered gateway; native sandboxed tools perform local coding.' });
+      return module.default.handler(args, { ...ctx, [module.INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway,
+        [module.INTERNAL_SCOPED_SESSION_CONFINEMENT]: confinement } as PapercuspUnifiedToolContext);
     },
     getTask: async id => (await import('../task-manager/store')).getTask(id),
     listTasks: async filter => (await import('../task-manager/store')).listTasks(filter),

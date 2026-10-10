@@ -9,6 +9,51 @@ import { buildPortalRosterBrowser } from '../../../test/portal-roster-browser-fi
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
 
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real private Portal shortcuts persist a remap across reload, deny a foreign Origin write and restore dispatch on reset', async context => {
+    preparePrivateRosterSocketRoot();
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor', shortcuts: true });
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+        'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/shortcut-registry.ts',
+        'packages/operator-core/lib/shortcut-bus.ts', 'packages/operator-core/lib/profile-pref.ts',
+        'packages/operator-core/lib/endpoint-route/routes/misc/profile.ts',
+        'apps/operator/app/settings/shortcuts/page.tsx', 'apps/operator/app/_components/GlobalShortcutDispatcher.tsx',
+        'apps/operator/lib/hotkeys.ts', 'packages/operator-ui/src/shortcuts/index.tsx',
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+      execute: async (observe, evidenceDir) => {
+        await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1',
+          ROSTER_SHORTCUT_BROWSER_PROOF: '1' };
+        delete env.PC_HEAVY_PREEMPT_READY_FILE; delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+        delete env.ROSTER_STOP_HTTP_MUTATION; delete env.ROSTER_HISTORY_BROWSER_PROOF;
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+        { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
+          if (line.startsWith('ROSTER_STOP_HTTP_PHASE ')) console.info(line); });
+        let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+        try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+        finally { await rm(join(evidenceDir, 'node_modules')); }
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
+          exitWaitTimedOut: false, stdioDrainTimedOut: false, code: 0 });
+        expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
+        const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_BROWSER_RECEIPT '));
+        expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+        expect(JSON.parse(line!.slice('ROSTER_COORD_BROWSER_RECEIPT '.length))).toMatchObject({
+          authMethod: 'private-loopback-profile-with-cookie', remapImmediate: true, remapPersisted: true, deepLinkReload: true,
+          resetRestoredDefault: true, denialStatus: 403, deniedWriteIsolated: true, oldChordFalsifier: true });
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ROSTER_SHORTCUT_BROWSER_PROOF_RUN ' + runId);
+  }, options.testTimeoutMs);
+
 // Portal is a separately maintained app. Missing source is an explicit skip,
 // never a pass; acceptance runs must select its canonical source checkout.
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(

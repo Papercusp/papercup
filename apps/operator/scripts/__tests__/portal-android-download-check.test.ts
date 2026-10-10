@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { assertAuthenticatedArtifact, enterSupportedAccountShell, runDownloadPhases } from '../portal-android-download-check';
+import { assertAuthenticatedArtifact, enterSupportedAccountShell, loadPortalModule, runDownloadPhases } from '../portal-android-download-check';
+import { fileURLToPath } from 'node:url';
 
 describe('Android served download phase evidence', () => {
+  it('imports fixture modules with the active tsx loader without a second namespace', async () => {
+    const module = await loadPortalModule(fileURLToPath(new URL('../portal-android-download-check.ts', import.meta.url)));
+    expect(module.runDownloadPhases).toBeTypeOf('function');
+  });
   it('refuses changed authenticated build before onboarding or click and still cleans', async () => {
     const actions: string[] = [];
     const oracle = {

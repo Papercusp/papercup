@@ -393,6 +393,8 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     countAgentToolCallsFn: vi.fn(async () => null) as never,
     forceResume: vi.fn(async () => false),
     claimResume: vi.fn(async () => true),
+    // Hermetic by default: a real re-arm reads/writes coordination PG state.
+    ensureInboxWakeArmedForActiveSession: vi.fn(async () => false),
     // WI-10002854 — hermetic by default. The real accountant writes a task-ledger
     // row and the adv-session pid to PG, and the real oracle reads the host's
     // /proc. Tests of the fence inject their own.
@@ -3075,6 +3077,41 @@ describe('executeWake — the liveness ladder', () => {
     expect((out as { reason: string }).reason).toContain('resume claim');
     expect(claimResume).toHaveBeenCalledWith(42, null, undefined, 'su-abc');
     expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the standing inbox-wake after the successful claim and before the headless resume spawn', async () => {
+    const order: string[] = [];
+    const claimResume = vi.fn(async () => {
+      order.push('claim');
+      return true;
+    });
+    const ensureInboxWakeArmedForActiveSession = vi.fn(async (input: {
+      ownerId: string;
+      forceRecheck?: boolean;
+    }) => {
+      order.push('rearm');
+      // false can mean the owner explicitly opted out during this incarnation;
+      // it must not prevent delivery of the already-claimed wake.
+      expect(input).toEqual({ ownerId: 'su-abc', forceRecheck: true });
+      return false;
+    });
+    const spawnDetached = vi.fn(() => {
+      order.push('spawn');
+      return 4321;
+    });
+
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        alive: vi.fn(() => false),
+        claimResume,
+        ensureInboxWakeArmedForActiveSession,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(order).toEqual(['claim', 'rearm', 'spawn']);
   });
 
   it('WI-666: force-resume timeout keeps the alive loop owner safely parked', async () => {
