@@ -3129,16 +3129,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           ]
         : []),
       // Exact events:status snapshots carry the only in-band identity for the
-      // requested key. Preserving the event_inspection root alone kept that
-      // snapshot from disappearing, but an oversized history could still be
-      // cut with only an aggregate omittedCount. Keep the identity/watermark
-      // first, then keep history keys selectable. If an array is too large,
-      // projectBoundedPayload places a typed truncation row inside that field;
-      // its location names the affected history and its counts prevent the
-      // visible prefix from reading as complete. The scratch cursor remains
-      // the route to the complete contents.
+      // requested key. Preserve the success bit and event/watermark first, then
+      // keep history keys selectable. Oversized arrays stay domain-only; the
+      // containing envelope's partial flag and omission entry disclose the cut.
+      // The scratch cursor remains the route to the complete contents.
       ...(opts.toolName === 'events:status'
         ? [
+            'ok',
             'event_inspection.event',
             'event_inspection.current_generation',
             'event_inspection.current_state',
@@ -3285,7 +3282,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(opts.toolName === 'coord:orient'
         ? { preserveTopLevelKeys: ['self', 'recovery'] as const }
         : opts.toolName === 'events:status'
-          ? { preserveTopLevelKeys: ['event_inspection'] as const }
+          ? { preserveTopLevelKeys: ['ok', 'event_inspection'] as const }
           : schedulerClaim
             ? { preserveTopLevelKeys: ['ok', 'claimReceipt'] as const }
             : agentReviewClaim
