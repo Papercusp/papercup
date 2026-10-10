@@ -178,6 +178,27 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
   }
 }
 
+/**
+ * Preserve raw profile bytes across guest/host ownership boundaries. A guest may
+ * already have saved the capture before it exits; verifying those same bytes
+ * needs read access, not permission to reopen its file for writing.
+ * @param {string} file
+ * @param {string | Buffer} raw
+ * @returns {{ created: boolean, bytes: number }}
+ */
+export function persistCpuProfile(file, raw) {
+  const bytes = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+  try {
+    writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 });
+    return { created: true, bytes: bytes.length };
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (!readFileSync(file).equals(bytes))
+      throw new Error('CPU profile output already contains different bytes: ' + file);
+    return { created: false, bytes: bytes.length };
+  }
+}
+
 async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     save: { type: 'string' }, 'attach-existing': { type: 'boolean' },
@@ -195,8 +216,8 @@ async function main() {
     resumeStartup: values['resume-startup'] ?? false,
     deadlineMs: values['attach-existing'] ? 50000 : durationMs + 20000 });
   if (values.save) {
-    writeFileSync(values.save, JSON.stringify(profile));
-    console.error(`saved raw profile to ${values.save}`);
+    const saved = persistCpuProfile(values.save, JSON.stringify(profile));
+    console.error(`${saved.created ? 'saved' : 'verified existing'} raw profile at ${values.save}`);
   }
   console.error(JSON.stringify({ target, captureMs }));
   const { totalUs, excludedUs, realUs, frames } = aggregateCpuProfile(profile);

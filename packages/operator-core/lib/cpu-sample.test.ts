@@ -1,13 +1,41 @@
 // @vitest-environment node
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import * as cdpInspector from '../../../scripts/cdp-inspector.mjs';
-import { captureCpuProfile, readInspectorProcessIdentity } from '../../../scripts/cpu-sample.mjs';
+import { captureCpuProfile, persistCpuProfile, readInspectorProcessIdentity } from '../../../scripts/cpu-sample.mjs';
+
+it('creates a raw profile and verifies an existing read-only capture without rewriting it', () => {
+  const out = mkdtempSync(join(tmpdir(), 'cpu-sample-save-'));
+  const file = join(out, 'profile.cpuprofile');
+  const raw = Buffer.from('{"nodes":[{"id":1}],"samples":[1]}');
+  try {
+    expect(persistCpuProfile(file, raw)).toEqual({ created: true, bytes: raw.length });
+    expect(readFileSync(file)).toEqual(raw);
+    chmodSync(file, 0o444);
+    const before = statSync(file);
+    expect(persistCpuProfile(file, raw)).toEqual({ created: false, bytes: raw.length });
+    const after = statSync(file);
+    expect([after.ino, after.uid, after.mode, after.mtimeMs, after.ctimeMs])
+      .toEqual([before.ino, before.uid, before.mode, before.mtimeMs, before.ctimeMs]);
+  } finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+it('refuses a differing profile without overwriting the existing capture', () => {
+  const out = mkdtempSync(join(tmpdir(), 'cpu-sample-collision-'));
+  const file = join(out, 'profile.cpuprofile');
+  const original = '{"nodes":[{"id":1}],"samples":[1]}';
+  try {
+    writeFileSync(file, original);
+    expect(() => persistCpuProfile(file, '{"nodes":[],"samples":[]}'))
+      .toThrow('already contains different bytes');
+    expect(readFileSync(file, 'utf8')).toBe(original);
+  } finally { rmSync(out, { recursive: true, force: true }); }
+});
 
 async function withTarget(run: (target: { pid: number; port: number; out: string }) => Promise<void>) {
   const out = mkdtempSync(join(tmpdir(), 'cpu-sample-test-'));
