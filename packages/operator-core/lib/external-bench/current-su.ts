@@ -1064,12 +1064,33 @@ export interface CurrentSuBenchPorts extends Pick<CurrentSuBenchObservations, 'a
   killTask(taskId: string): Promise<ControlOutcome>;
   sleep(ms: number): Promise<void>;
 }
+/** Stock shares verification/cleanup, but has no su launch port. */
+export interface CurrentStockBenchPorts extends Omit<CurrentSuBenchPorts, 'launch'> {
+  launchNative(input: { handle: BenchHarnessHandle; task: BenchTask; context: BenchmarkContextReceipt }): Promise<unknown>;
+}
+export const CURRENT_STOCK_CODEX_BLUEPRINT = 'native-codex';
+/** Validate the controller-issued object, its live lifetime and frozen scope. */
+export function requireCurrentBenchHostBinding(observations: Pick<CurrentSuBenchObservations, 'nativeGateway' | 'nativeAccountingBinding'>,
+  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>) {
+  const gateway = observations.nativeGateway && snapshotScopedInferenceGateway(observations.nativeGateway);
+  const host = observations.nativeGateway && currentBenchHostGateways.get(observations.nativeGateway);
+  const accounting = observations.nativeAccountingBinding;
+  if (!gateway || !host || !host.active() || !accounting ||
+      canonicalJson(accounting) !== canonicalJson(host.binding) || accounting.workspaceId !== opts.workspaceId ||
+      accounting.runId !== opts.runId || accounting.preregHash !== opts.preregistration.preregHash ||
+      accounting.assignmentId !== currentBenchAssignmentId(opts.runId, opts.armId, host.taskId, opts.seed) ||
+      canonicalJson(opts.preregistration.config) !== host.protocol) {
+    throw new Error('Current benchmark launch requires its active host-owned gateway and exact accounting binding.');
+  }
+  return host;
+}
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 export function currentBenchRunLabel(runId: string): string {
   if (!runId.trim()) throw new Error('Current benchmark execution requires a stable run id.');
   return `current-bench:${hash(runId).slice(0, 24)}:`;
 }
-const attemptLabel = (runId: string, handle: BenchHarnessHandle) => `${currentBenchRunLabel(runId)}${hash(handle.slug).slice(0, 24)}:`;
+export const currentBenchAttemptLabel = (runId: string, handle: BenchHarnessHandle) => `${currentBenchRunLabel(runId)}${hash(handle.slug).slice(0, 24)}:`;
+const attemptLabel = currentBenchAttemptLabel;
 
 export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: BenchHarnessHandle, problem: string, context?: BenchmarkContextReceipt): LaunchArgs {
   resolveBenchWorkspace(opts.workspaceId);
@@ -1125,13 +1146,22 @@ export async function recoverCurrentBenchRun(ports: Pick<CurrentSuBenchPorts, 'l
   return retirePrefix(ports, resolveBenchWorkspace(opts.workspaceId), currentBenchRunLabel(opts.runId));
 }
 export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuBenchPorts, opts: CurrentSuBenchOptions) {
+  return currentBenchHarnessDriver(lifecycle, ports, opts, 'current-su');
+}
+export function currentStockBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentStockBenchPorts, opts: CurrentSuBenchOptions) {
+  if (opts.armId !== 'baseline' || opts.agent !== 'codex') throw new Error('Stock benchmark requires the frozen native Codex baseline.');
+  return currentBenchHarnessDriver(lifecycle, ports, opts, 'stock-native');
+}
+function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuBenchPorts | CurrentStockBenchPorts,
+  opts: CurrentSuBenchOptions, kind: 'current-su' | 'stock-native') {
   const workspaceId = resolveBenchWorkspace(opts.workspaceId);
   currentBenchRunLabel(opts.runId);
   const registeredTasks = new Map<string, BenchTask>();
   const ops: BenchHarnessOps = {
     ...lifecycle,
     async createHarness(input) {
-      if (input.blueprintId !== FULL_SPINE_BLUEPRINT) throw new Error('Current su driver refuses a retired treatment blueprint.');
+      if (input.blueprintId !== (kind === 'stock-native' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT))
+        throw new Error('Current native driver refuses a different execution blueprint.');
       return lifecycle.createHarness(input);
     },
     async addFeature(input) {
@@ -1141,6 +1171,7 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
     async driveToDone({ handle, budget, timeoutMs, pollMs }): Promise<DriveResult> {
       const labelPrefix = attemptLabel(opts.runId, handle);
       const record: Record<string, unknown> = {
+        kind,
         configured: { agent: opts.agent, model: opts.model, effort: opts.effort, account: opts.account },
         identityStatus: 'unknown', measured: null, launchReceipt: null, terminalReceipt: null,
         protocolIdentity: { status: 'unobserved' },
@@ -1186,7 +1217,9 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
         record.initialContext = { status: 'verified-before-generation', ...contextEvidence };
         // A transport failure can happen after spawning: cleanup uses the durable label.
         started = true;
-        const receipt = payload(await ports.launch(currentBenchLaunchRequest(opts, handle, task.problemStatement, rereadContext)));
+        const receipt = payload(await ('launchNative' in ports
+          ? ports.launchNative({ handle, task, context: rereadContext })
+          : ports.launch(currentBenchLaunchRequest(opts, handle, task.problemStatement, rereadContext))));
         record.launchReceipt = receipt;
         const tasks = receipt.tasks as Array<{ taskId?: string }> | undefined;
         if (receipt.agentStarted !== true || tasks?.length !== 1 || !tasks[0]?.taskId) throw new Error('Native benchmark launch has no verified single-agent start.');
@@ -1278,15 +1311,7 @@ export function liveCurrentSuBenchPorts(
   const host = observations.nativeGateway === undefined ? undefined : currentBenchHostGateways.get(observations.nativeGateway);
   const accounting = observations.nativeAccountingBinding === undefined ? undefined : Object.freeze({ ...observations.nativeAccountingBinding });
   const requireBinding = () => {
-    if (!gateway || !host || !host.active() || !accounting ||
-        canonicalJson(accounting) !== canonicalJson(host.binding) ||
-        accounting.workspaceId !== workspaceId || accounting.runId !== opts.runId ||
-        accounting.preregHash !== opts.preregistration.preregHash ||
-        accounting.assignmentId !== currentBenchAssignmentId(opts.runId, opts.armId, host.taskId, opts.seed) ||
-        canonicalJson(opts.preregistration.config) !== host.protocol) {
-      throw new Error('Current benchmark launch requires its active host-owned gateway and exact accounting binding.');
-    }
-    return host;
+    return requireCurrentBenchHostBinding(observations, opts);
   };
   const requireHost = (args: LaunchArgs) => {
     const host = requireBinding();
