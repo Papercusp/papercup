@@ -138,6 +138,10 @@ beforeEach(() => {
   H.queryEnabled.clear();
   H.desktop = false;
   H.sync.set('harnessProjects.lite', [{ slug: 'papercusp' }, { slug: 'website' }]);
+  // The page also mounts the Slack setup card; give it a "nothing connected yet" answer so
+  // every test here sees a settled Slack card rather than its own read-failure alert.
+  route('GET', '/api/admin/triggers', { sources: [] });
+  route('GET', '/api/admin/triggers/slack/manifest', { ok: true, manifest: { display_information: { name: 'Papercusp' } } });
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string, init?: { method?: string; body?: string }) => {

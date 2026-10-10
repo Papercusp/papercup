@@ -122,6 +122,38 @@ describe('Slack external-trigger adapter', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('persists the workspace and bot display names auth.test returns, and omits them when absent', async () => {
+    const storage = { read: vi.fn(async () => ({})), update: vi.fn(async () => {}) };
+    const persistedConfig = async (authBody: Record<string, unknown>) => {
+      const values: unknown[] = [];
+      const sql = ((_strings: TemplateStringsArray, ...params: unknown[]) => {
+        values.push(...params);
+        return Promise.resolve([source()]);
+      }) as never;
+      await connectOwnedSlackSource(sql, {
+        workspaceId: 'papercusp-workspace', ownerUserId: '22222222-2222-4222-8222-222222222222',
+        installSlug: 'papercusp', field: 'owner', appToken: 'xapp-secret', botToken: 'xoxb-secret', channels: ['C1'],
+      }, {
+        storage,
+        apiOrigin: 'https://slack.test',
+        fetch: vi.fn(async () => new Response(JSON.stringify({ ok: true, ...authBody }))) as never,
+      });
+      const configs = values
+        .filter((value): value is string => typeof value === 'string' && value.startsWith('{'))
+        .map((value) => JSON.parse(value) as Record<string, unknown>)
+        .filter((value) => value.teamId === 'T1');
+      expect(configs).toHaveLength(1);
+      return configs[0];
+    };
+
+    expect(await persistedConfig({ team_id: 'T1', team: 'Acme', user_id: 'UPAPER', user: 'papercusp', bot_id: 'B1' }))
+      .toMatchObject({ teamId: 'T1', teamName: 'Acme', botUserId: 'UPAPER', botName: 'papercusp', botId: 'B1' });
+    const bare = await persistedConfig({ team_id: 'T1', user_id: 'UPAPER' });
+    expect(bare).not.toHaveProperty('teamName');
+    expect(bare).not.toHaveProperty('botName');
+    expect(JSON.stringify(bare)).not.toContain('xoxb-secret');
+  });
+
   it('routes ordinary human posts only in configured channels and deduplicates message coordinates', () => {
     const envelope = (event: Record<string, unknown>, eventId = 'EvOrdinary') => ({
       type: 'events_api', payload: { event_id: eventId, event: {
