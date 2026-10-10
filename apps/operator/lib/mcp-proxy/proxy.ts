@@ -2968,6 +2968,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     traceId: string;
     tools: string[];
     conflictKeys: string[] | null;
+    toolFailureCapture?: boolean;
   }
   const criticalContinuationRequests = new Map<
     number,

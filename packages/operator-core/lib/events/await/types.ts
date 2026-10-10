@@ -324,7 +324,10 @@ export interface DeliveryWork extends DeliveryRow {
 
 /** The wake executor's verdict for one delivery attempt. */
 export type WakeOutcome =
-  | { kind: 'delivered'; channel: WakeChannel }
+  /** `turnProof` is set ONLY when the delivery itself proved a turn started (P-006/D-004):
+   *  the psu host's native-turn-start confirmation, or a confirmed quota-recovery pickup.
+   *  Absent ⇒ the delivery reached its channel and the pump must still observe the turn. */
+  | { kind: 'delivered'; channel: WakeChannel; turnProof?: 'host-attested' }
   /** Recipient alive but uninjectable (detached terminal) — re-check later;
    *  converts to a resume when the process exits. */
   | {

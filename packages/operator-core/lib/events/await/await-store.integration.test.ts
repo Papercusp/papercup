@@ -386,6 +386,51 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     `;
   });
 
+  it('rotates the aged-retry reserve after a parked delivery is rechecked', async () => {
+    const prefix = 'su-fair-rotation';
+    const oldSubscriber = `${prefix}-old`;
+    const nextSubscriber = `${prefix}-next`;
+    const oldAwait = await store.registerAwait({ subscriberId: oldSubscriber, eventKey: 'fair:rotation:old' });
+    const nextAwait = await store.registerAwait({ subscriberId: nextSubscriber, eventKey: 'fair:rotation:next' });
+    await store.insertDeliveries({ awaits: [oldAwait], summary: 'first aged retry' });
+    await store.insertDeliveries({ awaits: [nextAwait], summary: 'next aged retry' });
+
+    const old = (await store.listRecentDeliveries(oldSubscriber, 1))[0];
+    const next = (await store.listRecentDeliveries(nextSubscriber, 1))[0];
+    expect(old).toBeDefined();
+    expect(next).toBeDefined();
+
+    // Both retries are already due and old enough for the starvation reserve.
+    // The older delivery wins once, then its recheck time advances past the other
+    // retry. It must not reclaim the reserved slot solely because created_at is old.
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET attempts = 1,
+             status = 'parked',
+             last_error = 'subscriber is currently uninjectable',
+             created_at = CASE
+               WHEN id = ${old.id} THEN now() - interval '10 minutes'
+               ELSE now() - interval '9 minutes'
+             END,
+             next_attempt_at = now() - interval '5 minutes'
+       WHERE id = ANY(${[old.id, next.id]})
+    `;
+
+    const [first] = await store.claimDueDeliveries({ limit: 1 });
+    expect(first.id).toBe(old.id);
+    await store.markDeliveryParked(first.id, 'still uninjectable', 0);
+
+    const [second] = await store.claimDueDeliveries({ limit: 1 });
+    expect(second.id).toBe(next.id);
+
+    await store.markDeliveryDropped(first.id, 'test cleanup');
+    await store.markDeliveryDropped(second.id, 'test cleanup');
+    await db.adminSql`
+      DELETE FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id LIKE ${`${prefix}-%`}
+    `;
+  });
+
   it('drops queued and claimed deliveries for any cancelled await before wake execution', async () => {
     const key = `${store.INBOX_WAKE_KEY_PREFIX}su-cancelled-wake`;
     await store.upsertInboxWakeAwait({ subscriberId: 'su-cancelled-wake', eventKey: key, note: 'standing wake' });

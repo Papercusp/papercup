@@ -3154,12 +3154,21 @@ async function injectPsuHostWake(
                 'waiting for a productive same-owner tool invocation',
             };
           }
-          return { kind: 'delivered', channel: 'psu-socket-recycle' };
+          // Pickup was just confirmed by a productive same-owner tool invocation (P-006/D-004).
+          return { kind: 'delivered', channel: 'psu-socket-recycle', turnProof: 'host-attested' };
         }
       }
+      // P-006/D-004: the host replies 'delivered' under requireNativeTurnStart only after it
+      // observed the native turn start (its native-turn-start-confirmed event). Any other ok
+      // reason here (a duplicate-delivery-id with no quota receipt, an older host) proves only
+      // that the bytes were accepted, so the turn is left for the pump to observe.
+      const hostAttested =
+        (injectMsg as { requireNativeTurnStart?: boolean }).requireNativeTurnStart === true &&
+        result.reason === 'delivered';
       return {
         kind: 'delivered',
         channel: quotaRecovery.eligible ? 'psu-socket-recycle' : 'psu-socket-inject',
+        ...(hostAttested ? { turnProof: 'host-attested' as const } : {}),
       };
     }
     const ok = await injectPsuHost(sock, injectMsg);

@@ -114,8 +114,22 @@ describe('local Git cancellation lifetime', () => {
   });
 });
 
+// WI-10008181: these windows were 150ms idle / 450ms stall / 500ms+800ms idle+hard,
+// and the gate (10+ cores of parallel vitest) beat them three times in one run. The
+// runner arms its idle timer at SPAWN (run-git-sync.ts armIdleTimer), so a loaded
+// box's `node -e` startup alone can exceed a 150ms window before the fixture's first
+// write. Each test asserts an ORDERING property, not a duration, so the margins are
+// sized for contention while keeping every inequality the test depends on:
+// stall > idle (the idle timer has really expired when the loop resumes), and
+// idle < hard (the hard ceiling, not the idle guard, ends the continuous-output child).
+const IDLE_MS = 1_000;
+const PARENT_STALL_MS = 2_000;
+const CONTINUOUS_IDLE_MS = 2_000;
+const CONTINUOUS_HARD_MS = 3_000;
+const LOADED_TEST_TIMEOUT_MS = 30_000;
+
 describe('local Git output-idle guard', () => {
-  it('reads queued child progress before expiring an idle timer after a parent-loop stall', async () => {
+  it('reads queued child progress before expiring an idle timer after a parent-loop stall', { timeout: LOADED_TEST_TIMEOUT_MS }, async () => {
     const dir = await mkdtemp(join(tmpdir(), 'local-git-progress-'));
     const release = join(dir, 'release');
     fixture.script = [
@@ -139,13 +153,13 @@ describe('local Git output-idle guard', () => {
       queued = true;
       setImmediate(() => {
         blockedFrom = Date.now();
-        while (Date.now() - blockedFrom < 450) { /* deliberately stall the CHECK phase */ }
+        while (Date.now() - blockedFrom < PARENT_STALL_MS) { /* deliberately stall the CHECK phase past IDLE_MS */ }
         blockedUntil = Date.now();
       });
     };
-    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '3000');
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '20000');
     const controller = new AbortController();
-    const pending = runGitBounded(['fetch'], tmpdir(), 150, { signal: controller.signal });
+    const pending = runGitBounded(['fetch'], tmpdir(), IDLE_MS, { signal: controller.signal });
     try {
       const result = await pending;
       const writes = result.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
@@ -161,22 +175,22 @@ describe('local Git output-idle guard', () => {
     }
   });
 
-  it('expires a resident child when a finite progress burst ends', async () => {
+  it('expires a resident child when a finite progress burst ends', { timeout: LOADED_TEST_TIMEOUT_MS }, async () => {
     fixture.script = "process.stderr.write('ready\\n'); let n = 0; const timer = setInterval(() => { process.stderr.write('progress\\n'); if (++n === 3) { clearInterval(timer); setInterval(() => {}, 1000); } }, 40);";
-    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '3000');
-    const result = await runGitBounded(['fetch'], tmpdir(), 150);
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '20000');
+    const result = await runGitBounded(['fetch'], tmpdir(), IDLE_MS);
     expect(result.stderr.match(/progress\n/g)).toHaveLength(3);
-    expect(result.stderr).toContain('made no output progress for 150ms');
+    expect(result.stderr).toContain(`made no output progress for ${IDLE_MS}ms`);
     expect(result.stderr).not.toContain('hard ceiling');
     expect(result.code).toBe(-1);
   });
 
-  it('still enforces the hard deadline despite continuous output', async () => {
+  it('still enforces the hard deadline despite continuous output', { timeout: LOADED_TEST_TIMEOUT_MS }, async () => {
     fixture.script = "process.stderr.write('ready\\n'); setInterval(() => process.stderr.write('progress\\n'), 20);";
-    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '800');
-    const result = await runGitBounded(['fetch'], tmpdir(), 500);
+    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', String(CONTINUOUS_HARD_MS));
+    const result = await runGitBounded(['fetch'], tmpdir(), CONTINUOUS_IDLE_MS);
     expect(result.stderr).toContain('progress');
-    expect(result.stderr).toContain('exceeded the 800ms hard ceiling despite output progress');
+    expect(result.stderr).toContain(`exceeded the ${CONTINUOUS_HARD_MS}ms hard ceiling despite output progress`);
     expect(result.code).toBe(-1);
   });
 });

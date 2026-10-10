@@ -1203,7 +1203,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         ) {
           resumes++;
         }
-        await markDeliveryDelivered(headline.id, outcome.channel, group.length);
+        await markDeliveryDelivered(headline.id, outcome.channel, group.length, outcome.turnProof);
         recordSettledDeliveryStats(stats, outcome.channel);
         if (siblings.length > 0) {
           await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);

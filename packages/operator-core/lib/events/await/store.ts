@@ -22,6 +22,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { normalizeEventKey } from './announce-key';
 import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
+import { initialTurnProof, pickupWindowSec } from './turn-proof';
 import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import { reconcileEventExternalBlockers } from '../../work-items';
@@ -2299,9 +2300,10 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
   const limit = input.limit ?? 10;
   // Fresh first-attempt work should usually win, but a permanently uninjectable
   // subscriber can otherwise keep a retried row behind an unbounded stream of new
-  // deliveries. Reserve one slot for the oldest retry once it has waited past this
-  // bound; the remaining slots preserve the fresh-first policy and keep a bad
-  // subscriber from monopolizing the batch.
+  // deliveries. Reserve one slot for the aged retry that has been due longest since
+  // its last attempt; ordering by next_attempt_at rotates a repeatedly parked row
+  // behind retries that have waited longer. The remaining slots preserve the
+  // fresh-first policy and keep a bad subscriber from monopolizing the batch.
   const retryStarvationAgeSec = 60;
   const retryReserveSlots = limit > 0 ? 1 : 0;
   const rows = await sql`
@@ -2316,7 +2318,7 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
                  attempts > 0
                  AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
                )
-               ORDER BY created_at ASC, id ASC
+               ORDER BY next_attempt_at ASC, created_at ASC, id ASC
              ) AS retry_rank
         FROM harness_shared.event_wake_deliveries
        WHERE workspace_id = ${ws}
@@ -2333,11 +2335,12 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
        -- A permanently uninjectable subscriber can legitimately PARK for a long
        -- time, but its retries must never monopolize this bounded batch. Give an
        -- untouched/no-error row its first delivery attempt before retrying recent
-       -- failures, while reserving one slot for the oldest retry after it has waited
-       -- long enough to prove that fresh-first ordering is starving it. The final
-       -- FIFO keys keep each tier deterministic. Loop-source compaction above keeps
-       -- repeated fires from becoming an unbounded fresh tier of their own
-       -- (EI-21303383797798186).
+       -- failures, while reserving one slot for the aged retry whose next attempt
+       -- has been due longest. A parked retry gets a later next_attempt_at and
+       -- rotates behind the remaining due retries instead of reclaiming the reserve
+       -- on every pump batch. The final FIFO keys keep each tier deterministic.
+       -- Loop-source compaction above keeps repeated fires from becoming an
+       -- unbounded fresh tier of their own (EI-21303383797798186).
        ORDER BY CASE
                   WHEN r.aged_retry AND r.retry_rank <= ${retryReserveSlots} THEN 0
                   WHEN d.attempts = 0 AND d.last_error IS NULL THEN 1
@@ -2363,12 +2366,25 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
   return rows.map(mapWork);
 }
 
-export async function markDeliveryDelivered(id: number, channel: WakeChannel, coalescedCount = 1): Promise<void> {
+export async function markDeliveryDelivered(
+  id: number,
+  channel: WakeChannel,
+  coalescedCount = 1,
+  attested?: 'host-attested',
+): Promise<void> {
   const { sql } = getOrgPg();
+  // P-006/D-004: status='delivered' says only that the delivery reached its channel. The turn is
+  // booked separately — attested now, superseded, or awaiting the pump's pickup sweep.
+  const proof = initialTurnProof(channel, attested);
+  const windowSec = pickupWindowSec();
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = ${channel}, delivered_at = now(), last_error = NULL,
-           coalesced_count = ${coalescedCount}
+           coalesced_count = ${coalescedCount},
+           turn_proof = ${proof},
+           turn_started_at = CASE WHEN ${proof} = 'host-attested' THEN now() ELSE NULL END,
+           pickup_deadline_at = CASE WHEN ${proof} = 'awaiting'
+                                     THEN now() + make_interval(secs => ${windowSec}) ELSE NULL END
      WHERE id = ${id}
   `;
 }
@@ -2383,6 +2399,7 @@ export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: num
   await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
+           turn_proof = 'superseded',
            last_error = ${`coalesced into wake #${intoDeliveryId}`}
      WHERE id = ANY(${ids})
   `;
@@ -2680,6 +2697,8 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
+           -- The subscriber acked it from inside a running turn (P-006/D-004).
+           turn_proof = 'observed', turn_started_at = now(),
            last_error = 'acked by subscriber while awake'
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
        AND status IN ('pending', 'parked')
@@ -2739,6 +2758,7 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
+           turn_proof = 'superseded',
            last_error = 'caught up at turn-end cursor settle — already seen in a bulk coord:inbox read (EI-9389)'
      WHERE workspace_id = ${ws} AND subscriber_id = ${input.subscriberId}
        AND event_key = ${key}
