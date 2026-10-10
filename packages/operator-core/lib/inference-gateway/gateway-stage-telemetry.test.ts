@@ -11,6 +11,7 @@ import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt, type GatewayCarryTrialAttemptResult,
   type GatewayCarryTrialBinding } from './gateway';
 import { processMonotonicClock } from '../process-monotonic-clock';
+import { readProcessIdentity } from '../process-identity';
 import { CACHE_POLICY_VERSION } from './cache-policy';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
@@ -135,6 +136,7 @@ it('publishes one reconciled, privacy-safe stage timeline through /stats and the
     `http://127.0.0.1:${port}/admin/owner-report?owner=${encodeURIComponent(owner)}`,
   );
   const ownerReport = await ownerResponse.json() as {
+    process: { pid: number; identity: string | null; startedAt: number };
     stageTelemetry: {
       ownerId: string;
       finalized: number;
@@ -143,6 +145,8 @@ it('publishes one reconciled, privacy-safe stage timeline through /stats and the
     };
   };
   expect(ownerReport.stageTelemetry).toMatchObject({ ownerId: owner, finalized: 1, outcomes: { ok: 1 } });
+  expect(ownerReport.process).toMatchObject({ pid: process.pid, identity: readProcessIdentity(process.pid) });
+  expect(ownerReport.process.startedAt).toBeLessThanOrEqual(timeline.startedAt);
   expect(ownerReport.stageTelemetry.recent).toHaveLength(1);
   expect(ownerReport.stageTelemetry.recent[0]?.admission).toEqual(timeline.admission);
 

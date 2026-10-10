@@ -16,7 +16,8 @@ const MISSING_TOOL_REFERENCE_RE =
   /^\s*API Error(?::\s*400|\s+400\b)[^\r\n]{0,300}\bTool reference\s+['"][^'"]+['"]\s+not found in available tools\b/im;
 const CONTEXT_LIMIT_RE =
   /^\s*(?:Prompt is too long|Context limit reached(?:\s*·\s*\/clear to continue)?)\s*$/i;
-const ACCOUNT_WALL_RE = /\b(?:credit balance is too low|insufficient credits)\b/i;
+const ACCOUNT_WALL_RE =
+  /\b(?:credit balance is too low|insufficient credits)\b|^\s*API Error:\s*Request rejected \(429\)[^\r\n]{0,300}\b(?:your\s+)?account(?:['’]s)?\s+rate\s+limit\b/i;
 
 export const CLAUDE_TOOL_REFERENCE_POISON_TURNS = 3;
 /**

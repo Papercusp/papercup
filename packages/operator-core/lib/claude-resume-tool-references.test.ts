@@ -22,11 +22,11 @@ const assistant = (text: string) => JSON.stringify({
   message: { role: 'assistant', content: [{ type: 'text', text }] },
 });
 /** The real record shape of a provider rejection (WI-10003466): synthetic, not model prose. */
-const apiError = (text: string) => JSON.stringify({
+const apiError = (text: string, status = 400) => JSON.stringify({
   type: 'assistant',
   error: 'unknown',
   isApiErrorMessage: true,
-  apiErrorStatus: 400,
+  apiErrorStatus: status,
   message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] },
 });
 
@@ -42,6 +42,24 @@ describe('Claude resume tool-reference recovery', () => {
         assistantTurnsSinceLastPrompt: 1,
       });
     });
+
+  it('detects the provider 429 account-rate rejection used by reviewer dispatch', () => {
+    const text = "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.";
+    expect(analyzeClaudeResumeTranscript(apiError(text, 429))).toMatchObject({
+      trailingAccountWallTurns: 1,
+      lastAccountWallEvidence: text,
+      assistantTurnsSinceLastPrompt: 1,
+    });
+  });
+
+  it('does not treat ordinary discussion of a 429 account-rate error as a provider rejection', () => {
+    const text = "The reviewer transcript said API Error: Request rejected (429) · This request would exceed your account's rate limit.";
+    expect(analyzeClaudeResumeTranscript(assistant(text))).toMatchObject({
+      trailingAccountWallTurns: 0,
+      lastAccountWallEvidence: null,
+      assistantTurnsSinceLastPrompt: 1,
+    });
+  });
 
   it('keeps copied billing errors and ordinary model discussion out of current account-wall evidence', () => {
     const kickoff = JSON.stringify({ type: 'user', message: { role: 'user', content: 'Answer the current consult.' } });

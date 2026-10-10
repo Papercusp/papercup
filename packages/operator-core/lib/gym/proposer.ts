@@ -17,7 +17,7 @@ import type { RunAgentChatOptions } from '../agent-chat-stream';
 import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult, GatewayCarryTrialBinding } from '../inference-gateway/gateway';
 import type { GatewayServiceOptions, RunningGatewayService } from '../inference-gateway/launch';
 import { runGovernedSpendAttempt, type GovernorGlueDeps, type SpendAttemptReport } from '../learning-governor/registrants';
-import type { CycleSpendReservationScope, LearningReservationResourceBudget } from '../learning-governor/store';
+import type { CycleSpendReservationScope, LearningReservationResourceBudget, ReserveLearningSpendInput } from '../learning-governor/store';
 import { processMonotonicClock } from '../process-monotonic-clock';
 
 export interface WorstTrace {
@@ -141,7 +141,10 @@ export function createNativeGymGatewayController(input: {
   token: string;
   manifestSha256: string;
   armId: string;
-  cycle: { runId: string; budgetUsd: number; resourceBudget: LearningReservationResourceBudget };
+  /** Existing Gym cycles and frozen benchmark lifetime grants share the same
+   * authenticated send guard. Exactly one budget identity must be supplied. */
+  cycle?: { runId: string; budgetUsd: number; resourceBudget: LearningReservationResourceBudget };
+  exact?: { binding: string; budgetUsd: number; resourceBudget: LearningReservationResourceBudget };
   authorizeProviderAttempt: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>;
 }, governor?: GovernorGlueDeps): { gateway: NativeGymGatewayConfig; revoke: () => void } {
   const invalid = () => Object.assign(new Error('Native Gym gateway controller requires approved policy'), { costUsd: 0 });
@@ -149,15 +152,19 @@ export function createNativeGymGatewayController(input: {
   const usd = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0 &&
     Number.isSafeInteger(Math.round(n * 1_000_000)) && Math.round(n * 1_000_000) / 1_000_000 === n;
   const text = (s: unknown): s is string => typeof s === 'string' && s.trim() === s && s.length > 0;
-  if (!input || !input.cycle?.resourceBudget) throw invalid();
+  if (!input || Boolean(input.cycle) === Boolean(input.exact)) throw invalid();
   // Snapshot caller policy and callbacks before any asynchronous authentication.
   const { workspaceId, loopId, potSlug, token, manifestSha256, armId, authorizeProviderAttempt } = input;
-  const { runId, budgetUsd } = input.cycle;
-  if (!Array.isArray(input.cycle.resourceBudget.armIds)) throw invalid();
-  const resourceBudget = { ...input.cycle.resourceBudget, armIds: [...input.cycle.resourceBudget.armIds] };
+  const scope = input.exact ?? input.cycle!;
+  const budgetUsd = scope.budgetUsd;
+  const runId = input.cycle?.runId;
+  const binding = input.exact?.binding;
+  if (!scope.resourceBudget || !Array.isArray(scope.resourceBudget.armIds)) throw invalid();
+  const resourceBudget = { ...scope.resourceBudget, armIds: [...scope.resourceBudget.armIds] };
   if (!text(workspaceId) || !text(loopId) || !text(armId) || armId.length > 256 ||
     !/^[a-f0-9]{64}$/.test(manifestSha256) || !text(token) || token.length < 32 ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId) || !usd(budgetUsd) ||
+    (input.cycle ? !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId!) :
+      !/^[a-f0-9]{64}$/.test(binding!) || binding !== manifestSha256) || !usd(budgetUsd) ||
     !count(resourceBudget.inputTokens) || !count(resourceBudget.outputTokens) || resourceBudget.outputTokens === 0 ||
     !count(resourceBudget.requestsPerArm) || resourceBudget.requestsPerArm === 0 ||
     resourceBudget.armIds.length > 1000 || !resourceBudget.armIds.every(text) ||
@@ -191,16 +198,20 @@ export function createNativeGymGatewayController(input: {
           authority.outputTokens > resourceBudget.outputTokens ||
           typeof authority.validateAuthorization !== 'function' ||
           !Number.isFinite(authority.validUntilMonotonicMs) || processMonotonicClock.now() >= authority.validUntilMonotonicMs) return null;
-        const cycle: CycleSpendReservationScope = { runId, budgetUsd,
-          resources: { armId, inputTokens: authority.inputTokens, outputTokens: authority.outputTokens },
-          expectedResourceBudget: { ...resourceBudget, armIds: [...resourceBudget.armIds] } };
+        const resources = { armId, inputTokens: authority.inputTokens, outputTokens: authority.outputTokens };
+        const expectedResourceBudget = { ...resourceBudget, armIds: [...resourceBudget.armIds] };
+        const cycle: CycleSpendReservationScope | undefined = runId === undefined ? undefined :
+          { runId, budgetUsd, resources, expectedResourceBudget };
+        const exact: ReserveLearningSpendInput['exact'] = binding === undefined ? undefined :
+          { reservationId: attempt.attemptId, binding, expectedBudgetUsd: budgetUsd, resources, expectedResourceBudget };
         const { body: _body, signal: _signal, ...identity } = attempt;
         // The governed helper owns reserve/validate/settle. Its work waits for
         // this exact gateway observer instead of aggregate caller usage.
         return await new Promise<Awaited<ReturnType<GatewayCarryTrialBinding['authorizeAttempt']>>>(resolveReceipt => {
           let finish: ((report: SpendAttemptReport<null>) => void) | undefined;
           const completion = runGovernedSpendAttempt({ workspaceId, loopId, potSlug,
-            attemptKind: authority.attemptKind, requestedUsd: authority.requestedUsd, cycle,
+            attemptKind: authority.attemptKind, requestedUsd: authority.requestedUsd,
+            ...(exact ? { exact, floorUsd: 0 } : { cycle }),
             note: JSON.stringify({ nativeGatewayAttempt: identity }),
             async run(grant) {
               if (!live || attempt.signal.aborted || grant.clamped || grant.reservedUsd !== authority.requestedUsd) {

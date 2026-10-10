@@ -292,9 +292,13 @@ function implementationCouplingReason(behavior: string): string | null {
   // A bare lower-camel identifier is also an implementation reference: clauses
   // can name a function directly (for example, `runSyncBatchDeltaCheck
   // evaluates the batch`) without an introductory "function" or code quotes.
-  const camelCaseMatch = behavior.match(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/);
-  if (camelCaseMatch) {
-    return 'names implementation construct ' + JSON.stringify(camelCaseMatch[0]) + ' instead of an observable contract';
+  // Public platform names describe the environment visible to a user. Continue
+  // scanning after them so a later actual implementation symbol still fails.
+  const publicPlatformNames = new Set(['macOS', 'iOS', 'iPadOS', 'watchOS', 'tvOS', 'visionOS']);
+  for (const match of behavior.matchAll(/\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g)) {
+    if (!publicPlatformNames.has(match[0])) {
+      return 'names implementation construct ' + JSON.stringify(match[0]) + ' instead of an observable contract';
+    }
   }
   return null;
 }

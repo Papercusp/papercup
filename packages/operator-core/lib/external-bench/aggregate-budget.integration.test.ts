@@ -1,13 +1,17 @@
 /** Benchmark admission reuses the governor's durable reservation ledger.
  * Real PostgreSQL proves serialization and recovery; no inference is sent. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { registerLearningLoop, reserveLearningSpend, settleLearningSpend,
   listLearningSpendReservations, cycleReservationRunRef,
   type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { OrgSql } from './reproducibility/db';
+import { currentBenchAssignmentId, currentBenchGatewayController } from './current-su';
+import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { processMonotonicClock } from '../process-monotonic-clock';
+import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 
 const WS = 'benchmark-budget-private-test';
 const manifest = 'a'.repeat(64);
@@ -133,5 +137,95 @@ describe('strict benchmark aggregate reservation bounds', () => {
     expect((await reserveLearningSpend(sql, first)).ok).toBe(true);
     await sql`UPDATE harness_shared.learning_spend_reservations SET run_ref = 'foreign-manifest' WHERE id = ${first.exact.reservationId}`;
     expect(await reserveLearningSpend(sql, request(loop, budget))).toMatchObject({ ok: false, reason: 'resource-accounting-incomplete' });
+  });
+});
+
+describe('native provider authority uses real exact benchmark reservations', () => {
+  async function nativeFixture() {
+    const protocol = currentProtocolFixture(`private-${randomUUID()}`, 60_000);
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const resources: LearningReservationResourceBudget = { ...caps(),
+      armIds: protocol.arms.map(arm => currentBenchAssignmentId(protocol.runId, arm.id, 't1', 1)),
+      wallClockMsPerArm: 60_000 };
+    const preregHash = digest(protocol.runId), loopId = `benchmark:${protocol.runId}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 60,
+      enabled: true, meta: { reservationBinding: preregHash, reservationResourceBudget: resources } });
+    const authority = { attemptKind: 'evaluation' as const, requestedUsd: 3, inputTokens: 10, outputTokens: 10,
+      validUntilMonotonicMs: processMonotonicClock.now() + 10_000, validateAuthorization: () => {} };
+    const controller = (armId = 'papercusp') => currentBenchGatewayController({ workspaceId: WS, loopId, preregHash,
+      token: randomUUID(), protocol, armId, taskId: 't1', seed: 1, resources, authenticateProvider: async () => authority },
+      { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    const request = (armId = 'papercusp'): GatewayCarryTrialAttempt => {
+      const body = JSON.stringify({ model: 'configured-alias', reasoning: { effort: 'high' }, max_output_tokens: 10 });
+      return { attemptId: randomUUID(), manifestSha256: preregHash,
+        armId: currentBenchAssignmentId(protocol.runId, armId, 't1', 1), transport: 'bearer-http', accountId: 'private-approved',
+        credentialHeader: 'authorization', credentialSha256: digest('Bearer PRIVATE_SECRET'), target: 'https://provider.invalid/v1/responses',
+        body, bodySha256: digest(body), clockId: processMonotonicClock.id, signal: new AbortController().signal };
+    };
+    const result = (request: GatewayCarryTrialAttempt, reservationRef: string, zero: boolean): GatewayCarryTrialAttemptResult => {
+      const { body: _body, signal: _signal, ...identity } = request;
+      return zero ? { ...identity, reservationRef, outcome: 'send-refused', responseStatus: null,
+        costUsd: 0, costUsdMeasurementMissing: false } : { ...identity, reservationRef, outcome: 'fetch-failed',
+        responseStatus: null, costUsdMeasurementMissing: true };
+    };
+    return { controller, request, result, loopId, authority };
+  }
+
+  it('issues only one concurrent native send when aggregate exposure is full', async () => {
+    const f = await nativeFixture(), a = f.controller(), b = f.controller('baseline');
+    try {
+      const responses = await Promise.all([a.gateway.carryTrial.authorizeAttempt(f.request()),
+        b.gateway.carryTrial.authorizeAttempt(f.request('baseline'))]);
+      expect(responses.filter(Boolean)).toHaveLength(1);
+      const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId });
+      expect(rows).toHaveLength(1); expect(rows[0].reservedUsd).toBe(3); expect(rows[0].status).toBe('open');
+      expect(rows[0].id).toBe(responses.find(Boolean)!.reservationRef);
+      expect(rows[0].runRef).toBe(`manifest:${manifest === 'unused' ? manifest : JSON.parse(rows[0].note!).nativeGatewayAttempt.manifestSha256}/attempt:${rows[0].id}`);
+      expect(rows[0].note).not.toContain('PRIVATE_SECRET');
+    } finally { a.revoke(); b.revoke(); }
+  });
+
+  it('keeps a failed native send open through a fresh controller and connection', async () => {
+    const f = await nativeFixture(), a = f.controller(), request = f.request();
+    try {
+      const receipt = (await a.gateway.carryTrial.authorizeAttempt(request))!;
+      expect(receipt).not.toBeNull(); receipt.validateAuthorization!();
+      await receipt.observeAttemptResult!(f.result(request, receipt.reservationRef, false)); a.revoke();
+      const postgres = (await import('postgres')).default, fresh = postgres(db.url, { max: 1, prepare: false });
+      const b = f.controller('baseline');
+      try {
+        expect(await b.gateway.carryTrial.authorizeAttempt(f.request('baseline'))).toBeNull();
+        const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId: f.loopId });
+        expect(rows).toHaveLength(1); expect(rows[0]).toMatchObject({ status: 'open', reservedUsd: 3, usedUsd: 0 });
+      } finally { b.revoke(); await fresh.end(); }
+    } finally { a.revoke(); }
+  });
+
+  it('releases only a matching measured pre-send zero, preserving paid retry limits', async () => {
+    const f = await nativeFixture(), a = f.controller(), request = f.request();
+    try {
+      const receipt = (await a.gateway.carryTrial.authorizeAttempt(request))!;
+      expect(receipt).not.toBeNull();
+      await receipt.observeAttemptResult!(f.result(request, receipt.reservationRef, true));
+      const row = (await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId }))[0];
+      expect(row).toMatchObject({ id: receipt.reservationRef, status: 'cancelled', reservedUsd: 3, usedUsd: 0 });
+      expect(await a.gateway.carryTrial.authorizeAttempt(request)).toBeNull();
+      const next = await a.gateway.carryTrial.authorizeAttempt(f.request());
+      expect(next).not.toBeNull(); expect(next!.reservationRef).not.toBe(receipt.reservationRef);
+    } finally { a.revoke(); }
+  });
+
+  it('does not reserve an underpriced bound or reset exposure by reissuing authority', async () => {
+    const f = await nativeFixture(), a = f.controller();
+    try {
+      f.authority.requestedUsd = 0.000001;
+      expect(await a.gateway.carryTrial.authorizeAttempt(f.request())).toBeNull();
+      expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId })).toEqual([]);
+      f.authority.requestedUsd = 3;
+      expect(await a.gateway.carryTrial.authorizeAttempt(f.request())).not.toBeNull();
+      const b = f.controller();
+      try { expect(await b.gateway.carryTrial.authorizeAttempt(f.request())).toBeNull(); }
+      finally { b.revoke(); }
+    } finally { a.revoke(); }
   });
 });

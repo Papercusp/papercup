@@ -1,14 +1,151 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentSuBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
+  currentBenchObservationReader, type CurrentBenchObservationReaderPorts,
+  currentBenchAssignmentId, currentBenchGatewayController,
   type CurrentBenchIdentity, type CurrentBenchTask, type CurrentSuBenchOptions, type CurrentSuBenchPorts,
 } from './current-su';
 import type { BenchHarnessOps } from './bench-harness-live';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
+import type { RuntimeVintageRow } from '../runtime-vintage';
+import { processMonotonicClock } from '../process-monotonic-clock';
+import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
+import type { NativeGymProviderAuthorization } from '../gym/proposer';
+import type { LearningSpendReservation, ReserveLearningSpendInput, SettleLearningSpendInput } from '../learning-governor/store';
+import type { Sql } from 'postgres';
+
+function budgetFixture() {
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  const protocol = currentProtocolFixture();
+  const resources = { inputTokens: 10_000, outputTokens: 1000, requestsPerArm: 50,
+    armIds: protocol.arms.map(arm => currentBenchAssignmentId(protocol.runId, arm.id, 't1', 1)),
+    usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 1000, wallClockMsPerArm: 100 };
+  const authority: NativeGymProviderAuthorization = { attemptKind: 'evaluation', requestedUsd: 0.001,
+    inputTokens: 100, outputTokens: 10, validUntilMonotonicMs: processMonotonicClock.now() + 10_000,
+    validateAuthorization: vi.fn(() => {}) };
+  const reserve = vi.fn(async (_sql: Sql, q: ReserveLearningSpendInput) => {
+    const reservation: LearningSpendReservation = { id: q.exact!.reservationId, workspaceId: q.workspaceId,
+      loopId: q.loopId, potSlug: null, attemptKind: q.attemptKind!, requestedUsd: q.requestedUsd,
+      reservedUsd: q.requestedUsd, usedUsd: 0, status: 'open', signalOrigin: 'organic',
+      runRef: `manifest:${q.exact!.binding}/attempt:${q.exact!.reservationId}`, resources: { ...q.exact!.resources! },
+      note: q.note ?? null, createdAt: Date.now(), settledAt: null };
+    return { ok: true as const, clamped: false, headroomUsd: 60, reservation };
+  });
+  const settle = vi.fn(async (_sql: Sql, q: SettleLearningSpendInput) => ({ ok: false as const,
+    reason: 'not-found' as const, reservation: null }));
+  const input = { workspaceId: 'bench-private', loopId: 'benchmark-run-1', token: randomUUID(), preregHash: digest('frozen'),
+    protocol, resources, armId: 'papercusp', taskId: 't1', seed: 1,
+    authenticateProvider: vi.fn(async () => authority) };
+  const governor = { enabled: async () => true, getSql: async () => ({} as Sql), reserve, settle, log: () => {} };
+  const controller = currentBenchGatewayController(input, governor);
+  const body = JSON.stringify({ model: 'configured-alias', reasoning: { effort: 'high' }, max_output_tokens: 10 });
+  const attempt: GatewayCarryTrialAttempt = { attemptId: randomUUID(), manifestSha256: input.preregHash,
+    armId: controller.gateway.carryTrial.armId, transport: 'bearer-http', accountId: 'authenticated-account',
+    credentialHeader: 'authorization', credentialSha256: digest('Bearer PRIVATE_PROVIDER_KEY'),
+    target: 'https://provider.invalid/v1/responses', body, bodySha256: digest(body),
+    clockId: processMonotonicClock.id, signal: new AbortController().signal };
+  const result = (request: GatewayCarryTrialAttempt, reservationRef: string, outcome: 'send-refused' | 'fetch-failed' | 'response-headers') => {
+    const { body: _body, signal: _signal, ...identity } = request;
+    return { ...identity, reservationRef, outcome, responseStatus: outcome === 'response-headers' ? 200 : null,
+      ...(outcome === 'send-refused' ? { costUsd: 0, costUsdMeasurementMissing: false } : { costUsdMeasurementMissing: true }) } as GatewayCarryTrialAttemptResult;
+  };
+  return { ...controller, input, governor, reserve, settle, authority, attempt, digest, result };
+}
+
+describe('frozen benchmark native provider admission', () => {
+  it('binds every provider attempt to the existing exact lifetime ledger and assignment cap', async () => {
+    const f = budgetFixture();
+    try {
+      const receipt = await f.gateway.carryTrial.authorizeAttempt(f.attempt);
+      expect(receipt).not.toBeNull();
+      expect(receipt!.reservationRef).toBe(f.attempt.attemptId);
+      expect(f.reserve).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        workspaceId: 'bench-private', loopId: 'benchmark-run-1', floorUsd: 0, requestedUsd: 0.001,
+        exact: { reservationId: f.attempt.attemptId, binding: f.input.preregHash, expectedBudgetUsd: 60,
+          resources: { armId: f.attempt.armId, inputTokens: 100, outputTokens: 10 }, expectedResourceBudget: f.input.resources },
+      }));
+      expect(f.reserve.mock.calls[0][1].cycle).toBeUndefined();
+      const note = f.reserve.mock.calls[0][1].note!;
+      expect(note).not.toContain('PRIVATE_PROVIDER_KEY'); expect(note).not.toContain('configured-alias');
+      receipt!.validateAuthorization!();
+      await receipt!.observeAttemptResult!(f.result(f.attempt, receipt!.reservationRef, 'response-headers'));
+      expect(f.settle).not.toHaveBeenCalled();
+    } finally { f.revoke(); }
+  });
+  it.each(['send-refused', 'fetch-failed', 'response-headers'] as const)('keeps unknown usage reserved for %s', async outcome => {
+    const f = budgetFixture();
+    try {
+      const receipt = (await f.gateway.carryTrial.authorizeAttempt(f.attempt))!;
+      expect(receipt).not.toBeNull();
+      if (outcome !== 'send-refused') receipt.validateAuthorization!();
+      await receipt.observeAttemptResult!(f.result(f.attempt, receipt.reservationRef, outcome));
+      expect(f.settle).toHaveBeenCalledTimes(outcome === 'send-refused' ? 1 : 0);
+      if (outcome === 'send-refused') expect(f.settle).toHaveBeenCalledWith(expect.anything(),
+        expect.objectContaining({ reservationId: f.attempt.attemptId, usedUsd: 0, disposition: 'cancelled' }));
+    } finally { f.revoke(); }
+  });
+  it.each(['body', 'effort', 'model', 'output', 'missing-output', 'auth', 'price', 'expired', 'foreign-manifest', 'foreign-assignment', 'fractional-usd'])('refuses %s before reservation', async changed => {
+    const f = budgetFixture();
+    try {
+      const body = JSON.parse(f.attempt.body);
+      if (changed === 'body') f.attempt = { ...f.attempt, body: '{' };
+      if (changed === 'effort') body.reasoning.effort = 'low';
+      if (changed === 'model') body.model = 'other-model';
+      if (changed === 'output') body.max_output_tokens = 11;
+      if (changed === 'missing-output') delete body.max_output_tokens;
+      if (changed === 'auth') f.input.authenticateProvider.mockResolvedValue(null as never);
+      if (changed === 'price') f.authority.requestedUsd = 0.000001;
+      if (changed === 'expired') f.authority.validUntilMonotonicMs = -1;
+      if (changed === 'foreign-manifest') f.attempt = { ...f.attempt, manifestSha256: 'd'.repeat(64) };
+      if (changed === 'foreign-assignment') f.attempt = { ...f.attempt, armId: 'other' };
+      if (changed === 'fractional-usd') f.authority.requestedUsd = 0.0000011;
+      if (['effort', 'model', 'output', 'missing-output'].includes(changed)) {
+        const text = JSON.stringify(body); f.attempt = { ...f.attempt, body: text, bodySha256: f.digest(text) };
+      }
+      expect(await f.gateway.carryTrial.authorizeAttempt(f.attempt)).toBeNull();
+      expect(f.reserve).not.toHaveBeenCalled();
+    } finally { f.revoke(); }
+  });
+  it.each(['total', 'assignment', 'inflight', 'roster', 'time'] as const)('rejects drifted frozen %s resource policy', changed => {
+    const f = budgetFixture();
+    try {
+      if (changed === 'total') f.input.protocol.aggregateBudgetUsd = 0.5;
+      if (changed === 'assignment') f.input.resources.usdPerArm = 4;
+      if (changed === 'inflight') f.input.resources.maxOpenUsd = 4;
+      if (changed === 'roster') f.input.resources.armIds.pop();
+      if (changed === 'time') f.input.resources.wallClockMsPerArm++;
+      expect(() => currentBenchGatewayController(f.input, f.governor)).toThrow();
+    } finally { f.revoke(); }
+  });
+  it('refuses replay, rechecks revocation at send and snapshots the frozen protocol', async () => {
+    const f = budgetFixture();
+    try {
+      f.input.protocol.arms[0].model = 'mutated'; f.input.protocol.aggregateBudgetUsd = 600;
+      f.input.resources.usdPerArm = 30;
+      const receipt = (await f.gateway.carryTrial.authorizeAttempt(f.attempt))!;
+      expect(receipt).not.toBeNull();
+      expect(f.reserve.mock.calls[0][1].exact!.expectedBudgetUsd).toBe(60);
+      expect(await f.gateway.carryTrial.authorizeAttempt(f.attempt)).toBeNull();
+      expect(f.reserve).toHaveBeenCalledTimes(1);
+      f.revoke(); expect(() => receipt.validateAuthorization!()).toThrow();
+    } finally { f.revoke(); }
+  });
+  it('does not price Anthropic cache-write exposure as ordinary input', async () => {
+    const f = budgetFixture();
+    try {
+      f.input.protocol.arms[0].agent = 'claude';
+      const c = currentBenchGatewayController(f.input, f.governor);
+      const body = JSON.stringify({ model: 'configured-alias', output_config: { effort: 'high' }, max_tokens: 10 });
+      expect(await c.gateway.carryTrial.authorizeAttempt({ ...f.attempt, transport: 'anthropic-http', body, bodySha256: f.digest(body) })).toBeNull();
+      expect(f.reserve).not.toHaveBeenCalled(); c.revoke();
+    } finally { f.revoke(); }
+  });
+});
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch } }));
@@ -86,6 +223,57 @@ describe('exact native benchmark identity observation', () => {
     if (changed === 'native-effort') o.nativeTranscript = o.nativeTranscript.replace('high', 'low');
     if (changed === 'malformed-transcript') o.nativeTranscript += '\n{';
     expect(currentBenchIdentityFromObservation(task, o)).toBeNull();
+  });
+});
+function hostObservationFixture() {
+  const { task, observation } = observedFixture();
+  task.detail.coordOwnerId = observation.worker.ownerId;
+  task.sessionId = observation.worker.nativeSessionId;
+  task.startedAt = new Date(observation.gateway.timeline.startedAt - 1).toISOString();
+  const rows: RuntimeVintageRow[] = ['worker', 'gateway'].map((unit, i) => ({
+    workspaceId: 'host-ledger', unit, host: 'measured-host', treeSha: 'b'.repeat(40), buildTime: null,
+    bundleVersion: null, pid: 100 + i, reportedAt: new Date(observation.gateway.timeline.startedAt - 2).toISOString(),
+    extra: { kernelProcessIdentity: `kernel:${unit}`, ...(unit === 'gateway' ? { port: 8788 } : {}) },
+  }));
+  const report = { owner: observation.worker.ownerId,
+    process: { pid: 101, identity: 'kernel:gateway', startedAt: observation.gateway.timeline.startedAt - 3 },
+    stageTelemetry: { ownerId: observation.worker.ownerId, recent: [observation.gateway.timeline] } };
+  const ports: CurrentBenchObservationReaderPorts = {
+    readBinding: vi.fn(async () => ({ ownerId: observation.worker.ownerId, nativeSessionId: observation.worker.nativeSessionId, codexHome: '/host/native-home' })),
+    readRuntimes: vi.fn(async () => rows), measureRuntimes: vi.fn(() => 'a'.repeat(64)),
+    readTranscript: vi.fn(async () => observation.nativeTranscript), readGateway: vi.fn(async () => report),
+  };
+  const opts = { workspaceId: task.workspaceId, runtimeWorkspaceId: 'host-ledger', workerUnit: 'worker', gatewayUnit: 'gateway', gatewayBaseUrl: 'http://127.0.0.1:8788' };
+  return { task, rows, report, ports, opts };
+}
+describe('host-backed benchmark observation reader', () => {
+  it('joins exact native binding, execution-host boot pins and a process-matched gateway request', async () => {
+    const f = hostObservationFixture();
+    const observation = await currentBenchObservationReader(f.opts, f.ports)(f.task);
+    expect(currentBenchIdentityFromObservation(f.task, observation!)).toMatchObject({ sourceRevision: 'b'.repeat(40), runtimeRevision: 'a'.repeat(64), model: 'actual-provider-model' });
+    expect(f.ports.readRuntimes).toHaveBeenCalledTimes(2);
+    expect(f.ports.readTranscript).toHaveBeenCalledWith(f.task.sessionId, '/host/native-home');
+  });
+  it.each(['task-workspace', 'missing-native', 'owner', 'kernel', 'pid', 'port', 'old-request', 'restarted', 'missing-transcript', 'abbreviated-source', 'runtime-workspace'])('refuses %s rather than fabricating loaded identity', async changed => {
+    const f = hostObservationFixture();
+    if (changed === 'task-workspace') f.task.workspaceId = 'production';
+    if (changed === 'missing-native') f.task.sessionId = null;
+    if (changed === 'owner') f.report.owner = 'other';
+    if (changed === 'kernel') f.report.process.identity = 'new-process';
+    if (changed === 'pid') f.report.process.pid++;
+    if (changed === 'port') f.rows[1].extra.port = 1234;
+    if (changed === 'old-request') f.task.startedAt = new Date(f.report.stageTelemetry.recent[0].finalizedAt + 1).toISOString();
+    if (changed === 'restarted') f.ports.measureRuntimes = vi.fn().mockReturnValueOnce('a'.repeat(64)).mockReturnValueOnce('a'.repeat(64)).mockReturnValue('c'.repeat(64));
+    if (changed === 'missing-transcript') f.ports.readTranscript = vi.fn(async () => null);
+    if (changed === 'abbreviated-source') f.rows[0].treeSha = 'abcdef0';
+    if (changed === 'runtime-workspace') f.rows[0].workspaceId = 'other';
+    expect(await currentBenchObservationReader(f.opts, f.ports)(f.task)).toBeNull();
+  });
+  it('requires an explicit local observation endpoint without an embedded credential', () => {
+    const f = hostObservationFixture();
+    for (const gatewayBaseUrl of ['https://example.com', 'http://secret@127.0.0.1:8788', 'http://127.0.0.1:8788/other']) {
+      expect(() => currentBenchObservationReader({ ...f.opts, gatewayBaseUrl }, f.ports)).toThrow(/explicit local/);
+    }
   });
 });
 function fixture(opts = options) {

@@ -22,6 +22,7 @@
 import http from 'node:http';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { processMonotonicClock } from '../process-monotonic-clock';
+import { readProcessIdentity } from '../process-identity';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { resolveCodexModel } from '../model-context-budget.mjs';
 import { readFile } from 'node:fs/promises';
@@ -10778,6 +10779,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           ok: true,
           now: Date.now(),
           owner,
+          process: { pid: process.pid, identity: readProcessIdentity(process.pid), startedAt: processStartedAt },
           ledger: e,
           lastRoute: route,
           pin,

@@ -280,6 +280,28 @@ describe('routingHealthFromRows request cohort', () => {
       unknown: 1, invalid: 1, recordedWithFeedback: 3, recordedWithoutFeedback: 1,
     });
   });
+
+  it.each(['active', 'closed_answered', 'closed_cant_help', 'graduated', 'declined', 'expired'])(
+    'reads retained requester history after %s without inferring a disposition from the lifecycle', (state) => {
+      const population = ['confirmed', 'rescoped', 'reversed', 'moot'].map(disposition => {
+        const historical = Object.freeze({ disposition, by: 'requester', at: iso(T0 + H),
+          note: 'Previously recorded project decision', decision_ref: 'project#D-001' });
+        return Object.freeze(row({ conversation_id: disposition, requester_id: 'requester',
+          state, created_at: iso(T0), has_feedback: true,
+          outcome: Object.freeze({ reconciliation: historical, reason: 'Subsequent lifecycle transition' }) }));
+      });
+      const silence = Object.freeze(row({ conversation_id: 'no-history', requester_id: 'requester',
+        state, created_at: iso(T0), has_feedback: true, outcome: Object.freeze({ answer: 'Delivered advice' }) }));
+      const before = JSON.stringify(population);
+      const follow = routingHealthFromRows([...population, silence], {
+        sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW,
+      }).requestCohort.totals.followThrough;
+      expect(follow.recorded).toEqual({ confirmed: 1, rescoped: 1, reversed: 1, moot: 1 });
+      expect(follow.unknown).toBe(1);
+      expect(follow.invalid).toBe(0);
+      expect(JSON.stringify(population)).toBe(before);
+    },
+  );
 });
 
 describe('routingHealthFromRows — honesty markers', () => {

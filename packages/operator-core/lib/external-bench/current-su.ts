@@ -12,9 +12,95 @@ import type { DbScope } from './reproducibility/db';
 import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
 import { normalizeFeatureStateInput } from '../work-item-dispatch-states';
 import type { GatewayRequestTimeline } from '../inference-gateway/request-stage-telemetry';
+import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from '../runtime-vintage';
+import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
+import { canonicalJson } from './reproducibility/canonical-json';
+import { createNativeGymGatewayController, type NativeGymProviderAuthorization } from '../gym/proposer';
+import type { GovernorGlueDeps } from '../learning-governor/registrants';
+import type { GatewayCarryTrialAttempt } from '../inference-gateway/gateway';
+import type { LearningReservationResourceBudget } from '../learning-governor/store';
+
+/** Stable assignment identity shared by every solver/reviewer/retry. It is an
+ * extension of the existing governor arm resource key, never a new ledger. */
+export function currentBenchAssignmentId(runId: string, armId: string, taskId: string, seed: number): string {
+  if ([runId, armId, taskId].some(value => !value.trim()) || !Number.isSafeInteger(seed) || seed < 0) {
+    throw new Error('Benchmark budget requires an exact assignment identity.');
+  }
+  return `bench-assignment:${createHash('sha256').update(canonicalJson([runId, armId, taskId, seed])).digest('hex')}`;
+}
+
+/** Private host authority authenticates the FINAL credential, payer and native
+ * input bound. A configured account alias or a caller bearer is insufficient.
+ * The request still has to match the frozen model, effort, output and prices. */
+export function currentBenchGatewayController(input: {
+  workspaceId: string; loopId: string; token: string; preregHash: string;
+  protocol: CurrentBenchmarkProtocol; armId: string; taskId: string; seed: number;
+  resources: LearningReservationResourceBudget;
+  authenticateProvider: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>;
+}, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> {
+  const protocol = currentBenchmarkProtocolSchema.parse(input.protocol);
+  const arm = protocol.arms.find(arm => arm.id === input.armId);
+  resolveBenchWorkspace(input.workspaceId);
+  if (!arm || !protocol.taskIds.includes(input.taskId) || !protocol.seeds.includes(input.seed) ||
+      !/^[a-f0-9]{64}$/.test(input.preregHash) || typeof input.authenticateProvider !== 'function') {
+    throw new Error('Benchmark gateway requires its frozen assignment and authenticated provider.');
+  }
+  const { workspaceId, loopId, token, preregHash, authenticateProvider } = input;
+  const assignmentId = currentBenchAssignmentId(protocol.runId, input.armId, input.taskId, input.seed);
+  const assignmentIds = protocol.arms.flatMap(arm => protocol.taskIds.flatMap(taskId =>
+    protocol.seeds.map(seed => currentBenchAssignmentId(protocol.runId, arm.id, taskId, seed)))).sort();
+  const resources = { ...input.resources, armIds: [...input.resources.armIds] };
+  // The host may choose tighter token, request and global-time bounds, but
+  // cannot widen any monetary/assignment limit or omit another frozen arm.
+  if (canonicalJson([...resources.armIds].sort()) !== canonicalJson(assignmentIds) ||
+      resources.usdPerArm !== arm.generationBudget.maxUsd || resources.maxOpenUsd !== protocol.maxInFlightUsd ||
+      resources.wallClockMsPerArm !== arm.generationBudget.maxWallClockMs ||
+      !Number.isSafeInteger(resources.wallClockMs) || resources.wallClockMs! <= 0) {
+    throw new Error('Benchmark gateway resource policy differs from the frozen protocol.');
+  }
+  const rate = protocol.priceSchedule.rates.find(rate => rate.model === arm.model)!;
+  return createNativeGymGatewayController({ workspaceId, loopId, token, manifestSha256: preregHash, armId: assignmentId,
+    exact: { binding: preregHash, budgetUsd: protocol.aggregateBudgetUsd, resourceBudget: resources },
+    async authorizeProviderAttempt(attempt) {
+      // Copy before authentication so an async callback cannot retarget the
+      // body whose native output ceiling and monetary exposure were checked.
+      const request = Object.freeze({ ...attempt });
+      try {
+        const body = JSON.parse(request.body);
+        const output = request.transport === 'anthropic-http' ? body.max_tokens : body.max_output_tokens;
+        const effort = request.transport === 'anthropic-http' ? body.output_config?.effort : body.reasoning?.effort;
+        if ((arm.agent === 'codex') !== (request.transport !== 'anthropic-http') ||
+            !['auto', 'default'].includes(arm.account) && request.accountId !== arm.account ||
+            body.model !== arm.model || effort !== arm.effort ||
+            !Number.isSafeInteger(output) || output <= 0 ||
+            arm.generationBudget.maxTokens !== undefined && output > arm.generationBudget.maxTokens) return null;
+        const authenticated = await authenticateProvider(request);
+        if (!authenticated) return null;
+        const authority = { ...authenticated };
+        if (authority.outputTokens !== output || !Number.isSafeInteger(authority.inputTokens) || authority.inputTokens < 0) return null;
+        // Round each frozen rate upward to microUSD per million tokens, then
+        // use integer arithmetic. Floating subtraction must never grant extra
+        // exposure. Full uncached input is the conservative OpenAI bound.
+        // Anthropic cache-write pricing needs a separately frozen ceiling;
+        // the current schema cannot authorize it by the ordinary input rate.
+        if (request.transport === 'anthropic-http') return null;
+        const inputRateMicros = Math.ceil(Math.max(rate.inputUsdPerMillion, rate.cachedInputUsdPerMillion) * 1_000_000);
+        const outputRateMicros = Math.ceil(rate.outputUsdPerMillion * 1_000_000);
+        if (![inputRateMicros, outputRateMicros].every(Number.isSafeInteger)) return null;
+        const inputRate = BigInt(inputRateMicros), outputRate = BigInt(outputRateMicros);
+        const requiredMicros = (BigInt(authority.inputTokens) * inputRate + BigInt(output) * outputRate + 999_999n) / 1_000_000n;
+        const grantMicros = Math.round(authority.requestedUsd * 1_000_000);
+        if (!Number.isSafeInteger(grantMicros) || grantMicros <= 0 || grantMicros / 1_000_000 !== authority.requestedUsd ||
+            BigInt(grantMicros) < requiredMicros || authority.requestedUsd > arm.generationBudget.maxUsd) return null;
+        return authority;
+      } catch { return null; }
+    },
+  }, governor);
+}
 
 type LaunchArgs = Parameters<typeof launchAgentTool.handler>[0];
-export type CurrentBenchTask = Pick<TaskRow, 'taskId' | 'workspaceId' | 'state' | 'exitCode' | 'detail'>;
+export type CurrentBenchTask = Pick<TaskRow, 'taskId' | 'workspaceId' | 'state' | 'exitCode' | 'detail'> &
+  Partial<Pick<TaskRow, 'sessionId' | 'startedAt'>>;
 export interface CurrentBenchIdentity {
   measuredBy: 'runtime-observation';
   runtimeRevision: string;
@@ -41,6 +127,144 @@ export interface CurrentBenchIdentityObservation {
   };
   nativeTranscript: string;
   gateway: { processRef: string; timeline: GatewayRequestTimeline };
+}
+
+/** Existing native session, runtime-vintage and gateway readers are the IO
+ * authority. A bounded gateway ring establishes a particular request identity,
+ * never complete all-attempt usage or a historical runtime census. */
+export interface CurrentBenchObservationReaderPorts {
+  readBinding(task: CurrentBenchTask): Promise<{ ownerId: string; nativeSessionId: string; codexHome: string } | null>;
+  readRuntimes(): Promise<RuntimeVintageRow[]>;
+  measureRuntimes(rows: RuntimeVintageRow[], units: string[]): string | null;
+  readTranscript(nativeSessionId: string, codexHome: string): Promise<string | null>;
+  readGateway(ownerId: string): Promise<{ owner: string; process: { pid: number; identity: string | null; startedAt: number };
+    stageTelemetry: { ownerId: string; recent: GatewayRequestTimeline[] } } | null>;
+}
+export interface CurrentBenchObservationReaderOptions extends DbScope {
+  workspaceId: string;
+  /** Boot ledger scope of the shared execution host, distinct from the
+   * isolated task workspace. Read-only observation does not grant it authority. */
+  runtimeWorkspaceId: string;
+  workerUnit: string;
+  gatewayUnit: string;
+  gatewayBaseUrl: string;
+}
+export function currentBenchObservationReader(
+  options: CurrentBenchObservationReaderOptions,
+  ports: CurrentBenchObservationReaderPorts = liveCurrentBenchObservationReaderPorts(options),
+): (task: CurrentBenchTask) => Promise<CurrentBenchIdentityObservation | null> {
+  // Copy before asynchronous reads; an options mutation cannot retarget proof.
+  const opts = { ...options };
+  resolveBenchWorkspace(opts.workspaceId);
+  const endpoint = new URL(opts.gatewayBaseUrl);
+  if (endpoint.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) ||
+      endpoint.username || endpoint.password || endpoint.pathname !== '/' || endpoint.search || endpoint.hash ||
+      !opts.runtimeWorkspaceId.trim() || !opts.workerUnit.trim() || !opts.gatewayUnit.trim() || opts.workerUnit === opts.gatewayUnit) {
+    throw new Error('Benchmark observation requires explicit local execution and gateway runtimes.');
+  }
+  const gatewayPort = Number(endpoint.port || 80);
+  const io = { ...ports };
+  return async task => {
+    try {
+      if (task.workspaceId !== opts.workspaceId || !task.sessionId || typeof task.detail.coordOwnerId !== 'string') return null;
+      const binding = await io.readBinding(task);
+      if (!binding || binding.nativeSessionId !== task.sessionId || binding.ownerId !== task.detail.coordOwnerId) return null;
+      const rows = await io.readRuntimes();
+      const units = [opts.workerUnit, opts.gatewayUnit];
+      const environment = io.measureRuntimes(rows, units), runtimeRevision = io.measureRuntimes(rows, [opts.workerUnit]);
+      const workers = rows.filter(row => row.unit === opts.workerUnit);
+      const gateways = rows.filter(row => row.unit === opts.gatewayUnit);
+      if (!environment || !runtimeRevision || workers.length !== 1 || gateways.length !== 1) return null;
+      const worker = workers[0], gateway = gateways[0];
+      if (worker.workspaceId !== opts.runtimeWorkspaceId || gateway.workspaceId !== opts.runtimeWorkspaceId ||
+          !worker.treeSha || !/^[a-f0-9]{40}$/.test(worker.treeSha) || gateway.extra.port !== gatewayPort ||
+          typeof gateway.extra.kernelProcessIdentity !== 'string') return null;
+      const [nativeTranscript, report] = await Promise.all([
+        io.readTranscript(binding.nativeSessionId, binding.codexHome), io.readGateway(binding.ownerId),
+      ]);
+      if (!nativeTranscript || !report || report.owner !== binding.ownerId || report.stageTelemetry.ownerId !== binding.ownerId ||
+          report.process.pid !== gateway.pid || report.process.identity !== gateway.extra.kernelProcessIdentity ||
+          !Number.isFinite(report.process.startedAt)) return null;
+      const bootAt = Date.parse(worker.reportedAt);
+      const taskAt = Date.parse(task.startedAt ?? '');
+      if (!Number.isFinite(bootAt) || !Number.isFinite(taskAt)) return null;
+      const candidates = report.stageTelemetry.recent.filter(row => row.nativeCorrelation.status === 'observed' &&
+        row.nativeCorrelation.threadId === binding.nativeSessionId && row.startedAt >= Math.max(bootAt, taskAt, report.process.startedAt));
+      const timeline = candidates.sort((a, b) => b.finalizedAt - a.finalizedAt)[0];
+      if (!timeline || io.measureRuntimes(await io.readRuntimes(), units) !== environment) return null;
+      const observation: CurrentBenchIdentityObservation = {
+        worker: { taskId: task.taskId, workspaceId: task.workspaceId, ownerId: binding.ownerId,
+          nativeSessionId: binding.nativeSessionId, runtimeRevision, sourceRevision: worker.treeSha,
+          evidenceRef: `runtime-vintage:${worker.unit}:${worker.host}:${worker.extra.kernelProcessIdentity}:${environment}` },
+        nativeTranscript, gateway: { processRef: `gateway:${report.process.identity}`, timeline },
+      };
+      return currentBenchIdentityFromObservation(task, observation) ? observation : null;
+    } catch { return null; }
+  };
+}
+
+/** Read host-owned bindings and full native bytes. Never search another home,
+ * restamp from HEAD, or use requested launch configuration as an observation. */
+export function liveCurrentBenchObservationReaderPorts(opts: CurrentBenchObservationReaderOptions): CurrentBenchObservationReaderPorts {
+  const scope = { ...opts };
+  return {
+    readBinding: async task => {
+      const { resolveDb } = await import('./reproducibility/db');
+      const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+      const { sql } = resolveDb(scope);
+      const rows = await sql<{ id: number; coord_owner_id: string; session_id: string }[]>`
+        SELECT a.id, a.coord_owner_id, a.session_id FROM harness_shared.adv_sessions a
+        JOIN harness_shared.task_ledger t ON t.workspace_id = a.workspace_id
+          AND t.session_id = a.session_id AND t.detail->>'coordOwnerId' = a.coord_owner_id
+        WHERE t.task_id = ${task.taskId} AND t.workspace_id = ${scope.workspaceId}
+          AND a.agent = 'codex' AND a.coord_owner_id = ${String(task.detail.coordOwnerId)}
+          AND a.session_id = ${task.sessionId ?? null}
+        ORDER BY a.started_at DESC LIMIT 2
+      `;
+      if (rows.length !== 1) return null;
+      return { ownerId: rows[0].coord_owner_id, nativeSessionId: rows[0].session_id, codexHome: codexHomeForSessionKey(rows[0].id) };
+    },
+    readRuntimes: async () => {
+      const { listRuntimeVintage } = await import('../runtime-vintage');
+      return listRuntimeVintage(scope.runtimeWorkspaceId, scope.sql, [scope.workerUnit, scope.gatewayUnit]);
+    },
+    // Keep the existing kernel-pin measurement synchronous for before/after proof.
+    measureRuntimes: (rows, units) => measureRuntimeVintageEnvironment(rows, units),
+    readTranscript: async (nativeSessionId, codexHome) => {
+      const [{ promises: fs, constants }, path, { findCodexRolloutPathByUuid }] = await Promise.all([
+        import('node:fs'), import('node:path'), import('../session-transcript-resolvers'),
+      ]);
+      const file = await findCodexRolloutPathByUuid(nativeSessionId, { homeOverride: codexHome });
+      if (!file) return null;
+      const root = await fs.realpath(path.join(codexHome, 'sessions')), realFile = await fs.realpath(file);
+      const relative = path.relative(root, realFile);
+      if (file !== realFile || !relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) return null;
+      const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const before = await handle.stat();
+        if (!before.isFile() || before.size <= 0 || before.size > 8_388_608) return null;
+        const bytes = Buffer.alloc(before.size); let offset = 0;
+        while (offset < bytes.length) {
+          const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+          if (!read.bytesRead) return null; offset += read.bytesRead;
+        }
+        const after = await handle.stat(), text = bytes.toString('utf8');
+        return before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs &&
+          Buffer.from(text, 'utf8').equals(bytes) ? text : null;
+      } finally { await handle.close(); }
+    },
+    readGateway: async ownerId => {
+      const url = new URL('/admin/owner-report', scope.gatewayBaseUrl); url.searchParams.set('owner', ownerId);
+      const response = await fetch(url, { signal: AbortSignal.timeout(5000), redirect: 'error' });
+      if (!response.ok || !response.body) return null;
+      const chunks: Uint8Array[] = []; let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.byteLength; if (size > 8_388_608) throw new Error('Benchmark gateway observation exceeded its byte bound.');
+        chunks.push(chunk);
+      }
+      return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    },
+  };
 }
 
 export function currentBenchIdentityFromObservation(
