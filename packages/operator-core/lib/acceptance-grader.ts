@@ -583,10 +583,12 @@ export async function detectAcceptanceGraderTerminalFailure(
   let latestRawLog = '';
   for (let recheck = 0; recheck <= boundedRechecks; recheck += 1) {
     latestRawLog = await readLogTail(logPath);
+    const nativeCompletedApiError = await nativeApiError();
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
-      allowInferenceGatewayError: allowInferenceGatewayError || await nativeApiError(),
-      allowGatewayErrorWithoutFooter,
+      allowInferenceGatewayError: allowInferenceGatewayError || nativeCompletedApiError,
+      // The native completed error remains a receipt when the PTY omits its footer.
+      allowGatewayErrorWithoutFooter: allowGatewayErrorWithoutFooter || nativeCompletedApiError,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
       allowLauncherKickoffDrop,
@@ -607,10 +609,11 @@ export async function detectAcceptanceGraderTerminalFailure(
   for (let recheck = 0; recheck < boundedStartupRechecks; recheck += 1) {
     await sleep(boundedStartupDelay);
     latestRawLog = await readLogTail(logPath);
+    const nativeCompletedApiError = await nativeApiError();
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
-      allowInferenceGatewayError: allowInferenceGatewayError || await nativeApiError(),
-      allowGatewayErrorWithoutFooter,
+      allowInferenceGatewayError: allowInferenceGatewayError || nativeCompletedApiError,
+      allowGatewayErrorWithoutFooter: allowGatewayErrorWithoutFooter || nativeCompletedApiError,
       allowLauncherQuotaDrop,
       allowLauncherWalledPoolRefusal,
       allowLauncherKickoffDrop,
@@ -797,7 +800,9 @@ export function classifyAcceptanceGraderTerminalFailure(
   const unsupportedSystemRole = allowInferenceGatewayError
     ? normalized.match(
         /API Error:\s*400\s+role\s+['"]system['"]\s+is not supported on this model[\s\S]{0,800}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
-      )
+      ) ?? (allowGatewayErrorWithoutFooter
+        ? normalized.match(/API Error:\s*400\s+role\s+['"]system['"]\s+is not supported on this model/iu)
+        : null)
     : null;
   if (unsupportedSystemRole) {
     return {
