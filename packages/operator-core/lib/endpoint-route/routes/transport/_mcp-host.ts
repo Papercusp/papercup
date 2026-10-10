@@ -112,6 +112,8 @@ import {
 } from '../../../result-projection';
 import type { ProjectionSpec, ViewResolution } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
+import { readSessionConfinement } from '../../../capability-envelope/session-confinement-store';
+import { evaluateSessionConfinement } from '../../../capability-envelope/session-confinement';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import { registerSuNativeToolDispatcher, runOnSuNativeToolOwner, SuNativeToolOwnerError, type SuNativeToolAddress } from '../../../su-session-owner-routing';
 import { SCRATCH_SCHEME } from '../../../scratch-uri';
@@ -3435,6 +3437,19 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // AFTER the allowlist filter so a compact name that is not advertised is
   // simply never reached.
   const compact = parseCompactToolNames(urlFromExtra(extra)?.searchParams.get('tools_compact'));
+  // Listing must expose the same launch authority that dispatch enforces.
+  // Apply this after identity-required additions, so neither those additions
+  // nor a growing discovery seed can widen an exact native launch ceiling.
+  if (spawnRes.kind === 'ok') {
+    try {
+      const ownerId = resolveAgentIdentity(spawnRes.ctx).ownerId;
+      const confinement = await readSessionConfinement(ownerId, spawnRes.ctx.workspaceId);
+      if (confinement) result = result.filter(listing =>
+        evaluateSessionConfinement({ toolName: listing.name, confinement }).allowed);
+    } catch {
+      return { kind: 'failed', reason: 'session_confinement_unavailable' };
+    }
+  }
   return {
     kind: spawnRes.kind,
     spawnRes,

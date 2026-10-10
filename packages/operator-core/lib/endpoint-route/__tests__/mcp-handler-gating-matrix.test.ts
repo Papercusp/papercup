@@ -218,6 +218,8 @@ const h = vi.hoisted(() => {
     identityListingRoleCaps: [] as readonly string[],
     identityObservedRoleCaps: [] as string[],
     identityListedCandidateNames: [] as string[],
+    readSessionConfinement: vi.fn(async (_owner: string | null | undefined, _workspace?: string):
+      Promise<import('../../capability-envelope/session-confinement').SessionToolConfinement | null> => null),
   };
 });
 
@@ -374,6 +376,11 @@ vi.mock('../../capability-envelope/identity-tool-surface', async (importOriginal
     },
   };
 });
+vi.mock('../../capability-envelope/session-confinement-store', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../capability-envelope/session-confinement-store')>()),
+  readSessionConfinement: (owner: string | null | undefined, workspace?: string) =>
+    h.readSessionConfinement(owner, workspace),
+}));
 vi.mock('../../spawn-signing', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   h.realSpawnSigning = actual as typeof import('../../spawn-signing');
@@ -1304,6 +1311,40 @@ function assertPolicyResultParity(
   expect(payloadContent(native)).toEqual([{ type: 'text', text: 'gatingtest:scoped-ok' }]);
 }
 
+describe.each(['memory', 'uds', 'listener'] as const)('launch ceiling listing — %s transport', connection => {
+  const extra = () => superuserExtra('&workspace=ws-test&client=su-ceiling&tools=gatingtest:engineer,gatingtest:txless_scope');
+  const policy = (denyOutside: string[]) => ({ denyTools: [], denyOutside,
+    reason: 'metered benchmark', imposedBy: 'benchmark-host' });
+  it('advertises only launch-authorized tools through HTTP assembly and the native SDK', async () => {
+    h.readSessionConfinement.mockResolvedValue(policy(['gatingtest:engineer']));
+    const http = await listTools(extra());
+    expect(http.tools.map(tool => tool.name)).toEqual(['gatingtest:engineer']);
+    expect(h.readSessionConfinement).toHaveBeenCalledWith('su-ceiling', 'ws-test');
+    await withSdkHost(extra(), async client => {
+      const native = await client.listTools();
+      assertCatalogParity(native, http);
+      expect(native.tools.map(tool => tool.name)).toEqual(['gatingtest:engineer']);
+    }, connection);
+  });
+  it('rechecks authoritative policy on every listing and preserves an expired empty ceiling', async () => {
+    h.readSessionConfinement.mockResolvedValue(policy(['gatingtest:engineer']));
+    await withSdkHost(extra(), async client => {
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['gatingtest:engineer']);
+      h.readSessionConfinement.mockResolvedValue(policy(['gatingtest:txless_scope']));
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['gatingtest:txless_scope']);
+      h.readSessionConfinement.mockResolvedValue(policy([]));
+      expect((await client.listTools()).tools).toEqual([]);
+    }, connection);
+  });
+  it('fails closed when the stored launch authority cannot be read', async () => {
+    h.readSessionConfinement.mockRejectedValue(new Error('private policy unavailable'));
+    await expect(listTools(extra())).rejects.toThrow('session_confinement_unavailable');
+    await withSdkHost(extra(), async client => {
+      await expect(client.listTools()).rejects.toThrow('session_confinement_unavailable');
+    }, connection);
+  });
+});
+
 describe.each(['memory', 'uds', 'listener'] as const)('shared MCP host — %s SDK parity with the real HTTP assembly', (connection) => {
   it('negotiates existing capabilities and exposes the same allowed catalog', async () => {
     const extra = extraFor(signedUrl({ tools: 'gatingtest:scoped,gatingtest:engineer' }));
@@ -2063,6 +2104,7 @@ beforeEach(() => {
   // contaminate another case's literal model-content oracle.
   _resetBatchNudgeState();
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
+  h.readSessionConfinement.mockResolvedValue(null);
   h.getSessionBrief.mockResolvedValue(null);
   h.kernelAuthority.rows = null;
   h.kernelAuthority.launchRecord = null;
