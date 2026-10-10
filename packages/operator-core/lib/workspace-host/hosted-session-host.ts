@@ -14,7 +14,9 @@
  * outbound relay. D-020's "loopback-only" property is therefore preserved by
  * construction rather than by configuration.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createHostedPrincipal } from '../auth/hosted-principal';
+import type { HostedCustomerCommandDependencies } from './hosted-customer-command';
 import { constants } from 'node:fs';
 import { open, realpath, readdir } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -169,6 +171,7 @@ export interface HostedHostRelayClose {
 export type HostedHostRelayEnvelope = HostedHostRelayOpen | HostedHostRelayMessage | HostedHostRelayClose;
 
 export type HostedHostOutboundEnvelope =
+  | { type: 'session.authorize'; channelId: string; requestId: string }
   | { type: 'relay'; channelId: string; payload: unknown }
   | { type: 'relay.close'; channelId: string; reason: string };
 
@@ -858,6 +861,8 @@ function ptyHandleAdapter(handle: PtyHandle, scope: PtyAccessScope): HostedHostP
 export class HostedWorkspaceHostSessionAdapter {
   private readonly sessions = new Map<string, HostSession>();
   private readonly channels = new Map<string, Channel>();
+  private readonly authorityPending = new Map<string, { channelId: string;
+    settle: (authority: unknown) => void }>();
   private readonly sealedChannels = new Map<string, ByocSealedChannel>();
   private readonly desktopChannels = new Map<string, DesktopChannel>();
   /**
@@ -884,12 +889,66 @@ export class HostedWorkspaceHostSessionAdapter {
     this.warn = options.onWarning ?? ((message: string) => console.warn(`[hosted-session-host] ${message}`));
   }
 
+  /** Private host API. A relay label is never a principal: query the current
+   * ticket-bound control-plane session for EACH call on the authenticated socket. */
+  resolveCustomerPrincipal(channelId: string, signal?: AbortSignal): ReturnType<HostedCustomerCommandDependencies['resolvePrincipal']> {
+    const channel = this.channels.get(channelId);
+    if (this.closed || signal?.aborted || !channel || channel.kind !== 'operator-http'
+      || channel.plane || this.authorityPending.size >= 64) return Promise.resolve({ ok: false });
+    const requestId = randomUUID();
+    const binding = { ...this.options.binding };
+    return new Promise(resolve => {
+      let timer: ReturnType<typeof setTimeout>;
+      const onAbort = () => settle(null);
+      const settle = (authority: unknown) => {
+        if (!this.authorityPending.delete(requestId)) return;
+        clearTimeout(timer); signal?.removeEventListener('abort', onAbort);
+        if (this.closed || signal?.aborted || this.channels.get(channelId) !== channel) {
+          resolve({ ok: false }); return;
+        }
+        try {
+          const a = object(authority);
+          if (!a || a.userId !== channel.userId || a.sessionId !== channel.hostedSessionId
+            || a.controlPlaneWorkspaceId !== binding.controlPlaneWorkspaceId
+            || a.organizationId !== binding.organizationId || a.customerWorkspaceId !== binding.customerWorkspaceId
+            || !Array.isArray(a.permissions) || a.permissions.length > 7) throw new Error('denied');
+          const principal = createHostedPrincipal({ workspaceId: binding.controlPlaneWorkspaceId,
+            activeOrganizationId: binding.organizationId, selectedWorkspaceId: binding.customerWorkspaceId,
+            userId: channel.userId, sessionId: channel.hostedSessionId,
+            sessionVersion: a.sessionVersion as number, permissions: a.permissions });
+          if (!principal.permissions.has('workspace:operate')) throw new Error('denied');
+          resolve({ ok: true, principal });
+        } catch { resolve({ ok: false }); }
+      };
+      this.authorityPending.set(requestId, { channelId, settle });
+      timer = setTimeout(() => settle(null), 15_000);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); return; }
+      try { this.options.send({ type: 'session.authorize', channelId, requestId }); }
+      catch { settle(null); }
+    });
+  }
+
+  private settleAuthority(message: Record<string, unknown>): void {
+    const requestId = string(message.requestId, 64);
+    if (!requestId) return;
+    const pending = this.authorityPending.get(requestId);
+    if (pending && pending.channelId === message.channelId) pending.settle(message.authority);
+  }
+
+  private cancelAuthority(channelId?: string): void {
+    for (const pending of [...this.authorityPending.values()]) {
+      if (channelId === undefined || pending.channelId === channelId) pending.settle(null);
+    }
+  }
+
   async accept(envelope: unknown): Promise<void> {
     if (this.closed || byteLength(envelope) > this.maxMessageBytes) return;
     const message = object(envelope);
     if (!message) return;
     const type = string(message.type, 64);
     if (type === 'relay.open') await this.open(message);
+    else if (type === 'session.authorized') this.settleAuthority(message);
     else if (type === 'relay') await this.relay(message);
     else if (type === 'relay.close')
       this.detach(string(message.channelId, 256), string(message.reason, 256) ?? 'remote_closed');
@@ -917,6 +976,7 @@ export class HostedWorkspaceHostSessionAdapter {
   close(reason = 'connector_closed'): void {
     if (this.closed) return;
     this.closed = true;
+    this.cancelAuthority();
     for (const channelId of [...this.channels.keys()]) this.options.send({ type: 'relay.close', channelId, reason });
     this.closeOperatorHttpChannels();
     // notify:false — the broadcast above already told the control plane about
@@ -948,6 +1008,7 @@ export class HostedWorkspaceHostSessionAdapter {
     const handoff = new SessionHandoff(this.options.binding);
     if (this.closed) return handoff;
     this.closed = true;
+    this.cancelAuthority();
     for (const channelId of [...this.channels.keys()]) this.options.send({ type: 'relay.close', channelId, reason });
     this.closeOperatorHttpChannels();
     for (const desktop of [...this.desktopChannels.values()]) this.closeDesktopChannel(desktop, reason, false);
@@ -1914,6 +1975,7 @@ export class HostedWorkspaceHostSessionAdapter {
 
   private detach(channelId: string | null, reason: string): void {
     if (!channelId) return;
+    this.cancelAuthority(channelId);
     const sealed = this.sealedChannels.get(channelId);
     if (sealed) {
       this.sealedChannels.delete(channelId);

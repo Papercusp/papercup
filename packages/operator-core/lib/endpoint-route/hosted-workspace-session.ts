@@ -1,5 +1,7 @@
 /** Generation-bound relay between one outbound workspace connector and browser sessions. */
 import { randomUUID } from 'node:crypto';
+import { isHostedPrincipal } from '../auth/hosted-principal';
+import type { HostedPrincipalResolution } from '../auth/hosted-principal-resolver';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { parseHostedPsuCustomerArgv } from '../workspace-host/hosted-psu-session';
 import { HOSTED_RELAY_FRAME_REGISTRY } from '../workspace-host/hosted-relay-confidentiality-registry';
@@ -64,6 +66,8 @@ export interface HostedWorkspaceSessionAuditEvent {
 }
 
 export interface HostedWorkspaceSessionBrokerOptions {
+  /** Re-read server-owned authority for the consumed ticket, never frame labels. */
+  resolveChannelPrincipal?: (binding: HostedConnectorTicketBinding) => Promise<HostedPrincipalResolution>;
   idleMs?: number;
   maxMessageBytes?: number;
   randomId?: () => string;
@@ -259,6 +263,8 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
   /** The last membership frame sent on each connector socket, serialized. */
   private readonly membershipSent = new WeakMap<HostedWorkspaceRelaySocket, string>();
   private lastMembershipRefreshAt: number;
+  private readonly resolveChannelPrincipal: HostedWorkspaceSessionBrokerOptions['resolveChannelPrincipal'];
+  private readonly authorityRequests = new WeakMap<HostedWorkspaceRelaySocket, Set<string>>();
 
   constructor(options: HostedWorkspaceSessionBrokerOptions = {}) {
     this.idleMs = options.idleMs ?? HOSTED_WORKSPACE_SESSION_IDLE_MS;
@@ -268,6 +274,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     this.onConnectorLiveness = options.onConnectorLiveness ?? (() => {});
     this.now = options.now ?? Date.now;
     this.membershipReport = options.membershipReport ?? null;
+    this.resolveChannelPrincipal = options.resolveChannelPrincipal;
     this.membershipRefreshMs = options.membershipRefreshMs ?? HOSTED_MEMBERSHIP_REFRESH_MS;
     this.lastMembershipRefreshAt = this.now();
     const pingIntervalMs = options.pingIntervalMs ?? HOSTED_WORKSPACE_PING_INTERVAL_MS;
@@ -406,8 +413,12 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       }
       const raw = text(data);
       if (!raw) return;
-      let message: { type?: string; channelId?: string; payload?: unknown; reason?: string };
+      let message: { type?: string; channelId?: string; requestId?: string; payload?: unknown; reason?: string };
       try { message = JSON.parse(raw) as typeof message; } catch { return; }
+      if (message.type === 'session.authorize') {
+        void this.authorizeHostSession(socket, key, message);
+        return;
+      }
       if (binding.hosting === 'byoc' && message.type !== 'relay' && message.type !== 'relay.close') {
         // A connector cannot add new control traffic by naming a frame type. Audit
         // only a known type name; an unknown string may itself contain content.
@@ -544,6 +555,46 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       },
       close: (reason) => this.closeSession(session, 1000, reason, true),
     };
+  }
+
+  private async authorizeHostSession(socket: HostedWorkspaceRelaySocket, key: string,
+    message: { channelId?: string; requestId?: string }): Promise<void> {
+    const { channelId, requestId } = message;
+    if (typeof channelId !== 'string' || channelId.length > 256
+      || typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/i.test(requestId)
+      || this.connectors.get(key) !== socket) return;
+    const session = this.sessions.get(channelId);
+    if (!session || session.closed || session.connectorKey !== key
+      || session.kind !== 'operator-http' || session.role !== 'controller') return;
+    const pending = this.authorityRequests.get(socket) ?? new Set<string>();
+    if (pending.size >= 64 || pending.has(requestId)) return;
+    this.authorityRequests.set(socket, pending);
+    pending.add(requestId);
+    let authority: Record<string, unknown> | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const binding = { ...session.binding } as HostedConnectorTicketBinding;
+      const result = await Promise.race([
+        this.resolveChannelPrincipal?.(binding) ?? Promise.resolve({ ok: false as const }),
+        new Promise<{ ok: false }>(resolve => { timer = setTimeout(() => resolve({ ok: false }), 15_000); }),
+      ]);
+      if (result.ok && isHostedPrincipal(result.principal)) {
+        const p = result.principal;
+        if (p.userId === binding.userId && p.sessionId === binding.hostedSessionId
+          && p.workspaceId === binding.controlPlaneWorkspaceId
+          && p.activeOrganizationId === binding.organizationId
+          && p.selectedWorkspaceId === binding.customerWorkspaceId
+          && p.permissions.has('workspace:operate')) {
+          authority = { userId: p.userId, sessionId: p.sessionId, sessionVersion: p.sessionVersion,
+            controlPlaneWorkspaceId: p.workspaceId, organizationId: p.activeOrganizationId,
+            customerWorkspaceId: p.selectedWorkspaceId, permissions: [...p.permissions] };
+        }
+      }
+    } catch { /* Authority failure denies without sending database/provider details. */ }
+    finally { if (timer) clearTimeout(timer); pending.delete(requestId); }
+    // The channel or connector may have rotated while the authority read waited.
+    if (this.connectors.get(key) !== socket || this.sessions.get(channelId) !== session || session.closed) return;
+    sendJson(socket, { type: 'session.authorized', channelId, requestId, authority });
   }
 
   attachBrowser(

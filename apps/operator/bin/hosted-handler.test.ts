@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { serve } from "@hono/node-server";
 import { WebSocket } from "ws";
 import { EventEmitter } from "node:events";
@@ -52,6 +52,39 @@ describe("readAttachRequest", () => {
 });
 
 const servers: Array<ReturnType<typeof serve>> = [];
+it('composes live session/membership checks on the existing connector broker', async () => {
+  let active = true;
+  const membership = { userId: 'user-1', organizationId: 'org-1', permissionVersion: 1,
+    permissions: new Set(['workspace:operate']) };
+  const plane = { app: new Hono(), mounted: [], components: {
+    sessionStore: { resolve: async () => ({ id: 'session-1', userId: 'user-1', organizationId: 'org-1',
+      workspaceId: 'workspace-1', permissionVersion: 1, revokedAt: null }) },
+    membershipAuthority: { resolveActive: async () => active ? membership : null,
+      workspaceBelongsToOrganization: async () => true },
+  } } as unknown as AssembledHostedControlPlane;
+  const hosted = createHostedHandler(plane, new Hono(), { controlPlaneWorkspaceId: 'control',
+    resolveWorkspaceHosting: async () => 'papercusp', resolveCustomerWorkspaceHosting: async () => 'papercusp' });
+  const host = Object.assign(new EventEmitter(), { OPEN: 1, readyState: 1, frames: [] as Record<string, unknown>[],
+    send(data: string | Buffer) { this.frames.push(JSON.parse(data.toString())); },
+    close() { this.readyState = 3; host.emit('close'); } });
+  const browser = Object.assign(new EventEmitter(), { OPEN: 1, readyState: 1,
+    send() {}, close() { this.readyState = 3; browser.emit('close'); } });
+  const binding = { controlPlaneWorkspaceId: 'control', organizationId: 'org-1', customerWorkspaceId: 'workspace-1',
+    hostId: 'host-1', routeLabel: 'alpha', generation: 1, state: 'active' as const, transport: 'websocket' as const };
+  hosted.relay.attachConnector(binding, host);
+  hosted.relay.attachBrowser({ ...binding, kind: 'session', audience: 'workspace-operator', userId: 'user-1',
+    hostedSessionId: 'session-1', expiresAt: new Date(Date.now() + 60_000) }, browser, { kind: 'operator-http' });
+  const channelId = host.frames.find(m => m.type === 'relay.open')!.channelId;
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  const query = () => host.emit('message', Buffer.from(JSON.stringify({ type: 'session.authorize', channelId, requestId })), false);
+  query();
+  await vi.waitFor(() => expect(host.frames).toContainEqual(expect.objectContaining({ type: 'session.authorized',
+    authority: expect.objectContaining({ userId: 'user-1', sessionId: 'session-1', permissions: ['workspace:operate'] }) })));
+  active = false; query();
+  await vi.waitFor(() => expect(host.frames).toContainEqual({ type: 'session.authorized', channelId, requestId, authority: null }));
+  browser.close(); host.close(); hosted.relay.dispose();
+});
+
 afterEach(async () => { await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve())))); });
 
 function fixture(connectorGateway?: HostedWorkspaceConnectorGateway) {
@@ -106,7 +139,7 @@ describe("hosted handler", () => {
     const connector = Object.assign(new EventEmitter(), {
       OPEN: 1, readyState: 1, frames: [] as Record<string, unknown>[],
       send(data: string | Buffer) { this.frames.push(JSON.parse(data.toString())); },
-      close() { this.readyState = 3; this.emit("close"); },
+      close() { this.readyState = 3; connector.emit("close"); },
     });
     const binding = {
       controlPlaneWorkspaceId: "control", organizationId: "org-1",

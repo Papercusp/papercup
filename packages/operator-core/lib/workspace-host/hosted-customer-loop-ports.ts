@@ -6,6 +6,7 @@ import { dispatchProjectedTool, lookupByMcpName, type DispatchProjectedDeps,
   type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import type { ModelPort, ModelRequest } from '../agent-loop/model-port';
 import type { ToolDispatcher, DispatchResult } from '../agent-loop/capability-toolset';
+import type { HostedWorkspaceHostSessionAdapter } from './hosted-session-host';
 import { awaitHostedCustomerOperation, bindHostedCustomerCommandExecutor, type HostedCustomerCommandDependencies,
   type HostedCustomerSessionBinding } from './hosted-customer-command';
 
@@ -22,6 +23,20 @@ export interface HostedCustomerLoopPortDependencies extends HostedCustomerComman
 }
 
 const SHELL_TOOL = 'capability:bash';
+
+/** Compose privately on the customer VM. The host channel owns authentication;
+ * request headers/account labels supply no authority. Route guard stays in place
+ * until real customer process/model/current-build acceptance is available. */
+export function bindHostedCustomerChannelLoopPorts(
+  deps: Omit<HostedCustomerLoopPortDependencies, 'resolvePrincipal' | 'sessionHeaders'> & {
+    readonly sessionHost: Pick<HostedWorkspaceHostSessionAdapter, 'resolveCustomerPrincipal'>;
+    readonly channelId: string;
+  },
+): ReturnType<typeof bindHostedCustomerLoopPorts> {
+  const { sessionHost, channelId, ...ports } = deps;
+  return bindHostedCustomerLoopPorts({ ...ports, sessionHeaders: new Headers(),
+    resolvePrincipal: () => sessionHost.resolveCustomerPrincipal(channelId, ports.signal) });
+}
 const refused = (): DispatchResult => ({ isError: true,
   content: [{ type: 'text', text: 'hosted_customer_tool_unavailable' }] });
 

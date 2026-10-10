@@ -48,7 +48,7 @@ import {
   type PortalMcpOAuthDependencies,
   type PortalOAuthStore,
 } from "@papercusp/operator-core/lib/connected-apps/portal-mcp-oauth";
-import { createHostedPrincipalResolver } from "@papercusp/operator-core/lib/auth/hosted-principal-resolver";
+import { createHostedChannelPrincipalResolver, createHostedPrincipalResolver } from "@papercusp/operator-core/lib/auth/hosted-principal-resolver";
 import { isHostedConnectorLive } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-connector";
 
 /** Local server-rendered namespaces that must never become SPA-looking 200s. */
@@ -207,10 +207,16 @@ export function createHostedHandler(
 ): HostedHandler {
   const app = new Hono();
   const gateway = plane.components.connectorGateway;
+  const controlPlaneWorkspaceId = options.controlPlaneWorkspaceId?.trim();
   // P-001 (psu-cloud-connector-liveness-multi-signin-2026-09-29): the broker pings
   // every relay socket and reports what it sees; `heartbeat_at` is what the CLI's
   // `reachable` and terminal gate read, so a dead link stops reading as connected.
   const sessionBroker = new HostedWorkspaceSessionBroker({
+    resolveChannelPrincipal: async (binding) => controlPlaneWorkspaceId
+      ? createHostedChannelPrincipalResolver({ controlPlaneWorkspaceId,
+          sessionStore: plane.components.sessionStore,
+          membershipAuthority: plane.components.membershipAuthority }, binding)()
+      : { ok: false, reason: 'authority_unavailable' },
     // WI-10004167: the control plane's own copy of hosted desktop viewer starts, in
     // the binding's control-plane workspace. The host writes these to its own
     // database, which the customer-acceptance receipt cannot read. Only desktop
@@ -259,7 +265,6 @@ export function createHostedHandler(
   // registers, sends the person to the consent page (the plane's own signed-in session decides
   // who may approve), and trades the code for a key the MACHINE mints over the connector.
   // Matched by the module's own path test, ahead of the relay and the `/api/*` catch-all.
-  const controlPlaneWorkspaceId = options.controlPlaneWorkspaceId?.trim();
   const resolveHostedPrincipal = controlPlaneWorkspaceId
     ? createHostedPrincipalResolver({
         controlPlaneWorkspaceId,

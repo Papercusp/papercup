@@ -38,6 +38,8 @@ export const HOSTED_RELAY_FRAME_REGISTRY: Readonly<Record<string, HostedRelayFra
   'relay.role': { planes: ['envelope'], sensitivity: 'control', note: 'controller/observer flip' },
   bound: { planes: ['envelope'], sensitivity: 'control', note: 'connector binding (org/workspace/host/generation)' },
   'session.bound': { planes: ['envelope'], sensitivity: 'control', note: 'browser channel binding' },
+  'session.authorize': { planes: ['envelope'], sensitivity: 'control', note: 'host-only channel/session authority query; nonce, no customer content' },
+  'session.authorized': { planes: ['envelope'], sensitivity: 'control', note: 'current channel-bound identity/version/permissions or denial; no cookie, key or prompt' },
   'session.denied': { planes: ['envelope'], sensitivity: 'control', note: 'refusal reason + requestType' },
   'session.role': { planes: ['envelope'], sensitivity: 'control', note: 'role notification' },
   'session.claim-control': { planes: ['envelope'], sensitivity: 'control', note: 'takeover request' },

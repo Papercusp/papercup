@@ -139,6 +139,72 @@ function harness(root: string, files?: SafeRootFileService) {
 }
 
 describe('hosted customer PTY identity', () => {
+  const authority = { userId: 'user-1', sessionId: 'session-1', sessionVersion: 2,
+    controlPlaneWorkspaceId: 'control-1', organizationId: 'org-1', customerWorkspaceId: 'workspace-1',
+    permissions: ['workspace:operate'] };
+  async function authorityHarness() {
+    const f = harness(await projectRoot());
+    await f.adapter.accept({ type: 'relay.open', channelId: 'http', userId: 'user-1',
+      hostedSessionId: 'session-1', audience: 'workspace-operator', role: 'controller', kind: 'operator-http' });
+    return f;
+  }
+
+  it('derives customer authority only from a correlated private connector answer', async () => {
+    const f = await authorityHarness();
+    const pending = f.adapter.resolveCustomerPrincipal('http');
+    const req = f.sent.find(m => m.type === 'session.authorize') as Extract<HostedHostOutboundEnvelope, { type: 'session.authorize' }>;
+    await f.adapter.accept({ type: 'relay', channelId: 'http', payload: { ...req, type: 'session.authorized', authority } });
+    await f.adapter.accept({ type: 'session.authorized', channelId: 'different', requestId: req.requestId, authority });
+    await f.adapter.accept({ type: 'session.authorized', channelId: 'http', requestId: req.requestId, authority });
+    expect(await pending).toMatchObject({ ok: true, principal: { userId: 'user-1', sessionVersion: 2,
+      activeOrganizationId: 'org-1', selectedWorkspaceId: 'workspace-1' } });
+    const next = f.adapter.resolveCustomerPrincipal('http');
+    const fresh = f.sent.filter(m => m.type === 'session.authorize').at(-1)!;
+    expect(fresh).not.toEqual(req);
+    f.adapter.close(); expect(await next).toEqual({ ok: false });
+  });
+
+  it.each(['userId', 'sessionId', 'controlPlaneWorkspaceId', 'organizationId',
+    'customerWorkspaceId', 'sessionVersion', 'permissions'])(
+    'rejects mismatched/malformed %s authority', async key => {
+      const f = await authorityHarness(); const pending = f.adapter.resolveCustomerPrincipal('http');
+      const req = f.sent.find(m => m.type === 'session.authorize')!;
+      await f.adapter.accept({ ...req, type: 'session.authorized', authority: {
+        ...authority, [key]: key === 'permissions' ? ['*'] : 'foreign' } });
+      expect(await pending).toEqual({ ok: false }); f.adapter.close();
+    });
+
+  it('bounds pending authority with cancellation, detach and release, ignoring late answers', async () => {
+    for (const action of ['abort', 'detach', 'release']) {
+      const f = await authorityHarness(); const controller = new AbortController();
+      const pending = f.adapter.resolveCustomerPrincipal('http', controller.signal);
+      const req = f.sent.find(m => m.type === 'session.authorize')!;
+      if (action === 'abort') controller.abort();
+      else if (action === 'detach') await f.adapter.accept({ type: 'relay.close', channelId: 'http' });
+      else f.adapter.release();
+      expect(await pending).toEqual({ ok: false });
+      await f.adapter.accept({ ...req, type: 'session.authorized', authority });
+      f.adapter.close();
+    }
+  });
+
+  it('refuses labels on a PTY channel before sending an authority query', async () => {
+    const f = harness(await projectRoot()); await f.open('pty');
+    expect(await f.adapter.resolveCustomerPrincipal('pty')).toEqual({ ok: false });
+    expect(f.sent).not.toContainEqual(expect.objectContaining({ type: 'session.authorize' })); f.adapter.close();
+  });
+  it('expires a stalled authority answer and bounds concurrent requests', async () => {
+    const f = await authorityHarness();
+    vi.useFakeTimers();
+    try {
+      const pending = Array.from({ length: 64 }, () => f.adapter.resolveCustomerPrincipal('http'));
+      expect(await f.adapter.resolveCustomerPrincipal('http')).toEqual({ ok: false });
+      expect(f.sent.filter(m => m.type === 'session.authorize')).toHaveLength(64);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await Promise.all(pending)).toEqual(Array.from({ length: 64 }, () => ({ ok: false })));
+    } finally { f.adapter.close(); vi.useRealTimers(); }
+  });
+
   it('uses pinned loopback SSH into the workspace account with a clean remote environment', () => {
     const spec = hostedWorkspacePtySpawnSpec({
       scope: {} as never,

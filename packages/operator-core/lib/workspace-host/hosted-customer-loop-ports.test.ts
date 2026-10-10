@@ -9,7 +9,7 @@ import type { HostedPrincipalResolver, HostedPrincipalResolution } from '../auth
 import type { ModelPort, ModelRequest } from '../agent-loop/model-port';
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '../task-manager/enroll-sync';
 import { notifyTaskKillRequested } from '../task-manager/kill-notify';
-import { bindHostedCustomerLoopPorts } from './hosted-customer-loop-ports';
+import { bindHostedCustomerChannelLoopPorts, bindHostedCustomerLoopPorts } from './hosted-customer-loop-ports';
 
 vi.mock('../task-manager/enroll-sync', () => ({
   beginSyncEnrolment: vi.fn(() => ({ taskId: 'testcustomertask', enrolled: true })),
@@ -59,6 +59,28 @@ async function consume(port: ModelPort, req = request) {
 }
 
 describe('private customer loop port composition', () => {
+  it('composes the private channel authority door without admitting request labels', async () => {
+    const f = await fixture();
+    const principal = createHostedPrincipal({ workspaceId: 'control-workspace', userId: 'customer-user',
+      activeOrganizationId: 'customer-org', selectedWorkspaceId: 'customer-workspace',
+      sessionId: 'channel-session', sessionVersion: 1, permissions: ['workspace:operate'] });
+    const resolve = vi.fn(async (): Promise<{ ok: true; principal: typeof principal } | { ok: false }> => ({ ok: true, principal }));
+    const ports = await bindHostedCustomerChannelLoopPorts({ sessionHost: { resolveCustomerPrincipal: resolve },
+      channelId: 'private-channel', customerWorkspaceId: 'customer-workspace', projectDir: project,
+      transform: f.transform, signal: f.controller.signal, lookupTool: () => ({
+        pluginName: 'fixture', description: 'shell', capabilities: ['capability:bash'],
+        expose: { mcp: { name: 'capability:bash' } }, agentRoles: ['worker'],
+        inputSchema: { type: 'object', properties: { command: { type: 'string' } }, additionalProperties: false },
+        fn: f.localHandler }), dispatchDeps: {}, createModelPort: f.modelFactory });
+    expect((await ports.dispatch('capability:bash', { command: 'printf channel' })).isError).not.toBe(true);
+    await consume(ports.modelPort);
+    expect(resolve).toHaveBeenCalledWith('private-channel', f.controller.signal);
+    expect(f.modelFactory).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'channel-session' }), expect.any(AbortSignal));
+    resolve.mockResolvedValue({ ok: false });
+    await expect(ports.dispatch('capability:bash', { command: 'touch forbidden' })).rejects.toThrow('hosted_customer_execution_denied');
+    await expect(consume(ports.modelPort)).rejects.toThrow('hosted_customer_execution_denied');
+    expect(existsSync(join(project, 'forbidden'))).toBe(false);
+  });
   it('uses the registry dispatcher gates and customer transport, with exact derived authority', async () => {
     const f = await fixture();
     const result = await f.ports.dispatch('capability:bash', { command: 'printf customer' });
