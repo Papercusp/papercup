@@ -847,10 +847,15 @@ describe('tool registration (C-3 surface)', () => {
   it('registers as blender:grade-idea with the SU+Mug allowlist and derived-attribution args', () => {
     const tool = gradeIdeaTool as unknown as {
       name: string;
+      timeoutSec?: number;
       agentRoles?: string[];
       guidance?: { when?: string };
     };
     expect(tool.name).toBe('blender:grade-idea');
+    // tools:invoke applies a 55s fallback when a target omits its declared budget.
+    // Keep this write-capable grade tool at 60s so its nested transport deadline
+    // includes the shared 5s buffer and does not time out before a slow grade settles.
+    expect(tool.timeoutSec).toBe(60);
     expect(tool.agentRoles).toContain('mug');
     expect(tool.agentRoles).toContain('operator');
     // gradedBy is derived, never an arg (C-3)
