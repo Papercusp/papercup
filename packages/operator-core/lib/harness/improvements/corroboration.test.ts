@@ -10,6 +10,7 @@ import {
 import {
   CORROBORATION_FILING_KINDS,
   CORROBORATION_NOTE,
+  corroborationReportersSql,
   readReporterKinds,
   summarizeCorroboration,
 } from './corroboration';
@@ -123,5 +124,22 @@ describe('corroboration summary (shown on the item)', () => {
   it("does not count 'promoted' rows as filings (an admission step, not a report)", () => {
     expect(CORROBORATION_FILING_KINDS).not.toContain('promoted');
     expect([...CORROBORATION_FILING_KINDS].sort()).toEqual(['canonical-created', 'coalesced', 'duplicate', 'regression']);
+  });
+});
+
+describe('corroboration reporter lookup SQL', () => {
+  it('keeps the direct and distinct-promotion probes in separate indexable branches', () => {
+    const fakeSql = Object.assign(
+      (strings: TemplateStringsArray, ...values: unknown[]) =>
+        strings.reduce((text, part, index) => text + part + (index < values.length ? String(values[index]) : ''), ''),
+      { unsafe: (value: string) => value },
+    );
+    const statement = String(corroborationReportersSql(fakeSql as never));
+
+    const branches = statement.split('UNION ALL');
+    expect(branches).toHaveLength(2);
+    expect(branches[0]).toContain('o.canonical_work_item_id = wi.feature_id');
+    expect(branches[1]).toContain("o.canonical_work_item_id = (source.payload -> 'intakeSource' ->> 'id')");
+    expect(statement).not.toContain('canonical_work_item_id = wi.feature_id OR');
   });
 });

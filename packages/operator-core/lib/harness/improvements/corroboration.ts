@@ -90,21 +90,35 @@ type IdColumn = 'wi.feature_id' | VerificationSubjectIdSql;
  * (workspace_id, canonical_harness_slug, canonical_work_item_id), the prefix of
  * `work_item_occurrences_canonical_idx`. Never NULL (an item with no rows counts 0),
  * so it can sit in an ORDER BY without a NULLS clause.
+ *
+ * Keep the direct and distinct-promotion canonical ids as separate UNION branches. An OR
+ * between them makes Postgres scan and sort thousands of occurrence rows per candidate
+ * while evaluating claim-next's ORDER BY; each branch here pins the canonical-id index to
+ * one lookup.
  */
 export function corroborationReportersSql(sql: OrgSql, idColumn: IdColumn = 'wi.feature_id') {
   return sql`(
-    SELECT count(DISTINCT btrim(o.reporter))
-      FROM harness_shared.work_item_occurrences o
-     WHERE o.workspace_id = wi.workspace_id
-       AND o.canonical_harness_slug = wi.harness_slug
-       AND (o.canonical_work_item_id = ${sql.unsafe(idColumn)} OR o.canonical_work_item_id IN (
-         SELECT source.payload -> 'intakeSource' ->> 'id'
-           FROM harness_shared.work_items source
-          WHERE source.workspace_id = wi.workspace_id AND source.harness_slug = wi.harness_slug
-            AND source.feature_id = ${sql.unsafe(idColumn)}
-            AND source.payload -> 'intakeSource' ->> 'mode' = 'distinct'
-       ))
-       AND btrim(COALESCE(o.reporter, '')) <> ''
+    SELECT count(DISTINCT btrim(reports.reporter))
+      FROM (
+        SELECT o.reporter
+          FROM harness_shared.work_item_occurrences o
+         WHERE o.workspace_id = wi.workspace_id
+           AND o.canonical_harness_slug = wi.harness_slug
+           AND o.canonical_work_item_id = ${sql.unsafe(idColumn)}
+           AND btrim(COALESCE(o.reporter, '')) <> ''
+        UNION ALL
+        SELECT o.reporter
+          FROM harness_shared.work_items source
+          JOIN harness_shared.work_item_occurrences o
+            ON o.workspace_id = source.workspace_id
+           AND o.canonical_harness_slug = source.harness_slug
+           AND o.canonical_work_item_id = (source.payload -> 'intakeSource' ->> 'id')
+           AND btrim(COALESCE(o.reporter, '')) <> ''
+         WHERE source.workspace_id = wi.workspace_id
+           AND source.harness_slug = wi.harness_slug
+           AND source.feature_id = ${sql.unsafe(idColumn)}
+           AND source.payload -> 'intakeSource' ->> 'mode' = 'distinct'
+      ) reports
   )`;
 }
 
