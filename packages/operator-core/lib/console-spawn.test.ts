@@ -761,6 +761,38 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(result).toHaveProperty('error', expect.stringContaining('exit 1'));
   });
 
+  it('kickoff child exit: wakes a pending poll and retains the launcher refusal diagnostic', async () => {
+    const child = fakeChild(7798);
+    spawnMock.mockImplementation(() => child);
+    const logs = mkdtempSync(join(tmpdir(), 'kickoff-exit-log-'));
+    const refusal = 'tracked fork is unavailable for codex source; refusing untracked fork';
+    try {
+      const result = await spawnHeadless({
+        envelope,
+        label: 'refused-kickoff',
+        logDir: logs,
+        kickoffProof: true,
+        kickoffProofProbes: {
+          windowMs: 1000,
+          readReceipt: () => '',
+          sleep: () => {
+            const log = readdirSync(logs).find((name) => name.endsWith('.log'))!;
+            writeFileSync(join(logs, log), refusal);
+            queueMicrotask(() => child.emit('exit', 1, null));
+            return new Promise<void>(() => {});
+          },
+        },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+      expect(result).toMatchObject({ status: 'error', code: 502 });
+      expect(result).toHaveProperty('error', expect.stringContaining(refusal));
+      expect(readFileSync((result as { logPath: string }).logPath, 'utf8')).toBe(refusal);
+    } finally {
+      rmSync(logs, { recursive: true, force: true });
+    }
+  });
+
   it('kickoff child exit: preserves a valid native receipt when the child also exits', async () => {
     const child = fakeChild(7797);
     spawnMock.mockImplementation(() => child);

@@ -209,7 +209,7 @@ async function liveCurrentTask(input: CurrentTaskInput) {
   try {
     host = await controller.startNativeGateway(context.log);
     const observeIdentity = currentBenchObservationReader({ ...scope, ...input.observation,
-      workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL });
+      workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL }, undefined, host);
     const driver = createCurrentSuBenchHarness(options, context, { ...host, observeIdentity,
       admit: async () => ({ admitted: !options.signal?.aborted, receiptRef: `governor:${options.workspaceId}/${loopId}#${options.preregistration.preregHash}` }) });
     return { driver, stop };

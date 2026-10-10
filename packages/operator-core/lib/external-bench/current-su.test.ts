@@ -1008,6 +1008,47 @@ function hostObservationFixture() {
   return { task, rows, report, ports, opts };
 }
 describe('host-backed benchmark observation reader', () => {
+  async function privateHostFixture() {
+    const f = hostObservationFixture(), protocol = currentProtocolFixture();
+    const controller = currentBenchGatewayController({ workspaceId: f.task.workspaceId, loopId: 'private-observation-loop',
+      token: 'b'.repeat(64), preregHash: 'a'.repeat(64), protocol, armId: 'papercusp', taskId: 't1', seed: 1,
+      resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
+        wallClockMs: 1000, wallClockMsPerArm: 100,
+        armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)) },
+      authenticateProvider: async () => null });
+    const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 8788, stop: async () => {} } as never));
+    f.rows.splice(1); f.rows[0].pid = process.pid;
+    f.report.process.pid = process.pid; f.report.process.identity = 'kernel:worker';
+    return { ...f, hosted };
+  }
+  it('observes the controller-issued private service against the same execution-host boot record', async () => {
+    const f = await privateHostFixture();
+    try {
+      expect(await currentBenchObservationReader(f.opts, f.ports)(f.task)).toBeNull();
+      const observation = await currentBenchObservationReader(f.opts, f.ports, f.hosted)(f.task);
+      expect(currentBenchIdentityFromObservation(f.task, observation!)).toMatchObject({ sourceRevision: 'b'.repeat(40), model: 'actual-provider-model' });
+      expect(vi.mocked(f.ports.measureRuntimes).mock.calls.at(-1)?.[1]).toEqual(['worker']);
+    } finally { await f.hosted.stop(); }
+  });
+  it.each(['forged', 'workspace', 'port', 'worker-process', 'gateway-process', 'revoked', 'revoked-during-read'])(
+    'refuses private service observation drift: %s', async changed => {
+      const f = await privateHostFixture();
+      try {
+        if (changed === 'worker-process') f.rows[0].pid = process.pid + 1;
+        if (changed === 'gateway-process') f.report.process.identity = 'replacement';
+        if (changed === 'revoked') await f.hosted.stop();
+        if (changed === 'revoked-during-read') f.ports.readTranscript = vi.fn(async () => {
+          await f.hosted.stop(); return observedFixture().observation.nativeTranscript;
+        });
+        const opts = { ...f.opts,
+          ...(changed === 'workspace' ? { workspaceId: 'bench-other' } : {}),
+          ...(changed === 'port' ? { gatewayBaseUrl: 'http://127.0.0.1:8789' } : {}) };
+        const hosted = changed === 'forged' ? { ...f.hosted, nativeGateway: { ...f.hosted.nativeGateway } } : f.hosted;
+        if (['forged', 'workspace', 'port', 'revoked'].includes(changed))
+          expect(() => currentBenchObservationReader(opts, f.ports, hosted)).toThrow(/controller-issued/);
+        else expect(await currentBenchObservationReader(opts, f.ports, hosted)(f.task)).toBeNull();
+      } finally { await f.hosted.stop(); }
+    });
   it('joins exact native binding, execution-host boot pins and a process-matched gateway request', async () => {
     const f = hostObservationFixture();
     const observation = await currentBenchObservationReader(f.opts, f.ports)(f.task);

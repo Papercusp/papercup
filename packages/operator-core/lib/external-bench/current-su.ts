@@ -845,32 +845,44 @@ export interface CurrentBenchObservationReaderOptions extends DbScope {
 export function currentBenchObservationReader(
   options: CurrentBenchObservationReaderOptions,
   ports: CurrentBenchObservationReaderPorts = liveCurrentBenchObservationReaderPorts(options),
+  issuedGateway?: CurrentBenchHostGateway,
 ): (task: CurrentBenchTask) => Promise<CurrentBenchIdentityObservation | null> {
   // Copy before asynchronous reads; an options mutation cannot retarget proof.
   const opts = { ...options };
   resolveBenchWorkspace(opts.workspaceId);
   const endpoint = new URL(opts.gatewayBaseUrl);
+  // A private service started by this controller runs in the execution host,
+  // so its loaded code is the host's boot record. A caller URL alone cannot
+  // take this path or substitute a second, self-reported runtime identity.
+  const host = issuedGateway && currentBenchHostGateways.get(issuedGateway.nativeGateway);
+  const issuedHere = () => !!host && host.active() &&
+    host.binding.workspaceId === opts.workspaceId &&
+    canonicalJson(issuedGateway!.nativeAccountingBinding) === canonicalJson(host.binding) &&
+    new URL(issuedGateway!.nativeGateway.baseURL).href === endpoint.href;
+  if (issuedGateway && !issuedHere()) throw new Error('Benchmark observation requires its active controller-issued gateway.');
   if (endpoint.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) ||
       endpoint.username || endpoint.password || endpoint.pathname !== '/' || endpoint.search || endpoint.hash ||
-      !opts.runtimeWorkspaceId.trim() || !opts.workerUnit.trim() || !opts.gatewayUnit.trim() || opts.workerUnit === opts.gatewayUnit) {
+      !opts.runtimeWorkspaceId.trim() || !opts.workerUnit.trim() ||
+      !host && (!opts.gatewayUnit.trim() || opts.workerUnit === opts.gatewayUnit)) {
     throw new Error('Benchmark observation requires explicit local execution and gateway runtimes.');
   }
   const gatewayPort = Number(endpoint.port || 80);
   const io = { ...ports };
   return async task => {
     try {
-      if (task.workspaceId !== opts.workspaceId || !task.sessionId || typeof task.detail.coordOwnerId !== 'string') return null;
+      if (host && !issuedHere() || task.workspaceId !== opts.workspaceId || !task.sessionId || typeof task.detail.coordOwnerId !== 'string') return null;
       const binding = await io.readBinding(task);
       if (!binding || binding.nativeSessionId !== task.sessionId || binding.ownerId !== task.detail.coordOwnerId) return null;
       const rows = await io.readRuntimes();
-      const units = [opts.workerUnit, opts.gatewayUnit];
+      const units = host ? [opts.workerUnit] : [opts.workerUnit, opts.gatewayUnit];
       const environment = io.measureRuntimes(rows, units), runtimeRevision = io.measureRuntimes(rows, [opts.workerUnit]);
       const workers = rows.filter(row => row.unit === opts.workerUnit);
-      const gateways = rows.filter(row => row.unit === opts.gatewayUnit);
+      const gateways = rows.filter(row => row.unit === (host ? opts.workerUnit : opts.gatewayUnit));
       if (!environment || !runtimeRevision || workers.length !== 1 || gateways.length !== 1) return null;
       const worker = workers[0], gateway = gateways[0];
       if (worker.workspaceId !== opts.runtimeWorkspaceId || gateway.workspaceId !== opts.runtimeWorkspaceId ||
-          !worker.treeSha || !/^[a-f0-9]{40}$/.test(worker.treeSha) || gateway.extra.port !== gatewayPort ||
+          !worker.treeSha || !/^[a-f0-9]{40}$/.test(worker.treeSha) ||
+          (host ? worker.pid !== process.pid : gateway.extra.port !== gatewayPort) ||
           typeof gateway.extra.kernelProcessIdentity !== 'string') return null;
       const [nativeTranscript, report] = await Promise.all([
         io.readTranscript(binding.nativeSessionId, binding.codexHome), io.readGateway(binding.ownerId),
@@ -884,7 +896,7 @@ export function currentBenchObservationReader(
       const candidates = report.stageTelemetry.recent.filter(row => row.nativeCorrelation.status === 'observed' &&
         row.nativeCorrelation.threadId === binding.nativeSessionId && row.startedAt >= Math.max(bootAt, taskAt, report.process.startedAt));
       const timeline = candidates.sort((a, b) => b.finalizedAt - a.finalizedAt)[0];
-      if (!timeline || io.measureRuntimes(await io.readRuntimes(), units) !== environment) return null;
+      if (!timeline || io.measureRuntimes(await io.readRuntimes(), units) !== environment || host && !issuedHere()) return null;
       const observation: CurrentBenchIdentityObservation = {
         worker: { taskId: task.taskId, workspaceId: task.workspaceId, ownerId: binding.ownerId,
           nativeSessionId: binding.nativeSessionId, runtimeRevision, sourceRevision: worker.treeSha,
