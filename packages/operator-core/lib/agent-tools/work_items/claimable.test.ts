@@ -920,6 +920,14 @@ describe('work_items:claimable handler', () => {
     expect(argsSchema.safeParse({ harness: 'papercup', sampleExcluded: 11 }).success).toBe(false);
   });
 
+  it('distinguishes ordinary-claim review exclusions from pending reviewer candidates', () => {
+    const description = String(tool.description ?? '');
+    expect(description).toContain('`excludedSample.agentReview`');
+    expect(description).toContain('can include `revision-requested` reviews');
+    expect(description).toContain('`excludedSample.queueControl.agentReview`');
+    expect(description).toContain('pending reviewer candidates only');
+  });
+
   it('sampleExcluded rides through as sampleLimit on the SAME snapshot read + surfaces excludedSample', async () => {
     sampleValue = {
       ...EMPTY_SAMPLE,
