@@ -3,6 +3,7 @@ import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
+import { preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
@@ -12,6 +13,7 @@ it(`confirmed roster stop through private HTTP and native children: ${phase}`, a
   // it.each supplies only the row arguments; the ordinary callback owns the
   // context needed by the canonical runtime-proof reporter. Check it up front.
   expect(context.task.meta).toBeDefined();
+  preparePrivateRosterSocketRoot();
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/adv-sessions-stop.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',

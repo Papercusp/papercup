@@ -74,6 +74,34 @@ function immediateDeps(config: any, release: any, overrides: Record<string, unkn
 }
 
 describe('cloud portal source reconciliation', () => {
+  it('builds with mobile download links and rebuilds when their configuration changes', async () => {
+    const { config, release } = fixture();
+    const links = 'NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL=https://releases.example/android.apk\nNEXT_PUBLIC_PORTAL_IPHONE_DOWNLOAD_URL=https://releases.example/iphone\n';
+    writeFileSync(config.publicLinksEnv, links);
+    const deps = immediateDeps(config, release);
+    await reconcilePortal(config, deps);
+    expect(deps.linkLive).toHaveBeenCalledWith('https://releases.example/android.apk');
+    expect(deps.linkLive).toHaveBeenCalledWith('https://releases.example/iphone');
+    expect(deps.run.mock.calls[0][3]).toMatchObject({
+      NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL: 'https://releases.example/android.apk',
+      NEXT_PUBLIC_PORTAL_IPHONE_DOWNLOAD_URL: 'https://releases.example/iphone',
+    });
+    deps.receiptAt.mockResolvedValue(deps.writeReceipt.mock.calls[0][1]);
+    deps.run.mockClear();
+    expect((await reconcilePortal(config, deps)).status).toBe('fresh');
+    writeFileSync(config.publicLinksEnv, links.replace('android.apk', 'android-next.apk'));
+    expect((await reconcilePortal(config, deps)).status).toBe('deployed');
+    expect(deps.run.mock.calls[0][3].NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL).toBe('https://releases.example/android-next.apk');
+  });
+
+  it('refuses an unreachable Android download before building', async () => {
+    const { config, release } = fixture();
+    writeFileSync(config.publicLinksEnv, 'NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL=https://releases.example/missing.apk\n');
+    const deps = immediateDeps(config, release, { linkLive: vi.fn().mockResolvedValue(false) });
+    await expect(reconcilePortal(config, deps)).rejects.toThrow('portal_public_links_dead_link:NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL');
+    expect(deps.run).not.toHaveBeenCalled();
+  });
+
   it('builds with the fingerprinted file snapshot even when the inherited environment is stale', async () => {
     const { config, release } = fixture();
     const links = 'NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL=https://releases.example/pui\nNEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL=https://releases.example/desktop\n';

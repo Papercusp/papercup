@@ -3,7 +3,7 @@ import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePortalBrowserSource } from '../../../test/private-http-workspace-preflight';
+import { preparePortalBrowserSource, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
 import { buildPortalRosterBrowser } from '../../../test/portal-roster-browser-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
@@ -13,6 +13,7 @@ const options = isolatedWorkerOptions(360_000);
 // never a pass; acceptance runs must select its canonical source checkout.
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal roster browser preserves denied draft, retries the exact private recipient and truthfully renders wake', async context => {
+    preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor' });
     const runId = await recordIsolatedIntegrationProof({ root,
@@ -55,6 +56,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private Portal roster opens the selected native history and explicitly selects its GUI conversation across reload', async context => {
+    preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor',
       history: { selectedSessionId: 1, neighborSessionId: 2, selectedRolloutId: 'preflight-selected-rollout',

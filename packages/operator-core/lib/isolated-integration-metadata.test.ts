@@ -8,12 +8,31 @@ import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
-import { portalNuqsPlugin, preparePortalBrowserSource, preparePrivateHttpWorkspaces } from '../test/private-http-workspace-preflight';
+import { portalNuqsPlugin, preparePortalBrowserSource, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot } from '../test/private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
 import { retainPortalBrowserFailure } from '../test/portal-roster-browser-fixture';
+
+it('checks private socket capacity in bytes before runtime allocation, including multibyte scratch roots', () => {
+  const suffix = '/papercusp-test-runtime-XXXXXX/tmp/rs-XXXXXX/su-rs-123456789-neighbor.sock';
+  const rootAtLimit = '/' + 'x'.repeat(103 - Buffer.byteLength(suffix) - 1);
+  expect(Buffer.byteLength(preparePrivateRosterSocketRoot(rootAtLimit))).toBe(103);
+  expect(() => preparePrivateRosterSocketRoot(rootAtLimit + 'x')).toThrow('native socket capacity');
+  expect(() => preparePrivateRosterSocketRoot('/mnt/backup/d813-history4-ldcW0D')).toThrow('native socket capacity');
+  expect(() => preparePrivateRosterSocketRoot('/' + 'é'.repeat(20))).toThrow('native socket capacity');
+  expect(() => preparePrivateRosterSocketRoot('relative')).toThrow('must be absolute');
+  expect(preparePrivateRosterSocketRoot('/mnt/backup/h-XXXXXX')).toContain('/tmp/rs-XXXXXX/');
+});
+
+it('preserves a top-level native assertion and stack before long PG cleanup output', () => {
+  const failure = 'AssertionError [ERR_ASSERTION]: private socket directory exceeds the native address limit\n'
+    + '    at fixture.ts:28:8\n';
+  const detail = isolatedWorkerFailureDetail('bootstrap\n' + failure + '\n' + 'cleanup observation\n'.repeat(2_000));
+  expect(detail).toContain(failure.trim());
+  expect(detail.length).toBeLessThan(500);
+});
 
 it.each([null, 'selected-rollout'])('correlates the production Codex stream key with native discovery %s', rolloutId => {
   const expected = {

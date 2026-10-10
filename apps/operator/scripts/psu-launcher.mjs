@@ -214,6 +214,7 @@ import {
   SCOPED_INFERENCE_GATEWAY_ENV,
   snapshotScopedInferenceGateway,
 } from "@papercusp/orchestrator/codex-gateway-config";
+import { createScopedNativeSandboxSpawn } from "@papercusp/orchestrator/fleet-srt-spawn";
 import {
   prepareOmpGatewayModelsConfig,
   ompGatewayModelsConfig,
@@ -12444,6 +12445,10 @@ export function runWrapper(options) {
     );
   }
   const managedPtyEnabled = Boolean(ownerId && usePtyHost({ env }));
+  if (env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined && !managedPtyEnabled) {
+    void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
+    throw new Error("Scoped native launch requires its managed PTY boundary; refusing plain execution");
+  }
   if (adoptedCarryRespawn) {
     const handoffFirstTurn = hostHandoff?.firstTurnText;
     appendHostEvent(ownerId, "host-code-adoption-launch-prepared", {
@@ -12473,6 +12478,7 @@ export function runWrapper(options) {
         cwd,
         env,
         ownerId,
+        spawnPty: createScopedNativeSandboxSpawn({ env, cwd }),
         // headless-fleet-launch P-001/D-004: never bridge a human TTY for a headless
         // member. It resolves false anyway when stdio is detached (stdin.isTTY undefined),
         // but pinning it makes `psu --headless` run FROM a real terminal (the debugging
@@ -12672,6 +12678,10 @@ export function runWrapper(options) {
       });
       return;
     } catch (e) {
+      if (env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined) {
+        void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
+        throw e;
+      }
       // Synchronous failure = the pty never started (node-pty load / spawn). Safe
       // to fall back to the plain inherit launch.
       process.stderr.write(

@@ -121,7 +121,8 @@ async function promoteCurrentRelease(runtimeRoot, releasePath, expectedCurrentPa
 }
 
 async function publicLinksSnapshot(path, inherited) {
-  const keys = ['NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL', 'NEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL'];
+  const keys = ['NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL', 'NEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL',
+    'NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL', 'NEXT_PUBLIC_PORTAL_IPHONE_DOWNLOAD_URL'];
   let values = {};
   try {
     values = parseEnv(await readFile(path, 'utf8'));
