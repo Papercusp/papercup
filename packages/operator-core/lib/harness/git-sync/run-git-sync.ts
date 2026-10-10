@@ -1623,6 +1623,13 @@ export function expandNpmManifestClosure(
  * any conflict → 'conflict', else any error → 'error', else 'synced'/'nothing'.
  */
 export type GitSyncOutcome = {
+  /**
+   * Measured superproject HEAD after the local stage, including a partial
+   * error/conflict pass. Absence means that stage did not supply a readable
+   * HEAD; it does not mean the checkout has no committed work. Synced outcomes
+   * keep their existing required headSha contract below.
+   */
+  headSha?: string;
   /** Number of dirty paths measured across every repo visited by this pass. */
   dirtyPathCount: number;
   /** Number of local commits created across every repo during this pass. */
@@ -2088,7 +2095,7 @@ const ensureBranchAttachedForCommit = async (
 
 const headSha = async (runGit: RunGit, repo: string): Promise<string> => {
   const r = await runGit(['rev-parse', 'HEAD'], repo);
-  return r.stdout.trim();
+  return r.code === 0 ? r.stdout.trim() : '';
 };
 
 const conflictedFiles = async (runGit: RunGit, repo: string): Promise<string[]> => {
@@ -7123,10 +7130,15 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // P-016: present on every status so a sync-back conflict is reported even when the
   // pass itself is otherwise clean ('nothing' / 'synced' are the common cases).
   const syncBackField = superSyncBack ? { syncBack: superSyncBack } : {};
+  // EI-25545265520729999: the superproject can commit successfully while a
+  // sibling fetch/push fails. Keep its measured local HEAD on partial outcomes
+  // so health readers do not retain a stale tip behind the whole-pass verdict.
+  const measuredHead = superHeadSha ? { headSha: superHeadSha } : {};
 
   if (conflicts.length > 0)
     return {
       status: 'conflict',
+      ...measuredHead,
       dirtyPathCount,
       committedCount,
       conflicts,
@@ -7144,6 +7156,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   if (errors.length > 0)
     return {
       status: 'error',
+      ...measuredHead,
       dirtyPathCount,
       committedCount,
       errors,
