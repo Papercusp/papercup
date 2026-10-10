@@ -148,6 +148,18 @@ describe('runScratchGc — retention', () => {
     expect(r.retentionEvictions).toBeGreaterThanOrEqual(1);
     expect(existsSync(before)).toBe(false);
   });
+
+  it('honors an extended requested retention window without relaxing the safe default', async () => {
+    const requestedRetentionMs = RETENTION_MS + 60_000;
+    const withinRequestedWindow = makeRunDir('ws-A', 'demo:tool', UUID(2), 100, RETENTION_MS + 1_000);
+    const beyondRequestedWindow = makeRunDir('ws-A', 'demo:tool', UUID(3), 100, requestedRetentionMs + 1_000);
+
+    const r = await runScratchGc({ workspaceRegistry: ['ws-A'], retentionMs: requestedRetentionMs });
+
+    expect(r.retentionEvictions).toBe(1);
+    expect(existsSync(withinRequestedWindow)).toBe(true);
+    expect(existsSync(beyondRequestedWindow)).toBe(false);
+  });
 });
 
 /**
@@ -559,6 +571,35 @@ describe('runScratchGc — deletes only provably-dead, quiet workspace roots (WI
     expect(r.deadWorkspacesDeferred).toEqual([{ workspaceId: 'ws-BUSY', reason: 'recent-write' }]);
   });
 
+  it('honors an extended quiet window for dead workspace roots', async () => {
+    const dir = makeDeadWorkspace('ws-QUIET', DEAD_WORKSPACE_QUIET_MS + 1_000);
+    const requestedQuietMs = DEAD_WORKSPACE_QUIET_MS + 60_000;
+
+    const r = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: noHolders, quietMs: requestedQuietMs });
+
+    expect(existsSync(dir)).toBe(true);
+    expect(r.deadWorkspaces).toBe(0);
+    expect(r.deadWorkspacesDeferred).toEqual([{ workspaceId: 'ws-QUIET', reason: 'recent-write' }]);
+  });
+
+  it('dry-run reports eligible cleanup without deleting paths or writing markers', async () => {
+    const deadRoot = makeDeadWorkspace('ws-DRYRUN');
+    const liveRoot = join(root(), 'ws-LIVE');
+    const staleRun = join(liveRoot, 'demo:tool', UUID(800));
+    mkdirSync(staleRun, { recursive: true });
+    writeFileSync(join(staleRun, 'data.bin'), Buffer.alloc(100));
+    ageTree(liveRoot, RETENTION_MS + 1_000);
+
+    const r = await runScratchGc({ workspaceRegistry: ['ws-LIVE'], scanOpenPaths: noHolders, dryRun: true });
+
+    expect(r.deadWorkspaces).toBe(1);
+    expect(r.retentionEvictions).toBe(1);
+    expect(r.markersWritten).toBe(0);
+    expect(existsSync(deadRoot)).toBe(true);
+    expect(existsSync(staleRun)).toBe(true);
+    expect(existsSync(join(liveRoot, WORKSPACE_SCRATCH_MARKER))).toBe(false);
+  });
+
   it('keeps a dead workspace a process still holds open', async () => {
     const dir = makeDeadWorkspace('ws-HELD');
     const real = realpathSync(dir);
@@ -655,6 +696,15 @@ describe('runScratchGc — quota eviction', () => {
     expect(scratchEvictionBytes()).toBe(4 * 1024 ** 3);
     // GC also clears the cached full verdict, so a subsequent reservation can succeed.
     expect(() => reserveScratchSpace({ workspaceId: 'ws-Q', bytes: 1024 })).not.toThrow();
+  });
+
+  it('can skip quota eviction when the caller only owns retention pruning', async () => {
+    const oversized = makeSparseRun('ws-Q', UUID(12), WORKSPACE_QUOTA_BYTES + 1);
+
+    const result = await runScratchGc({ workspaceRegistry: ['ws-Q'], enforceQuota: false });
+
+    expect(result.quotaEvictions).toBe(0);
+    expect(existsSync(oversized)).toBe(true);
   });
 });
 

@@ -306,7 +306,7 @@ describe('pruneStorageCategory — disk (plain store)', () => {
       { path: '/s/old', mtimeMs: now - 40 * 86400000, sizeBytes: 500 },
       { path: '/s/fresh', mtimeMs: now - 10 * 86400000, sizeBytes: 300 },
     ];
-    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 30, dryRun: true }));
+    const r = await pruneStorageCategory(REQ({ categoryId: 'flight-recorder', olderThanDays: 30, dryRun: true }));
     expect(r.ok).toBe(true);
     expect(r.removed).toBe(1);
     expect(r.reclaimedBytes).toBe(500);
@@ -318,7 +318,7 @@ describe('pruneStorageCategory — disk (plain store)', () => {
   it('applies the in-flight guard to an EXPLICIT age request, not just to "all"', async () => {
     const now = Date.now();
     h.diskEntries = [{ path: '/s/just-written', mtimeMs: now - 30_000, sizeBytes: 100 }];
-    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 0, dryRun: true }));
+    const r = await pruneStorageCategory(REQ({ categoryId: 'flight-recorder', olderThanDays: 0, dryRun: true }));
     expect(r.removed).toBe(0);
     expect(r.note).toMatch(/in-flight/);
   });
@@ -326,7 +326,7 @@ describe('pruneStorageCategory — disk (plain store)', () => {
   it('still removes an entry past the in-flight guard on an explicit 0', async () => {
     const now = Date.now();
     h.diskEntries = [{ path: '/s/stale', mtimeMs: now - 10 * 60_000, sizeBytes: 100 }];
-    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 0, dryRun: true }));
+    const r = await pruneStorageCategory(REQ({ categoryId: 'flight-recorder', olderThanDays: 0, dryRun: true }));
     expect(r.removed).toBe(1);
   });
 
@@ -344,6 +344,23 @@ describe('pruneStorageCategory — disk (plain store)', () => {
     expect(r.ok).toBe(true);
     expect(r.removed).toBe(1);
     expect(existsSync(fixture.staleRun)).toBe(false);
+    expect(existsSync(fixture.freshRun)).toBe(true);
+    expect(existsSync(fixture.workspaceRoot)).toBe(true);
+    expect(existsSync(fixture.agentFile)).toBe(true);
+  });
+
+  it('scratch dry-run reports eligible run-dir cleanup without deleting it (WI-10006960)', async () => {
+    const fixture = makeScratchPruneFixture();
+    h.diskEntries = [
+      { path: fixture.workspaceRoot, mtimeMs: fixture.oldTimeMs, sizeBytes: 100 },
+      { path: fixture.agentDir, mtimeMs: fixture.oldTimeMs, sizeBytes: 50 },
+    ];
+
+    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 1, dryRun: true }));
+
+    expect(r.ok).toBe(true);
+    expect(r.removed).toBe(1);
+    expect(existsSync(fixture.staleRun)).toBe(true);
     expect(existsSync(fixture.freshRun)).toBe(true);
     expect(existsSync(fixture.workspaceRoot)).toBe(true);
     expect(existsSync(fixture.agentFile)).toBe(true);
