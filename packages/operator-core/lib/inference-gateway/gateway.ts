@@ -9407,7 +9407,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
               : null;
             const error = streamFailure?.error && typeof streamFailure.error === 'object'
               ? streamFailure.error : { code: 'server_error', message: failure.message };
-            const terminal = { type: 'response.failed', response: { id: responseId, status: 'failed', error } };
+            const terminal = responseId
+              ? { type: 'response.failed', response: { id: responseId, status: 'failed', error } }
+              : { type: 'error', error };
             res.end('event: ' + terminal.type + '\ndata: ' + JSON.stringify(terminal) + '\n\n');
           } else {
             res.destroy();
