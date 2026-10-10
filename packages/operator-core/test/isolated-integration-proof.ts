@@ -21,8 +21,11 @@ export const isolatedIntegrationCases = it.for([false, true]);
 
 /** Cleanup logs must not displace a worker's original structured assertion. */
 export function isolatedWorkerFailureDetail(output: string): string {
-  const failures = output.split('\n').filter(line => /^[A-Z][A-Z0-9_]*_FAILURE /.test(line));
-  return failures.length ? failures.map(line => line.slice(0, 4_000)).join('\n') : output.slice(-4_000);
+  const lines = output.split('\n');
+  const failures = lines.filter(line => /^[A-Z][A-Z0-9_]*_FAILURE /.test(line));
+  if (failures.length) return failures.map(line => line.slice(0, 4_000)).join('\n');
+  const fatal = lines.findIndex(line => /^\w*Error(?: \[[^\]]+\])?:/.test(line.trim()));
+  return fatal >= 0 ? lines.slice(fatal, fatal + 12).join('\n').slice(0, 4_000) : output.slice(-4_000);
 }
 
 type WorkerPhase = 'bootstrap' | 'execute' | 'teardown';
