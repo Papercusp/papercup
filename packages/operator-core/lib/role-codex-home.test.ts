@@ -35,12 +35,33 @@ vi.mock('node:os', async (importActual) => {
   const actual = await importActual<typeof import('node:os')>();
   return { ...actual, homedir: () => homeHolder.home };
 });
+const ownerSidSyncCalls = vi.hoisted(() => [] as string[]);
+vi.mock('node:fs', async (importActual) => {
+  const actual = await importActual<typeof import('node:fs')>();
+  const isOwnerSid = (path: unknown) => String(path).endsWith('.owner-sid');
+  return {
+    ...actual,
+    existsSync: (...args: Parameters<typeof actual.existsSync>) => {
+      if (isOwnerSid(args[0])) ownerSidSyncCalls.push('existsSync');
+      return actual.existsSync(...args);
+    },
+    readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+      if (isOwnerSid(args[0])) ownerSidSyncCalls.push('readFileSync');
+      return actual.readFileSync(...args);
+    },
+    writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+      if (isOwnerSid(args[0])) ownerSidSyncCalls.push('writeFileSync');
+      return actual.writeFileSync(...args);
+    },
+  };
+});
 
 let fakeHome = '';
 const RESOLVED_CODEX_DEFAULT = 'gpt-5.6-sol:xhigh';
 const savedCodexSqliteHomes = process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
 
 beforeEach(() => {
+  ownerSidSyncCalls.length = 0;
   fakeHome = mkdtempSync(join(tmpdir(), 'role-codex-home-test-'));
   homeHolder.home = fakeHome;
   process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'codex-sqlite-homes');
@@ -1757,42 +1778,30 @@ describe('writeSuCodexHome', () => {
 
   it('uses async filesystem access for owner-sid reads and stamps during fresh creation', async () => {
     await installFakeHooks();
-    const fs = await import('node:fs');
     const { readFile } = await import('node:fs/promises');
-    const exists = vi.spyOn(fs, 'existsSync');
-    const read = vi.spyOn(fs, 'readFileSync');
-    const write = vi.spyOn(fs, 'writeFileSync');
-    try {
-      const { writeSuCodexHomeAsync } = await loadMod();
-      const input = {
-        sessionKey: 'async-owner-sid-create',
-        mcpUrl: 'http://x/api/mcp?superuser=1',
-        promptText: 'ASYNC OWNER SID',
-      };
-      const first = await writeSuCodexHomeAsync({ ...input, sid: 'su-first' });
-      const ownerSidPath = join(first.codexHome, '.owner-sid');
-      expect(await readFile(ownerSidPath, 'utf8')).toBe('su-first');
+    const { writeSuCodexHomeAsync } = await loadMod();
+    const input = {
+      sessionKey: 'async-owner-sid-create',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'ASYNC OWNER SID',
+    };
+    const first = await writeSuCodexHomeAsync({ ...input, sid: 'su-first' });
+    const ownerSidPath = join(first.codexHome, '.owner-sid');
+    expect(await readFile(ownerSidPath, 'utf8')).toBe('su-first');
 
-      const isOwnerLive = vi.fn(async (sid: string) => sid === 'su-first');
-      await expect(writeSuCodexHomeAsync({
-        ...input,
-        sid: 'su-second',
-        isOwnerLive,
-      })).rejects.toThrow(/LIVE Codex home/);
-      expect(isOwnerLive).toHaveBeenCalledWith('su-first');
-      expect(await readFile(ownerSidPath, 'utf8')).toBe('su-first');
-
-      expect(exists.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
-      expect(read.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
-      expect(write.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
-    } finally {
-      vi.restoreAllMocks();
-    }
+    const isOwnerLive = vi.fn(async (sid: string) => sid === 'su-first');
+    await expect(writeSuCodexHomeAsync({
+      ...input,
+      sid: 'su-second',
+      isOwnerLive,
+    })).rejects.toThrow(/LIVE Codex home/);
+    expect(isOwnerLive).toHaveBeenCalledWith('su-first');
+    expect(await readFile(ownerSidPath, 'utf8')).toBe('su-first');
+    expect(ownerSidSyncCalls).toEqual([]);
   });
 
   it('uses async filesystem access for owner-sid reads and stamps during repair', async () => {
     await installFakeHooks();
-    const fs = await import('node:fs');
     const { readFile, writeFile } = await import('node:fs/promises');
     const { writeSuCodexHome } = await loadMod();
     const opts = {
@@ -1803,25 +1812,16 @@ describe('writeSuCodexHome', () => {
     };
     const home = writeSuCodexHome(opts);
     const ownerSidPath = join(home.codexHome, '.owner-sid');
-    const exists = vi.spyOn(fs, 'existsSync');
-    const read = vi.spyOn(fs, 'readFileSync');
-    const write = vi.spyOn(fs, 'writeFileSync');
-    try {
-      const { ensureSuCodexHomeConfigAsync } = await loadMod();
-      const unchanged = await ensureSuCodexHomeConfigAsync(opts);
-      expect(unchanged).toMatchObject({ repaired: false, identityRepaired: false });
+    ownerSidSyncCalls.length = 0;
+    const { ensureSuCodexHomeConfigAsync } = await loadMod();
+    const unchanged = await ensureSuCodexHomeConfigAsync(opts);
+    expect(unchanged).toMatchObject({ repaired: false, identityRepaired: false });
 
-      await writeFile(ownerSidPath, 'su-stale');
-      const repaired = await ensureSuCodexHomeConfigAsync(opts);
-      expect(repaired).toMatchObject({ repaired: true, identityRepaired: true });
-      expect(await readFile(ownerSidPath, 'utf8')).toBe('su-repair');
-
-      expect(exists.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
-      expect(read.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
-      expect(write.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
-    } finally {
-      vi.restoreAllMocks();
-    }
+    await writeFile(ownerSidPath, 'su-stale');
+    const repaired = await ensureSuCodexHomeConfigAsync(opts);
+    expect(repaired).toMatchObject({ repaired: true, identityRepaired: true });
+    expect(await readFile(ownerSidPath, 'utf8')).toBe('su-repair');
+    expect(ownerSidSyncCalls).toEqual([]);
   });
 
   it('keeps production SU creation and repair paths on the async owner-sid APIs', () => {
