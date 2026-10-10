@@ -22,6 +22,7 @@ describe.each([
   ['../harness/git-sync/standing-pr-merge-deps.ts', 'execFileP'],
   ['../harness/git-sync/standing-pr-merge-live.ts', 'execFileP'],
   ['../backup/state-census-producers.ts', 'execFileAsync'],
+  ['../fleet-logs-gc.ts', 'execFileAsync'],
   ['../goal-brief-live-probe.test-helper.ts', 'execute'],
   ['../../../../papercusp-desktop/bin/lib/server-container.mjs', 'execFileAsync'],
 ])('%s subprocess wrapper', (module, binding) => {

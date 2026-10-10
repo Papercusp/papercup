@@ -6,11 +6,51 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { build } from 'esbuild';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
-import { preparePortalBrowserSource, preparePrivateHttpWorkspaces } from '../test/private-http-workspace-preflight';
+import { portalNuqsPlugin, preparePortalBrowserSource, preparePrivateHttpWorkspaces } from '../test/private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
+
+function writeNuqsExportFixture(root: string) {
+  const files = {
+    'node_modules/nuqs/package.json': JSON.stringify({ name: 'nuqs', type: 'module', exports: {
+      '.': './dist/index.js', './adapters/react': './dist/adapters/react.js' } }),
+    'node_modules/nuqs/dist/index.js': "export { context } from './context.js';",
+    'node_modules/nuqs/dist/adapters/react.js': "export { context } from '../context.js';",
+    'node_modules/nuqs/dist/context.js': 'export const context = {};',
+  };
+  for (const [file, contents] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), contents);
+  }
+}
+
+it('bundles exported Nuqs adapters and pins cross-checkout consumers to one Portal context', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-portal-nuqs-'));
+  try {
+    const portal = join(root, 'portal');
+    const operator = join(root, 'operator');
+    writeNuqsExportFixture(portal);
+    writeNuqsExportFixture(operator);
+    writeFileSync(join(operator, 'consumer.js'), "export { context } from 'nuqs';");
+    const result = await build({ stdin: { contents: `import { context } from 'nuqs';
+      import { context as adapter } from 'nuqs/adapters/react';
+      import { context as operator } from ${JSON.stringify(join(operator, 'consumer.js'))};
+      export const sameContext = context === adapter && context === operator;`, resolveDir: operator },
+    bundle: true, write: false, format: 'cjs', platform: 'browser', metafile: true, plugins: [portalNuqsPlugin(portal)] });
+    const module: { exports: { sameContext?: boolean } } = { exports: {} };
+    new Function('exports', 'module', result.outputFiles[0].text)(module.exports, module);
+    expect(module.exports.sameContext).toBe(true);
+    expect(Object.keys(result.metafile!.inputs).some(path => path.includes('/operator/node_modules/nuqs/'))).toBe(false);
+    // Directory-prefix rewriting must fail this exported-subpath control.
+    await expect(build({ stdin: { contents: "import 'nuqs/adapters/react';", resolveDir: operator },
+      alias: { nuqs: join(portal, 'node_modules/nuqs') }, bundle: true, write: false, logLevel: 'silent' })).rejects.toThrow('Could not resolve');
+    await expect(build({ stdin: { contents: "import 'nuqs/private-internal';", resolveDir: operator },
+      plugins: [portalNuqsPlugin(portal)], bundle: true, write: false, logLevel: 'silent' })).rejects.toThrow();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 it('correlates a private browser stop to the exact owner, managed row, launch and disposition', () => {
   const expected = { ownerId: 'selected', managedSessionId: 17, startedAt: '2026-10-10T03:00:00Z' };
@@ -51,11 +91,15 @@ it('validates explicit Portal source before a private runtime even after ambient
       mkdirSync(dirname(join(root, file)), { recursive: true });
       writeFileSync(join(root, file), '{}');
     }
+    writeNuqsExportFixture(root);
     vi.stubEnv('PAPERCUSP_TEST_PORTAL_SOURCE_ROOT', undefined);
     expect(preparePortalBrowserSource(['node', 'fixture.ts', '--portal-source=' + root])).toBe(realpathSync(root));
     expect(() => preparePortalBrowserSource(['node', 'fixture.ts'])).toThrow('exactly one explicit');
     expect(() => preparePortalBrowserSource(['--portal-source=relative'])).toThrow('absolute maintained');
     expect(() => preparePortalBrowserSource(['--portal-source=' + root, '--portal-source=' + root])).toThrow('exactly one explicit');
+    rmSync(join(root, 'node_modules/nuqs/dist/adapters/react.js'));
+    expect(() => preparePortalBrowserSource(['--portal-source=' + root])).toThrow();
+    writeNuqsExportFixture(root);
     rmSync(join(root, 'packages/ui/src/agents-popover.tsx'));
     expect(() => preparePortalBrowserSource(['--portal-source=' + root])).toThrow();
   } finally { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); }

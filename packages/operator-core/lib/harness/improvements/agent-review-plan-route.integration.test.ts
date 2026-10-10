@@ -85,6 +85,37 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
     if (!process.env.KEEP_TEST_PG) await teardownTestPg();
   });
 
+  it.each([null, 'su-peer'])('P-002 recovers triage provenance without accepting a bug or stealing holder %s', async (holder) => {
+    const id = `EI-BQL-P002-TRIAGE-${holder ?? 'unheld'}`;
+    const now = new Date('2026-10-10T00:00:00.000Z');
+    await db.adminSql`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, kind, scope, title, body, severity, source, state,
+         assignee, payload, created_by, signal_origin, created_at, updated_at, admission)
+      VALUES (${WS}, ${id}, 'bug', ${`harness:${HARNESS}`},
+        'Unvalidated legacy report', 'Requires a current reproduction receipt', 'minor', 'engineer', 'open',
+        ${holder}, ${JSON.stringify({
+          _ei: { created_by: 'su-filer' },
+          ideaLifecycle: { state: 'triaged', triageDecision: 'gate', triagedAt: now.toISOString() },
+          agentReview: { status: 'revision-requested', submittedBy: 'improvement-triage', ledgerIdeaId: id, round: 1 },
+        })}::text::jsonb, 'su-filer', 'organic', ${now}, ${now}, 'pending')`;
+
+    const result = await resubmitAgentReview({ id, submittedBy: 'su-filer' });
+    const stored = (await getWorkItem(id, HARNESS))!;
+    if (holder) {
+      expect(result).toMatchObject({ resubmitted: false, reason: 'orphan-revision-held-by-other' });
+      expect(stored.assignee).toBe(holder);
+      expect(readAgentReviewState(stored.payload)).toMatchObject({ status: 'revision-requested', submittedBy: 'improvement-triage', round: 1 });
+    } else {
+      expect(result).toMatchObject({ resubmitted: true });
+      expect(readAgentReviewState(stored.payload)).toMatchObject({ status: 'pending', submittedBy: 'su-filer', round: 2 });
+      expect(stored.payload).toMatchObject({ implementationReadiness: { status: 'unknown', reason: 'agent-review-resubmitted' } });
+      expect(stored.assignee).toBeNull();
+    }
+    expect(stored.kind).toBe('bug');
+    expect(stored.payload).not.toHaveProperty('reproduction');
+  });
+
   it('P-030 persists round entry/reset independently of report creation and first ledger routing', async () => {
     const id = 'EI-P030-PERSISTED-TIMING';
     const old = new Date('2026-01-01T00:00:00.000Z');
