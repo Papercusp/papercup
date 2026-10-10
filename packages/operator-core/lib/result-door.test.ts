@@ -254,8 +254,9 @@ describe('applyResultDoor', () => {
       }
       if (workItemLostField) {
         sawPartial = true;
-        expect(workItem?._partial).toBe(true);
+        expect(row._partial).toBe(true);
       }
+      if (workItem) expect(workItem).not.toHaveProperty('_partial');
     }
     // Calibration: if this turns false, the fixture no longer exercises the
     // dangerous field-loss direction and the assertions above are vacuous.
@@ -335,6 +336,7 @@ describe('applyResultDoor', () => {
     );
     const body = boundedBody(doored) as unknown as {
       results: Array<Record<string, unknown>>;
+      _partial?: boolean;
       coverage: {
         selectedCount: number;
         checkedCount: number;
@@ -351,11 +353,10 @@ describe('applyResultDoor', () => {
       linkedCount: 100,
     });
     expect(visibleRows.length).toBeLessThan(body.coverage.linkedCount);
-    expect(body.results.at(-1)).toMatchObject({
-      kind: 'projection-truncation',
-      _truncated: true,
-      renderedCount: 100,
-    });
+    expect(body._partial).toBe(true);
+    expect(body.results.every((row) =>
+      typeof row.id === 'string' && row.kind !== 'projection-truncation',
+    )).toBe(true);
   });
 
   it('work_items:get preserves row reread handles ahead of get-shape counts through the result door', () => {
@@ -574,8 +575,9 @@ describe('applyResultDoor', () => {
       expectedIds.map((_, i) => (i % 2 === 0 ? 'todo' : 'passed')),
     );
     for (const row of tieredRows) {
-      expect(row.results[0].workItem).toMatchObject({ _partial: true });
-      expect(row.results[0].workItem._omitted).toContain('summary');
+      expect(row.results[0]).toMatchObject({ _partial: true });
+      expect(row.results[0].workItem).not.toHaveProperty('_partial');
+      expect(row.results[0].workItem).not.toHaveProperty('_omitted');
     }
     expect(tieredBody._projection.cursor).toEqual({
       kind: 'full-detail',
@@ -677,10 +679,12 @@ describe('applyResultDoor', () => {
     const tieredBody = tiered.data as any;
     expect(tieredBody._projection).toMatchObject({ truncated: true });
     expect(tieredBody._projection.omittedCount).toBeGreaterThan(0);
-    const visibleRatings = tieredBody.rows?.[0]?.ratings ?? {};
+    const row = tieredBody.rows?.[0] ?? {};
+    const visibleRatings = row.ratings ?? {};
     const missingRatings = criteria.filter((criterion) => !Object.prototype.hasOwnProperty.call(visibleRatings, criterion));
     expect(missingRatings.length).toBeGreaterThan(0);
-    expect(visibleRatings._partial).toBe(true);
+    expect(row._partial).toBe(true);
+    expect(visibleRatings).not.toHaveProperty('_partial');
     expect(tieredBody._projection.omitted).toContainEqual(expect.objectContaining({
       path: `$.rows[0].ratings.${missingRatings[0]}`,
       reason: 'remaining fields omitted to fit projection budget',
@@ -899,7 +903,7 @@ describe('applyResultDoor', () => {
     expect(doored.structuredContent).toBe(rows);
   });
 
-  it('REGRESSION (EI-23481355842555588): coord:thread array truncation is explicitly typed as a marker, not an empty message row', () => {
+  it('REGRESSION (EI-23481355842555588): coord:thread keeps message arrays domain-only and marks the containing envelope partial', () => {
     const entries = Array.from({ length: 300 }, (_, index) => ({
       msg_id: `coord-${index}`,
       kind: 'message',
@@ -920,18 +924,22 @@ describe('applyResultDoor', () => {
     ) as DoorableResult;
     const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
       entries: Array<Record<string, unknown>>;
-      _projection: { truncated: boolean };
+      _partial?: boolean;
+      _projection: { truncated: boolean; omitted?: Array<{ path: string; reason: string }> };
     };
-    const marker = projected.entries.at(-1);
 
     expect(projected._projection.truncated).toBe(true);
-    expect(marker).toMatchObject({
-      kind: 'projection-truncation',
-      type: 'projection-truncation',
-      _truncated: true,
-    });
-    expect(marker).not.toHaveProperty('msg_id');
-    expect(marker).not.toHaveProperty('summary');
+    expect(projected._partial).toBe(true);
+    expect(projected.entries.length).toBeLessThan(entries.length);
+    expect(projected.entries.every((entry) =>
+      entry.kind === 'message' && typeof entry.msg_id === 'string',
+    )).toBe(true);
+    expect(projected._projection.omitted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: `$.entries[${projected.entries.length}]`,
+        reason: expect.stringContaining('array item(s) omitted'),
+      }),
+    ]));
   });
 
   it('REGRESSION (EI-23481355842555588): coord:send delivery verdicts survive generic result-door trimming', () => {
@@ -1314,7 +1322,7 @@ describe('applyResultDoor', () => {
     expect(controlBody.changeInCandidate).toBeUndefined();
   });
 
-  it('preserves exact event identity and state while naming overflowed default history', () => {
+  it('preserves exact event identity and state while marking overflowed default history incomplete', () => {
     const event = 'harness:papercusp:wi-40086-qualified-current-tip';
     const original = JSON.stringify({
       ok: true,
@@ -1347,6 +1355,12 @@ describe('applyResultDoor', () => {
       { toolName: 'events:status', workspaceId: 'ws-1', runId: RUN_ID },
     );
     const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      _partial?: boolean;
+      _projection: ReturnType<typeof boundedBody>['_projection'] & {
+        omittedCount: number;
+        omitted?: Array<{ path: string; reason: string }>;
+        omittedSamplesDropped?: true;
+      };
       ok?: boolean;
       event_inspection?: {
         event?: string;
@@ -1365,17 +1379,25 @@ describe('applyResultDoor', () => {
     });
     expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
     expect(body._projection.next).toContain('capability:read');
-    const visibleWaiters = JSON.stringify(body.event_inspection?.waiters ?? null);
-    const waiterMarker = body.event_inspection?.waiters?.find((row) =>
-      row !== null && typeof row === 'object' && (row as { kind?: string }).kind === 'projection-truncation',
-    ) as { _truncated?: boolean; omittedCount?: number; shownCount?: number; renderedCount?: number } | undefined;
-    expect(waiterMarker).toMatchObject({
-      _truncated: true,
-      omittedCount: 194,
-      shownCount: 6,
-      renderedCount: 200,
-    });
-    expect(visibleWaiters).toContain('projection-truncation');
+    expect(body._partial).toBe(true);
+    const visibleWaiters = body.event_inspection?.waiters ?? [];
+    expect(visibleWaiters.length).toBeGreaterThan(0);
+    expect(visibleWaiters.length).toBeLessThan(200);
+    expect(visibleWaiters.every((row) =>
+      row !== null && typeof row === 'object' && (row as { kind?: string }).kind !== 'projection-truncation',
+    )).toBe(true);
+    const arrayOmission = body._projection.omitted?.find((row) =>
+      row.path === `$.event_inspection.waiters[${visibleWaiters.length}]`,
+    );
+    if (arrayOmission) {
+      expect(arrayOmission.reason).toMatch(/\d+ array item\(s\) omitted; showing \d+ of 200 rendered input entries/);
+    } else {
+      // The payload tier may shed omission samples to keep useful rows in the
+      // body. That fallback must disclose the sample loss and retain the exact
+      // omission count; the envelope's `_partial` remains the in-band warning.
+      expect(body._projection.omittedSamplesDropped).toBe(true);
+      expect(body._projection.omittedCount).toBeGreaterThanOrEqual(200 - visibleWaiters.length);
+    }
 
     // The visible summary keeps the requested key/state so ok:true cannot read as
     // absence; the named cursor still recovers every row that the bounded body cut.
@@ -1430,6 +1452,10 @@ describe('applyResultDoor', () => {
       runId: RUN_ID,
     });
     const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      _partial?: boolean;
+      _projection: ReturnType<typeof boundedBody>['_projection'] & {
+        omitted?: Array<{ path: string; reason: string }>;
+      };
       ok?: boolean;
       event_inspection?: {
         event?: string;
@@ -1448,17 +1474,19 @@ describe('applyResultDoor', () => {
     });
     expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
     expect(body._projection.next).toContain('capability:read');
-    const visibleWaiters = JSON.stringify(body.event_inspection?.waiters ?? null);
-    const waiterMarker = body.event_inspection?.waiters?.find((row) =>
-      row !== null && typeof row === 'object' && (row as { kind?: string }).kind === 'projection-truncation',
-    ) as { _truncated?: boolean; omittedCount?: number; shownCount?: number; renderedCount?: number } | undefined;
-    expect(waiterMarker).toMatchObject({
-      _truncated: true,
-      omittedCount: 194,
-      shownCount: 6,
-      renderedCount: 200,
-    });
-    expect(visibleWaiters).toContain('projection-truncation');
+    expect(body._partial).toBe(true);
+    const visibleWaiters = body.event_inspection?.waiters ?? [];
+    expect(visibleWaiters.length).toBeGreaterThan(0);
+    expect(visibleWaiters.length).toBeLessThan(200);
+    expect(visibleWaiters.every((row) =>
+      row !== null && typeof row === 'object' && (row as { kind?: string }).kind !== 'projection-truncation',
+    )).toBe(true);
+    expect(body._projection.omitted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: '$.event_inspection.waiters[' + visibleWaiters.length + ']',
+        reason: expect.stringMatching(/\d+ array item\(s\) omitted; showing \d+ of 200 rendered input entries/),
+      }),
+    ]));
 
     const spillText = readSpill('ws-2', 'events:status', RUN_ID);
     const bodyOffset = (body._projection.cursor as { bodyOffsetInPayload?: number }).bodyOffsetInPayload;
