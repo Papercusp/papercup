@@ -35,9 +35,9 @@ export interface OpenRouterUsageBinding {
 }
 export interface OpenRouterUsageCollectorOptions {
   /** Read the durable server binding, never a browser-supplied billing claim. */
-  readonly readBinding?: (scope: Scope, generationId: string) => Promise<OpenRouterUsageBinding | null>;
+  readonly readBinding?: (scope: Scope, generationId: string, signal?: AbortSignal) => Promise<OpenRouterUsageBinding | null>;
   /** Resolve exactly the bound account's secret without persisting it. */
-  readonly readCredential?: (credentialRef: string) => Promise<string | null>;
+  readonly readCredential?: (credentialRef: string, signal?: AbortSignal) => Promise<string | null>;
   readonly fetch?: typeof globalThis.fetch;
   readonly append?: (record: HostedUsageRecord) => Promise<HostedUsageAppendResult>;
 }
@@ -108,6 +108,22 @@ export function openRouterUsageRecord(binding: OpenRouterUsageBinding, payload: 
   return result;
 }
 
+/** Bound read-only callbacks even when their implementation ignores its signal.
+ * A late result cannot resume this collector; the durable append is deliberately
+ * outside this race so an in-flight committed write is never reported absent. */
+async function readWithSignal<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  const operation = Promise.resolve().then(() => { signal.throwIfAborted(); return start(); });
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new Error('OpenRouter read aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try { return await Promise.race([operation, aborted]); }
+  finally { signal.removeEventListener('abort', onAbort); }
+}
+
 export class OpenRouterHostedUsageCollector {
   private readonly options: OpenRouterUsageCollectorOptions;
   constructor(options: OpenRouterUsageCollectorOptions = {}) { this.options = { ...options }; }
@@ -118,60 +134,66 @@ export class OpenRouterHostedUsageCollector {
     const scope = snapshotScope(input.scope); const generationId = input.generationId;
     if (signal?.aborted) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
     if (!this.options.readBinding || !this.options.readCredential) return { outcome: 'unavailable' as const, reason: 'unconfigured' as const };
-    const received = await this.options.readBinding(scope, generationId);
-    if (signal?.aborted) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
-    if (!received) return { outcome: 'unavailable' as const, reason: 'unbound-generation' as const };
-    const binding: OpenRouterUsageBinding = Object.freeze({ ...received, scope: snapshotScope(received.scope) });
-    if (!sameScope(scope, binding.scope) || generationId !== binding.generationId) {
-      return { outcome: 'unavailable' as const, reason: 'binding-mismatch' as const };
-    }
-    // Validate server counters/account ref before asking for a secret or doing I/O.
-    openRouterUsageRecord(binding, { data: { id: generationId, is_byok: binding.isByok, total_cost: null } });
-    const secret = await this.options.readCredential(binding.credentialRef).catch(() => null);
-    if (typeof secret !== 'string' || !secret || secret.trim() !== secret || /[\r\n]/.test(secret)) {
-      return { outcome: 'unavailable' as const, reason: 'missing-credential' as const };
-    }
-    if (binding.credentialSha256 !== undefined
-        && createHash('sha256').update(secret).digest('hex') !== binding.credentialSha256) {
-      return { outcome: 'unavailable' as const, reason: 'credential-mismatch' as const };
-    }
-    // As on the Stripe read rail, own the cancellable transport deadline even
-    // when a caller supplies a signal. Keep it through body consumption and
-    // abort unread error bodies before clearing the request's ownership.
+    // Own one deadline from the FIRST authority read through body consumption,
+    // including readers/transports that do not cooperate with cancellation.
     const controller = new AbortController();
     const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const started = performance.now();
-    const expired = () => performance.now() - started >= READ_TIMEOUT_MS;
+    const expired = () => requestSignal.aborted || performance.now() - started >= READ_TIMEOUT_MS;
     const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
-    let body: string;
+    let normalized: HostedUsageRecord;
     try {
-      requestSignal.throwIfAborted();
-      const url = new URL('https://openrouter.ai/api/v1/generation'); url.searchParams.set('id', generationId);
-      const response = await (this.options.fetch ?? globalThis.fetch)(url, { method: 'GET', redirect: 'error', cache: 'no-store',
-        headers: { Authorization: `Bearer ${secret}` }, signal: requestSignal });
-      requestSignal.throwIfAborted();
-      if (expired()) throw new Error('OpenRouter read deadline');
-      if (!response.ok) return { outcome: 'unavailable' as const, reason: 'provider-http-error' as const, status: response.status };
-      body = await response.text();
-      requestSignal.throwIfAborted();
-      if (expired()) throw new Error('OpenRouter read deadline');
-    } catch {
-      // Provider error text may contain a secret or customer content.
-      return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
+      let received: OpenRouterUsageBinding | null;
+      try { received = await readWithSignal(() => this.options.readBinding!(scope, generationId, requestSignal), requestSignal); }
+      catch (error) {
+        if (expired()) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
+        throw error;
+      }
+      if (expired()) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
+      if (!received) return { outcome: 'unavailable' as const, reason: 'unbound-generation' as const };
+      const binding: OpenRouterUsageBinding = Object.freeze({ ...received, scope: snapshotScope(received.scope) });
+      if (!sameScope(scope, binding.scope) || generationId !== binding.generationId) {
+        return { outcome: 'unavailable' as const, reason: 'binding-mismatch' as const };
+      }
+      // Validate server counters/account ref before asking for a secret or doing I/O.
+      openRouterUsageRecord(binding, { data: { id: generationId, is_byok: binding.isByok, total_cost: null } });
+      const secret = await readWithSignal(() => this.options.readCredential!(binding.credentialRef, requestSignal), requestSignal).catch(() => null);
+      if (expired()) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
+      if (typeof secret !== 'string' || !secret || secret.trim() !== secret || /[\r\n]/.test(secret)) {
+        return { outcome: 'unavailable' as const, reason: 'missing-credential' as const };
+      }
+      if (binding.credentialSha256 !== undefined
+          && createHash('sha256').update(secret).digest('hex') !== binding.credentialSha256) {
+        return { outcome: 'unavailable' as const, reason: 'credential-mismatch' as const };
+      }
+      let body: string;
+      try {
+        const url = new URL('https://openrouter.ai/api/v1/generation'); url.searchParams.set('id', generationId);
+        const response = await readWithSignal(() => (this.options.fetch ?? globalThis.fetch)(url,
+          { method: 'GET', redirect: 'error', cache: 'no-store', headers: { Authorization: `Bearer ${secret}` }, signal: requestSignal }), requestSignal);
+        if (expired()) throw new Error('OpenRouter read deadline');
+        if (!response.ok) return { outcome: 'unavailable' as const, reason: 'provider-http-error' as const, status: response.status };
+        body = await readWithSignal(() => response.text(), requestSignal);
+        if (expired()) throw new Error('OpenRouter read deadline');
+      } catch {
+        // Provider error text may contain a secret or customer content.
+        return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
+      }
+      try {
+        const payload: unknown = JSON.parse(body, (key, value: unknown, context?: { source?: string }) =>
+          key === 'total_cost' && typeof value === 'number'
+            // A runtime without source-token support stays explicitly unpriced.
+            ? new ProviderDecimal(context?.source ?? '') : value);
+        normalized = openRouterUsageRecord(binding, payload);
+      } catch { return { outcome: 'unavailable' as const, reason: 'invalid-provider-report' as const }; }
+      if (expired()) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
     } finally {
       clearTimeout(timer);
       controller.abort();
     }
-    let normalized: HostedUsageRecord;
-    try {
-      const payload: unknown = JSON.parse(body, (key, value: unknown, context?: { source?: string }) =>
-        key === 'total_cost' && typeof value === 'number'
-          // A runtime without source-token support stays explicitly unpriced.
-          ? new ProviderDecimal(context?.source ?? '') : value);
-      normalized = openRouterUsageRecord(binding, payload);
+    if (signal?.aborted || performance.now() - started >= READ_TIMEOUT_MS) {
+      return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
     }
-    catch { return { outcome: 'unavailable' as const, reason: 'invalid-provider-report' as const }; }
-    if (signal?.aborted || expired()) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
     const append = this.options.append ?? (r => new PostgresHostedUsageStore().append(r));
     const outcome = await append(normalized);
     return { outcome, record: normalized };
@@ -184,13 +206,23 @@ export class OpenRouterHostedUsageCollector {
  * Revision races are refused; a later read reconciles from committed history. */
 export function createOpenRouterHostedUsageCollector(options: {
   readonly store: Pick<PostgresHostedUsageStore, 'readOpenRouterBindings'>;
-  readonly readCredential: (reference: string) => Promise<string | null>;
+  readonly readCredential: (reference: string, signal?: AbortSignal) => Promise<string | null>;
   readonly fetch?: typeof globalThis.fetch;
 }): HostedUsageCollector {
   return {
     id: 'openrouter:bound-generations', provider: 'openrouter', categories: ['inference-fees'],
     async read(input) {
-      const bindings = await options.store.readOpenRouterBindings(input);
+      const started = performance.now();
+      const deadline = AbortSignal.timeout(READ_TIMEOUT_MS);
+      const expired = () => deadline.aborted || performance.now() - started >= READ_TIMEOUT_MS;
+      let bindings: readonly OpenRouterUsageBinding[];
+      try { bindings = await readWithSignal(() => options.store.readOpenRouterBindings(input), deadline); }
+      catch (error) {
+        if (!expired()) throw error;
+        bindings = [];
+      }
+      if (expired()) return { scope: input.scope, month: input.month, complete: false,
+        observedAtMs: input.asOfMs, evidenceRef: 'openrouter:bound-generations', records: [] };
       const { startMs, endMs } = shadowMonthBounds(input.month);
       // Validate the full server batch before resolving ANY account key. An
       // organization request may include only its own workspace bindings.
@@ -203,9 +235,6 @@ export function createOpenRouterHostedUsageCollector(options: {
         openRouterUsageRecord(binding, { data: { id: binding.generationId, is_byok: binding.isByok, total_cost: null } });
       }
       const records: HostedUsageRecord[] = [];
-      const started = performance.now();
-      const deadline = AbortSignal.timeout(READ_TIMEOUT_MS);
-      const expired = () => deadline.aborted || performance.now() - started >= READ_TIMEOUT_MS;
       // Sequential provider reads keep account rate pressure bounded. No
       // incomplete/failed read is represented as a zero charge or full census.
       for (const binding of bindings) {

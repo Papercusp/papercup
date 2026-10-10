@@ -45,8 +45,8 @@ describe('OpenRouter hosted usage collector', () => {
   });
   it('reads only the bound generation metadata using the bound account and persists a whitelist', async () => {
     const s = setup(); const result = await s.collector.collect({ scope, generationId: binding.generationId });
-    expect(result.outcome).toBe('recorded'); expect(s.readBinding).toHaveBeenCalledWith(scope, binding.generationId);
-    expect(s.readCredential).toHaveBeenCalledWith(binding.credentialRef);
+    expect(result.outcome).toBe('recorded'); expect(s.readBinding).toHaveBeenCalledWith(scope, binding.generationId, expect.any(AbortSignal));
+    expect(s.readCredential).toHaveBeenCalledWith(binding.credentialRef, expect.any(AbortSignal));
     const [url, options] = s.fetch.mock.calls[0]!;
     expect(String(url)).toBe('https://openrouter.ai/api/v1/generation?id=gen-server-recorded');
     expect(options).toMatchObject({ method: 'GET', redirect: 'error', cache: 'no-store', headers: { Authorization: 'Bearer server-secret' } });
@@ -255,6 +255,147 @@ describe('OpenRouter authenticated read cancellation', () => {
     expect(await s.collector.collect(input, parent.signal)).toEqual(refusal);
     expect(s.readBinding).not.toHaveBeenCalled(); expect(s.readCredential).not.toHaveBeenCalled();
     expect(s.fetch).not.toHaveBeenCalled(); expect(s.append).not.toHaveBeenCalled();
+  });
+
+  it.each(['binding', 'credential'] as const)('bounds caller cancellation while the %s reader is held', async phase => {
+    vi.useFakeTimers();
+    const parent = new AbortController();
+    let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const reader = vi.fn(async () => { entered(); await held; return phase === 'binding' ? binding : 'server-secret'; });
+    const s = setup(phase === 'binding' ? { readBinding: reader } : { readCredential: reader });
+    let settled = false;
+    const pending = s.collector.collect(input, parent.signal).then(result => { settled = true; return result; });
+    try {
+      await started; parent.abort(new Error('private cancellation reason'));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(settled).toBe(true);
+      expect(await pending).toEqual(refusal);
+      expect(s.fetch).not.toHaveBeenCalled(); expect(s.append).not.toHaveBeenCalled();
+    } finally {
+      release(); await pending; vi.useRealTimers();
+    }
+    // An abort-ignoring reader may settle later, but cannot resume HTTP or DML.
+    expect(s.fetch).not.toHaveBeenCalled(); expect(s.append).not.toHaveBeenCalled();
+  });
+
+  it.each(['binding', 'credential'] as const)('owns the deadline while the %s reader ignores cancellation', async phase => {
+    vi.useFakeTimers();
+    const parent = new AbortController();
+    let entered!: () => void; let release!: () => void; let readerSignal: AbortSignal | undefined;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const reader = async (...args: unknown[]) => {
+      readerSignal = args.at(-1) as AbortSignal; entered(); await held;
+      return phase === 'binding' ? binding : 'server-secret';
+    };
+    const s = setup(phase === 'binding' ? { readBinding: reader } : { readCredential: reader });
+    let settled = false;
+    const pending = s.collector.collect(input, parent.signal).then(result => { settled = true; return result; });
+    try {
+      await started; await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false); expect(readerSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true); expect(await pending).toEqual(refusal);
+      expect(readerSignal?.aborted).toBe(true); expect(parent.signal.aborted).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); parent.abort(); await pending; vi.useRealTimers(); }
+    expect(s.fetch).not.toHaveBeenCalled(); expect(s.append).not.toHaveBeenCalled();
+  });
+
+  it.each(['binding', 'credential'] as const)('refuses a late %s read before timer delivery', async phase => {
+    let elapsed = 0; const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    try {
+      const reader = async () => { elapsed = 10_000; return phase === 'binding' ? binding : 'server-secret'; };
+      const s = setup(phase === 'binding' ? { readBinding: reader } : { readCredential: reader });
+      expect(await s.collector.collect(input)).toEqual(refusal);
+      expect(s.fetch).not.toHaveBeenCalled(); expect(s.append).not.toHaveBeenCalled();
+      if (phase === 'binding') expect(s.readCredential).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each(['fetch', 'body'] as const)('bounds caller cancellation when %s ignores its signal', async phase => {
+    vi.useFakeTimers();
+    const parent = new AbortController();
+    let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const s = setup({ fetch: async () => {
+      const response = new Response(JSON.stringify(payload()));
+      if (phase === 'fetch') { entered(); await held; }
+      else response.text = async () => { entered(); await held; return JSON.stringify(payload()); };
+      return response;
+    } });
+    let settled = false;
+    const pending = s.collector.collect(input, parent.signal).then(result => { settled = true; return result; });
+    try {
+      await started; parent.abort(); await vi.advanceTimersByTimeAsync(500);
+      expect(settled).toBe(true); expect(await pending).toEqual(refusal);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); await pending; vi.useRealTimers(); }
+    expect(s.append).not.toHaveBeenCalled();
+  });
+
+  it('bounds the initial persisted binding population read before resolving credentials', async () => {
+    vi.useFakeTimers();
+    const deadline = new AbortController();
+    let release!: () => void; let entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      expect(ms).toBe(10_000); timer = setTimeout(() => deadline.abort(), ms); return deadline.signal;
+    });
+    const readCredential = vi.fn(async () => 'server-secret'); const fetch = vi.fn<typeof globalThis.fetch>();
+    const request = { scope, month: '2026-10', asOfMs: time + 2000 };
+    const collector = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => {
+      entered(); await held; return [{ ...binding, observedAtMs: request.asOfMs }];
+    } }, readCredential, fetch });
+    let settled = false; const pending = collector.read(request).then(result => { settled = true; return result; });
+    try {
+      await started; await vi.advanceTimersByTimeAsync(10_000);
+      expect(settled).toBe(true); expect(await pending).toMatchObject({ complete: false, records: [] });
+    } finally { release(); await pending; clearTimeout(timer); timeout.mockRestore(); vi.useRealTimers(); }
+    expect(readCredential).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses a late persisted binding population before deadline timer delivery', async () => {
+    let elapsed = 0; const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    const readCredential = vi.fn(async () => 'server-secret'); const fetch = vi.fn<typeof globalThis.fetch>();
+    const request = { scope, month: '2026-10', asOfMs: time + 2000 };
+    try {
+      const collector = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => {
+        elapsed = 10_000; return [{ ...binding, observedAtMs: request.asOfMs }];
+      } }, readCredential, fetch });
+      expect(await collector.read(request)).toMatchObject({ complete: false, records: [] });
+      expect(readCredential).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('rechecks caller cancellation triggered by request cleanup before appending', async () => {
+    const parent = new AbortController();
+    const s = setup({ fetch: async (_url: unknown, options: RequestInit) => {
+      options.signal?.addEventListener('abort', () => parent.abort(), { once: true });
+      return new Response(JSON.stringify(payload()));
+    } });
+    expect(await s.collector.collect(input, parent.signal)).toEqual(refusal);
+    expect(s.append).not.toHaveBeenCalled();
+  });
+
+  it('preserves the actual outcome of an append already in flight when the caller cancels', async () => {
+    vi.useFakeTimers();
+    const parent = new AbortController(); let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const append = vi.fn(async () => { entered(); await held; return 'recorded' as const; });
+    const s = setup({ append }); let settled = false;
+    const pending = s.collector.collect(input, parent.signal).then(result => { settled = true; return result; });
+    try {
+      await started; parent.abort(); await vi.advanceTimersByTimeAsync(500);
+      expect(settled).toBe(false); expect(append).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); await pending; vi.useRealTimers(); }
+    expect(await pending).toMatchObject({ outcome: 'recorded' });
   });
 
   it.each(['fetch', 'body'] as const)('bounds stalled %s despite a non-expiring parent signal', async phase => {
