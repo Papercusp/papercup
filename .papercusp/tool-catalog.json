@@ -16112,7 +16112,7 @@
           "POST"
         ]
       },
-      "description": "Claim a specific or the next peer-review item in one concrete harness, or resubmit a revision-requested item. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.",
+      "description": "Claim a specific or the next peer-review item in one concrete harness, resubmit a revision-requested item, or adopt one whose submitter is provably gone. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.",
       "capabilities": [
         "work_items:write"
       ],
@@ -16138,7 +16138,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use mode:'claim' with an id when a directed review must take one known pending item without consuming unrelated review work. Use mode:'claim-next' only to take the next pending change/feature. Then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item — or to adopt one whose original submitter's session is provably gone, which is otherwise stuck forever.",
+        "when": "Use mode:'claim' with an id when a directed review must take one known pending item without consuming unrelated review work. Use mode:'claim-next' only to take the next pending change/feature. Then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item. Use mode:'adopt' (id) or 'adopt-next' to take a content revision whose original submitter is provably gone, then revise and resubmit it.",
         "notWhen": "Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.",
         "chaining": "improvements:agent-review { mode:'claim', id, harness? } (directed) OR { mode:'claim-next', harness? } (queue order) → use returned gradeWith.ideaId or ledgerIdeaId with blender:grade-idea { ideaId, grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id }."
       }
@@ -18483,7 +18483,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "COLD: save facts; pair with work_items:checkpoint. Use same-line [turn:<session>@<iso-ts>] refs; never invent a ref. Label claims [self-imposed], [peer:<sid>], [inferred]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance the immediately runnable action in `next` or perform a bounded progress read; writing this checkpoint alone is not post-note progress. `cold-successor-no-progress` may refuse; scheduled fire/compaction is a narrow boundary exception. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. Executable `probe` shape (choose ONE target): `{ kind:'tool', tool:'<direct read-only tool>', args:{...}, schemaRevision:'live', expect:{ path:'$.state', op:'eq', value:'green' } }` or `{ kind:'state-cell', cell:'<registered cell>', as:'<reader>', schemaRevision:'<revision>', expect:{ path:'$.state', op:'eq', value:'green' } }`. `kind`, the matching target (`tool` or `cell`), `schemaRevision`, and `expect` are required; `args` defaults to `{}` for tool probes. `probe:{ expect:... }` has no executable target — omit `probe` and put the human command in `recheck`.",
+        "when": "COLD: save facts; pair with work_items:checkpoint. Use same-line [turn:<session>@<iso-ts>] refs; never invent a ref. Label claims [self-imposed], [peer:<sid>], [inferred]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance the immediately runnable action in `next` or perform a bounded progress read; writing this checkpoint alone is not post-note progress. `cold-successor-no-progress` may refuse; scheduled fire/compaction is a narrow boundary exception. The carry mode belongs to loop:arm, not loop:checkpoint; do not retry a rejected `carry` argument here. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. Executable `probe` shape (choose ONE target): `{ kind:'tool', tool:'<direct read-only tool>', args:{...}, schemaRevision:'live', expect:{ path:'$.state', op:'eq', value:'green' } }` or `{ kind:'state-cell', cell:'<registered cell>', as:'<reader>', schemaRevision:'<revision>', expect:{ path:'$.state', op:'eq', value:'green' } }`. `kind`, the matching target (`tool` or `cell`), `schemaRevision`, and `expect` are required; `args` defaults to `{}` for tool probes. `probe:{ expect:... }` has no executable target — omit `probe` and put the human command in `recheck`.",
         "notWhen": "WARM (carry:'warm', default) use live transcript; work_items:checkpoint for state.",
         "chaining": "Retune: read loop:status, then loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes."
       }

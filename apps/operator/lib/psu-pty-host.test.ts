@@ -5000,6 +5000,52 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
       .every((event) => event.data.comm === 'codex')).toBe(true);
     stop('child-exit');
   });
+
+  // WI-10008169: a short-lived Codex child exits between ticks, so the live
+  // target is cleared before host-cleanup. The terminal row must still name the
+  // pid the samples described (the integration test asserted ended.pid ===
+  // selected.pid and flaked whenever the child won that race).
+  it('names the last traced pid on the terminal row after the target exits', () => {
+    let elapsedMs = 0;
+    let alive = true;
+    let tick: (() => void) | undefined;
+    const events: Array<{ kind: string; data: Record<string, unknown> }> = [];
+    const stop = startCodexStartupProcessTrace({
+      agent: 'codex', ownerId: 'su-trace', pid: 123, platform: 'linux',
+      now: () => elapsedMs,
+      resolveTargetPid: () => (alive ? 456 : null),
+      readCounters: (pid: number) => (alive ? { pid, comm: 'codex', majorFaults: 0 } : null),
+      emit: (_owner: string, kind: string, data: Record<string, unknown>) => { events.push({ kind, data }); return true; },
+      interval: (fn: () => void) => { tick = fn; return { unref: vi.fn() }; },
+      clear: vi.fn(),
+    });
+    elapsedMs = 500;
+    tick?.();
+    alive = false;
+    elapsedMs = 1000;
+    tick?.();
+    stop('host-cleanup');
+    expect(events.at(-1)).toMatchObject({
+      kind: 'codex-startup-process-trace-ended',
+      data: { rootPid: 123, pid: 456, reason: 'host-cleanup', samples: 2 },
+    });
+
+    // A trace that never found a Codex process still reports null, not a guess.
+    events.length = 0;
+    elapsedMs = 0;
+    startCodexStartupProcessTrace({
+      agent: 'codex', ownerId: 'su-trace', pid: 123, platform: 'linux',
+      now: () => elapsedMs,
+      resolveTargetPid: () => null,
+      readCounters: () => null,
+      emit: (_owner: string, kind: string, data: Record<string, unknown>) => { events.push({ kind, data }); return true; },
+      interval: () => ({ unref: vi.fn() }),
+      clear: vi.fn(),
+    })('host-cleanup');
+    expect(events.at(-1)).toMatchObject({
+      kind: 'codex-startup-process-trace-ended', data: { pid: null, samples: 0 },
+    });
+  });
 });
 
 describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {

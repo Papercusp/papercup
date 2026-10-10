@@ -2742,6 +2742,11 @@ export function startCodexStartupProcessTrace({
   const startedAt = now();
   let samples = 0;
   let targetPid = null;
+  // WI-10008169: the terminal row names the process that was TRACED, not the
+  // live target. When the Codex child exits before stop() (host-cleanup after
+  // a short-lived child), the next tick clears targetPid; reporting that null
+  // threw away the very pid the samples describe.
+  let tracedPid = null;
   let stopped = false;
   let timer;
   const sample = () => {
@@ -2764,6 +2769,7 @@ export function startCodexStartupProcessTrace({
       }
     }
     if (counters) {
+      tracedPid = targetPid;
       samples++;
       emit(ownerId, 'codex-startup-process-sample', { elapsedMs, rootPid: pid, ...counters });
     }
@@ -2774,7 +2780,7 @@ export function startCodexStartupProcessTrace({
     stopped = true;
     if (timer) clear(timer);
     emit(ownerId, 'codex-startup-process-trace-ended', {
-      rootPid: pid, pid: targetPid, elapsedMs: now() - startedAt, samples, reason,
+      rootPid: pid, pid: tracedPid, elapsedMs: now() - startedAt, samples, reason,
     });
   };
   sample();
