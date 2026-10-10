@@ -511,6 +511,21 @@ describe('describeRelation / listRelations (real PG)', () => {
     expect(d!.indexes.length).toBeGreaterThan(0);
   });
 
+  it('uses two catalog round-trips per describe to keep concurrent calls within their deadline (EI-25597414544524089)', async () => {
+    let queryCount = 0;
+    const countingClient = new Proxy(db.adminSql, {
+      apply(target, thisArg, args) {
+        queryCount += 1;
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+
+    const d = await describeRelation('harness_shared.harness_plans', { client: countingClient });
+
+    expect(d?.relation).toBe('harness_shared.harness_plans');
+    expect(queryCount).toBe(2);
+  });
+
   it('resolves a BARE table name to the same relation a query would use', async () => {
     const bare = await describeRelation('harness_plans', { client: db.adminSql });
     expect(bare?.relation).toBe('harness_shared.harness_plans');

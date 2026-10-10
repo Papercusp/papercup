@@ -4352,53 +4352,52 @@ export async function describeRelation(
   const relation = await resolveRelation(ref, opts.client);
   if (!relation) return null;
 
-  // WI-37360: a column's own COMMENT is the one piece of schema metadata that can name
-  // "this column is dead" / "read THAT one instead" directly on the thing an agent is
-  // looking at — col_description() joined by ordinal_position (works for tables AND
-  // views; COMMENT ON COLUMN is valid on both). Left NULL for a column nobody commented,
-  // same as every other optional field here.
-  const columnRows = (await sql`
-    SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
-           col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position) AS comment
-      FROM information_schema.columns c
-     WHERE c.table_schema = ${relation.schema} AND c.table_name = ${relation.name}
-     ORDER BY c.ordinal_position
+  // EI-25597414544524089: three concurrent descriptions of ordinary shared
+  // tables reached the 8s whole-call deadline. Keep metadata in one catalog
+  // round-trip instead of issuing separate columns, indexes and constraints
+  // queries after relation resolution.
+  const [metadata] = (await sql`
+    SELECT COALESCE((
+             -- Keep column comments in the \\d-style description; they carry
+             -- replacement guidance for deprecated or misleading columns.
+             SELECT jsonb_agg(jsonb_build_object(
+               'name', c.column_name,
+               'type', COALESCE(NULLIF(c.data_type, ''), 'unknown'),
+               'nullable', c.is_nullable = 'YES',
+               'default', c.column_default,
+               'comment', col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position)
+             ) ORDER BY c.ordinal_position)
+               FROM information_schema.columns c
+              WHERE c.table_schema = ${relation.schema} AND c.table_name = ${relation.name}
+           ), '[]'::jsonb) AS columns,
+           COALESCE((
+             SELECT jsonb_agg(jsonb_build_object('name', i.indexname, 'definition', i.indexdef) ORDER BY i.indexname)
+               FROM pg_indexes i
+              WHERE i.schemaname = ${relation.schema} AND i.tablename = ${relation.name}
+           ), '[]'::jsonb) AS indexes,
+           COALESCE((
+             SELECT jsonb_agg(jsonb_build_object(
+               'name', con.conname,
+               'contype', con.contype::text,
+               'definition', pg_get_constraintdef(con.oid)
+             ) ORDER BY con.conname)
+               FROM pg_constraint con
+               JOIN pg_class c ON c.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = ${relation.schema} AND c.relname = ${relation.name}
+           ), '[]'::jsonb) AS constraints
   `) as unknown as Array<{
-    column_name: string;
-    data_type: string;
-    is_nullable: string;
-    column_default: string | null;
-    comment: string | null;
+    columns: RelationDescription['columns'];
+    indexes: RelationDescription['indexes'];
+    constraints: Array<{ name: string; contype: string; definition: string }>;
   }>;
-
-  const indexRows = (await sql`
-    SELECT indexname, indexdef
-      FROM pg_indexes
-     WHERE schemaname = ${relation.schema} AND tablename = ${relation.name}
-     ORDER BY indexname
-  `) as unknown as Array<{ indexname: string; indexdef: string }>;
-
-  const constraintRows = (await sql`
-    SELECT con.conname AS name, con.contype::text AS contype, pg_get_constraintdef(con.oid) AS definition
-      FROM pg_constraint con
-      JOIN pg_class c ON c.oid = con.conrelid
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = ${relation.schema} AND c.relname = ${relation.name}
-     ORDER BY con.conname
-  `) as unknown as Array<{ name: string; contype: string; definition: string }>;
 
   return {
     relation: `${relation.schema}.${relation.name}`,
     kind: RELATION_KIND[relation.relkind] ?? relation.relkind,
-    columns: columnRows.map((r) => ({
-      name: r.column_name,
-      type: r.data_type || 'unknown',
-      nullable: r.is_nullable === 'YES',
-      default: r.column_default,
-      comment: r.comment,
-    })),
-    indexes: indexRows.map((r) => ({ name: r.indexname, definition: r.indexdef })),
-    constraints: constraintRows.map((r) => ({
+    columns: metadata.columns,
+    indexes: metadata.indexes,
+    constraints: metadata.constraints.map((r) => ({
       name: r.name,
       type: CONSTRAINT_TYPE[r.contype] ?? r.contype,
       definition: r.definition,
