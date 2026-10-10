@@ -561,6 +561,24 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'Role "judge" cannot call tool "sessions:search"')).toBe('structural');
   });
 
+  it('classifies a nested loop:checkpoint merge-cap refusal as caller, not a structural defect', () => {
+    // The checkpoint tool intentionally persists the narrative while refusing a row
+    // merge that would evict carried checks. tools:invoke preserves that refusal in
+    // its handler_error text, so both the code and serialized response shape belong
+    // on the caller path.
+    const refusal = JSON.stringify({
+      ok: false,
+      error: 'checkpoint_merge_would_evict_rows',
+      retryable: true,
+      narrativePersisted: true,
+      checksDropped: ['an existing carried check'],
+    });
+    expect(classifyToolError('checkpoint_merge_would_evict_rows', 'error', refusal)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', refusal)).toBe('caller');
+    // Generic checkpoint handler failures remain eligible for structural diagnosis.
+    expect(classifyToolError('handler_error', 'error', 'checkpoint database write failed')).toBe('structural');
+  });
+
   it('classifies the code:run dynamic-import sandbox refusal as caller even when reproduced', () => {
     const message =
       'code:run rejects dynamic import/require of repo modules and node builtins; use the exposed tools whitelist.';

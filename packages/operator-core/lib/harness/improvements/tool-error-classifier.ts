@@ -86,8 +86,8 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  the intentional scratch-reference line-window size refusal
  *  (scratch_line_window_too_large), or the explicitly caller-side JSON reasons
  *  for absent scratch evidence and missing tenant-scope controls,
- *  the checkpoint replacement safety refusal that requires explicit retirement
- *  of carried safety rows,
+ *  the checkpoint replacement/merge safety refusals that require explicit
+ *  retirement of carried safety rows,
  *  a missing / unregistered browser UI client for a CLI caller,
  *  an explicit compaction flush-gate refusal that requires a checkpoint,
  *  an explicit claim-spec selector refusal for the literal `self` sentinel,
@@ -100,7 +100,7 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|checkpoint_(replace_would_drop_rows|merge_would_evict_rows)|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
 
 /** `dev:pg_query` returns caller-authored SQL's undefined-column refusal with
  *  its PostgreSQL 42703 code and a known-column correction payload. When
@@ -173,6 +173,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
       'compile_error',
       'quota_exceeded', 'harness_required', 'checkpoint_replace_would_drop_rows',
+      'checkpoint_merge_would_evict_rows',
       'structured_result_shape',
       'flush-required', 'rubric-not-found', 'reviewer_model_not_allowed',
       'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
