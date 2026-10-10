@@ -935,7 +935,9 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
       credentialRef: 'slack:fixture', status: 'connected', config: { botUserId: 'UBOT', channels: ['C-DRILL'],
         asanaBugDestination: { sourceId, projectGid: ENG.gid } } });
     const binding = await ensureSlackBugClassificationBinding(sql, WS, slack);
-    expect(await readAndEvaluateAcceptanceBarLifecycle(binding.binding.planSlug, 'pre-start',
+    const planSlug = binding.binding.planSlug;
+    if (!planSlug) throw new Error('the Slack bug-classification binding has no plan');
+    expect(await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'pre-start',
       { harnessSlug: HARNESS, expectedApplicable: true })).toMatchObject({ satisfied: true });
     await sql`UPDATE harness_shared.trigger_bindings SET armed = TRUE WHERE id = ${binding.binding.id}::uuid`;
     let sequence = 0;
