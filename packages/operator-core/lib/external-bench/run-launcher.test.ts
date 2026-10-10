@@ -71,9 +71,9 @@ describe('current host selection', () => {
     ('refuses drift before running anything: %j', changed => {
       expect(() => currentBenchLaunchSelection({ ...input, ...changed }, config)).toThrow(/drift/);
     });
-  it('refuses unregistered seeds and never disguises a su launch as the stock baseline', () => {
+  it('refuses unregistered seeds and selects the frozen stock arm independently', () => {
     expect(() => currentBenchLaunchSelection({ ...input, current: { ...input.current!, seed: 4 } }, config)).toThrow(/frozen protocol/);
-    expect(() => currentBenchLaunchSelection({ ...input, arm: 'baseline' }, config)).toThrow(/Unsupported current/);
+    expect(currentBenchLaunchSelection({ ...input, arm: 'baseline' }, config).arm.id).toBe('baseline');
   });
 });
 
@@ -82,6 +82,16 @@ describe('current launcher owns its assignment runtime', () => {
     loadBacklog: async () => [task('t2'), task('t1')],
     currentGeneration: { clone: async (t: BenchTask) => ({ dir: `/private/${t.instanceId}`, repo: 'fixture', baseCommit: 'a'.repeat(40), cleanup: async () => {} }),
       extractDiff: async () => 'diff --git a/a b/a' },
+  });
+  it('passes native-codex to the stock assignment driver and never binds a Queen', async () => {
+    const requests: string[] = [];
+    const stock: BenchHarnessDriver = { spinRunAndCost: async req => { requests.push(req.blueprintId); return driver.spinRunAndCost(req); } };
+    const stop = vi.fn(async () => {});
+    const currentTask = vi.fn(async (_input: CurrentTaskInput) => ({ driver: stock, stop }));
+    await (await launchBenchRun({ ...input, arm: 'baseline' }, { ...deps(), currentTask })).done;
+    expect(requests).toEqual(['native-codex', 'native-codex']);
+    expect(currentTask.mock.calls.every(([i]) => i.options.armId === 'baseline')).toBe(true);
+    expect(io.legacyBind).not.toHaveBeenCalled(); expect(io.legacyRun).not.toHaveBeenCalled();
   });
   it('runs the exact seed/task controls, persists assignments, and shares one lifetime budget across the full study', async () => {
     const stop = vi.fn(async () => {}), currentTask = vi.fn(async (_input: CurrentTaskInput) => ({ driver, stop }));

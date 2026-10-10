@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { formatSummaryLine, loadRunResult, parseSummaryLine, runHarness } from './runner.js';
+import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneRuns, runHarness, writeRunResult } from './runner.js';
 import { parseSelectionArgs, planSelection } from './select.js';
 
 const contract: HarnessContract = {
@@ -18,6 +18,70 @@ const contract: HarnessContract = {
 };
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-'));
+
+describe('declared completion receipt retention', () => {
+  const receipts = ['phases/prepare/source.json', 'phases/execute/lifecycle.json'];
+  const source = Buffer.from('{"source":"original bytes", "sequence":1}\n');
+  const lifecycle = Buffer.from('{"worker":23,"ended":true}\n');
+  const complete = (root: string, runId: string) => runHarness({
+    contract: { name: 'receipt-proof', phases: [{ id: 'prepare' }, { id: 'execute' }] },
+    evidenceRoot: root, runId, retainedArtifacts: receipts,
+    runPhase: async ({ phase, evidenceDir }) => {
+      writeFileSync(path.join(evidenceDir, phase === 'prepare' ? 'source.json' : 'lifecycle.json'),
+        phase === 'prepare' ? source : lifecycle);
+      return { ok: true };
+    },
+  });
+
+  it('preserves exact source and lifecycle bytes for late binding after count pruning', async () => {
+    const root = tmp(), first = '20261010T000001Z-1', second = '20261010T000002Z-2';
+    try {
+      const original = await complete(root, first);
+      await complete(root, second);
+      await pruneRuns(root, 1);
+      expect(existsSync(original.evidenceDir)).toBe(false);
+      expect(readFileSync(path.join(root, 'retained', first, receipts[0]))).toEqual(source);
+      expect(readFileSync(path.join(root, 'retained', first, receipts[1]))).toEqual(lifecycle);
+      expect(readFileSync(path.join(root, 'retained', first, 'result.json')))
+        .toEqual(Buffer.from(JSON.stringify(original, null, 2) + '\n'));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses missing declared phase receipts before publishing retained completion', async () => {
+    const root = tmp(), runId = '20261010T000003Z-3';
+    try {
+      await expect(runHarness({
+        contract: { name: 'receipt-proof', phases: [{ id: 'prepare' }] },
+        evidenceRoot: root, runId, retainedArtifacts: receipts,
+        runPhase: async () => ({ ok: true }),
+      })).rejects.toThrow();
+      expect(existsSync(path.join(root, 'retained', runId, 'result.json'))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses changed retained source bytes without replacing the original', async () => {
+    const root = tmp(), runId = '20261010T000004Z-4';
+    try {
+      const result = await complete(root, runId);
+      writeFileSync(path.join(result.evidenceDir, receipts[0]), '{}');
+      await expect(writeRunResult(result, receipts)).rejects.toThrow('retained harness artifact changed');
+      expect(readFileSync(path.join(root, 'retained', runId, receipts[0]))).toEqual(source);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['../outside.json', '/absolute.json', 'phases/../source.json', 'phases\\source.json'])
+    ('refuses an unsafe declared receipt path %s before phase execution', async receipt => {
+      const root = tmp(); let ran = false;
+      try {
+        await expect(runHarness({
+          contract: { name: 'receipt-proof', phases: [{ id: 'prepare' }] },
+          evidenceRoot: root, retainedArtifacts: [receipt],
+          runPhase: async () => { ran = true; return { ok: true }; },
+        })).rejects.toThrow('invalid retained harness artifact path');
+        expect(ran).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});
 
 describe('validateContract', () => {
   it('rejects a forward dependency, an unknown one and a duplicate id', () => {

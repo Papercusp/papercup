@@ -144,6 +144,14 @@ afterEach(() => {
 });
 
 describe('managedSpawn ledger registration recovery', () => {
+  it('does not fork a metered execution if required durable enrollment fails', async () => {
+    M.registerTask.mockRejectedValueOnce(new Error('fixture ledger offline'));
+    const spawnFn = vi.fn();
+    await expect(managedSpawn('codex', [], { ...SPEC, class: 'agent-session' }, {
+      taskId: 'requiredenroll1', requireRegistration: true, scopeAvailable: false, spawnFn: spawnFn as never,
+    })).rejects.toThrow(/Required task enrollment failed; no process started/);
+    expect(spawnFn).not.toHaveBeenCalled(); expect(M.markSpawned).not.toHaveBeenCalled();
+  });
   it('identifies a pending ledger registration before the native fork', async () => {
     const stages: string[] = [];
     let release!: () => void;

@@ -55,6 +55,8 @@ import {
 } from './types';
 
 export interface ManagedSpawnOptions {
+  /** Metered executions require enrollment before any process can send. */
+  requireRegistration?: boolean;
   /** Optional launch tracer; observes the existing spawn path without secrets. */
   stage?: (name: string) => void;
   /** Anything `child_process.spawn` takes. `detached` is honoured — a detached
@@ -291,6 +293,7 @@ export async function managedSpawn(
   // rather than a dashboard blanker.
   opts.stage?.('spawn-read-flag');
   if (!(await isTaskManagerEnabled('task-manager:spawn'))) {
+    if (opts.requireRegistration) throw new Error('Required task enrollment is disabled; no process started.');
     opts.stage?.('spawn-fork');
     const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
     return {
@@ -346,6 +349,7 @@ export async function managedSpawn(
     opts.stage?.('spawn-register-task');
     row = await registerTask(argvSpec, registerOptions, undefined, opts.stage ? { stage: opts.stage } : undefined);
   } catch (e) {
+    if (opts.requireRegistration) throw new Error(`Required task enrollment failed; no process started: ${errorMessage(e)}`);
     ledgered = false;
     const why = `ledger register failed: ${rememberLedgerRegistrationFailure(registrationFailures, e)}`;
     skippedReason = skippedReason ? `${skippedReason}; ${why}` : why;

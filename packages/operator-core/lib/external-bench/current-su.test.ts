@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import {
-  currentBenchLaunchRequest, currentBenchRunLabel, currentSuBenchHarnessDriver,
+  currentBenchLaunchRequest, currentBenchRunLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
@@ -1123,6 +1123,21 @@ function fixture(opts = options) {
   return { row, ports, lifecycle, context, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
 describe('current native benchmark execution', () => {
+  it('stock shares protocol/context/accounting checks without invoking a su launch or accepting its blueprint', async () => {
+    const opts = { ...options, armId: 'baseline' };
+    const f = fixture(opts), launchNative = vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: f.row.taskId }] }));
+    const { launch, ...common } = f.ports;
+    const stock = currentStockBenchHarnessDriver(f.lifecycle, { ...common, launchNative }, opts);
+    const rejected = await stock.spinRunAndCost(request);
+    expect(rejected.telemetry.stopReason).toBe('error');
+    expect(launchNative).not.toHaveBeenCalled();
+    const result = await stock.spinRunAndCost({ ...request, blueprintId: 'native-codex' });
+    expect(result.telemetry.stopReason).toBe('done');
+    expect(launchNative).toHaveBeenCalledWith({ handle, task: request.task, context: f.context });
+    expect(launch).not.toHaveBeenCalled();
+    expect(f.ports.verifyPreregistration).toHaveBeenCalled(); expect(f.ports.verifyContext).toHaveBeenCalled();
+    expect(f.ports.killTask).toHaveBeenCalledWith(f.row.taskId);
+  });
   it('restores after committed protocol verification and re-reads after admission before launching the complete frozen context', async () => {
     const f = fixture(), result = await f.run();
     const order = (mock: unknown) => vi.mocked(mock as typeof f.ports.verifyPreregistration).mock.invocationCallOrder[0];

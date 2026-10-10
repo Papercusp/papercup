@@ -437,11 +437,11 @@ const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
  * cold-loop-respawned session whose `adv_sessions.session_id` was never
  * re-anchored to its live successor transcript — filed separately.)
  */
-export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<IngestResult> {
+export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { sql?: Sql; workspaceId?: string } = {}): Promise<IngestResult> {
   const maxFiles = opts.maxFilesPerTick ?? DEFAULT_MAX_FILES;
   const capBytes = opts.maxBytesPerFile ?? DEFAULT_MAX_BYTES_PER_FILE;
-  const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const sql = scope.sql ?? getOrgPg().sql;
+  const ws = scope.workspaceId ?? activeWorkspaceId();
   if (opts.historical && (opts.adapters?.length !== 1 || opts.includeIsolationRoots === true ||
     !Number.isSafeInteger(opts.historical.backupSnapshotId) || opts.historical.backupSnapshotId <= 0 ||
     !/^[a-f0-9]{64}$/.test(opts.historical.sourceSha256) || !/^[a-f0-9]{32}$/.test(opts.historical.legacyFingerprint))) {

@@ -60,6 +60,8 @@ import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGate
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions } from './current-su';
 import { registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
+import { createCurrentStockBenchHarness } from './native-harness-runner';
+import { CURRENT_STOCK_CODEX_BLUEPRINT } from './current-su';
 
 /** A run actively executing in THIS host process (ephemeral; PG is durable truth). */
 interface ActiveRun {
@@ -167,7 +169,7 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
   }
   // The stock-native adapter is a separate execution route. It must never fall
   // through to a Queen or become a second su treatment under a baseline label.
-  if (arm.id !== 'papercusp' || arm.agent !== 'codex') throw new Error('Unsupported current benchmark execution arm/client.');
+  if (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex') throw new Error('Unsupported current benchmark execution arm/client.');
   if (input.taskSetId !== 'custom' || input.taskIds && canonicalJson(input.taskIds) !== canonicalJson(protocol.taskIds) ||
       input.model !== undefined && input.model !== arm.model || input.cap !== undefined && input.cap !== 1 ||
       input.maxUsdPerTask !== undefined && input.maxUsdPerTask !== arm.generationBudget.maxUsd ||
@@ -210,7 +212,8 @@ async function liveCurrentTask(input: CurrentTaskInput) {
     host = await controller.startNativeGateway(context.log);
     const observeIdentity = currentBenchObservationReader({ ...scope, ...input.observation,
       workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL }, undefined, host);
-    const driver = createCurrentSuBenchHarness(options, context, { ...host, observeIdentity,
+    const create = options.armId === 'baseline' ? createCurrentStockBenchHarness : createCurrentSuBenchHarness;
+    const driver = create(options, context, { ...host, observeIdentity,
       admit: async () => ({ admitted: !options.signal?.aborted, receiptRef: `governor:${options.workspaceId}/${loopId}#${options.preregistration.preregHash}` }) });
     return { driver, stop };
   } catch (error) { await stop(); throw error; }
@@ -274,7 +277,7 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
       active.stopCurrent = owned.stop;
       const startedAtMs = Date.now();
       try {
-        const attempt = await runArmGeneration({ arm: arm.id, blueprintId: FULL_SPINE_BLUEPRINT, task,
+        const attempt = await runArmGeneration({ arm: arm.id, blueprintId: arm.id === 'baseline' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT, task,
           seed: String(current.seed), budget: arm.generationBudget }, {
           clone: deps.currentGeneration?.clone ?? cloneTaskRepo, extractDiff: deps.currentGeneration?.extractDiff ?? extractDiff,
           instantiate: (blueprintId, task, checkout, budget) => owned.driver.spinRunAndCost({ blueprintId, task, checkout, budget }) });

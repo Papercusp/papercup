@@ -1227,6 +1227,7 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
         for (;;) {
           const task = await ports.getTask(taskId);
           if (!task || task.workspaceId !== workspaceId || task.detail.label !== `${labelPrefix}solver`) throw new Error('Native benchmark task identity/scope could not be verified.');
+          if (typeof task.detail.nativeStreamError === 'string') throw new Error(task.detail.nativeStreamError);
           record.terminalReceipt = task;
           const identity = measuredIdentity(await ports.readIdentity(task));
           record.measured = identity;

@@ -31,7 +31,7 @@ vi.mock('../task-manager/managed-spawn', async original => {
 });
 import { LSP_LANGUAGES, resolveServerBin, shutdownAllLspClients, type LspLanguage } from './lsp-adapter';
 import { lspDaemonFacade } from './lsp-daemon-facade';
-import { killTask } from '../task-manager/control';
+import { killScopeUnit, killTask } from '../task-manager/control';
 import { closeTask } from '../task-manager/store';
 import { taskTerminalEventKey } from '../task-manager/task-terminal-events';
 
@@ -73,12 +73,26 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await shutdownAllLspClients();
+  const errors: unknown[] = [];
+  try { await shutdownAllLspClients(); } catch (error) { errors.push(error); }
   for (const taskId of db.tasks) {
+    try {
     const outcome = await killTask(taskId, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 500 });
-    if (!outcome.ok && outcome.error !== 'already_gone') throw new Error(`multilingual fixture cleanup refused: ${outcome.error}`);
-    if (!outcome.ok) await closeTask(taskId, { state: 'stranded', exitReason: 'fixture verified process gone at teardown' });
-    await expect.poll(async () => {
+    if (!outcome.ok && outcome.error === 'not_live') {
+      // not_live also covers unsafe/unconfined residue. Independently verify
+      // this exact owned scope instead of treating the error itself as success.
+      const [row] = await db.sql!`SELECT workspace_id, scope_unit FROM harness_shared.task_ledger WHERE task_id = ${taskId}`;
+      expect(row?.workspace_id).toBe(workspaceId);
+      if (!row?.scope_unit) throw new Error('multilingual fixture cannot verify an unconfined terminal task');
+      const scope = await killScopeUnit(row.scope_unit, { escalateAfterMs: 500 });
+      if (!scope.ok && scope.error !== 'already_gone') throw new Error(`multilingual fixture scope cleanup refused: ${scope.error}`);
+    } else if (!outcome.ok && outcome.error !== 'already_gone') {
+      throw new Error(`multilingual fixture cleanup refused: ${outcome.error}`);
+    } else if (!outcome.ok) {
+      await closeTask(taskId, { state: 'stranded', exitReason: 'fixture verified process gone at teardown' });
+    }
+    // expect.poll requires an active test; vi.waitFor is valid in suite hooks.
+    await vi.waitFor(async () => {
       const [row] = await db.sql!`
         SELECT task.workspace_id, task.ended_at IS NOT NULL AS ended,
                fire.last_payload->>'taskId' AS emitted_task,
@@ -86,13 +100,15 @@ afterAll(async () => {
           FROM harness_shared.task_ledger task
           LEFT JOIN harness_shared.event_key_fires fire ON fire.event_key = ${taskTerminalEventKey(taskId)}
          WHERE task.task_id = ${taskId}`;
-      return row;
-    }, { timeout: 5_000, interval: 20 }).toMatchObject({ workspace_id: workspaceId, ended: true, emitted_task: taskId, matching_state: true });
+      expect(row).toMatchObject({ workspace_id: workspaceId, ended: true, emitted_task: taskId, matching_state: true });
+    }, { timeout: 5_000, interval: 20 });
+    } catch (error) { errors.push(error); }
   }
   eventEngine.setAutoPumpEnabledForTests(previousAutoPump);
   await orgDb?.cleanup();
   db.sql = undefined;
   if (root) rmSync(root, { recursive: true, force: true });
+  if (errors.length) throw new AggregateError(errors, 'multilingual fixture task cleanup failed');
 }, 30_000);
 
 describe('P-004 configured native compiler adapters', () => {
@@ -114,6 +130,11 @@ describe('P-004 configured native compiler adapters', () => {
 
   it.each(['python', 'go'] as const)('%s refuses an uncertified empty after a successful definition', async language => {
     const layout = layouts[language]; const file = join(root, language, 'a', layout.consumer);
+    const lines = layout.use.trimEnd().split('\n');
+    const useLine = lines.findIndex(line => line.includes('target()')) + 1;
+    const warm = await lspDaemonFacade('symbol', { file, rootPath: root, line1: useLine, character: lines[useLine - 1]!.indexOf('target()') });
+    expect(warm.error).toBeNull();
+    expect(warm.sites.map(site => site.path)).toContain(`${language}/a/${layout.declaration}`);
     const line1 = layout.use.trimEnd().split('\n').length;
     const answer = await lspDaemonFacade('symbol', { file, rootPath: root, line1, character: 0 });
     expect(answer.sites).toEqual([]);
