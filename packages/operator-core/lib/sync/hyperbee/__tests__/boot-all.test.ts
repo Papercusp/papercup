@@ -604,7 +604,9 @@ describe('boot-all — substrate orchestrator', () => {
     const uncapped = await runWithConcurrency(N);
     expect(uncapped.failed).toBeGreaterThan(0);
     expect(uncapped.booted).toBeLessThan(N);
-  }, 10_000);
+    // WI-10006055: the simulated boots are bounded by TIMEOUT_MS above; this outer
+    // budget only has to cover module loading, which overran 10s under gate load.
+  }, 60_000);
 
   it('P-078: the DEFAULT discovery reads the PG registry and boots only entries with a LIVE project path', async () => {
     const liveDir = mkdtempSync(join(tmpdir(), 'boot-all-live-'));

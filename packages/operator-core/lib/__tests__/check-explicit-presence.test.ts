@@ -218,15 +218,17 @@ describe('explicit-presence is ENFORCED, not merely available (WI-5977)', () => 
   it('runs an end-to-end positive control that forces the real ratchet red even when the corpus has zero candidates', () => {
     const run = spawnSync(
       'node',
+      // WI-10006055: a whole-tree ratchet scan (~15s CPU idle). Under green-checkpoint
+      // lane-stateful load it overran a 60s kill and returned status null, not a verdict.
       [join(REPO_ROOT, 'scripts/check-explicit-presence.mjs'), '--ratchet', '--positive-control'],
-      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 180_000, killSignal: 'SIGKILL' },
     );
     const output = `${run.stdout}\n${run.stderr}`;
     expect(run.status, output).toBe(1);
     expect(output).toMatch(/POSITIVE CONTROL: evaluating \d+ analyzer-produced known violation/);
     expect(output).toMatch(/count ROSE above baseline/);
     expect(output).toMatch(/\(\+1\)/);
-  }, 60_000);
+  }, 180_000);
 
   it('refuses to combine the synthetic positive control with --update', () => {
     const run = spawnSync(
