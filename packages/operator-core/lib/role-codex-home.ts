@@ -1082,11 +1082,14 @@ function writeCodexHomeDiagnostics(
  * the canonical hooks, merges the current owner into diagnostics, and advances
  * the collision sentinel.  A same-owner home remains byte-identical.
  */
-export function repairSuCodexHomeIdentity(
+type CodexHomeOwnerSidIo = { priorSid: string | null; skipStamp?: boolean };
+
+function repairSuCodexHomeIdentityImpl(
   codexHome: string,
   sid: string,
   advSessionId?: string | number,
   mcpUrl?: string,
+  ownerSidIo?: CodexHomeOwnerSidIo,
 ): { repaired: boolean; hooksInstalled: boolean; reason?: 'no-home' } {
   if (!existsSync(codexHome)) return { repaired: false, hooksInstalled: false, reason: 'no-home' };
 
@@ -1115,7 +1118,8 @@ export function repairSuCodexHomeIdentity(
     ? hookOwners.length > 0 && hookOwners.every((owner) => owner === sid)
     : hookOwners.length === 0;
   const diagnosticsMatch = diagnostics.lockOwnerSid === sid;
-  const sentinelMatches = existingCodexHomeOwnerSid(codexHome) === sid;
+  const priorSid = ownerSidIo ? ownerSidIo.priorSid : existingCodexHomeOwnerSid(codexHome);
+  const sentinelMatches = priorSid === sid;
   const lifecycleHooksMatch = (() => {
     if (!hooksExpected) return true;
     try {
@@ -1231,8 +1235,17 @@ export function repairSuCodexHomeIdentity(
     lockOwnerSid: sid,
   };
   writeFileSync(diagnosticsPath, `${JSON.stringify(nextDiagnostics, null, 2)}\n`, { mode: 0o600 });
-  writeFileSync(join(codexHome, '.owner-sid'), sid, { mode: 0o600 });
+  if (!ownerSidIo?.skipStamp) writeFileSync(join(codexHome, '.owner-sid'), sid, { mode: 0o600 });
   return { repaired: true, hooksInstalled };
+}
+
+export function repairSuCodexHomeIdentity(
+  codexHome: string,
+  sid: string,
+  advSessionId?: string | number,
+  mcpUrl?: string,
+): { repaired: boolean; hooksInstalled: boolean; reason?: 'no-home' } {
+  return repairSuCodexHomeIdentityImpl(codexHome, sid, advSessionId, mcpUrl);
 }
 
 function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerdict): string {
@@ -1554,13 +1567,13 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  * (or carry superseded values) are rewritten from this canonical renderer so a
  * model-less resume cannot silently fall back to Codex's smaller native window.
  */
-export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
+function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   sessionKey: string | number;
   /** Canonical, current SU render; supplied by the operator repair route. */
   promptText?: string;
   /** A carry starts a fresh thread, so a GC-removed home can be recreated safely. */
   recoverMissingHome?: boolean;
-}): {
+}, ownerSidIo?: CodexHomeOwnerSidIo): {
   codexHome: string;
   sqliteHome: string;
   configPath: string;
@@ -1652,11 +1665,12 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   if (!configReady) {
     writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }), { mode: 0o600 });
   }
-  const identity = repairSuCodexHomeIdentity(
+  const identity = repairSuCodexHomeIdentityImpl(
     codexHome,
     opts.sid,
     opts.sessionKey,
     mcpUrlWithClient(opts.mcpUrl, opts.sid),
+    ownerSidIo,
   );
   const agentsPath = join(codexHome, 'AGENTS.md');
   const carryBasePath = join(codexHome, '.papercusp-carry-base-AGENTS.md');
@@ -1692,7 +1706,31 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   };
 }
 
-export function writeSuCodexHome(opts: {
+type EnsureSuCodexHomeConfigOptions = SuCodexConfigInput & {
+  sessionKey: string | number;
+  /** Canonical, current SU render; supplied by the operator repair route. */
+  promptText?: string;
+  /** A carry starts a fresh thread, so a GC-removed home can be recreated safely. */
+  recoverMissingHome?: boolean;
+};
+
+export function ensureSuCodexHomeConfig(opts: EnsureSuCodexHomeConfigOptions) {
+  return ensureSuCodexHomeConfigImpl(opts);
+}
+
+export async function ensureSuCodexHomeConfigAsync(
+  opts: EnsureSuCodexHomeConfigOptions,
+): Promise<ReturnType<typeof ensureSuCodexHomeConfigImpl>> {
+  const codexHome = codexHomeForSessionKey(opts.sessionKey);
+  return withCodexHomeAsyncWriteLock(codexHome, async () => {
+    const priorSid = await existingCodexHomeOwnerSidAsync(codexHome);
+    const result = ensureSuCodexHomeConfigImpl(opts, { priorSid, skipStamp: true });
+    if (result.identityRepaired) await stampCodexHomeOwnerSidAsync(codexHome, opts.sid);
+    return result;
+  });
+}
+
+type WriteSuCodexHomeOptions = {
   /** Same host-owned context ceiling consulted by bootstrap and MCP. */
   denyAmbientContext?: true;
   sessionKey: string | number;
@@ -1734,7 +1772,9 @@ export function writeSuCodexHome(opts: {
    *  Omitted ⇒ the collision check is skipped entirely (byte-identical to the
    *  pre-guard behavior — safe default for every existing caller/test). */
   isOwnerLive?: (sid: string) => boolean;
-}): SuCodexHome {
+};
+
+function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexHomeOwnerSidIo): SuCodexHome {
   const targetHome = codexHomeForSessionKey(opts.sessionKey);
   // EI-11366: a live Codex psu host was once found split across two identities
   // — the physical host process/PAPERCUSP_SID/socket stayed with its ORIGINAL
@@ -1750,7 +1790,7 @@ export function writeSuCodexHome(opts: {
   // diagnosable refusal instead. Fails OPEN (proceeds, current behavior) unless
   // BOTH a differing prior owner AND a caller-supplied liveness check confirm
   // it is still live — never blocks a normal fresh/re-prepare launch.
-  const priorSid = existingCodexHomeOwnerSid(targetHome);
+  const priorSid = ownerSidIo ? ownerSidIo.priorSid : existingCodexHomeOwnerSid(targetHome);
   if (priorSid && priorSid !== opts.sid && opts.isOwnerLive?.(priorSid)) {
     throw new Error(
       `writeSuCodexHome: refusing to rebuild ${targetHome} — it is the LIVE Codex home of a ` +
@@ -1803,13 +1843,43 @@ export function writeSuCodexHome(opts: {
   // EI-11366: stamp the sentinel the collision guard above reads on the NEXT
   // write to this sessionKey's home. Best-effort — a write failure here must
   // never fail the launch (mirrors every other diagnostics write in this fn).
-  try {
-    writeFileSync(join(codexHome, '.owner-sid'), opts.sid, { mode: 0o600 });
-  } catch {
-    /* non-fatal: the collision guard simply skips on the next write */
+  if (!ownerSidIo?.skipStamp) {
+    try {
+      writeFileSync(join(codexHome, '.owner-sid'), opts.sid, { mode: 0o600 });
+    } catch {
+      /* non-fatal: the collision guard simply skips on the next write */
+    }
   }
 
   return { codexHome, sqliteHome, agentsPath, configPath, instructionLint };
+}
+
+export function writeSuCodexHome(opts: WriteSuCodexHomeOptions): SuCodexHome {
+  return writeSuCodexHomeImpl(opts);
+}
+
+export async function writeSuCodexHomeAsync(
+  opts: Omit<WriteSuCodexHomeOptions, 'isOwnerLive'> & {
+    isOwnerLive?: (sid: string) => boolean | Promise<boolean>;
+  },
+): Promise<SuCodexHome> {
+  const targetHome = codexHomeForSessionKey(opts.sessionKey);
+  return withCodexHomeAsyncWriteLock(targetHome, async () => {
+    const priorSid = await existingCodexHomeOwnerSidAsync(targetHome);
+    if (priorSid && priorSid !== opts.sid && opts.isOwnerLive && await opts.isOwnerLive(priorSid)) {
+      throw new Error(
+        `writeSuCodexHome: refusing to rebuild ${targetHome} — it is the LIVE Codex home of a ` +
+          `different session (owner ${priorSid}); overwriting it would silently split that ` +
+          `session's identity between its still-running process and a rewritten CODEX_HOME ` +
+          `(EI-11366). Pass the SAME sid to re-prepare that session, or a sessionKey that does ` +
+          `not collide with a live session's home.`,
+      );
+    }
+    const { isOwnerLive: _isOwnerLive, ...writeOpts } = opts;
+    const result = writeSuCodexHomeImpl(writeOpts, { priorSid, skipStamp: true });
+    await stampCodexHomeOwnerSidAsync(result.codexHome, opts.sid);
+    return result;
+  });
 }
 
 const PAPERCUSP_SU_TABLE_RE = /^mcp_servers\.(?:papercusp-su|"papercusp-su")(?:\.|$)/;
