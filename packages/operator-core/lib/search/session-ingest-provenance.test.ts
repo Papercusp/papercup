@@ -338,6 +338,87 @@ describe('hook-authenticated prompt-origin correlation', () => {
     expect(correlatePromptOriginStamps([candidate], [stamp])).toBe(0);
   });
 
+  // WI-10008184: identical prompts typed twice in one session share a hash, so
+  // the stamp a turn receives must be decided by time, not by row order.
+  function unenrolledAt(turnIdx: number, ts: string, text = 'continue'): Row {
+    return row({
+      turn_idx: turnIdx,
+      ts,
+      text,
+      prompt_hash: promptOriginHash(text),
+      turn_origin_verdict: UNENROLLED_ORIGIN_VERDICT,
+      turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION,
+    });
+  }
+  function stampAt(submittedAt: string, text = 'continue') {
+    return { source_kind: 'claude', session_id: 's-1', prompt_hash: promptOriginHash(text), submitted_at: submittedAt };
+  }
+  const at = (offsetSec: number) => new Date(Date.parse('2026-10-10T19:00:00.000Z') + offsetSec * 1000).toISOString();
+
+  it('gives a single stamp to the identical turn nearest it, not to the earlier row (WI-10008184)', () => {
+    const earlier = unenrolledAt(10, at(0));
+    const later = unenrolledAt(12, at(100));
+    expect(correlatePromptOriginStamps([earlier, later], [stampAt(at(95))])).toBe(1);
+    expect(later.turn_origin_verdict).toBe('owner-typed');
+    expect(earlier.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('does not depend on the order rows are supplied in', () => {
+    const earlier = unenrolledAt(10, at(0));
+    const later = unenrolledAt(12, at(100));
+    expect(correlatePromptOriginStamps([later, earlier], [stampAt(at(95))])).toBe(1);
+    expect(later.turn_origin_verdict).toBe('owner-typed');
+    expect(earlier.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('never trades a matched turn for a nearer pairing: every stamp that can vouch for a turn does', () => {
+    // A nearest-pair-first greedy gives B the 60s stamp (40s away) and leaves
+    // A with nothing, because the 150s stamp is outside A's window. Both turns
+    // were typed and both were stamped, so both must be promoted.
+    const a = unenrolledAt(10, at(0));
+    const b = unenrolledAt(12, at(100));
+    expect(correlatePromptOriginStamps([a, b], [stampAt(at(60)), stampAt(at(150))])).toBe(2);
+    expect(a.turn_origin_verdict).toBe('owner-typed');
+    expect(b.turn_origin_verdict).toBe('owner-typed');
+  });
+
+  it('pairs repeated prompts in time order when there are as many stamps as turns', () => {
+    const rows = [0, 30, 60, 90].map((sec, i) => unenrolledAt(i, at(sec)));
+    const stamps = [88, 58, 28, -2].map((sec) => stampAt(at(sec)));
+    expect(correlatePromptOriginStamps(rows, stamps)).toBe(4);
+    expect(rows.every((r) => r.turn_origin_verdict === 'owner-typed')).toBe(true);
+  });
+
+  it('matches a prompt repeated across a long session, segment by segment', () => {
+    // Turns 10 minutes apart: each window gap starts a new segment, and a
+    // stamp with no turn in its own segment vouches for nothing.
+    const rows = [0, 600, 1200].map((sec, i) => unenrolledAt(i, at(sec)));
+    const stamps = [1199, 2, 900, 601].map((sec) => stampAt(at(sec)));
+    expect(correlatePromptOriginStamps(rows, stamps)).toBe(3);
+    expect(rows.every((r) => r.turn_origin_verdict === 'owner-typed')).toBe(true);
+    const lone = unenrolledAt(9, at(3000));
+    expect(correlatePromptOriginStamps([lone], [stampAt(at(3000 - 121))])).toBe(0);
+  });
+
+  it('lets priority rows keep their stamps before any other row is considered', () => {
+    // Replay (WI-10008183): an already-promoted row consumed a stamp when it
+    // was promoted; a candidate nearer that stamp must not take it from it.
+    const promoted = unenrolledAt(10, at(0));
+    const candidate = unenrolledAt(12, at(100));
+    const stamp = stampAt(at(95));
+    expect(correlatePromptOriginStamps([promoted, candidate], [stamp], { priority: new Set([promoted]) })).toBe(1);
+    expect(promoted.turn_origin_verdict).toBe('owner-typed');
+    expect(candidate.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('matches clusters independently when several prompts are mixed together', () => {
+    const go = unenrolledAt(1, at(0), 'go');
+    const stop = unenrolledAt(2, at(10), 'stop');
+    expect(correlatePromptOriginStamps([go, stop], [stampAt(at(9), 'stop'), stampAt(at(1), 'go')])).toBe(2);
+    expect(go.turn_origin_verdict).toBe('owner-typed');
+    expect(stop.turn_origin_verdict).toBe('owner-typed');
+  });
+
   it.each([
     ['wrong source', { source_kind: 'omp' }],
     ['wrong session', { session_id: 'other-session' }],

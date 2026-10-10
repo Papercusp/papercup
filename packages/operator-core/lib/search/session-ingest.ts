@@ -1287,11 +1287,36 @@ export interface PromptOriginStamp {
   expires_at?: Date | string | null;
 }
 
+export interface CorrelatePromptOriginOptions {
+  /** Rows that must keep a stamp before any other row may take one. Replay
+   *  (WI-10008183) passes the already-promoted rows here: each consumed a
+   *  stamp when it was promoted, and a nearer candidate must not take it. */
+  priority?: ReadonlySet<TurnRow>;
+}
+
 /** Upgrade only the exact v5 uncertainty state. An authenticated stamp can
- * never override an envelope or catalogue machine verdict. */
-export function correlatePromptOriginStamps(rows: TurnRow[], stamps: PromptOriginStamp[]): number {
-  const used = new Set<number>();
-  let matched = 0;
+ * never override an envelope or catalogue machine verdict.
+ *
+ * Each stamp vouches for at most one turn and each turn takes at most one
+ * stamp. Rows and stamps are matched per (source, session, prompt hash)
+ * cluster, because only identical prompts can compete for a stamp. Inside a
+ * cluster the matching is chosen by time, never by the order rows arrive in
+ * (WI-10008184: an earlier identical turn took the stamp of a later one). The
+ * chosen matching maximises, in this order: priority rows matched, rows
+ * matched, then closeness (smallest total |turn − stamp| delta).
+ *
+ * The search is over order-preserving matchings of the time-sorted rows and
+ * stamps. For a distance cost with a symmetric window that loses nothing: any
+ * crossing pair can be uncrossed without leaving the window or adding
+ * distance. Expiry is a per-pair check against the turn's own time. */
+export function correlatePromptOriginStamps(
+  rows: TurnRow[],
+  stamps: PromptOriginStamp[],
+  options: CorrelatePromptOriginOptions = {},
+): number {
+  const clusterKey = (sourceKind: string, sessionId: string, hash: string) =>
+    [sourceKind, sessionId, hash].join('\u0000');
+  const rowsByCluster = new Map<string, Array<{ row: TurnRow; ms: number }>>();
   for (const row of rows) {
     if (
       row.turn_origin_classifier_version !== MACHINE_SURFACE_CATALOGUE_VERSION ||
@@ -1299,37 +1324,128 @@ export function correlatePromptOriginStamps(rows: TurnRow[], stamps: PromptOrigi
       !row.prompt_hash ||
       !row.ts
     ) continue;
-    const rowMs = Date.parse(row.ts);
-    if (!Number.isFinite(rowMs)) continue;
-    let best = -1;
-    let bestDelta = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < stamps.length; i += 1) {
-      if (used.has(i)) continue;
-      const stamp = stamps[i];
-      if (
-        stamp.source_kind !== row.source_kind ||
-        stamp.session_id !== row.session_id ||
-        stamp.prompt_hash !== row.prompt_hash
-      ) continue;
+    const ms = Date.parse(row.ts);
+    if (!Number.isFinite(ms)) continue;
+    const key = clusterKey(row.source_kind, row.session_id, row.prompt_hash);
+    rowsByCluster.set(key, [...(rowsByCluster.get(key) ?? []), { row, ms }]);
+  }
+  if (!rowsByCluster.size) return 0;
+  const stampsByCluster = new Map<string, Array<{ ms: number; expiresMs: number | null }>>();
+  for (const stamp of stamps) {
+    const key = clusterKey(stamp.source_kind, stamp.session_id, stamp.prompt_hash);
+    if (!rowsByCluster.has(key)) continue;
+    const ms = new Date(stamp.submitted_at).getTime();
+    if (!Number.isFinite(ms)) continue;
+    const expiresMs = stamp.expires_at == null ? null : new Date(stamp.expires_at).getTime();
+    stampsByCluster.set(key, [...(stampsByCluster.get(key) ?? []), { ms, expiresMs }]);
+  }
+  const priority = options.priority;
+  let matched = 0;
+  for (const [key, clusterRows] of rowsByCluster) {
+    const clusterStamps = stampsByCluster.get(key);
+    if (!clusterStamps?.length) continue;
+    clusterRows.sort((a, b) => a.ms - b.ms);
+    clusterStamps.sort((a, b) => a.ms - b.ms);
+    const deltaOf = (r: { ms: number }, s: { ms: number; expiresMs: number | null }): number | null => {
       // An expired stamp cannot vouch for a prompt typed after it expired. It
       // is compared with the TURN's own time, not with now(): measuring it
       // against ingest time lost every owner turn ingested more than one TTL
-      // late (WI-10006568, 58 rows measured).
-      if (stamp.expires_at != null && !(new Date(stamp.expires_at).getTime() > rowMs)) continue;
-      const submittedMs = new Date(stamp.submitted_at).getTime();
-      const delta = Math.abs(rowMs - submittedMs);
-      if (Number.isFinite(delta) && delta <= PROMPT_ORIGIN_MATCH_WINDOW_MS && delta < bestDelta) {
-        best = i;
-        bestDelta = delta;
+      // late (WI-10006568, 58 rows measured). A NaN expiry fails closed.
+      if (s.expiresMs != null && !(s.expiresMs > r.ms)) return null;
+      const delta = Math.abs(r.ms - s.ms);
+      return delta <= PROMPT_ORIGIN_MATCH_WINDOW_MS ? delta : null;
+    };
+    // No pair can span a gap wider than the window, so each run of events
+    // between such gaps is matched on its own. That keeps the table small for
+    // a prompt repeated all session long ("continue").
+    for (const [rowSlice, stampSlice] of splitAtWindowGaps(clusterRows, clusterStamps)) {
+      for (const index of matchCluster(rowSlice, stampSlice, deltaOf, (r) => priority?.has(r.row) ?? false)) {
+        const row = rowSlice[index].row;
+        row.turn_origin = HOOK_AUTHENTICATED_PROMPT_ORIGIN;
+        row.turn_origin_verdict = 'owner-typed';
+        matched += 1;
       }
     }
-    if (best < 0) continue;
-    used.add(best);
-    row.turn_origin = HOOK_AUTHENTICATED_PROMPT_ORIGIN;
-    row.turn_origin_verdict = 'owner-typed';
-    matched += 1;
   }
   return matched;
+}
+
+/** Split time-sorted rows and stamps wherever consecutive events (of either
+ * kind) are more than the match window apart. Segments without both a row and
+ * a stamp are dropped. */
+function splitAtWindowGaps<R extends { ms: number }, S extends { ms: number }>(rows: R[], stamps: S[]): Array<[R[], S[]]> {
+  const segments: Array<[R[], S[]]> = [];
+  let current: [R[], S[]] = [[], []];
+  let lastMs = Number.NEGATIVE_INFINITY;
+  let i = 0;
+  let j = 0;
+  while (i < rows.length || j < stamps.length) {
+    const takeRow = j >= stamps.length || (i < rows.length && rows[i].ms <= stamps[j].ms);
+    const ms = takeRow ? rows[i].ms : stamps[j].ms;
+    if (ms - lastMs > PROMPT_ORIGIN_MATCH_WINDOW_MS) {
+      if (current[0].length && current[1].length) segments.push(current);
+      current = [[], []];
+    }
+    if (takeRow) current[0].push(rows[i++]);
+    else current[1].push(stamps[j++]);
+    lastMs = ms;
+  }
+  if (current[0].length && current[1].length) segments.push(current);
+  return segments;
+}
+
+/** Order-preserving matching of time-sorted rows to time-sorted stamps by
+ * dynamic programming over prefixes. Returns the indices of matched rows.
+ * Score compared lexicographically: priority matched, matched, −total delta.
+ * Ties keep the earlier row, which is what the row-order rule used to do. */
+function matchCluster<R, S>(
+  rows: R[],
+  stamps: S[],
+  deltaOf: (row: R, stamp: S) => number | null,
+  isPriority: (row: R) => boolean,
+): number[] {
+  const n = rows.length;
+  const m = stamps.length;
+  const width = m + 1;
+  const cells = (n + 1) * width;
+  const prio = new Int32Array(cells);
+  const count = new Int32Array(cells);
+  const cost = new Float64Array(cells);
+  // 0 = skip row, 1 = skip stamp, 2 = match row with stamp
+  const step = new Uint8Array(cells);
+  const better = (p: number, c: number, d: number, at: number) =>
+    p !== prio[at] ? p > prio[at] : c !== count[at] ? c > count[at] : d < cost[at];
+  const set = (at: number, from: number, move: number) => {
+    prio[at] = prio[from]; count[at] = count[from]; cost[at] = cost[from]; step[at] = move;
+  };
+  for (let j = 1; j <= m; j += 1) step[j] = 1;
+  for (let i = 1; i <= n; i += 1) {
+    const priority = isPriority(rows[i - 1]) ? 1 : 0;
+    for (let j = 1; j <= m; j += 1) {
+      const at = i * width + j;
+      set(at, (i - 1) * width + j, 0);
+      const skipStamp = i * width + j - 1;
+      if (better(prio[skipStamp], count[skipStamp], cost[skipStamp], at)) set(at, skipStamp, 1);
+      const delta = deltaOf(rows[i - 1], stamps[j - 1]);
+      if (delta != null) {
+        const prev = (i - 1) * width + j - 1;
+        const p = prio[prev] + priority;
+        const c = count[prev] + 1;
+        const d = cost[prev] + delta;
+        if (better(p, c, d, at)) { prio[at] = p; count[at] = c; cost[at] = d; step[at] = 2; }
+      }
+    }
+  }
+  const matchedRows: number[] = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    const move = step[i * width + j];
+    if (move === 2) { matchedRows.push(i - 1); i -= 1; j -= 1; }
+    else if (move === 1) j -= 1;
+    else i -= 1;
+  }
+  return matchedRows;
 }
 
 function isUnenrolledFileRow(row: Pick<TurnRow, 'source_kind' | 'speaker'>): boolean {
@@ -2577,8 +2693,9 @@ export async function recorrelatePromptOriginStampsOnce(
  * The SQL prefilter cannot know which stamp an already-promoted row consumed,
  * so it can pass a candidate whose only stamp really belongs to a promoted
  * sibling. Here the cluster is replayed through correlatePromptOriginStamps,
- * the same one-row-per-stamp rule insertTurns uses: already-promoted rows take
- * their nearest stamps FIRST, and candidates receive only stamps left over. If
+ * the same one-row-per-stamp rule insertTurns uses, with the already-promoted
+ * rows passed as `priority`: they keep stamps first, and candidates receive
+ * only stamps the promoted rows can do without. If
  * the promoted rows alone already over-subscribe the cluster's stamps, no
  * candidate in it is promoted. The pass may still miss a row; it never
  * promotes more rows in a cluster than the hook stamped.
@@ -2647,7 +2764,9 @@ async function replayPromptOriginClusters(sql: Sql, workspace: string, rows: Tur
   }
   for (const [key, candidates] of candidatesByCluster) {
     const already = (spentByCluster.get(key) ?? []).sort((a, b) => Date.parse(a.ts!) - Date.parse(b.ts!));
-    correlatePromptOriginStamps([...already, ...candidates], stampsByCluster.get(key) ?? []);
+    correlatePromptOriginStamps([...already, ...candidates], stampsByCluster.get(key) ?? [], {
+      priority: new Set(already),
+    });
     if (already.some((row) => row.turn_origin !== HOOK_AUTHENTICATED_PROMPT_ORIGIN)) {
       for (const row of candidates) {
         row.turn_origin = null;
