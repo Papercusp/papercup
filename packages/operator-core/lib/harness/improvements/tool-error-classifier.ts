@@ -226,6 +226,8 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     // Codex reports the same local lookup miss in several phrasings; it is not a
     // server defect because the target MCP handler never ran.
     class: 'caller',
+    errorCodes: ['wrapper-unavailable', 'client_wrapper_unavailable'],
+    statuses: ['wrapper-unavailable'],
     messagePattern:
       'The normalized direct wrapper [A-Za-z0-9_.]+ was undefined, so attempting it raised a local TypeError before MCP dispatch|' +
       'the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch|' +
@@ -719,6 +721,8 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     input.reproduced === true || input.clearServerMismatch === true || input.hardInternal === true;
   const structuredAttested = input.directEvidence !== undefined;
   const attested = structuredAttested || (legacyAttested && klass !== 'caller');
+  const deferredWrapperUnavailable = [input.errorCode, input.status]
+    .some((value) => ['wrapper-unavailable', 'client_wrapper_unavailable'].includes(value?.trim().toLowerCase() ?? ''));
   return {
     class: klass,
     watchdogKey: `repeated-tool-error:${signalKey}`,
@@ -729,7 +733,10 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     messageFingerprint,
     // A documented external class never bypasses probation, however the
     // reporter attested it — the attestation is honest, the row is a duplicate.
-    direct: attested && !knownExternal,
+    // A missing client wrapper is affirmative evidence that dispatch never
+    // reached the named handler. Non-empty expected/actual prose cannot turn
+    // that discovery report into a claimable server defect.
+    direct: attested && !knownExternal && !deferredWrapperUnavailable,
     knownExternal,
   };
 }
