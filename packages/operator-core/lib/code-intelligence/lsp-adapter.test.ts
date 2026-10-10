@@ -473,15 +473,36 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
     expect(sent).toEqual([]);
   });
 
-  it('an unstattable file keeps the copy we hold rather than dropping it', async () => {
+  it('refuses a deleted source and closes its retained document before any query can reuse it', async () => {
     const uri = await ensureOpen(client, file);
     sent.length = 0;
+    client.certifiedReadiness = new Set<LspReadinessIntent>(['references']);
+    client.quiescent = true;
 
     await rm(file);
-    const again = await ensureOpen(client, file);
+    await expect(ensureOpen(client, file)).rejects.toMatchObject({ code: 'ENOENT' });
 
-    expect(again).toBe(uri);
-    expect(sent).toEqual([]);
+    expect(client.openDocs.has(uri)).toBe(false);
+    expect(client.certifiedReadiness.size).toBe(0);
+    expect(client.quiescent).toBeNull();
+    expect(sent).toEqual([{ method: 'textDocument/didClose', params: { textDocument: { uri } } }]);
+
+    // Recreating the path must load the new text, never revive the old copy.
+    await writeFile(file, 'export const recreated = 2;\n');
+    await ensureOpen(client, file);
+    expect(sent.at(-1)?.method).toBe('textDocument/didOpen');
+    expect(sent.at(-1)?.params.textDocument.text).toBe('export const recreated = 2;\n');
+  });
+
+  it('invalidates a deleted document even when its close notification fails', async () => {
+    const uri = await ensureOpen(client, file);
+    client.certifiedReadiness = new Set<LspReadinessIntent>(['references']);
+    await rm(file);
+    client.connection.sendNotification = vi.fn().mockRejectedValue(new Error('closed connection'));
+
+    await expect(ensureOpen(client, file)).rejects.toThrow('closed connection');
+    expect(client.openDocs.has(uri)).toBe(false);
+    expect(client.certifiedReadiness.size).toBe(0);
   });
 });
 

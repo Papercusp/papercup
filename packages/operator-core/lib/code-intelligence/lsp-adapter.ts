@@ -1947,11 +1947,16 @@ export async function ensureOpen(client: LspClient, absPath: string): Promise<st
   try {
     const st = await stat(absPath);
     stamp = { mtimeMs: st.mtimeMs, size: st.size };
-  } catch {
-    // Unstattable (deleted mid-flight, permissions). Fall through: if we have
-    // it open, keep the copy we have rather than dropping it; if we do not, the
-    // readFile below will surface the real error.
-    if (seen) return uri;
+  } catch (error) {
+    // Retained didOpen text is historical evidence once disk cannot be read.
+    // Drop its identity/readiness before awaiting the close, so concurrent
+    // answers cannot certify the deleted document even if the pipe is dead.
+    if (seen) {
+      client.openDocs.delete(uri);
+      invalidateClientReadiness(client);
+      await client.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
+    }
+    throw error;
   }
 
   if (seen) {
