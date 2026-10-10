@@ -326,7 +326,7 @@ vi.mock('../../agent-launch-core', async (orig) => ({
 
 const launchAgentModule = await import('./launch-agent');
 const launchAgent = launchAgentModule.default;
-const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_INFERENCE_GATEWAY } = launchAgentModule;
+const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_INFERENCE_GATEWAY, INTERNAL_SCOPED_SESSION_CONFINEMENT } = launchAgentModule;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
@@ -552,14 +552,36 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
   });
 });
 
+const declareConfinementMock = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+vi.mock('../../capability-envelope/session-confinement-store', async original => ({
+  ...await original<typeof import('../../capability-envelope/session-confinement-store')>(),
+  declareSessionConfinement: declareConfinementMock,
+}));
+const scopedCeiling = { denyTools: [], denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint'],
+  imposedBy: 'benchmark-host', reason: 'one metered gateway' };
 describe('internal launch context provenance', () => {
   it('threads the private controller route only through a fresh supported host context', async () => {
     const gateway = { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) };
-    const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway } as never;
+    const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway,
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: scopedCeiling } as never;
     const res = await launchAgent.handler({ brief: 'Private native task', harness: 'papercusp', agent: 'codex', headless: true }, privateCtx);
     expect(isError(res)).toBe(false);
     expect(JSON.parse(spawnedEnv(spawnHeadlessMock).PAPERCUSP_SCOPED_INFERENCE_GATEWAY)).toEqual(gateway);
     expect(spawnedCommand(spawnHeadlessMock)).not.toContain(gateway.token);
+    expect(declareConfinementMock).toHaveBeenCalledWith({ ownerId: expect.stringMatching(/^su-/),
+      workspaceId: 'ws-test', confinement: scopedCeiling });
+    expect(declareConfinementMock.mock.invocationCallOrder.at(-1)).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]);
+  });
+  it('refuses missing or failed durable server tool confinement before opening a process', async () => {
+    const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]:
+      { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) } };
+    const args = { brief: 'Private task', harness: 'papercusp', agent: 'codex' as const, headless: true };
+    expect(isError(await launchAgent.handler(args, privateCtx as never))).toBe(true);
+    declareConfinementMock.mockRejectedValueOnce(new Error('store down'));
+    expect(isError(await launchAgent.handler(args, { ...privateCtx,
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: scopedCeiling } as never))).toBe(true);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
   it('refuses private unsupported or multi-process launches before opening a process', async () => {
     const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]:

@@ -124,6 +124,7 @@ export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fi
 
 /** Private controller seam, absent from the public tool schema. */
 export const INTERNAL_SCOPED_INFERENCE_GATEWAY: unique symbol = Symbol('internal-scoped-inference-gateway');
+export const INTERNAL_SCOPED_SESSION_CONFINEMENT: unique symbol = Symbol('internal-scoped-session-confinement');
 
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
@@ -756,6 +757,11 @@ export default defineTool({
       [INTERNAL_SCOPED_INFERENCE_GATEWAY]?: ScopedInferenceGateway;
     })[INTERNAL_SCOPED_INFERENCE_GATEWAY];
     const scopedGateway = privateRoute === undefined ? null : snapshotScopedInferenceGateway(privateRoute);
+    const privateConfinement = (ctx as typeof ctx & {
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]?: import('../../capability-envelope/session-confinement').SessionToolConfinement;
+    })[INTERNAL_SCOPED_SESSION_CONFINEMENT];
+    if (scopedGateway && (!privateConfinement || !Array.isArray(privateConfinement.denyOutside)))
+      return err('Scoped native inference requires an exact server-side session tool ceiling before launch.');
     if (scopedGateway && (args.resume || args.successor || args.fork || (args.count ?? args.members?.length ?? 1) !== 1)) {
       return err('Scoped inference gateway requires a fresh single native launch.');
     }
@@ -1765,6 +1771,19 @@ export default defineTool({
       if (i === 0 && respawnOwnerId) return respawnOwnerId;
       return `su-${randomUUID()}`;
     });
+    if (scopedGateway) {
+      try {
+        const { declareSessionConfinement } = await import('../../capability-envelope/session-confinement-store');
+        for (const ownerId of memberOwnerIds) {
+          if (!ownerId) return err('Scoped native launch has no pinned confinement identity.');
+          const receipt = await declareSessionConfinement({ ownerId, workspaceId,
+            confinement: privateConfinement! });
+          if (!receipt.ok) return err(`Scoped native tool confinement refused: ${receipt.reason}`);
+        }
+      } catch {
+        return err('Scoped native tool confinement could not be durably installed; no process started.');
+      }
+    }
     if (!isResume) {
       const roleFailure = unresolvedAgentRole({
         harness: slug,
