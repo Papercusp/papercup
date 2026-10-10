@@ -1130,24 +1130,25 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run',
     );
     expect(result.ratings['execution-integrity'].evidence).toContain(
-      'when skips exist, every declared scope case must be accounted for',
+      'any skipped ordinary run fails execution-integrity',
     );
     expect(result.ratings['execution-integrity'].evidence).toContain(
       'correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer',
     );
   });
 
-  it('accepts unrelated skips only when every explicitly claimed test case passed in the ledger', () => {
+  it('rejects the recorded skipped run even when its binder and case scope claim success', () => {
     const selected = successfulTestBinding('selected.integration.test.ts', { testCases: ['suite > selected'] });
-    selected.testRunExecution!.skipped = 71;
+    selected.testRunId = 20919771;
+    selected.testRunExecution!.skipped = 165;
     const evaluate = () => evaluateSpecTestAdequacy({ clause: clause(), evidence: [selected], classRef: 'plan-class-feature-ship' });
-    expect(evaluate().ratings['execution-integrity'].rating).toBe('pass');
+    expect(evaluate().ratings['execution-integrity'].rating).toBe('fail');
 
     const bareDeclaration = successfulTestBinding('bare-selected.integration.test.ts', { testCases: ['selected'] });
     bareDeclaration.testRunExecution!.passedCaseTitles = ['suite > selected'];
     bareDeclaration.testRunExecution!.skipped = 71;
     expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: [bareDeclaration], classRef: 'plan-class-feature-ship' })
-      .ratings['execution-integrity'].rating).toBe('pass');
+      .ratings['execution-integrity'].rating).toBe('fail');
 
     // Neither an absent selected case nor a prefix of a real title is proof.
     selected.details.adequacy = { ...(selected.details.adequacy as object), testCases: ['suite > selected', 'suite > skipped'] };

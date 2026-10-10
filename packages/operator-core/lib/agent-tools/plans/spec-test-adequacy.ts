@@ -1094,7 +1094,7 @@ function isCanonicalMutantCounterexample(row: SpecEvidenceForAdequacy): boolean 
     row.testRunProvenance.mutationPhase === 'mutant';
 }
 
-/** Unselected skips cannot invalidate a ledger-corroborated, explicitly bounded case scope. */
+/** A measured failed-mutant scope may tolerate skips outside the failed case. */
 function hasMeasuredCaseScope(row: SpecEvidenceForAdequacy, failedCases?: string[]): boolean {
   const declared = detailsOf(row).testCases ?? [];
   if (declared.length === 0) return false;
@@ -1137,8 +1137,9 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
 
   if (status === 'fail') return 'fail';
   if (status !== 'pass') return 'unknown';
-  return run.collectionFailed || run.failed > 0 || run.passed < 1 ||
-    (run.skipped > 0 && !hasMeasuredCaseScope(row)) ? 'fail' : 'pass';
+  return run.collectionFailed || run.failed > 0 || run.passed < 1 || run.skipped > 0
+    ? 'fail'
+    : 'pass';
 }
 
 function isSuccessfulExecutableEvidence(row: SpecEvidenceForAdequacy): boolean {
@@ -2554,7 +2555,7 @@ export function evaluateSpecTestAdequacy(input: {
                     ),
                     ...(executable.some((row) => measuredExecutionVerdict(row) === 'pass' && hasUnmatchedPassingCaseDeclaration(row))
                       ? [
-                          'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run, which measures canonical runner status/counts; when skips exist, every declared scope case must be accounted for. correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer.',
+                          'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run, which measures canonical runner status/counts; any skipped ordinary run fails execution-integrity. correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer.',
                         ]
                       : []),
                   ].join(' '),
