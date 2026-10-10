@@ -1,11 +1,11 @@
 // @vitest-environment node
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { captureCpuProfile } from '../../../scripts/cpu-sample.mjs';
+import { captureCpuProfile, readInspectorProcessIdentity } from '../../../scripts/cpu-sample.mjs';
 
 async function withTarget(run: (target: { pid: number; port: number; out: string }) => Promise<void>) {
   const out = mkdtempSync(join(tmpdir(), 'cpu-sample-test-'));
@@ -71,3 +71,54 @@ it('requires an exact entry when the pid is unknown', async () => {
   await expect(captureCpuProfile({ pid: 0, attachExisting: true, startPort: 9229,
     durationMs: 250 })).rejects.toThrow('exact expected entry');
 });
+
+async function withBusyTarget(run: (target: { pid: number; port: number; entry: string }) => Promise<void>) {
+  const out = mkdtempSync(join(tmpdir(), 'cpu-sample-busy-'));
+  const entry = join(out, 'startup.mjs');
+  writeFileSync(entry, 'console.log("CPU_SAMPLE_BUSY_READY");function busyStartup(){while(true)Math.sqrt(Math.random());}busyStartup();');
+  const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', entry, '--probe-target'],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  const exit = once(child, 'exit');
+  try {
+    const port = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('busy inspector did not open')), 5000);
+      let inspectorPort: number | undefined;
+      let ready = false;
+      const settle = () => { if (inspectorPort && ready) { clearTimeout(timer); resolve(inspectorPort); } };
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.stderr!.on('data', chunk => {
+        const match = String(chunk).match(/ws:\/\/127\.0\.0\.1:(\d+)\//);
+        if (match) { inspectorPort = Number(match[1]); settle(); }
+      });
+      child.stdout!.on('data', chunk => {
+        if (String(chunk).includes('CPU_SAMPLE_BUSY_READY')) { ready = true; settle(); }
+      });
+    });
+    await run({ pid: child.pid!, port, entry });
+  } finally {
+    child.kill('SIGTERM');
+    await exit;
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
+it.skipIf(process.platform !== 'linux')('profiles a synchronously busy target with kernel identity before SIGTERM', async () => {
+  await withBusyTarget(async ({ pid, port, entry }) => {
+    const result = await captureCpuProfile({ pid: 0, startPort: port, attachExisting: true, procIdentity: true,
+      expectedEntry: entry, expectedArg: '--probe-target', durationMs: 250, deadlineMs: 7000 });
+    expect(result.target).toMatchObject({ pid, entry, identity: 'proc' });
+    const samples = new Set(result.profile.samples);
+    expect(result.profile.nodes.some((node: { id: number; callFrame: { functionName: string } }) =>
+      samples.has(node.id) && node.callFrame.functionName === 'busyStartup')).toBe(true);
+  });
+}, 15000);
+
+it.skipIf(process.platform !== 'linux')('refuses a matching entry whose PID does not own the inspector socket', async () => {
+  await withBusyTarget(({ port, entry }) => {
+    expect(() => readInspectorProcessIdentity({ pid: process.pid, port, expectedEntry: entry,
+      expectedArg: '--probe-target' })).toThrow('identity mismatch');
+    expect(() => readInspectorProcessIdentity({ pid: 0, port, expectedEntry: entry,
+      expectedArg: '--wrong-argument' })).toThrow('identity mismatch');
+    return Promise.resolve();
+  });
+}, 15000);

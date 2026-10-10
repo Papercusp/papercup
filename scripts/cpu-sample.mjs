@@ -8,7 +8,8 @@
 //
 // Usage: node scripts/cpu-sample.mjs <pid> [durationMs] [inspectorPort] [--save <path>]
 import { setTimeout as sleep } from 'node:timers/promises';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
@@ -18,6 +19,50 @@ import {
   redactDiagnosticUrl,
 } from './cdp-inspector.mjs';
 import { aggregateCpuProfile } from './lib/cpu-profile.mjs';
+import { listProcesses, parseArgv } from './proc-guard.mjs';
+
+// Startup may not yet service Runtime.evaluate. On Linux, bind the loopback
+// listener to its owning process and exact OS argv instead; never trust a port
+// or matching filename alone. The start tick also detects PID reuse.
+export function readInspectorProcessIdentity({ pid, port, expectedEntry, expectedArg }) {
+  const inodes = new Set();
+  const loopback = new Set(['0100007F', '00000000',
+    '00000000000000000000000000000000', '0000000000000000FFFF00000100007F']);
+  for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let text;
+    try { text = readFileSync(table, 'utf8'); } catch { continue; }
+    for (const line of text.split('\n').slice(1)) {
+      const fields = line.trim().split(/\s+/);
+      const [address, hexPort] = (fields[1] ?? '').split(':');
+      if (fields[3] === '0A' && Number.parseInt(hexPort, 16) === port
+          && loopback.has(address) && fields[9] && fields[9] !== '0') inodes.add(fields[9]);
+    }
+  }
+  if (inodes.size !== 1) throw new Error('inspector target identity mismatch: listener ownership unavailable or ambiguous');
+  const [listenerInode] = inodes;
+  const candidates = pid ? [{ pid }] : listProcesses().map(row => ({ pid: row.pid }));
+  const matches = [];
+  for (const candidate of candidates) {
+    try {
+      const root = '/proc/' + candidate.pid;
+      const argv = parseArgv(readFileSync(root + '/cmdline'));
+      const entryIndex = argv.indexOf(expectedEntry);
+      if (entryIndex < 1 || argv.lastIndexOf(expectedEntry) !== entryIndex
+          || (expectedArg && !argv.slice(entryIndex + 1).includes(expectedArg))) continue;
+      if (!readdirSync(root + '/fd').some(fd => {
+        try { return readlinkSync(root + '/fd/' + fd) === 'socket:[' + listenerInode + ']'; }
+        catch { return false; }
+      })) continue;
+      const stat = readFileSync(root + '/stat', 'utf8');
+      const startTicks = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[19];
+      if (!/^\d+$/.test(startTicks ?? '')) continue;
+      matches.push({ pid: candidate.pid, entry: expectedEntry, argv: argv.slice(entryIndex + 1),
+        startTicks, listenerInode, identity: 'proc' });
+    } catch { /* Exited or unreadable processes cannot supply identity proof. */ }
+  }
+  if (matches.length !== 1) throw new Error('inspector target identity mismatch: exact process does not own listener');
+  return matches[0];
+}
 
 /**
  * Collect before a startup probe's deadline kills its child. --cpu-prof alone
@@ -25,10 +70,10 @@ import { aggregateCpuProfile } from './lib/cpu-profile.mjs';
  * Existing-inspector mode pins one port and checks entry/arguments before sampling;
  * it disconnects its own socket without closing the target's pre-opened inspector.
  * @param {{ pid: number, durationMs?: number, startPort?: number, attachExisting?: boolean,
- *   expectedEntry?: string, expectedArg?: string, deadlineMs?: number }} options
+ *   expectedEntry?: string, expectedArg?: string, deadlineMs?: number, procIdentity?: boolean }} options
  */
 export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9229,
-  attachExisting = false, expectedEntry, expectedArg, deadlineMs = 50000 }) {
+  attachExisting = false, expectedEntry, expectedArg, deadlineMs = 50000, procIdentity = false }) {
   if (!Number.isInteger(pid) || pid < 0 || (!attachExisting && pid === 0))
     throw new TypeError('a positive target pid is required unless attaching by exact entry');
   if (!Number.isInteger(durationMs) || durationMs <= 0 || !Number.isInteger(deadlineMs) || deadlineMs <= 5000)
@@ -37,6 +82,8 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     throw new TypeError('invalid inspector port');
   if (attachExisting && (typeof expectedEntry !== 'string' || !expectedEntry))
     throw new TypeError('existing inspector capture requires an exact expected entry');
+  if (procIdentity && (!attachExisting || process.platform !== 'linux' || !isAbsolute(expectedEntry ?? '')))
+    throw new TypeError('proc identity requires an existing Linux inspector and absolute expected entry');
 
   const deadline = Date.now() + deadlineMs;
   if (!attachExisting) {
@@ -53,6 +100,14 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
   } while (Date.now() < discoveryDeadline);
   if (!inspector) throw new Error('could not find inspector within the capture deadline');
 
+  let target;
+  if (procIdentity) {
+    const endpoint = new URL(inspector.wsUrl);
+    if (endpoint.protocol !== 'ws:' || endpoint.hostname !== '127.0.0.1' || Number(endpoint.port) !== inspector.port)
+      throw new Error('inspector target identity mismatch: nonlocal endpoint');
+    target = readInspectorProcessIdentity({ pid, port: inspector.port, expectedEntry, expectedArg });
+  }
+
   const client = createCdpClient(inspector.wsUrl, {
     requestTimeoutMs: 2000,
     webSocketOptions: { handshakeTimeout: 2000, maxPayload: 64 * 1024 * 1024 },
@@ -61,15 +116,16 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     await client.connect();
     // --inspect starts listening before Node has initialized process.argv.
     // Wait for that measured startup boundary before comparing the identity.
-    let target;
-    const identityDeadline = Math.min(deadline - 5000, Date.now() + 5000);
-    do {
-      const evaluated = await client.evaluate('({pid:process.pid, entry:process.argv?.[1], argv:process.argv?.slice(2)})',
-        { returnByValue: true });
-      target = evaluated.result?.value;
-      if (typeof target?.entry === 'string') break;
-      await sleep(100);
-    } while (Date.now() < identityDeadline);
+    if (!procIdentity) {
+      const identityDeadline = Math.min(deadline - 5000, Date.now() + 5000);
+      do {
+        const evaluated = await client.evaluate('({pid:process.pid, entry:process.argv?.[1], argv:process.argv?.slice(2)})',
+          { returnByValue: true });
+        target = evaluated.result?.value;
+        if (typeof target?.entry === 'string') break;
+        await sleep(100);
+      } while (Date.now() < identityDeadline);
+    }
     if (!Number.isInteger(target?.pid) || (pid && target.pid !== pid)
         || (expectedEntry && target.entry !== expectedEntry)
         || (expectedArg && !target.argv?.includes(expectedArg)))
@@ -83,6 +139,11 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
     const { profile } = await client.send('Profiler.stop');
     if (!profile?.nodes?.length || !profile.samples?.length)
       throw new Error('inspector returned an empty CPU profile');
+    if (procIdentity) {
+      const after = readInspectorProcessIdentity({ pid: target.pid, port: inspector.port, expectedEntry, expectedArg });
+      if (after.startTicks !== target.startTicks || after.listenerInode !== target.listenerInode)
+        throw new Error('inspector target identity mismatch: process changed during capture');
+    }
     return { profile, target, captureMs, inspector: redactDiagnosticUrl(inspector.wsUrl) };
   } finally {
     if (attachExisting) client.close();
@@ -94,6 +155,7 @@ async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     save: { type: 'string' }, 'attach-existing': { type: 'boolean' },
     'expect-entry': { type: 'string' }, 'expect-arg': { type: 'string' },
+    'proc-identity': { type: 'boolean' },
   } });
   const pid = Number(positionals[0]);
   const durationMs = Number(positionals[1] || 30000);
@@ -101,6 +163,7 @@ async function main() {
   const { profile, captureMs, target } = await captureCpuProfile({ pid, durationMs, startPort,
     attachExisting: values['attach-existing'] ?? false,
     expectedEntry: values['expect-entry'], expectedArg: values['expect-arg'],
+    procIdentity: values['proc-identity'] ?? false,
     deadlineMs: values['attach-existing'] ? 50000 : durationMs + 20000 });
   if (values.save) {
     writeFileSync(values.save, JSON.stringify(profile));
