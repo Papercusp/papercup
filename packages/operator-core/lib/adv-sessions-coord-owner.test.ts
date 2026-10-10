@@ -129,7 +129,10 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     const map = await mod.advSessionsByCoordOwner();
 
     // Half 1 — the column is actually loaded.
-    const strings = sql.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    // postgres.js builds empty/conditional fragments before executing SELECT.
+    const strings = sql.mock.calls
+      .map((call) => call[0] as TemplateStringsArray | undefined)
+      .find((parts) => parts && Array.from(parts).join(' ').includes('SELECT'));
     const query = strings ? Array.from(strings).join(' ? ') : '';
     expect(query).toContain('launch_argv');
 

@@ -280,7 +280,8 @@ describe('getLatestActiveAdvSessionByOwner', () => {
     const sql = ((advSessionRowsMock.mock.calls as unknown[][]).at(-1)?.[0] as readonly string[]).join(' ');
     expect(sql).toContain('coord_owner_id =');
     expect(sql).toContain('ended_at IS NULL');
-    expect(sql).toContain('ORDER BY started_at DESC');
+    expect(sql).toContain('successor.id > a.id');
+    expect(sql).toContain('ORDER BY id DESC');
     expect(sql).toContain('LIMIT 1');
   });
 
