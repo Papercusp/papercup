@@ -514,14 +514,21 @@ async function runPrivateInboxPage(page: Page, context: BrowserContext, input: P
   const cacheStats: Array<{ phase: string; at: string; status: number; body: unknown; l2Rows: unknown }> = [];
   const captureCacheStats = async (phase: string) => {
     const url = new URL('/api/agent-tools/dev/cache_stats', input.base);
-    url.searchParams.set('superuser', '1');
     url.searchParams.set('client', 'pc-admin-coord-ui');
-    const response = await page.request.post(url.href, { data: { tool: 'plans:attention' } });
+    // This read tool accepts the existing private cookie context. Opting into
+    // superuser mode would instead require a separate bearer and return401.
+    const response = await page.request.post(url.href, { data: { tool: 'plans:attention' },
+      headers: { 'x-papercusp-workspace': input.workspace } });
     const l2Rows = await getOrgPg().sql`SELECT workspace_id, cache_key, tags, generation, expires_at,
       jsonb_path_query_array(value, '$.groups[*].items[*].id') AS item_ids
       FROM harness_shared.cache_l2 WHERE cache_key LIKE 'plans:attention|%' LIMIT 10`;
     cacheStats.push({ phase, at: new Date().toISOString(), status: response.status(), body: await response.json(), l2Rows });
     writeFileSync(join(input.evidence, 'portal-inbox-cache-stats.json'), JSON.stringify(cacheStats, null, 2));
+    assert.equal(response.status(), 200, 'passive cache diagnostics must return measured counters');
+    if (phase === 'before-ack') assert.ok(l2Rows.some(row => row.workspace_id === input.workspace),
+      'the warm viewed attention feed must be cached in its concrete workspace');
+    assert.equal(l2Rows.some(row => row.workspace_id === '*'), false,
+      'private attention reads must not escape scoped PG invalidation through a wildcard cache');
   };
   const assertState = async (acked: boolean) => {
     const ids = await readAckedMsgIds('pc-admin-coord-ui');

@@ -68,6 +68,8 @@ set -uo pipefail
 # the override. Pinned to host-dump-coverage.ts by
 # host-dump-coverage-defaults.test.ts — change both or that test goes red.
 DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+BACKUP_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+BACKUP_REPO_ROOT="$(git -C "$(dirname "$BACKUP_SELF")" rev-parse --show-toplevel 2>/dev/null || true)"
 STATUS="$DUMP/STATUS.json"
 LOG="$DUMP/db-backup.log"
 BACKUP_USER="${USER:-$(id -un)}"
@@ -1164,6 +1166,15 @@ if $OK; then
   # alarm is a bug in the alarm: a marker that never clears trains readers to
   # ignore the single signal meant to catch silent backup rot.
   rm -f "$DUMP/ALERT-BACKUP-FAILING"
+  if [ -n "$BACKUP_REPO_ROOT" ] && [ -f "$BACKUP_REPO_ROOT/scripts/mcp-call.mjs" ]; then
+    RECOVERY_BODY='{"to":["*"],"expects":"none","summary":"BACKUP RECOVERED: papercusp-db-backup succeeded","body":[{"text":"STATUS.json is green and ALERT-BACKUP-FAILING was cleared."}],"resolvesCondition":"papercusp-db-backup-failing"}'
+    if ! (cd "$BACKUP_REPO_ROOT" && timeout 30 node scripts/mcp-call.mjs coord:send "$RECOVERY_BODY" \
+        --client system-backup-alert --harness papercusp --workspace papercusp-workspace >/dev/null); then
+      echo "BACKUP RECOVERY: coord:send leg FAILED — recovery condition remains open" >&2
+    fi
+  else
+    echo "BACKUP RECOVERY: coord:send unavailable — recovery condition remains open" >&2
+  fi
   log "backup OK in ${ELAPSED}s: ${DUMPED[*]}${VANISHED_SKIPPED[*]:+ (vanished after enumeration: ${VANISHED_SKIPPED[*]})}"
   exit 0
 fi

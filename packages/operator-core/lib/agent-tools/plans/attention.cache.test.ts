@@ -170,6 +170,25 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
+  it('refreshes the real attention handler through the production PG bridge and reaction action', async () => {
+    const workspace = 'ws-inbox-production-bridge';
+    M.inboxByWorkspace.set(workspace, ['selected', 'neighbor'].map(msg_id => ({
+      msg_id, from: 'peer-' + msg_id, to: ['human'], kind: 'message', summary: msg_id,
+      body: msg_id + ' body', ts: new Date().toISOString(),
+    })));
+    const { bridgeTriggerEvent } = await import('../../sync-sse');
+    const { registerCacheTagEcaRule, _refreshCacheEcaForTests } = await import('../../events/cache-eca-rule');
+    setFlagOverridesForTest({ [CACHE_LAYER]: true, 'papercusp-cache-tag-eca': true });
+    await _refreshCacheEcaForTests();
+    registerCacheTagEcaRule();
+    const refs = async () => deriveAttentionRefs((await run({}, ctx(workspace))).groups).map(row => row.id);
+    expect(await refs()).toContain('coord-message:selected');
+    M.ackedByWorkspace.set(workspace, new Set(['selected']));
+    bridgeTriggerEvent('harness_shared.coord_event_log.changed', { workspace_id: workspace, op: 'INSERT', id: 3 });
+    await expect.poll(refs).not.toContain('coord-message:selected');
+    expect(await refs()).toContain('coord-message:neighbor');
+  });
+
   it('refreshes a warm human inbox after coord-log acknowledgment and reversal invalidation', async () => {
     const workspace = 'ws-inbox-ack-refresh';
     const messages = ['selected', 'neighbor'].map(msg_id => ({ msg_id, from: 'peer-' + msg_id,
@@ -185,6 +204,28 @@ describe("plans:attention — cache wiring", () => {
     M.ackedByWorkspace.set(workspace, new Set());
     getOperatorCache().invalidateByTags(workspace, ['coord_event_log']);
     expect(await refs()).toEqual(expect.arrayContaining(['coord-message:selected', 'coord-message:neighbor']));
+  });
+
+  it('invalidates wildcard HTTP attention reads in the concrete viewed workspace', async () => {
+    const workspace = 'ws-inbox-wildcard-http';
+    const foreign = 'ws-inbox-wildcard-neighbor';
+    for (const ws of [workspace, foreign]) {
+      M.inboxByWorkspace.set(ws, ['selected', 'neighbor'].map(msg_id => ({
+        msg_id, from: 'peer-' + msg_id, to: ['human'], kind: 'message', summary: msg_id,
+        body: msg_id + ' body', ts: new Date().toISOString(),
+      })));
+    }
+    const refs = (ws: string) => runWithWorkspace(ws, async () =>
+      deriveAttentionRefs((await run({}, ctx('*'))).groups).map(row => row.id));
+    expect(await refs(workspace)).toContain('coord-message:selected');
+    expect(await refs(foreign)).toContain('coord-message:selected');
+    const foreignBuilds = M.seenInboxWs.filter(ws => ws === foreign).length;
+    M.ackedByWorkspace.set(workspace, new Set(['selected']));
+    getOperatorCache().invalidateByTags(workspace, ['coord_event_log']);
+    expect(await refs(workspace)).not.toContain('coord-message:selected');
+    expect(await refs(workspace)).toContain('coord-message:neighbor');
+    expect(await refs(foreign)).toContain('coord-message:selected');
+    expect(M.seenInboxWs.filter(ws => ws === foreign)).toHaveLength(foreignBuilds);
   });
 
   it('supports the device attention route through the real in-process dispatcher', async () => {

@@ -178,6 +178,9 @@ export function evaluateSessionConfinement(args: {
   toolName: string;
   confinement?: SessionToolConfinement | null;
   args?: unknown;
+  /** Host-only metadata listing, which executes no work-item operation.
+   * Default dispatch always checks arguments, including when they are absent. */
+  purpose?: 'listing';
 }): SessionConfinementDecision {
   const { toolName, confinement } = args;
   if (!confinement) return UNCONFINED;
@@ -188,7 +191,7 @@ export function evaluateSessionConfinement(args: {
   }
   if (confinement.denyWorkItemsOutside !== undefined &&
       (!validWorkItemBoundary(confinement.denyWorkItemsOutside) ||
-       toDenyMatchKey(toolName).startsWith('work_items_') &&
+       args.purpose !== 'listing' && toDenyMatchKey(toolName).startsWith('work_items_') &&
        !withinWorkItemBoundary(toolName.trim(), args.args, confinement.denyWorkItemsOutside))) {
     return { allowed: false, applied: true, matchedGlob: 'outside-exact-work-item',
       reason: `tool "${toolName.trim()}" must use the launch-declared single work-item boundary imposed by ${confinement.imposedBy}: ${confinement.reason}` };

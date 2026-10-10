@@ -748,6 +748,31 @@ const noBodyRefsArg = z
     "P-008 body auto-refs OPT-OUT: by default, WI-/EI- ids mentioned in your summary/body auto-hydrate at delivery into a one-line live status+title+checkpoint suffix on the receiver's [coord+N] line (first 3 ids, ~150 chars each — receivers stop re-fetching cited items). Set true when that live status would MISLEAD: the ids are historical/illustrative examples, or you are deliberately quoting stale state.",
   );
 
+const conditionKeyArg = z
+  .string()
+  .min(1)
+  .max(512)
+  .optional()
+  .describe(
+    'Raise a coord:conditions alarm for this key. The persisted key is scoped to your authenticated sender, so a different producer cannot resolve it.',
+  );
+
+const resolvesConditionArg = z
+  .string()
+  .min(1)
+  .max(512)
+  .optional()
+  .describe(
+    'Resolve a coord:conditions alarm previously raised by this authenticated sender with conditionKey. Pass the same raw key.',
+  );
+
+/** The condition fold is workspace-wide, so make a coord:send key unique to
+ *  its authenticated producer. Length-prefixing the sender keeps the tuple
+ *  unambiguous even when either component contains colons. */
+function senderScopedConditionKey(senderId: string, key: string): string {
+  return `coord:send:${senderId.length}:${senderId}:${key}`;
+}
+
 /** P-013 (fleet-leadership-continuity): the SIDE EFFECT this directive requires.
  *  `queued:1` proves a durable wake delivery was queued; it does not prove a session
  *  started a turn. `expects`/`expectsReply` proves they answered.
@@ -849,6 +874,8 @@ export const itemSpec = z.object({
   summary: summaryArg,
   harness: messageHarnessArg,
   body: messageBodyArg,
+  conditionKey: conditionKeyArg,
+  resolvesCondition: resolvesConditionArg,
   // P-032 / D-064, reopened by D-070: the ENVELOPE half of the split. These
   // cannot vary per section — `blocking` because a scheduler acts on a message
   // as a UNIT, `why` because one message serves one goal (D-011). The SECTION
@@ -1468,6 +1495,12 @@ async function sendOne(
   // send opted in, so a FUTURE reply (which looks the original up by msg_id) can see
   // the opt-in and wake us back. Both keys merge onto the persisted envelope.
   const extra: Record<string, unknown> = {};
+  if (msg.conditionKey !== undefined) {
+    extra.condition_key = senderScopedConditionKey(identity.ownerId, msg.conditionKey);
+  }
+  if (msg.resolvesCondition !== undefined) {
+    extra.resolves_condition = senderScopedConditionKey(identity.ownerId, msg.resolvesCondition);
+  }
   if (relayStamp) extra[RELAY_PROVENANCE_FIELD] = relayStamp;
   // P-006: verify + stamp announced-gate refs at send (fail-soft — a store
   // hiccup stamps 'unknown', never blocks; the EXACT key always travels).
@@ -3086,7 +3119,17 @@ export default defineTool({
     // shape as D-016's "a default is how a field dies" — a rule that can be satisfied by
     // not participating is not a gate. So a message that ASKS SOMETHING of its recipient
     // must carry a body; a genuine FYI (`expects: 'none'`) still may not.
-    const checkStructured = (m: { to?: unknown; expects?: unknown; body?: unknown }, path: (string | number)[]) => {
+    const checkStructured = (
+      m: { to?: unknown; expects?: unknown; body?: unknown; conditionKey?: unknown; resolvesCondition?: unknown },
+      path: (string | number)[],
+    ) => {
+      if (m.conditionKey !== undefined && m.resolvesCondition !== undefined) {
+        pctx.addIssue({
+          code: 'custom',
+          path: [...path, 'resolvesCondition'],
+          message: 'Set only one condition lifecycle field per message: `conditionKey` or `resolvesCondition`.',
+        });
+      }
       const expects = typeof m.expects === 'string' ? m.expects : undefined;
       // Scoped to the two expectations that ask the recipient to DO something with content.
       // 'none' is an FYI and 'ack' asks only for a receipt — for both, `summary` genuinely can
@@ -3168,6 +3211,8 @@ export default defineTool({
     summary: summaryArg.optional(),
     harness: messageHarnessArg,
     body: messageBodyArg,
+    conditionKey: conditionKeyArg,
+    resolvesCondition: resolvesConditionArg,
     // P-032 / D-064 envelope half — see itemSpec for why these two cannot be
     // per-section.
     blocking: blockingArg,
@@ -3207,7 +3252,7 @@ export default defineTool({
       .max(100)
       .optional()
       .describe(
-        'send many DISTINCT messages at once — each { to, summary, expects, harness?, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }; a top-level `harness` is the default for items that omit it — `expects` is required on EVERY item',
+        'send many DISTINCT messages at once — each { to, summary, expects, harness?, body?, files?, plan_slug?, conditionKey?, resolvesCondition?, related_msg_id?, wake?, wakeOnReply?, endTurn? }; a top-level `harness` is the default for items that omit it — `expects` is required on EVERY item',
       ),
   }).meta({
     'x-papercusp-call-constraint':

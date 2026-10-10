@@ -3212,17 +3212,8 @@ export const ISSUE_STATE_ALIASES: Record<string, string> = {
   'need-human': 'needs-human',
 };
 
-/**
- * The work-item id shapes admitted by the positional claim guard (D-008): every
- * NEW work-item mints a kind-independent `WI-NNN` id; pre-D-008 rows keep their
- * legacy `F-NNN` (feature) / `EI-NNN` (issue) ids; promoted issue-fix features
- * use `F-FIX-NNN`; scheduled plan-run frontier rows use `PR-<run>-P-<item>`
- * (the parser's plan-item ids are `P-NNN`). This exact allowlist is used by the
- * positional-write misalignment guard (EI-7927) to catch a swapped-row id
- * column carrying an obviously-wrong value (e.g. a state string in id's slot)
- * without rejecting a real scheduled-run item.
- */
-export const WORK_ITEM_ID_PATTERN = '^(?:(?:WI|F|EI)-\\d+|F-FIX-\\d+|PR-\\d+-P-\\d+)$';
+// Preserve the facade export while metadata-only consumers import the leaf.
+export { WORK_ITEM_ID_PATTERN } from './work-item-id';
 
 /**
  * Normalize a requested lifecycle state onto the UNIFIED work-item enum

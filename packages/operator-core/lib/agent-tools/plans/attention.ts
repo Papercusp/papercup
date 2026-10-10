@@ -92,11 +92,11 @@ function attentionProjections(groups: ReturnType<typeof buildAttentionGroups>) {
 /**
  * SWR backstop for plans:attention (cache-expensive-tool-reads-2026-06-22 P-003 / D-001).
  * Shorter than plans:list's: the feed folds ~10 sources beyond the plan tables — several
- * append-heavy (coord_event_log: escalations + messages-to-human) — which are deliberately
- * NOT tagged (tagging an append-heavy source = ~0 hit-rate, the coord:inbox problem D-006).
- * The plan tables ARE tagged, so a plan-item change (the dominant attention change) busts
- * immediately; this short soft TTL bounds staleness for the un-tagged sources (a new
- * escalation/message/smoke-fail surfaces within the window).
+ * append-heavy (coord_event_log: escalations, messages-to-human and acknowledgments).
+ * The existing leading/trailing tag debouncer coalesces coord-log invalidation over
+ * a 4s window, retaining cache hits while refreshing acknowledged messages promptly.
+ * Plan-table writes bust immediately; this short soft TTL remains the backstop for
+ * sources without change-stream tags (such as smoke failures).
  */
 const PLANS_ATTENTION_SOFT_TTL_MS = 20_000;
 
@@ -301,11 +301,15 @@ export default defineTool({
     // includeArchived, and the conversations workspace partition (WI-3348 — a
     // WORKSPACE dimension, not a caller one: two callers viewing the same workspace
     // share the entry; without it in the key one workspace's feed would be served to
-    // another from cache). Tags are ONLY the trigger-covered plan tables; the other
-    // sources (coord_event_log escalations/messages — append-heavy, the coord:inbox
-    // D-006 problem) are deliberately un-tagged and bounded by the short SWR softTtl.
+    // another from cache). Tag the trigger-covered plan tables and coord log: the
+    // latter contains inbox acknowledgments as well as new messages/escalations.
+    // Its existing append-heavy debouncer bounds invalidation frequency; the short
+    // SWR softTtl remains the backstop for sources without change-stream tags.
     const aggregation = await cachedRead(
-      ctx as CachedReadCtx,
+      // Superuser HTTP contexts may carry '*', while this aggregation reads
+      // one concrete workspace. Key L1/L2 in that same partition so its PG
+      // change events invalidate the cached acknowledgment state.
+      { ...(ctx as CachedReadCtx), workspaceId: conversationsWorkspace },
       {
         tool: 'plans:attention',
         key: {
@@ -314,7 +318,7 @@ export default defineTool({
           includeArchived,
           conversationsWorkspace,
         },
-        tags: ['harness_plans', 'plan_revisions', 'plan_runs'],
+        tags: ['harness_plans', 'plan_revisions', 'plan_runs', 'coord_event_log'],
         softTtlMs: PLANS_ATTENTION_SOFT_TTL_MS,
         // P-007/D-082: the read D-078 measured. :3070 runs 16 workers against
         // per-process L1s, so each paid its OWN cold build of this ~10-source

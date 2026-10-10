@@ -157,6 +157,13 @@ describe('session confinement — exact assignment arguments', () => {
     expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none', completion }).allowed).toBe(true);
     expect(evaluate('coord:whoami', {}).allowed).toBe(true);
   });
+  it('exposes permitted metadata only when the host explicitly requests listing; missing dispatch args still deny', () => {
+    for (const toolName of ['work_items:get', 'work_items:checkpoint', 'work_items:complete']) {
+      expect(evaluateSessionConfinement({ toolName, confinement, purpose: 'listing' }).allowed).toBe(true);
+      expect(evaluateSessionConfinement({ toolName, confinement }).allowed).toBe(false);
+    }
+    expect(evaluateSessionConfinement({ toolName: 'capability:bash', confinement, purpose: 'listing' }).allowed).toBe(false);
+  });
   it.each([undefined, {}, { ...own, id: 'F-neighbor' }, { ...own, harness: 'other' },
     { ...own, ids: ['F-bench', 'F-neighbor'] }, { ...own, items: [{ id: 'F-neighbor' }] },
     { ...own, priorAttemptRefs: ['thread-post:other'] }, { ...own, workItem: 'F-neighbor' },

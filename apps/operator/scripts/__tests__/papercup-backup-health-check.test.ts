@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 const SCRIPT = resolve(__dirname, '..', 'papercup-backup-health-check.sh');
 const PRODUCER = resolve(__dirname, '..', 'systemd', 'papercusp-db-backup.sh');
+const ALERT = resolve(__dirname, '..', 'systemd', 'kopia-backup-alert.sh');
+const BACKUP_CONDITION_KEY = 'papercusp-db-backup-failing';
 
 describe('papercup-backup-health-check.sh', () => {
   // NOTE (WI-2145430): `bash -n` is a SYNTAX check and is structurally blind to
@@ -114,5 +117,62 @@ describe('papercup-backup-health-check.sh', () => {
     expect(health).toMatch(/PC_BACKUP_SPACE_SAFETY="\$\{PC_BACKUP_SPACE_SAFETY:-140\}"/);
     expect(producer).toMatch(/PC_BACKUP_MIN_FREE_GB="\$\{PC_BACKUP_MIN_FREE_GB:-120\}"/);
     expect(producer).toMatch(/PC_BACKUP_SPACE_SAFETY="\$\{PC_BACKUP_SPACE_SAFETY:-140\}"/);
+  });
+
+  it('raises and resolves the same sender-scoped backup condition', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'papercusp-backup-condition-'));
+    try {
+      const bin = join(temp, 'bin');
+      const dump = join(temp, 'dump');
+      const capture = join(temp, 'coord-send.json');
+      mkdirSync(bin);
+      const nodeShim = join(bin, 'node');
+      writeFileSync(nodeShim, [
+        '#!/usr/bin/env sh',
+        'if [ "$2" = "coord:send" ]; then',
+        '  printf "%s" "$3" > "$CAPTURE_PAYLOAD"',
+        'fi',
+        'exit 0',
+        '',
+      ].join('\n'));
+      chmodSync(nodeShim, 0o755);
+      const notifyShim = join(bin, 'notify-send');
+      writeFileSync(notifyShim, '#!/usr/bin/env sh\nexit 0\n');
+      chmodSync(notifyShim, 0o755);
+
+      const alertRun = spawnSync('bash', [ALERT, 'test failure'], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          CAPTURE_PAYLOAD: capture,
+          PAPERCUSP_HOST_PG_DUMP_DIR: dump,
+        },
+      });
+      expect({
+        status: alertRun.status,
+        signal: alertRun.signal,
+        error: alertRun.error?.message ?? null,
+      }).toEqual({ status: 0, signal: null, error: null });
+
+      const alert = readFileSync(capture, 'utf8');
+      expect(JSON.parse(alert)).toMatchObject({
+        to: ['*'],
+        expects: 'none',
+        conditionKey: BACKUP_CONDITION_KEY,
+      });
+      expect(readFileSync(ALERT, 'utf8')).toContain('--client system-backup-alert');
+
+      const producer = readFileSync(PRODUCER, 'utf8');
+      const successBranch = producer.slice(producer.lastIndexOf('if $OK; then'));
+      const markerClear = successBranch.indexOf('rm -f "$DUMP/ALERT-BACKUP-FAILING"');
+      const resolution = successBranch.indexOf(`"resolvesCondition":"${BACKUP_CONDITION_KEY}"`);
+      expect(markerClear).toBeGreaterThanOrEqual(0);
+      expect(resolution).toBeGreaterThan(markerClear);
+      expect(successBranch).toContain('--client system-backup-alert');
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 });

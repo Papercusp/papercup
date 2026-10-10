@@ -20,6 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import devServiceHealth from '../dev/service_health';
 import launchAgent from '../capability/launch-agent';
 import activityToolLog from '../activity/tool-log';
+import releaseCut from '../release/cut';
 import releaseTrace from '../release/trace';
 import plansNew from '../plans/new';
 import plansAudit from '../plans/audit';
@@ -528,6 +529,18 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
   });
 
+  it('EI-25577107953770833: advertises release:cut branch-specific fields without leaking them into reclaim', () => {
+    expect(releaseCut.name).toBe('release:cut');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'release:cut');
+    const branchRule =
+      'when op in (preflight|prepare-tag|status|handoff|abort-leg|gate-status|reclaim) => work_item_id';
+
+    expect(entry?.argSchema).toContain(branchRule);
+    expect(entry?.argSchema).toContain('forbidden');
+    expect(compactSchemaForResult(schemaByTool.get('release:cut'))).toContain(branchRule);
+  });
+
   it('publishes activity:tool-log scope as a required owner/session one-of', () => {
     expect(activityToolLog.name).toBe('activity:tool-log');
     const { corpus, schemaByTool } = buildCorpus();
@@ -588,7 +601,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const { schemaByTool } = buildCorpus();
     const compact = compactSchemaForResult(schemaByTool.get('plans:audit')) ?? '';
 
-    expect(compact).toContain('constraint:$ (phase=activation => classRef required');
+    expect(compact).toContain('phase=activation => classRef required');
     expect(compact).toContain('phase=completion (including omitted phase) => items required');
     expect(compact).toContain('classRef');
   });

@@ -267,7 +267,7 @@ import { describeMissedRecipients } from '../recipient-liveness';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { getPresence } from '../presence';
 import { fetchPresenceFleet, resolvePresenceFleet } from '../presence-fleet';
-import { deriveFleetMembership } from '../identity';
+import { deriveFleetMembership, resolveAgentIdentity } from '../identity';
 import { lookupEndedSessions } from '../dead-session-recipient-guidance';
 import { getFlag } from '@papercusp/flags/server';
 import { deriveBasedOn } from '../based-on';
@@ -279,6 +279,7 @@ import type { MessageSection } from '../message-fields';
 import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 import { reassembleChunkedBodies } from './send-chunking';
 const staleQuoteM = vi.mocked(resolveStaleQuoteStamps);
+const resolveIdentityM = vi.mocked(resolveAgentIdentity);
 const premiseM = vi.mocked(resolvePremiseStamps);
 const couplingDivergenceM = vi.mocked(resolveCouplingDivergenceStamps);
 const basedOnM = vi.mocked(deriveBasedOn);
@@ -359,6 +360,7 @@ it('opts out of the ambient workspace transaction because the handler never read
 let n = 0;
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveIdentityM.mockReset().mockReturnValue({ ownerId: 'me', workspaceId: 'ws1' } as never);
   sendReaderMocks.deriveAwaiting.mockReset().mockResolvedValue([]);
   sendReaderMocks.deriveDraftSuspension.mockReset().mockResolvedValue(null);
   sendReaderMocks.getConversation.mockReset().mockResolvedValue(null);
@@ -402,6 +404,58 @@ beforeEach(() => {
   // state-plane-adoption P-011: no stale quotes by default — an ordinary send is
   // unchanged (matches the real resolver's []-on-anything-unresolvable contract).
   mockResolvedTyped(staleQuoteM, []);
+});
+
+describe('coord:send sender-scoped condition lifecycle', () => {
+  it('persists alarms and resolutions under the authenticated sender', async () => {
+    resolveIdentityM.mockReturnValueOnce({ ownerId: 'backup-producer', workspaceId: 'ws1' } as never);
+    await body({
+      to: ['peer-1'],
+      summary: 'backup failing',
+      expects: 'none',
+      conditionKey: 'backup-failing',
+    });
+    const scopedKey = 'coord:send:15:backup-producer:backup-failing';
+    const alarmExtra = (sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> }).extra;
+    expect(alarmExtra?.condition_key).toBe(scopedKey);
+    expect(alarmExtra).not.toHaveProperty('conditionKey');
+
+    resolveIdentityM.mockReturnValueOnce({ ownerId: 'different-producer', workspaceId: 'ws1' } as never);
+    await body({
+      items: [{
+        to: ['peer-1'],
+        summary: 'backup recovered',
+        expects: 'none',
+        resolvesCondition: 'backup-failing',
+      }],
+    });
+    const foreignResolutionExtra = (sendM.mock.calls[1]![1] as { extra?: Record<string, unknown> }).extra;
+    expect(foreignResolutionExtra?.resolves_condition).not.toBe(scopedKey);
+
+    resolveIdentityM.mockReturnValueOnce({ ownerId: 'backup-producer', workspaceId: 'ws1' } as never);
+    await body({
+      items: [{
+        to: ['peer-1'],
+        summary: 'backup recovered',
+        expects: 'none',
+        resolvesCondition: 'backup-failing',
+      }],
+    });
+    const recoveryExtra = (sendM.mock.calls[2]![1] as { extra?: Record<string, unknown> }).extra;
+    expect(recoveryExtra?.resolves_condition).toBe(scopedKey);
+  });
+
+  it('rejects a message that both raises and resolves a condition', () => {
+    const both = {
+      to: ['peer-1'],
+      summary: 'ambiguous condition action',
+      expects: 'none',
+      conditionKey: 'backup-failing',
+      resolvesCondition: 'backup-failing',
+    };
+    expect(tool.args.safeParse(both).success).toBe(false);
+    expect(tool.args.safeParse({ items: [both] }).success).toBe(false);
+  });
 });
 
 // Timer-backed regression fixtures must never poison the other 179 cases if

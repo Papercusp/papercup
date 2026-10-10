@@ -21,7 +21,9 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, isDeprecatedWorkItemKind, setWorkItemState, ensureClaimHoldAttribution, familyOf, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
+import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { PlanItemStamp } from '../../plan-items/convert';
+import { getPlanItemRow } from '../plans/source';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
 import { reportSemanticDedupProbeUnavailable } from './semantic-dedup-probe-alarm';
@@ -423,6 +425,7 @@ async function appendWorkItemOccurrence(
 interface PlanItemIdentity {
   planSlug: string;
   itemId: string;
+  harnessSlug?: string;
 }
 
 interface PlanItemCollisionRow {
@@ -447,7 +450,61 @@ function readPlanItemIdentity(raw: unknown): PlanItemIdentity | null {
   const value = raw as Record<string, unknown>;
   const planSlug = typeof value.plan_slug === 'string' ? value.plan_slug.trim() : '';
   const itemId = typeof value.item_id === 'string' ? value.item_id.trim() : '';
-  return planSlug && itemId ? { planSlug, itemId } : null;
+  const harnessSlug = typeof value.harness_slug === 'string' ? value.harness_slug.trim() : '';
+  return planSlug && itemId
+    ? { planSlug, itemId, ...(harnessSlug ? { harnessSlug } : {}) }
+    : null;
+}
+
+async function validatePlanItemReferences(
+  workspaceId: string | undefined,
+  identities: readonly PlanItemIdentity[],
+): Promise<{ error: string; message: string } | null> {
+  for (const identity of identities) {
+    let plan;
+    try {
+      plan = await getPlanItemRow(identity.planSlug, {
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(identity.harnessSlug ? { harnessSlug: identity.harnessSlug } : {}),
+      });
+    } catch {
+      return {
+        error: 'plan_item_status_unavailable',
+        message:
+          'could not verify plan item ' +
+          identity.planSlug +
+          '#' +
+          identity.itemId +
+          ' status; no work-item was created',
+      };
+    }
+    const item = plan?.items.find((candidate) => candidate.id === identity.itemId);
+    if (!item) {
+      return {
+        error: 'plan_item_not_found',
+        message:
+          'plan item ' +
+          identity.planSlug +
+          '#' +
+          identity.itemId +
+          ' was not found in the resolved plan scope; verify its slug, item id, and harness',
+      };
+    }
+    if (isTerminalItemStatus(item.status)) {
+      return {
+        error: 'terminal_plan_item',
+        message:
+          'cannot create a work-item for terminal plan item ' +
+          identity.planSlug +
+          '#' +
+          identity.itemId +
+          ' (status=' +
+          item.status +
+          '); choose an open plan item or create unrelated work without this plan link',
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -1168,8 +1225,24 @@ export async function createOneWorkItem(
         }
       : payloadWithPlanStamp;
     const planItemIdentities = new Map<string, PlanItemIdentity>();
+    const planItemStatusIdentities = new Map<string, PlanItemIdentity>();
+    const registerPlanItemStatusIdentity = (identity: PlanItemIdentity) => {
+      const scopedIdentity = {
+        ...identity,
+        ...(identity.harnessSlug ?? planItemStampHarness
+          ? { harnessSlug: identity.harnessSlug ?? planItemStampHarness }
+          : {}),
+      };
+      const key = JSON.stringify([
+        scopedIdentity.harnessSlug ?? '',
+        scopedIdentity.planSlug,
+        scopedIdentity.itemId,
+      ]);
+      planItemStatusIdentities.set(key, scopedIdentity);
+    };
     const stampedPlanItem = readPlanItemIdentity(payloadForCreate?.plan_item);
     if (stampedPlanItem) {
+      registerPlanItemStatusIdentity(stampedPlanItem);
       planItemIdentities.set(`${stampedPlanItem.planSlug}#${stampedPlanItem.itemId}`, stampedPlanItem);
     }
     if (args.targetPlanItem?.slug && args.targetPlanItem.itemId) {
@@ -1178,9 +1251,15 @@ export async function createOneWorkItem(
         itemId: args.targetPlanItem.itemId.trim(),
       };
       if (targetPlanItem.planSlug && targetPlanItem.itemId) {
+        registerPlanItemStatusIdentity(targetPlanItem);
         planItemIdentities.set(`${targetPlanItem.planSlug}#${targetPlanItem.itemId}`, targetPlanItem);
       }
     }
+    const invalidPlanItem = await validatePlanItemReferences(
+      workspaceId,
+      [...planItemStatusIdentities.values()],
+    );
+    if (invalidPlanItem) return { ok: false, ...invalidPlanItem };
     const planItemCollision = await findOpenPlanItemCollision(workspaceId, [...planItemIdentities.values()]);
     if (planItemCollision) {
       return {
