@@ -102,6 +102,13 @@ export interface PsuPtyHost {
   quotaBlocked?: boolean;
   /** Start of the current detected quota episode, epoch milliseconds. */
   quotaBlockedSinceMs?: number | null;
+  /** Host-observed provider-auth failure (codex only today): the child's own
+   * screen shows that its in-memory login can no longer be refreshed, so every
+   * turn it runs fails at once. Only a fresh child, which re-reads the shared
+   * auth file, can recover. Absence means an older host with no reading. */
+  authBlocked?: boolean;
+  /** Start of the current detected auth-failure episode, epoch milliseconds. */
+  authBlockedSinceMs?: number | null;
   // ── Host capability advertisement (WI-1804; ADDITIVE — absent on files written
   //    by older hosts, which is exactly how the tool detects an old host and falls
   //    back). A new host lists the control-socket modes it understands beyond the
