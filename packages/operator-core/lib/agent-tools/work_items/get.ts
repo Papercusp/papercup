@@ -559,6 +559,19 @@ const workItemIdentityResultSchema = z.object({
 const workItemsGetResultRowSchema = z.object({
   ok: z.boolean(),
   id: z.string(),
+  // EI-25202926303923365: resume is a continuation packet, and checks is
+  // a bounded ledger rather than an array. Publish the consumer's real path
+  // and validate it instead of accepting any resume value via passthrough.
+  resume: z.object({
+    schemaVersion: z.literal('work-item-resume-v1'),
+    checks: z.object({
+      rows: z.array(z.object({
+        id: z.string().optional(),
+        claim: z.string(),
+      }).passthrough()),
+      omitted: z.number().int().nonnegative(),
+    }).passthrough(),
+  }).passthrough().optional(),
   // These are existing reader fields, including explicit null/unavailable
   // states. Declare them so discovery teaches their real paths instead of
   // hiding the checkpoint and comment window behind passthrough.
@@ -708,7 +721,7 @@ export default defineTool({
           'return only the stored checkpoint check-row ledger (`checkpointChecks.rows` with caller-facing id/claim identities) plus recency/failure metadata; omit the checkpoint narrative and other enrichments. Use this before building `retireIds` instead of fetching the full checkpoint body.',
         ),
       resume: z.boolean().optional().describe(
-        'Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Do not combine with detail, checksOnly, threadLimit, priorAttemptRefs, or operationalBrief; use a separate read for those enrichments.',
+        'Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Checks are at results[].resume.checks.rows (an array), not resume.checks; resume.checks.omitted counts saved rows excluded by the packet budget. Do not combine with detail, checksOnly, threadLimit, priorAttemptRefs, or operationalBrief; use a separate read for those enrichments.',
       ),
       operationalBrief: z.boolean().optional().describe(
         'Add `operationalBrief` per row: claim/state, blockers, last verified evidence, next action and successor residue, projected from this same read. Unmeasured fields are explicit `unknown` with a reason, never zero. Forces a complete read; not with resume or checksOnly.',
