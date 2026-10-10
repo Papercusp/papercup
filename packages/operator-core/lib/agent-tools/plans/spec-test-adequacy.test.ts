@@ -269,6 +269,97 @@ function successfulTestBinding(
   });
 }
 
+describe('source BAR registered test files', () => {
+  const requiredFiles = [
+    'packages/service/src/api.test.ts',
+    'packages/service/src/store.test.ts',
+  ];
+  const sourceBar = {
+    barKey: 'BAR-TESTS',
+    barHash: 'bar-hash',
+    barSetHash: 'bar-set-hash',
+    rubricSlug: 'acceptance-service',
+    rubricRevision: 4,
+    evidencePlane: 'tree' as const,
+  };
+
+  function fileRun(
+    filePath: string,
+    testRunId: number,
+    options: { currentness?: 'current' | 'stale'; status?: 'pass' | 'fail' } = {},
+  ): SpecEvidenceForAdequacy {
+    const row = successfulTestBinding(filePath);
+    row.testRunId = testRunId;
+    row.evidenceRef = `test-run:${testRunId}:${filePath}`;
+    row.currentness = { ...row.currentness, overall: options.currentness ?? 'current' };
+    if (options.status === 'fail') {
+      row.testRunExecution = {
+        ...row.testRunExecution!,
+        status: 'fail',
+        passed: 0,
+        failed: 1,
+      };
+      row.details = {
+        ...row.details,
+        adequacy: { ...row.details.adequacy, outcome: 'failed' },
+      };
+    }
+    return row;
+  }
+
+  function grade(evidenceRows: SpecEvidenceForAdequacy[]) {
+    return evaluateSpecTestAdequacy({
+      clause: clause({ sourceBar, requiredTestLayers: [] }),
+      evidence: evidenceRows,
+      classRef: 'plan-class-feature-ship',
+      sourceBarTestRequirements: { status: 'required', files: requiredFiles },
+    });
+  }
+
+  it('passes only when every registered file has current passing ledger evidence', () => {
+    const result = grade([
+      fileRun(requiredFiles[0]!, 101),
+      fileRun(requiredFiles[1]!, 102),
+    ]);
+
+    expect(result.ratings['correct-layer'].rating).toBe('pass');
+    expect(result.ratings['correct-layer'].evidence).toContain(requiredFiles[0]!);
+    expect(result.ratings['correct-layer'].evidence).toContain(requiredFiles[1]!);
+  });
+
+  it('keeps missing and stale registered-file evidence unknown', () => {
+    const missing = grade([fileRun(requiredFiles[0]!, 103)]);
+    expect(missing.ratings['correct-layer'].rating).toBe('unknown');
+    expect(missing.ratings['correct-layer'].evidence).toContain(requiredFiles[1]!);
+
+    const stale = grade([
+      fileRun(requiredFiles[0]!, 104),
+      fileRun(requiredFiles[1]!, 105, { currentness: 'stale' }),
+    ]);
+    expect(stale.ratings['correct-layer'].rating).toBe('unknown');
+    expect(stale.ratings['correct-layer'].evidence).toContain(requiredFiles[1]!);
+  });
+
+  it('fails a current registered-file run that failed', () => {
+    const result = grade([
+      fileRun(requiredFiles[0]!, 106),
+      fileRun(requiredFiles[1]!, 107, { status: 'fail' }),
+    ]);
+
+    expect(result.ratings['correct-layer'].rating).toBe('fail');
+    expect(result.ratings['correct-layer'].evidence).toContain(requiredFiles[1]!);
+  });
+
+  it('counts aliases of one testRunId once in traceability evidence', () => {
+    const first = fileRun(requiredFiles[0]!, 108);
+    const alias = { ...first, id: 109, evidenceRef: 'test-run-alias:108' };
+    const result = grade([first, alias, fileRun(requiredFiles[1]!, 110)]);
+
+    expect(result.ratings.traceability.evidence).toContain('2 distinct immutable proof record(s)');
+    expect(result.ratings.traceability.evidence).not.toContain('3 immutable binding(s)');
+  });
+});
+
 function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
   const base = evidence();
   return {

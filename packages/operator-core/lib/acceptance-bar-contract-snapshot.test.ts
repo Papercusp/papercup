@@ -282,6 +282,70 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
   };
 }
 
+function currentRegisteredTestEvidence(
+  base: AcceptanceBarEvidenceSource,
+  filePath: string,
+  testRunId: number,
+): AcceptanceBarEvidenceSource {
+  return {
+    ...base,
+    id: testRunId,
+    evidenceKind: 'test',
+    evidenceRef: `test-run:${testRunId}:${filePath}`,
+    testRunId,
+    fingerprints: {
+      sourceFingerprint: 'source-current',
+      testFingerprint: `test-${testRunId}`,
+      fixtureFingerprint: `fixture-${testRunId}`,
+      rubricFingerprint: `rubric-${testRunId}`,
+      environmentFingerprint: `environment-${testRunId}`,
+    },
+    testRunProvenance: { filePath, commitSha: 'abc123', worktreeDirty: false },
+    testRunExecution: {
+      status: 'pass',
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+      filePath,
+      passedCaseTitles: [`source-bar-check-${testRunId}`],
+    },
+    details: {
+      evidencePlane: 'tree',
+      adequacy: {
+        testLayer: 'integration',
+        pathReachable: true,
+        fixtureCalibrated: true,
+        falsifiable: true,
+        oracleIndependent: true,
+        collected: true,
+        skipped: false,
+        executed: true,
+        outcome: 'passed',
+        targeted: base.specId,
+        testCases: [`source-bar-check-${testRunId}`],
+      },
+    },
+    currentness: {
+      ...base.currentness,
+      overall: 'current',
+      comparisonSupplied: true,
+      dimensions: {
+        ...base.currentness.dimensions,
+        source: 'current',
+        test: 'current',
+        fixture: 'current',
+        rubric: 'current',
+        environment: 'current',
+        testRun: 'current',
+      },
+      staleReasons: [],
+      unknownReasons: [],
+    },
+  } as unknown as AcceptanceBarEvidenceSource;
+}
+
 function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
   const input = fixture(n);
   const rubric = input.rubrics.rows[0]!;
@@ -374,6 +438,39 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
 }
 
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it('evaluates every structured tests check file even when requiredTestLayers is empty', () => {
+    const input = fixture(1);
+    const rubric = input.rubrics.rows[0]!;
+    const criterion = rubric.criteria[0]!;
+    const files = [
+      'packages/service/src/api.test.ts',
+      'packages/service/src/store.test.ts',
+    ];
+    criterion.requiredTestLayers = [];
+    criterion.check = { kind: 'tests', files };
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    input.clauses.rows[0]!.requiredTestLayers = [];
+    input.clauses.rows[0]!.sourceBar = {
+      ...input.clauses.rows[0]!.sourceBar!,
+      barHash: criterion.barHash!,
+      barSetHash,
+      rubricSlug: rubric.rubricId,
+      rubricRevision: rubric.revision,
+      evidencePlane: 'tree',
+    };
+    const base = input.evidence.rows[0]!;
+    input.evidence.rows = files.map((file, index) => currentRegisteredTestEvidence(base, file, index + 1));
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    const adequacy = snapshot.bars[0]!.proof.adequacy;
+
+    expect(adequacy).toMatchObject({ checks: [{ verdict: 'unknown' }] });
+    expect(adequacy!.checks[0]!.wouldBlock).not.toContain('correct-layer');
+  });
+
   it.each([{ floor: [] }, { floor: ['integration'] }])('keeps a stricter clause current above the BAR test floor $floor', ({ floor }) => {
     const input = floor.length ? provedFixture(1) : fixture(1);
     input.clauses.rows[0]!.requiredTestLayers = [...floor, 'e2e'];
@@ -711,6 +808,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       evidence: input.evidence.rows,
       classRef: 'plan-class-feature-ship',
       harness: 'papercusp',
+      sourceBarTestRequirements: { status: 'not-required' },
     });
     expect(adequacy).toMatchObject({
       requiredProofFloor: 'l3',
@@ -980,7 +1078,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       .not.toContain('bar_snapshot_proof_depth_missing');
   });
 
-  it('requires proof depth when a live-plane BAR declares a tests check', () => {
+  it('requires current file proof when a live-plane BAR declares a tests check without layers', () => {
     const input = fixture(1);
     input.rubrics.rows[0]!.criteria[0]!.evidencePlane = 'live';
     input.rubrics.rows[0]!.criteria[0]!.check = {
@@ -992,7 +1090,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     const snapshot = projectAcceptanceBarContractSnapshot(input);
 
     expect(snapshot.bars[0]!.automatedProofRequired).toBe(true);
-    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_inadequate');
   });
 
   // An EXPLICITLY manual BAR (check instrument:'none') must not carry an automated proof
@@ -1030,7 +1128,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
   // ANTI-LOOPHOLE (both directions). The exemption is keyed to an explicit authored
   // instrument:'none'; an ordinary automated BAR keeps its floor, so this cannot become a
   // general way to skip proof depth.
-  it('still requires proof depth for a tree-plane BAR that declares a structured test check', () => {
+  it('requires current file proof for a tree-plane BAR that declares a structured test check without layers', () => {
     const input = fixture(1);
     input.rubrics.rows[0]!.criteria[0]!.check = {
       kind: 'tests',
@@ -1039,7 +1137,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
 
     const snapshot = projectAcceptanceBarContractSnapshot(input);
 
-    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_inadequate');
   });
 
   // FAILS CLOSED: an instrument:'none' criterion whose CLAUSE still declares an automated

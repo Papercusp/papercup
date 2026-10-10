@@ -1156,6 +1156,10 @@ export function projectAcceptanceBarContractSnapshot(
     );
     const staleEvidence = activeEvidence.filter((row) => !currentEvidence.includes(row));
     const requiredTestLayers = normalized(criterion.requiredTestLayers);
+    const hasStructuredTestsCheck = criterion.check?.kind === 'tests';
+    const sourceBarTestRequirements = hasStructuredTestsCheck
+      ? { status: 'required' as const, files: criterion.check.files }
+      : { status: 'not-required' as const };
     // The declared evidence plane is a separate lifecycle obligation. Adequacy
     // must inspect every current exact-cohort row because a BAR can require
     // mixed test layers (for example, tree/unit plus live/e2e). Filtering here
@@ -1164,18 +1168,19 @@ export function projectAcceptanceBarContractSnapshot(
     // on the BAR's declared plane.
     const classRef: PlanClassRubricRef = PLAN_CLASS_RUBRIC_REFS.includes(rubric?.classRef as PlanClassRubricRef)
       ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
-    const adequacyChecks = requiredTestLayers.length === 0 ? [] : enforceableClauses.map((clause) => {
+    const adequacyDeclared = requiredTestLayers.length > 0 || hasStructuredTestsCheck;
+    const adequacyChecks = !adequacyDeclared ? [] : enforceableClauses.map((clause) => {
       // A clause may add proof obligations above its BAR's minimum. Keep those
       // obligations when grading instead of replacing them with the BAR floor.
       const clauseTestLayers = normalized([...requiredTestLayers, ...clause.requiredTestLayers]);
       const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers: clauseTestLayers },
         // Selection precedes freshness: a newer stale/unknown registered attempt
         // must not vanish and leave a passing counterexample to stand in for it.
-        evidence, classRef, harness: plan.harnessSlug });
+        evidence, classRef, harness: plan.harnessSlug, sourceBarTestRequirements });
       return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
         wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
     });
-    const adequacyState = requiredTestLayers.length === 0 ? 'undeclared' as const
+    const adequacyState = !adequacyDeclared ? 'undeclared' as const
       : adequacyChecks.some((check) => check.verdict === 'pass') ? 'pass' as const
         : adequacyChecks.some((check) => check.verdict === 'unknown') ? 'unknown' as const : 'fail' as const;
     const ratingEntry = grading.card?.ratings[criterion.key] as { rating?: string; evidence?: string } | undefined;
