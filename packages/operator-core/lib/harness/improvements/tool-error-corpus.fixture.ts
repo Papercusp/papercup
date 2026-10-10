@@ -22,6 +22,8 @@
  * it is an expected caller refusal and must not enter the structural bug lane.
  * The caller-authored pg_query undefined-column row was added 2026-10-08 from
  * EI-25389944836048866; tools:invoke preserves the 42703 payload for correction.
+ * The explicit capability:bash cwd refusal was added 2026-10-09 from
+ * EI-25541385148400614; it is a caller path error, not a structural spawn failure.
  * The missing-UI-client rows were added 2026-10-07 from EI-24710297442793828;
  * they are expected caller context refusals, not structural UI defects.
  * The native-owner transport capability refusal was added 2026-10-09 from
@@ -38,7 +40,10 @@
  * correct class. A new shape that lands in the wrong class is exactly the
  * regression this fixture exists to catch.
  */
+import { homedir } from 'node:os';
 import type { ToolErrorClass } from './tool-error-classifier';
+
+const missingHomeCwdFixture = homedir() + '/__papercusp_missing_cwd_fixture__';
 
 export interface ToolErrorCorpusRow {
   /** Bucket occurrence count at capture (ranking only — not asserted). */
@@ -149,6 +154,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
   },
 
   // ── caller: bad input / scope (DX, not a tool bug) ─────────────────────────
+  {
+    n: 2, errorCode: 'handler_error', status: 'error',
+    message: "capability:bash cwd '" + missingHomeCwdFixture + "' does not exist — the child process cannot start. (Node would report this as a misleading \"spawn /usr/bin/bash ENOENT\".) Pass an existing directory as cwd.",
+    expectedClass: 'caller',
+    note: 'capability:bash explicitly preflights cwd before spawning; the supplied missing path is invalid caller input, not a structural tool defect (EI-25541385148400614)',
+  },
   {
     n: 1, errorCode: 'aborted', status: 'error',
     message: 'tool "coord:declare-intent" was aborted by its parent signal after the handler returned',

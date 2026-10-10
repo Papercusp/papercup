@@ -20,6 +20,7 @@
  *   SELECT count(*) n, ec, status, left(norm,80), left(max(error_message),140)
  *   FROM e GROUP BY ec, status, 4 ORDER BY n DESC LIMIT 45;
  */
+import { homedir } from 'node:os';
 import { describe, it, expect } from 'vitest';
 import {
   classifyToolError,
@@ -38,6 +39,8 @@ import {
 } from './tool-error-classifier';
 import { TOOL_ERROR_CORPUS } from './tool-error-corpus.fixture';
 import { metadataToolFailure } from '../../agent-tools/plans/coordination-metadata-fixtures';
+
+const missingHomeCwd = homedir() + '/__papercusp_missing_cwd_test__';
 
 describe('P-001 R-7 frozen friction correlation controls', () => {
   it('replays the same report with stable identities but without an authority escalation', () => {
@@ -208,6 +211,26 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       .toBe('structural');
   });
 
+  it('keeps wrapper-unavailable discovery reports caller-side and non-claimable despite structured prose', () => {
+    const report = {
+      toolName: 'fleet:status',
+      status: 'wrapper-unavailable',
+      message: 'The normalized direct wrapper fleet_status is not callable in this Codex session.',
+      directEvidence: {
+        kind: 'server-contract-mismatch' as const,
+        expected: 'tools:find plus tools:invoke provides a route to fleet:status.',
+        actual: 'The normalized direct wrapper was unavailable; this observation did not dispatch a server call.',
+      },
+    };
+
+    expect(classifyToolError(undefined, report.status, report.message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure(report)).toMatchObject({
+      class: 'caller',
+      direct: false,
+      knownExternal: null,
+    });
+  });
+
   it('classifies scratch-reference size refusals from the reported error code', () => {
     expect(normalizeSuspectedToolFailure({
       toolName: 'capability:read',
@@ -261,6 +284,25 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }).class).toBe('caller');
     // Keep genuine implementation failures on the structural lane.
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
+  it('classifies explicit missing or non-directory capability:bash cwd values as caller input only', () => {
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      "capability:bash cwd '" + missingHomeCwd + "' does not exist — the child process cannot start. Pass an existing directory as cwd.",
+    )).toBe('caller');
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      "capability:bash cwd '/tmp/a-file' exists but is not a directory — the child process cannot start there. Pass an existing directory as cwd.",
+    )).toBe('caller');
+    // An implicit stale project root indicates harness configuration, so it stays structural.
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      "capability:bash implicit cwd '/tmp/phantom-root' (this context's project dir) does not exist, and no existing PAPERCUSP_INTEGRATION_ROOT was available to recover to — the harness registry likely points at a stale or phantom repo root.",
+    )).toBe('structural');
   });
 
   it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
