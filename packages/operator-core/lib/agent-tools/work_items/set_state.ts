@@ -680,7 +680,11 @@ export default defineTool({
             },
           });
         const canonicalExpectedState = expectedState ?? requestedState ?? it.state;
-        if (workItem && appliedState !== canonicalExpectedState) {
+        // A second terminal close can be intentionally attested while the existing
+        // terminal state remains authoritative. The writer reports that outcome through
+        // terminalConflict; return its warning and the applied state below instead of
+        // misclassifying the preserved record as a failed post-write readback.
+        if (workItem && appliedState !== canonicalExpectedState && terminalConflict?.outcome !== 'attested') {
           throw new Error(
             `work_item '${it.id}' state verification failed: requested '${requestedState ?? it.state}' ` +
               `normalizes to '${canonicalExpectedState}', but the canonical post-write reader returned '${String(appliedState)}'.`,

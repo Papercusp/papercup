@@ -435,6 +435,79 @@ describe('work_items:set_state — aliased/requestedState/appliedState on every 
 // set_state.ts comment at the wiring site) — a caller must not learn two spellings of
 // "your evidence didn't win" depending on which tool it called.
 describe('work_items:set_state — terminal conflict surfaced end-to-end (WI-2142258)', () => {
+  it('returns the attestation when a second terminal close preserves the existing state', async () => {
+    setM.mockImplementation(async (id: string, state: string, opts) => {
+      opts?.onTerminalConflict?.({
+        outcome: 'attested',
+        existingOwner: 'system:tool-failure-signature-fold',
+        existingAuthority: null,
+        existingEvidenceSufficient: false,
+        incomingEvidenceSufficient: false,
+        note: 'was ALREADY completed; this close was FILED AS A SECOND ATTESTATION',
+      } as never);
+      return {
+        workItem: { id, state: 'resolved' },
+        aliased: true,
+        requestedState: state,
+        expectedState: 'dropped',
+        appliedState: 'resolved',
+      } as never;
+    });
+
+    const b = await body({
+      id: 'EI-already-resolved',
+      state: 'dropped',
+      completionRef: 'duplicate observation retraction',
+      assumptions: 'none',
+    });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      aliased: true,
+      requestedState: 'dropped',
+      expectedState: 'dropped',
+      appliedState: 'resolved',
+      terminalConflict: {
+        outcome: 'attested',
+        existingOwner: 'system:tool-failure-signature-fold',
+      },
+    });
+    expect(b.results[0].terminalConflictWarning).toContain('COMPLETION RECORDED AS A SECOND ATTESTATION');
+  });
+
+  it('still fails readback verification when an upgraded terminal write returns a divergent state', async () => {
+    setM.mockImplementation(async (id: string, state: string, opts) => {
+      opts?.onTerminalConflict?.({
+        outcome: 'upgraded',
+        existingOwner: 'system:plan-item-reconcile',
+        existingAuthority: 'proposed',
+        existingEvidenceSufficient: false,
+        incomingEvidenceSufficient: true,
+        note: 'the richer completion replaced the earlier record',
+      } as never);
+      return {
+        workItem: { id, state: 'resolved' },
+        aliased: true,
+        requestedState: state,
+        expectedState: 'dropped',
+        appliedState: 'resolved',
+      } as never;
+    });
+
+    const b = await body({
+      id: 'EI-upgraded-divergent',
+      state: 'dropped',
+      completionRef: 'richer completion evidence',
+      assumptions: 'none',
+    });
+
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0].error).toContain(
+      "normalizes to 'dropped', but the canonical post-write reader returned 'resolved'",
+    );
+  });
+
   it('surfaces terminalConflictWarning + raw terminalConflict when the callback fires with outcome "attested"', async () => {
     setM.mockImplementation(async (id: string, state: string, opts) => {
       opts?.onTerminalConflict?.({
