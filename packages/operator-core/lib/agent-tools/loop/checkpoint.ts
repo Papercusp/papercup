@@ -338,10 +338,10 @@ export default defineTool({
   profile: 'engineer',
   description:
     `Read/write/clear COLD loop carry-note; carry mode belongs to loop:arm (\`carry:'cold'|'warm'\`); loop:checkpoint does not accept a \`carry\` argument. Read {read:true, ownerId?, harness?}; write {did,left,insight,next}, {note}, or {checkpoint}; blank/null clears. Narrative inputs are accepted up to ${CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE} characters, then persisted with an ${CARRY_TEXT_SOFT_CAP}-character soft cap per field; every clipped field is listed in the response's repairs. The schema input maximum is not a persistence-length guarantee. ` +
-    "Default rowsMode:'merge' preserves rows; rowsMode:'replace' retires rows (empty list with replace clears). `confirmShrink` is accepted by `work_items:checkpoint` only; use `confirmRetire` here. Probe rows: kind:'tool' or kind:'state-cell', args, schemaRevision.",
+    "Default rowsMode:'merge' preserves rows; rowsMode:'replace' retires rows (empty list with replace clears). `confirmShrink` is accepted by `work_items:checkpoint` only; use `confirmRetire` here. " + EXECUTABLE_PROBE_SHAPE,
   guidance: {
     when:
-      "COLD: save facts; pair with work_items:checkpoint. Use same-line [turn:<session>@<iso-ts>] refs; don't invent. Label claims [self-imposed], [peer:<sid>], [inferred]. Merge keeps rows; replace retires them. Before compaction, advance runnable `next` or read progress; this write alone doesn't count. `cold-successor-no-progress` may refuse; scheduled fire/compaction is exempt. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered.",
+      "COLD: save facts; pair with work_items:checkpoint. Use same-line [turn:<session>@<iso-ts>] refs; never invent a ref. Label claims [self-imposed], [peer:<sid>], [inferred]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance the immediately runnable action in `next` or perform a bounded progress read; writing this checkpoint alone is not post-note progress. `cold-successor-no-progress` may refuse; scheduled fire/compaction is a narrow boundary exception. The carry mode belongs to loop:arm, not loop:checkpoint; do not retry a rejected `carry` argument here. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. " + EXECUTABLE_PROBE_SHAPE,
     notWhen: "WARM (carry:'warm', default) use live transcript; work_items:checkpoint for state.",
     chaining:
       'Retune: read loop:status, then ' +
