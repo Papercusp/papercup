@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const OWNER = 'su-p006-pinned-codex';
+const ADV_SESSION_ID = 900_000_000 + process.pid;
 const REVISION = 'a'.repeat(64);
 const savedRecord = {
   v: 1, agent: 'codex', workspaceId: 'papercusp-workspace',
@@ -102,7 +103,7 @@ beforeEach(() => {
 
 async function call(model?: string, extra: { requireGatewayProvider?: boolean } = {}) {
   return ensureCodexHome(new Request('http://localhost:3170/api/adv/sessions/ensure-codex-home', {
-    method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: 123, model, ...extra }),
+    method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: ADV_SESSION_ID, model, ...extra }),
   }));
 }
 
@@ -154,9 +155,9 @@ describe('ensure-codex-home pinned-source recovery', () => {
       acceptedOperation: expect.objectContaining({ modelSelection: expect.objectContaining({ model: 'gpt-6.1-sol:medium' }) }),
     }));
     expect(mocks.roleHome).toHaveBeenCalledWith(expect.objectContaining({ preserveExisting: true,
-      sid: OWNER, sessionKey: 123, codexGatewayAuto: true,
+      sid: OWNER, sessionKey: ADV_SESSION_ID, codexGatewayAuto: true,
       mcpUrl: 'http://localhost:3170/api/mcp?role=researcher&sig=valid' }));
-    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(123, OWNER, expect.objectContaining({
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(ADV_SESSION_ID, OWNER, expect.objectContaining({
       role: 'researcher', acceptedOperation: expect.objectContaining({ workItemId: 'WI-50' }),
     }));
     expect(mocks.requestActivation).toHaveBeenCalledWith(expect.objectContaining({
@@ -192,7 +193,7 @@ describe('ensure-codex-home pinned-source recovery', () => {
       recordedSqliteHome: '/original-state/session-123', sid: OWNER,
       model: 'gpt-5.6-sol:high', codexGatewayAuto: true, headless: true,
       mcpUrl: 'http://localhost:3170/api/mcp?role=judge&sig=valid' }));
-    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(123, OWNER, expect.objectContaining({
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(ADV_SESSION_ID, OWNER, expect.objectContaining({
       role: 'judge', codexSqliteHome: '/original-state/session-123', acceptedOperation: null }));
     expect(mocks.rebuild).not.toHaveBeenCalled();
     expect(mocks.ensureHome).not.toHaveBeenCalled();
@@ -318,7 +319,7 @@ describe('ensure-codex-home pinned-source recovery', () => {
     const response = await call('gpt-6.1-sol:xhigh');
     expect(response.status).toBe(200);
     expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6.1-sol:xhigh' }));
-    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(123, OWNER, expect.objectContaining({
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(ADV_SESSION_ID, OWNER, expect.objectContaining({
       model: 'gpt-6.1-sol:xhigh', modelSource: 'inherited',
       selectedIdentity: savedRecord.selectedIdentity,
     }));
@@ -330,7 +331,7 @@ describe('ensure-codex-home pinned-source recovery', () => {
     mocks.recordLaunchSpec.mockResolvedValue(true);
     const response = await call('gpt-6.1-sol:xhigh');
     expect(response.status).toBe(200);
-    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(123, OWNER, expect.objectContaining({
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(ADV_SESSION_ID, OWNER, expect.objectContaining({
       model: 'gpt-6.1-sol:xhigh', selectedIdentity: savedRecord.selectedIdentity,
       specificationRevision: REVISION,
     }));
