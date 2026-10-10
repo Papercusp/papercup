@@ -53,6 +53,24 @@ const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
 const repoRoot = resolve(here, '../../..');
 
 const mod = await import(scriptPath);
+describe('committed reporter database route', () => {
+  it('carries the original operator route when the frozen tree omits ignored configuration', () => {
+    const original = mkdtempSync(join(tmpdir(), 'committed-ledger-route-'));
+    try {
+      mkdirSync(join(original, 'apps/operator'), { recursive: true });
+      writeFileSync(join(original, 'apps/operator/.env.local'),
+        'DATABASE_URL=postgres://fixture:fixture@127.0.0.1:15432/canonical\nUNRELATED_SECRET=must-not-carry\n');
+      const child = mod.lintAsCommittedChildEnv({}, original);
+      expect(child.DATABASE_URL).toBe('postgres://fixture:fixture@127.0.0.1:15432/canonical');
+      expect(child).not.toHaveProperty('UNRELATED_SECRET');
+      expect(mod.lintAsCommittedChildEnv({ DATABASE_URL: 'postgres://explicit' }, original).DATABASE_URL)
+        .toBe('postgres://explicit');
+      for (const isolation of [{ PAPERCUSP_PG_PORT: '25432' }, { PAPERCUSP_SKIP_PG_DISCOVERY: '1' }]) {
+        expect(mod.lintAsCommittedChildEnv(isolation, original)).not.toHaveProperty('DATABASE_URL');
+      }
+    } finally { rmSync(original, { recursive: true, force: true }); }
+  });
+});
 describe('committed workspace selection', () => {
   const manifestPath = (workspace?: string) => mod.workspaceManifestPath(workspace);
   it('selects a workspace manifest without changing root defaults', () => {
