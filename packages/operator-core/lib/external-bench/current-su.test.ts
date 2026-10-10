@@ -1056,6 +1056,41 @@ describe('current native benchmark execution', () => {
     expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
     expect(f.ports.sleep).not.toHaveBeenCalled();
   });
+  it.each([
+    ['negative-dollars', { costUsd: -1 }],
+    ['nonfinite-dollars', { costUsd: Number.NaN }],
+    ['absent-input', { tokensIn: undefined }],
+    ['negative-input', { tokensIn: -1 }],
+    ['fractional-output', { tokensOut: 0.5 }],
+    ['unsafe-cache-read', { tokensCacheRead: Number.MAX_SAFE_INTEGER + 1 }],
+    ['nonfinite-cache-write', { tokensCacheWrite: Number.POSITIVE_INFINITY }],
+    ['null-cache-read', { tokensCacheRead: null }],
+    ['null-cache-write', { tokensCacheWrite: null }],
+    ['negative-turns', { turns: -1 }],
+    ['unsafe-combined-tokens', { tokensIn: Number.MAX_SAFE_INTEGER, tokensOut: 1 }],
+  ])('retires the live native task on invalid spend telemetry: %s', async (_name, changed) => {
+    const f = fixture(); f.row.state = 'running'; f.row.exitCode = null;
+    f.ports.collectCost = vi.fn(async () => ({ costUsd: 0.25, tokensIn: 20, tokensOut: 10, turns: 1,
+      ...changed } as Awaited<ReturnType<BenchHarnessOps['collectCost']>>));
+    const result = await f.run();
+    expect(result.telemetry.stopReason).toBe('error');
+    expect(result.telemetry.generationError).toMatch(/invalid.*spend measurement/i);
+    expect(f.ports.sleep).not.toHaveBeenCalled();
+    expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
+    expect(f.ports.launch).toHaveBeenCalledOnce();
+  });
+  it('keeps a valid incomplete native subtotal while waiting for terminal accounting', async () => {
+    const f = fixture(); f.row.state = 'running'; f.row.exitCode = null;
+    f.ports.collectCost = vi.fn(async () => ({ costUsd: 0.25, tokensIn: 20, tokensOut: 10, turns: 1,
+      costUsdMeasurementMissing: true }));
+    f.ports.sleep = vi.fn(async () => { f.row.state = 'exited'; f.row.exitCode = 0; });
+    const result = await f.run();
+    expect(result.telemetry.stopReason).toBe('done');
+    expect(result.telemetry.costUsd).toBe(0.25);
+    expect(result.telemetry.armMeta).toMatchObject({ costUsdMeasurementMissing: true });
+    expect(f.ports.sleep).toHaveBeenCalledOnce();
+    expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
+  });
   it('refuses a task receipt pointing to another workspace', async () => {
     const f = fixture(); f.row.workspaceId = 'papercusp-workspace';
     expect((await f.run()).telemetry.generationError).toMatch(/identity\/scope/);

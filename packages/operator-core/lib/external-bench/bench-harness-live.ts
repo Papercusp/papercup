@@ -105,6 +105,18 @@ export interface BenchRunCost {
   costUsdMeasurementMissing?: boolean;
 }
 
+/** Validate the same measurement at live budget decisions and final reporting.
+ * A valid known subtotal may still have incomplete terminal accounting. */
+export function hasValidBenchRunCost(cost: BenchRunCost): boolean {
+  if (!cost || typeof cost !== 'object') return false;
+  const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
+  const tokens = [cost.tokensIn, cost.tokensOut,
+    cost.tokensCacheRead === undefined ? 0 : cost.tokensCacheRead,
+    cost.tokensCacheWrite === undefined ? 0 : cost.tokensCacheWrite];
+  return Number.isFinite(cost.costUsd) && cost.costUsd >= 0 && count(cost.turns) &&
+    tokens.every(count) && count(tokens.reduce((sum, value) => sum + value, 0));
+}
+
 /**
  * How the DRIVE seam terminated — the raw disposition the orchestration maps to a {@link GenerationStopReason}.
  * `done` (the feature reached its terminal `passed` status + the pipeline settled), `escalate` (the feature
@@ -289,9 +301,7 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
         const measured = await ops.collectCost({ handle, workspaceId: ws });
         const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
         const validUsd = Number.isFinite(measured.costUsd) && measured.costUsd >= 0;
-        const invalid = !validUsd || !count(measured.tokensIn) || !count(measured.tokensOut) || !count(measured.turns) ||
-          measured.tokensCacheRead !== undefined && !count(measured.tokensCacheRead) ||
-          measured.tokensCacheWrite !== undefined && !count(measured.tokensCacheWrite);
+        const invalid = !hasValidBenchRunCost(measured);
         cost = { tokensIn: count(measured.tokensIn) ? measured.tokensIn : 0,
           tokensOut: count(measured.tokensOut) ? measured.tokensOut : 0,
           turns: count(measured.turns) ? measured.turns : 0, costUsd: validUsd ? measured.costUsd : 0,
@@ -579,6 +589,7 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
         const cost: BenchRunCost = await readBenchRunCost(sql, handle.slug, workspaceId).catch(
           () => { throw new Error('Benchmark spend measurement is unavailable; refusing another agent spawn.'); },
         );
+        if (!hasValidBenchRunCost(cost)) throw new Error('Invalid benchmark spend measurement; refusing another agent spawn.');
         if (cost.costUsdMeasurementMissing) throw new Error('Benchmark spend measurement is incomplete; refusing another agent spawn.');
         if (budget.maxUsd != null && cost.costUsd >= budget.maxUsd) return true;
         if (budget.maxTokens != null && cost.tokensIn + cost.tokensOut + (cost.tokensCacheRead ?? 0) + (cost.tokensCacheWrite ?? 0) >= budget.maxTokens) return true;

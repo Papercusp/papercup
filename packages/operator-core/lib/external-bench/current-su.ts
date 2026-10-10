@@ -6,7 +6,7 @@ import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { TaskRow } from '../task-manager/types';
 import type { ControlOutcome } from '../task-manager/control';
 import { resolveBenchWorkspace } from './bench-workspace';
-import { liveBenchHarnessDriver, liveBenchHarnessOps, type BenchHarnessOps, type BenchHarnessHandle, type BenchRunCost, type DriveResult, type LiveBenchHarnessOpts } from './bench-harness-live';
+import { liveBenchHarnessDriver, liveBenchHarnessOps, hasValidBenchRunCost, type BenchHarnessOps, type BenchHarnessHandle, type BenchRunCost, type DriveResult, type LiveBenchHarnessOpts } from './bench-harness-live';
 import { FULL_SPINE_BLUEPRINT, setBenchHarnessDriver } from './run-loop';
 import type { BenchTask, GenerationBudget } from './types';
 import type { DbScope } from './reproducibility/db';
@@ -1049,6 +1049,7 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
           }
           const cost = await (ports.collectCost ? ports.collectCost({ handle, workspaceId }) :
             lifecycle.collectCost({ handle, workspaceId }));
+          if (!hasValidBenchRunCost(cost)) throw new Error('Invalid benchmark spend measurement; retiring the native task.');
           if ((budget.maxUsd != null && cost.costUsd >= budget.maxUsd) ||
               (budget.maxTokens != null && cost.tokensIn + cost.tokensOut + (cost.tokensCacheRead ?? 0) + (cost.tokensCacheWrite ?? 0) >= budget.maxTokens)) { result = { disposition: 'budget-exhausted' }; break; }
           await ports.sleep(Math.max(1, Math.min(pollMs, deadline - lifecycle.now())));
