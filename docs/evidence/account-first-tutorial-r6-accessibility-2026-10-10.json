@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-10-10T12:54:00Z",
+  "workItemIds": [
+    "WI-10007744",
+    "WI-10008102"
+  ],
+  "plan": "cloud-app-live-tutorial-2026-10-01",
+  "clause": {
+    "specId": "AUTO-BAR-R-6-P-016",
+    "revision": 1,
+    "hash": "3917327a5ece6f2b5ebe401dc3544582141633514a760fc28f9435334fb67e87",
+    "integrationBindingId": 34391
+  },
+  "integration": {
+    "testRunId": 20983298,
+    "commit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+    "testPath": "apps/operator/lib/onboarding/cloud-tutorial-guide.integration.test.tsx",
+    "sha256": "10d608dfd4cb180f8b820db23c39daec96dc6c86f8cfe747648b00000265425e",
+    "passed": 2,
+    "unselected": 13,
+    "dirty": false,
+    "log": "/dev/shm/tutorial-r6-composition-clean-attributed-dd071706-20261010T1247.log",
+    "logSha256": "0fbcc0b8a57a3e863f66bd70acd45d19f779b94f6ea7c5bd05aa41d78f317f0d",
+    "receipt": "/dev/shm/tutorial-r6-composition-clean-attributed-dd071706-20261010T1247.receipt.json"
+  },
+  "browser": {
+    "testRunId": 20983408,
+    "portalCommit": "501a33d40324abefde337479b154c1da18f363e0",
+    "testPath": "e2e/portal-product-tutorial.spec.ts",
+    "testSha256": "839049107b70bcc0bb154d3b09fdca04ef8a88885b340dc9713fb3272bc49c24",
+    "operatorCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+    "passed": 4,
+    "skipped": 0,
+    "retries": 0,
+    "dirty": false,
+    "log": "/dev/shm/tutorial-r6-browser-clean-501a33d4-20261010T1252.log",
+    "logSha256": "bcf17a3bbcb4c5f9c87c6736776942e213f3f2643a99bc3da16081376ec1acce",
+    "report": "/dev/shm/tutorial-r6-browser-clean-501a33d4-20261010T1252.report.json",
+    "reportSha256": "53174cd7e836dddb690ba32913d4d96bd983001d3139038bb2577b4326bfdc84",
+    "sourceCustody": {
+      "capture": "esbuild-onLoad-consumed-bytes",
+      "importedOperatorFiles": 14,
+      "comparedToCommittedBlobs": 14,
+      "mismatches": 0,
+      "productTutorialPath": "packages/operator-ui/src/onboarding/product-tutorial.tsx",
+      "productTutorialSha256": "6ef334883debb8355a81cfedba8308cd386977682e3661c971012a570ddd4453"
+    }
+  },
+  "rootCause": {
+    "hypothesis": "The lesson-question textarea retained intrinsic sizing without a container-relative border-box width, overflowing the guide under narrow enlarged text.",
+    "alternativeHypothesis": "The viewport test was unstable or failed due to asynchronous lesson loading.",
+    "distinguishingTest": "Same maintained browser oracle before and after only the textarea sizing change: navigate each lesson at 390x844 and 200% text, open Help, scroll the textarea, require viewport ratio1 and no horizontal document overflow.",
+    "before": {
+      "log": "/dev/shm/tutorial-r6-axe-working-20261010T1210.log",
+      "failedAccountVariants": 2,
+      "viewportRatio": 0.9974424839019775
+    },
+    "after": {
+      "testRunId": 20983408,
+      "passedAccountVariants": 2,
+      "viewportAssertion": "ratio1",
+      "noHorizontalDocumentOverflow": true
+    },
+    "fixCommit": "0d6386879156b41f2321671f74a8778fcbe7caad",
+    "detector": "Maintained Portal per-lesson narrow/zoom/reduced-motion browser tests plus account-modal axe/focus assertions."
+  },
+  "limitations": [
+    "Mounted browser fixtures and jsdom composition only.",
+    "Supported-runtime screen-reader announcements and actual highlighted product task completion remain unproved.",
+    "No human-heard/provider/native-input/novice/full-affected/exact-production shipment claim."
+  ]
+}
