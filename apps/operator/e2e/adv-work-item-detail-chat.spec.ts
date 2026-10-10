@@ -351,10 +351,11 @@ test.describe('/adv work-item Detail pane + chat launch', () => {
     // pick-an-item empty state until a row is clicked.
     const detail = page.locator('.pc-adv-detail').first();
     const grid = page.locator('.pc-advpanel').first();
-    await expect(grid.getByText('Second stubbed item')).toBeVisible({ timeout: 20_000 });
+    const secondRow = grid.getByRole('row').filter({ hasText: 'Second stubbed item' });
+    await expect(secondRow).toBeVisible({ timeout: 20_000 });
 
     // Row click sets ?sel via nuqs → the Detail pane follows to that item.
-    await grid.getByText('Second stubbed item').click();
+    await secondRow.click();
     await expect(detail.locator('.pc-adv-detail__title')).toHaveText('Second stubbed item', {
       timeout: 15_000,
     });
