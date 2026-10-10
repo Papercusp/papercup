@@ -170,18 +170,20 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
-  it('refreshes a warm human inbox after acknowledgment and reversal without serving a settled row', async () => {
+  it('refreshes a warm human inbox after coord-log acknowledgment and reversal invalidation', async () => {
     const workspace = 'ws-inbox-ack-refresh';
     const messages = ['selected', 'neighbor'].map(msg_id => ({ msg_id, from: 'peer-' + msg_id,
       to: ['human'], kind: 'message', summary: msg_id, body: msg_id + ' body', ts: new Date().toISOString() }));
     M.inboxByWorkspace.set(workspace, messages);
-    const refs = async () => deriveAttentionRefs((await run({}, ctx(workspace))).groups as never).refs;
+    const refs = async () => deriveAttentionRefs((await run({}, ctx(workspace))).groups).map(row => row.id);
     expect(await refs()).toEqual(expect.arrayContaining(['coord-message:selected', 'coord-message:neighbor']));
     M.ackedByWorkspace.set(workspace, new Set(['selected']));
+    getOperatorCache().invalidateByTags(workspace, ['coord_event_log']);
     const acknowledged = await refs();
     expect(acknowledged).not.toContain('coord-message:selected');
     expect(acknowledged).toContain('coord-message:neighbor');
     M.ackedByWorkspace.set(workspace, new Set());
+    getOperatorCache().invalidateByTags(workspace, ['coord_event_log']);
     expect(await refs()).toEqual(expect.arrayContaining(['coord-message:selected', 'coord-message:neighbor']));
   });
 
