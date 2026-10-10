@@ -409,6 +409,8 @@ describe('runLintWorkRootGc', () => {
     const source = readFileSync(new URL('./dbos/periodic-workflows.ts', import.meta.url), 'utf8');
     const tick = source.slice(source.indexOf('async function fleetLogsGcTick'), source.indexOf('const fleetLogsGcWorkflow'));
     expect(tick).toContain('await runLintWorkRootGc({ dryRun: false })');
+    expect(tick).toContain("defaultEvidenceRoot('release-local')");
+    expect(tick).toContain('pruneEvidenceRoot(evidenceRoot)');
     expect(source).toContain("DBOS.registerScheduled(fleetLogsGcWorkflow, { name: 'fleetLogsGc', crontab: '0 5 * * * *' })");
   });
 });
