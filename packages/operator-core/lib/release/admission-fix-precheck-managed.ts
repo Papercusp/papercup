@@ -38,6 +38,9 @@ export interface AdmissionPrecheckWorkerInput {
   taskId: string;
   queueTarget: AdmissionPrecheckQueueTarget;
   integrationRoot: string;
+  toolingRoot?: string;
+  testCommand?: string[];
+  clearEnv?: string[];
   checkpointRoot: string;
   expiresAtMs: number;
 }
@@ -224,6 +227,9 @@ export async function runAdmissionPrecheckWorker(
     integrationRoot: input.integrationRoot,
     checkpointRoot: input.checkpointRoot,
     testRunHarness: input.queueTarget.installSlug,
+    ...(input.toolingRoot ? { toolingRoot: input.toolingRoot } : {}),
+    ...(input.testCommand ? { testCommand: input.testCommand } : {}),
+    ...(input.clearEnv ? { clearEnv: input.clearEnv } : {}),
   });
   let run: FixPrecheckRunResult;
   try {
@@ -266,6 +272,11 @@ export function parseAdmissionPrecheckWorkerInput(raw: string | undefined): Admi
       typeof queueTarget.installSlug !== 'string' || !queueTarget.installSlug.trim() ||
       typeof row.integrationRoot !== 'string' || !row.integrationRoot.trim() ||
       typeof row.checkpointRoot !== 'string' || !row.checkpointRoot.trim() ||
+      (row.toolingRoot !== undefined && (typeof row.toolingRoot !== 'string' || !row.toolingRoot.trim())) ||
+      (row.testCommand !== undefined && (!Array.isArray(row.testCommand) || !row.testCommand.length ||
+        !row.testCommand.every((arg) => typeof arg === 'string' && arg.trim()))) ||
+      (row.clearEnv !== undefined && (!Array.isArray(row.clearEnv) ||
+        !row.clearEnv.every((key) => typeof key === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)))) ||
       typeof row.expiresAtMs !== 'number' || !Number.isFinite(row.expiresAtMs) || row.expiresAtMs < 0
     ) return null;
     return {
@@ -274,6 +285,9 @@ export function parseAdmissionPrecheckWorkerInput(raw: string | undefined): Admi
       queueTarget: { workspaceId: queueTarget.workspaceId, installSlug: queueTarget.installSlug },
       integrationRoot: row.integrationRoot,
       checkpointRoot: row.checkpointRoot,
+      ...(typeof row.toolingRoot === 'string' ? { toolingRoot: row.toolingRoot } : {}),
+      ...(Array.isArray(row.testCommand) ? { testCommand: row.testCommand as string[] } : {}),
+      ...(Array.isArray(row.clearEnv) ? { clearEnv: row.clearEnv as string[] } : {}),
       expiresAtMs: row.expiresAtMs,
     };
   } catch {

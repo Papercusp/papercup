@@ -290,6 +290,12 @@ export function resolveCanonicalIntegrationRoot(root: string, gitCommonDir: (roo
 export interface CheckpointTreeRunnerOptions {
   /** The canonical integration checkout (where the unpublished commit object lives). */
   integrationRoot: string;
+  /** Operator checkout containing the shared materializer; distinct from a foreign app. */
+  toolingRoot?: string;
+  /** Registered foreign-pot test suite argv; never substitute a build-only command. */
+  testCommand?: string[];
+  /** Foreign routing removes operator credentials from the app's test environment. */
+  clearEnv?: string[];
   /** The gate's isolated checkout — setup-release-checkout materializes `commit` here. */
   checkpointRoot: string;
   /** Registered harness for test-ledger attribution; never inferred from a checkout path. */
@@ -721,6 +727,12 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       logDir,
       `admission-precheck-${commit.slice(0, 12)}-${new Date().toISOString().replace(/[:.]/g, '-')}.log`,
     );
+    const toolingRoot = opts.toolingRoot ?? opts.integrationRoot;
+    const clearedEnv: NodeJS.ProcessEnv = Object.fromEntries((opts.clearEnv ?? []).map((key) => [key, undefined]));
+    if (toolingRoot !== opts.integrationRoot && !opts.testCommand?.length) {
+      return { ran: false, reason: 'runner-failed',
+        detail: 'foreign admission pre-check has no registered test-suite command; refusing to infer one from operator tooling' };
+    }
     const held = runLockHeld(opts.integrationRoot);
     if (held.held) {
       return {
@@ -765,7 +777,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         };
       }
     }
-    const setupScript = path.join(opts.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
+    const setupScript = path.join(toolingRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
     const reportProgress = async (progress: FixPrecheckProgress): Promise<void> => {
       if (!onProgress) return;
       try {
@@ -818,7 +830,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         // repo-keyed reader lease as checkpoint prewarming so guarded installers
         // cannot reify the source dependencies during admission setup.
         process.execPath,
-        path.join(opts.integrationRoot, 'scripts/npm-install-safe.mjs'),
+        path.join(toolingRoot, 'scripts/npm-install-safe.mjs'),
         '--repo-root',
         opts.integrationRoot,
         '--exec-under-lock',
@@ -840,7 +852,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         cwd: opts.integrationRoot,
         timeoutMs: setupTimeoutMs,
         idleTimeoutMs: ADMISSION_PRECHECK_SETUP_IDLE_MS,
-        env: admissionPrecheckSetupEnv(),
+        env: { ...admissionPrecheckSetupEnv(), ...clearedEnv },
         logFile,
       },
       { currentFile: files[0] as string, completedCount: 0, totalCount: files.length },
@@ -868,13 +880,17 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         heartbeatAtMs: Date.now(),
       });
       log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
-      const r = await execWithProgress(['node', 'scripts/test-files.mjs', file], {
+      const argv = opts.testCommand?.length
+        ? [...opts.testCommand, '--', file]
+        : ['node', 'scripts/test-files.mjs', file];
+      const r = await execWithProgress(argv, {
         cwd: precheckRoot,
         timeoutMs: perFileTimeoutMs,
         env: {
           PAPERCUSP_ADMISSION_PRECHECK: '1',
           PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
           ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
+          ...clearedEnv,
         },
         logFile,
       }, { currentFile: file, completedCount: index, totalCount: files.length });

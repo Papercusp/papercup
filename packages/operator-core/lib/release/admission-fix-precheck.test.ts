@@ -314,6 +314,29 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
   // beside-checkpoint placement whatever PAPERCUSP_DEPENDENCY_GENERATION_ROOT says.
   const base = { integrationRoot: '/repo', checkpointRoot: '/ckpt', resolveGenerationRoot: () => null };
 
+  it('materializes a foreign app with operator tooling and runs its registered suite in the pinned app checkout', async () => {
+    const exec = vi.fn(async (_argv: readonly string[], _opts: ExecOptions) => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult));
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, integrationRoot: '/app', toolingRoot: '/operator',
+      testCommand: ['npm', 'test'], clearEnv: ['DATABASE_URL'], exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const out = await runner({ commit: C, files: ['tests/host.test.ts'] });
+    expect(out).toMatchObject({ ran: true, commit: C, results: [{ path: 'tests/host.test.ts', status: 'pass' }] });
+    expect(exec.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+      '/operator/scripts/npm-install-safe.mjs', '--repo-root', '/app',
+      '/operator/apps/operator/bin/release/setup-release-checkout.sh', '--integration', '/app', '--ref', C,
+    ]));
+    expect(exec.mock.calls[1]).toEqual([['npm', 'test', '--', 'tests/host.test.ts'], expect.objectContaining({ cwd: '/ckpt-admission-precheck' })]);
+    for (const [, options] of exec.mock.calls) {
+      expect(options.env).toHaveProperty('DATABASE_URL', undefined);
+    }
+  });
+
+  it('refuses a foreign app without a real registered test command before materialization', async () => {
+    const exec = vi.fn();
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, integrationRoot: '/app', toolingRoot: '/operator', exec });
+    expect(await runner({ commit: C, files: ['tests/host.test.ts'] })).toMatchObject({ ran: false, reason: 'runner-failed' });
+    expect(exec).not.toHaveBeenCalled();
+  });
+
   it('reports checkpoint-tree-busy without touching the tree when a gate run holds the run-lock', async () => {
     const exec = vi.fn();
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: true, pid: 42, elapsedSec: 120 }) });

@@ -141,7 +141,8 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       return { ran: true as const, commit: run.commit, results: run.files.map((path) => ({ path, status: 'pass' as const })) };
     });
     const createRunner = vi.fn(() => runner);
-    const outcome = await runAdmissionPrecheckWorker({ ...input, queueTarget: { ...input.queueTarget, installSlug: harness } }, {
+    const outcome = await runAdmissionPrecheckWorker({ ...input, toolingRoot: '/operator', testCommand: ['npm', 'test'], clearEnv: ['DATABASE_URL'],
+      queueTarget: { ...input.queueTarget, installSlug: harness } }, {
       getTask: async () => ({ state: 'running', confined: true }),
       readQueue: async () => ({ status: 'value', queue: persisted }),
       transition: async (_target, update) => { persisted = update(persisted); },
@@ -154,6 +155,9 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       integrationRoot: input.integrationRoot,
       checkpointRoot: input.checkpointRoot,
       testRunHarness: harness,
+      toolingRoot: '/operator',
+      testCommand: ['npm', 'test'],
+      clearEnv: ['DATABASE_URL'],
     });
     expect(runner).toHaveBeenCalledWith(expect.objectContaining({
       commit: 'c'.repeat(40),
@@ -204,6 +208,11 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(parseAdmissionPrecheckWorkerInput(undefined)).toBeNull();
     expect(parseAdmissionPrecheckWorkerInput(JSON.stringify({ ...input, taskId: '' }))).toBeNull();
     expect(parseAdmissionPrecheckWorkerInput(JSON.stringify(input))).toEqual(input);
+    const foreign = { ...input, toolingRoot: '/operator', testCommand: ['npm', 'test'], clearEnv: ['DATABASE_URL'] };
+    expect(parseAdmissionPrecheckWorkerInput(JSON.stringify(foreign))).toEqual(foreign);
+    expect(parseAdmissionPrecheckWorkerInput(JSON.stringify({ ...foreign, testCommand: [] }))).toBeNull();
+    expect(parseAdmissionPrecheckWorkerInput(JSON.stringify({ ...foreign, testCommand: [5] }))).toBeNull();
+    expect(parseAdmissionPrecheckWorkerInput(JSON.stringify({ ...foreign, clearEnv: ['invalid key'] }))).toBeNull();
   });
 
   it('pins both host entrypoints to divert before normal host boot and parent-death handling', () => {
