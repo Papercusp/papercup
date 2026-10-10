@@ -32,6 +32,14 @@ export const productPortalSources = [
   'playwright.config.ts',
   'e2e/portal-product-tutorial.spec.ts',
 ];
+export const hostedProductPortalSources = [
+  ...productPortalSources.filter(path => path !== 'e2e/portal-product-tutorial.spec.ts'),
+  'e2e/portal-product-tutorial-served.spec.ts',
+  'e2e/served-artifact.ts',
+  'e2e/hosted-test-user.ts',
+  'e2e/guide-write-observer.ts',
+  'e2e/guide-destination-observer.ts',
+];
 
 // The desktop child runs in the retained checkout. Resolve paths while they
 // still belong to the caller's directory, including manifests outside it.
@@ -49,8 +57,11 @@ export function resolveReviewArgs(args, cwd = process.cwd()) {
 export function reviewCommand({ profile = 'cloud', root, portalRoot }) {
   if (profile === 'cloud') return { cwd: join(root, 'apps/operator'),
     args: ['run', 'test:e2e', '--', 'e2e/cloud-tutorial.spec.ts', '--headed', '--workers=1', '--grep', 'beginner reviews'] };
-  if (profile !== 'product-guide') throw new Error(`Unknown native review profile: ${profile}`);
+  if (!['product-guide', 'product-hosted'].includes(profile)) throw new Error(`Unknown native review profile: ${profile}`);
   if (!portalRoot) throw new Error('Product guide review requires --portal-root');
+  if (profile === 'product-hosted') return { cwd: portalRoot,
+    args: ['run', 'test:e2e:browser', '--', 'e2e/portal-product-tutorial-served.spec.ts', '--headed', '--workers=1',
+      '--grep', 'a real hosted non-Cloud preference task saves and survives reload using only Tab and arrow traversal at 200 percent text$'] };
   return { cwd: portalRoot,
     args: ['run', 'test:e2e:browser', '--', 'e2e/portal-product-tutorial.spec.ts', '--headed', '--workers=1',
       '--grep', 'guide precedes portal destination and persists reload with workspace=null$'] };
@@ -92,9 +103,14 @@ function verifyFileSet(root, sourceRoot, files, expected, label) {
 }
 
 export function verifySources(root, sourceRoot, manifest, { profile = 'cloud', portalRoot, portalSourceRoot } = {}) {
-  if (profile === 'product-guide') {
+  if (profile === 'product-guide' || profile === 'product-hosted') {
     verifyFileSet(root, sourceRoot, manifest.files, productSources, 'Product guide');
-    verifyFileSet(portalRoot, portalSourceRoot, manifest.portalFiles, productPortalSources, 'Product Portal');
+    verifyFileSet(portalRoot, portalSourceRoot, manifest.portalFiles,
+      profile === 'product-hosted' ? hostedProductPortalSources : productPortalSources, 'Product Portal');
+    if (profile === 'product-hosted' && !readFileSync(join(portalRoot, 'e2e/portal-product-tutorial-served.spec.ts'), 'utf8')
+      .includes("process.env.PORTAL_TUTORIAL_ORCA_REVIEW === '1'")) {
+      throw new Error('Hosted native review requires the maintained attended pause seam');
+    }
     return;
   }
   if (profile !== 'cloud') throw new Error(`Unknown native review profile: ${profile}`);
@@ -160,16 +176,19 @@ async function desktop(root, out, review, profile) {
     const port = server.address().port;
     await new Promise(r => server.close(r));
     const env = { ...process.env, OPERATOR_E2E_PORT: String(port), PAPERCUSP_TUTORIAL_ORCA_REVIEW: '1', PWDEBUG: '1',
-      ...(profile === 'product-guide' ? { PORTAL_TUTORIAL_ORCA_REVIEW: '1', PORTAL_BROWSER_CHANNEL: 'chrome' } : {}),
+      ...(['product-guide', 'product-hosted'].includes(profile)
+        ? { PORTAL_TUTORIAL_ORCA_REVIEW: '1', PORTAL_BROWSER_CHANNEL: 'chrome' } : {}),
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp', PAPERCUSP_TEST_RUN_WORKSPACE: 'papercusp-workspace',
       PAPERCUSP_TEST_RUN_GROUP: `cloud-tutorial-native-${port}` };
     // Pause/resume remounts the guide with Help collapsed. A reviewer must
     // reopen it before searching AT-SPI for optional output controls.
-    const reviewInstructions = profile === 'product-guide' ? [
+    const reviewInstructions = ['product-guide', 'product-hosted'].includes(profile) ? [
       'After pause/resume, reopen Help with this lesson before inspecting speech controls.',
       'Verify Help is expanded and Spoken lesson guidance is present before using Speak lesson, Stop speech, Mute, or Replay.',
       'Missing controls in collapsed Help are an unmet review precondition; record them as not exercised.',
-      'This mounted fixture does not prove hosted provider audio, protected input, or production acceptance.',
+      profile === 'product-hosted'
+        ? 'This attended hosted review must record its native controls and screen-reader observations separately; stopping it is not an automated PASS.'
+        : 'This mounted fixture does not prove hosted provider audio, protected input, or production acceptance.',
     ] : [];
     writeFileSync(`${out}.json`, JSON.stringify({ root, profile, review, reviewInstructions, port, modules, display: env.DISPLAY,
       dbus: env.DBUS_SESSION_BUS_ADDRESS, xauthority: env.XAUTHORITY, orcaPid: reader.pid, windowPid: wm.pid,
@@ -189,11 +208,11 @@ async function main() {
   const get = key => { const i = args.indexOf(key); if (i < 0 || !args[i + 1]) throw new Error(`Required ${key}`); return resolve(args[i + 1]); };
   const root = get('--root'), sourceRoot = get('--source-root'), manifestPath = get('--manifest'), out = get('--out');
   const profile = args.includes('--profile') ? args[args.indexOf('--profile') + 1] : 'cloud';
-  const options = { profile, ...(profile === 'product-guide'
+  const options = { profile, ...(['product-guide', 'product-hosted'].includes(profile)
     ? { portalRoot: get('--portal-root'), portalSourceRoot: get('--portal-source-root') } : {}) };
   const review = reviewCommand({ root, ...options });
   verifySources(root, sourceRoot, JSON.parse(readFileSync(manifestPath, 'utf8')), options);
-  if (profile === 'product-guide') {
+  if (profile === 'product-guide' || profile === 'product-hosted') {
     verifyProductImports(root, options.portalRoot);
     if (!['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/opt/google/chrome/chrome'].some(existsSync))
       throw new Error('Missing system Chrome required by the Portal browser review');

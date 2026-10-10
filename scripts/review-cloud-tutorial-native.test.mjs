@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync 
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { sources, productSources, productPortalSources, resolveReviewArgs, reviewCommand, verifySources, verifyProductImports, speechReady } from './review-cloud-tutorial-native.mjs';
+import { sources, productSources, productPortalSources, hostedProductPortalSources, resolveReviewArgs, reviewCommand, verifySources, verifyProductImports, speechReady } from './review-cloud-tutorial-native.mjs';
 
 test('desktop re-entry keeps caller-relative manifests and roots when its working directory changes', () => {
   const caller = resolve('/caller'), child = resolve('/retained');
@@ -144,4 +144,35 @@ test('product review filter accepts Playwright file-qualified titles and exclude
   assert.equal(filter.test('portal-product-tutorial.spec.ts guide precedes portal destination and persists reload with workspace=null'), true);
   assert.equal(filter.test('portal-product-tutorial.spec.ts guide precedes portal destination and persists reload with workspace=assigned-workspace'), false);
   assert.equal(filter.test('portal-product-tutorial.spec.ts guide precedes portal destination and persists reload with workspace=null extra case'), false);
+});
+
+test('hosted native review selects only the maintained real Tab journey and refuses a missing pause or changed admission fixture', () => {
+  const { cwd, args } = reviewCommand({ profile: 'product-hosted', root: '/root', portalRoot: '/portal' });
+  assert.equal(cwd, '/portal');
+  assert.ok(args.includes('e2e/portal-product-tutorial-served.spec.ts'));
+  const filter = new RegExp(args[args.indexOf('--grep') + 1]);
+  const title = 'a real hosted non-Cloud preference task saves and survives reload using only Tab and arrow traversal at 200 percent text';
+  assert.equal(filter.test('portal-product-tutorial-served.spec.ts ' + title), true);
+  assert.equal(filter.test(title + ' extra case'), false);
+  assert.equal(filter.test('a real hosted non-Cloud preference task saves and survives reload with narrow enlarged text, reduced motion and keyboard activation'), false);
+  const fixture = mkdtempSync(join(tmpdir(), 'native-hosted-custody-'));
+  try {
+    const root = join(fixture, 'core'), portalRoot = join(fixture, 'portal'), portalSourceRoot = join(fixture, 'current');
+    const seed = (roots, paths) => paths.map(path => {
+      for (const base of roots) {
+        mkdirSync(dirname(join(base, path)), { recursive: true }); writeFileSync(join(base, path), path);
+      }
+      return { path, sha256: createHash('sha256').update(path).digest('hex') };
+    });
+    const manifest = { files: seed([root], productSources), portalFiles: seed([portalRoot, portalSourceRoot], hostedProductPortalSources) };
+    const options = { profile: 'product-hosted', portalRoot, portalSourceRoot };
+    assert.throws(() => verifySources(root, root, manifest, options), /attended pause seam/);
+    const pausedPath = 'e2e/portal-product-tutorial-served.spec.ts';
+    const paused = "if (process.env.PORTAL_TUTORIAL_ORCA_REVIEW === '1') await page.pause();";
+    for (const base of [portalRoot, portalSourceRoot]) writeFileSync(join(base, pausedPath), paused);
+    manifest.portalFiles.find(row => row.path === pausedPath).sha256 = createHash('sha256').update(paused).digest('hex');
+    verifySources(root, root, manifest, options);
+    writeFileSync(join(portalSourceRoot, 'e2e/hosted-test-user.ts'), 'changed admission');
+    assert.throws(() => verifySources(root, root, manifest, options), /Product Portal source drift/);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
 });
