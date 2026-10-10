@@ -57,6 +57,12 @@ export const currentBenchmarkProtocolSchema = z.object({
   priceSchedule: z.object({ version: pin, rates: z.array(z.object({
     model: pin, inputUsdPerMillion: z.number().finite().nonnegative(),
     cachedInputUsdPerMillion: z.number().finite().nonnegative(), outputUsdPerMillion: z.number().finite().nonnegative(),
+    // Native admission reserves the complete provider input ceiling. A local
+    // token estimate or a requested client context window is not this proof.
+    inputTokenCeiling: z.number().int().positive().optional(),
+    inputTokenCeilingSourceSha256: digest.optional(),
+    // Freeze the most expensive supported cache-write tier before Claude sends.
+    cacheWriteUsdPerMillion: z.number().finite().nonnegative().optional(),
   }).strict()).min(1) }).strict(),
   grader: z.object({ family: pin, version: pin, imageDigest: pin }).strict(),
   context: z.object({
@@ -83,6 +89,11 @@ export const currentBenchmarkProtocolSchema = z.object({
   if (protocol.maxInFlightUsd > protocol.aggregateBudgetUsd) issue(['maxInFlightUsd'], 'In-flight exposure cannot exceed the aggregate cap.');
   const modelRates = protocol.priceSchedule.rates.map(rate => rate.model);
   if (!distinct(modelRates) || protocol.arms.some(arm => !modelRates.includes(arm.model))) issue(['priceSchedule'], 'Every arm model needs one frozen price rate.');
+  protocol.priceSchedule.rates.forEach((rate, index) => {
+    if ((rate.inputTokenCeiling === undefined) !== (rate.inputTokenCeilingSourceSha256 === undefined)) {
+      issue(['priceSchedule', 'rates', index], 'Native input ceiling and source proof must be frozen together.');
+    }
+  });
   if (protocol.confirmation.taskIds.some(id => protocol.taskIds.includes(id))) issue(['confirmation', 'taskIds'], 'Confirmation tasks must be withheld from the pilot.');
   if (protocol.confirmation.plannedPairedTasks > protocol.confirmation.taskIds.length) issue(['confirmation', 'plannedPairedTasks'], 'The confirmation roster must reserve the planned paired tasks.');
 });

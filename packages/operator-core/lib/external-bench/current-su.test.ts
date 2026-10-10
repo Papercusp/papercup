@@ -1,11 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentSuBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   currentBenchObservationReader, type CurrentBenchObservationReaderPorts,
-  currentBenchAssignmentId, currentBenchGatewayController,
+  currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
+  type CurrentBenchNativeInputCeiling,
   type CurrentBenchIdentity, type CurrentBenchTask, type CurrentSuBenchOptions, type CurrentSuBenchPorts,
 } from './current-su';
 import type { BenchHarnessOps } from './bench-harness-live';
@@ -150,6 +155,169 @@ describe('frozen benchmark native provider admission', () => {
       const body = JSON.stringify({ model: 'configured-alias', output_config: { effort: 'high' }, max_tokens: 10 });
       expect(await c.gateway.carryTrial.authorizeAttempt({ ...f.attempt, transport: 'anthropic-http', body, bodySha256: f.digest(body) })).toBeNull();
       expect(f.reserve).not.toHaveBeenCalled(); c.revoke();
+    } finally { f.revoke(); }
+  });
+  it('admits Claude only with its frozen maximum cache-write price', async () => {
+    const f = budgetFixture();
+    f.input.protocol.arms[0].agent = 'claude';
+    f.input.protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 10;
+    const c = currentBenchGatewayController(f.input, f.governor);
+    try {
+      const body = JSON.stringify({ model: 'configured-alias', output_config: { effort: 'high' }, max_tokens: 10 });
+      const attempt = { ...f.attempt, transport: 'anthropic-http' as const, body, bodySha256: f.digest(body) };
+      f.authority.requestedUsd = 0.00012; // Enough for ordinary input; below the cache-write bound.
+      expect(await c.gateway.carryTrial.authorizeAttempt(attempt)).toBeNull();
+      expect(f.reserve).not.toHaveBeenCalled();
+      f.authority.requestedUsd = 0.00102;
+      const receipt = await c.gateway.carryTrial.authorizeAttempt({ ...attempt, attemptId: randomUUID() });
+      expect(receipt).not.toBeNull();
+      expect(f.reserve.mock.calls[0][1].requestedUsd).toBe(0.00102);
+    } finally { c.revoke(); f.revoke(); }
+  });
+  it('refuses an authority that understates the frozen complete input ceiling', async () => {
+    const f = budgetFixture();
+    f.input.protocol.priceSchedule.rates[0].inputTokenCeiling = 101;
+    f.input.protocol.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = f.digest('native-bound');
+    const c = currentBenchGatewayController(f.input, f.governor);
+    try {
+      expect(await c.gateway.carryTrial.authorizeAttempt(f.attempt)).toBeNull();
+      expect(f.reserve).not.toHaveBeenCalled();
+    } finally { c.revoke(); f.revoke(); }
+  });
+});
+
+function providerAuthFixture() {
+  const f = budgetFixture();
+  f.revoke();
+  const rate = f.input.protocol.priceSchedule.rates[0];
+  rate.inputTokenCeiling = 10_000;
+  rate.inputTokenCeilingSourceSha256 = f.digest('native-provider-contract');
+  const ceiling: CurrentBenchNativeInputCeiling = { model: rate.model, inputTokens: 10_000,
+    sourceSha256: rate.inputTokenCeilingSourceSha256, validUntilMonotonicMs: processMonotonicClock.now() + 10_000,
+    validateAuthorization: vi.fn(() => {}) };
+  const account = { id: f.attempt.accountId, provider: 'codex' as const, credentialRef: 'token:fixture-private-key' };
+  const resolver = { current: vi.fn(async () => 'PRIVATE_PROVIDER_KEY'), invalidate: vi.fn(),
+    kind: 'token' as const, authMode: 'oauth' as const };
+  const ports = { readAccount: vi.fn(async () => account), credentialResolver: vi.fn(() => resolver) };
+  const input = { workspaceId: f.input.workspaceId, preregHash: f.input.preregHash, protocol: f.input.protocol,
+    armId: f.input.armId, taskId: f.input.taskId, seed: f.input.seed,
+    readNativeInputCeiling: vi.fn(async () => ceiling) };
+  const auth = currentBenchProviderAuthenticator(input, ports);
+  const attempt = { ...f.attempt, target: 'https://api.openai.com/v1/responses' };
+  return { ...f, ...auth, input, ports, ceiling, account, resolver, attempt };
+}
+
+describe('registered benchmark provider authentication', () => {
+  it('uses the maintained physical credential-file resolver and refuses a changed credential', async () => {
+    const f = providerAuthFixture();
+    const root = mkdtempSync(join(tmpdir(), 'benchmark-provider-credential-'));
+    const path = join(root, 'provider-key');
+    writeFileSync(path, 'PRIVATE_PROVIDER_KEY', { mode: 0o600 });
+    const account = { ...f.account, credentialRef: `token:${path}` };
+    f.ports.readAccount.mockResolvedValue(account);
+    const auth = currentBenchProviderAuthenticator(f.input, { readAccount: f.ports.readAccount,
+      credentialResolver: (_provider, ref) => makeBearerCredentialResolver(ref) });
+    try {
+      expect(await auth.authenticateProvider(f.attempt)).toMatchObject({ inputTokens: 10_000, requestedUsd: 0.01002 });
+      writeFileSync(path, 'ROTATED_PROVIDER_KEY', { mode: 0o600 });
+      expect(await auth.authenticateProvider({ ...f.attempt, attemptId: randomUUID() })).toBeNull();
+    } finally { auth.revoke(); f.revoke(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each(['ceiling', 'source'] as const)('requires a paired frozen native %s', changed => {
+    const f = providerAuthFixture();
+    try {
+      if (changed === 'ceiling') delete f.input.protocol.priceSchedule.rates[0].inputTokenCeiling;
+      else delete f.input.protocol.priceSchedule.rates[0].inputTokenCeilingSourceSha256;
+      expect(() => currentBenchProviderAuthenticator(f.input, f.ports)).toThrow(/frozen together/);
+    } finally { f.revoke(); }
+  });
+  it('refuses a protocol with no frozen native ceiling before reading a provider credential', async () => {
+    const f = providerAuthFixture();
+    delete f.input.protocol.priceSchedule.rates[0].inputTokenCeiling;
+    delete f.input.protocol.priceSchedule.rates[0].inputTokenCeilingSourceSha256;
+    const auth = currentBenchProviderAuthenticator(f.input, f.ports);
+    try {
+      expect(await auth.authenticateProvider(f.attempt)).toBeNull();
+      expect(f.resolver.current).not.toHaveBeenCalled();
+    } finally { auth.revoke(); f.revoke(); }
+  });
+  it('authenticates Claude API-key shape and prices the full frozen cache-write ceiling', async () => {
+    const f = providerAuthFixture();
+    f.input.protocol.arms[0].agent = 'claude';
+    f.input.protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 25;
+    f.ports.readAccount.mockResolvedValue({ ...f.account, provider: 'claude' } as never);
+    f.ports.credentialResolver.mockReturnValue({ ...f.resolver, kind: 'apikey', authMode: 'api-key' } as never);
+    const body = JSON.stringify({ model: 'configured-alias', output_config: { effort: 'high' }, max_tokens: 10 });
+    const attempt = { ...f.attempt, target: 'https://api.anthropic.com/v1/messages', transport: 'anthropic-http' as const,
+      credentialHeader: 'x-api-key' as const, credentialSha256: f.digest('PRIVATE_PROVIDER_KEY'), body, bodySha256: f.digest(body) };
+    const auth = currentBenchProviderAuthenticator(f.input, f.ports);
+    try {
+      expect(await auth.authenticateProvider(attempt)).toMatchObject({ inputTokens: 10_000, requestedUsd: 0.25002 });
+      expect(await auth.authenticateProvider({ ...attempt, credentialHeader: 'authorization' })).toBeNull();
+    } finally { auth.revoke(); f.revoke(); }
+  });
+  it('authenticates the final registered credential and reserves the full native ceiling', async () => {
+    const f = providerAuthFixture();
+    try {
+      const authority = await f.authenticateProvider(f.attempt);
+      expect(authority).toMatchObject({ inputTokens: 10_000, outputTokens: 10, requestedUsd: 0.01002 });
+      expect(f.ports.readAccount).toHaveBeenCalledTimes(2);
+      expect(f.ports.readAccount).toHaveBeenCalledWith('bench-private', f.attempt.accountId);
+      expect(JSON.stringify(authority)).not.toContain('PRIVATE_PROVIDER_KEY');
+      expect(authority!.validUntilMonotonicMs).toBeLessThanOrEqual(processMonotonicClock.now() + 5000);
+      authority!.validateAuthorization();
+      f.revoke(); expect(() => authority!.validateAuthorization()).toThrow(/revoked/);
+    } finally { f.revoke(); }
+  });
+  it.each(['credential', 'header', 'target', 'transport', 'clock', 'manifest', 'assignment', 'body', 'model', 'effort', 'output', 'account', 'provider', 'unregistered', 'missing-ceiling', 'source', 'ceiling', 'expired', 'asynchronous-check', 'aborted'] as const)(
+    'refuses %s without granting provider authority', async changed => {
+      const f = providerAuthFixture();
+      try {
+        let attempt = { ...f.attempt };
+        const body = JSON.parse(attempt.body);
+        if (changed === 'credential') attempt.credentialSha256 = f.digest('Bearer foreign-key');
+        if (changed === 'header') attempt.credentialHeader = 'x-api-key';
+        if (changed === 'target') attempt.target = 'https://api.openai.com.evil.invalid/v1/responses';
+        if (changed === 'transport') attempt.transport = 'oauth-http';
+        if (changed === 'clock') attempt.clockId = 'foreign-clock';
+        if (changed === 'manifest') attempt.manifestSha256 = f.digest('other-manifest');
+        if (changed === 'assignment') attempt.armId = 'other-assignment';
+        if (changed === 'body') attempt.bodySha256 = f.digest('different-body');
+        if (changed === 'model') body.model = 'other-model';
+        if (changed === 'effort') body.reasoning.effort = 'low';
+        if (changed === 'output') body.max_output_tokens = 0;
+        if (['model', 'effort', 'output'].includes(changed)) {
+          attempt.body = JSON.stringify(body); attempt.bodySha256 = f.digest(attempt.body);
+        }
+        if (changed === 'account') attempt.accountId = 'other-account';
+        if (changed === 'provider') f.ports.readAccount.mockResolvedValue({ ...f.account, provider: 'claude' } as never);
+        if (changed === 'unregistered') f.ports.readAccount.mockResolvedValue(null as never);
+        if (changed === 'missing-ceiling') f.input.readNativeInputCeiling.mockResolvedValue(null as never);
+        if (changed === 'source') f.ceiling.sourceSha256 = f.digest('other-contract');
+        if (changed === 'ceiling') f.ceiling.inputTokens = 9999;
+        if (changed === 'expired') f.ceiling.validUntilMonotonicMs = -1;
+        if (changed === 'asynchronous-check') f.ceiling.validateAuthorization = (() => Promise.resolve()) as unknown as () => void;
+        if (changed === 'aborted') attempt.signal = AbortSignal.abort();
+        expect(await f.authenticateProvider(attempt)).toBeNull();
+      } finally { f.revoke(); }
+    });
+  it('rejects a registry retarget during credential/input proof reads', async () => {
+    const f = providerAuthFixture();
+    try {
+      f.ports.readAccount.mockResolvedValueOnce(f.account).mockResolvedValueOnce({ ...f.account, credentialRef: 'token:retargeted' });
+      expect(await f.authenticateProvider(f.attempt)).toBeNull();
+    } finally { f.revoke(); }
+  });
+  it('snapshots protocol and native proof, and rechecks proof revocation synchronously at send', async () => {
+    const f = providerAuthFixture();
+    try {
+      f.input.protocol.priceSchedule.rates[0].inputUsdPerMillion = 0;
+      const authority = (await f.authenticateProvider(f.attempt))!;
+      expect(authority).not.toBeNull(); expect(authority.requestedUsd).toBe(0.01002);
+      f.ceiling.inputTokens = 1;
+      expect(authority.inputTokens).toBe(10_000);
+      vi.mocked(f.ceiling.validateAuthorization).mockImplementation(() => { throw new Error('native contract revoked'); });
+      expect(() => authority.validateAuthorization()).toThrow(/native contract revoked/);
     } finally { f.revoke(); }
   });
 });

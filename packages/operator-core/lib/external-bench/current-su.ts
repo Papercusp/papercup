@@ -20,6 +20,8 @@ import { createNativeGymGatewayController, type NativeGymProviderAuthorization }
 import type { GovernorGlueDeps } from '../learning-governor/registrants';
 import type { GatewayCarryTrialAttempt } from '../inference-gateway/gateway';
 import type { LearningReservationResourceBudget } from '../learning-governor/store';
+import { processMonotonicClock } from '../process-monotonic-clock';
+import type { CredentialResolver } from '../inference-gateway/credential-store';
 
 /** Stable assignment identity shared by every solver/reviewer/retry. It is an
  * extension of the existing governor arm resource key, never a new ledger. */
@@ -28,6 +30,120 @@ export function currentBenchAssignmentId(runId: string, armId: string, taskId: s
     throw new Error('Benchmark budget requires an exact assignment identity.');
   }
   return `bench-assignment:${createHash('sha256').update(canonicalJson([runId, armId, taskId, seed])).digest('hex')}`;
+}
+
+type FrozenBenchRate = CurrentBenchmarkProtocol['priceSchedule']['rates'][number];
+
+/** Reserve the full uncached/native input exposure, including the most
+ * expensive frozen cache-write tier. Keep rounding in integer microUSD. */
+function currentBenchRequestExposureUsd(rate: FrozenBenchRate, input: number, output: number, claude: boolean): number | null {
+  if (!Number.isSafeInteger(input) || input < 0 || !Number.isSafeInteger(output) || output <= 0 ||
+      claude && rate.cacheWriteUsdPerMillion === undefined) return null;
+  const inputRate = Math.ceil(Math.max(rate.inputUsdPerMillion, rate.cachedInputUsdPerMillion,
+    claude ? rate.cacheWriteUsdPerMillion! : 0) * 1_000_000);
+  const outputRate = Math.ceil(rate.outputUsdPerMillion * 1_000_000);
+  if (![inputRate, outputRate].every(Number.isSafeInteger)) return null;
+  const micros = (BigInt(input) * BigInt(inputRate) + BigInt(output) * BigInt(outputRate) + 999_999n) / 1_000_000n;
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Math.max(1, Number(micros)) / 1_000_000;
+}
+
+/** A host-observed provider contract, not configured native-client context.
+ * The host must supply its source-bound reader; missing proof refuses sends. */
+export interface CurrentBenchNativeInputCeiling {
+  model: string;
+  inputTokens: number;
+  sourceSha256: string;
+  validUntilMonotonicMs: number;
+  validateAuthorization: () => void;
+}
+
+/** Reuse registered account and credential readers to authenticate the FINAL
+ * payer. Never consult an ambient login or treat a caller bearer as a provider
+ * credential. The complete native input ceiling is reserved per attempt. */
+export function currentBenchProviderAuthenticator(input: {
+  workspaceId: string; preregHash: string; protocol: CurrentBenchmarkProtocol;
+  armId: string; taskId: string; seed: number;
+  readNativeInputCeiling: (attempt: GatewayCarryTrialAttempt) => Promise<CurrentBenchNativeInputCeiling | null>;
+}, ports?: {
+  readAccount: (workspaceId: string, accountId: string) => Promise<{ id: string; provider: 'claude' | 'codex'; credentialRef: string } | null>;
+  credentialResolver: (provider: 'claude' | 'codex', ref: string) => CredentialResolver;
+}): { authenticateProvider: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>; revoke: () => void } {
+  const protocol = currentBenchmarkProtocolSchema.parse(input.protocol);
+  const arm = protocol.arms.find(value => value.id === input.armId);
+  if (!arm || !protocol.taskIds.includes(input.taskId) || !protocol.seeds.includes(input.seed) ||
+      !/^[a-f0-9]{64}$/.test(input.preregHash) || typeof input.readNativeInputCeiling !== 'function') {
+    throw new Error('Benchmark provider authentication requires its frozen assignment and native input proof.');
+  }
+  resolveBenchWorkspace(input.workspaceId);
+  const { workspaceId, preregHash, readNativeInputCeiling } = input;
+  const assignmentId = currentBenchAssignmentId(protocol.runId, arm.id, input.taskId, input.seed);
+  const rate = protocol.priceSchedule.rates.find(value => value.model === arm.model)!;
+  let live = true;
+  return { revoke() { live = false; }, async authenticateProvider(value) {
+    const attempt = Object.freeze({ ...value });
+    try {
+      const claude = attempt.transport === 'anthropic-http';
+      const provider = claude ? 'claude' : 'codex';
+      // OAuth/CLI OpenAI routes currently cannot preserve the native output
+      // ceiling. The maintained gateway already refuses them for bounded runs.
+      if (!live || attempt.signal.aborted || attempt.clockId !== processMonotonicClock.id ||
+          attempt.manifestSha256 !== preregHash || attempt.armId !== assignmentId ||
+          attempt.transport !== (arm.agent === 'claude' ? 'anthropic-http' : 'bearer-http') ||
+          attempt.target !== (claude ? 'https://api.anthropic.com/v1/messages' : 'https://api.openai.com/v1/responses') ||
+          attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex') ||
+          rate.inputTokenCeiling === undefined || rate.inputTokenCeilingSourceSha256 === undefined ||
+          !['auto', 'default'].includes(arm.account) && attempt.accountId !== arm.account) return null;
+      const body = JSON.parse(attempt.body);
+      const output = claude ? body.max_tokens : body.max_output_tokens;
+      if (body.model !== arm.model || (claude ? body.output_config?.effort : body.reasoning?.effort) !== arm.effort ||
+          !Number.isSafeInteger(output) || output <= 0 ||
+          arm.generationBudget.maxTokens !== undefined && output > arm.generationBudget.maxTokens) return null;
+      const readAccount = ports?.readAccount ?? (async (workspace: string, id: string) => {
+        const [{ loadAccountPool }, { accountProvider }] = await Promise.all([
+          import('../deployment/account-pool-store'), import('../deployment/account-pool')]);
+        const account = (await loadAccountPool(workspace)).accounts.find(value => value.id === id);
+        return account ? { id: account.id, provider: accountProvider(account), credentialRef: account.credentialRef } : null;
+      });
+      const account = await readAccount(workspaceId, attempt.accountId);
+      if (!account || account.id !== attempt.accountId || account.provider !== provider || !account.credentialRef.trim()) return null;
+      const snapshot = Object.freeze({ ...account });
+      const resolver = ports ? ports.credentialResolver(provider, snapshot.credentialRef) : await (async () => {
+        const credentials = await import('../inference-gateway/credential-store');
+        return claude ? credentials.makeCredentialResolver(snapshot.credentialRef) :
+          credentials.makeBearerCredentialResolver(snapshot.credentialRef);
+      })();
+      const credentialHeader = claude && resolver.authMode === 'api-key' ? 'x-api-key' : 'authorization';
+      const secret = await resolver.current();
+      if (!secret || attempt.credentialHeader !== credentialHeader ||
+          attempt.credentialSha256 !== createHash('sha256').update(credentialHeader === 'authorization' ? `Bearer ${secret}` : secret).digest('hex')) return null;
+      const supplied = await readNativeInputCeiling(attempt);
+      const ceiling = supplied ? Object.freeze({ ...supplied }) : null;
+      const current = await readAccount(workspaceId, attempt.accountId);
+      if (!live || attempt.signal.aborted || !current || canonicalJson(current) !== canonicalJson(snapshot) ||
+          !ceiling || ceiling.model !== arm.model || ceiling.inputTokens !== rate.inputTokenCeiling ||
+          ceiling.sourceSha256 !== rate.inputTokenCeilingSourceSha256 || typeof ceiling.validateAuthorization !== 'function' ||
+          !Number.isFinite(ceiling.validUntilMonotonicMs)) return null;
+      const requestedUsd = currentBenchRequestExposureUsd(rate, ceiling.inputTokens, output, claude);
+      if (requestedUsd === null || requestedUsd > arm.generationBudget.maxUsd) return null;
+      const validUntilMonotonicMs = Math.min(ceiling.validUntilMonotonicMs, processMonotonicClock.now() + 5000);
+      const validateAuthorization = () => {
+        const check = () => { if (!live || attempt.signal.aborted || processMonotonicClock.now() >= validUntilMonotonicMs) {
+          throw new Error('Benchmark provider authority expired or revoked.');
+        } };
+        check();
+        const validation: unknown = ceiling.validateAuthorization();
+        if (validation !== undefined) {
+          void Promise.resolve(validation).catch(() => {});
+          throw new Error('Benchmark native input authority requires a synchronous check.');
+        }
+        check();
+      };
+      validateAuthorization();
+      return { attemptKind: 'evaluation', requestedUsd, inputTokens: ceiling.inputTokens, outputTokens: output,
+        validUntilMonotonicMs, validateAuthorization };
+    } catch { return null; }
+  } };
 }
 
 /** Private host authority authenticates the FINAL credential, payer and native
@@ -79,21 +195,16 @@ export function currentBenchGatewayController(input: {
         const authenticated = await authenticateProvider(request);
         if (!authenticated) return null;
         const authority = { ...authenticated };
-        if (authority.outputTokens !== output || !Number.isSafeInteger(authority.inputTokens) || authority.inputTokens < 0) return null;
+        if (authority.outputTokens !== output || !Number.isSafeInteger(authority.inputTokens) || authority.inputTokens < 0 ||
+            rate.inputTokenCeiling !== undefined && authority.inputTokens !== rate.inputTokenCeiling) return null;
         // Round each frozen rate upward to microUSD per million tokens, then
         // use integer arithmetic. Floating subtraction must never grant extra
         // exposure. Full uncached input is the conservative OpenAI bound.
-        // Anthropic cache-write pricing needs a separately frozen ceiling;
-        // the current schema cannot authorize it by the ordinary input rate.
-        if (request.transport === 'anthropic-http') return null;
-        const inputRateMicros = Math.ceil(Math.max(rate.inputUsdPerMillion, rate.cachedInputUsdPerMillion) * 1_000_000);
-        const outputRateMicros = Math.ceil(rate.outputUsdPerMillion * 1_000_000);
-        if (![inputRateMicros, outputRateMicros].every(Number.isSafeInteger)) return null;
-        const inputRate = BigInt(inputRateMicros), outputRate = BigInt(outputRateMicros);
-        const requiredMicros = (BigInt(authority.inputTokens) * inputRate + BigInt(output) * outputRate + 999_999n) / 1_000_000n;
+        const requiredUsd = currentBenchRequestExposureUsd(rate, authority.inputTokens, output, request.transport === 'anthropic-http');
+        if (requiredUsd === null) return null;
         const grantMicros = Math.round(authority.requestedUsd * 1_000_000);
         if (!Number.isSafeInteger(grantMicros) || grantMicros <= 0 || grantMicros / 1_000_000 !== authority.requestedUsd ||
-            BigInt(grantMicros) < requiredMicros || authority.requestedUsd > arm.generationBudget.maxUsd) return null;
+            grantMicros < Math.round(requiredUsd * 1_000_000) || authority.requestedUsd > arm.generationBudget.maxUsd) return null;
         return authority;
       } catch { return null; }
     },
