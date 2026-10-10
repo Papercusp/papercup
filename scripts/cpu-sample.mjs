@@ -9,6 +9,8 @@
 // Usage: node scripts/cpu-sample.mjs <pid> [durationMs] [inspectorPort] [--save <path>]
 import { setTimeout as sleep } from 'node:timers/promises';
 import { writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { parseArgs } from 'node:util';
 import {
   closeInspector,
   createCdpClient,
@@ -17,67 +19,102 @@ import {
 } from './cdp-inspector.mjs';
 import { aggregateCpuProfile } from './lib/cpu-profile.mjs';
 
-const args = process.argv.slice(2);
-const saveIdx = args.indexOf('--save');
-const savePath = saveIdx >= 0 ? args[saveIdx + 1] : null;
-const positional = args.filter((a, i) => !a.startsWith('--') && (saveIdx < 0 || i !== saveIdx + 1));
+/**
+ * Collect before a startup probe's deadline kills its child. --cpu-prof alone
+ * writes at normal exit and loses the profile on spawnSync's default SIGTERM.
+ * Existing-inspector mode pins one port and checks entry/arguments before sampling;
+ * it disconnects its own socket without closing the target's pre-opened inspector.
+ * @param {{ pid: number, durationMs?: number, startPort?: number, attachExisting?: boolean,
+ *   expectedEntry?: string, expectedArg?: string, deadlineMs?: number }} options
+ */
+export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9229,
+  attachExisting = false, expectedEntry, expectedArg, deadlineMs = 50000 }) {
+  if (!Number.isInteger(pid) || pid < 0 || (!attachExisting && pid === 0))
+    throw new TypeError('a positive target pid is required unless attaching by exact entry');
+  if (!Number.isInteger(durationMs) || durationMs <= 0 || !Number.isInteger(deadlineMs) || deadlineMs <= 5000)
+    throw new TypeError('positive duration and a deadline above 5000ms are required');
+  if (!Number.isInteger(startPort) || startPort < 1 || startPort > 65535)
+    throw new TypeError('invalid inspector port');
+  if (attachExisting && (typeof expectedEntry !== 'string' || !expectedEntry))
+    throw new TypeError('existing inspector capture requires an exact expected entry');
 
-const pid = Number(positional[0]);
-const durationMs = Number(positional[1] || 30000);
-const startPort = Number(positional[2] || 9229);
-if (!pid) { console.error('usage: cpu-sample.mjs <pid> [durationMs] [port] [--save <path>]'); process.exit(1); }
+  const deadline = Date.now() + deadlineMs;
+  if (!attachExisting) {
+    process.kill(pid, 'SIGUSR1');
+    await sleep(1200);
+  }
+  let inspector;
+  const discoveryDeadline = Math.min(deadline - 5000, Date.now() + 10000);
+  do {
+    inspector = await discoverInspector({ startPort, portCount: attachExisting ? 1 : 6,
+      requestTimeoutMs: 500 });
+    if (inspector) break;
+    await sleep(100);
+  } while (Date.now() < discoveryDeadline);
+  if (!inspector) throw new Error('could not find inspector within the capture deadline');
 
-// 1) open the inspector on the target
-try { process.kill(pid, 'SIGUSR1'); } catch (e) { console.error('SIGUSR1 failed:', e.message); process.exit(1); }
-await sleep(1200);
-
-// 2) discover the inspector ws url (Node picks startPort, or next free)
-let inspector = null;
-for (let i = 0; i < 8 && !inspector; i += 1) {
-  inspector = await discoverInspector({ startPort });
-  if (!inspector) await sleep(700);
+  const client = createCdpClient(inspector.wsUrl, {
+    requestTimeoutMs: 2000,
+    webSocketOptions: { handshakeTimeout: 2000, maxPayload: 64 * 1024 * 1024 },
+  });
+  try {
+    await client.connect();
+    // --inspect starts listening before Node has initialized process.argv.
+    // Wait for that measured startup boundary before comparing the identity.
+    let target;
+    const identityDeadline = Math.min(deadline - 5000, Date.now() + 5000);
+    do {
+      const evaluated = await client.evaluate('({pid:process.pid, entry:process.argv?.[1], argv:process.argv?.slice(2)})',
+        { returnByValue: true });
+      target = evaluated.result?.value;
+      if (typeof target?.entry === 'string') break;
+      await sleep(100);
+    } while (Date.now() < identityDeadline);
+    if (!Number.isInteger(target?.pid) || (pid && target.pid !== pid)
+        || (expectedEntry && target.entry !== expectedEntry)
+        || (expectedArg && !target.argv?.includes(expectedArg)))
+      throw new Error('inspector target identity mismatch');
+    await client.send('Profiler.enable');
+    await client.send('Profiler.setSamplingInterval', { interval: attachExisting ? 1000 : 200 });
+    await client.send('Profiler.start');
+    const captureMs = Math.min(durationMs, deadline - Date.now() - 5000);
+    if (captureMs <= 0) throw new Error('no capture window remains before the deadline');
+    await sleep(captureMs);
+    const { profile } = await client.send('Profiler.stop');
+    if (!profile?.nodes?.length || !profile.samples?.length)
+      throw new Error('inspector returned an empty CPU profile');
+    return { profile, target, captureMs, inspector: redactDiagnosticUrl(inspector.wsUrl) };
+  } finally {
+    if (attachExisting) client.close();
+    else await closeInspector(client, inspector.port);
+  }
 }
-if (!inspector) { console.error('could not find inspector ws url (SIGUSR1 may need --inspect support)'); process.exit(1); }
-console.error('inspector:', redactDiagnosticUrl(inspector.wsUrl));
 
-const client = createCdpClient(inspector.wsUrl);
-await client.connect();
-
-let profile;
-let profilingError = null;
-try {
-  await client.send('Profiler.enable');
-  await client.send('Profiler.setSamplingInterval', { interval: 200 }); // µs; 200us = 5kHz, plenty for a 30s window
-  await client.send('Profiler.start');
-  console.error(`profiling ${durationMs}ms ...`);
-  await sleep(durationMs);
-  ({ profile } = await client.send('Profiler.stop'));
-} catch (error) {
-  profilingError = error;
+async function main() {
+  const { values, positionals } = parseArgs({ allowPositionals: true, options: {
+    save: { type: 'string' }, 'attach-existing': { type: 'boolean' },
+    'expect-entry': { type: 'string' }, 'expect-arg': { type: 'string' },
+  } });
+  const pid = Number(positionals[0]);
+  const durationMs = Number(positionals[1] || 30000);
+  const startPort = Number(positionals[2] || 9229);
+  const { profile, captureMs, target } = await captureCpuProfile({ pid, durationMs, startPort,
+    attachExisting: values['attach-existing'] ?? false,
+    expectedEntry: values['expect-entry'], expectedArg: values['expect-arg'],
+    deadlineMs: values['attach-existing'] ? 50000 : durationMs + 20000 });
+  if (values.save) {
+    writeFileSync(values.save, JSON.stringify(profile));
+    console.error(`saved raw profile to ${values.save}`);
+  }
+  console.error(JSON.stringify({ target, captureMs }));
+  const { totalUs, excludedUs, realUs, frames } = aggregateCpuProfile(profile);
+  const excludedPct = totalUs ? ((excludedUs / totalUs) * 100).toFixed(1) : '0.0';
+  console.log(`\n=== TOP CPU SELF-TIME (sampled ${(captureMs / 1000).toFixed(1)}s, total ${(totalUs / 1e6).toFixed(1)}s, observer/non-work excluded ${(excludedUs / 1e6).toFixed(1)}s [${excludedPct}%], real workload ${(realUs / 1e6).toFixed(1)}s) ===`);
+  for (const [site, us] of frames.slice(0, 30)) {
+    const seconds = (us / 1e6).toFixed(2);
+    const pct = ((us / (realUs || 1)) * 100).toFixed(1);
+    console.log(`${seconds.padStart(7)}s  ${pct.padStart(5)}%  ${site}`);
+  }
 }
 
-let closeError = null;
-try {
-  await closeInspector(client, inspector.port);
-} catch (error) {
-  closeError = error;
-}
-if (profilingError) throw profilingError;
-if (closeError) throw closeError;
-
-if (savePath) {
-  writeFileSync(savePath, JSON.stringify(profile));
-  console.error(`saved raw profile to ${savePath}`);
-}
-
-// 3) aggregate self-time per call frame (function@file:line), excluding the
-// profiler's observer/non-work frames before ranking.
-const { totalUs, excludedUs, realUs, frames } = aggregateCpuProfile(profile);
-const excludedPct = totalUs ? ((excludedUs / totalUs) * 100).toFixed(1) : '0.0';
-const top = frames.slice(0, 30);
-console.log(`\n=== TOP CPU SELF-TIME (sampled ${(durationMs/1000)|0}s, total ${(totalUs/1e6).toFixed(1)}s, observer/non-work excluded ${(excludedUs/1e6).toFixed(1)}s [${excludedPct}%], real workload ${(realUs/1e6).toFixed(1)}s) ===`);
-for (const [site, us] of top) {
-  const s = (us / 1e6).toFixed(2);
-  const pct = ((us / (realUs || 1)) * 100).toFixed(1);
-  console.log(`${s.padStart(7)}s  ${pct.padStart(5)}%  ${site}`);
-}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
