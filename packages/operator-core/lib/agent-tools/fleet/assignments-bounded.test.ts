@@ -370,6 +370,65 @@ describe('fleet:assignments bounded handler reads', () => {
     );
   });
 
+  it('snapshot detail keeps the full scoped roster and claims without running member diagnostics', async () => {
+    mocks.listAssignments.mockResolvedValue([liveRow(), livePresenceRow()]);
+
+    const result = await fleetAssignmentsTool.handler(
+      { fleet: 'test-fleet', detail: 'snapshot', includeTimings: true } as never,
+      ctx,
+    ) as {
+      data: {
+        detail?: string;
+        unmeasuredMetrics?: string[];
+        scope?: { fleet?: string | null };
+        summary: Record<string, unknown>;
+        agents: Array<{ agentId?: string; claims?: unknown[] }>;
+        readTimings?: Array<{ phase: string }>;
+      };
+    };
+
+    expect(result.data).toMatchObject({
+      detail: 'snapshot',
+      scope: { fleet: 'test-fleet' },
+      summary: {
+        agents: 1,
+        alive: 1,
+        claims: 1,
+        scheduler_claim_state_status: 'unknown',
+        scheduler_active_work_item_claims: null,
+        orphaned_claims: null,
+        stalled_claims: null,
+        reclaimable_claims: null,
+        unanswered_directed: null,
+      },
+      agents: [expect.objectContaining({ agentId: 'su-worker' })],
+    });
+    expect(result.data.unmeasuredMetrics).toContain('orphaned_claims');
+    expect(result.data.unmeasuredMetrics).toContain('member.verdict');
+    expect(result.data.readTimings?.map((timing) => timing.phase)).not.toEqual(
+      expect.arrayContaining(['coverage', 'unanswered', 'loop', 'lastToolCalls', 'residue']),
+    );
+
+    for (const read of [
+      mocks.coverage,
+      mocks.schedulerClaims,
+      mocks.wakeability,
+      mocks.recordedLive,
+      mocks.selfWake,
+      mocks.recordedEnded,
+      mocks.parkedOn,
+      mocks.contextPressure,
+      mocks.unanswered,
+      mocks.loopStatuses,
+      mocks.lastToolCalls,
+      mocks.wakeModeOverrides,
+      mocks.defaultWakeMode,
+      mocks.residue,
+    ]) {
+      expect(read).not.toHaveBeenCalled();
+    }
+  });
+
   it('starts independent row enrichments together before any one of them settles', async () => {
     mocks.listAssignments.mockResolvedValue([liveRow()]);
     const wakeability = deferred<Map<string, never>>();

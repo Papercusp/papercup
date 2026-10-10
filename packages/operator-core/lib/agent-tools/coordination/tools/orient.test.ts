@@ -933,6 +933,64 @@ describe('coord:orient args', () => {
     });
   });
 
+  it('uses the full-roster snapshot for a recovered member afterCompaction read', async () => {
+    const ownerId = 'su-orient-handler-snapshot-test';
+    const nestedCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      control: { state: { route: { kind: 'fleet', fleet: 'orch-unify', role: 'member' } } },
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+
+    inProcessCallMock.mockReturnValue(async (name: string, args: Record<string, unknown>) => {
+      nestedCalls.push({ name, args });
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          detail: 'snapshot',
+          summary: { agents: 2, claims: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 1 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error('unexpected sub-call: ' + name);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    await orientTool.handler(
+      {
+        afterCompaction: true,
+        harness: 'papercusp',
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    );
+
+    const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
+    expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify', detail: 'snapshot', harness: 'papercusp' });
+  });
+
   it('applies caller-specific tool-surface activation in the real handler', async () => {
     const ownerId = 'su-orient-handler-activation-test';
 
@@ -4521,7 +4579,7 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
         const result = await resultPromise;
         const assignmentCall = calls.find((entry) => entry.name === 'fleet:assignments');
 
-        expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify' });
+        expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify', detail: 'snapshot' });
         expect(result.me).toMatchObject({
           ok: false,
           degraded: true,

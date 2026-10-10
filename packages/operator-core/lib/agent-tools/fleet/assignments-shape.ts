@@ -274,6 +274,10 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     ...(typeof d.retryable === "boolean" ? { retryable: d.retryable } : {}),
     ...(readTimings ? { readTimings } : {}),
     ...(handlerElapsedMs !== null ? { handlerElapsedMs } : {}),
+    ...(typeof d.detail === 'string' ? { detail: d.detail } : {}),
+    ...(Array.isArray(d.unmeasuredMetrics)
+      ? { unmeasuredMetrics: d.unmeasuredMetrics.map(String) }
+      : {}),
     ...(d.self !== undefined ? { self: d.self } : {}),
     // EI-18763132241176410: `scope` QUALIFIES the counts contract below — it names the
     // population the query asked about ({ agent, plan, fleet, harness, selfScoped,

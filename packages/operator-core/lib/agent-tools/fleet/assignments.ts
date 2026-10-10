@@ -1061,6 +1061,12 @@ export default defineTool({
       ),
     harness: z.string().max(80).optional(),
     workspace: z.string().max(120).optional(),
+    detail: z
+      .enum(['full', 'snapshot'])
+      .optional()
+      .describe(
+        "Read detail. 'full' (default) includes lifecycle, claim-recovery, coverage, and member diagnostics. 'snapshot' returns the full scoped roster and active claims without those expensive diagnostics; omitted metrics are null and listed in unmeasuredMetrics. Use for recovery/bootstrap reads that need accurate membership and claims but must not infer reclaimability.",
+      ),
     include_stale: z
       .boolean()
       .optional()
@@ -1110,6 +1116,7 @@ export default defineTool({
   async handler(args, ctx) {
     const handlerStartedAt = Date.now();
     const handlerDeadlineAt = handlerStartedAt + FLEET_ASSIGNMENTS_HANDLER_BUDGET_MS;
+    const snapshotRead = args.detail === 'snapshot';
     // Judge is an evidence-only reader. Unlike broad fleet observers, it can
     // inspect only its own assignment row; requiring the explicit `self`
     // selector prevents an omitted filter from widening to the whole fleet.
@@ -1258,13 +1265,15 @@ export default defineTool({
         }),
       [] as FleetAssignmentRow[],
     );
-    const coveragePromise = boundedRead(
-      'coverage',
-      () => getAllPlanItemCoverage(args.plan ? { planSlug: args.plan } : {}),
-      new Map<string, PlanItemCoverage>(),
-    );
+    const coveragePromise = snapshotRead
+      ? Promise.resolve(null)
+      : boundedRead(
+          'coverage',
+          () => getAllPlanItemCoverage(args.plan ? { planSlug: args.plan } : {}),
+          new Map<string, PlanItemCoverage>(),
+        );
     const harnessPlansPromise =
-      args.harness && !args.plan
+      !snapshotRead && args.harness && !args.plan
         ? boundedRead(
             'harnessPlans',
             () => planSlugsForHarness(workspaceId, args.harness as string),
@@ -1306,11 +1315,13 @@ export default defineTool({
     })[] = groupedAgents.filter(
       (g) => basePopulationPredicate(g) || hasIntentWorkItemReference(g.intent),
     );
-    const schedulerClaimStatePromise = boundedRead(
-      'schedulerClaimState',
-      () => readClaimConcurrencyBatch({ cupIds: agents.map((agent) => agent.agentId), workspaceId }),
-      null as Map<string, ClaimConcurrencyVerdict> | null,
-    );
+    const schedulerClaimStatePromise = snapshotRead
+      ? Promise.resolve(null)
+      : boundedRead(
+          'schedulerClaimState',
+          () => readClaimConcurrencyBatch({ cupIds: agents.map((agent) => agent.agentId), workspaceId }),
+          null as Map<string, ClaimConcurrencyVerdict> | null,
+        );
     const runDecoration = async (label: string, work: () => Promise<unknown>): Promise<void> => {
       try {
         await work();
@@ -1324,7 +1335,7 @@ export default defineTool({
     // EI-6077 / P-001 / P-007: these reads are independent once the agent rows
     // exist. Start them together, with each underlying fetch bounded separately
     // so one slow PG leg cannot consume the whole handler's request budget.
-    await Promise.all([
+    await Promise.all(snapshotRead ? [] : [
       runDecoration('wakeability', () =>
         reconcileWakeability(
           agents,
@@ -1389,61 +1400,67 @@ export default defineTool({
 
     // P-010: loop state depends on parkedOn (parked event keys change the
     // lifecycle verdict), so it starts after the independent first wave settles.
-    await runDecoration('loop', () =>
-      decorateLoopMonitorStates(agents, (ids) =>
-        boundedRead(
-          'loop',
-          () => getLoopStatuses(ids),
-          new Map<string, LoopStatus>(),
+    if (!snapshotRead) {
+      await runDecoration('loop', () =>
+        decorateLoopMonitorStates(agents, (ids) =>
+          boundedRead(
+            'loop',
+            () => getLoopStatuses(ids),
+            new Map<string, LoopStatus>(),
+          ),
         ),
-      ),
-    );
+      );
 
-    // EI-8995: verdicts depend on wakeability, parked events, and loop state;
-    // their three source reads are independent and bounded in the helper call.
-    await runDecoration('verdicts', () =>
-      decorateMemberVerdicts(
-        agents,
-        (ids) =>
-          boundedRead(
-            'lastToolCalls',
-            () => lastToolCallAtByOwner(ids),
-            new Map<string, string>(),
+      // EI-8995: verdicts depend on wakeability, parked events, and loop state;
+      // their three source reads are independent and bounded in the helper call.
+      await runDecoration('verdicts', () =>
+        decorateMemberVerdicts(
+          agents,
+          (ids) =>
+            boundedRead(
+              'lastToolCalls',
+              () => lastToolCallAtByOwner(ids),
+              new Map<string, string>(),
+            ),
+          (ids) =>
+            boundedRead(
+              'wakeModeOverrides',
+              () => getWakeModeOverridesFor(ids),
+              new Map<string, WakeMode>(),
+            ),
+          () =>
+            boundedRead(
+              'defaultWakeMode',
+              () => getDefaultWakeMode(),
+              'auto' as WakeMode,
+            ),
+        ),
+      );
+    }
+    const deadIntentWorkItemIds = snapshotRead
+      ? []
+      : [
+          ...new Set(
+            agents
+              .filter((a) => a.verdict === 'dead')
+              .flatMap((a) => extractWorkItemIds(a.intent)),
           ),
-        (ids) =>
-          boundedRead(
-            'wakeModeOverrides',
-            () => getWakeModeOverridesFor(ids),
-            new Map<string, WakeMode>(),
-          ),
-        () =>
-          boundedRead(
-            'defaultWakeMode',
-            () => getDefaultWakeMode(),
-            'auto' as WakeMode,
-          ),
-      ),
-    );
-    const deadIntentWorkItemIds = [
-      ...new Set(
-        agents
-          .filter((a) => a.verdict === 'dead')
-          .flatMap((a) => extractWorkItemIds(a.intent)),
-      ),
-    ].slice(0, ABANDONED_INTENT_REF_CAP);
-    const intentWorkItems = await boundedRead(
-      'intentWorkItems',
-      async () => {
-        const resolved = await Promise.all(
-          deadIntentWorkItemIds.map(async (id) => [id, await getWorkItem(id, args.harness)] as const),
+        ].slice(0, ABANDONED_INTENT_REF_CAP);
+    const intentWorkItems = snapshotRead
+      ? new Map<string, WorkItem>()
+      : await boundedRead(
+          'intentWorkItems',
+          async () => {
+            const resolved = await Promise.all(
+              deadIntentWorkItemIds.map(async (id) => [id, await getWorkItem(id, args.harness)] as const),
+            );
+            return new Map(
+              resolved.filter((entry): entry is readonly [string, WorkItem] => entry[1] != null),
+            );
+          },
+          new Map<string, WorkItem>(),
         );
-        return new Map(
-          resolved.filter((entry): entry is readonly [string, WorkItem] => entry[1] != null),
-        );
-      },
-      new Map<string, WorkItem>(),
-    );
-    const abandonedIntents = findAbandonedIntentWorkItems(agents, intentWorkItems);
+    const abandonedIntents = snapshotRead ? [] : findAbandonedIntentWorkItems(agents, intentWorkItems);
     const abandonedIntentOwners = new Set(abandonedIntents.map((row) => row.agentId));
     const agentPopulation = selectFleetPopulation(
       groupedAgents,
@@ -1476,7 +1493,7 @@ export default defineTool({
       agents.filter((a) => a.sessionState === 'ended').map((a) => a.agentId),
     );
     const reconciledRows = reconcileOrphanedWithVerdicts(rows, oracleEndedOwners);
-    const orphans = orphanedClaims(reconciledRows);
+    const orphans = snapshotRead ? [] : orphanedClaims(reconciledRows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
     // no reader concludes "someone's on it" from a claim that isn't advancing.
@@ -1508,7 +1525,7 @@ export default defineTool({
     // the richer writer evidence says the holder is healthy, deliberately waiting,
     // recoverable by wake, or internally contested. Only genuinely suspect progress
     // remains in the stalled/reclaimable bucket.
-    const stalled = stalledClaims(reconciledRows).filter((row) => {
+    const stalled = snapshotRead ? [] : stalledClaims(reconciledRows).filter((row) => {
       if (row.agentId && healthyLoopOwners.has(row.agentId)) return false;
       const health = deriveClaimHealth(row, row.agentId ? (holderActivity.get(row.agentId) ?? null) : null);
       return shouldRecoverClaimFromHealth(health);
@@ -1521,11 +1538,13 @@ export default defineTool({
       if (!id) continue;
       rowByAgentAndId.set(`${row.agentId}\0${id}`, row);
     }
-    for (const agent of agents) {
-      const holder = holderActivity.get(agent.agentId) ?? null;
-      for (const claim of agent.claims) {
-        const row = claim.id ? rowByAgentAndId.get(`${agent.agentId}\0${claim.id}`) : null;
-        if (row) claim.claimHealth = deriveClaimHealth(row, holder);
+    if (!snapshotRead) {
+      for (const agent of agents) {
+        const holder = holderActivity.get(agent.agentId) ?? null;
+        for (const claim of agent.claims) {
+          const row = claim.id ? rowByAgentAndId.get(`${agent.agentId}\0${claim.id}`) : null;
+          if (row) claim.claimHealth = deriveClaimHealth(row, holder);
+        }
       }
     }
     // EI-18763117665515043: a claim's liveness verdict is meaningless when the
@@ -1539,11 +1558,13 @@ export default defineTool({
     // that interface gained `reason` (TS2345 at the summarizeFor call below, +1 over
     // baseline — a fleet-wide gate red, since test:affected is type-blind and cannot see
     // it). Deriving it means the next field added there cannot reopen this.
-    const residueMap = await boundedRead(
-      'residue',
-      () => resolveTerminalPlanItemResidue([...orphans, ...stalled]),
-      new Map() as Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>>,
-    );
+    const residueMap = snapshotRead
+      ? (new Map() as Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>>)
+      : await boundedRead(
+          'residue',
+          () => resolveTerminalPlanItemResidue([...orphans, ...stalled]),
+          new Map() as Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>>,
+        );
     const summarizeFor = (row: FleetAssignmentRow) =>
       summarizeOrphan(
         row,
@@ -1595,6 +1616,7 @@ export default defineTool({
     // harness scoping failed, omit this section rather than widening an
     // uncertain scope to another harness.
     let covMap: Awaited<ReturnType<typeof getAllPlanItemCoverage>> | null =
+      snapshotRead ||
       degradedLegs.has('coverage') ||
       (args.harness != null && !args.plan && degradedLegs.has('harnessPlans'))
         ? null
@@ -1693,7 +1715,7 @@ export default defineTool({
     // coverage map for claims, so `ready` is exactly what would be placed next.
     // Requires a plan; non-fatal (a read hiccup just omits the section).
     let dagView: DagFrontierView | null = null;
-    if (args.includeDag && args.plan) {
+    if (!snapshotRead && args.includeDag && args.plan) {
       try {
         const row = await boundedRead(
           'dag',
@@ -1735,37 +1757,39 @@ export default defineTool({
       // This uses the scheduler's exact held-work-item predicate. It can exceed
       // claims/load because blocked and needs-human holds consume scheduler capacity
       // while remaining absent from the actionable fleet_assignment work-list.
-      scheduler_claim_state_status: schedulerClaimStateComplete ? 'measured' : 'unknown',
-      scheduler_active_work_item_claims: schedulerClaimStateComplete
+      scheduler_claim_state_status: !snapshotRead && schedulerClaimStateComplete ? 'measured' : 'unknown',
+      scheduler_active_work_item_claims: !snapshotRead && schedulerClaimStateComplete
         ? agents.reduce((count, agent) => count + (agent.schedulerClaimState?.activeClaims ?? 0), 0)
         : null,
-      orphaned_claims: orphans.length,
-      stalled_claims: stalled.length,
+      orphaned_claims: snapshotRead ? null : orphans.length,
+      stalled_claims: snapshotRead ? null : stalled.length,
       // WI-5975: the two numbers a leader should actually act on. `reclaimable`
       // counts ONLY claims whose holder the oracle says is gone; `held_by_live_agent`
       // counts the quiet-but-alive ones, whose sanctioned action is ASK. The raw
       // orphaned/stalled counts above conflated them, which is how a reassign got
       // aimed at an agent that was working.
-      reclaimable_claims: reclaimableRows.length,
-      held_by_live_agent: liveHeldRows.length,
+      reclaimable_claims: snapshotRead ? null : reclaimableRows.length,
+      held_by_live_agent: snapshotRead ? null : liveHeldRows.length,
       // EI-18763117665515043: claims whose LINKED plan item is already terminal —
       // stale residue, not abandoned/quiet-but-live work. Close these (evidence
       // citing the plan item), never `work_items:release` them.
-      residue_claims: residueRows.length,
+      residue_claims: snapshotRead ? null : residueRows.length,
       // EI-6074: distinct plan-item deliverables held by >1 principal via the
       // work-item↔plan-item coverage edge — the silent cross-table duplicate.
-      coverage_collisions: collisions.length,
+      coverage_collisions: snapshotRead ? null : collisions.length,
       // EI-21188799646985672: distinct non-terminal linked work-items held by
       // one principal for the same plan-item deliverable — the same-principal
       // duplicate that the cross-principal collision detector cannot see.
-      coverage_duplicates: duplicates.length,
+      coverage_duplicates: snapshotRead ? null : duplicates.length,
       // No claim exists to orphan, so this is a separate detector beside the
       // claim counters rather than another spelling of orphaned_claims.
-      abandoned_intents: abandonedIntents.length,
+      abandoned_intents: snapshotRead ? null : abandonedIntents.length,
       declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
       // P-001 (fleet-member-dx): members deliberately parked on an events:await —
       // idle-by-design, not stalled/abandoned.
-      parked: agents.filter((a) => ((a as { parkedOn?: string[] }).parkedOn?.length ?? 0) > 0).length,
+      parked: snapshotRead
+        ? null
+        : agents.filter((a) => ((a as { parkedOn?: string[] }).parkedOn?.length ?? 0) > 0).length,
       // EI-19407725333778711: members that will NEVER act again unprompted —
       // `selfWake:'none'` while still reading as alive. Sits next to `parked`
       // on purpose: `parked` is the healthy idle state and this is the one that
@@ -1773,15 +1797,15 @@ export default defineTool({
       // re-arm their loops (`loop:arm`) or relaunch them; a leader reading
       // `agents:11, alive:11, parked:0` learned nothing about it before this.
       // Excludes rows where the leg did not resolve — unknown never counts.
-      no_self_wake: agents.filter((a) =>
+      no_self_wake: snapshotRead ? null : agents.filter((a) =>
         isStrandedMember({
           sessionState: (a as { sessionState?: SessionState | null }).sessionState,
           selfWake: (a as { selfWake?: SelfWakeSource }).selfWake,
         }),
       ).length,
-      monitoring: agents.filter((a) => a.monitorState === 'monitoring').length,
-      waiting: agents.filter((a) => a.monitorState === 'waiting').length,
-      parked_awaiting_capability: agents.filter(
+      monitoring: snapshotRead ? null : agents.filter((a) => a.monitorState === 'monitoring').length,
+      waiting: snapshotRead ? null : agents.filter((a) => a.monitorState === 'waiting').length,
+      parked_awaiting_capability: snapshotRead ? null : agents.filter(
         (a) => a.monitorState === 'parked-awaiting-capability',
       ).length,
       // P-021: total work-item load across live agents (the warm-inject signal).
@@ -1789,12 +1813,12 @@ export default defineTool({
       // P-007: fleet-health headline — members whose context-pressure bucket is
       // high/critical right now (silent when 0, mirroring the ambient gauge's
       // quiet-below-LOUD philosophy).
-      high_context: agents.filter((a) => a.contextPressure === 'high').length,
-      critical_context: agents.filter((a) => a.contextPressure === 'critical').length,
+      high_context: snapshotRead ? null : agents.filter((a) => a.contextPressure === 'high').length,
+      critical_context: snapshotRead ? null : agents.filter((a) => a.contextPressure === 'critical').length,
       // P-007 (fleet-reliability-verification-2026-07-10): members with >=1
       // unanswered directed message right now — the mechanical "who hasn't
       // answered me" read a leader otherwise hand-tracks across wakes.
-      unanswered_directed: agents.filter((a) => (a.unanswered?.count ?? 0) > 0).length,
+      unanswered_directed: snapshotRead ? null : agents.filter((a) => (a.unanswered?.count ?? 0) > 0).length,
     };
     // EI-1597: bound the agent-facing output so a large fleet (esp. include_stale)
     // can't overflow the agent result cap. `agents` is already sorted live-first, so
@@ -1847,6 +1871,37 @@ export default defineTool({
     return {
       data: {
         ok: true,
+        ...(snapshotRead
+          ? {
+              detail: 'snapshot',
+              unmeasuredMetrics: [
+                'scheduler_active_work_item_claims',
+                'orphaned_claims',
+                'stalled_claims',
+                'reclaimable_claims',
+                'held_by_live_agent',
+                'residue_claims',
+                'abandoned_intents',
+                'coverage_collisions',
+                'coverage_duplicates',
+                'parked',
+                'no_self_wake',
+                'monitoring',
+                'waiting',
+                'parked_awaiting_capability',
+                'high_context',
+                'critical_context',
+                'unanswered_directed',
+                'member.sessionState',
+                'member.wakeability',
+                'member.selfWake',
+                'member.verdict',
+                'member.loopState',
+                'member.lastToolCallAt',
+                'population.liveness',
+              ],
+            }
+          : {}),
         // A degraded read remains useful, but its counts/rows can be incomplete.
         // Name the exact bounded leg(s) so supervisors can distinguish that state
         // from a genuine empty fleet.

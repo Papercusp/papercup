@@ -1280,7 +1280,11 @@ export async function composeOrient(
   // on settlement even if the backlog chain is still waiting.
   const mePromise = withBoundedTimeout(
     call('fleet:assignments', {
-      ...(recoveredFleetMembership ? { fleet: recoveredFleetMembership.fleetSlug } : ownerId ? { agent: ownerId } : {}),
+      ...(recoveredFleetMembership
+        ? { fleet: recoveredFleetMembership.fleetSlug, detail: 'snapshot' }
+        : ownerId
+          ? { agent: ownerId }
+          : {}),
       ...(args.harness ? { harness: args.harness } : {}),
     }),
     {
