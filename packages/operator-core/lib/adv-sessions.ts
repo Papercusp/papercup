@@ -2507,7 +2507,9 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
 }
 
 /**
- * Resolve the newest still-active launch row for one coordination owner.
+ * Resolve the newest registration for one coordination owner when still active.
+ * A resumed predecessor's activity timestamp cannot supersede a later row;
+ * when the later registration ends, never fall back to an active old row.
  *
  * This is deliberately keyed by `coord_owner_id`, not a native transcript id:
  * focus/mark/wake requests start from the stable handle exposed by
@@ -2537,7 +2539,12 @@ export async function getLatestActiveAdvSessionByOwner(coordOwnerId: string): Pr
          WHERE workspace_id = ${activeWorkspaceId()}
            AND coord_owner_id = ${ownerId}
            AND ended_at IS NULL
-         ORDER BY started_at DESC
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.adv_sessions AS successor
+              WHERE successor.coord_owner_id = a.coord_owner_id
+                AND successor.id > a.id
+           )
+         ORDER BY id DESC
          LIMIT 1
       `,
     );
@@ -2661,12 +2668,12 @@ export async function advSessionsByCoordOwner(
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id IS NOT NULL
          ${ids ? sql`AND coord_owner_id = ANY(${ids}::text[])` : sql``}
-       ORDER BY ${ids ? sql`coord_owner_id,` : sql``} started_at DESC
+       ORDER BY ${ids ? sql`coord_owner_id,` : sql``} id DESC
        LIMIT ${limit}
     `;
     for (const r of rows) {
       const mapped = mapAdvSessionRow(r);
-      // ORDER BY started_at DESC → first seen per owner is the most recent.
+      // Registration ids are immutable; resume activity can bump started_at.
       if (mapped.coordOwnerId && !out.has(mapped.coordOwnerId)) out.set(mapped.coordOwnerId, mapped);
     }
   } catch (e) {
@@ -3038,7 +3045,7 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
-       ORDER BY started_at DESC
+       ORDER BY id DESC
        LIMIT 1
     `;
     const r = rows[0];

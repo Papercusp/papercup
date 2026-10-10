@@ -22,6 +22,8 @@ import {
   advSessionsByCoordOwner,
   claimAdvSessionResume,
   finalizeAdvSessionResume,
+  getLatestActiveAdvSessionByOwner,
+  latestAdvSessionByCoordOwner,
   listRecordedLiveSessions,
   reactivateAdvSessionByOwner,
   releaseAdvSessionResume,
@@ -74,6 +76,35 @@ beforeAll(async () => {
 });
 
 describe('WI-10006572 — real recorded reader / absent presence / local OS PID', () => {
+  it.each([false, true])('elects the newest registration after predecessor activity is bumped (successor ended=%s)', async (ended) => {
+    const ownerId = `s-registration-${WS}-${ended}`;
+    await seedAdv({ coordOwnerId: ownerId, startedAgoSec: 7200, pid: 72 });
+    await seedAdv({ coordOwnerId: ownerId, startedAgoSec: 3600, pid: 73, ended });
+    const rows = await admin`
+      SELECT id FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${WS} AND coord_owner_id = ${ownerId}
+       ORDER BY id ASC`;
+    const predecessorId = Number(rows[0].id);
+    const successorId = Number(rows[1].id);
+    await admin`
+      UPDATE harness_shared.adv_sessions SET started_at = now()
+       WHERE id = ${predecessorId}`;
+
+    // Resume activity changes started_at, but cannot change registration order.
+    expect.soft((await latestAdvSessionByCoordOwner(ownerId))?.id).toBe(successorId);
+    expect.soft((await advSessionsByCoordOwner(1, [ownerId])).get(ownerId)?.id).toBe(successorId);
+    expect.soft((await advSessionsByCoordOwner(500)).get(ownerId)?.id).toBe(successorId);
+    const priorWorkspace = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = WS;
+    try {
+      const active = await getLatestActiveAdvSessionByOwner(ownerId);
+      expect.soft(active?.id ?? null).toBe(ended ? null : successorId);
+    } finally {
+      if (priorWorkspace === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = priorWorkspace;
+    }
+  });
+
   it('targeted latest-per-owner reads retain PID/locality outside the global recent window', async () => {
     const a = `s-hydration-a-${WS}`;
     const b = `s-hydration-b-${WS}`;
