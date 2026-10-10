@@ -924,6 +924,12 @@ describe('work_items:set_state — non-terminal reason is recorded as a comment 
     const result = parse({ reason: REASON, items: [{ id: 'WI-7', state: 'blocked' }] });
     expect(result.success).toBe(false);
     expect(result.error?.issues.map((issue) => issue.message).join(' | ')).toContain('work_items:set_blocker');
+
+    const schema = z.toJSONSchema(tool.args as never);
+    const advertised = JSON.stringify(schema);
+    expect(advertised).toContain('x-papercusp-call-constraint');
+    expect(advertised).toContain('a batch-level `reason` or `note` applies to every row');
+    expect(advertised).toContain('forbidden when any row state is `blocked`');
   });
 
   it('refuses conflicting batch and per-row reason values', () => {

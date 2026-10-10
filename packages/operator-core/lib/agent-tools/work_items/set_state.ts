@@ -396,6 +396,8 @@ const blockedSingle = z.object({ id: z.string().min(1), ...blockedInlineShape })
 const blockedMany = z
   .object({ ids: z.array(z.string().min(1)).min(1).max(200), ...blockedInlineShape })
   .strict();
+const ITEMS_BATCH_REASON_CALL_CONSTRAINT =
+  'Within `items:[...]`, a batch-level `reason` or `note` applies to every row and is forbidden when any row state is `blocked` (including legacy aliases). Blocked rows also reject row-level `reason`/`note`; use `work_items:set_blocker` for external blockers or `work_items:link { rel:"blocks" }` for a work-item dependency.';
 const itemsBatch = z
   .object({
     harness: z.string().max(80).optional().describe('default harness for items that omit one'),
@@ -455,7 +457,8 @@ const itemsBatch = z
         });
       }
     }
-  });
+  })
+  .meta({ 'x-papercusp-call-constraint': ITEMS_BATCH_REASON_CALL_CONSTRAINT });
 
 const setStateArgs = z.union(
   [itemsBatch, terminalSingle, terminalMany, progressSingle, progressMany, blockedSingle, blockedMany],
