@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildLoopbackIdentitySpawn, type AgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
+import { buildLoopbackIdentitySpawn, LOOPBACK_IDENTITY_WRAPPER_SOURCE, type AgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import { createHostedPrincipalResolver, type HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import { HOSTED_SESSION_COOKIE, HostedSessionCookieCodec, type HostedSession } from '../auth/hosted-session';
 import { hostedPermissionsForMembership } from '../auth/hosted-role-permissions';
@@ -219,6 +219,51 @@ describe('signed-session customer command execution', () => {
       if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already reaped */ } }
     }
   }, 15_000);
+
+  it('cancels during wrapper startup without orphaning the detached payload', async () => {
+    const marker = join(root, 'wrapper-started.json');
+    // Hold the real wrapper immediately after spawning its detached payload.
+    // Cancellation must be armed before that spawn, even while startup work
+    // prevents the JS event loop from delivering the pending signal.
+    const source = LOOPBACK_IDENTITY_WRAPPER_SOURCE.replace(
+      "const cleanup = () => {",
+      `require('fs').writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ wrapper: process.pid, payload: child.pid }));
+       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+       const cleanup = () => {`,
+    );
+    expect(source).not.toBe(LOOPBACK_IDENTITY_WRAPPER_SOURCE);
+    const original = transport();
+    const transform: AgentSpawnTransform = input => {
+      const plan = original(input);
+      return { ...plan, command: process.execPath, args: ['-e', source] };
+    };
+    const { executor } = await bind(authority(), vi.fn(transform));
+    const controller = new AbortController();
+    const pending = executor.run({ command: 'exec sleep 30', signal: controller.signal });
+    const settled = pending.then(() => 'resolved', error => (error as Error).message);
+    let pids: { wrapper: number; payload: number } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await vi.waitFor(() => expect(existsSync(marker)).toBe(true));
+      pids = JSON.parse(readFileSync(marker, 'utf8'));
+      const started = performance.now();
+      controller.abort();
+      const outcome = await Promise.race([settled,
+        new Promise<string>(resolve => { timer = setTimeout(() => resolve('shutdown deadline exceeded'), 2_000); })]);
+      expect(outcome).toBe('hosted_customer_execution_aborted');
+      expect(performance.now() - started).toBeLessThan(2_000);
+      expect(() => process.kill(pids!.payload, 0)).toThrow();
+    } finally {
+      if (timer) clearTimeout(timer);
+      controller.abort();
+      // Clean up exactly this test's measured subtree after a failing detector.
+      if (pids) {
+        try { process.kill(-pids.payload, 'SIGKILL'); } catch { /* already reaped */ }
+        try { process.kill(pids.wrapper, 'SIGKILL'); } catch { /* already reaped */ }
+      }
+      await settled;
+    }
+  }, 10_000);
 
   it('sanitizes authority and transport failures instead of leaking their details', async () => {
     const a = await bind();
