@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { lookupByMcpName, listAllProjectedTools } from '@papercusp/tooldef';
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { scoreSubjectEvidence, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
@@ -6,6 +6,23 @@ import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES } from './subject-evidence
 import '../agent-tools/index';
 
 describe('registered subject evidence with the real local scorer', () => {
+  let configuredPrivateWarmup = false;
+  beforeAll(() => {
+    // A scorer-only test owns its lazily spawned sidecar. The default Gemma
+    // startup is unrelated to this fixture and can overlap the first bounded
+    // measurements. Reuse the maintained reranker-only warm profile; explicit
+    // shared-sidecar URLs and caller-selected profiles retain their settings.
+    if (process.env.PAPERCUSP_EMBED_SIDECAR === '1' &&
+        !process.env.PAPERCUSP_EMBED_SIDECAR_URL &&
+        process.env.PAPERCUSP_EMBED_SIDECAR_WARM === undefined) {
+      process.env.PAPERCUSP_EMBED_SIDECAR_WARM = 'rerank';
+      configuredPrivateWarmup = true;
+    }
+  });
+  afterAll(() => {
+    if (configuredPrivateWarmup) delete process.env.PAPERCUSP_EMBED_SIDECAR_WARM;
+  });
+
   it('measures labelled held-out top choice, recall and explicit no-expert outcomes', async () => {
     for (const name of ['computer:provision_desktop', 'computer:observe', 'db:migrate']) {
       expect(lookupByMcpName(name)?.description).toBeTruthy();
@@ -14,6 +31,7 @@ describe('registered subject evidence with the real local scorer', () => {
     const url = await resolveProcessSidecarUrl(undefined, ['POST /rerank']);
     const health = url ? await (await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(5000) })).json() : null;
     const runtime = { endpoint: url, engine: url ? 'sidecar' : 'in-process',
+      warmProfile: process.env.PAPERCUSP_EMBED_SIDECAR_WARM ?? 'default',
       build: health?.sha ?? null, modelState: health?.models?.rerank ?? null,
       execution: health?.rerankExecutionHealth?.active ?? null };
     console.info('subject-scorer-preflight', JSON.stringify(runtime));
