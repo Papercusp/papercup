@@ -425,16 +425,26 @@ after it may have run.
 Every drop-in named in this section must be installed as a symlink so the
 checked-in contracts remain the source of truth.
 
+On this Linux development host, the packaged `papercusp-server.service` can
+also start the cross-platform gateway fallback. When the dedicated
+`papercup-inference-gateway.service` is installed, its host-only override keeps
+that unit as the single `:8788` authority. The packaged base unit stays
+default-on, so Linux installations without the dedicated gateway retain their
+managed fallback.
+
 ## Install (one-time, on the shared development host)
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
 mkdir -p ~/.config/systemd/user/papercup-bg-host.service.d
+mkdir -p ~/.config/systemd/user/papercusp-server.service.d
 sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" /mnt/data/papercusp-dependency-generations
 ln -sfn "$(pwd)/papercup-bg-host.service.d/95-bundled-entry.conf" \
   ~/.config/systemd/user/papercup-bg-host.service.d/95-bundled-entry.conf
 ln -sfn "$(pwd)/papercup-bg-host.service.d/97-gateway-systemd-authority.conf" \
   ~/.config/systemd/user/papercup-bg-host.service.d/97-gateway-systemd-authority.conf
+ln -sfn "$(pwd)/papercusp-server.service.d/97-gateway-systemd-authority.conf" \
+  ~/.config/systemd/user/papercusp-server.service.d/97-gateway-systemd-authority.conf
 ln -sfn "$(pwd)/papercup-bg-host.service.d/98-dependency-generation-root.conf" ~/.config/systemd/user/papercup-bg-host.service.d/98-dependency-generation-root.conf
 ln -sfn "$(pwd)/papercup-bg-host.service.d/99-mcp-proxy.conf" ~/.config/systemd/user/papercup-bg-host.service.d/99-mcp-proxy.conf
 ln -sfn "$(pwd)/papercup-mcp-proxy-bg-host.service" ~/.config/systemd/user/papercup-mcp-proxy-bg-host.service
@@ -442,9 +452,9 @@ systemctl --user daemon-reload
 systemctl --user enable --now papercup-mcp-proxy-bg-host.service
 ```
 
-Do not copy the drop-in or edit the generated service. Do not restart bg-host
-as part of this installation; activate it at the next coordinated/managed
-bg-host restart.
+Do not copy the drop-in or edit the generated service. Do not restart bg-host or
+papercusp-server as part of this installation; activate each override at its
+next coordinated/managed restart.
 
 The drop-in also carries `TimeoutStartSec=300`. That is not decoration and must not be
 dropped: `ExecStartPre` time counts against `TimeoutStartSec` for `Type=simple`, and the

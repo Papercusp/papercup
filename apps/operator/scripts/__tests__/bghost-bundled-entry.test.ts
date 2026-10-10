@@ -11,6 +11,12 @@ const GATEWAY_AUTHORITY_DROP_IN = join(
   'papercup-bg-host.service.d',
   '97-gateway-systemd-authority.conf',
 );
+const PACKAGED_SERVER_GATEWAY_AUTHORITY_DROP_IN = join(
+  SCRIPTS_DIR,
+  'systemd',
+  'papercusp-server.service.d',
+  '97-gateway-systemd-authority.conf',
+);
 const DEPENDENCY_GENERATION_DROP_IN = join(
   SCRIPTS_DIR,
   'systemd',
@@ -44,10 +50,11 @@ const SNAPSHOT_LAUNCHER_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/oper
  * cannot live here: CI has no user systemd session, so the fact is unobservable from a
  * vitest by construction.
  */
-describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', () => {
+describe('papercup-bg-host and Linux gateway-authority file contracts', () => {
   const bundleHost = readFileSync(BUNDLE_HOST, 'utf8');
   const dropIn = readFileSync(DROP_IN, 'utf8');
   const gatewayAuthorityDropIn = readFileSync(GATEWAY_AUTHORITY_DROP_IN, 'utf8');
+  const packagedServerGatewayAuthorityDropIn = readFileSync(PACKAGED_SERVER_GATEWAY_AUTHORITY_DROP_IN, 'utf8');
   const dependencyGenerationDropIn = readFileSync(DEPENDENCY_GENERATION_DROP_IN, 'utf8');
   const readme = readFileSync(README, 'utf8');
 
@@ -157,14 +164,14 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     expect(dropIn).toContain('ExecStartPre=%h/');
   });
 
-  it('documents the canonical symlink installation without restarting bg-host', () => {
+  it('documents the canonical symlink installation without restarting services', () => {
     expect(readme).toContain('papercup-bg-host.service.d/95-bundled-entry.conf');
     expect(readme).toContain('papercup-bg-host.service.d/98-dependency-generation-root.conf');
     expect(readme).toContain('sudo install -d -m 0750');
     expect(readme).toMatch(/mkdir -p ~\/\.config\/systemd\/user\/papercup-bg-host\.service\.d/);
     expect(readme).toMatch(/ln -sfn "\$\(pwd\)\/papercup-bg-host\.service\.d\/95-bundled-entry\.conf"/);
     expect(readme).toContain('systemctl --user daemon-reload');
-    expect(readme).toMatch(/Do not restart bg-host\s+as part of this installation/);
+    expect(readme).toMatch(/Do not restart bg-host or\s+papercusp-server as part of this installation/);
   });
 
   it('pins the standalone systemd gateway as the single Linux :8788 authority (EI-22359055031706978)', () => {
@@ -180,5 +187,19 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     );
     expect(readme).toContain('PAPERCUSP_GATEWAY_SUPERVISE=0');
     expect(readme).toContain('papercup-inference-gateway.service');
+  });
+
+  it('disables the packaged server fallback only through the shared Linux host override', () => {
+    expect(packagedServerGatewayAuthorityDropIn).toContain('[Service]');
+    expect(packagedServerGatewayAuthorityDropIn).toContain('Environment=PAPERCUSP_GATEWAY_SUPERVISE=0');
+    expect(packagedServerGatewayAuthorityDropIn).toContain('papercup-inference-gateway.service');
+    expect(packagedServerGatewayAuthorityDropIn).toContain('without the dedicated gateway');
+
+    expect(readme).toContain('papercusp-server.service.d/97-gateway-systemd-authority.conf');
+    expect(readme).toMatch(/mkdir -p ~\/\.config\/systemd\/user\/papercusp-server\.service\.d/);
+    expect(readme).toMatch(
+      /ln -sfn "\$\(pwd\)\/papercusp-server\.service\.d\/97-gateway-systemd-authority\.conf"/,
+    );
+    expect(readme).toMatch(/Do not restart bg-host or\s+papercusp-server/);
   });
 });
