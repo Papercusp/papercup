@@ -774,12 +774,16 @@ export function normalizeExplicitFilesForProject({ files, root, coveredPrefixes,
  *
  * A `''` prefix (whole-repo project) covers everything.
  *
- * @param {{files: Iterable<string>, coveredPrefixes: Iterable<string>}} opts
+ * When supplied, `programFiles` is authoritative: a directory prefix does not establish
+ * enrollment in the actual compiler program (e.g. scripts/*.mjs in a TS-only project).
+ *
+ * @param {{files: Iterable<string>, coveredPrefixes: Iterable<string>, programFiles?: Iterable<string>}} opts
  * @returns {{covered: string[], uncovered: string[]}}
  */
-export function partitionFilesByCoverage({ files, coveredPrefixes }: {
+export function partitionFilesByCoverage({ files, coveredPrefixes, programFiles }: {
     files: Iterable<string>;
     coveredPrefixes: Iterable<string>;
+    programFiles?: Iterable<string>;
 }): {
     covered: string[];
     uncovered: string[];
@@ -965,15 +969,16 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates }:
  * into this gate forever. A routed child owns the actual verdict; this caller only aggregates its
  * exit status. `execFile` is injectable for unit tests and never receives a shell command string.
  *
- * @param {{root: string, routes: {args: string[]}[], execFile?: Function}} opts
+ * @param {{root: string, routes: {args: string[]}[], execFile?: Function, onUnchecked?: (count: number) => void}} opts
  * @returns {number}
  */
-export function runAutoTypecheckRoutes({ root, routes, execFile }: {
+export function runAutoTypecheckRoutes({ root, routes, execFile, onUnchecked }: {
     root: string;
     routes: {
         args: string[];
     }[];
     execFile?: Function;
+    onUnchecked?: (count: number) => void;
 }): number;
 /**
  * The banner for `--files=` entries this run cannot judge.

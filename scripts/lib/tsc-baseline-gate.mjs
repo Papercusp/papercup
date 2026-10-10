@@ -28,6 +28,7 @@ import { isRootWorkspace, rootWorkspacePatterns } from './submodule-installs.mjs
 import {
   baselineWithinScope,
   formatTscServiceBanner,
+  serviceProjectFromTscCommand,
   tscServiceEligibility,
   typecheckViaService,
 } from './tsc-service.mjs';
@@ -1844,16 +1845,22 @@ export function normalizeExplicitFilesForProject({
  *
  * A `''` prefix (whole-repo project) covers everything.
  *
- * @param {{files: Iterable<string>, coveredPrefixes: Iterable<string>}} opts
+ * When supplied, `programFiles` is authoritative: a directory prefix does not establish
+ * enrollment in the actual compiler program (e.g. scripts/*.mjs in a TS-only project).
+ *
+ * @param {{files: Iterable<string>, coveredPrefixes: Iterable<string>, programFiles?: Iterable<string>}} opts
  * @returns {{covered: string[], uncovered: string[]}}
  */
-export function partitionFilesByCoverage({ files, coveredPrefixes }) {
+export function partitionFilesByCoverage({ files, coveredPrefixes, programFiles }) {
   const prefixes = [...coveredPrefixes].filter((p) => typeof p === 'string');
+  const program = programFiles === undefined
+    ? null
+    : new Set([...programFiles].map((file) => String(file).replace(/^\.\//, '')));
   const covered = [];
   const uncovered = [];
   for (const raw of files) {
     const file = String(raw).replace(/^\.\//, '');
-    if (prefixes.some((p) => p === '' || file.startsWith(p))) covered.push(file);
+    if (program === null ? prefixes.some((p) => p === '' || file.startsWith(p)) : program.has(file)) covered.push(file);
     else uncovered.push(file);
   }
   return { covered, uncovered };
@@ -2195,20 +2202,30 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
  * into this gate forever. A routed child owns the actual verdict; this caller only aggregates its
  * exit status. `execFile` is injectable for unit tests and never receives a shell command string.
  *
- * @param {{root: string, routes: {args: string[]}[], execFile?: Function}} opts
+ * @param {{root: string, routes: {args: string[]}[], execFile?: Function, onUnchecked?: (count: number) => void}} opts
  * @returns {number}
  */
-export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync }) {
+export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync, onUnchecked }) {
   if (!Array.isArray(routes) || routes.length === 0) return 1;
   let firstFailure = 0;
   for (const route of routes) {
     try {
-      execFile('npm', route.args, {
+      const output = execFile('npm', route.args, {
         cwd: root,
-        stdio: 'inherit',
+        stdio: onUnchecked ? ['ignore', 'pipe', 'inherit'] : 'inherit',
+        ...(onUnchecked ? { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 } : {}),
         env: { ...process.env, [AUTO_TYPECHECK_ROUTE_ENV]: '1' },
       });
+      if (onUnchecked && typeof output === 'string') {
+        process.stdout.write(output);
+        // The final marker belongs to the delegate, after any nested child markers. A
+        // successful partial verdict must not become full coverage in its parent.
+        const markers = output.split(/\r?\n/).filter((line) => line.startsWith('LINT_TSC_RESULT '));
+        const count = /\bfilesUnchecked=(\d+)\b/.exec(markers.at(-1) ?? '');
+        if (count) onUnchecked(Number(count[1]));
+      }
     } catch (error) {
+      if (onUnchecked && error?.stdout) process.stdout.write(error.stdout);
       const status = Number.isInteger(error?.status) && error.status > 0 ? error.status : 1;
       if (firstFailure === 0) firstFailure = status;
     }
@@ -2616,7 +2633,9 @@ export function formatLintTscResultMarker({
   // flag happened to be set before the process died.
   const unchecked = Number.isFinite(filesUnchecked) && filesUnchecked > 0 ? filesUnchecked : 0;
   const status =
-    routed && code === 0
+    code === 0 && unchecked > 0
+      ? 'partial'
+      : routed && code === 0
       ? 'routed'
       : routed && code === 1
         ? 'routed-failed'
@@ -2830,6 +2849,8 @@ export async function runTscBaselineGate({
   // it is the PARTIAL case (`fatal === false`), where the gate still exits 0 on a true verdict
   // about the covered files and the marker must not let that read as coverage of all of them.
   let filesUnchecked = 0;
+  /** @type {string[]} Files handled by the prefix-based routing branch, not this program. */
+  let outsideProjectFiles = [];
   // EI-21985804122617157 — how many named files a DELEGATE compiled on this run's behalf.
   // Distinct from `autoRouted`, which means "this gate had no verdict of its own and handed the
   // whole request over". Here the parent keeps its own verdict and a sibling gate judged the
@@ -2956,6 +2977,7 @@ export async function runTscBaselineGate({
         coveredPrefixes: [projectPrefix, ...foreignBaselines.map((b) => b.prefix)],
       });
       if (uncovered.length > 0) {
+        outsideProjectFiles = uncovered;
         const suggestions = new Map(uncovered.map((f) => [f, suggestTypecheckGate(root, f)]));
         const fatal = covered.length === 0;
         // Stamped for BOTH branches: the fatal one already reports `out-of-scope`, and the
@@ -2999,7 +3021,11 @@ export async function runTscBaselineGate({
         if (fatal) {
           if (canAutoRoute) {
             autoRouted = true;
-            process.exit(runAutoTypecheckRoutes({ root, routes: autoRoutes.routes }));
+            filesUnchecked = 0;
+            process.exit(runAutoTypecheckRoutes({
+              root, routes: autoRoutes.routes,
+              onUnchecked: (count) => { filesUnchecked = Math.min(uncovered.length, filesUnchecked + count); },
+            }));
           }
           // Paired with the exit on the very next line so the marker cannot claim `regressed`
           // about a run that compiled nothing (EI-20072775668558359).
@@ -3025,14 +3051,18 @@ export async function runTscBaselineGate({
         // gate. Leaving it set would keep reporting `status=partial` about files that now have a
         // verdict, which is the same false-coverage claim in the opposite direction.
         if (canAutoRoute) {
-          const routedExit = runAutoTypecheckRoutes({ root, routes: autoRoutes.routes });
+          let routeUnchecked = 0;
+          const routedExit = runAutoTypecheckRoutes({
+            root, routes: autoRoutes.routes,
+            onUnchecked: (count) => { routeUnchecked = Math.min(uncovered.length, routeUnchecked + count); },
+          });
           if (routedExit !== 0) {
             autoRouted = true;
             process.exit(routedExit);
           }
-          filesRoutedAway = uncovered.length;
-          routedAwayFiles = uncovered;
-          filesUnchecked = 0;
+          filesRoutedAway = uncovered.length - routeUnchecked;
+          routedAwayFiles = routeUnchecked === 0 ? uncovered : [];
+          filesUnchecked = routeUnchecked;
         }
       }
     }
@@ -3202,6 +3232,10 @@ export async function runTscBaselineGate({
   // own text format, so everything below parses it unchanged. Any refusal or failure falls back to
   // the compile below with one printed line.
   const serviceRoute = tscServiceEligibility({ tscCommand, explicitFiles, argv, root });
+  // Capture membership from the SAME full compile when the service is unavailable or disabled.
+  // Prefixes are only routing hints; neither an excluded TS file nor unenrolled JS was judged.
+  const captureProgramFiles = explicitFiles !== null && explicitFiles.size > 0 &&
+    serviceProjectFromTscCommand(tscCommand) !== null;
   const served = serviceRoute.eligible
     ? await typecheckViaService({ root, project: serviceRoute.project, files: [...explicitFiles], label })
     : null;
@@ -3212,7 +3246,9 @@ export async function runTscBaselineGate({
   } else {
     const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
     const freshAfter = coalesceWatermarkFor({ root, files: explicitFiles, updateFlag });
-    const executableTscCommand = resolvePinnedTscCommand(root, tscCommand);
+    const executableTscCommand = resolvePinnedTscCommand(
+      root, captureProgramFiles ? `${tscCommand} --listFiles` : tscCommand,
+    );
     try {
       tscOutput = existsSync(pcHeavyPath)
         ? execFileSync('bash', [pcHeavyPath, ...pcHeavyCompileArgv(executableTscCommand, explicitFiles !== null)], {
@@ -3294,6 +3330,32 @@ export async function runTscBaselineGate({
     );
     console.error(tscOutput.slice(0, 4000));
     process.exit(1);
+  }
+
+  // Reconcile the actual measured program with the caller's own named files. Already-routed
+  // paths are accounted for separately, including a delegate's partial coverage above.
+  if (explicitFiles !== null && (served !== null || captureProgramFiles)) {
+    const outside = new Set(outsideProjectFiles);
+    const ownFiles = [...explicitFiles].filter((file) => !outside.has(file));
+    const programFiles = served !== null
+      ? served.checked
+      : tscOutput.split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => isAbsolute(line))
+          .map((file) => relative(root, file).replace(/\\/g, '/'));
+    const { uncovered } = partitionFilesByCoverage({
+      files: ownFiles, coveredPrefixes: [], programFiles,
+    });
+    if (uncovered.length > 0) {
+      filesUnchecked += uncovered.length;
+      console.error(`⚠ ${uncovered.length} named file(s) were NOT typechecked: absent from the actual ${label} compiler program.`);
+      for (const file of uncovered) console.error(`   - ${file}`);
+      if (filesRoutedAway === 0 && filesUnchecked === explicitFiles.size) {
+        nothingTypechecked = true;
+        console.error('❌ NOTHING YOU NAMED WAS TYPECHECKED.');
+        process.exit(1);
+      }
+    }
   }
 
   // Keep the verdict's historical TS1xxx hard-fail policy separate from the

@@ -16,13 +16,16 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { createServer } from 'node:net';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
@@ -198,10 +201,12 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
         label: 'operator-core',
         scope: 'files',
         code: 0,
-        filesUnchecked: 1,
         routed: true,
       }),
-    ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=routed filesUnchecked=1');
+    ).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=routed');
+    expect(formatLintTscResultMarker({
+      label: 'operator-core', scope: 'files', code: 0, routed: true, filesUnchecked: 1,
+    })).toBe('LINT_TSC_RESULT label=operator-core scope=files exit=0 status=partial filesUnchecked=1');
     expect(
       formatLintTscResultMarker({
         label: 'operator-core',
@@ -3358,6 +3363,17 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       });
       expect(covered).toEqual(['packages/operator-core/lib/a.ts']);
     });
+
+    it('uses actual program membership rather than a directory when membership is available', () => {
+      expect(partitionFilesByCoverage({
+        files: ['./scripts/included.ts', 'scripts/excluded.ts', 'scripts/test-files.mjs'],
+        coveredPrefixes: ['scripts/'],
+        programFiles: ['scripts/included.ts'],
+      })).toEqual({
+        covered: ['scripts/included.ts'],
+        uncovered: ['scripts/excluded.ts', 'scripts/test-files.mjs'],
+      });
+    });
   });
 
   describe('normalizeExplicitFilesForProject (EI-21648762323304317)', () => {
@@ -4353,6 +4369,7 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
     function runMixedGate(
       delegateScript: string,
       env: Record<string, string> = {},
+      files = ['pkg-a/lib/a.ts', 'pkg-b/lib/b.ts'],
     ): { out: string; code: number } {
       const root = mkdtempSync(join(tmpdir(), 'tsc-gate-mixed-route-'));
       try {
@@ -4389,7 +4406,7 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
             `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')} # -p pkg-a/tsconfig.json`)},\n` +
             `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
             `  label: 'test',\n` +
-            `  argv: ['--files=pkg-a/lib/a.ts,pkg-b/lib/b.ts'],\n` +
+            `  argv: [${JSON.stringify(`--files=${files.join(',')}`)}],\n` +
             `});\n`,
         );
         try {
@@ -4462,6 +4479,106 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
       expect(code).toBe(3);
       expect(out).toContain('status=error(3)');
       expect(out).not.toContain('routed-failed');
+    });
+
+    it.each([['mixed', undefined], ['entirely delegated', ['pkg-b/lib/b.ts']]])(
+      'preserves a successful partial delegate in the %s parent verdict', (_kind, files) => {
+        const { out, code } = runMixedGate(
+          'node -e "console.log(\'LINT_TSC_RESULT label=delegate scope=files exit=0 status=partial filesUnchecked=1\')"',
+          {}, files,
+        );
+        expect(code).toBe(0);
+        const parent = out.split('\n').filter((line) => line.startsWith('LINT_TSC_RESULT label=test ')).at(-1);
+        expect(parent).toContain('status=partial filesUnchecked=1');
+        expect(parent).not.toContain('status=clean');
+        expect(parent).not.toContain('filesRoutedAway=1');
+      },
+    );
+  });
+});
+
+describe('actual program coverage of scoped typechecks (EI-25574814068391872)', () => {
+  const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
+  const exec = promisify(execFile);
+
+  async function runCoverageGate(files: string[], service: boolean) {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-enrollment-'));
+    const server = service ? createServer((socket) => {
+      socket.once('data', () => {
+        const checked: string[] = files.filter((file) => file === 'scripts/included.ts');
+        socket.end(JSON.stringify({
+          ok: true, output: '', errorCount: 0, checked,
+          counts: { named: checked.length, typeReferencing: 0, importers: 0 },
+          namedNotInProgram: files.filter((file) => !checked.includes(file)),
+          snapshotAgeMs: 0, queuedMs: 0, checkMs: 0,
+        }) + '\n');
+      });
+    }) : null;
+    try {
+      mkdirSync(join(root, 'scripts'));
+      symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+      writeFileSync(join(root, 'scripts/included.ts'), 'export const fixture: number = 1;\n');
+      writeFileSync(join(root, 'scripts/excluded.ts'), 'export const fixture: number = 1;\n');
+      writeFileSync(join(root, 'scripts/unenrolled.mjs'), 'export const fixture = 1;\n');
+      writeFileSync(join(root, 'scripts/tsconfig.json'), JSON.stringify({
+        compilerOptions: { noEmit: true, types: [], lib: ['es2022'] },
+        files: ['included.ts'],
+      }));
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: {} }));
+      writeFileSync(join(root, 'run.mjs'),
+        `import {runTscBaselineGate} from ${JSON.stringify(gateUrl)};\n` +
+        `await runTscBaselineGate(${JSON.stringify({
+          root, baselineFile: join(root, 'baseline.json'), label: 'coverage-fixture',
+          tscCommand: 'npx tsc -p scripts/tsconfig.json --noEmit --incremental false',
+          argv: [`--files=${files.join(',')}`],
+        })});\n`,
+      );
+      const socketPath = join(root, 'service.sock');
+      if (server) await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(socketPath, resolve);
+      });
+      const options = {
+        cwd: root, encoding: 'utf-8' as const, timeout: 15_000,
+        env: { ...process.env, PAPERCUSP_TSC_SERVICE: service ? '1' : '0',
+          PAPERCUSP_TSC_SERVICE_SOCKET: socketPath, PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: '' },
+      };
+      try {
+        const result = await exec(process.execPath, [join(root, 'run.mjs')], options);
+        return { code: 0, out: result.stdout + result.stderr };
+      } catch (error: any) {
+        return { code: error.code, out: `${error.stdout ?? ''}${error.stderr ?? ''}` };
+      }
+    } finally {
+      if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  describe.each([['service', true], ['full compiler', false]] as const)('%s route', (_name, service) => {
+    it.each(['scripts/unenrolled.mjs', 'scripts/excluded.ts'])(
+      'refuses a clean verdict for the only named file %s absent from its program', async (file) => {
+        const result = await runCoverageGate([file], service);
+        expect(result.code).toBe(1);
+        expect(result.out).toContain('NOTHING YOU NAMED WAS TYPECHECKED');
+        expect(result.out).toContain('status=out-of-scope filesUnchecked=1');
+        expect(result.out).not.toContain('status=clean');
+      },
+    );
+
+    it('reports mixed actual coverage as partial without changing the covered verdict', async () => {
+      const result = await runCoverageGate(['scripts/included.ts', 'scripts/unenrolled.mjs'], service);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('status=partial filesUnchecked=1');
+      expect(result.out).not.toContain('status=clean');
+    });
+
+    it('keeps the enrolled TypeScript control clean', async () => {
+      const result = await runCoverageGate(['scripts/included.ts'], service);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('status=clean');
+      expect(result.out).not.toContain('filesUnchecked=');
     });
   });
 });
