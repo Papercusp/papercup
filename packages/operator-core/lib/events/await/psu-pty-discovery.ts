@@ -27,8 +27,6 @@ import {
   openSync,
   readSync,
   closeSync,
-  appendFileSync,
-  renameSync,
   promises as fsp,
 } from 'node:fs';
 import net from 'node:net';
@@ -1086,26 +1084,40 @@ function injectAuditMaxBytes(): number {
 
 /** Rotate `path` to `path.1` once it has reached the cap. A missing file is the
  *  normal first-write case, not an error. Exported for the rotation test. */
-export function rotateInjectAuditIfFull(path: string, maxBytes: number = injectAuditMaxBytes()): boolean {
+export async function rotateInjectAuditIfFull(path: string, maxBytes: number = injectAuditMaxBytes()): Promise<boolean> {
   let size: number;
   try {
-    size = statSync(path).size;
+    size = (await fsp.stat(path)).size;
   } catch {
     return false;
   }
   if (size < maxBytes) return false;
-  renameSync(path, `${path}.1`);
+  await fsp.rename(path, `${path}.1`);
   return true;
 }
 
+let injectAuditWriteQueue: Promise<void> = Promise.resolve();
+
 function appendInjectAudit(row: Record<string, unknown>): void {
-  try {
-    const path = injectAuditPath();
-    rotateInjectAuditIfFull(path);
-    appendFileSync(path, `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`);
-  } catch {
-    /* A diagnostic must never be able to fail a delivery. */
-  }
+  const path = injectAuditPath();
+  const maxBytes = injectAuditMaxBytes();
+  const line = `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`;
+  // The audit is diagnostic-only, but its journal latency used to run inline on
+  // the operator event loop. Serialize the async rotate+append pair so rows
+  // from this process cannot race the size check or reorder around a rotation.
+  injectAuditWriteQueue = injectAuditWriteQueue
+    .then(async () => {
+      await rotateInjectAuditIfFull(path, maxBytes);
+      await fsp.appendFile(path, line);
+    })
+    .catch(() => {
+      /* A diagnostic must never be able to fail a delivery. */
+    });
+}
+
+/** Test-only barrier for the best-effort async audit writer. */
+export async function _flushInjectAuditForTest(): Promise<void> {
+  await injectAuditWriteQueue;
 }
 
 /**

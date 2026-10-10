@@ -12,6 +12,7 @@ import {
   existsSync,
   readFileSync,
   utimesSync,
+  promises as fsPromises,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -39,6 +40,7 @@ import {
   sanitizeKey,
   sockOwnerIdFromPath,
   auditInjectOwnerBinding,
+  _flushInjectAuditForTest,
   rotateInjectAuditIfFull,
   PSU_PTY_DIR,
   MAX_CONTROL_PAYLOAD_BYTES,
@@ -469,17 +471,20 @@ describe('failed wake confirmation audit retention', () => {
     process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = auditPath;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await _flushInjectAuditForTest();
     if (previousAuditPath === undefined) delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
     else process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = previousAuditPath;
   });
 
-  const failures = (): Array<Record<string, unknown>> =>
-    existsSync(auditPath)
+  const failures = async (): Promise<Array<Record<string, unknown>>> => {
+    await _flushInjectAuditForTest();
+    return existsSync(auditPath)
       ? readFileSync(auditPath, 'utf8').trim().split('\n')
           .map((line) => JSON.parse(line) as Record<string, unknown>)
           .filter((row) => row.kind === 'inject-host-failed')
       : [];
+  };
 
   it('retains the host refusal after the same delivery succeeds on retry', async () => {
     const ownerId = `su-wake-audit-${process.pid}`;
@@ -493,7 +498,7 @@ describe('failed wake confirmation audit retention', () => {
     expect(await injectIntoHostWithConfirmation(recovered.sock, msg)).toEqual({
       ok: true, confirmation: 'acked', reason: 'delivered',
     });
-    expect(failures()).toEqual([expect.objectContaining({
+    expect(await failures()).toEqual([expect.objectContaining({
       ownerId, deliveryId: msg.deliveryId, mode: 'turn',
       confirmation: 'acked', reason: 'deferred-busy-gate', transportErrorCode: null,
     })]);
@@ -505,7 +510,7 @@ describe('failed wake confirmation audit retention', () => {
     const msg = { mode: 'turn' as const, ownerId, deliveryId: 'test-wake-socket-error', data: 'private wake body' };
     const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), msg, 500);
     expect(result).toEqual({ ok: false, confirmation: 'error' });
-    expect(failures()).toEqual([expect.objectContaining({
+    expect(await failures()).toEqual([expect.objectContaining({
       ownerId, deliveryId: msg.deliveryId, confirmation: 'error',
       reason: null, transportErrorCode: 'ENOENT',
     })]);
@@ -537,7 +542,7 @@ describe('failed wake confirmation audit retention', () => {
       mode: 'turn', ownerId, deliveryId: 'test-wake-timeout', data: 'x',
     }, 100);
     expect(result).toEqual({ ok: false, confirmation: 'timeout' });
-    expect(failures()).toEqual([expect.objectContaining({
+    expect(await failures()).toEqual([expect.objectContaining({
       ownerId, deliveryId: 'test-wake-timeout', confirmation: 'timeout',
     })]);
   });
@@ -549,7 +554,7 @@ describe('failed wake confirmation audit retention', () => {
       data: 'x'.repeat(MAX_CONTROL_PAYLOAD_BYTES),
     });
     expect(result).toEqual({ ok: false, confirmation: 'oversize' });
-    expect(failures()).toEqual([expect.objectContaining({
+    expect(await failures()).toEqual([expect.objectContaining({
       ownerId, deliveryId: 'test-wake-oversize', confirmation: 'oversize',
     })]);
   });
@@ -1348,20 +1353,23 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await _flushInjectAuditForTest();
     delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
     warn.mockRestore();
     rmSync(auditDir, { recursive: true, force: true });
     for (const p of planted.splice(0)) if (existsSync(p)) unlinkSync(p);
   });
 
-  const rows = (): Array<Record<string, unknown>> =>
-    existsSync(auditPath)
+  const rows = async (): Promise<Array<Record<string, unknown>>> => {
+    await _flushInjectAuditForTest();
+    return existsSync(auditPath)
       ? readFileSync(auditPath, 'utf8')
           .split('\n')
           .filter(Boolean)
           .map((l) => JSON.parse(l) as Record<string, unknown>)
       : [];
+  };
 
   describe('sockOwnerIdFromPath — the caller-independent witness', () => {
     it('reads the owner out of the socket path the host actually writes', () => {
@@ -1375,18 +1383,18 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     });
   });
 
-  it('passes a correctly-bound delivery silently', () => {
+  it('passes a correctly-bound delivery silently', async () => {
     const verdict = auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), {
       mode: 'turn',
       ownerId: OWNER_A,
     });
     expect(verdict).toBe('match');
-    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
   });
 
   // THE load-bearing case: the failure the receiving host's EI-153 guard structurally
   // cannot see, because envelope ownerId and socket owner agree from ITS point of view.
-  it('catches text addressed to one owner being written to ANOTHER owner’s socket', () => {
+  it('catches text addressed to one owner being written to ANOTHER owner’s socket', async () => {
     const sockB = plantHost(OWNER_B);
     const verdict = auditInjectOwnerBinding(sockB, {
       mode: 'turn',
@@ -1395,7 +1403,7 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     });
     expect(verdict).toBe('mismatch');
 
-    const hits = rows().filter((r) => r.kind === 'inject-owner-mismatch');
+    const hits = (await rows()).filter((r) => r.kind === 'inject-owner-mismatch');
     expect(hits).toHaveLength(1);
     expect(hits[0]).toMatchObject({
       mode: 'turn',
@@ -1410,16 +1418,16 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
   // CONVENTION, not the binding: `interruptViaPty` legitimately retries against a
   // rebound socket whose filename no longer matches its owner. The filename
   // disagreeing is a reason to consult the host's own record — never a verdict.
-  it('does NOT accuse a correctly-bound delivery whose socket path is non-canonical', () => {
+  it('does NOT accuse a correctly-bound delivery whose socket path is non-canonical', async () => {
     const reboundSock = join(PSU_PTY_DIR, `${sanitizeKey(OWNER_A)}-rebound.sock`);
     plantHost(OWNER_A, reboundSock);
 
     expect(auditInjectOwnerBinding(reboundSock, { mode: 'turn', ownerId: OWNER_A })).toBe('match');
-    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('reports indeterminate when no discovery record explains the disagreement — and COUNTS it', () => {
+  it('reports indeterminate when no discovery record explains the disagreement — and COUNTS it', async () => {
     // Filenames disagree and there is no record binding this socket to anyone. That is
     // an ABSENCE of evidence; calling it a misroute would be inventing one — so the
     // verdict stays `indeterminate` and nobody is accused.
@@ -1433,11 +1441,11 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     expect(auditInjectOwnerBinding(orphan, { mode: 'turn', ownerId: OWNER_A })).toBe('indeterminate');
 
     // NOT accused: no mismatch row, no operator-facing warning.
-    expect(rows().filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-mismatch')).toHaveLength(0);
     expect(warn).not.toHaveBeenCalled();
 
     // ...but no longer invisible.
-    const seen = rows().filter((r) => r.kind === 'inject-owner-indeterminate');
+    const seen = (await rows()).filter((r) => r.kind === 'inject-owner-indeterminate');
     expect(seen).toHaveLength(1);
     // `sockOwnerId` is the FILENAME-DERIVED witness, verbatim — the whole `.sock` stem,
     // not an owner id parsed out of it. That is the point of the field: it records what
@@ -1451,39 +1459,39 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     });
   });
 
-  it('keeps the NO-WITNESS path silent — only an unadjudicable DISAGREEMENT is censused', () => {
+  it('keeps the NO-WITNESS path silent — only an unadjudicable DISAGREEMENT is censused', async () => {
     // The discriminator that keeps the new census row honest. A path carrying no owner
     // witness at all never observed a disagreement in the first place, so it must not
     // inflate the indeterminate census; it returns before the counter even increments.
     expect(auditInjectOwnerBinding('/tmp/not-a-socket', { mode: 'turn', ownerId: OWNER_A })).toBe(
       'indeterminate',
     );
-    expect(rows()).toHaveLength(0);
+    expect(await rows()).toHaveLength(0);
   });
 
-  it('records an unlabelled TURN-class inject — the guard’s fail-open exemption', () => {
+  it('records an unlabelled TURN-class inject — the guard’s fail-open exemption', async () => {
     // An envelope with no ownerId decodes host-side to a legacy mode:'turn' the EI-153
     // guard abstains on entirely, so this is the one shape that reaches a pty with no
     // identity check anywhere. It must not be silent here too.
     const verdict = auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' });
     expect(verdict).toBe('unlabelled');
-    expect(rows().filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(1);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(1);
   });
 
-  it('does not itemise unlabelled CONTROL-BYTE modes, which are legitimately unaddressed', () => {
+  it('does not itemise unlabelled CONTROL-BYTE modes, which are legitimately unaddressed', async () => {
     for (const mode of ['raw', 'osc', 'mcp-reconnect']) {
       expect(auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode })).toBe('unlabelled');
     }
-    expect(rows().filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-owner-unlabelled')).toHaveLength(0);
   });
 
-  it('reports indeterminate — never a mismatch — when the path carries no witness', () => {
+  it('reports indeterminate — never a mismatch — when the path carries no witness', async () => {
     // A test double or an injected absolute path is an ABSENCE of evidence. Reporting it
     // as a mismatch would manufacture exactly the false positive that discredits a detector.
     expect(auditInjectOwnerBinding('/tmp/not-a-socket', { mode: 'turn', ownerId: OWNER_A })).toBe(
       'indeterminate',
     );
-    expect(rows()).toHaveLength(0);
+    expect(await rows()).toHaveLength(0);
   });
 
   // The heartbeat is the detector's positive control, but `injectsChecked` is
@@ -1493,14 +1501,14 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
   // whole audit population was 9 short-lived pids reaching ~25 checks apiece, so the
   // control was unreachable by construction. The override turns a falsifier you WAIT
   // on into one you can PROBE.
-  it('honours a heartbeat-interval override, so the positive control is reachable in a probe', () => {
+  it('honours a heartbeat-interval override, so the positive control is reachable in a probe', async () => {
     process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY = '1';
     try {
       auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), {
         mode: 'turn',
         ownerId: OWNER_A,
       });
-      const beats = rows().filter((r) => r.kind === 'inject-audit-heartbeat');
+      const beats = (await rows()).filter((r) => r.kind === 'inject-audit-heartbeat');
       expect(beats.length).toBeGreaterThanOrEqual(1);
       expect(beats[0]).toMatchObject({ pid: process.pid });
       expect(typeof beats[0].checked).toBe('number');
@@ -1509,7 +1517,7 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     }
   });
 
-  it('ignores a junk or non-positive heartbeat override rather than beating on every inject', () => {
+  it('ignores a junk or non-positive heartbeat override rather than beating on every inject', async () => {
     for (const bad of ['0', '-5', 'banana', '']) {
       process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_HEARTBEAT_EVERY = bad;
       try {
@@ -1522,7 +1530,7 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
       }
     }
     // Default interval (500) is far above the handful of checks this test performed.
-    expect(rows().filter((r) => r.kind === 'inject-audit-heartbeat')).toHaveLength(0);
+    expect((await rows()).filter((r) => r.kind === 'inject-audit-heartbeat')).toHaveLength(0);
   });
 
   it('never throws, and never blocks a delivery, on a hostile audit path', () => {
@@ -1531,9 +1539,24 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     expect(() => auditInjectOwnerBinding(sockB, { mode: 'turn', ownerId: OWNER_A })).not.toThrow();
   });
 
+  it('returns while the async audit append is still pending', async () => {
+    const append = vi.spyOn(fsPromises, 'appendFile');
+    let release!: () => void;
+    append.mockReturnValue(new Promise<void>((resolve) => { release = resolve; }));
+    try {
+      expect(auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' })).toBe('unlabelled');
+      await vi.waitFor(() => expect(append).toHaveBeenCalledOnce());
+      expect(append).toHaveBeenCalledOnce();
+    } finally {
+      release();
+      append.mockRestore();
+      await _flushInjectAuditForTest();
+    }
+  });
+
   // WI-10004854: the log had no cap (1.6 MB in a month). Driven through the real write
   // path: a full log rotates to `.1` (replacing the old generation) before the next row.
-  it('rotates a full audit log to .1 before writing, replacing the previous generation', () => {
+  it('rotates a full audit log to .1 before writing, replacing the previous generation', async () => {
     writeFileSync(`${auditPath}.1`, 'OLDEST-GENERATION\n');
     writeFileSync(auditPath, 'FULL-GENERATION\n');
     process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES = '8';
@@ -1542,15 +1565,17 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     } finally {
       delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES;
     }
+    await _flushInjectAuditForTest();
     expect(readFileSync(`${auditPath}.1`, 'utf8')).toBe('FULL-GENERATION\n');
-    const fresh = rows();
+    const fresh = await rows();
     expect(fresh).toHaveLength(1);
     expect(fresh[0]).toMatchObject({ kind: 'inject-owner-unlabelled' });
   });
 
-  it('does not rotate a log under the default cap', () => {
+  it('does not rotate a log under the default cap', async () => {
     writeFileSync(auditPath, 'SMALL\n');
     auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' });
+    await _flushInjectAuditForTest();
     expect(existsSync(`${auditPath}.1`)).toBe(false);
     expect(readFileSync(auditPath, 'utf8').startsWith('SMALL\n')).toBe(true);
   });
@@ -1565,20 +1590,20 @@ describe('rotateInjectAuditIfFull (WI-10004854)', () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('treats a missing log as the normal first-write case', () => {
-    expect(rotateInjectAuditIfFull(path, 1)).toBe(false);
+  it('treats a missing log as the normal first-write case', async () => {
+    expect(await rotateInjectAuditIfFull(path, 1)).toBe(false);
     expect(existsSync(`${path}.1`)).toBe(false);
   });
 
-  it('leaves a log one byte under the cap alone', () => {
+  it('leaves a log one byte under the cap alone', async () => {
     writeFileSync(path, 'x'.repeat(9));
-    expect(rotateInjectAuditIfFull(path, 10)).toBe(false);
+    expect(await rotateInjectAuditIfFull(path, 10)).toBe(false);
     expect(readFileSync(path, 'utf8')).toBe('x'.repeat(9));
   });
 
-  it('rotates a log exactly at the cap', () => {
+  it('rotates a log exactly at the cap', async () => {
     writeFileSync(path, 'x'.repeat(10));
-    expect(rotateInjectAuditIfFull(path, 10)).toBe(true);
+    expect(await rotateInjectAuditIfFull(path, 10)).toBe(true);
     expect(existsSync(path)).toBe(false);
     expect(readFileSync(`${path}.1`, 'utf8')).toBe('x'.repeat(10));
   });
