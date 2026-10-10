@@ -328,6 +328,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
       evidence: 'Credit balance is too low', ownerId: 'judge-1', nativeRef: '/retained/review.jsonl',
       taskId: 'task-1', answerOn: { workItemId: 'WI-7', harness: 'papercusp' } });
     const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
+    if (result.state === 'not-required') throw new Error('Expected a reviewer attempt');
     expect(result.freshReviewer).toMatchObject({ state: 'blocked', ownerId: 'judge-1' });
     expect(result.next).toContain('Credit balance is too low');
     expect(result.next).toContain("resume:{agentId:'judge-1'}");
@@ -449,7 +450,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
   const answerOn = { workItemId: 'WI-7', harness: 'papercusp' };
   const launched = { data: { deduped: false, launch: { tasks: [{ taskId: 'task-1' }] } } };
 
-  function deps(overrides: Record<string, unknown> = {}) {
+  function deps<T extends Record<string, unknown>>(overrides: T = {} as T) {
     return {
       resolveAnswerTarget: vi.fn().mockResolvedValue(answerOn),
       // The implementer's lineage never includes the dedicated launcher.
