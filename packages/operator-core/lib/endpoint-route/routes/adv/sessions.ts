@@ -1561,7 +1561,7 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       });
     }
-    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection, codexCompactionLimitFromLaunchArgv }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }] =
+    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection, codexCompactionLimitFromLaunchArgv }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }, { sessionAllowsAmbientContext }] =
       await Promise.all([
         import('../../../adv-sessions'),
         import('../../../su-persona-render'),
@@ -1573,6 +1573,8 @@ const ensureCodexHome = defineTool({
         import('../../../role-launch-spec'),
         import('../../../inference-gateway/spawn-env'),
         import('../../../events/await/wake-executor'),
+        import('../../../capability-envelope/session-confinement-store')
+          .then(() => import('../../../capability-envelope/session-confinement-port')),
       ]);
     const rawRecord = await readSuLaunchSpecByOwner(owner);
     const persistedRecord = parseSuLaunchSpecRecord(rawRecord);
@@ -1725,6 +1727,7 @@ const ensureCodexHome = defineTool({
     // absence of a hint as a request to switch to the local login.
     const gatewayInputs = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow?.launchArgv, owner));
     const repairGatewayAuto = gatewayInputs.requireGatewayProvider === true || body.requireGatewayProvider === true;
+    const denyAmbientContext = !(await sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId }));
     const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfig({
       sessionKey: advSessionId,
       mcpUrl,
@@ -1740,6 +1743,7 @@ const ensureCodexHome = defineTool({
       projectDir: sessionRow?.cwd,
       promptText,
       recoverMissingHome: sessionRow?.coordOwnerId === owner,
+      ...(denyAmbientContext ? { denyAmbientContext: true } : {}),
     });
     let rebuilt;
     // agent-economy-flywheel P-016 (D-012): a repair is a restart. An unfunded
