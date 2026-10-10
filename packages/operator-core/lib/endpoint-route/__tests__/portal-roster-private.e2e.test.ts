@@ -57,10 +57,11 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_BROWSER_RECEIPT '));
         expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
         expect(JSON.parse(line!.slice('ROSTER_COORD_BROWSER_RECEIPT '.length))).toMatchObject({
-          workspace: expect.stringMatching(/^test-runtime-/), authMethod: 'private-cookie-HUD-roster',
+          workspace: expect.stringMatching(/^test-runtime-/), authMethod: 'private-loopback-with-cookie',
           keyboardFilter: true, selectedRetained: true, neighborFiltered: true, filterReset: true,
           deepLinkReload: true, shellQueryPreserved: true, denialStatus: 403,
-          denialTransport: 'actual-private-roster-request', retryReload: true });
+          scopedWorkspaceArgs: true, foreignExcluded: true, globalForeignControl: true,
+          denialTransport: 'actual-private-roster-external-host', retryReload: true });
       },
     });
     Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });

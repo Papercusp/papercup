@@ -21,7 +21,7 @@ const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).di
 const vditorAssets = dirname(createRequire(import.meta.url).resolve('vditor/package.json'));
 
 type PortalRosterBrowserInput = {
-  evidence: string; base: string; workspace: string; selected: string; neighbor: string;
+  evidence: string; base: string; workspace: string; selected: string; neighbor: string; foreign?: string;
   portalSourceRoot: string;
   cookieName: string; ownToken: string; foreignToken: string;
   shortcuts?: boolean;
@@ -84,12 +84,18 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { parseAsString, useQueryState } from 'nuqs';
     import { SyncProvider } from '@papercusp/sync';
     import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
     import HudView from ${JSON.stringify(join(operatorRoot, 'app/adv/hud/HudView.tsx'))};
+    function Fixture() {
+      const [workspaceId] = useQueryState('ws', parseAsString);
+      if (!workspaceId) throw new Error('Private HUD fixture requires an explicit workspace');
+      return React.createElement(HudView, { workspaceId });
+    }
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
       React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
-        React.createElement(HudView))) });
+        React.createElement(Fixture))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.docs ? `
@@ -453,8 +459,11 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       await search.waitFor();
       const selectedCard = page.locator('.hud__card').filter({ hasText: `HUD selected ${selected}` });
       const neighborCard = page.locator('.hud__card').filter({ hasText: `HUD neighbor ${neighbor}` });
+      assert.ok(input.foreign, 'HUD exclusion control requires a seeded foreign-workspace owner');
+      const foreignCard = page.locator('.hud__card').filter({ hasText: `HUD foreign ${input.foreign}` });
       await selectedCard.waitFor();
       await neighborCard.waitFor();
+      assert.equal(await foreignCard.count(), 0, 'foreign workspace session must not appear in the scoped HUD');
       await search.focus();
       await search.pressSequentially(selected);
       await page.waitForURL(value => value.searchParams.get('hudsq') === selected);
@@ -470,16 +479,29 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       await Promise.all([...syncReadCaptures]);
       const read = syncReads.find(value => value.status === 200 && typeof value.url === 'string');
       assert.ok(read, 'HUD must read the actual private roster endpoint');
-      await context.addCookies([cookie(input.foreignToken)]);
-      let deniedStatus: number;
-      try {
-        const denied = await context.request.get(read.url as string,
-          { headers: { 'x-papercusp-workspace': workspace } });
-        deniedStatus = denied.status();
-        writeFileSync(join(evidence, 'portal-hud-denial.json'), JSON.stringify({
-          url: read.url, status: deniedStatus, body: await denied.text() }, null, 2));
-        assert.equal(deniedStatus, 403, 'foreign workspace identity must not read the retained workspace roster');
-      } finally { await context.addCookies([cookie(input.ownToken)]); }
+      assert.equal(JSON.parse(read.args as string).workspaceId, workspace, 'HUD prop must scope the actual roster request');
+      const scopedRoster = (read.body as { rows: Array<{ active: Array<{ ownerId: string }> }> }).rows[0];
+      assert.ok(scopedRoster.active.some(row => row.ownerId === selected));
+      assert.ok(scopedRoster.active.some(row => row.ownerId === neighbor));
+      assert.equal(scopedRoster.active.some(row => row.ownerId === input.foreign), false);
+      // This native read seam is auth:loopback, not cookie workspace authorization.
+      // The intentionally global query is the positive control for the seeded row.
+      const globalUrl = new URL(read.url as string);
+      globalUrl.searchParams.set('args', JSON.stringify({ ...JSON.parse(read.args as string), workspaceId: null }));
+      const globalRead = await context.request.get(globalUrl.href);
+      assert.equal(globalRead.status(), 200);
+      const globalRoster = (await globalRead.json()).rows[0];
+      assert.ok(globalRoster.active.some((row: { ownerId: string }) => row.ownerId === input.foreign),
+        'global control must contain the same foreign owner excluded by the scoped query');
+      const deniedHost = 'foreign-roster.invalid';
+      const denied = await context.request.get(read.url as string, { headers: { host: deniedHost } });
+      const deniedStatus = denied.status();
+      const deniedBody = await denied.text();
+      writeFileSync(join(evidence, 'portal-hud-denial.json'), JSON.stringify({
+        url: read.url, host: deniedHost, status: deniedStatus, body: deniedBody,
+        authPlane: 'private-loopback-with-cookie' }, null, 2));
+      assert.equal(deniedStatus, 403, 'external Host must be denied by the actual loopback roster policy');
+      assert.equal(JSON.parse(deniedBody).error, 'loopback_only');
       assert.equal(await search.inputValue(), selected, 'denied read must preserve the selected filter');
       await selectedCard.waitFor();
       await page.reload();
@@ -488,11 +510,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       await search.fill('');
       await neighborCard.waitFor();
       await selectedCard.waitFor();
+      assert.equal(await foreignCard.count(), 0, 'filter reset must retain workspace exclusion');
       assert.deepEqual(pageErrors, [], 'actual HUD session workflow must stay browser-safe');
-      const retained = { workspace, authMethod: 'private-cookie-HUD-roster', selected, neighbor,
+      const retained = { workspace, authMethod: 'private-loopback-with-cookie', selected, neighbor, foreign: input.foreign,
         keyboardFilter: true, selectedRetained: true, neighborFiltered: true,
         filterReset: true, deepLinkReload: true, shellQueryPreserved: true,
-        denialStatus: deniedStatus, denialTransport: 'actual-private-roster-request', retryReload: true,
+        scopedWorkspaceArgs: true, foreignExcluded: true, globalForeignControl: true,
+        denialStatus: deniedStatus, denialTransport: 'actual-private-roster-external-host', retryReload: true,
         browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
       writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
       return retained;
