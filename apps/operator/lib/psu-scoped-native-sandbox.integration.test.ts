@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { createServer, type Server } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -109,6 +110,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
   const admissionEvidence: Array<{ target: string; bodySha256: string; openBeforeSend: number }> = [];
   const countedInputs: Record<string, unknown>[] = [];
   const gatewayErrors: string[] = [];
+  const admissionStages: Record<string, unknown>[] = [];
   let readReservations: (() => Promise<unknown>) | undefined;
   try {
   mkdirSync(cwd);
@@ -200,7 +202,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
               verifiedHow: z.literal('manual'), filesChanged: z.array(z.string()) }) },
         };
         for (const name of Object.keys(inputs) as Array<keyof typeof inputs>) {
-          host.registerTool(name, { inputSchema: inputs[name] }, async args => {
+          host.registerTool(name, { inputSchema: inputs[name] }, async (args: Record<string, unknown>): Promise<CallToolResult> => {
             const canonical = name.replace('work_items_', 'work_items:');
             const tool = lookupByMcpName(canonical);
             if (!tool) throw new Error(`Maintained workflow tool is absent: ${canonical}`);
@@ -208,7 +210,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
               checkCapabilityEnvelope: async input => checkSessionConfinement(input),
             });
             workflowCalls.push({ name, args, result });
-            return result.ok ? { ...result.result, content: result.result?.content ?? [] } : {
+            return result.ok ? { ...result.result, content: result.result?.content ?? [] } as CallToolResult : {
               isError: true, content: [{ type: 'text' as const, text: JSON.stringify(result.error) }],
             };
           });
@@ -274,6 +276,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       const account = { id: 'private-native-provider', provider: 'codex' as const, credentialRef: `token:${key}` };
       const inputTokens = 100_000;
       config.priceSchedule.rates[0].inputTokenCeiling = inputTokens;
+      config.priceSchedule.rates[0].cacheWriteUsdPerMillion = 1.25;
       config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract('gpt-6-sol', inputTokens);
       const resources = { inputTokens: 1_000_000, outputTokens: 4096, requestsPerArm: 50, usdPerArm: 3,
         maxOpenUsd: config.maxInFlightUsd, wallClockMs: 120_000, wallClockMsPerArm: 120_000,
@@ -288,17 +291,39 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
         return Response.json({ object: 'response.input_tokens', input_tokens: 1000 });
       } });
       const auth = currentBenchProviderAuthenticator({ workspaceId, preregHash, protocol: config,
-        armId: 'papercusp', taskId: 't1', seed: 1, readNativeInputCeiling: reader.read }, {
+        armId: 'papercusp', taskId: 't1', seed: 1, readNativeInputCeiling: async (attempt, credential) => {
+          const result = await reader.read(attempt, credential);
+          admissionStages.push({ stage: 'input-proof', accepted: result !== null });
+          return result;
+        } }, {
         readAccount: async (_workspace, id) => id === account.id ? account : null,
         credentialResolver: (_provider, ref) => makeBearerCredentialResolver(ref),
       });
       revokeProvider = () => { auth.revoke(); reader.revoke(); };
       const controller = currentBenchGatewayController({ workspaceId, loopId, token: 'a'.repeat(64), preregHash,
         protocol: config, resources, armId: 'papercusp', taskId: 't1', seed: 1,
-        authenticateProvider: auth.authenticateProvider }, { enabled: async () => true, getSql: async () => db!.adminSql,
+        authenticateProvider: async attempt => {
+          const result = await auth.authenticateProvider(attempt);
+          admissionStages.push({ stage: 'provider-authentication', accepted: result !== null });
+          return result;
+        } }, { enabled: async () => true, getSql: async () => db!.adminSql,
         log: () => {} });
       const hosted = await controller.startNativeGateway(message => { gatewayErrors.push(message); }, options =>
-        startGatewayService({ ...options, resolveAccounts: async () => [{ accountId: account.id,
+        startGatewayService({ ...options, carryTrial: { ...options.carryTrial!, authorizeAttempt: async attempt => {
+          const body = JSON.parse(attempt.body);
+          admissionStages.push({ stage: 'controller-input', model: body.model, reasoning: body.reasoning,
+            outputLimit: body.max_output_tokens, fields: Object.keys(body), transport: attempt.transport,
+            clientMetadata: body.client_metadata, promptCacheOptions: body.prompt_cache_options,
+            toolShapes: (body.tools ?? []).map((tool: Record<string, unknown>) => ({ type: tool.type, name: tool.name,
+              keys: Object.keys(tool), tools: Array.isArray(tool.tools) ? tool.tools.map((child: Record<string, unknown>) =>
+                ({ type: child.type, name: child.name, keys: Object.keys(child) })) : undefined })),
+            nativeSessionId: attempt.nativeSessionId, nativeTurnId: attempt.nativeTurnId,
+            inputShapes: Array.isArray(body.input) ? body.input.map((item: Record<string, unknown>) =>
+              ({ type: item.type, role: item.role, keys: Object.keys(item) })) : typeof body.input });
+          const result = await options.carryTrial!.authorizeAttempt(attempt);
+          admissionStages.push({ stage: 'controller-output', accepted: result !== null });
+          return result;
+        } }, resolveAccounts: async () => [{ accountId: account.id,
           credentialRef: account.credentialRef, source: 'env' }], resolveLocalBackends: async () => [],
           observePool: () => () => {}, refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
           fetchImpl: async (target, init) => {
@@ -335,6 +360,8 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       'model_providers.frozen_fixture.supports_websockets': false,
       'model_providers.frozen_fixture.request_max_retries': 0,
       'model_providers.frozen_fixture.stream_max_retries': 0 } : {}),
+      'model_providers.papercusp-codex-gateway.request_max_retries': 0,
+      'model_providers.papercusp-codex-gateway.stream_max_retries': 0,
       'features.apps': false, 'features.hooks': false, web_search: 'disabled' };
     const args = ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
       ...Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]), 'Read the frozen assignment context.'];
@@ -366,7 +393,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
           .flatMap(([key, entry]) => inputShapes(entry, `${path}.${key}`))];
       return [];
     };
-    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, gatewayErrors, admissionEvidence,
+    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, gatewayErrors, admissionEvidence, admissionStages,
       countedInputCount: countedInputs.length, reservations: await readReservations?.(), requestPaths, mcpMethods, workflowCalls,
       dependencyPreflight, executablePath: env.PATH, discoveryRoot: env.PAPERCUSP_PSU_PTY_DIR,
       inputShapes: inputShapes(providerCalls[0]?.input),

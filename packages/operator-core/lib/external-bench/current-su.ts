@@ -29,6 +29,7 @@ import { readGatewayNativeCorrelation } from '../inference-gateway/request-stage
 import { concurrencyTimelineFromIntervals } from './hive-backlog-utilities';
 import { restoreBenchmarkContext, readRestoredBenchmarkContext, type BenchmarkContextInput, type BenchmarkContextReceipt } from './reproducibility/context';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
+import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
 
 interface NativeCostParticipant {
   taskId: string; ownerId: string; codexHome: string; terminal: boolean;
@@ -330,10 +331,11 @@ type FrozenBenchRate = CurrentBenchmarkProtocol['priceSchedule']['rates'][number
 /** Reserve the full uncached/native input exposure, including the most
  * expensive frozen cache-write tier. Keep rounding in integer microUSD. */
 function currentBenchRequestExposureUsd(rate: FrozenBenchRate, input: number, output: number, claude: boolean): number | null {
+  const requiresCacheWritePrice = claude || openAiCacheGeneration(rate.model) === 'modern';
   if (!Number.isSafeInteger(input) || input < 0 || !Number.isSafeInteger(output) || output <= 0 ||
-      claude && rate.cacheWriteUsdPerMillion === undefined) return null;
+      requiresCacheWritePrice && rate.cacheWriteUsdPerMillion === undefined) return null;
   const inputRate = Math.ceil(Math.max(rate.inputUsdPerMillion, rate.cachedInputUsdPerMillion,
-    claude ? rate.cacheWriteUsdPerMillion! : 0) * 1_000_000);
+    rate.cacheWriteUsdPerMillion ?? 0) * 1_000_000);
   const outputRate = Math.ceil(rate.outputUsdPerMillion * 1_000_000);
   if (![inputRate, outputRate].every(Number.isSafeInteger)) return null;
   const micros = (BigInt(input) * BigInt(inputRate) + BigInt(output) * BigInt(outputRate) + 999_999n) / 1_000_000n;
@@ -358,7 +360,7 @@ interface CurrentBenchInputCredential { readonly secret: string }
 const openAiCountFields = ['model', 'input', 'instructions', 'parallel_tool_calls', 'personality',
   'reasoning', 'text', 'tool_choice', 'tools', 'truncation'] as const;
 const openAiGenerationFields = ['max_output_tokens', 'stream', 'store', 'include', 'metadata',
-  'prompt_cache_key', 'prompt_cache_retention', 'safety_identifier', 'user', 'service_tier', 'background'] as const;
+  'prompt_cache_key', 'prompt_cache_retention', 'prompt_cache_options', 'safety_identifier', 'user', 'service_tier', 'background'] as const;
 const openAiCountTarget = 'https://api.openai.com/v1/responses/input_tokens';
 
 /** Freeze the maintained admission contract with the input cap. Its source is
@@ -368,10 +370,11 @@ const openAiCountTarget = 'https://api.openai.com/v1/responses/input_tokens';
  * https://developers.openai.com/api/docs/guides/token-counting */
 export function currentBenchOpenAiInputContract(model: string, inputTokens: number): string {
   if (!model.trim() || !Number.isSafeInteger(inputTokens) || inputTokens <= 0) throw new Error('Invalid native input contract.');
-  return createHash('sha256').update(canonicalJson({ version: 2, model, inputTokens,
+  return createHash('sha256').update(canonicalJson({ version: 3, model, inputTokens,
     target: openAiCountTarget, fields: openAiCountFields, generationFields: openAiGenerationFields,
     input: 'self-contained-text-and-local-tools', localToolFormats: ['function', 'custom', 'namespace'],
-    inlineToolType: 'additional_tools', tier: 'default' })).digest('hex');
+    inlineToolType: 'additional_tools', promptCacheOptions: { ttl: '30m', modes: ['implicit', 'explicit'] },
+    tier: 'default' })).digest('hex');
 }
 
 /** Refuse mutable server/remote context and separately billed provider tools.
@@ -386,6 +389,13 @@ function selfContainedOpenAiInput(body: Record<string, unknown>): boolean {
   }
   const object = (value: unknown): value is Record<string, unknown> =>
     value !== null && typeof value === 'object' && !Array.isArray(value);
+  // Cache lifetime/mode affects cost, not counted input. The gateway's
+  // maintained modern-model rewrite adds this field before admission.
+  // Refuse prewarming, comparison requests and unknown options; reserve the
+  // maximum frozen cache-write rate separately before a provider send.
+  if (body.prompt_cache_options !== undefined && (!object(body.prompt_cache_options) ||
+      body.prompt_cache_options.ttl !== '30m' || Object.keys(body.prompt_cache_options).some(key => !['ttl', 'mode'].includes(key)) ||
+      body.prompt_cache_options.mode !== undefined && !['implicit', 'explicit'].includes(String(body.prompt_cache_options.mode)))) return false;
   const named = (tool: Record<string, unknown>) => typeof tool.name === 'string' && tool.name.trim().length > 0;
   const localTool = (tool: unknown) => object(tool) && named(tool) && ['function', 'custom'].includes(String(tool.type));
   // Native Responses-lite puts these definitions in developer input items.

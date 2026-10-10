@@ -429,6 +429,22 @@ describe('frozen benchmark native provider admission', () => {
       f.revoke(); expect(() => receipt.validateAuthorization!()).toThrow();
     } finally { f.revoke(); }
   });
+  it.each(['missing-rate', 'under-reserved', 'reserved'] as const)('bounds modern OpenAI cache-write exposure (%s)', async mode => {
+    const f = budgetFixture();
+    f.input.protocol.arms.forEach(arm => { arm.model = 'gpt-6-sol'; });
+    const rate = f.input.protocol.priceSchedule.rates[0]; rate.model = 'gpt-6-sol';
+    if (mode !== 'missing-rate') rate.cacheWriteUsdPerMillion = 5;
+    const c = currentBenchGatewayController(f.input, f.governor);
+    try {
+      const body = JSON.stringify({ model: rate.model, reasoning: { effort: 'high' }, max_output_tokens: 10,
+        prompt_cache_options: { ttl: '30m' } });
+      const attempt = { ...f.attempt, body, bodySha256: f.digest(body) };
+      f.authority.requestedUsd = mode === 'reserved' ? 0.00052 : 0.00012;
+      const receipt = await c.gateway.carryTrial.authorizeAttempt(attempt);
+      if (mode === 'reserved') expect(receipt).not.toBeNull();
+      else { expect(receipt).toBeNull(); expect(f.reserve).not.toHaveBeenCalled(); }
+    } finally { c.revoke(); f.revoke(); }
+  });
   it('does not price Anthropic cache-write exposure as ordinary input', async () => {
     const f = budgetFixture();
     try {
@@ -501,6 +517,25 @@ describe('provider-counted complete native input', () => {
     const reader = currentBenchOpenAiInputReader(input, { fetch });
     return { ...f, input, attempt, fetch, reader, credential: { secret: NEVER_EMIT_MARKER } };
   }
+  it.each([
+    { ttl: '30m' }, { ttl: '30m', mode: 'implicit' }, { ttl: '30m', mode: 'explicit' },
+    { ttl: '24h' }, { ttl: '30m', prewarm: true }, { ttl: '30m', comparison_response_id: 'foreign' },
+    { ttl: '30m', unknown: 'uncounted' }, '30m', null,
+  ])('admits only bounded native prompt-cache options %j', async options => {
+    const f = fixture();
+    const body = JSON.parse(f.attempt.body); body.prompt_cache_options = options;
+    f.attempt.body = JSON.stringify(body); f.attempt.bodySha256 = f.digest(f.attempt.body);
+    const accepted = options !== null && typeof options === 'object' && options.ttl === '30m' &&
+      Object.keys(options).every(key => key === 'ttl' || key === 'mode');
+    try {
+      const proof = await f.reader.read(f.attempt, f.credential);
+      if (accepted) {
+        expect(proof).not.toBeNull();
+        expect(proof!.evidence!.bodySha256).toBe(f.attempt.bodySha256);
+        expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).not.toHaveProperty('prompt_cache_options');
+      } else { expect(proof).toBeNull(); expect(f.fetch).not.toHaveBeenCalled(); }
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
   it.each(['valid', 'unknown-metadata', 'malformed-metadata'] as const)(
     'counts native input with bounded source correlation (%s)', async mode => {
       const f = fixture();
