@@ -212,12 +212,33 @@ export function hostedCustomerAgentIdentitySpec(options: HostedCustomerAgentIden
 export function hostedCustomerAgentSpawnTransform(
   options: HostedCustomerAgentIdentityOptions = {},
 ): AgentSpawnTransform {
+  const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
+  const exists = options.exists ?? existsSync;
+  const nodePath = posix.join(toolchainBin, 'node');
+  const inner = hostedCustomerIdentityTransform(options);
+  return (request) => {
+    const command = hostedCustomerAgentCommand(request.backend, toolchainBin);
+    for (const required of [nodePath, command]) {
+      if (!exists(required)) {
+        throw new AgentSpawnRefusedError(
+          'agent_toolchain_missing',
+          `cannot run ${request.backend} as the customer workspace account: the customer agent toolchain has no ${required} ` +
+            '(this host was bootstrapped before D-423 or without that agent installed; upgrade the workspace host)',
+        );
+      }
+    }
+    return inner({ ...request, command });
+  };
+}
+
+/** The shared pinned transport; CLI command selection stays in its caller. */
+function hostedCustomerIdentityTransform(options: HostedCustomerAgentIdentityOptions): AgentSpawnTransform {
   const localHome = options.localHome ?? homedir();
   const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
   const exists = options.exists ?? existsSync;
   const nodePath = posix.join(toolchainBin, 'node');
   const fixedEnv = hostedFixedEnv(toolchainBin, exists);
-  const inner = buildLoopbackIdentitySpawn({
+  return buildLoopbackIdentitySpawn({
     ...(fixedEnv ? { fixedEnv } : {}),
     transportCommand: '/usr/bin/ssh',
     transportArgs: hostedIdentitySshArgs(false),
@@ -234,18 +255,29 @@ export function hostedCustomerAgentSpawnTransform(
       options.forbiddenSecrets ??
       readOperatorSuperuserTokens(operatorStateRoots(localHome, options.baseEnv ?? process.env)),
   });
+}
+
+/**
+ * Native command execution reuses the CLI identity transport, without selecting
+ * a vendor CLI or shipping any Papercusp module to the customer toolchain.
+ * This is only an OS execution plan: the host must authorize each invocation.
+ */
+export function hostedCustomerCommandSpawnTransform(
+  options: HostedCustomerAgentIdentityOptions = {},
+): AgentSpawnTransform {
+  const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
+  const exists = options.exists ?? existsSync;
+  const nodePath = posix.join(toolchainBin, 'node');
+  const inner = hostedCustomerIdentityTransform(options);
   return (request) => {
-    const command = hostedCustomerAgentCommand(request.backend, toolchainBin);
-    for (const required of [nodePath, command]) {
-      if (!exists(required)) {
-        throw new AgentSpawnRefusedError(
-          'agent_toolchain_missing',
-          `cannot run ${request.backend} as the customer workspace account: the customer agent toolchain has no ${required} ` +
-            '(this host was bootstrapped before D-423 or without that agent installed; upgrade the workspace host)',
-        );
-      }
+    if (request.backend !== 'native-command' || request.command !== '/bin/bash'
+      || request.stagedDirs.length !== 0) {
+      throw new AgentSpawnRefusedError('customer_command_invalid', 'invalid customer command execution plan');
     }
-    return inner({ ...request, command });
+    if (!exists(nodePath) || !exists('/bin/bash')) {
+      throw new AgentSpawnRefusedError('agent_toolchain_missing', 'customer command toolchain unavailable');
+    }
+    return inner(request);
   };
 }
 
