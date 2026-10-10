@@ -1176,6 +1176,45 @@ export function agentReviewIsReproductionValidation(payload: unknown): boolean {
   return review.status === 'revision-requested' && review.revisionKind === 'reproduction';
 }
 
+/** What a claim door tells the claimant of reproduction-validation work (D-006, P-002 Left#1). */
+export interface ReproductionValidationBrief {
+  lane: 'reproduction-validation';
+  /** The claim is NOT a licence to fix: no fix starts without an accepted current-build receipt. */
+  validationOnly: true;
+  reviewRound: number | null;
+  reason: string;
+  next: readonly string[];
+}
+
+/**
+ * The claim-time label for a reproduction-validation row, or null for any other row.
+ *
+ * The intake floor admits these rows to ordinary claimers (D-006), so the claimant is usually
+ * NOT the submitter and has never seen the review. Without this label a drain member reads a
+ * claimed bug as "fix it", which is exactly what the reproduction gate forbids. Pure, and
+ * keyed on the same predicate as the SQL floor leg, so a row the floor admitted as
+ * validation work is always labelled as such and no other row ever is.
+ */
+export function reproductionValidationBrief(item: unknown): ReproductionValidationBrief | null {
+  const row = record(item);
+  if (row.kind !== 'bug' || !agentReviewIsReproductionValidation(row.payload)) return null;
+  const round = record(record(row.payload).agentReview).round;
+  return {
+    lane: 'reproduction-validation',
+    validationOnly: true,
+    reviewRound: Number.isInteger(round) ? Number(round) : null,
+    reason:
+      "An independent agent review passed this bug's content and refused it ONLY because no accepted " +
+      'current-build reproduction receipt is recorded. This claim is validation work: do not start a fix.',
+    next: [
+      'Reproduce the bug on the CURRENT build: a failing test, a scripted repro, or a current-build observation.',
+      "Reproduced: improvements:agent-review { mode:'resubmit', id, reproduction:{ kind:'failing-test'|'scripted-repro'|'current-build-observation', ref, buildSha } }. " +
+        'The receipt is recorded on the row and the next review round verifies it against the current build; resubmitting releases your claim.',
+      "Not reproducible on the current build: close it with work_items:complete { id, state:'dropped' }, citing the reproduction attempt (what you ran, on which build) in completion.verifiedHow.",
+    ],
+  };
+}
+
 /**
  * Narrow, server-only authority to claim one exact pending review. It is minted
  * after the reviewer lane checks the work-item and consumed by the shared claim
