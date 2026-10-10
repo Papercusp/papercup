@@ -14,6 +14,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { resolveCheckpointRouting } from '../../harness/routines/hive-release-env';
+import type { GateVerdictTarget } from '../../release/gate-verdict-target';
 import { getTask } from '../../task-manager/store';
 import { newTaskId } from '../../task-manager/types';
 import {
@@ -91,7 +94,11 @@ import { executeWithGateActionReceipt } from '../../release/gate-action-receipt'
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
 const json = (payload: unknown) => ({ data: payload });
-const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
+const target = (ctx: { workspaceId?: unknown; harnessSlug?: string | null } = {}): GateVerdictTarget => ({
+  workspaceId: typeof ctx.workspaceId === 'string' && ctx.workspaceId.trim() && ctx.workspaceId !== '*'
+    ? ctx.workspaceId : activeWorkspaceId(),
+  installSlug: resolveConcreteHarnessSlug(undefined, ctx) ?? operatorHomeHarnessSlug(),
+});
 
 /**
  * A completed `release:repair-queue` call can outlive dispatch's deadline after it has
@@ -545,6 +552,7 @@ export function assessFrozenRepairFixerAuthorization(
 async function reconcileQueueRowWithLineage(
   queueTarget: ReturnType<typeof target>,
   queue: FrozenCandidateRepairQueue,
+  root: string,
 ): Promise<{
   queue: FrozenCandidateRepairQueue;
   ledger: { status: string; reconciled: number; detail: string } | null;
@@ -552,7 +560,6 @@ async function reconcileQueueRowWithLineage(
   try {
     const { reconcileFrozenRepairQueueWithLineageRef } = await import('../../release/frozen-lineage-ledger-reconcile');
     const { applyFrozenCandidateRepairQueueTransition } = await import('../../harness/routines/release-actions');
-    const root = integrationRoot();
     const probe = reconcileFrozenRepairQueueWithLineageRef(queue, { root });
     if (probe.status === 'in-sync') return { queue, ledger: null };
     if (probe.status !== 'reconciled') {
@@ -600,12 +607,11 @@ async function readSameHeadContradiction(
   }
 }
 
-async function inspectQueue() {
-  const queueTarget = target();
+async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
   const read = await readFrozenCandidateRepairQueueState(queueTarget);
   let queue = read.status === 'value' ? read.queue : null;
   let ledger: { status: string; reconciled: number; detail: string } | null = null;
-  if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue));
+  if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue, root));
   // New R6 runs live in task-manager scopes and persist progress/verdict by operationId.
   // The launcher host PID is only the pre-spawn race guard; after the task row exists,
   // replacing that host must not cancel or fail an active pre-check.
@@ -782,7 +788,7 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect, admit paths onto, claim a manifest leg, or retire the frozen repair queue. Workspace-global; omit harness/workspace. `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins a reviewed source against later staging drift. Dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.',
+    'Inspect, admit paths onto, claim a manifest leg, or retire the frozen repair queue for the selected harness scope (operator home when unscoped). `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins a reviewed source against later staging drift. Dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.',
   capability: 'operator:write',
   abortCompletionReceipt: repairQueueAbortCompletionReceipt,
   effectForCall: (args) => {
@@ -801,7 +807,7 @@ export default defineTool({
   guidance: {
     when: 'After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.',
     notWhen:
-      'Workspace-global: never pass harness/workspace. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
+      'Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
       '`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If staging may move between preview and confirmation, use `wholeBlob:true, sourceCommit:<reviewed integration ancestor SHA>, reason`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity.',
     returns:
@@ -860,6 +866,14 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    const queueTarget = target(ctx);
+    let scopeRoot = integrationRoot();
+    if (queueTarget.installSlug !== operatorHomeHarnessSlug()) {
+      const routing = await resolveCheckpointRouting(queueTarget, scopeRoot);
+      if (routing.skip) return json({ ok: false, refused: true, reason: 'checkpoint_routing_skip',
+        target: queueTarget, detail: routing.skip.reason });
+      scopeRoot = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
+    }
     // WI-10005695: admit/converge report per-step timings (response `timings`) and log a step
     // that is still running after 30s, so a call whose client gives up is still localizable.
     const clock =
@@ -871,7 +885,9 @@ export default defineTool({
           })
       : null;
     try {
-    const inspected = clock ? await clock.step('inspect-queue', () => inspectQueue()) : await inspectQueue();
+    const inspected = clock
+      ? await clock.step('inspect-queue', () => inspectQueue(queueTarget, scopeRoot))
+      : await inspectQueue(queueTarget, scopeRoot);
     const compactRead =
       inspected.read.status === 'value'
         ? { status: 'value' as const, schemaVersion: inspected.read.queue.schemaVersion }
@@ -1079,7 +1095,7 @@ export default defineTool({
       });
     }
     if (args.op === 'admit' || args.op === 'converge') {
-      const root = integrationRoot();
+      const root = scopeRoot;
       const branch = integrationBranch();
       const queue = inspected.queue;
       const paths = Array.isArray(args.paths) ? args.paths.filter((p) => typeof p === 'string' && p.trim()) : [];
@@ -2021,6 +2037,7 @@ export default defineTool({
             candidate: queue.candidate,
             repairHead: outcome.commit,
             admittedAtMs: Date.now(),
+            ...(queueTarget.installSlug !== operatorHomeHarnessSlug() ? { target: queueTarget } : {}),
           })
         : null;
       return json({

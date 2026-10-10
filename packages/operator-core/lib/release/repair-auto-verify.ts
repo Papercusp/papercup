@@ -28,11 +28,14 @@ import {
   frozenRepairHeadAwaitsVerification,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
+import type { GateVerdictTarget } from './gate-verdict-target';
 
 /** D-131 quiet window: no further admit to the same queue for this long ⇒ verify. */
 export const REPAIR_AUTO_VERIFY_QUIET_MS = 5 * 60_000;
 
 export interface RepairAutoVerifyRequest {
+  /** The admitted queue's harness; omitted only by legacy operator-home requests. */
+  target?: GateVerdictTarget;
   /** The frozen candidate the admit landed on. */
   candidate: string;
   /** The repair head the persisted admit published — the head this waiter may verify. */
@@ -78,8 +81,10 @@ export interface RepairAutoVerifyDeps {
 }
 
 /** Deterministic per-head workflow id: the DBOS dedupe key that makes scheduling idempotent. */
-export function repairAutoVerifyWorkflowId(repairHead: string): string {
-  return `repair-auto-verify:${repairHead}`;
+export function repairAutoVerifyWorkflowId(repairHead: string, target?: GateVerdictTarget): string {
+  return target
+    ? `repair-auto-verify:${encodeURIComponent(target.workspaceId)}:${encodeURIComponent(target.installSlug)}:${repairHead}`
+    : `repair-auto-verify:${repairHead}`;
 }
 
 /**

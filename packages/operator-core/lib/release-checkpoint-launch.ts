@@ -2044,6 +2044,8 @@ export interface CheckpointEligibilityWaitRequest {
   waitSec: number;
   pendingId: string;
   root?: string;
+  /** Preserve the selected harness across the durable wait; root is its subject checkout. */
+  target?: GateVerdictTarget;
   force?: boolean;
   replaceStale?: boolean;
   /** Re-check this lineage after the quiet-cut delay before the deferred launch. */

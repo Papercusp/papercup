@@ -5310,20 +5310,18 @@ async function amendAcceptanceBarRubric(
       // The custom writer updates the rubric and subject plan under both locks. Keep
       // both revision snapshots in this transaction too, so failure on either insert
       // rolls back both plan rows and any earlier revision insert.
-      await recordPlanRevisionInTransaction(tx, {
-        planSlug: input.rubricId,
-        harnessSlug: rubricScope.harnessSlug,
-        workspaceId: rubricScope.workspaceId,
-        content: formatRubricRevisionSnapshot(
-          rubricBody,
-          guard.data,
-          criteriaHash,
-          nextRubricRevision,
-        ),
-        contentHash: hashPlanContent(rubricBody),
-        rationale: revisionRationale,
-        identity: revisionIdentity,
-      });
+      // Reuse the rubric revision writer's proved-preimage capture. A legacy
+      // activation snapshot is resolvable only while its version is current;
+      // preserve that identity before the acceptance amendment advances it.
+      await rubricRevisionInTransaction(input.rubricId, actorId, revisionRationale)(
+        tx, rubricBody, rubricScope, guard.data, nextRubricRevision,
+        {
+          body: rubricRow.content,
+          contentHash: rubricRow.content_hash,
+          version: oldRubricRevision,
+          templateData: rubricRow.template_data,
+        },
+      );
       await recordPlanRevisionInTransaction(tx, {
         planSlug: subjectPlanHint,
         harnessSlug: subjectScope.harnessSlug,

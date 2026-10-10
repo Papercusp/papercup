@@ -1,6 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
-import { frozenRepairQueueReadTarget } from './checkpoint-required-ancestor';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { assessFrozenRepairQueuePreflight, assessRequiredAncestorPreflight, frozenRepairQueueReadTarget } from './checkpoint-required-ancestor';
 import { gateVerdictEnv } from './gate-verdict-target';
+
+const queueRead = vi.hoisted(() => vi.fn());
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
+vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+vi.mock('../harness/routines/release-actions', () => ({
+  readFrozenCandidateRepairQueue: queueRead, releaseFixerSpawnAlive: vi.fn(async () => false),
+}));
+
+beforeEach(() => { queueRead.mockReset(); queueRead.mockResolvedValue(null); });
 
 // WI-10008171: calendar's scheduled green-checkpoint read papercusp's frozen repair queue
 // (keyed by the operator HOME harness) and adopted papercusp's repairHead f07043ba — a commit
@@ -39,5 +48,13 @@ describe('frozenRepairQueueReadTarget (WI-10008171)', () => {
     const env = gateVerdictEnv({ workspaceId: 'papercusp-workspace', installSlug: 'calendar' });
     const [workspaceKey] = Object.keys(env);
     expect(frozenRepairQueueReadTarget(() => home, { [workspaceKey]: 'papercusp-workspace' })).toEqual(home);
+  });
+
+  it('an explicit request target outranks the shared server environment', async () => {
+    const target = { workspaceId: 'papercusp-workspace', installSlug: 'slack-asana-bug-drill' };
+    expect(frozenRepairQueueReadTarget(() => home, gateVerdictEnv(home), target)).toEqual(target);
+    await assessFrozenRepairQueuePreflight(null, '/drill', target);
+    await assessRequiredAncestorPreflight('a'.repeat(40), null, '/drill', target);
+    expect(queueRead.mock.calls.map(([selected]) => selected)).toEqual([target, target]);
   });
 });

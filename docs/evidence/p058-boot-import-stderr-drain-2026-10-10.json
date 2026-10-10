@@ -9,7 +9,11 @@
   "planSlug": "portable-papercusp-container-and-native-2026-10-06",
   "evidencePlane": "saved-conventional-node-test-wrapper",
   "candidateAccepted": false,
-  "command": "node --test --test-name-pattern='packaged import|Linux import probe' papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js\nbash -n papercusp-desktop/bin/verify-sidecar-bundle.sh",
+  "command": [
+    "bash",
+    "-c",
+    "node --test --test-name-pattern='packaged import|Linux import probe' papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js\nbash -n papercusp-desktop/bin/verify-sidecar-bundle.sh"
+  ],
   "startedAt": "2026-10-10T21:26:36.820Z",
   "finishedAt": "2026-10-10T21:26:41.377Z",
   "timestampEvidence": "Start is the saved native tool-call timestamp including the immediately preceding atomic patch; finish is the durable runner JOB END. No new execution was made during evidence recovery.",

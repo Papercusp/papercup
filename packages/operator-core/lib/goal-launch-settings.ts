@@ -1819,6 +1819,15 @@ async function assembleGoalPortfolioBrief(args: {
    * a caller that never reads the count must not pay for it. Default 'count'.
    */
   claimability?: 'count' | 'skip';
+  /**
+   * 'skip' omits `rubricStewardship`, even for a goal whose brief carries rubric
+   * duties. Its acceptance-author identity read builds the workspace's whole
+   * identity-edge graph (~13k edges; measured 455-500ms on 60d3a8), the slowest
+   * statement in this read, and the agent-obligation reader never reads it
+   * (EI-25306440159635835). A skipped read OMITS the field, so a caller that
+   * passes 'skip' must not read its absence as "no rubric duties". Default 'read'.
+   */
+  rubricStewardship?: 'read' | 'skip';
   launch?: {
     goalBrief: GoalLaunchBrief;
     settings: GoalLaunchSettings | null;
@@ -2442,7 +2451,8 @@ async function assembleGoalPortfolioBrief(args: {
     };
     stage.buildPriorities = buildPriorities;
 
-    const hasRubricDuties = launch.goalBrief.body?.includes('Maintain rubric coverage') === true;
+    const hasRubricDuties = launch.goalBrief.body?.includes('Maintain rubric coverage') === true
+      && args.rubricStewardship !== 'skip';
     const rubricStewardship = hasRubricDuties
       ? await readGoalRubricStewardship({ workspaceId: args.workspaceId, goalId: args.goalId,
         nowMs: assembledAt.getTime() }, { sql }) : undefined;

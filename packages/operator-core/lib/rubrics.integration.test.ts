@@ -4032,6 +4032,32 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...criterion, model };
   }
 
+  it('preserves a proved legacy acceptance preimage before a started-BAR amendment', async () => {
+    const seeded = await seedBarContract('legacy-acceptance-preimage-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const templateData = await storedTemplateData(seeded.rubricSlug);
+    const [latest] = await db.adminSql<{ id: string; content_snapshot: string }[]>`
+      SELECT id, content_snapshot FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+         AND plan_slug = ${seeded.rubricSlug} ORDER BY seq DESC LIMIT 1`;
+    const body = latest!.content_snapshot.split('## Structured rubric data (`template_data`)')[0]!.trimEnd();
+    const legacySnapshot = `${body}\n\n## Structured rubric data (\`template_data\`)\n\n~~~json\n${JSON.stringify(templateData, null, 2)}\n~~~\n`;
+    await db.adminSql`UPDATE harness_shared.plan_revisions SET content_snapshot = ${legacySnapshot}
+      WHERE id = ${latest!.id} AND workspace_id = ${activeWorkspaceId()}`;
+    await rubrics.amendRubric({
+      rubricId: seeded.rubricSlug, actorId: 'amendment-actor',
+      reason: 'Require an additional recorded layer.',
+      requirement: { key: before.criteria[0]!.key, acceptance: { requiredTestLayers: ['unit', 'integration'] } },
+    });
+    const historical = await rubrics.getRubric(seeded.rubricSlug, before.revision!);
+    expect(historical?.revision).toBe(before.revision);
+    expect(historical?.criteria).toEqual(before.criteria);
+    const [original] = await db.adminSql<{ content_snapshot: string }[]>`
+      SELECT content_snapshot FROM harness_shared.plan_revisions WHERE id = ${latest!.id}
+       AND workspace_id = ${activeWorkspaceId()}`;
+    expect(original!.content_snapshot).toBe(legacySnapshot);
+  });
+
   it('applies a started-BAR amendment that only grows required test layers without approval', async () => {
     const seeded = await seedBarContract('additive-layer-amendment-subject', { authorMethods: true });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;

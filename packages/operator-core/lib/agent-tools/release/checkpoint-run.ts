@@ -1234,11 +1234,11 @@ export default defineTool({
     // lineage check; avoid a second read there so both answers cannot drift across a DB update.
     const frozenRepairQueuePreflight =
       !preflight.refuse && !args.requiredAncestorSha
-        ? await assessFrozenRepairQueuePreflight(preflight.candidate, checkpointRoot)
+        ? await assessFrozenRepairQueuePreflight(preflight.candidate, checkpointRoot, verdictTarget)
         : null;
     const requiredAncestorPreflight =
       !preflight.refuse && args.requiredAncestorSha
-        ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate, checkpointRoot)
+        ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate, checkpointRoot, verdictTarget)
         : null;
     const launchCandidate =
       requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
@@ -1505,6 +1505,7 @@ export default defineTool({
           waitSec: preflight.waitSec ?? 0,
           pendingId: logicalAttemptId,
           root,
+          target: verdictTarget,
           force: args.force,
           replaceStale: args.replaceStale,
           logicalAttemptId,
@@ -1758,6 +1759,7 @@ export default defineTool({
     const liveFrozenRepairQueuePreflight = await assessFrozenRepairQueuePreflight(
       preflight.candidate,
       checkpointRoot,
+      verdictTarget,
     );
     const frozenLineageCas = assessFrozenLineageLaunchCas(
       frozenLineageIdentity,

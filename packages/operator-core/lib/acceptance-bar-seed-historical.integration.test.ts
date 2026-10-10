@@ -18,6 +18,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
 const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
+const { getRubric, inspectRubricRevisionSnapshot } = await import('./rubrics');
+const { runWithWorkspace } = await import('./workspace-als');
 import { setSpecClause, type SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
 
 const WORKSPACE = 'acceptance-bar-seed-historical-test';
@@ -93,6 +95,36 @@ function seedInput(planSlug: string, planContent: string, actorId: string) {
 }
 
 describe('historical deterministic acceptance BAR rubric collision', () => {
+  it('resolves the exact seeded rubric version after a later version becomes current', async () => {
+    const planSlug = 'seeded-rubric-immutable-history';
+    const planContent = contentFor(planSlug);
+    await insertSubject(planSlug, planContent);
+    const first = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      ...seedInput(planSlug, planContent, 'su-seeder'),
+      executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.message);
+    const [snapshot] = await db.adminSql<{ content_snapshot: string }[]>`
+      SELECT content_snapshot FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = ${first.rubricSlug}`;
+    expect(inspectRubricRevisionSnapshot(snapshot!.content_snapshot)).toMatchObject({
+      kind: 'enriched', rubricRevision: 1,
+    });
+    // Decouple the current plan version from the audit sequence. The immutable
+    // seed must remain addressable even after current structured data changes.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans SET version = 7,
+        template_data = jsonb_set(template_data, '{criteria,0,method}', '"Later method"')
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = ${first.rubricSlug}`;
+    const historical = await runWithWorkspace(WORKSPACE, () => getRubric(first.rubricSlug, 1));
+    expect(historical).toMatchObject({ revision: 1, barSetHash: first.barSetHash });
+    expect(historical!.criteria[0]!.method).not.toBe('Later method');
+    expect(await runWithWorkspace(WORKSPACE, () => getRubric(first.rubricSlug, 2))).toBeNull();
+  });
+
   it('reuses a superseded subject acceptance rubric during a later re-audit', async () => {
     const planSlug = 'historical-bar-reaudit';
     const planContent = contentFor(planSlug);

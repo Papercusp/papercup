@@ -32,6 +32,7 @@ import {
   buildRubricPlanBody,
   computeAcceptanceBarSetHash,
   DEFAULT_RATING_SCALE,
+  formatRubricRevisionSnapshot,
   normalizeAcceptanceBarCriterion,
   planStatusToRubricStatus,
   type ProposeRubricCriterion,
@@ -1210,7 +1211,9 @@ export async function seedAcceptanceBarsInTransaction(
         updated_at = now(),
         origin = 'local'`;
 
-    const snapshot = `${body}${body.endsWith('\n') ? '\n' : '\n\n'}## Structured rubric data (\`template_data\`)\n\n~~~json\n${JSON.stringify(built.templateData, null, 2)}\n~~~\n`;
+    // A clause may retain this exact pin after a sibling BAR is amended. Persist
+    // the committed version, rather than relying on the audit sequence to name it.
+    const snapshot = formatRubricRevisionSnapshot(body, built.templateData, null, rubricRevision);
     await sql`
       INSERT INTO harness_shared.plan_revisions (
         workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,

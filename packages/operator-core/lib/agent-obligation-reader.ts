@@ -41,6 +41,18 @@ import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-pref
 export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
 
 /**
+ * The goal-portfolio sections the obligation reader does NOT read, and so must not
+ * pay for inside AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS. The reader reads only
+ * `portfolio.goal` and `portfolio.worklist`. Without this projection the 60d3a8
+ * read measured 0.8-1.3s warm, and 111 of 149 goal turn-end rows (2026-10-06..10)
+ * recorded `unknown` (EI-25306440159635835).
+ */
+export const AGENT_OBLIGATION_PORTFOLIO_PROJECTION = {
+  claimability: 'skip',
+  rubricStewardship: 'skip',
+} as const;
+
+/**
  * The cost bound on how many plans one turn-start read raises an acceptance
  * obligation for. It predates P-026 (it capped the declared plan context alone);
  * D-012 item 2 widened that context to the delegated goal worklist and
@@ -932,9 +944,11 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
     },
     goalPortfolio: async (workspaceId, goalId) => {
       const { readGoalPortfolioBrief } = await import('./goal-launch-settings');
-      // Placement and planning obligations never read queue.claimable; its
-      // per-id floor count alone exceeded AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS.
-      return readGoalPortfolioBrief({ workspaceId, goalId, claimability: 'skip' });
+      // Placement and planning obligations read only `goal` and `worklist`. The
+      // claim-floor count (queue.claimable) and the rubric-stewardship identity
+      // graph each alone pushed this read past AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS
+      // (EI-25306440159635835), so neither is paid for here.
+      return readGoalPortfolioBrief({ workspaceId, goalId, ...AGENT_OBLIGATION_PORTFOLIO_PROJECTION });
     },
     goalPlacementProgress: async (workspaceId, ownerId, goalId, planRefs) =>
       (await import('./goal-placement-progress-store')).readGoalPlacementProgress({ workspaceId, ownerId, goalId, planRefs }),

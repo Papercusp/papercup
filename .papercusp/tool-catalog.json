@@ -18171,7 +18171,7 @@
           "POST"
         ]
       },
-      "description": "Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. A named-resource UUID is rejected with guidance to use locks:release_resource. Fires the classic file-lock grant cascade for waiting agents.",
+      "description": "Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Path-only selection is caller-owned and grouped by lock_id before release. Absolute home/XDG-runtime paths in paths are normalized to the canonical external lock key; use lock_id for absolute managed-repository files. Many: pass lock_ids:[…]. A named-resource UUID is rejected with guidance to use locks:release_resource. Fires the classic file-lock grant cascade for waiting agents.",
       "capabilities": [
         "locks:write"
       ],
@@ -18232,7 +18232,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row's lock_id.",
+        "when": "Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. The paths selector accepts repo-relative paths, canonical @external/* keys, or absolute home/XDG-runtime paths (normalized to the canonical key). Use lock_id for an absolute managed-repository file. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row's lock_id.",
         "notWhen": "Mid-edit. The lock should outlive the edit by enough that no other agent races between release and PR merge.",
         "chaining": "locks:acquire or locks:acquire_granular → work → locks:release { lock_id } or { lock_ids:[…] }. If a classic file-lock id was lost, locks:queue → select your active row's lock_id → locks:release { lock_id }. Or: session-end → locks:release { all_mine: true }."
       }
@@ -28570,7 +28570,7 @@
           "POST"
         ]
       },
-      "description": "Inspect, admit paths onto, claim a manifest leg, or retire the frozen repair queue. Workspace-global; omit harness/workspace. `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins a reviewed source against later staging drift. Dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.",
+      "description": "Inspect, admit paths onto, claim a manifest leg, or retire the frozen repair queue for the selected harness scope (operator home when unscoped). `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins a reviewed source against later staging drift. Dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.",
       "capabilities": [
         "operator:write"
       ],
@@ -28590,7 +28590,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.",
-        "notWhen": "Workspace-global: never pass harness/workspace. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.",
+        "notWhen": "Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.",
         "chaining": "`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If staging may move between preview and confirmation, use `wholeBlob:true, sourceCommit:<reviewed integration ancestor SHA>, reason`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity."
       }
     },

@@ -572,6 +572,10 @@ describe('release:checkpoint-run', () => {
       }),
     );
     expect(result).toMatchObject({ ok: true, launched: true });
+    const { assessFrozenRepairQueuePreflight } = await import('../../release/checkpoint-required-ancestor');
+    expect(assessFrozenRepairQueuePreflight).toHaveBeenCalledWith(
+      null, '/portal-subject', { workspaceId: 'portal-workspace', installSlug: 'portal' },
+    );
   });
 
   it('WI-5124: warns loudly in `note` when the quiet-cut excluded fresh commits (the "my fix was silently excluded" trap)', async () => {

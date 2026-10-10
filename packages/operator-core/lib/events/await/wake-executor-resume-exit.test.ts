@@ -37,35 +37,37 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
   }> {
     const s = tb.session('A');
     const dead = await deadPid();
-    return {
-      s,
-      deps: {
-        resolveWakeModeFn: async () => 'auto',
-        findPsuHost: () => null, // no live socket → fall through to the resume ladder
-        getSession: async () =>
-          ({
-            pid: dead,
-            endedAt: null,
-            agent: 'claude',
-            sessionId: 'native-A',
-            coordOwnerId: null,
-            cwd: s.cwd,
-          }) as never,
-        findPty: () => null,
-        write: () => true,
-        presence: async () => null,
-        alive: () => false,
-        // Hermetic Channel 2 resume path: the production default performs the
-        // atomic DB claim, but this unit test only exercises detached-exit wiring.
-        claimResume: async () => true,
-        // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
-        accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
-        // The resume leg's harness fallback reads the live loop row. That blocked
-        // real-PG attempt ran in every test here; model "no loop row" instead.
-        getLoopStatusFn: (async () => null) as never,
-        ...over,
-      },
+    const deps: ExecuteWakeDeps = {
+      resolveWakeModeFn: async () => 'auto',
+      findPsuHost: () => null, // no live socket → fall through to the resume ladder
+      getSession: async () =>
+        ({
+          pid: dead,
+          endedAt: null,
+          agent: 'claude',
+          sessionId: 'native-A',
+          coordOwnerId: null,
+          cwd: s.cwd,
+        }) as never,
+      findPty: () => null,
+      write: () => true,
+      presence: async () => null,
+      alive: () => false,
+      // Hermetic Channel 2 resume path: the production default performs the
+      // atomic DB claim, but this unit test only exercises detached-exit wiring.
+      claimResume: async () => true,
+      // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
+      accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
+      // The resume leg's harness fallback reads the live loop row. That blocked
+      // real-PG attempt ran in every test here; model "no loop row" instead.
+      getLoopStatusFn: (async () => null) as never,
+      ...over,
     };
+    // Hermetic owner election (WI-10008189): the handle reads not-alive, so executeWake elects
+    // the owner's newest adv-session. Stamp the fixture row with its id + owner and model "no
+    // successor", so it never reaches the real PG election read. A cell's own
+    // getLatestSessionForOwner (via `over`) still wins.
+    return { s, deps: { ...deps, ...tb.ownerElectionDeps(deps) } };
   }
 
   it('forwards the detached turn exit to onResumeTurnExit, bound to the delivery; still delivers on spawn', async () => {
@@ -219,7 +221,9 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       id: s.advSessionId,
       workspaceId: 'row-ws',
       agent: 'claude',
-      coordOwnerId: null,
+      // Replaces the owner-election-wrapped getSession, so name the row's real owner
+      // itself: the election parks a row it cannot attribute (WI-10008189).
+      coordOwnerId: s.ownerId,
       sessionId: 'native-A',
       startedAt: '2026-09-24T10:06:00.000Z',
       endedAt: null,

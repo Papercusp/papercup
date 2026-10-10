@@ -18,6 +18,14 @@ import {
   type RepairAutoVerifyDeps,
 } from './repair-auto-verify';
 
+it('keeps auto-verification workflow identities separate for equal heads in two harnesses', () => {
+  const head = 'a'.repeat(40);
+  const home = { workspaceId: 'workspace', installSlug: 'papercusp' };
+  const drill = { workspaceId: 'workspace', installSlug: 'slack-asana-bug-drill' };
+  expect(repairAutoVerifyWorkflowId(head, home)).not.toBe(repairAutoVerifyWorkflowId(head, drill));
+  expect(repairAutoVerifyWorkflowId(head)).toBe(`repair-auto-verify:${head}`);
+});
+
 const CAND = 'c'.repeat(40);
 const HEAD1 = '1'.repeat(40);
 const HEAD2 = '2'.repeat(40);

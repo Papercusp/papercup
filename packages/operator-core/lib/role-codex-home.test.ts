@@ -70,7 +70,9 @@ async function loadMod() {
     ...mod,
     writeRoleCodexHome: withResolvedDefault(mod.writeRoleCodexHome),
     writeSuCodexHome: withResolvedDefault(mod.writeSuCodexHome),
+    writeSuCodexHomeAsync: withResolvedDefault(mod.writeSuCodexHomeAsync),
     ensureSuCodexHomeConfig: withResolvedDefault(mod.ensureSuCodexHomeConfig),
+    ensureSuCodexHomeConfigAsync: withResolvedDefault(mod.ensureSuCodexHomeConfigAsync),
   };
 }
 
@@ -1751,6 +1753,86 @@ describe('writeSuCodexHome', () => {
     const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
     expect(hooks.hooks.PostToolUse).toHaveLength(1); // lock-release only
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-activity-report.sh');
+  });
+
+  it('uses async filesystem access for owner-sid reads and stamps during fresh creation', async () => {
+    await installFakeHooks();
+    const fs = await import('node:fs');
+    const { readFile } = await import('node:fs/promises');
+    const exists = vi.spyOn(fs, 'existsSync');
+    const read = vi.spyOn(fs, 'readFileSync');
+    const write = vi.spyOn(fs, 'writeFileSync');
+    try {
+      const { writeSuCodexHomeAsync } = await loadMod();
+      const input = {
+        sessionKey: 'async-owner-sid-create',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'ASYNC OWNER SID',
+      };
+      const first = await writeSuCodexHomeAsync({ ...input, sid: 'su-first' });
+      const ownerSidPath = join(first.codexHome, '.owner-sid');
+      expect(await readFile(ownerSidPath, 'utf8')).toBe('su-first');
+
+      const isOwnerLive = vi.fn(async (sid: string) => sid === 'su-first');
+      await expect(writeSuCodexHomeAsync({
+        ...input,
+        sid: 'su-second',
+        isOwnerLive,
+      })).rejects.toThrow(/LIVE Codex home/);
+      expect(isOwnerLive).toHaveBeenCalledWith('su-first');
+      expect(await readFile(ownerSidPath, 'utf8')).toBe('su-first');
+
+      expect(exists.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
+      expect(read.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
+      expect(write.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('uses async filesystem access for owner-sid reads and stamps during repair', async () => {
+    await installFakeHooks();
+    const fs = await import('node:fs');
+    const { readFile, writeFile } = await import('node:fs/promises');
+    const { writeSuCodexHome } = await loadMod();
+    const opts = {
+      sessionKey: 'async-owner-sid-repair',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'ASYNC OWNER SID REPAIR',
+      sid: 'su-repair',
+    };
+    const home = writeSuCodexHome(opts);
+    const ownerSidPath = join(home.codexHome, '.owner-sid');
+    const exists = vi.spyOn(fs, 'existsSync');
+    const read = vi.spyOn(fs, 'readFileSync');
+    const write = vi.spyOn(fs, 'writeFileSync');
+    try {
+      const { ensureSuCodexHomeConfigAsync } = await loadMod();
+      const unchanged = await ensureSuCodexHomeConfigAsync(opts);
+      expect(unchanged).toMatchObject({ repaired: false, identityRepaired: false });
+
+      await writeFile(ownerSidPath, 'su-stale');
+      const repaired = await ensureSuCodexHomeConfigAsync(opts);
+      expect(repaired).toMatchObject({ repaired: true, identityRepaired: true });
+      expect(await readFile(ownerSidPath, 'utf8')).toBe('su-repair');
+
+      expect(exists.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
+      expect(read.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
+      expect(write.mock.calls.some(([path]) => String(path) === ownerSidPath)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('keeps production SU creation and repair paths on the async owner-sid APIs', () => {
+    const bootstrap = readFileSync(new URL('./endpoint-route/routes/agent-mcp/bootstrap-su.ts', import.meta.url), 'utf8');
+    const wakeExecutor = readFileSync(new URL('./events/await/wake-executor.ts', import.meta.url), 'utf8');
+    const advSessions = readFileSync(new URL('./endpoint-route/routes/adv/sessions.ts', import.meta.url), 'utf8');
+
+    expect(bootstrap).toMatch(/await writeSuCodexHomeAsync\s*\(/);
+    expect(wakeExecutor).toMatch(/await ensureSuCodexHomeConfigAsync\s*\(/);
+    expect(advSessions).toMatch(/ensureConfig\s*=\s*\([^)]*\)\s*=>\s*ensureSuCodexHomeConfigAsync\s*\(/);
+    expect(advSessions.match(/await ensureConfig\s*\(/g) ?? []).toHaveLength(2);
   });
 });
 

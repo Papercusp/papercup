@@ -248,11 +248,12 @@ export function resolveRunnableCandidate(
 export function frozenRepairQueueReadTarget(
   home: () => GateVerdictTarget,
   env: NodeJS.ProcessEnv = process.env,
+  target?: GateVerdictTarget,
 ): GateVerdictTarget {
-  return gateVerdictTargetFromEnv(env) ?? home();
+  return target ?? gateVerdictTargetFromEnv(env) ?? home();
 }
 
-async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
+async function readFrozenRepairQueueState(target?: GateVerdictTarget): Promise<FrozenRepairQueueState> {
   const [
     { activeWorkspaceId },
     { operatorHomeHarnessSlug },
@@ -266,7 +267,7 @@ async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
     frozenRepairQueueReadTarget(() => ({
       workspaceId: activeWorkspaceId(),
       installSlug: operatorHomeHarnessSlug(),
-    })),
+    }), process.env, target),
   );
 
   let fixerAlive: boolean | null = null;
@@ -299,11 +300,12 @@ async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
 export async function assessFrozenRepairQueuePreflight(
   predictedCandidate: string | null = null,
   root = integrationRoot(),
+  target?: GateVerdictTarget,
 ): Promise<FrozenRepairQueuePreflight> {
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let fixerAlive: boolean | null = null;
   try {
-    const state = await readFrozenRepairQueueState();
+    const state = await readFrozenRepairQueueState(target);
     repairQueue = state.repairQueue;
     fixerAlive = state.fixerAlive;
     const { queueDecision } = state;
@@ -360,12 +362,13 @@ export async function assessRequiredAncestorPreflight(
   requiredAncestor: string,
   predictedCandidate: string | null,
   root = integrationRoot(),
+  target?: GateVerdictTarget,
 ): Promise<RequiredAncestorPreflight> {
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let fixerAlive: boolean | null = null;
   let queueDecision: FrozenRepairQueueDecision;
   try {
-    const state = await readFrozenRepairQueueState();
+    const state = await readFrozenRepairQueueState(target);
     repairQueue = state.repairQueue;
     fixerAlive = state.fixerAlive;
     queueDecision = state.queueDecision;

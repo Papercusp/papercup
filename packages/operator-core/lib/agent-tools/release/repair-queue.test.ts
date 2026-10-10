@@ -118,6 +118,10 @@ vi.mock('../../harness/routines/release-actions', () => ({
 }));
 vi.mock('../../release/fixer-liveness', () => ({ releaseFixerSpawnAlive: mocks.alive }));
 vi.mock('../../release-deploy-launch', () => ({ integrationRoot: () => '/repo' }));
+vi.mock('../../harness/routines/hive-release-env', () => ({
+  resolveCheckpointRouting: vi.fn(async () => ({ root: '/tooling',
+    extraEnv: { PAPERCUSP_INTEGRATION_ROOT: '/drill' }, clearEnv: [] })),
+}));
 vi.mock('../../release/frozen-lineage-ledger-reconcile', () => ({
   reconcileFrozenRepairQueueWithLineageRef: (current: unknown) => ({
     status: 'in-sync',
@@ -332,6 +336,18 @@ describe('release:repair-queue abort-completion receipts', () => {
   });
 });
 
+describe('selected harness repair queue', () => {
+  it('reads a foreign queue and previews its admission against that harness checkout', async () => {
+    mocks.admit.mockReturnValue(admissionOf(false));
+    const ctx = { role: 'su', harnessSlug: 'slack-asana-bug-drill', workspaceId: 'ws-drill' } as never;
+    const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, ctx));
+    expect(mocks.readState).toHaveBeenCalledWith({ workspaceId: 'ws-drill', installSlug: 'slack-asana-bug-drill' });
+    expect(result).toMatchObject({ target: { workspaceId: 'ws-drill', installSlug: 'slack-asana-bug-drill' },
+      source: { root: '/drill', ref: 'staging' } });
+    expect(mocks.gateOwnership).toHaveBeenCalledWith({ harness: 'slack-asana-bug-drill' });
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.gateOwnership.mockResolvedValue({
@@ -398,10 +414,10 @@ describe('release:repair-queue', () => {
     expect(mocks.write).not.toHaveBeenCalled();
   });
 
-  it('makes its workspace-global scope explicit to prevent caller harness arguments', () => {
-    expect(tool.description).toContain('Workspace-global');
-    expect(tool.description).toContain('omit harness/workspace');
-    expect(tool.guidance?.notWhen).toContain('never pass harness/workspace');
+  it('documents request scope without accepting target identity in the operation payload', () => {
+    expect(tool.description).toContain('selected harness scope');
+    expect(tool.guidance?.notWhen).toContain('not a harness/workspace key in the payload');
+    expect(tool.args.safeParse({ op: 'get', harness: 'other' }).success).toBe(false);
   });
 
   it('defaults an empty args object to get while preserving strict branch validation', () => {

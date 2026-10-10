@@ -289,6 +289,9 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         }, {
           id: 'leaf', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
           execution: { kind: 'agent', role: 'worker' },
+          // An agent work-item operation must pin the worker identity it will bind
+          // (validate.ts operation-unpinned-agent; WI-10008190).
+          policy: { identity: { kind: 'identity', ref: 'neutral-leaf-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
           inputSchema: { type: 'object', required: [key], additionalProperties: false,
             properties: { [key]: { type: typeof value === 'number' ? 'integer' : 'string' } } },
           acceptance: { resultSchema: consumer.outputSchema },
