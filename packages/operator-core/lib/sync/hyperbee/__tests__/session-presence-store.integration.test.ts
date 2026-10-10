@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import {
   applySessionPresenceSet,
   listLiveSessionPresence,
@@ -60,8 +61,12 @@ const entry = (ownerId: string, over?: Partial<SessionPresenceEntry>): SessionPr
 
 describe('shared_session_presence (real PG, mig 434)', () => {
   let db: FreshPgDb;
+  let dedicatedPg: DedicatedNativePg | undefined;
+  const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
 
   beforeAll(async () => {
+    dedicatedPg = await startDedicatedNativePg({ baseDir: '/dev/shm/pcv' });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     db = await createFreshPgDb('session_presence');
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
     await db.sql.unsafe(stripMeta(readFileSync(MIG_434, 'utf8')));
@@ -72,7 +77,16 @@ describe('shared_session_presence (real PG, mig 434)', () => {
   }, 60_000);
 
   afterAll(async () => {
-    await db?.cleanup();
+    try {
+      await db?.cleanup();
+    } finally {
+      try {
+        await dedicatedPg?.stop();
+      } finally {
+        if (priorAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+        else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = priorAdminUrl;
+      }
+    }
   });
 
   async function rowsFor(devicePubkey: string) {
