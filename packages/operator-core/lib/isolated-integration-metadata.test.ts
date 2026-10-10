@@ -432,6 +432,13 @@ it('separates ordinary cleanup stdout from bootstrap and refuses incomplete, for
     expect(kill).not.toHaveBeenCalled();
     child.stdout!.emit('data', Buffer.from(line(999, 'pg-stopped') + line(123, 'pg-stop-waiting')));
     await vi.advanceTimersByTimeAsync(10);
+    // The maintained watchdog includes the stall-window boundary. Its first
+    // checkpoint may extend from the genuine start; later waiting cannot.
+    expect(kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(90);
+    expect(kill).not.toHaveBeenCalled();
+    child.stdout!.emit('data', Buffer.from(line(123, 'pg-stop-waiting')));
+    await vi.advanceTimersByTimeAsync(10);
     expect(kill).toHaveBeenCalledWith('SIGTERM');
     Object.assign(child, { exitCode: 1 }); child.emit('exit', 1, null); child.emit('close', 1, null);
     expect(await captured).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
