@@ -35,6 +35,7 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
     [
       '#!/usr/bin/env bash',
       `[ "$VERIFY_TAURI_ISOLATED_DB" = "1" ] || { echo "rig: not isolated" >&2; exit 41; }`,
+      '[ "$PAPERCUSP_FAKE_LLM" = "1" ] || { echo "rig: native host missing fake LLM" >&2; exit 43; }',
       '[ "$1" = "--" ] || { echo "rig: expected --" >&2; exit 42; }',
       'shift',
       `export HARNESS_ADMIN_DATABASE_URL='${ISOLATED}'`,
@@ -112,6 +113,7 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
     'PAPERCUSP_HARNESS_SLUG',
     'OPERATOR_SOURCE_ROOT',
     'VH_PHASE_DIR',
+    'PAPERCUSP_FAKE_LLM',
   ]) delete base[k];
   const res = spawnSync('bash', [RUNNER, ...args], {
     env: {

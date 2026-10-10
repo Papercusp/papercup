@@ -70,6 +70,9 @@ else
   echo "run-operator-e2e-isolated: WARNING no caller workspace (PAPERCUSP_TEST_RUN_WORKSPACE / PAPERCUSP_WORKSPACE_ID / PAPERCUSP_WORKSPACE); ledger rows will carry the rig's throwaway workspace id" >&2
 fi
 export OPERATOR_E2E_PLAYWRIGHT="${OPERATOR_E2E_PLAYWRIGHT:-npx playwright test}"
+# The native host handles agent chat; setting this only on Vite leaves the
+# backend using live credentials and makes fake-LLM-only cases skip.
+export PAPERCUSP_FAKE_LLM=1
 # Open signup for THIS throwaway rig operator only (WI-10006791). The rig always has
 # its auto-signed-in default user, and /api/auth/signup refuses 403 signup_disabled
 # whenever a user exists and papercusp-open-signup is off. That flag is an
