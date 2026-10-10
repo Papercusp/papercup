@@ -30,6 +30,10 @@ import { startGatewayService } from '../inference-gateway/launch';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
+// Goal admission is an independent boundary. Its production service binding
+// reads the host org DB; this fixture owns only the private benchmark DB.
+const goalAdmission = vi.hoisted(() => vi.fn());
+vi.mock('../goal-launch-settings', () => ({ checkGoalInferenceAdmission: goalAdmission }));
 const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
   INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route'),
@@ -146,6 +150,7 @@ beforeAll(async () => {
   await sql`SELECT started_at, ended_at FROM harness_shared.task_ledger LIMIT 0`;
 }, 90_000);
 beforeEach(async () => {
+  goalAdmission.mockReset().mockResolvedValue({ allowed: true, goalId: null, reason: 'no-goal' });
   vi.clearAllMocks();
   hostHome.byId.clear();
   await sql`TRUNCATE harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
@@ -185,8 +190,8 @@ describe('production native accounting with private PG and full source bytes', (
       const dir = join(home, 'sessions', '2026', '10', '10'); mkdirSync(dir, { recursive: true });
       const file = join(dir, `rollout-2026-10-10T00-00-00-${nativeSessionId}.jsonl`);
       const transcript = [
-        { type: 'session_meta', payload: { id: nativeSessionId } },
-        { type: 'turn_context', payload: { turn_id: nativeTurnId, model: 'configured-alias' } },
+        { type: 'session_meta', payload: { id: nativeSessionId, cli_version: '0.162.0' } },
+        { type: 'turn_context', payload: { turn_id: nativeTurnId, model: 'configured-alias', effort: 'high' } },
         { type: 'event_msg', payload: { type: 'token_count', info: {
           total_token_usage: { input_tokens: 100, output_tokens: 10 },
           last_token_usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 },
@@ -318,13 +323,23 @@ describe('production native accounting with private PG and full source bytes', (
     const send = () => fetch(`${hosted.nativeGateway.baseURL}/v1/responses`, {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${hosted.nativeGateway.token}`,
         'x-papercusp-owner': f.solver.ownerId },
-      body: JSON.stringify({ model: 'configured-alias', input: 'private benchmark task', reasoning: { effort: 'high' },
+      body: JSON.stringify({ model: 'configured-alias', input: 'private benchmark task', instructions: 'private native instructions',
+        tools: [{ type: 'function', name: 'private_native_tool', parameters: { type: 'object' } }], reasoning: { effort: 'high' },
         client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ thread_id: f.solver.nativeSessionId, turn_id: f.solver.nativeTurnId }) } }),
     });
     try {
       const context = await ports.restoreContext(handle, 't1');
       await ports.launch(currentBenchLaunchRequest(f.opts, handle, 'private task', context));
       expect(native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
+      goalAdmission.mockResolvedValueOnce({ allowed: false, goalId: 'private-denied-goal', status: 403,
+        code: 'goal_budget_exhausted', message: 'Private fixture goal allowance exhausted.' });
+      const withheld = await send(); expect(withheld.status).toBe(403); await withheld.text();
+      expect(goalAdmission).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, ownerId: f.solver.ownerId }));
+      expect(count).not.toHaveBeenCalled(); expect(authenticate).not.toHaveBeenCalled(); expect(provider).not.toHaveBeenCalled();
+      await sql`INSERT INTO harness_shared.runtime_vintage VALUES
+        ('private-current-runtime', 'private-current-worker', ${hostname()}, ${'a'.repeat(40)}, null, null, ${process.pid},
+         ${sql.json({ kernelProcessIdentity: readProcessIdentity(process.pid) })},
+         ${new Date(Date.now() - 10_000).toISOString()}::timestamptz)`;
       const accepted = await send(), acceptedBody = await accepted.text();
       const authority = await authenticate.mock.results.at(-1)?.value;
       const lastAttempt = authenticate.mock.calls.at(-1)?.[0];
@@ -341,6 +356,16 @@ describe('production native accounting with private PG and full source bytes', (
       expect(providerEvidence[0]).toMatchObject({ target: 'https://api.openai.com/v1/responses', credentialMatches: true,
         model: 'configured-alias', outputLimit: 10, beforeSend: { positions: { unsettledUsd: 0.00012 },
           census: { status: 'complete', reservations: [{ status: 'open' }] } } });
+      const nativeTasks = await sql`SELECT started_at FROM harness_shared.task_ledger WHERE task_id = ${f.solver.taskId}`;
+      const nativeTask: CurrentBenchTask = { taskId: f.solver.taskId, workspaceId, sessionId: f.solver.nativeSessionId,
+        startedAt: new Date(nativeTasks[0].started_at).toISOString(), state: 'exited', exitCode: 0,
+        detail: { coordOwnerId: f.solver.ownerId } };
+      const observationOptions = { ...scope(), runtimeWorkspaceId: 'private-current-runtime',
+        workerUnit: 'private-current-worker', gatewayUnit: 'unregistered-private-gateway', gatewayBaseUrl: hosted.nativeGateway.baseURL };
+      const observed = await currentBenchObservationReader(observationOptions, undefined, hosted)(nativeTask);
+      expect(observed, 'issued private HTTP service needs only the actual host boot record').not.toBeNull();
+      expect(currentBenchIdentityFromObservation(nativeTask, observed!)).toMatchObject({ sourceRevision: 'a'.repeat(40),
+        model: 'configured-alias', accountId: account.id, clientVersion: 'codex/0.162.0', providerResponseId: 'host-http-provider-response' });
       expect(await ports.collectCost!({ handle, workspaceId })).toMatchObject({ costUsdMeasurementMissing: false,
         armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: 0.002 } } });
       const denied = await send(); expect(denied.status).toBe(403); await denied.text();
@@ -368,7 +393,8 @@ describe('production native accounting with private PG and full source bytes', (
     expect(result).toMatchObject({ costUsdMeasurementMissing: false,
       armMeta: { nativeCostAccounting: { attemptAccountingComplete: true, billedCostUsd: 0.011 } } });
     const positions = await getLearningSpendPositions(sql, { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
-    expect(positions.positions).toMatchObject({ usedUsd: 0.011, unsettledUsd: 0 });
+    expect(positions.positions.usedUsd).toBeCloseTo(0.011, 12);
+    expect(positions.positions.unsettledUsd).toBe(0);
     if (positions.census?.status !== 'complete') throw new Error('Incomplete role settlement census');
     expect(positions.census.reservations.map(row => row.status)).toEqual(['settled', 'settled', 'settled']);
     expect(positions.census.reservations.map(row => row.usedUsd).sort()).toEqual([0.002, 0.002, 0.007]);

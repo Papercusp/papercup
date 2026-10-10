@@ -20,6 +20,8 @@ import { PostgresHostedBudgetStore } from '../auth/hosted/billing/budget-store';
 import { createRoutedModelPort } from '../agent-loop/provider-router';
 import { runLoopChatTurn } from '../agent-loop/chat-engine';
 import { createOperatorOwnedLoopPort } from '../agent-loop/headless-invoke';
+import { createHostedCustomerModelPortFactory } from '../workspace-host/hosted-customer-loop-ports';
+import { captureModelProviderRequest, type ModelPort, type ModelRequest } from '../agent-loop/model-port';
 import type { LanguageModelV3 } from '@ai-sdk/provider';
 import { createHostedPrincipal, type HostedPermission } from '../auth/hosted-principal';
 import type { HostedPrincipalResolution, HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
@@ -213,6 +215,101 @@ describe('hosted native OpenRouter authorization', () => {
     const headers = new Headers({ cookie: 'session=original' });
     return { r, principal, authorize, secret, capture, createCapture, observations, headers };
   }
+
+  async function customerModel() {
+    const p = await prepared();
+    const channel = vi.fn(async (_signal: AbortSignal) => resolution());
+    const principal = resolution().principal;
+    const session = { workspaceId: principal.workspaceId, userId: principal.userId,
+      activeOrganizationId: principal.activeOrganizationId, selectedWorkspaceId: principal.selectedWorkspaceId,
+      sessionId: principal.sessionId, sessionVersion: principal.sessionVersion };
+    const controller = new AbortController();
+    const wire = vi.fn(async () => ({ stream: new ReadableStream({ start(c) {
+      c.enqueue({ type: 'error', error: 'fixture stream ended' }); c.close();
+    } }) }));
+    const languageModel = vi.fn(async (): Promise<LanguageModelV3> => ({ specificationVersion: 'v3',
+      provider: 'fixture', modelId: context.modelId, supportedUrls: {}, doStream: wire,
+      async doGenerate() { throw new Error('unused'); } }));
+    const token = vi.fn(async () => 'selected-key');
+    const select = vi.fn(() => null);
+    const factory = createHostedCustomerModelPortFactory({ billing: p.r, resolvePrincipal: channel,
+      openRouterAccounts: { active: () => ({ accountId: context.servedAccount, authMode: 'api-key', token }),
+        select, onExhausted: () => null }, createLanguageModel: languageModel });
+    const port = await factory(session, controller.signal);
+    const consume = async (request: ModelRequest = { model: 'openrouter/vendor/model', messages: [] },
+      target: ModelPort = port) => {
+      const events = [];
+      for await (const event of target.stream(request)) {
+        if (event.type === 'provider_request') await captureModelProviderRequest(event);
+        events.push(event);
+      }
+      return events;
+    };
+    return { ...p, channel, session, controller, wire, languageModel, token, select, factory, port, consume };
+  }
+
+  it('joins private customer session, runtime pool and awaited billing admission without cookie forwarding', async () => {
+    const p = await customerModel();
+    await p.consume({ model: 'openrouter/vendor/model', messages: [], account: 'foreign-account', ownerId: 'foreign-user' });
+    expect(p.principal).not.toHaveBeenCalled();
+    expect(p.select).not.toHaveBeenCalled();
+    expect(p.channel).toHaveBeenCalledTimes(2);
+    expect(p.authorize).toHaveBeenCalledWith(expect.objectContaining({
+      principal: expect.objectContaining({ userId: p.session.userId }) }));
+    expect(p.createCapture.mock.calls[0]![0].request.scope).toEqual(authorized().request.scope);
+    expect(p.capture).toHaveBeenCalledExactlyOnceWith(intent);
+    expect(p.wire).toHaveBeenCalledOnce();
+  });
+
+  it.each(['claude/sonnet', 'codex/gpt', 'openai/gpt', 'anthropic/claude', ' vendor/model', 'openrouter'])
+    ('refuses the unmetered model route %s before authentication or credential selection', async model => {
+      const p = await customerModel();
+      await expect(p.consume({ model, messages: [] })).rejects.toThrow('hosted_customer_model_unavailable');
+      expect(p.channel).not.toHaveBeenCalled(); expect(p.token).not.toHaveBeenCalled();
+      expect(p.authorize).not.toHaveBeenCalled(); expect(p.languageModel).not.toHaveBeenCalled();
+    });
+
+  it.each(['workspaceId', 'userId', 'activeOrganizationId', 'selectedWorkspaceId', 'sessionId', 'sessionVersion'] as const)
+    ('denies a changed customer %s before selecting credentials', async field => {
+      const p = await customerModel(); const r = resolution();
+      const value = field === 'sessionVersion' ? r.principal.sessionVersion + 1 : 'foreign';
+      p.channel.mockResolvedValue({ ...r, principal: createHostedPrincipal({ ...r.principal, [field]: value }) });
+      await expect(p.consume()).rejects.toThrow('hosted_customer_model_unavailable');
+      expect(p.token).not.toHaveBeenCalled(); expect(p.authorize).not.toHaveBeenCalled();
+    });
+
+  it('rechecks customer membership after credential lookup and keeps a denial off the wire', async () => {
+    const p = await customerModel();
+    p.token.mockImplementation(async () => {
+      const r = resolution();
+      p.channel.mockResolvedValue({ ...r, principal: createHostedPrincipal({ ...r.principal, permissions: ['workspace:view'] }) });
+      return 'selected-key';
+    });
+    await expect(p.consume()).rejects.toThrow('OpenRouter request capture failed; reservation remains unresolved');
+    expect(p.authorize).not.toHaveBeenCalled(); expect(p.createCapture).not.toHaveBeenCalled();
+    expect(p.wire).not.toHaveBeenCalled();
+  });
+
+  it('binds every stream to fresh admission and snapshots the session independently of its input object', async () => {
+    const p = await customerModel();
+    p.session.userId = 'mutated';
+    let id = 0;
+    p.authorize.mockImplementation(async () => { const a = authorized(); return { ...a,
+      request: { ...a.request, reservationId: 'customer-' + ++id } }; });
+    await p.consume(); await p.consume();
+    expect(p.createCapture.mock.calls.map(([o]) => o.request.reservationId)).toEqual(['customer-1', 'customer-2']);
+    expect(p.wire).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds a stalled channel authentication by invocation cancellation', async () => {
+    const p = await customerModel();
+    p.channel.mockImplementation(() => new Promise(() => {}));
+    const pending = p.consume();
+    const denied = expect(pending).rejects.toThrow('hosted_customer_model_unavailable');
+    await vi.waitFor(() => expect(p.channel).toHaveBeenCalledOnce());
+    p.controller.abort(); await denied;
+    expect(p.token).not.toHaveBeenCalled(); expect(p.wire).not.toHaveBeenCalled();
+  });
 
   it('uses the real native router and chat loop, awaits host authority before wire, and captures early identity privately', async () => {
     const p = await prepared(); let wire = 0;

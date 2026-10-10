@@ -5,6 +5,9 @@ import { posix } from 'node:path';
 import { dispatchProjectedTool, lookupByMcpName, type DispatchProjectedDeps,
   type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import type { ModelPort, ModelRequest } from '../agent-loop/model-port';
+import { createRoutedModelPort, type RoutedModelPortOptions } from '../agent-loop/provider-router';
+import { isHostedPrincipal } from '../auth/hosted-principal';
+import type { HostedBillingRuntime } from '../endpoint-route/hosted-billing-runtime';
 import { capabilityToolset, type ToolDispatcher, type DispatchResult } from '../agent-loop/capability-toolset';
 import { createOperatorOwnedLoopPort, type OperatorOwnedLoopPortOptions } from '../agent-loop/headless-invoke';
 import type { HostedWorkspaceHostSessionAdapter, HostedCustomerOperatorHttpHandler } from './hosted-session-host';
@@ -24,6 +27,53 @@ export interface HostedCustomerLoopPortDependencies extends HostedCustomerComman
 }
 
 const SHELL_TOOL = 'capability:bash';
+
+/** Prepare a private model factory using the existing router and billing
+ * admission continuation. This installs no native route, credential, funding
+ * reader or commercial policy. All of those remain independent host authority.
+ * Subscription/direct-key routes cannot bypass the supplied paid admission. */
+export function createHostedCustomerModelPortFactory(deps: {
+  readonly billing: Pick<HostedBillingRuntime, 'openRouterRequestCapture'>;
+  readonly resolvePrincipal: (signal: AbortSignal) => ReturnType<HostedCustomerCommandDependencies['resolvePrincipal']>;
+  readonly openRouterAccounts: NonNullable<RoutedModelPortOptions['openRouterAccounts']>;
+  readonly catalog?: RoutedModelPortOptions['catalog'];
+  readonly createLanguageModel?: RoutedModelPortOptions['createLanguageModel'];
+}): HostedCustomerLoopPortDependencies['createModelPort'] {
+  const resolve = deps.resolvePrincipal;
+  const capture = deps.billing.openRouterRequestCapture.bind(deps.billing);
+  const options = { catalog: deps.catalog ?? null, openRouterAccounts: deps.openRouterAccounts,
+    createLanguageModel: deps.createLanguageModel };
+  const identityKeys = ['workspaceId', 'userId', 'activeOrganizationId', 'selectedWorkspaceId',
+    'sessionId', 'sessionVersion'] as const;
+  return (session, signal) => {
+    if (!(signal instanceof AbortSignal) || signal.aborted) throw new Error('hosted_customer_model_unavailable');
+    const expected = Object.freeze({ ...session });
+    return { async *stream(input) {
+      const { signal: callerSignal, account: _account, ownerId: _ownerId, ...body } = input;
+      const request = structuredClone(body);
+      const streamSignal = callerSignal ? AbortSignal.any([signal, callerSignal]) : signal;
+      // Check the immutable request before selecting any credential or provider.
+      if (typeof request.model !== 'string' || !request.model.startsWith('openrouter/')) {
+        throw new Error('hosted_customer_model_unavailable');
+      }
+      const readPrincipal = async () => {
+        try {
+          const result = await awaitHostedCustomerOperation(() => resolve(streamSignal), streamSignal);
+          if (!result.ok || !isHostedPrincipal(result.principal)
+            || !result.principal.permissions.has('workspace:operate') || !expected.selectedWorkspaceId
+            || identityKeys.some(key => result.principal[key] !== expected[key])) return { ok: false } as const;
+          return result;
+        } catch { return { ok: false } as const; }
+      };
+      // A request's labels never select a tenant/account. Re-read again through
+      // the billing continuation before admission, after credential selection.
+      if (!(await readPrincipal()).ok) throw new Error('hosted_customer_model_unavailable');
+      const port = createRoutedModelPort({ ...options, env: {}, credentials: async () => ({}),
+        openRouterRequestCapture: capture(readPrincipal, streamSignal) });
+      yield* port.stream({ ...request, signal: streamSignal, ownerId: expected.userId });
+    } };
+  };
+}
 
 /** Prepare the existing native chat turn door on the VM's PRIVATE relay path.
  * Production does not install this callback until model/budget and customer OS
