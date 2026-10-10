@@ -772,12 +772,15 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
   });
 
   it.each(['positive', 'no-allocation', 'missing-cash', 'short-cash', 'unknown-reserve', 'fractional-prior-charge',
-    'stripe-positive', 'stripe-refund', 'stripe-pending', 'stripe-lineage-mismatch', 'stripe-census-gap', 'stripe-missing-cash'] as const)
+    'stripe-positive', 'stripe-refund', 'stripe-pending', 'stripe-lineage-mismatch', 'stripe-census-gap', 'stripe-missing-cash',
+    'stripe-usage-reported', 'stripe-usage-reported-final', 'stripe-usage-final', 'stripe-usage-final-correction',
+    'stripe-usage-final-zero', 'stripe-usage-overrun', 'stripe-usage-key-mismatch', 'stripe-usage-unpriced'] as const)
     ('joins persisted prepaid funding to private model admission with %s fixture authority', async mode => {
       // A separate maintained private DB makes the FULL local populations exact
       // without deleting immutable rows or depending on preceding test order.
       const isolated = await createOrgTestDb();
       const stripeMode = mode.startsWith('stripe-');
+      const usageMode = mode.startsWith('stripe-usage-');
       // The maintained HTTP reader stamps Date.now(). Keep its source clock
       // identical to the admission fixture, without changing timers or dates.
       const sourceClock = stripeMode ? vi.spyOn(Date, 'now').mockReturnValue(T) : null;
@@ -815,7 +818,7 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
         expect(await accrueUsageMicros({ workspaceId: journalWorkspaceId, rollupId: 'fixture-liability',
           accrualId: 'fixture-liability', micros: 1, microsExact: '1.25' }, { sql: isolated.adminSql })).toMatchObject({ ok: true });
 
-        let fault = false;
+        let fault = false; let expectedLiability = '1.25';
         const refundTransaction = { ...transaction, id: 'txn_FixtureRefund', amount: -1 };
         const calls: string[] = [];
         const fundingResults: Awaited<ReturnType<Extract<ReturnType<typeof createLockedHostedStripeFundingReader>,
@@ -878,12 +881,13 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
           expect(journal.entries).toHaveLength(hasRefund ? 3 : 2);
           const liability = splitMicrosDecimal(addMicrosDecimals(...journal.rollups.map(r =>
             r.rollup.roundingMicrosExact ?? String(r.rollup.roundingMicros))));
-          expect(liability.exact).toBe('1.25');
-          // This fixture owns every row and assigns each unpriced generation to
-          // its unresolved reservation. A production no-overlap/provider census
+          expect(liability.exact).toBe(expectedLiability);
+          // This fixture owns every row and assigns each generation to its
+          // reservation, including its later observations. A production no-overlap/provider census
           // needs independently authenticated joins, never these local labels.
           for (const binding of usage.openRouterBindings) expect(budget.latest).toContainEqual(expect.objectContaining({
-            reservationId: binding.budgetGrant?.reservationId, costMicros: null, providerFinal: false }));
+            reservationId: binding.budgetGrant?.reservationId,
+            ...(usageMode ? {} : { costMicros: null, providerFinal: false }) }));
           const collected = built?.ok ? await built.read(sql, scope) : null;
           if (collected) {
             fundingResults.push(collected);
@@ -912,8 +916,8 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
             cashBacking: fault && ['missing-cash', 'stripe-missing-cash'].includes(mode) ? null : {
               controlWorkspaceId: scope.controlWorkspaceId, stripeAccountId: accountId, asOfMs: request.asOfMs,
               livemode: true, complete: true, evidenceRef: 'fixture:independent-cash-not-bank-authority',
-              journalEntries: journal.entries.map(e => e.entry), availableMicros: 100_001,
-              availableMicrosExact: fault && mode === 'short-cash' ? '100001' : '100001.25',
+              journalEntries: journal.entries.map(e => e.entry), availableMicros: usageMode ? 100_002 : 100_001,
+              availableMicrosExact: usageMode ? '100002' : fault && mode === 'short-cash' ? '100001' : '100001.25',
               unpaidProviderMicros: liability.micros, unpaidProviderMicrosExact: liability.exact,
               retainedReserveMicros: fault && mode === 'unknown-reserve' ? null : 0 } };
         };
@@ -950,7 +954,7 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
         const a = await privateCustomerModel(scope, { run, readContext });
         const b = await privateCustomerModel(scope, { run, readContext });
         await Promise.all([a.consume(), b.consume()]);
-        const expected = ['positive', 'stripe-positive'].includes(mode) ? 1 : 0;
+        const expected = usageMode || ['positive', 'stripe-positive'].includes(mode) ? 1 : 0;
         expect(a.wire.mock.calls.length + b.wire.mock.calls.length).toBe(expected);
         expect(await a.usage.readOpenRouterBindings({ scope, month: MONTH, asOfMs: T + 1000 })).toHaveLength(expected);
         expect(await isolated.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts`).toHaveLength(expected);
@@ -972,6 +976,116 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
           await winner.consume(); expect(winner.wire).toHaveBeenCalledOnce();
           expect(await winner.budget.reserve(winner.request)).toMatchObject({ outcome: 'duplicate',
             receipt: { revision: 0, costMicros: null, providerFinal: false } });
+          if (usageMode) {
+            // Recover the private admission from a NEW store, then use the
+            // maintained HTTP collector. Nothing in /generation certifies a
+            // final invoice, even when a caller labels that report final.
+            const freshUsage = new PostgresHostedUsageStore(run);
+            const [binding] = await freshUsage.readOpenRouterBindings({ scope, month: MONTH, asOfMs: T });
+            expect(binding?.budgetGrant).toMatchObject({ scope, reservationId: winner.request.reservationId });
+            const generationId = winner.generationId;
+            let providerCalls = 0;
+            const reportedCost = mode === 'stripe-usage-unpriced' ? 'null'
+              : mode === 'stripe-usage-overrun' ? '0.10000025'
+                : mode === 'stripe-usage-final-zero' ? '0' : '0.00000025';
+            const collector = new OpenRouterHostedUsageCollector({
+              readBinding: async (requested, id) => {
+                expect(requested).toEqual(scope); expect(id).toBe(generationId); return binding ?? null;
+              },
+              readCredential: async reference => {
+                expect(reference).toBe(binding?.credentialRef);
+                return mode === 'stripe-usage-key-mismatch' ? 'other-account-key' : 'execution-key';
+              },
+              fetch: async (url, init) => {
+                providerCalls++;
+                expect(new URL(String(url)).searchParams.get('id')).toBe(generationId);
+                expect(init).toMatchObject({ method: 'GET', redirect: 'error', cache: 'no-store',
+                  headers: { Authorization: 'Bearer execution-key' } });
+                return new Response('{"data":{"id":"' + generationId + '","is_byok":false,"total_cost":'
+                  + reportedCost + ',"upstream_inference_cost":99,"prompt":"private fixture"}}');
+              },
+              append: r => freshUsage.append(r),
+            });
+            const collected = await collector.collect({ scope, generationId });
+            const budget = new PostgresHostedBudgetStore({ run, readContext, now: () => T });
+            const nextRequest = { ...winner.request, reservationId: randomUUID(), maximumCostMicros: 1 };
+            if (mode === 'stripe-usage-key-mismatch') {
+              expect(collected).toEqual({ outcome: 'unavailable', reason: 'credential-mismatch' });
+              expect(providerCalls).toBe(0);
+              expect(await budget.reserve(winner.request)).toMatchObject({ outcome: 'duplicate',
+                receipt: { revision: 0, costMicros: null, providerFinal: false } });
+              expect(await budget.reserve(nextRequest)).toMatchObject({ outcome: 'refused' });
+              expect(await freshUsage.readRecords({ scope, month: MONTH, asOfMs: T })).toHaveLength(1);
+            } else {
+              expect(collected.outcome).toBe('recorded'); expect(providerCalls).toBe(1);
+              if (!('record' in collected) || !collected.record) throw new Error('fixture collector omitted its record');
+              const report = collected.record;
+              expect(report).toMatchObject({ usageId: generationId, revision: 2,
+                costSource: mode === 'stripe-usage-unpriced' ? 'unpriced' : 'provider-reported' });
+              expect(JSON.stringify(report)).not.toMatch(/private|credential|execution-key|upstream|budgetGrant/);
+              const observation = { scope: binding!.budgetGrant!.scope,
+                reservationId: binding!.budgetGrant!.reservationId, eventId: report.recordId,
+                revision: 1, observedAtMs: report.observedAtMs, costSource: report.costSource,
+                costMicros: report.costMicros, costMicrosExact: report.costMicrosExact,
+                providerFinal: mode === 'stripe-usage-reported-final', evidenceRef: report.sourceRef };
+              const observed = await budget.observe(observation);
+              expect(observed).toMatchObject({ outcome: 'recorded', settlement: {
+                state: 'pending', chargedMicros: 0, heldMicros: 100_000, releasedMicros: 0,
+                suspend: mode === 'stripe-usage-overrun' } });
+              if (mode === 'stripe-usage-overrun') expect(observed).toMatchObject({ settlement: { overrunMicrosExact: '0.25' } });
+              else if (mode !== 'stripe-usage-unpriced') expect(report).toMatchObject({
+                costMicros: 0, ...(mode === 'stripe-usage-final-zero' ? {} : { costMicrosExact: '0.25' }) });
+              expect(await budget.observe(observation)).toMatchObject({ outcome: 'duplicate' });
+              expect(await budget.observe({ ...observation, scope: { ...scope, customerWorkspaceId: randomUUID() } }))
+                .toMatchObject({ outcome: 'unknown', receipt: null });
+              const finalMode = ['stripe-usage-final', 'stripe-usage-final-correction', 'stripe-usage-final-zero'].includes(mode);
+              if (finalMode) {
+                // Explicit trusted-server FINAL BILL FIXTURES, separate from
+                // the authenticated-shape reported amount above. They do not
+                // install an invoice adapter or grant production authority.
+                const costs = mode === 'stripe-usage-final-correction' ? ['0.25', '0.5']
+                  : mode === 'stripe-usage-final-zero' ? ['0'] : ['0.25'];
+                let previous = '0';
+                for (const [index, exact] of costs.entries()) {
+                  const cost = splitMicrosDecimal(exact);
+                  const final = { ...observation, eventId: 'fixture-invoice:' + randomUUID(), revision: index + 2,
+                    costSource: 'provider-billed' as const, costMicros: cost.micros,
+                    costMicrosExact: cost.exact.includes('.') ? cost.exact : undefined,
+                    providerFinal: true, evidenceRef: 'fixture:independent-final-provider-bill' };
+                  expect(await budget.observe(final)).toMatchObject({ outcome: 'recorded', settlement: {
+                    state: 'settled', heldMicros: 0, chargedMicros: cost.micros,
+                    ...(exact.includes('.') ? { chargedMicrosExact: exact } : {}), suspend: false } });
+                  expect(await budget.observe(final)).toMatchObject({ outcome: 'duplicate' });
+                  expect(await freshUsage.append({ ...report, recordId: randomUUID(), revision: index + 3,
+                    costSource: 'provider-billed', costMicros: cost.micros,
+                    costMicrosExact: final.costMicrosExact, sourceRef: final.evidenceRef })).toBe('recorded');
+                  if (exact !== '0') {
+                    // Append only the exact correction delta to the existing
+                    // journal accrual rail; do not double-charge old revisions.
+                    const delta = exact === '0.5' && previous === '0.25' ? '0.25' : exact;
+                    const amount = splitMicrosDecimal(delta);
+                    expect(await accrueUsageMicros({ workspaceId: journalWorkspaceId, rollupId: generationId,
+                      accrualId: 'fixture-final:' + index, micros: amount.micros, microsExact: amount.exact },
+                    { sql: isolated.adminSql })).toMatchObject({ ok: true });
+                  }
+                  expectedLiability = addMicrosDecimals('1.25', exact); previous = exact;
+                }
+                const statement = buildHostedUsageStatement({ scope, month: MONTH, asOfMs: T,
+                  source: { complete: false, observedAtMs: T, maximumAgeMs: 0, evidenceRef: 'fixture:partial-provider-population' },
+                  records: await freshUsage.readRecords({ scope, month: MONTH, asOfMs: T }) });
+                expect(statement.lines[0]).toMatchObject({ usages: 1, billedMicros: 0,
+                  ...(previous.includes('.') ? { billedMicrosExact: previous } : {}) });
+                expect(statement.settlementEligible).toBe(false);
+                const maximum = { ...nextRequest, maximumCostMicros: 100_000 };
+                if (previous !== '0') expect(await budget.reserve(maximum)).toMatchObject({ outcome: 'refused' });
+                expect(await budget.reserve({ ...maximum, maximumCostMicros: previous === '0' ? 100_000 : 99_999 }))
+                  .toMatchObject({ outcome: 'reserved' });
+              } else expect(await budget.reserve(nextRequest)).toMatchObject({ outcome: 'refused' });
+              expect(await budget.reserve(winner.request)).toMatchObject({ outcome: 'duplicate' });
+            }
+            expect(winner.wire).toHaveBeenCalledOnce();
+            expect(await isolated.adminSql`SELECT allocation_id FROM papercusp_auth.hosted_prepaid_allocations`).toHaveLength(1);
+          }
         }
       } finally { sourceClock?.mockRestore(); await isolated.cleanup(); }
     }, 60_000);
