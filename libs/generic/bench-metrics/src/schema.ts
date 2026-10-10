@@ -294,6 +294,8 @@ export interface ParetoPoint {
 export interface SuiteReport {
   runId: string;
   suite: BenchSuite;
+  /** Frozen table used for normalized token cost, distinct from actual bills. */
+  priceTableVersion?: string;
   /** Explicitly distinguish a frozen population from legacy observed-only evidence. */
   assignment?: {
     basis: 'frozen' | 'observed';

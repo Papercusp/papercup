@@ -6,6 +6,7 @@
  */
 import { buildSuiteReport, type AggregateOpts, type SuiteReport, type TaskRunResult, type TestOutcome } from '@papercusp/bench-metrics';
 import type { PreregRecord, RolloutRecord } from './schema';
+import { currentBenchmarkProtocolSchema } from './schema';
 import { resolveDb, type DbScope } from './db';
 
 /** bigint/numeric columns arrive as strings from postgres.js — coerce to number. */
@@ -137,6 +138,15 @@ export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | nu
   let assignment: AggregateOpts = {};
   if (prereg?.config.taskIds !== undefined) {
     const { taskIds, seeds, arms, arm } = prereg.config;
+    // Current protocols freeze structured execution controls per arm. Validate
+    // that complete contract before projecting its ids; old string rosters
+    // retain their original report semantics.
+    const currentProtocol = 'aggregateBudgetUsd' in prereg.config ||
+      Array.isArray(arms) && arms.some(value => value !== null && typeof value === 'object')
+      ? currentBenchmarkProtocolSchema.parse(prereg.config) : null;
+    if (currentProtocol && currentProtocol.runId !== prereg.runId) {
+      throw new Error('benchmark report: current protocol differs from frozen run identity');
+    }
     const stringRoster = (value: unknown, label: string): string[] => {
       if (!Array.isArray(value) || value.length === 0 ||
           value.some(v => typeof v !== 'string' || !v.trim()) || new Set(value).size !== value.length) {
@@ -145,7 +155,8 @@ export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | nu
       return value as string[];
     };
     const assignedTaskIds = stringRoster(taskIds, 'task');
-    const assignedArms = stringRoster(arms ?? (typeof arm === 'string' ? [arm] : undefined), 'arm');
+    const assignedArms = stringRoster(currentProtocol?.arms.map(value => value.id) ??
+      arms ?? (typeof arm === 'string' ? [arm] : undefined), 'arm');
     const assignedSeeds = typeof seeds === 'number' && Number.isSafeInteger(seeds) && seeds > 0 && seeds <= 10000
       ? Array.from({ length: seeds }, (_, i) => i) : seeds;
     if (!Array.isArray(assignedSeeds) || assignedSeeds.length === 0 ||
@@ -158,10 +169,32 @@ export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | nu
       throw new Error('benchmark report: frozen assignment has ambiguous run or suite identity');
     }
     assignment = { assignedTaskIds, assignedArms, assignedSeeds, runId: prereg.runId, suite: prereg.suites[0] };
+    if (currentProtocol) {
+      const models = new Map(currentProtocol.arms.map(value => [value.id, value.model]));
+      const rates = new Map(currentProtocol.priceSchedule.rates.map(value => [value.model, value]));
+      for (const row of rows) {
+        if (row.preregHash !== prereg.preregHash || row.modelId !== models.get(row.arm)) {
+          throw new Error('benchmark report: result model or preregistration differs from frozen current protocol');
+        }
+        if ((row.tokensCacheWrite ?? 0) > 0 && rates.get(row.modelId)?.cacheWriteUsdPerMillion === undefined) {
+          throw new Error('benchmark report: no frozen cache-write price for current usage');
+        }
+      }
+      assignment.priceTable = {
+        version: currentProtocol.priceSchedule.version,
+        prices: Object.fromEntries(currentProtocol.priceSchedule.rates.map(rate => [rate.model, {
+          inputPerMtok: rate.inputUsdPerMillion, outputPerMtok: rate.outputUsdPerMillion,
+          cacheReadPerMtok: rate.cachedInputUsdPerMillion,
+          // No write usage is admitted above unless its rate was frozen.
+          cacheWritePerMtok: rate.cacheWriteUsdPerMillion ?? 0,
+        }])),
+      };
+    }
     if (!bySuite.has(prereg.suites[0])) bySuite.set(prereg.suites[0], []);
   }
   return [...bySuite.values()].map(group => {
     const report = buildSuiteReport(group, assignment);
+    if (assignment.priceTable) report.priceTableVersion = assignment.priceTable.version;
     if (prereg) report.assignment = {
       ...report.assignment!, preregHash: prereg.preregHash, protocolCommitted: prereg.gitCommitted,
     };

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TaskRunResult } from '@papercusp/bench-metrics';
 import type { PreregRecord } from './schema';
 import { buildRunReports } from './store';
+import { currentProtocolFixture } from './_protocol-test-fixture';
 
 const prereg = (config: Record<string, unknown> = {}): PreregRecord => ({
   runId: 'assigned-run', preregHash: 'frozen-hash', suites: ['swe-bench-pro'],
@@ -17,6 +18,43 @@ const result = (over: Partial<TaskRunResult> = {}): TaskRunResult => ({
 });
 
 describe('preregistered product reports', () => {
+  it('reports the maintained structured-arm protocol with absent assignments preserved', () => {
+    const protocol = currentProtocolFixture('assigned-run');
+    protocol.taskIds = ['a', 'b'];
+    protocol.seeds = [0, 1, 2];
+    const frozen = prereg({ ...protocol });
+    const [report] = buildRunReports([result({ modelId: protocol.arms[0].model })], frozen);
+    expect(report.assignment).toMatchObject({ basis: 'frozen', arms: ['papercusp', 'baseline'],
+      taskIds: ['a', 'b'], seeds: [0, 1, 2], preregHash: frozen.preregHash });
+    expect(report.arms[0].passAt1).toBeCloseTo(1 / 6);
+    expect(report.arms[1]).toMatchObject({ arm: 'baseline', attempts: 0, absentTasks: 2, passAt1: 0 });
+    expect(buildRunReports([], frozen)[0].arms).toHaveLength(2);
+  });
+
+  it('validates the complete current protocol rather than projecting ids from malformed controls', () => {
+    const protocol = currentProtocolFixture('assigned-run');
+    expect(() => buildRunReports([], prereg({ ...protocol, runId: 'other-run' }))).toThrow(/frozen|protocol/);
+    expect(() => buildRunReports([], prereg({ ...protocol, priceSchedule: undefined }))).toThrow();
+    expect(() => buildRunReports([], prereg({ ...protocol, arms: protocol.arms.map(arm => ({ ...arm, model: '' })) }))).toThrow();
+  });
+
+  it('normalizes current model aliases with the frozen protocol prices rather than the historical table', () => {
+    const protocol = currentProtocolFixture('assigned-run');
+    const row = result({ taskId: 't1', seed: 1, modelId: protocol.arms[0].model,
+      tokensIn: 1_000_000, tokensOut: 500_000, tokensTotal: 1_700_000, tokensCacheRead: 200_000 });
+    const [report] = buildRunReports([row], prereg({ ...protocol }));
+    // tokensIn is uncached input; cache read/write counts are additive.
+    // Frozen $1/M input, $0.50/M cached input, $2/M output.
+    expect(report.arms[0].cost.costUsd).toBeCloseTo(2.1);
+    expect(report.priceTableVersion).toBe(protocol.priceSchedule.version);
+    const cachedWrite = { ...row, tokensCacheWrite: 10 };
+    expect(() => buildRunReports([cachedWrite], prereg({ ...protocol }))).toThrow(/frozen cache-write price/);
+    protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 1.25;
+    expect(buildRunReports([cachedWrite], prereg({ ...protocol }))[0].arms[0].cost.costUsd).toBeCloseTo(2.1000125);
+    expect(() => buildRunReports([{ ...row, modelId: 'other-model' }], prereg({ ...protocol }))).toThrow(/model/);
+    expect(() => buildRunReports([{ ...row, preregHash: 'other-hash' }], prereg({ ...protocol }))).toThrow(/preregistration/);
+  });
+
   it('retains missing task, seed and whole-arm outcomes from the frozen assignment', () => {
     const [report] = buildRunReports([result()], prereg());
     expect(report.assignment).toMatchObject({ basis: 'frozen', taskIds: ['a', 'b'], seeds: [0, 1, 2], preregHash: 'frozen-hash' });
