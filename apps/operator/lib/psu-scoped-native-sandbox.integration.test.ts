@@ -12,6 +12,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
+import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
+
+const privateDatabase = vi.hoisted(() => ({ sql: undefined as unknown as OrgTestDb['adminSql'] }));
+// Keep the native workflow on a fully migrated, disposable database. The
+// maintained handlers, checkpoint writer and terminal-state SQL stay real.
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: privateDatabase.sql }),
+}));
 
 const homeAllocation = vi.hoisted(() => ({ key: '', path: '' }));
 vi.mock('@papercusp/orchestrator/session-launch-dirs', async (original) => {
@@ -71,7 +80,7 @@ it('enforces the scoped boundary through the actual launcher and final managed P
   }
 }, 30_000);
 
-it('delivers restored frozen context to installed Codex through the real managed launcher and file-read handler', async () => {
+it('delivers frozen context and a scoped work-item workflow through installed Codex and maintained handlers', async () => {
   const fixtureRoot = mkdtempSync('/tmp/psu-native-frozen-context-');
   const cwd = join(fixtureRoot, 'checkout');
   const codexHome = join(cwd, 'codex-home');
@@ -80,6 +89,14 @@ it('delivers restored frozen context to installed Codex through the real managed
   const ambientMarker = `AMBIENT_OUTSIDE_${randomUUID()}`;
   const owner = `test-scoped-frozen-${randomUUID()}`;
   const providerCalls: Record<string, unknown>[] = [], reads: unknown[] = [], errors: unknown[] = [];
+  const workflowCalls: Array<{ name: string; args: unknown; result: unknown }> = [];
+  const checkpointMarker = `NATIVE_CHECKPOINT_${randomUUID()}`;
+  const completionMarker = `NATIVE_COMPLETION_${randomUUID()}`;
+  const own = { id: `F-native-${randomUUID()}`, harness: 'fixture' };
+  const neighbor = `F-neighbor-${randomUUID()}`;
+  const priorWorkspace = process.env.PAPERCUSP_WORKSPACE_ID;
+  let db: OrgTestDb | undefined;
+  let clearConfinement: (() => void) | undefined;
   const requestPaths: string[] = [];
   const mcpMethods: unknown[] = [];
   const hosts: McpServer[] = [];
@@ -95,6 +112,37 @@ it('delivers restored frozen context to installed Codex through the real managed
   const { currentBenchAssignmentId } = await import('../../../packages/operator-core/lib/external-bench/current-su');
   const { codexCliResponsesBody, codexCliResponsesCompletionSse } = await import('../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge');
   const sourceRead = (await import('../../../packages/operator-core/lib/agent-tools/capability/read')).default;
+  const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
+  const { checkSessionConfinement, setSessionConfinementResolver } = await import(
+    '../../../packages/operator-core/lib/capability-envelope/session-confinement-port');
+  await import('../../../packages/operator-core/lib/agent-tools/work_items/get');
+  await import('../../../packages/operator-core/lib/agent-tools/work_items/checkpoint');
+  await import('../../../packages/operator-core/lib/agent-tools/work_items/complete');
+  db = await createOrgTestDb(); privateDatabase.sql = db.adminSql;
+  process.env.PAPERCUSP_WORKSPACE_ID = 'native-frozen-private';
+  const { saveHarnessRegistry } = await import('../../../packages/operator-core/lib/harness-registry');
+  await saveHarnessRegistry({ projects: [{ slug: own.harness, path: cwd }] }, 'native-frozen-private');
+  await db.adminSql`INSERT INTO harness_shared.work_items
+    (workspace_id, harness_slug, feature_id, item_kind, title, status, taken_by, taken_at, created_ts, updated_ts)
+    VALUES ('native-frozen-private', ${own.harness}, ${own.id}, 'feature', 'Private native workflow', 'wip', ${owner}, now(), ${Date.now()}, ${Date.now()}),
+      ('native-frozen-private', ${own.harness}, ${neighbor}, 'feature', 'Untouched neighboring assignment', 'wip', ${owner}, now(), ${Date.now()}, ${Date.now()})`;
+  const confinement = { denyTools: [], denyOutside: ['work_items:get', 'work_items:checkpoint', 'work_items:complete'],
+    denyWorkItemsOutside: { ...own, checkout: cwd }, denyAmbientContext: true as const,
+    reason: 'private native benchmark assignment', imposedBy: 'fixture host' };
+  setSessionConfinementResolver(context => context.uiClientId === owner ? confinement : undefined);
+  clearConfinement = () => setSessionConfinementResolver(undefined);
+  const toolContext = { workspaceId: 'native-frozen-private', harnessSlug: own.harness, projectDir: cwd,
+    uiClientId: owner, isSuperuser: true, role: 'operator', signal: new AbortController().signal,
+    log: vi.fn(), progress: vi.fn(), emit: vi.fn(), runId: owner, spawnId: owner, parentSpawnId: null };
+  const workflow = [
+    { name: 'work_items_get', args: { ...own, threadLimit: 0 } },
+    { name: 'work_items_checkpoint', args: { ...own, checkpoint: checkpointMarker } },
+    { name: 'work_items_get', args: { ...own, threadLimit: 0 } },
+    { name: 'work_items_checkpoint', args: { ...own, id: neighbor, checkpoint: 'MUST_NOT_WRITE' } },
+    { name: 'work_items_complete', args: { ...own, state: 'done', assumptions: 'none', completion: {
+      summary: completionMarker, testsRun: 'manual read of restored frozen fixture', testResult: 'pass',
+      verifiedHow: 'manual', filesChanged: [] } } },
+  ];
   const snapshotRoot = join(fixtureRoot, 'protocol'); mkdirSync(snapshotRoot);
   const snapshot = JSON.stringify({ entries: [{ key: 'permitted:fixture', text: frozenMarker }] });
   for (const name of ['corpus.json', 'memory.json']) writeFileSync(join(snapshotRoot, name), snapshot);
@@ -105,7 +153,8 @@ it('delivers restored frozen context to installed Codex through the real managed
     binding: { workspaceId: 'native-frozen-private', runId: owner, preregHash: 'a'.repeat(64),
       assignmentId: currentBenchAssignmentId(owner, config.arms[0].id, config.taskIds[0], config.seeds[0]), harnessSlug: 'fixture' } });
   // This server scripts the native protocol only. It is never a provider bill,
-  // task-quality measurement, maintained work-item workflow or pilot result.
+  // task-quality measurement or pilot result. Work-item calls below execute
+  // the maintained dispatcher/handlers and are checked against private SQL.
   server = createServer(async (req, res) => {
     try {
       requestPaths.push(`${req.method} ${req.url}`);
@@ -123,6 +172,28 @@ it('delivers restored frozen context to installed Codex through the real managed
             content: Array<{ type: 'text'; text: string }>;
           };
         });
+        const identity = { id: z.string(), harness: z.string() };
+        const inputs = {
+          work_items_get: { ...identity, threadLimit: z.number().optional() },
+          work_items_checkpoint: { ...identity, checkpoint: z.string() },
+          work_items_complete: { ...identity, state: z.literal('done'), assumptions: z.literal('none'),
+            completion: z.object({ summary: z.string(), testsRun: z.string(), testResult: z.string(),
+              verifiedHow: z.literal('manual'), filesChanged: z.array(z.string()) }) },
+        };
+        for (const name of Object.keys(inputs) as Array<keyof typeof inputs>) {
+          host.registerTool(name, { inputSchema: inputs[name] }, async args => {
+            const canonical = name.replace('work_items_', 'work_items:');
+            const tool = lookupByMcpName(canonical);
+            if (!tool) throw new Error(`Maintained workflow tool is absent: ${canonical}`);
+            const result = await dispatchProjectedTool(tool, canonical, args, toolContext as never, {
+              checkCapabilityEnvelope: async input => checkSessionConfinement(input),
+            });
+            workflowCalls.push({ name, args, result });
+            return result.ok ? { ...result.result, content: result.result?.content ?? [] } : {
+              isError: true, content: [{ type: 'text' as const, text: JSON.stringify(result.error) }],
+            };
+          });
+        }
         await host.connect(transport); await transport.handleRequest(req, res, message); return;
       }
       // The real launcher also posts operator lifecycle events. They are
@@ -134,28 +205,31 @@ it('delivers restored frozen context to installed Codex through the real managed
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const request = JSON.parse(Buffer.concat(chunks).toString()); providerCalls.push(request);
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      if (providerCalls.length === 1) {
+      if (providerCalls.length <= workflow.length + 1) {
         // Responses-lite carries the real definitions in an input item. A
         // code-mode model advertises its executor rather than direct MCP calls.
         const tools = [...(request.tools ?? []), ...(request.input ?? []).flatMap(
           (item: Record<string, unknown>) => Array.isArray(item.tools) ? item.tools : [],
         )] as Array<Record<string, unknown>>;
+        const step = providerCalls.length === 1 ? { name: 'capability_read', args: {
+          file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot),
+        } } : workflow[providerCalls.length - 2];
         const namespace = tools.find(entry =>
-          entry.type === 'namespace' && (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.name === 'capability_read'));
+          entry.type === 'namespace' && (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.name === step.name));
         const direct = tools.find(tool => tool.type === 'function' && typeof tool.name === 'string' &&
-          tool.name.endsWith('__capability_read'));
+          tool.name.endsWith(`__${step.name}`));
         const executor = tools.find(entry => entry.type === 'namespace' &&
           (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.type === 'custom' && tool.name === 'exec'));
-        if (!namespace && !direct && !executor) throw new Error('Installed native runtime did not advertise a frozen-read execution path');
-        const readArgs = { file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) };
-        const item = executor ? { id: 'fc_frozen', type: 'custom_tool_call', call_id: 'frozen-read',
+        if (!namespace && !direct && !executor) throw new Error(`Installed native runtime did not advertise ${step.name}`);
+        const callId = providerCalls.length === 1 ? 'frozen-read' : `workflow-${providerCalls.length - 1}`;
+        const item = executor ? { id: `fc_${callId}`, type: 'custom_tool_call', call_id: callId,
           namespace: executor.name, name: 'exec', status: 'completed', input:
-            `const frozen = ALL_TOOLS.find(tool => tool.name.endsWith('__capability_read'));\n` +
-            `if (!frozen) throw new Error('Frozen read is absent from the actual native executor registry');\n` +
-            `text(await tools[frozen.name](${JSON.stringify(readArgs)}));`,
-        } : { id: 'fc_frozen', type: 'function_call', call_id: 'frozen-read',
+            `const selected = ALL_TOOLS.find(tool => tool.name.endsWith(${JSON.stringify(`__${step.name}`)}));\n` +
+            `if (!selected) throw new Error('Workflow tool is absent from the actual native executor registry');\n` +
+            `text(await tools[selected.name](${JSON.stringify(step.args)}));`,
+        } : { id: `fc_${callId}`, type: 'function_call', call_id: callId,
           ...(namespace ? { namespace: namespace.name } : {}),
-          name: direct?.name ?? 'capability_read', arguments: JSON.stringify(readArgs), status: 'completed' };
+          name: direct?.name ?? step.name, arguments: JSON.stringify(step.args), status: 'completed' };
         const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
         const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
         res.end(event('response.output_item.added', { output_index: 0, item: { ...item,
@@ -175,7 +249,7 @@ it('delivers restored frozen context to installed Codex through the real managed
     await probe.connect(new StreamableHTTPClientTransport(new URL(`${baseURL}/mcp`)),
       { timeout: 5_000, signal: AbortSignal.timeout(5_000) });
     expect((await probe.listTools(undefined, { timeout: 5_000, signal: AbortSignal.timeout(5_000) }))
-      .tools.map(tool => tool.name)).toEqual(['capability_read']);
+      .tools.map(tool => tool.name).sort()).toEqual(['capability_read', 'work_items_checkpoint', 'work_items_complete', 'work_items_get']);
     await probe.close(); probe = undefined;
     // The child must read the exact delivered AGENTS file and restored bytes.
     // Keep fixture-only provider and tool choices in CLI overrides, so a
@@ -203,7 +277,7 @@ it('delivers restored frozen context to installed Codex through the real managed
     let output = '';
     child.stdout!.on('data', b => { output += b; }); child.stderr!.on('data', b => { output += b; });
     const code = await new Promise<number | null>((resolve, reject) => {
-      const timer = setTimeout(() => { child!.kill('SIGKILL'); reject(new Error(`Frozen native fixture exceeded 40 seconds: ${output.slice(-2000)}`)); }, 40_000);
+      const timer = setTimeout(() => { child!.kill('SIGKILL'); reject(new Error(`Frozen native workflow exceeded 80 seconds: ${output.slice(-2000)}`)); }, 80_000);
       child!.once('error', e => { clearTimeout(timer); reject(e); });
       child!.once('close', c => { clearTimeout(timer); resolve(c); });
     });
@@ -219,19 +293,34 @@ it('delivers restored frozen context to installed Codex through the real managed
           .flatMap(([key, entry]) => inputShapes(entry, `${path}.${key}`))];
       return [];
     };
-    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, requestPaths, mcpMethods,
+    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, requestPaths, mcpMethods, workflowCalls,
       inputShapes: inputShapes(providerCalls[0]?.input),
       providerRequestKeys: providerCalls.map(request => Object.keys(request)),
       toolShapes: (providerCalls[0]?.tools as Array<Record<string, unknown>> | undefined)?.map(tool =>
         ({ type: tool.type, name: tool.name, keys: Object.keys(tool) })) });
     expect(code, diagnostics).toBe(0); expect(errors, diagnostics).toEqual([]);
-    expect(providerCalls).toHaveLength(2); expect(reads).toHaveLength(1);
+    expect(providerCalls, diagnostics).toHaveLength(workflow.length + 2); expect(reads).toHaveLength(1);
     expect(reads[0]).toEqual({ file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) });
     expect(JSON.stringify(providerCalls[0])).toContain(roleMarker);
     expect(JSON.stringify(providerCalls[0])).toContain(frozenMarker);
     expect(JSON.stringify(providerCalls)).not.toContain(ambientMarker);
     expect(JSON.stringify(providerCalls[1])).toContain('frozen-read');
     expect(JSON.stringify(providerCalls[1])).toContain(Buffer.from(snapshot).toString('base64'));
+    expect(workflowCalls.map(call => call.name)).toEqual(workflow.map(step => step.name));
+    expect(workflowCalls.map(call => (call.result as { ok: boolean }).ok), diagnostics).toEqual([true, true, true, false, true]);
+    expect(JSON.stringify(workflowCalls[2].result), diagnostics).toContain(checkpointMarker);
+    expect(JSON.stringify(providerCalls[4]), diagnostics).toContain(checkpointMarker);
+    expect(JSON.stringify(providerCalls[5]), diagnostics).toContain('capability_denied');
+    const rows = await db.adminSql`SELECT feature_id, status, terminal_owner, terminal_completion_ref
+      FROM harness_shared.work_items WHERE workspace_id = 'native-frozen-private' ORDER BY feature_id`;
+    expect(rows.find(row => row.feature_id === own.id), diagnostics).toMatchObject({
+      status: 'done', terminal_owner: owner, terminal_completion_ref: completionMarker,
+    });
+    expect(rows.find(row => row.feature_id === neighbor)).toMatchObject({ status: 'wip', terminal_completion_ref: null });
+    const { workItemScope } = await import('../../../packages/operator-core/lib/carry-note');
+    const notes = await db.adminSql`SELECT scope FROM harness_shared.carry_notes
+      WHERE workspace_id = 'native-frozen-private' AND scope = ${workItemScope(own.harness, neighbor)}`;
+    expect(notes).toHaveLength(0);
     expect(output).toContain('FROZEN_NATIVE_RECEIPT');
   } finally {
     if (child && child.exitCode === null) child.kill('SIGKILL');
@@ -240,10 +329,14 @@ it('delivers restored frozen context to installed Codex through the real managed
       await Promise.allSettled(hosts.map(host => host.close()));
       if (server?.listening) await stop(server);
     } finally {
+      clearConfinement?.();
+      if (priorWorkspace === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = priorWorkspace;
+      await db?.cleanup();
       rmSync(fixtureRoot, { recursive: true, force: true }); homeAllocation.key = ''; homeAllocation.path = '';
     }
   }
-}, 60_000);
+}, 150_000);
 
 it('starts the installed Codex runtime through the actual launcher without inference', async () => {
   const cwd = mkdtempSync('/tmp/psu-native-codex-');
