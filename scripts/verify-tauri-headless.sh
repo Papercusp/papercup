@@ -882,6 +882,17 @@ preflight_native_cargo() {
 }
 vh_run_step native-cargo-capacity preflight_native_cargo || exit $?
 
+# WI-10008139: cargo test enabled a Windows/test-only module that Linux's
+# production console also called. Compile the actual module declaration without
+# cfg(test), then exercise the owned-output/terminal behavior before full setup.
+preflight_native_console_platform() {
+  [ "$PREPARE_ONLY" != "1" ] || return 0
+  [ "$(uname -s)" = "Linux" ] || return 0
+  node --test --test-global-setup="$DESKTOP_DIR/test/monorepo-host-preflight.mjs" \
+    "$DESKTOP_DIR/test/native-console-gnome.test.js"
+}
+vh_run_step native-console-platform-check preflight_native_console_platform || exit $?
+
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # EI-20229366113827667: cargo compilation and bridge readiness are separate
 # phases. A cold Rust build can consume most of the bridge budget before the
@@ -1406,7 +1417,7 @@ snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
   local snapshot_root receipt source_bytes
-  local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,scripts/lib/budgeted-task-scheduler.mjs,scripts/pc-heavy.sh,apps/operator/bin/release/dependency-generation.sh,papercusp-desktop/bin/tauri-guarded,papercusp-desktop/bin/lib/claim-target-dir.sh,papercusp-desktop/bin/lib/cargo-target-root.sh,papercusp-desktop/bin/lib/release-artifacts.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,${VERIFY_TAURI_SOURCE_INPUTS:-}"
+  local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,scripts/lib/budgeted-task-scheduler.mjs,scripts/pc-heavy.sh,apps/operator/bin/release/dependency-generation.sh,papercusp-desktop/bin/tauri-guarded,papercusp-desktop/bin/lib/claim-target-dir.sh,papercusp-desktop/bin/lib/cargo-target-root.sh,papercusp-desktop/bin/lib/release-artifacts.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,papercusp-desktop/src-tauri/src/main.rs,papercusp-desktop/src-tauri/src/native_console.rs,papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs,papercusp-desktop/test/native-console-gnome.test.js,papercusp-desktop/test/monorepo-host-preflight.mjs,scripts/lib/node-test-host-preflight.mjs,packages/operator-core/lib/gnome-terminal-policy.json,${VERIFY_TAURI_SOURCE_INPUTS:-}"
   [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
     echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
     return 1
