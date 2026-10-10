@@ -2,9 +2,20 @@
 import assert from 'node:assert/strict';
 import { realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { Plugin } from 'esbuild';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
+
+/** Match with-test-pg's six-character runtime allocation and the native fixture's
+ * existing conservative socket limit before paying for PG startup/migrations. */
+export function preparePrivateRosterSocketRoot(scratchRoot = tmpdir()) {
+  assert.ok(isAbsolute(scratchRoot), 'Private roster scratch root must be absolute');
+  const socket = join(scratchRoot, 'papercusp-test-runtime-XXXXXX', 'tmp', 'rs-XXXXXX', 'su-rs-123456789-neighbor.sock');
+  assert.ok(Buffer.byteLength(socket) < 104,
+    'Private roster scratch root exceeds native socket capacity; select a shorter task-owned TMPDIR before private PG');
+  return socket;
+}
 
 /** Isolated workers intentionally discard PAPERCUSP_* ambient settings.
  * Explicit readonly source selection travels in argv and is validated by the
