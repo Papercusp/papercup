@@ -16,17 +16,25 @@ vi.mock('@papercusp/agent-mcp', async importOriginal => ({
   handleHttpToolRequest: (...args: unknown[]) => fixture.dispatch(...args),
 }));
 import routes from './coord';
+import { buildHttpSpawnContext } from '@papercusp/agent-mcp';
+import { currentRequestWorkspaceId } from '../../../workspace-als';
 
 beforeEach(() => {
   fixture.known = new Set(['su-selected', 'su-control']);
   fixture.read.mockClear();
-  fixture.dispatch.mockReset().mockResolvedValue({ status: 200, body: { content: [{ type: 'text', text: JSON.stringify({
+  fixture.dispatch.mockReset().mockImplementation(async request => {
+    // Exercise the real projection's header-over-query precedence and the
+    // ambient scope inside dispatch; a canned 200 misses workspace drift.
+    expect(buildHttpSpawnContext(request).workspaceId).toBe('authorized-workspace');
+    expect(currentRequestWorkspaceId()).toBe('authorized-workspace');
+    return { status: 200, body: { content: [{ type: 'text', text: JSON.stringify({
     ok: true, results: [{ ok: true, to: ['su-selected'], msg_id: 'private-receipt', wake: { queued: 1, pickupConfirmed: false } }],
     counts: { total: 1, ok: 1, failed: 0 },
-  }) }] } });
+    }) }] } };
+  });
 });
 
-const send = (to: unknown, wake = false) => routes[0].handler(new Request('http://127.0.0.1/api/admin/coord/send', {
+const send = (to: unknown, wake = false) => routes[0].handler(new Request('http://127.0.0.1/api/admin/coord/send?workspace=forged-query', {
   method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-workspace': 'forged-workspace' },
   body: JSON.stringify({ to, summary: 'private canary', body: [{ text: 'private canary' }], expects: 'none', ...(wake ? { wake: 'required' } : {}) }),
 }), { params: { verb: 'send' }, principal: { workspaceId: 'authorized-workspace' } } as never) as Promise<Response>;
@@ -39,6 +47,14 @@ describe('GUI coordination roster boundary', () => {
     expect(fixture.dispatch).toHaveBeenCalledTimes(1);
     expect(fixture.dispatch.mock.calls[0][0].body).toMatchObject({ to: ['su-selected'], body: [{ text: 'private canary' }] });
     await expect(response.json()).resolves.toMatchObject({ results: [{ to: ['su-selected'], msg_id: 'private-receipt', wake: { queued: 1, pickupConfirmed: false } }] });
+  });
+  it.each(['resolve', 'ack', 'message-agent', 'wake-mode'])('keeps the admitted workspace for %s dispatch too', async verb => {
+    const response = await routes[0].handler(new Request(`http://127.0.0.1/api/admin/coord/${verb}?workspace=forged-query`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-workspace': 'forged-workspace' },
+      body: JSON.stringify({ msg_id: 'private-receipt' }),
+    }), { params: { verb }, principal: { workspaceId: 'authorized-workspace' } } as never) as Response;
+    expect(response.status).toBe(200);
+    expect(fixture.dispatch).toHaveBeenCalledTimes(1);
   });
   it.each([false, true])('refuses foreign or stale concrete identities before any dispatch (wake=%s)', async wake => {
     for (const to of [['su-foreign'], ['su-selected', 'su-foreign'], ['su-selec']]) {

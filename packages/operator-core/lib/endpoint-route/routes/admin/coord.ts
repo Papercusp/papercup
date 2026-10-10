@@ -32,12 +32,13 @@ import '../../../agent-tools/index';
 // WI-5364: shared extras carry the runScoped seam so proxied handlers that use
 // ctx.tx get a real DB handle instead of 500ing "ctx.tx is not a function".
 import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
-import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
+import { defineTool, PAPERCUSP_CONTEXT_HEADERS, type RouteContext } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
 import { applyOwnerMessageDefaults } from '../../../agent-tools/coordination/owner-message';
 import { knownOwnerIdSet } from '../../../agent-tools/coordination/recipient-resolve';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { runWithWorkspace } from '../../../workspace-als';
 
 // Shared with the Planning inbox's ack-dismiss filter (plans/attention.ts) so
 // "Acknowledge" actually dismisses: the human acks AS this owner here, and the
@@ -135,16 +136,22 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   // trap armed for the fourth.
   const dispatchBody = verb === 'send' ? applyOwnerMessageDefaults(body) : body;
   const url = new URL(req.url);
-  const result = await handleHttpToolRequest(
+  // The in-process admin projection does not resolve cookie principals again.
+  // Bind both its typed context and ambient readers to the admitted workspace;
+  // forwarding the caller's header would validate one roster and send in another.
+  const workspaceId = ctx.principal?.workspaceId ?? activeWorkspaceId();
+  const headers = collectHeaders(req);
+  headers[PAPERCUSP_CONTEXT_HEADERS.workspace] = workspaceId;
+  const result = await runWithWorkspace(workspaceId, () => handleHttpToolRequest(
     {
       method: 'POST',
       pathname: `/api/agent-tools/coord/${verb}`,
       searchParams: adminSearchParams(url.searchParams),
-      headers: collectHeaders(req),
+      headers,
       body: dispatchBody,
     },
     HOST_EXTRAS,
-  );
+  ));
   return unwrap(result);
 }
 
