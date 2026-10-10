@@ -293,7 +293,7 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
   it('REFUSES an unknown language loudly, and never hands back another server', () => {
     // Cast is the whole point: this simulates a plain-JS caller, a persisted
     // value, or a request payload carrying a language the union does not know.
-    const unknown = 'python' as unknown as Parameters<typeof specForLanguage>[0];
+    const unknown = 'cobol' as unknown as Parameters<typeof specForLanguage>[0];
 
     expect(() => specForLanguage(unknown)).toThrow(/Unknown LSP language/);
     // The regression signature: before the fix this returned the rust-analyzer
@@ -302,7 +302,7 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
   });
 
   it('names the known languages in the refusal, so the fix is obvious at the call site', () => {
-    const unknown = 'python' as unknown as Parameters<typeof specForLanguage>[0];
+    const unknown = 'cobol' as unknown as Parameters<typeof specForLanguage>[0];
     expect(() => specForLanguage(unknown)).toThrow(/typescript/);
     expect(() => specForLanguage(unknown)).toThrow(/rust/);
   });

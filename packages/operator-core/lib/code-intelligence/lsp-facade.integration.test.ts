@@ -159,7 +159,7 @@ describe('argument refusals are answers, not throws', () => {
     {
       what: 'a file no pinned server handles',
       op: 'symbol',
-      args: { file: '/x/a.py', line1: 1, character: 0 },
+      args: { file: '/x/a.cpp', line1: 1, character: 0 },
       match: /no pinned language server/,
     },
     {

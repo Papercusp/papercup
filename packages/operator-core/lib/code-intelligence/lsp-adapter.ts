@@ -32,7 +32,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Dir
 import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 
@@ -73,10 +73,13 @@ import {
  * member here without adding its spec is a COMPILE error, which is exactly the
  * point: it used to be a silent runtime mislabel.
  */
-export type LspLanguage = 'typescript' | 'rust';
+export const LSP_LANGUAGES = ['typescript', 'rust', 'python', 'go'] as const;
+export type LspLanguage = typeof LSP_LANGUAGES[number];
 
 /** Where the pinned pilot environment lives (P-007). */
 export const LSP_VENDOR_DIR = join(homedir(), '.papercusp', 'vendor', 'lsp');
+export const PYRIGHT_VERSION = '1.1.414';
+export const GOPLS_VERSION = 'v0.22.0';
 
 /**
  * Resolve the tsserver entrypoint — D-009, and the single most confusing
@@ -248,6 +251,11 @@ interface LanguageSpec {
   readonly languageId: string;
   /** Absolute path to the pinned server binary, or null when not provisioned. */
   readonly resolveBin: () => string | null;
+  readonly serverArgs: readonly string[];
+  readonly projectMarkers: readonly string[];
+  readonly initializationOptions: (rootPath: string, plugin?: SemanticCompletionPluginDeclaration) => unknown;
+  /** Interpreted server payloads belong in the binary identity too. */
+  readonly identityFiles?: () => readonly string[];
   /**
    * Readiness is per intent, never per server. Missing entries use the
    * conservative canary-query default; they can answer positively, but cannot
@@ -261,6 +269,9 @@ interface LanguageSpec {
 const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
   typescript: {
     languageId: 'typescript',
+    serverArgs: ['--stdio'],
+    projectMarkers: ['tsconfig.json', 'jsconfig.json'],
+    initializationOptions: (root, plugin) => typescriptInitializationOptions(resolveTsserverPath(), undefined, root, plugin),
     resolveBin: () => {
       const bin = join(LSP_VENDOR_DIR, 'node_modules', '.bin', 'typescript-language-server');
       return existsSync(bin) ? bin : null;
@@ -273,6 +284,9 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
   },
   rust: {
     languageId: 'rust',
+    serverArgs: [],
+    projectMarkers: ['Cargo.toml'],
+    initializationOptions: () => ({ cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } }),
     // rust-analyzer is a rustup COMPONENT, so its version is pinned by the
     // repo's toolchain rather than floating.
     resolveBin: () => {
@@ -290,6 +304,35 @@ const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
     // intent consumes that signal independently so one query never certifies
     // another merely because they share a process.
     readinessStrategy: progressSignalStrategies(),
+  },
+  python: {
+    languageId: 'python',
+    serverArgs: ['--stdio'],
+    projectMarkers: ['pyrightconfig.json', 'pyproject.toml', 'setup.cfg', 'setup.py'],
+    initializationOptions: () => ({}),
+    identityFiles: () => [join(LSP_VENDOR_DIR, 'pyright', PYRIGHT_VERSION, 'node_modules', 'pyright', 'dist', 'pyright-internal.js')],
+    resolveBin: () => {
+      const dir = join(LSP_VENDOR_DIR, 'pyright', PYRIGHT_VERSION);
+      const bin = join(dir, 'node_modules', '.bin', 'pyright-langserver');
+      try {
+        const pkg = JSON.parse(readFileSync(join(dir, 'node_modules', 'pyright', 'package.json'), 'utf8'));
+        return pkg.version === PYRIGHT_VERSION && existsSync(bin) ? bin : null;
+      } catch { return null; }
+    },
+    // Pyright does not offer rust-analyzer's authoritative quiescence signal.
+    // Positive navigation is useful; an unproven empty remains degraded.
+    readinessStrategy: {},
+  },
+  go: {
+    languageId: 'go',
+    serverArgs: ['serve'],
+    projectMarkers: ['go.mod', 'go.work'],
+    initializationOptions: () => ({ vulncheck: 'Off' }),
+    resolveBin: () => {
+      const bin = join(LSP_VENDOR_DIR, 'gopls', GOPLS_VERSION, 'bin', 'gopls');
+      return existsSync(bin) ? bin : null;
+    },
+    readinessStrategy: {},
   },
 };
 
@@ -789,6 +832,10 @@ export function resolveProjectRoot(
   file: string,
   fallbackRoot: string,
 ): { root: string; error: string | null } {
+  specForLanguage(language);
+  if (!withinProjectBoundary(file, fallbackRoot)) {
+    return { root: fallbackRoot, error: `file ${file} is outside project boundary ${fallbackRoot}; refusing cross-project navigation` };
+  }
   // TypeScript: tsserver finds a file's own tsconfig by walking UP from the
   // document it is asked to open, so the client root only has to CONTAIN the
   // file — it does not have to hold a tsconfig itself.
@@ -804,11 +851,12 @@ export function resolveProjectRoot(
   // server's LOADED PROJECTS rather than the open document, so it needs a root
   // that actually holds a tsconfig.json — see nearestTsProjectRoot, used by
   // resolveSymbolSearchScope below.
-  if (language !== 'rust') return { root: fallbackRoot, error: null };
+  if (language === 'typescript') return { root: fallbackRoot, error: null };
 
-  let dir = dirname(file);
-  while (dir.startsWith(fallbackRoot)) {
-    if (existsSync(join(dir, 'Cargo.toml'))) return { root: dir, error: null };
+  const markers = specForLanguage(language).projectMarkers;
+  let dir = dirname(resolve(file));
+  while (withinProjectBoundary(dir, fallbackRoot)) {
+    if (markers.some(marker => existsSync(join(dir, marker)))) return { root: dir, error: null };
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -817,11 +865,15 @@ export function resolveProjectRoot(
   return {
     root: fallbackRoot,
     error:
-      `no Cargo.toml found between ${file} and ${fallbackRoot}, so rust-analyzer ` +
-      `would have no crate graph and would answer EMPTY for every query while ` +
-      `reporting itself healthy. Refusing to answer rather than returning a ` +
-      `false-empty that reads as "nothing implements this".`,
+      `no ${markers.join(' or ')} found between ${file} and ${fallbackRoot}; ` +
+      `the ${language} server has no verified project/build scope. Refusing to answer EMPTY without that prerequisite.`,
   };
+}
+
+function withinProjectBoundary(path: string, root: string): boolean {
+  const canonical = (value: string) => existsSync(value) ? realpathSync(value) : resolve(value);
+  const rel = relative(canonical(root), canonical(path));
+  return rel === '' || (rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel));
 }
 
 /** Directories a directory-anchor walk never descends: generated, vendored or VCS. */
@@ -842,7 +894,7 @@ function isDirectoryPath(path: string): boolean {
 /** The nearest directory at-or-above `dir` holding `marker`, inside `fallbackRoot`. */
 function nearestAncestorWith(dir: string, marker: string, fallbackRoot: string): string | null {
   let cur = dir;
-  while (cur.startsWith(fallbackRoot)) {
+  while (withinProjectBoundary(cur, fallbackRoot)) {
     if (existsSync(join(cur, marker))) return cur;
     const parent = dirname(cur);
     if (parent === cur) break;
@@ -977,6 +1029,19 @@ export function resolveSymbolSearchScope(
   anchor: string | undefined,
   rootPath: string,
 ): { root: string; anchor: string | null; error: string | null } {
+  const spec = specForLanguage(language);
+  if (anchor && !withinProjectBoundary(anchor, rootPath)) {
+    return { root: rootPath, anchor: null, error: `anchor ${anchor} is outside project boundary ${rootPath}` };
+  }
+  if (language === 'python' || language === 'go') {
+    // A directory cannot pick one of its nested projects on the caller's behalf.
+    // Require a source anchor so admission and the server share the exact scope.
+    if (!anchor || isDirectoryPath(anchor)) {
+      return { root: rootPath, anchor: null, error: `${language} workspace_symbols requires a source file anchor inside ONE configured project (${spec.projectMarkers.join(' or ')}); directory/unanchored searches are unsupported` };
+    }
+    const project = resolveProjectRoot(language, anchor, rootPath);
+    return { root: project.root, anchor: project.error ? null : anchor, error: project.error };
+  }
   // A DIRECTORY anchor (P-002): resolve it to a project + an openable document
   // before either language branch, which both assume a file they can open.
   if (anchor && isDirectoryPath(anchor)) {
@@ -1239,25 +1304,30 @@ export function symbolSearchEmptyCaveat(
 export function languageForFile(path: string): LspLanguage | null {
   if (/\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(path)) return 'typescript';
   if (/\.rs$/.test(path)) return 'rust';
+  if (/\.pyi?$/.test(path)) return 'python';
+  if (/\.go$/.test(path)) return 'go';
   return null;
 }
 
 async function startClient(language: LspLanguage, rootPath: string, semanticPlugin?: SemanticCompletionPluginDeclaration): Promise<LspClient> {
   // Fail a source/config census before creating a managed child.
-  const initializationOptions = language === 'typescript'
-    ? typescriptInitializationOptions(resolveTsserverPath(), undefined, rootPath, semanticPlugin)
-    : { cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } };
+  const spec = specForLanguage(language);
+  const initializationOptions = spec.initializationOptions(rootPath, semanticPlugin);
   const bin = resolveServerBin(language);
   if (!bin) {
     throw new Error(
       `Pinned ${language} language server is not provisioned. Expected it under ` +
-        `${language === 'typescript' ? LSP_VENDOR_DIR : '~/.rustup/toolchains/stable-*/bin'}. ` +
+        `${language === 'rust' ? '~/.rustup/toolchains/stable-*/bin' : LSP_VENDOR_DIR}. ` +
         `Provision it (P-007) rather than falling back to an unpinned server — a floating ` +
         `version silently changes answers between runs.`,
     );
   }
 
-  const args = language === 'typescript' ? ['--stdio'] : [];
+  const args = [...spec.serverArgs];
+  const goBin = join(homedir(), '.papercusp', 'vendor', 'go', 'go', 'bin');
+  const env = language === 'go' && existsSync(join(goBin, 'go'))
+    ? { ...process.env, PATH: `${goBin}:${process.env.PATH ?? ''}`, GOTOOLCHAIN: 'local' }
+    : process.env;
   const spawned = await managedSpawn(
     bin,
     args,
@@ -1273,7 +1343,7 @@ async function startClient(language: LspLanguage, rootPath: string, semanticPlug
       planSlug: 'code-intelligence-routing-lsp-gitnexus-2026-08-20',
       detail: { subsystem: 'code-intelligence', language, rootPath },
     },
-    { spawnOptions: { cwd: rootPath, stdio: ['pipe', 'pipe', 'pipe'] } },
+    { spawnOptions: { cwd: rootPath, env, stdio: ['pipe', 'pipe', 'pipe'] } },
   );
 
   const child = spawned.child;
@@ -1465,7 +1535,7 @@ async function startClient(language: LspLanguage, rootPath: string, semanticPlug
   try {
     const result = initialized as { serverInfo?: unknown; capabilities?: unknown } | null;
     client.capabilityServerIdentity = lspServerIdentity(
-      bin, result?.serverInfo, language === 'typescript' ? [resolveTsserverPath()] : [],
+      bin, result?.serverInfo, spec.identityFiles?.() ?? (language === 'typescript' ? [resolveTsserverPath()] : []),
     );
     await Promise.all(initializeCapabilityObservations(language, client.capabilityServerIdentity, result?.capabilities)
       .map(observation => lspCapabilityStore.observe(observation)));

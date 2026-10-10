@@ -87,7 +87,7 @@ export default defineTool({
       .describe('ZERO-indexed column offset within the line (a column, not a line — LSP convention).'),
     name: z.string().min(1).optional().describe('workspace_symbols: the symbol name to search for.'),
     language: z
-      .enum(['typescript', 'rust'])
+      .enum(['typescript', 'rust', 'python', 'go'])
       .optional()
       .describe(
         'workspace_symbols: which pinned server answers. Each server has its OWN symbol index, so a TypeScript query cannot see Rust symbols. Default typescript.',

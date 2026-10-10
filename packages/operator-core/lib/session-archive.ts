@@ -204,6 +204,8 @@ export interface ArchiveManifestEntry {
   relpath: string;
   sha256: string;
   bytes_raw: number;
+  /** Absent on legacy archives. Bytes before this boundary retain the original micro-turn filter. */
+  short_user_turns_offset?: number;
 }
 
 export interface ArchiveStampRow {
@@ -240,6 +242,8 @@ export interface SessionArchiveStore {
   readStamp(sourceKind: string, sessionId: string): Promise<ArchiveStampRow | null>;
   readFiles(sourceKind: string, sessionId: string): Promise<ArchiveFileRow[]>;
   stampAdvSessionArchived(advSessionId: number): Promise<void>;
+  /** Capture parser compatibility before the bounded ingest-state ledger is pruned. */
+  readTurnParsingOffset?(sourceKind: string, filePath: string): Promise<number | null>;
 }
 
 const WS_DEFAULT = 'default';
@@ -501,7 +505,12 @@ export async function archiveSession(
       bytes_stored: blob.length,
       mtime: new Date(f.mtimeMs),
     });
-    manifest.push({ relpath: f.rel, sha256: sha, bytes_raw: raw.length });
+    const shortUserOffset = f.rel.endsWith('.jsonl')
+      ? await store.readTurnParsingOffset?.(ref.sourceKind, f.abs) : null;
+    manifest.push({
+      relpath: f.rel, sha256: sha, bytes_raw: raw.length,
+      ...(shortUserOffset == null ? {} : { short_user_turns_offset: shortUserOffset }),
+    });
   }
   await store.upsertArchive(fileRows, {
     workspace_id: ws,
@@ -810,6 +819,13 @@ export async function rematerializeSession(
 
 export function pgSessionArchiveStore(): SessionArchiveStore {
   return {
+    async readTurnParsingOffset(sourceKind, filePath) {
+      const rows = await getOrgPg().sql<Array<{ short_user_turns_offset: string | number | null }>>`
+        SELECT short_user_turns_offset FROM harness_shared.session_ingest_state
+         WHERE source_kind = ${sourceKind} AND file_path = ${filePath}`;
+      const offset = rows[0]?.short_user_turns_offset;
+      return offset == null ? null : Number(offset);
+    },
     async upsertArchive(files, stamp) {
       const { sql } = getOrgPg();
       await sql.begin(async (tx) => {

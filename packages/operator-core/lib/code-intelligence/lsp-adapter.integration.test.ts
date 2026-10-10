@@ -75,7 +75,8 @@ describe('adapter wiring (no server needed)', () => {
     expect(languageForFile('/x/a.ts')).toBe('typescript');
     expect(languageForFile('/x/a.tsx')).toBe('typescript');
     expect(languageForFile('/x/a.rs')).toBe('rust');
-    expect(languageForFile('/x/a.py')).toBeNull();
+    expect(languageForFile('/x/a.py')).toBe('python');
+    expect(languageForFile('/x/a.go')).toBe('go');
     expect(languageForFile('/x/README.md')).toBeNull();
   });
 
@@ -95,7 +96,7 @@ describe('adapter wiring (no server needed)', () => {
 
   it('declines a file with no pinned server rather than guessing', async () => {
     const answer = await lspQuery('definition', {
-      file: '/x/a.py',
+      file: '/x/a.cpp',
       line1: 1,
       character: 0,
       rootPath: REPO_ROOT,
