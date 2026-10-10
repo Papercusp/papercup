@@ -13,8 +13,12 @@ import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, o
 import { createHostedUsageSource } from './usage-service';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { PostgresHostedBudgetStore, createLockedHostedStripeFundingReader, readLockedHostedBudgetPopulation,
-  type HostedBudgetContextReader, type HostedBudgetExecutionGrant } from './budget-store';
-import { accrueUsageMicros, readLockedMoneyJournalPopulation } from '../../../cupboard/money-journal-store';
+  readLockedHostedStripeFundingPopulation, evaluateLockedHostedPrepaidFunding,
+  type HostedBudgetContextReader, type HostedBudgetExecutionGrant, type HostedPrepaidFundingReader } from './budget-store';
+import { accrueUsageMicros, postMoneyJournalEntry, readLockedMoneyJournalPopulation } from '../../../cupboard/money-journal-store';
+import { addMicrosDecimals, journalEntryForMovement, splitMicrosDecimal } from '../../../cupboard/money-journal';
+import { pgPaymentReceiptStore } from '../../../cupboard/payment-receipt-store';
+import { receiptCommitment } from '../../../cupboard/payment-receipt';
 import { createRoutedModelPort } from '../../../agent-loop/provider-router';
 import { runAgentLoop } from '../../../agent-loop/loop';
 import { createHostedPrincipal } from '../../hosted-principal';
@@ -33,21 +37,21 @@ const runService: HostedServiceContextRunner = <T>(fn: (sql: Sql) => Promise<T>)
   }) as Promise<T>;
 const store = () => new PostgresHostedUsageStore(runService);
 
-async function tenant(controlWorkspaceId: string = randomUUID(), organizationId: string = randomUUID(), state: 'active' | 'deleted' = 'active'): Promise<HostedUsageScope & { customerWorkspaceId: string }> {
+async function tenant(controlWorkspaceId: string = randomUUID(), organizationId: string = randomUUID(), state: 'active' | 'deleted' = 'active', fixtureDb = db): Promise<HostedUsageScope & { customerWorkspaceId: string }> {
   const customerWorkspaceId = randomUUID();
-  await db.adminSql`
+  await fixtureDb.adminSql`
     INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name)
     VALUES (${organizationId}::uuid, ${'usage-org-' + organizationId}, 'Usage fixture')
     ON CONFLICT (id) DO NOTHING`;
-  await db.adminSql`
+  await fixtureDb.adminSql`
     INSERT INTO harness_shared.workspace_host_connections (workspace_id, id, target, label, credential_ref, status)
     VALUES (${controlWorkspaceId}, ${customerWorkspaceId}, 'gcp', 'Usage fixture', 'delegation://fixture/gcp', 'connected')`;
-  await db.adminSql`
+  await fixtureDb.adminSql`
     INSERT INTO harness_shared.workspace_hosts
       (workspace_id, id, name, connection_id, target, scope_label, region, size, image, disk_gib, network, desired_state, observed_state)
     VALUES (${controlWorkspaceId}, ${customerWorkspaceId}, 'Usage fixture', ${customerWorkspaceId},
             'gcp', 'fixture-project', 'us-central1', 'n2-standard-2', 'ubuntu-2404', 40, 'default', 'running', 'running')`;
-  await db.adminSql`
+  await fixtureDb.adminSql`
     INSERT INTO harness_shared.customer_workspaces
       (workspace_id, id, organization_id, workspace_host_id, display_name, state, deleted_at, created_by_principal_kind, created_by_principal_id)
     VALUES (${controlWorkspaceId}, ${customerWorkspaceId}, ${organizationId}, ${customerWorkspaceId},
@@ -483,7 +487,10 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
   async function privateCustomerModel(scope: OpenRouterGenerationBinding['scope'], options: {
     readContext?: HostedBudgetContextReader | null;
     afterReservation?: () => void | Promise<void>;
+    run?: HostedServiceContextRunner;
   } = {}) {
+    const run = options.run ?? runService;
+    const usage = new PostgresHostedUsageStore(run);
     const session = { workspaceId: scope.controlWorkspaceId, userId: 'fixture-private-user',
       activeOrganizationId: scope.organizationId, selectedWorkspaceId: scope.customerWorkspaceId,
       sessionId: randomUUID(), sessionVersion: 1 };
@@ -492,7 +499,7 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
       principal: createHostedPrincipal({ ...session, permissions: revoked ? ['workspace:view'] : ['workspace:operate'] }) }));
     const publicResolver = vi.fn(async () => ({ ok: false as const, reason: 'authority_unavailable' as const }));
     const request = captureRequest(scope);
-    const budget = new PostgresHostedBudgetStore({ run: runService, now: () => T,
+    const budget = new PostgresHostedBudgetStore({ run, now: () => T,
       readContext: options.readContext === null ? undefined : options.readContext ?? grantContext });
     const admissionBudget: Pick<PostgresHostedBudgetStore, 'executeOnce'> = {
       async executeOnce(input, execute) {
@@ -505,8 +512,8 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
       isByok: false, evidenceRef: 'fixture:private-channel-authority' }));
     const runtime = await createHostedBillingRuntime({ publicOrigin: 'https://fixture.invalid',
       stripeSecretKeyRef: null, stripeWebhookSecretRef: null, plans: [] }, {
-      resolvePrincipal: publicResolver, resolveSecret: async () => 'execution-key', runService,
-      usageStore: store(), openRouterAdmission: { budget: admissionBudget, authorize, now: () => T },
+      resolvePrincipal: publicResolver, resolveSecret: async () => 'execution-key', runService: run,
+      usageStore: usage, openRouterAdmission: { budget: admissionBudget, authorize, now: () => T },
     });
     const generationId = 'gen-' + randomUUID();
     const wire = vi.fn(async () => {
@@ -535,7 +542,7 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
         account: 'untrusted-account-label', ownerId: 'untrusted-owner-label', signal: abort.signal })) events.push(event);
       return events;
     };
-    return { session, request, budget, channel, publicResolver, authorize, wire, generationId, select, abort,
+    return { session, request, budget, usage, channel, publicResolver, authorize, wire, generationId, select, abort,
       consume, revoke: () => { revoked = true; } };
   }
 
@@ -763,6 +770,211 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
       WHERE control_workspace_id = ${scope.controlWorkspaceId} AND organization_id = ${scope.organizationId}`)
       .toEqual([]);
   });
+
+  it.each(['positive', 'no-allocation', 'missing-cash', 'short-cash', 'unknown-reserve', 'fractional-prior-charge',
+    'stripe-positive', 'stripe-refund', 'stripe-pending', 'stripe-lineage-mismatch', 'stripe-census-gap', 'stripe-missing-cash'] as const)
+    ('joins persisted prepaid funding to private model admission with %s fixture authority', async mode => {
+      // A separate maintained private DB makes the FULL local populations exact
+      // without deleting immutable rows or depending on preceding test order.
+      const isolated = await createOrgTestDb();
+      const stripeMode = mode.startsWith('stripe-');
+      // The maintained HTTP reader stamps Date.now(). Keep its source clock
+      // identical to the admission fixture, without changing timers or dates.
+      const sourceClock = stripeMode ? vi.spyOn(Date, 'now').mockReturnValue(T) : null;
+      try {
+        const run: HostedServiceContextRunner = <T>(fn: (sql: Sql) => Promise<T>): Promise<T> => isolated.appSql.begin(async tx => {
+          await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
+          await tx.unsafe('SET LOCAL ROLE hosted_service'); return fn(tx as unknown as Sql);
+        }) as Promise<T>;
+        const scope = await tenant(randomUUID(), randomUUID(), 'active', isolated);
+        const accountId = 'acct_' + randomUUID().replaceAll('-', '');
+        const customerId = 'cus_' + randomUUID().replaceAll('-', '');
+        const journalWorkspaceId = 'fixture-' + randomUUID();
+        const transaction = { id: 'txn_' + randomUUID().replaceAll('-', ''), amount: 10,
+          fee: 0, currency: 'usd', created: T / 1000 };
+        const payment = journalEntryForMovement({ entryId: 'stripe-bt:' + transaction.id,
+          occurredAtMs: T, currency: 'USD', externalRef: { kind: 'stripe-balance-transaction', id: transaction.id },
+          movement: { kind: 'credit-purchase', grossCents: 10, feeCents: 0, taxCents: 0 } });
+        const capital = journalEntryForMovement({ entryId: 'fixture-capital', occurredAtMs: T,
+          currency: 'USD', externalRef: { kind: 'stripe-balance-transaction', id: 'txn_FixtureCapital' },
+          movement: { kind: 'customer-payment', grossCents: 1, feeCents: 0, taxCents: 0,
+            daoCents: 0, refundReserveCents: 0 } });
+        if (!payment.ok) throw new Error('payment fixture: ' + payment.detail);
+        if (!capital.ok) throw new Error('capital fixture: ' + capital.detail);
+        for (const entry of [payment.entry, capital.entry]) expect(await postMoneyJournalEntry(
+          { workspaceId: journalWorkspaceId, entry }, { sql: isolated.adminSql, ledgerChain: null })).toMatchObject({ ok: true });
+        const salt = 'c'.repeat(64);
+        expect(await pgPaymentReceiptStore(isolated.adminSql).insertMissing(journalWorkspaceId, [{ transaction, salt,
+          commitment: receiptCommitment(transaction, salt), sourceId: 'ch_Fixture', sourceCustomer: customerId }])).toBe(1);
+        const capitalTransaction = { ...transaction, id: 'txn_FixtureCapital', amount: 1 };
+        if (stripeMode) expect(await pgPaymentReceiptStore(isolated.adminSql).insertMissing(journalWorkspaceId,
+          [{ transaction: capitalTransaction, salt, commitment: receiptCommitment(capitalTransaction, salt),
+            sourceId: 'ch_Capital', sourceCustomer: customerId }])).toBe(1);
+        await run(sql => sql`INSERT INTO papercusp_auth.hosted_billing_customers
+          (organization_id, stripe_customer_id, livemode) VALUES (${scope.organizationId}::uuid, ${customerId}, true)`);
+        expect(await accrueUsageMicros({ workspaceId: journalWorkspaceId, rollupId: 'fixture-liability',
+          accrualId: 'fixture-liability', micros: 1, microsExact: '1.25' }, { sql: isolated.adminSql })).toMatchObject({ ok: true });
+
+        let fault = false;
+        const refundTransaction = { ...transaction, id: 'txn_FixtureRefund', amount: -1 };
+        const calls: string[] = [];
+        const fundingResults: Awaited<ReturnType<Extract<ReturnType<typeof createLockedHostedStripeFundingReader>,
+          { ok: true }>['read']>>[] = [];
+        const charge = (id: string, tx: typeof transaction, prepaid: boolean) => ({ object: 'charge', id,
+          customer: customerId, livemode: true, currency: 'usd', status: 'succeeded', paid: true, captured: true,
+          amount: tx.amount, amount_captured: tx.amount, amount_refunded: fault && mode === 'stripe-refund' && prepaid ? 1 : 0,
+          balance_transaction: tx.id, failure_balance_transaction: null, created: tx.created,
+          metadata: prepaid ? { purpose: 'prepaid-credits' } : {}, invoice: null });
+        const movement = (tx: typeof transaction, source: Record<string, unknown>, type: string) => ({
+          ...tx, object: 'balance_transaction', type, net: tx.amount - tx.fee, available_on: tx.created,
+          status: fault && mode === 'stripe-pending' && tx.id === transaction.id ? 'pending' : 'available', source });
+        const refund = { object: 'refund', id: 're_Fixture', charge: 'ch_Fixture', customer: customerId,
+          currency: 'usd', amount: 1, status: 'succeeded', created: transaction.created,
+          balance_transaction: refundTransaction.id, failure_balance_transaction: null };
+        const built = stripeMode ? createLockedHostedStripeFundingReader({
+          pool: { controlWorkspaceId: scope.controlWorkspaceId, stripeAccountId: accountId }, journalWorkspaceId,
+          policy: { daoBasisPoints: 0, refundReserveBasisPoints: 0 }, maximumAgeMs: 1000,
+        }, { secretKey: 'sk_live_fixture', liveModeAllowed: true, now: () => T, fetchImpl: async (url, init) => {
+          expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk_live_fixture');
+          expect(init?.method).toBe('GET'); expect(init?.redirect).toBe('error'); expect(init?.signal).toBeInstanceOf(AbortSignal);
+          const path = new URL(String(url)).pathname; calls.push(path);
+          const original = charge('ch_Fixture', transaction, true);
+          const revenue = charge('ch_Capital', capitalTransaction, false);
+          const originalMovement = movement(transaction, original, 'charge');
+          const revenueMovement = movement(capitalTransaction, revenue, 'charge');
+          const refundMovement = movement(refundTransaction, refund, 'refund');
+          let body: unknown;
+          if (path === '/v1/account') body = { object: 'account', id: accountId };
+          else if (path === '/v1/customers/' + customerId) body = { object: 'customer', id: customerId,
+            livemode: true, metadata: { organizationId: scope.organizationId } };
+          else if (path === '/v1/balance') body = { object: 'balance', livemode: true,
+            available: [{ currency: 'usd', amount: fault && mode === 'stripe-pending' ? 1 : fault && mode === 'stripe-refund' ? 10 : 11 }],
+            pending: fault && mode === 'stripe-pending' ? [{ currency: 'usd', amount: 10 }] : [] };
+          else if (path === '/v1/charges') body = { object: 'list', data: [original, revenue], has_more: false };
+          else if (path === '/v1/refunds') body = { object: 'list', data: fault && mode === 'stripe-refund' ? [refund] : [], has_more: false };
+          else if (path === '/v1/disputes') body = { object: 'list', data: [], has_more: false };
+          else if (path === '/v1/balance_transactions') body = { object: 'list', data: [originalMovement, revenueMovement,
+            ...(fault && mode === 'stripe-refund' ? [refundMovement] : [])], has_more: false };
+          else if (path === '/v1/charges/ch_Fixture') body = original;
+          else if (path === '/v1/charges/ch_Capital') body = revenue;
+          else if (path === '/v1/refunds/re_Fixture') body = refund;
+          else if (path === '/v1/balance_transactions/' + transaction.id) body = fault && mode === 'stripe-lineage-mismatch'
+            ? { ...originalMovement, source: 'ch_Foreign' } : originalMovement;
+          else if (path === '/v1/balance_transactions/' + capitalTransaction.id) body = revenueMovement;
+          else if (path === '/v1/balance_transactions/' + refundTransaction.id) body = refundMovement;
+          else throw new Error('unexpected positive Stripe fixture path: ' + path);
+          return new Response(JSON.stringify(body), { headers: { 'request-id': 'req_PositiveFixture' } });
+        } }) : null;
+        if (built && !built.ok) throw new Error('invalid positive Stripe fixture');
+        const readFunding: HostedPrepaidFundingReader = async (sql, request) => {
+          const population = await readLockedHostedStripeFundingPopulation(sql, {
+            pool: { controlWorkspaceId: scope.controlWorkspaceId, stripeAccountId: accountId }, journalWorkspaceId });
+          const journal = await readLockedMoneyJournalPopulation(sql);
+          const usage = await new PostgresHostedUsageStore(run).readLockedPopulation(sql);
+          const budget = await readLockedHostedBudgetPopulation(sql);
+          expect(population.customers).toEqual([{ organizationId: scope.organizationId, stripeCustomerId: customerId, livemode: true }]);
+          const hasRefund = fault && ['stripe-refund', 'stripe-census-gap'].includes(mode);
+          expect(population.receipts).toHaveLength(stripeMode ? hasRefund ? 3 : 2 : 1);
+          expect(journal.entries).toHaveLength(hasRefund ? 3 : 2);
+          const liability = splitMicrosDecimal(addMicrosDecimals(...journal.rollups.map(r =>
+            r.rollup.roundingMicrosExact ?? String(r.rollup.roundingMicros))));
+          expect(liability.exact).toBe('1.25');
+          // This fixture owns every row and assigns each unpriced generation to
+          // its unresolved reservation. A production no-overlap/provider census
+          // needs independently authenticated joins, never these local labels.
+          for (const binding of usage.openRouterBindings) expect(budget.latest).toContainEqual(expect.objectContaining({
+            reservationId: binding.budgetGrant?.reservationId, costMicros: null, providerFinal: false }));
+          const collected = built?.ok ? await built.read(sql, scope) : null;
+          if (collected) {
+            fundingResults.push(collected);
+            if (!collected.ok) return null;
+            expect(collected.payments).toHaveLength(1); // The second charge is revenue, never prepaid credit.
+            expect(collected).not.toHaveProperty('cashBacking');
+            // The authenticated HTTP parser/collector still runs against owned
+            // responses. Independent cash and provider/no-overlap joins below
+            // remain explicit fixtures, rather than inferred Stripe authority.
+            await expect(isolated.adminSql.begin(async tx => {
+              await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+              await tx`UPDATE harness_shared.payment_receipts SET workspace_id = workspace_id WHERE false`;
+            })).rejects.toMatchObject({ code: '55P03' });
+          }
+          const { startMs } = shadowMonthBounds(request.month);
+          return { scope, budgetKey: request.allocation.budgetKey, windowStartMs: startMs, asOfMs: request.asOfMs,
+            snapshot: collected?.ok ? collected.snapshot : { controlWorkspaceId: scope.controlWorkspaceId, organizationId: scope.organizationId,
+              stripeAccountId: accountId, stripeCustomerId: customerId, livemode: true, complete: true,
+              asOfMs: request.asOfMs, evidenceRef: 'fixture:source-census-not-provider-authority' },
+            payments: collected?.ok ? collected.payments : [{ entry: population.entries.find(e => e.entryId === payment.entry.entryId)!,
+              receipt: population.receipts[0]!, available: true }], reversals: collected?.ok ? collected.reversals : [],
+            priorCharges: fault && mode === 'fractional-prior-charge' ? [{ chargeId: 'fixture-prior',
+              organizationId: scope.organizationId, customerWorkspaceId: scope.customerWorkspaceId,
+              budgetKey: request.allocation.budgetKey, periodEndMs: startMs, costSource: 'provider-billed',
+              providerFinal: true, micros: 0, microsExact: '0.25' }] : [],
+            cashBacking: fault && ['missing-cash', 'stripe-missing-cash'].includes(mode) ? null : {
+              controlWorkspaceId: scope.controlWorkspaceId, stripeAccountId: accountId, asOfMs: request.asOfMs,
+              livemode: true, complete: true, evidenceRef: 'fixture:independent-cash-not-bank-authority',
+              journalEntries: journal.entries.map(e => e.entry), availableMicros: 100_001,
+              availableMicrosExact: fault && mode === 'short-cash' ? '100001' : '100001.25',
+              unpaidProviderMicros: liability.micros, unpaidProviderMicrosExact: liability.exact,
+              retainedReserveMicros: fault && mode === 'unknown-reserve' ? null : 0 } };
+        };
+        const allocation = { allocationId: randomUUID(), paymentTransactionId: transaction.id,
+          organizationId: scope.organizationId, customerWorkspaceId: scope.customerWorkspaceId,
+          budgetKey: 'consumption.usd_cents', micros: 100_000 };
+        const allocationRequest = { scope, stripeAccountId: accountId, allocation, month: MONTH, asOfMs: T };
+        const prepaid = new PostgresHostedBudgetStore({ run, readPrepaidFunding: readFunding, now: () => T });
+        if (mode !== 'no-allocation') expect(await prepaid.allocatePrepaid(allocationRequest)).toMatchObject({
+          outcome: 'allocated', funding: { organization: { fundedMicros: 100_000 }, workspace: { fundedMicros: 100_000 } } });
+        if (['stripe-refund', 'stripe-census-gap'].includes(mode)) {
+          const reversal = journalEntryForMovement({ entryId: 'stripe-bt:' + refundTransaction.id,
+            occurredAtMs: T, currency: 'USD', externalRef: { kind: 'stripe-balance-transaction', id: refundTransaction.id },
+            movement: { kind: 'refund', amountCents: 1, taxCents: 0 } });
+          if (!reversal.ok) throw new Error('refund fixture: ' + reversal.detail);
+          expect(await postMoneyJournalEntry({ workspaceId: journalWorkspaceId, entry: reversal.entry },
+            { sql: isolated.adminSql, ledgerChain: null })).toMatchObject({ ok: true });
+          expect(await pgPaymentReceiptStore(isolated.adminSql).insertMissing(journalWorkspaceId,
+            [{ transaction: refundTransaction, salt, commitment: receiptCommitment(refundTransaction, salt),
+              sourceId: 're_Fixture', sourceCustomer: customerId }])).toBe(1);
+        }
+        fault = true;
+        const readContext: HostedBudgetContextReader = async (sql, request) => {
+          const evidence = await readFunding(sql, { ...allocationRequest, asOfMs: request.asOfMs });
+          if (!evidence) return null;
+          const funding = await evaluateLockedHostedPrepaidFunding(sql, evidence);
+          if (!funding.ok) return null;
+          const context = await grantContext(sql, request);
+          return context && { ...context, evidenceRef: funding.evidenceRef,
+            limits: [{ ...context.limits[0]!, ...funding.organization },
+              ...(funding.workspace ? [{ ...context.limits[0]!, customerWorkspaceId: scope.customerWorkspaceId,
+                ...funding.workspace }] : [])] };
+        };
+        const a = await privateCustomerModel(scope, { run, readContext });
+        const b = await privateCustomerModel(scope, { run, readContext });
+        await Promise.all([a.consume(), b.consume()]);
+        const expected = ['positive', 'stripe-positive'].includes(mode) ? 1 : 0;
+        expect(a.wire.mock.calls.length + b.wire.mock.calls.length).toBe(expected);
+        expect(await a.usage.readOpenRouterBindings({ scope, month: MONTH, asOfMs: T + 1000 })).toHaveLength(expected);
+        expect(await isolated.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts`).toHaveLength(expected);
+        expect(await isolated.adminSql`SELECT allocation_id FROM papercusp_auth.hosted_prepaid_allocations`)
+          .toHaveLength(mode === 'no-allocation' ? 0 : 1);
+        if (stripeMode) {
+          expect(fundingResults[0]).toMatchObject({ ok: true, payments: [{ available: true }], reversals: [] });
+          if (mode === 'stripe-refund') {
+            expect(fundingResults.at(-1)).toMatchObject({ ok: true, reversals: [{ paymentTransactionId: transaction.id }] });
+            expect(calls).toContain('/v1/refunds/re_Fixture');
+          } else if (mode === 'stripe-pending') expect(fundingResults.at(-1)).toMatchObject({ ok: true, payments: [{ available: false }] });
+          else if (mode === 'stripe-lineage-mismatch') expect(fundingResults.at(-1)).toMatchObject({ ok: false, reason: 'unverified-stripe-read' });
+          else if (mode === 'stripe-census-gap') expect(fundingResults.at(-1)).toMatchObject({ ok: false, reason: 'unreconciled-stripe-movement' });
+          else expect(fundingResults.at(-1)).toMatchObject({ ok: true });
+          expect(calls).toContain('/v1/balance_transactions/' + transaction.id);
+        }
+        if (expected) {
+          const winner = a.wire.mock.calls.length ? a : b;
+          await winner.consume(); expect(winner.wire).toHaveBeenCalledOnce();
+          expect(await winner.budget.reserve(winner.request)).toMatchObject({ outcome: 'duplicate',
+            receipt: { revision: 0, costMicros: null, providerFinal: false } });
+        }
+      } finally { sourceClock?.mockRestore(); await isolated.cleanup(); }
+    }, 60_000);
 
   it.each(['error', 'abort-before-wire'] as const)('composes actual native routing with committed admission and early binding on %s', async ending => {
     const scope = await tenant(); const options = captureOptions(scope);
