@@ -4710,6 +4710,8 @@ export interface LifecycleAliasInfo {
   aliased: boolean;
   /** Exactly what the caller passed, before any normalization. */
   requestedState: string;
+  /** The requested state after the item's family-specific normalization. */
+  expectedState: string;
   /** The state actually persisted (workItem.state read back after the write), or null
    *  when the item was not found (setWorkItemState returned null — a separate failure
    *  mode from aliasing, surfaced by the caller's own `ok:false` path). */
@@ -4765,6 +4767,10 @@ export async function setWorkItemStateWithAliasInfo(
   // setWorkItemState is already post-transition, so it cannot tell us whether the
   // blocked auto-gate lease was the state that this call just left.
   const priorWorkItem = await getWorkItem(id, opts.harness);
+  const normalizedRequest = priorWorkItem
+    ? normalizeWorkItemState(priorWorkItem.family, requestedState)
+    : null;
+  const expectedState = normalizedRequest?.ok ? normalizedRequest.state : requestedState;
   let stateToApply = requestedState;
   if (requestedLower === 'needs-human') {
     const current = priorWorkItem;
@@ -4781,6 +4787,7 @@ export async function setWorkItemStateWithAliasInfo(
           workItem: current,
           aliased: current.state !== requestedState,
           requestedState,
+          expectedState,
           appliedState: current.state,
           aliasNote:
             remoteOwned
@@ -4872,6 +4879,7 @@ export async function setWorkItemStateWithAliasInfo(
     workItem,
     aliased: effectiveAliased,
     requestedState,
+    expectedState: onAliasInfo?.resolved ?? expectedState,
     appliedState,
     ...(note ? { aliasNote: note } : {}),
   };
