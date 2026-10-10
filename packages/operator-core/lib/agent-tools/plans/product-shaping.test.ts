@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { previewProductShaping, productShapingScaffold, type ProductShaping } from './product-shaping';
+import { previewProductShaping, productShapingScaffold, renderOwnerWalkthrough, type ProductShaping } from './product-shaping';
 
 const source = 'session_turn:codex:original-request:1';
 function brief(outcome = 'The user can retry without losing their draft.'): ProductShaping {
@@ -113,6 +113,101 @@ describe('product shaping', () => {
     expect(JSON.stringify(result).length).toBeLessThan(6000);
     expect(result.reviewerBrief.readFullContext).toContain('Product shaping');
     expect(result.reviewerBrief.sourceRefs).toHaveLength(3);
+  });
+
+  describe('owner walkthrough (R-7)', () => {
+    function richBrief(): ProductShaping {
+      const shape = brief();
+      shape.scenarios.push({ id: 'SC-002', title: 'Offline submit', kind: 'failure', trigger: 'The network drops mid-submit',
+        action: 'Press submit again', outcome: 'The draft is still there', requirementIds: ['R-1'] });
+      shape.scenarios.unshift({ id: 'SC-000', title: 'Over the size limit', kind: 'boundary', trigger: 'A 50MB attachment',
+        action: 'Attach it', outcome: 'A clear size message', requirementIds: ['R-1'] });
+      shape.context.push({ kind: 'product-choice', text: 'Public or private reports?', material: true, resolved: false, recommendation: 'Private by default' });
+      shape.context.push({ kind: 'product-choice', text: 'Settled choice', material: true, resolved: true, recommendation: 'Done' });
+      return shape;
+    }
+
+    it('renders every scenario as a trigger/action/outcome line, normal journeys first', () => {
+      const walk = previewProductShaping(plan(richBrief())).ownerWalkthrough!;
+      expect(walk).toBeTruthy();
+      for (const [id, trigger, action, outcome] of [
+        ['SC-001', 'A saved draft', 'Submit the report', 'The user can retry without losing their draft.'],
+        ['SC-002', 'The network drops mid-submit', 'Press submit again', 'The draft is still there'],
+        ['SC-000', 'A 50MB attachment', 'Attach it', 'A clear size message'],
+      ]) {
+        const line = walk.split('\n').find(row => row.includes(`(${id})`));
+        expect(line, id).toBeDefined();
+        expect(line).toContain(`When: ${trigger}`);
+        expect(line).toContain(`Then: ${action}`);
+        expect(line).toContain(`Result: ${outcome}`);
+      }
+      // Normal journeys come before failure/boundary cases even when authored later.
+      expect(walk.indexOf('(SC-001)')).toBeLessThan(walk.indexOf('(SC-000)'));
+      expect(walk).toContain('[failure] **Offline submit**');
+      expect(walk).toContain('Automatic public posting');
+    });
+
+    it('lists assumptions and only the OPEN material choices, each with its recommendation', () => {
+      const walk = previewProductShaping(plan(richBrief())).ownerWalkthrough!;
+      expect(walk).toMatch(/Assumptions made on your behalf[\s\S]*Retain drafts locally \(proposed: Use the existing draft store\)/);
+      expect(walk).toMatch(/Choices for you[\s\S]*Public or private reports\? — recommended: Private by default/);
+      expect(walk).not.toContain('Settled choice');
+      // Owner requests are the owner's own words, not something to re-confirm.
+      expect(walk).not.toContain('Make bug reporting easy');
+    });
+
+    it('yields no walkthrough for missing or malformed shaping', () => {
+      expect(previewProductShaping('# Legacy\n## Build\n- **P-001** `todo` Work').ownerWalkthrough).toBeNull();
+      expect(previewProductShaping('## Product shaping\n```product-shaping\n{oops\n```').ownerWalkthrough).toBeNull();
+      expect(renderOwnerWalkthrough(null)).toBeNull();
+    });
+
+    it('keeps the walkthrough inside the bounded preview and marks an excerpt explicitly', () => {
+      const shape = richBrief();
+      shape.scenarios = Array.from({ length: 40 }, (_, i) => ({ id: 'SC-' + String(i + 1).padStart(3, '0'), title: 'Scenario ' + i,
+        kind: 'normal' as const, trigger: 'Trigger '.repeat(20), action: 'Action '.repeat(20), outcome: 'Outcome '.repeat(20), requirementIds: ['R-1'] }));
+      const result = previewProductShaping(plan(shape));
+      expect(JSON.stringify(result).length).toBeLessThan(6000);
+      expect(result.ownerWalkthroughIsExcerpt).toBe(true);
+      expect(result.ownerWalkthrough).toMatch(/…$/);
+      // The full rendering is still available from the data itself.
+      expect(renderOwnerWalkthrough(shape)!.split('\n').filter(row => row.startsWith('- **')).length).toBe(40);
+    });
+  });
+
+  describe('two-pass blind intent review (R-11)', () => {
+    it('pass one carries only owner and evidence refs, never the plan\'s interpretation', () => {
+      const shape = brief();
+      shape.context.push({ kind: 'observed-fact', text: 'Draft storage exists', sourceRefs: ['file:lib/drafts.ts'] });
+      shape.context.push({ kind: 'owner-request', text: 'Keep it simple', sourceRefs: ['session_turn:claude:other:4'] });
+      const result = previewProductShaping(plan(shape, '**R-1 — Retry works.** The person can retry submission after a failure.'));
+      const { passOne, sourceRefs, instructions, readFullContext } = result.reviewerBrief;
+      // Owner-request turns are read alongside the brief's own source refs.
+      expect(sourceRefs).toEqual([source, 'session_turn:claude:other:4']);
+      expect(passOne.observedFactRefs).toEqual(['file:lib/drafts.ts']);
+      // Everything a reviewer is handed for pass one: refs, task, instructions.
+      const packet = JSON.stringify({ sourceRefs, passOne, instructions, readFullContext });
+      for (const leak of ['Retry submission', 'A saved draft', 'Submit the report', 'retry without losing', 'Retry works',
+        'retry submission after a failure', 'A person reporting a bug', 'A failed submission loses', 'Retain drafts locally',
+        'Draft storage exists', 'Make bug reporting easy', 'Automatic public posting']) {
+        expect(packet, leak).not.toContain(leak);
+      }
+      expect(passOne.consultQuestion).toContain(source);
+      expect(passOne.consultQuestion).toMatch(/Without reading the plan/);
+    });
+
+    it('pass two compares against the plan and names omissions, unsupported additions and contradictions', () => {
+      const { reviewerBrief } = previewProductShaping(plan(brief()));
+      expect(reviewerBrief.protocol).toBe('two-pass-blind');
+      expect(reviewerBrief.passTwo.task).toMatch(/omission/);
+      expect(reviewerBrief.passTwo.task).toMatch(/unsupported addition/);
+      expect(reviewerBrief.passTwo.task).toMatch(/contradiction/);
+      expect(reviewerBrief.passTwo.reportShape).toContain('ownerRef');
+    });
+
+    it('has no consult question when there is no owner source to read', () => {
+      expect(previewProductShaping('# Legacy\n## Build\n- **P-001** `todo` Work').reviewerBrief.passOne.consultQuestion).toBeNull();
+    });
   });
 
   it.each([

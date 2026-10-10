@@ -42,7 +42,61 @@ export const productShapingSchema = z.object({
 export type ProductShaping = z.infer<typeof productShapingSchema>;
 
 export const PRODUCT_SHAPING_GUIDANCE =
-  'Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only about consequential product choices, never engineering methodology. Map scenarios to R-N requirements and their existing Design BAR-to-work map. Use plans:audit phase:shaping for advisory gaps and the original-intent reviewer brief; save edits with plans:set-content. Full verification remains unchanged.';
+  'Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only consequential product choices, never engineering methodology. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner\'s approval ask with the ownerWalkthrough, not the requirements. Save edits with plans:set-content. Full verification remains unchanged.';
+
+const WALKTHROUGH_FIELD_MAX = 400;
+const clip = (value: string) => value.length > WALKTHROUGH_FIELD_MAX ? value.slice(0, WALKTHROUGH_FIELD_MAX - 1) + '…' : value;
+
+/**
+ * Plain-language rendering of the shaping data for the owner's approval read:
+ * what changes for whom, every scenario as a trigger/action/outcome line
+ * (normal journeys first), the assumptions made on the owner's behalf, and the
+ * consequential choices still open. Rendered from data, so it cannot drift from
+ * the brief; null when there is no valid brief to render.
+ */
+export function renderOwnerWalkthrough(brief: ProductShaping | null): string | null {
+  if (!brief) return null;
+  const lines: string[] = [];
+  if (brief.audience) lines.push(`**Who this is for:** ${clip(brief.audience)}`);
+  if (brief.problem) lines.push(`**The problem today:** ${clip(brief.problem)}`);
+  if (brief.outcome) lines.push(`**After this ships:** ${clip(brief.outcome)}`);
+  if (brief.nonGoals.some(Boolean)) lines.push(`**Not included:** ${brief.nonGoals.filter(Boolean).map(clip).join('; ')}`);
+  const scenarioLine = (scenario: ProductShaping['scenarios'][number]) =>
+    `- ${scenario.kind === 'normal' ? '' : `[${scenario.kind}] `}**${clip(scenario.title) || scenario.id}** (${scenario.id}) — When: ${clip(scenario.trigger) || '(not stated)'}. Then: ${clip(scenario.action) || '(not stated)'}. Result: ${clip(scenario.outcome) || '(not stated)'}.`;
+  const normal = brief.scenarios.filter(scenario => scenario.kind === 'normal');
+  const other = brief.scenarios.filter(scenario => scenario.kind !== 'normal');
+  if (normal.length) lines.push('', '**What you will be able to do:**', ...normal.map(scenarioLine));
+  if (other.length) lines.push('', '**When things go wrong or reach a limit:**', ...other.map(scenarioLine));
+  const assumptions = brief.context.filter(entry => entry.kind === 'assumption' && entry.text);
+  if (assumptions.length) lines.push('', '**Assumptions made on your behalf (correct any that are wrong):**',
+    ...assumptions.map(entry => `- ${clip(entry.text)}${entry.recommendation ? ` (proposed: ${clip(entry.recommendation)})` : ''}`));
+  const choices = brief.context.filter(entry => entry.kind === 'product-choice' && entry.material && !entry.resolved && entry.text);
+  if (choices.length) lines.push('', '**Choices for you:**',
+    ...choices.map(entry => `- ${clip(entry.text)} — recommended: ${entry.recommendation ? clip(entry.recommendation) : '(no recommendation yet)'}`));
+  return lines.join('\n').trim() || null;
+}
+
+/**
+ * Pass one of the original-intent review sees ONLY the owner's own turns and
+ * cited evidence, never the plan's interpretation (brief text, scenarios or
+ * requirements), so the reviewer's expected scenarios are not anchored by it.
+ */
+function intentReviewPassOne(brief: ProductShaping | null) {
+  const ownerSourceRefs = [...new Set([...(brief?.sourceRefs ?? []),
+    ...(brief?.context ?? []).filter(entry => entry.kind === 'owner-request').flatMap(entry => entry.sourceRefs ?? [])])];
+  const observedFactRefs = [...new Set((brief?.context ?? []).filter(entry => entry.kind === 'observed-fact').flatMap(entry => entry.sourceRefs ?? []))];
+  return {
+    ownerSourceRefs,
+    packet: {
+      observedFactRefs,
+      withheld: 'Brief, scenarios and requirements are withheld so they cannot anchor your reading.',
+      task: 'Read each owner turn in sourceRefs (sessions:read) and the cited evidence; list the scenarios you expect as trigger, action, outcome, including failure and boundary cases, and what the owner excluded.',
+      consultQuestion: ownerSourceRefs.length
+        ? `Without reading the plan, read these owner turns: ${ownerSourceRefs.join(', ')}${observedFactRefs.length ? `; evidence: ${observedFactRefs.join(', ')}` : ''}. List the user scenarios (trigger, action, outcome) the owner expects, including failure and boundary cases, and anything excluded.`
+        : null,
+    },
+  };
+}
 
 export function productShapingScaffold(): string {
   const draft: ProductShaping = {
@@ -128,39 +182,68 @@ export function previewProductShaping(planContent: string) {
     }
     if (diagnostics.length) status = 'incomplete';
   }
+  const { ownerSourceRefs, packet: passOne } = intentReviewPassOne(brief);
+  // sourceRefs are the pass-one owner turns (brief refs plus owner-request
+  // refs); passOne adds only evidence refs and the task, never plan text.
   const reviewerBrief = {
-    sourceRefs: brief?.sourceRefs ?? [],
+    sourceRefs: ownerSourceRefs,
     planSection: 'Product shaping',
-    readFullContext: 'plans:get { slug, heading:"Product shaping" }; read each original source via sessions:read before reviewing requirements.',
+    readFullContext: 'Pass one: sessions:read each sourceRefs turn only. Pass two: plans:get { slug, heading:"Product shaping" } and { heading:"Requirements" }.',
+    protocol: 'two-pass-blind' as const,
+    passOne,
+    passTwo: {
+      task: 'Then read the plan and report omissions (owner expects, plan lacks), unsupported additions (in the plan, no owner turn supports) and contradictions, each with its owner turn ref.',
+      reportShape: '{ omissions, unsupportedAdditions, contradictions }, each entry with ownerRef',
+    },
     instructions: [
-      'Read the original source turns and relevant current-product context BEFORE reading generated requirements. Source syntax is checked here; source content and authorship are not verified by this preview.',
-      'Reconstruct the intended experience independently. Compare it with the brief, concrete scenarios and requirements; report omissions, contradictions, unsupported additions and material ambiguous choices with exact references.',
-      'Keep assumptions distinct from owner requests. Investigate routine technical choices yourself; ask only material product questions with a recommended answer.',
-      'Use the existing independent review route. These structural diagnostics do not prove semantic completeness or owner approval; full verification remains unchanged.',
+      'Pass one is blind: BEFORE reading the plan\'s brief, scenarios or requirements, read sourceRefs and passOne.observedFactRefs and write your expected scenarios. Source syntax is checked; source content and authorship are not.',
+      'Pass two: compare your list with the plan. Keep assumptions distinct from owner requests; ask only material product questions, with a recommended answer.',
+      'Use the existing independent review route (passOne.consultQuestion suits consult:get_feedback). These diagnostics do not prove semantic completeness or owner approval.',
     ],
   };
+  const ownerWalkthrough = renderOwnerWalkthrough(brief);
   const preview = {
     status, advisory: true as const, semanticCompleteness: 'not-measured' as const,
     sourceContentVerified: false as const, brief, trace, diagnostics: diagnostics.slice(0, 20),
     diagnosticsOmitted: Math.max(0, diagnostics.length - 20),
     overflowRead: diagnostics.length > 20 ? 'Read the canonical Product shaping section and repair these diagnostics first, then repeat the shaping preview.' : null,
+    ownerWalkthrough, ownerWalkthroughIsExcerpt: false,
     reviewerBrief, scaffold: status === 'missing' || status === 'invalid' ? productShapingScaffold() : null,
     next: PRODUCT_SHAPING_GUIDANCE,
   };
   // A large brief remains in the canonical plan; never duplicate it into a
   // tool-result spill that conceals the diagnostic or review instructions.
-  if (JSON.stringify(preview).length > 6000) {
-    return { ...preview, brief: brief ? { audience: brief.audience.slice(0, 240),
+  if (JSON.stringify(preview).length > PREVIEW_BUDGET) {
+    const refs = (values: string[]) => values.slice(0, 3);
+    const bounded = { ...preview, brief: brief ? { audience: brief.audience.slice(0, 240),
       problem: brief.problem.slice(0, 240), outcome: brief.outcome.slice(0, 240) } : null,
-      reviewerBrief: { ...reviewerBrief, sourceRefs: reviewerBrief.sourceRefs.slice(0, 3),
-        sourceRefsOmitted: Math.max(0, reviewerBrief.sourceRefs.length - 3) },
+      reviewerBrief: { ...reviewerBrief, sourceRefs: refs(reviewerBrief.sourceRefs),
+        sourceRefsOmitted: Math.max(0, reviewerBrief.sourceRefs.length - 3),
+        passOne: { ...passOne, observedFactRefs: refs(passOne.observedFactRefs),
+          observedFactRefsOmitted: Math.max(0, passOne.observedFactRefs.length - 3),
+          consultQuestion: passOne.consultQuestion && passOne.consultQuestion.length > 600 ? null : passOne.consultQuestion } },
       briefIsExcerpt: true, trace: trace.slice(0, 3).map(row => ({ ...row,
         requirementIds: row.requirementIds.slice(0, 5), planItemIds: row.planItemIds.slice(0, 5),
         linksAreExcerpt: row.requirementIds.length > 5 || row.planItemIds.length > 5 })),
       traceOmitted: Math.max(0, trace.length - 3),
       diagnostics: diagnostics.slice(0, 5).map(row => ({ ...row, message: row.message.slice(0, 160) })),
       diagnosticsOmitted: Math.max(0, diagnostics.length - 5),
-      overflowRead: 'Read the full canonical Product shaping section with plans:get; the brief, trace and diagnostics here are excerpts.' };
+      ownerWalkthrough: null as string | null,
+      overflowRead: 'Read the full canonical Product shaping section with plans:get; the brief, trace, diagnostics and walkthrough here are excerpts. renderOwnerWalkthrough over the full brief yields the complete walkthrough.' };
+    // The walkthrough gets whatever budget the rest leaves, cut at a line so no
+    // scenario is shown half-rendered; the excerpt flag says lines were dropped.
+    if (ownerWalkthrough) {
+      const room = Math.max(600, PREVIEW_BUDGET - JSON.stringify(bounded).length - 200);
+      if (ownerWalkthrough.length <= room) bounded.ownerWalkthrough = ownerWalkthrough;
+      else {
+        const cut = ownerWalkthrough.slice(0, room);
+        bounded.ownerWalkthrough = cut.slice(0, Math.max(0, cut.lastIndexOf('\n'))) + '\n…';
+        bounded.ownerWalkthroughIsExcerpt = true;
+      }
+    }
+    return bounded;
   }
   return { ...preview, briefIsExcerpt: false, traceOmitted: 0 };
 }
+
+const PREVIEW_BUDGET = 6000;
