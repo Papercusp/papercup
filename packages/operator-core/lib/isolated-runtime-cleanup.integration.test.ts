@@ -8,6 +8,7 @@ import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 import { browserCachePath } from '../../../scripts/ensure-playwright-browsers.mjs';
 import { defaultEvidenceRoot } from '@papercusp/verification-harness';
+import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
@@ -180,6 +181,12 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
       expect(stages).toEqual(expect.arrayContaining(['start', 'pg-stop', 'pg-stopped', 'remove-private-state', 'complete']));
     },
   });
+  // The runtime workspace is disposable; the original source receipt must use
+  // the same durable attribution as the canonical test-run reporter.
+  const source = JSON.parse(readFileSync(join(defaultEvidenceRoot('isolated-integration'),
+    runId, 'phases/prepare/source.json'), 'utf8'));
+  expect(source.workspaceId).toBe(resolveTestRunWorkspaceId());
+  expect(source.harnessSlug).toBe(resolveTestRunHarnessSlug());
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('ISOLATED_CLEANUP_PREFLIGHT_PROOF_RUN ' + runId);
 }, workerOptions.testTimeoutMs);

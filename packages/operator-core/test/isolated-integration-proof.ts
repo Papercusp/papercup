@@ -8,6 +8,7 @@ import { writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
+import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import { linuxPpidFromProcStat, readProcessIdentity } from '../lib/process-identity';
 import { it } from 'vitest';
 // @ts-ignore -- reuse the maintained JS router's deadline contract.
@@ -254,8 +255,8 @@ export async function recordIsolatedIntegrationProof(options: {
         });
         source = { schemaVersion: 1, runId: ctx.runId, sourceCommit: commit, repoRoot: root, filePath,
           runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
-          workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE ?? null,
-          harnessSlug: process.env.PAPERCUSP_TEST_RUN_HARNESS ?? null, files };
+          workspaceId: resolveTestRunWorkspaceId(),
+          harnessSlug: resolveTestRunHarnessSlug(), files };
         await writeFile(join(ctx.evidenceDir, 'source.json'), JSON.stringify(source), { flag: 'wx' });
       } else if (ctx.phase === 'execute') {
         await options.execute(child => {
