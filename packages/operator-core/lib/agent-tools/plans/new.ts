@@ -30,7 +30,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
 import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-context';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { productShapingScaffold, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
+import { productShapingScaffold, productShapingWriteAdvisory, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
 import {
   parseBarMappings,
   parseRequirementBars,
@@ -780,6 +780,7 @@ export default defineTool({
       })
       .catch(() => {});
 
+    const shapingAdvisory = body != null && body.trim().length > 0 ? productShapingWriteAdvisory(body) : null;
     return {
       content: [
         {
@@ -791,6 +792,10 @@ export default defineTool({
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
             ...parseSummary,
+            // R-9: a supplied body without product shaping still lands; the
+            // response carries the advisory preview + scaffold. The default
+            // template already embeds the scaffold, so it never triggers this.
+            ...(shapingAdvisory ? { productShaping: shapingAdvisory } : {}),
           }),
         },
       ],

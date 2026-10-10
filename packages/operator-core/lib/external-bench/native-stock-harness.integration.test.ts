@@ -26,6 +26,7 @@ vi.mock('../session-archive-hook', () => ({ scheduleArchiveForAdvSession: () => 
 const workspaceId = 'private-stock-native';
 let db: OrgTestDb, root: string;
 beforeAll(async () => {
+  expect(execFileSync('codex', ['--version'], { encoding: 'utf8' })).toMatch(/codex/i);
   db = await createOrgTestDb(); h.sql = db.adminSql;
   // SRT has private shared-memory mounts; native files must live on physical /tmp.
   root = mkdtempSync('/tmp/stock-native-factory-'); h.homes = join(root, 'homes'); mkdirSync(h.homes);
@@ -77,7 +78,10 @@ it('retains a real native UUID and terminal ingestion after local refusal withou
     // never become a verified successful generation or a complete free run.
     expect(result.telemetry.stopReason, JSON.stringify(result)).not.toBe('done');
     expect(result.telemetry.armMeta?.costUsdMeasurementMissing, JSON.stringify(result)).toBe(true);
-    expect(bodies.length).toBeGreaterThan(0); expect(bodies[0].model).toBe('configured-alias');
+    const tasks = await h.sql`SELECT task_id, session_id, state, exit_code FROM harness_shared.task_ledger WHERE workspace_id=${workspaceId}`;
+    const sessions = await h.sql`SELECT id, session_id, ended_at FROM harness_shared.adv_sessions WHERE workspace_id=${workspaceId}`;
+    const diagnostic = JSON.stringify({ telemetry: result.telemetry, tasks, sessions });
+    expect(bodies.length, diagnostic).toBeGreaterThan(0); expect(bodies[0].model, diagnostic).toBe('configured-alias');
     const rows = await h.sql`SELECT t.task_id, t.session_id, t.state, t.ended_at, a.id, a.ended_at AS session_ended_at
       FROM harness_shared.task_ledger t JOIN harness_shared.adv_sessions a
         ON a.workspace_id=t.workspace_id AND a.coord_owner_id=t.detail->>'coordOwnerId' AND a.session_id=t.session_id

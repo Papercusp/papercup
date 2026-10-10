@@ -740,6 +740,11 @@ continuation gate picks, not a law.
   vanish with the session, and are invisible to the fleet. Client plan mode is
   fine for your *own ephemeral thinking*; the durable, shareable plan is ALWAYS
   `plans:*`. This holds for every agent that authors plans — su, planner, scout.
+- **Shape, then specify; lead approval with the walkthrough.** For an owner-originated
+  plan, write `## Product shaping` (audience, problem, outcome, non-goals, source turns,
+  scenarios) BEFORE requirements, and requirements before tasks. Ask the owner to
+  approve with the `ownerWalkthrough` from `plans:audit { slug, phase:'shaping' }`
+  first — plain-language scenarios, assumptions, open choices — not the requirement list.
 - **Decompose deliberately; don't reflex-parallelize.** Always encode real
   `blocked-by` deps, but reach for parallel waves / fleet fan-out ONLY when
   items are genuinely independent AND touch **disjoint files** — same-file

@@ -2841,6 +2841,7 @@ type PsuInjectHostView = {
   bridgeTty?: boolean | null;
   lastInputAt?: number | null;
   quotaBlocked?: boolean | null;
+  authBlocked?: boolean | null;
   caps?: string[] | null;
   launchedBy?: string | null;
 };
@@ -2854,22 +2855,70 @@ export interface QuotaWakeRecoveryDecision {
     | 'not-headless'
     | 'not-agent-launched'
     | 'route-not-auto'
-    | 'host-capability-missing';
+    | 'host-capability-missing'
+    | 'auth-recovery-exhausted';
+  /** Which wall the recycle clears. 'auth' = the child's in-memory provider
+   * login is dead (P-004); 'quota' = the account is walled. */
+  cause: 'quota' | 'auth';
   operationId: string;
 }
 
+/** P-004 bound: auth recoveries per owner inside AUTH_RECOVERY_WINDOW_MS. A
+ * fresh child re-reads the shared auth file, so one recycle normally clears the
+ * wall. If the shared login itself is dead, every new child fails the same way;
+ * the bound stops a recycle-per-wake loop and leaves the failure visible. */
+export const AUTH_RECOVERY_MAX_PER_WINDOW = 2;
+export const AUTH_RECOVERY_WINDOW_MS = 6 * 60 * 60_000;
+
+/** Count this owner's auth recoveries the host recorded inside the window. */
+export function recentAuthRecoveryCount(
+  events: readonly PtyHostEvent[],
+  ownerId: string,
+  nowMs: number,
+  windowMs: number = AUTH_RECOVERY_WINDOW_MS,
+): number {
+  let count = 0;
+  for (const raw of events) {
+    const event = raw as Record<string, unknown>;
+    if (event.kind !== 'quota-recovery-started' || event.cause !== 'auth') continue;
+    if (event.recoveryOwnerId !== ownerId) continue;
+    const startedAtMs = event.startedAtMs;
+    if (typeof startedAtMs !== 'number' || !Number.isFinite(startedAtMs)) continue;
+    if (nowMs - startedAtMs <= windowMs) count += 1;
+  }
+  return count;
+}
+
 /** Pure, fail-closed eligibility gate for the one automatic lifecycle action in
- * this path. A recycle is useful only when gateway auto-routing can choose a
- * different credential, and safe only for a headless agent-owned host carrying
- * the new operation/dedup contract. */
+ * this path. A quota recycle is useful only when gateway auto-routing can choose
+ * a different credential. An auth recycle (P-004) is useful on any route: the
+ * fresh child re-reads the shared login the old child holds a spent copy of.
+ * Both are safe only for a headless agent-owned host carrying the
+ * operation/dedup contract. */
 export function decideQuotaWakeRecovery(input: {
   host: PsuInjectHostView;
   subscriberId: string;
   deliveryId: string;
   accountMode?: string | null;
+  /** Auth recoveries already recorded for this owner inside the window. */
+  priorAuthRecoveries?: number;
 }): QuotaWakeRecoveryDecision {
-  const base = { operationId: input.deliveryId } as const;
+  const base = { operationId: input.deliveryId, cause: 'quota' } as const;
   if (input.host.ownerId !== input.subscriberId) return { ...base, eligible: false, reason: 'wrong-owner' };
+  if (input.host.authBlocked === true) {
+    const auth = { ...base, cause: 'auth' } as const;
+    if (input.host.bridgeTty !== false) return { ...auth, eligible: false, reason: 'not-headless' };
+    if (!hostIsAgentLaunched(input.host as PsuPtyHost)) {
+      return { ...auth, eligible: false, reason: 'not-agent-launched' };
+    }
+    if (!hostSupports(input.host as PsuPtyHost, 'auth-recovery')) {
+      return { ...auth, eligible: false, reason: 'host-capability-missing' };
+    }
+    if ((input.priorAuthRecoveries ?? 0) >= AUTH_RECOVERY_MAX_PER_WINDOW) {
+      return { ...auth, eligible: false, reason: 'auth-recovery-exhausted' };
+    }
+    return { ...auth, eligible: true, reason: 'eligible' };
+  }
   if (input.host.quotaBlocked !== true) return { ...base, eligible: false, reason: 'not-quota-blocked' };
   if (input.host.bridgeTty !== false) return { ...base, eligible: false, reason: 'not-headless' };
   if (!hostIsAgentLaunched(input.host as PsuPtyHost)) {
@@ -3023,13 +3072,23 @@ async function injectPsuHostWake(
         return { kind: 'delivered', channel: 'psu-socket-inject' };
       }
     }
+    const recoveryStartedAtMs = Date.now();
+    // P-004: the auth bound reads the host's own ledger, only when it matters.
+    const priorAuthRecoveries =
+      host.authBlocked === true
+        ? recentAuthRecoveryCount(
+            (deps.readPsuHostEventTail ?? readHostEventTail)(d.subscriberId),
+            d.subscriberId,
+            recoveryStartedAtMs,
+          )
+        : 0;
     const quotaRecovery = decideQuotaWakeRecovery({
       host,
       subscriberId: d.subscriberId,
       deliveryId: String(d.id),
       accountMode: accountRoute?.mode,
+      priorAuthRecoveries,
     });
-    const recoveryStartedAtMs = Date.now();
     // EI-19311270129974785: thread this delivery's own durable id so a retry the
     // CLIENT believes is fresh (its ack-wait timed out, or the host's ack write
     // back failed) is recognized by the host as the SAME delivery it already
@@ -3051,6 +3110,7 @@ async function injectPsuHostWake(
               operationId: String(d.id),
               ownerId: d.subscriberId,
               startedAtMs: recoveryStartedAtMs,
+              cause: quotaRecovery.cause,
             },
           }
         : {}),

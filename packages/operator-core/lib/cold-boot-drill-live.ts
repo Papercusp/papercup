@@ -266,7 +266,7 @@ export interface StartColdBootDrillInput {
 export interface StartColdBootDrillDeps {
   now: () => number;
   newId: () => string;
-  findHost: (ownerId: string) => PsuPtyHost | null;
+  findHost: (ownerId: string) => Promise<PsuPtyHost | null>;
   resolveTranscript: (ownerId: string) => Promise<SelfSession | null>;
   resolveEffectiveWindow: (ownerId: string) => Promise<number>;
   buildBrief: (ownerId: string, workspaceId?: string) => Promise<CarryBrief | null>;
@@ -285,7 +285,7 @@ function startDeps(overrides: Partial<StartColdBootDrillDeps>): StartColdBootDri
   return {
     now: Date.now,
     newId: randomUUID,
-    findHost: findLiveHost,
+    findHost: findLiveHostAsync,
     resolveTranscript: defaultTranscript,
     resolveEffectiveWindow: defaultEffectiveWindow,
     buildBrief: async (ownerId, workspaceId) => {
@@ -329,7 +329,7 @@ export async function startColdBootDrill(
   const interval = Math.max(60_000, input.minIntervalMs ?? DEFAULT_COLD_BOOT_DRILL_INTERVAL_MS);
   if (!ownerId) return { ok: false, error: 'owner_required', note: 'A drill must target the calling session owner.' };
 
-  const host = deps.findHost(ownerId);
+  const host = await deps.findHost(ownerId);
   if (!host || !hostSupports(host, 'carry-respawn')) {
     return {
       ok: false,

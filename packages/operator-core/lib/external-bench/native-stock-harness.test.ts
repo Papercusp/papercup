@@ -119,6 +119,18 @@ describe('current stock native factory', () => {
     expect(await value.ports.getTask('stock-task')).toMatchObject({ detail: { nativeStreamError: 'stream failed' } });
   });
 
+  it('preserves sanitized native stderr explaining an early CLI failure', async () => {
+    h.run.mockImplementation(async function* (options) {
+      await spawn(options); terminal();
+      yield { type: 'error', message: 'codex exited 1', stderr: 'native boot refused: missing configuration' };
+    });
+    const value = factory(); await value.ports.launchNative(input());
+    expect(await value.ports.getTask('stock-task')).toMatchObject({ detail: {
+      nativeStreamError: 'codex exited 1\nnative boot refused: missing configuration',
+    } });
+    expect(h.ingest).not.toHaveBeenCalled();
+  });
+
   it('retires the owned task rather than only its launcher handle when a live link is refused', async () => {
     let stopped!: () => void; const stopping = new Promise<void>(resolve => { stopped = resolve; });
     h.kill.mockImplementation(async () => { terminal(); stopped(); return { ok: true, taskId: 'stock-task', action: 'kill' }; });

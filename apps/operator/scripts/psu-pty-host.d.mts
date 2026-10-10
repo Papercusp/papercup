@@ -2232,6 +2232,7 @@ export function decodeQuotaRecovery(o: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
 };
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
@@ -2276,6 +2277,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -2302,6 +2304,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -2328,6 +2331,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -2354,6 +2358,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -2380,6 +2385,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -2406,6 +2412,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -2432,6 +2439,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -2458,6 +2466,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -2484,6 +2493,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -2510,6 +2520,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -2536,6 +2547,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -2562,6 +2574,7 @@ export function decodeControl(payload: any): {
         operationId: any;
         ownerId: any;
         startedAtMs: any;
+        cause: string;
     };
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;

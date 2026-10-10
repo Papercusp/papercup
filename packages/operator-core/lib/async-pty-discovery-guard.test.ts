@@ -48,6 +48,16 @@ function syncDiscoveryCallsInAsyncContext(fileName: string, text: string): strin
         findings.push(relative(LIB_ROOT, fileName) + ':' + line + ' ' + callee);
       }
     }
+    if (
+      ts.isPropertyAssignment(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'findHost' &&
+      ts.isIdentifier(node.initializer) &&
+      node.initializer.text === 'findLiveHost'
+    ) {
+      const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+      findings.push(relative(LIB_ROOT, fileName) + ':' + line + ' findHost=findLiveHost');
+    }
     ts.forEachChild(node, (child) => visit(child, nestedAsync));
   };
 
@@ -77,6 +87,14 @@ describe('async PTY discovery recurrence guard', () => {
     const syncOnly = () => selfCompactionAvailability('owner');`;
     expect(syncDiscoveryCallsInAsyncContext(join(LIB_ROOT, 'fixture.ts'), fixture)).toEqual([
       'fixture.ts:3 findLiveHost',
+    ]);
+  });
+
+  it('detects the synchronous finder being injected as an async host dependency', () => {
+    const fixture = `const deps = { findHost: findLiveHost };
+    async function handler() { return await deps.findHost('owner'); }`;
+    expect(syncDiscoveryCallsInAsyncContext(join(LIB_ROOT, 'fixture.ts'), fixture)).toEqual([
+      'fixture.ts:1 findHost=findLiveHost',
     ]);
   });
 

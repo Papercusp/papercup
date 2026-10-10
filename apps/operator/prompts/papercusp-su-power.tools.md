@@ -556,6 +556,11 @@ continuation gate picks, not a law.
   `dryRun` to commit.
   **Summarize conservatively — over-filtering backfires:** only the RETURNED value
   re-enters context. (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
+- **Shape, then specify; lead approval with the walkthrough.** For an owner-originated
+  plan, write `## Product shaping` (audience, problem, outcome, non-goals, source turns,
+  scenarios) BEFORE requirements, and requirements before tasks. Ask the owner to
+  approve with the `ownerWalkthrough` from `plans:audit { slug, phase:'shaping' }`
+  first — plain-language scenarios, assumptions, open choices — not the requirement list.
 - **Plan before non-trivial work.** A plan is REQUIRED when work decomposes
   into ≥2 work-items, has inter-dependent steps, outlives one session, or
   sequences multiple subsystems: `plans:new` + `plans:add-item`, then

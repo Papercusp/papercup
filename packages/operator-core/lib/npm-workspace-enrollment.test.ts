@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
+import { expandWorkspaces } from '../../../scripts/assert-workspace-links.mjs';
 
 it('npm enrolls primary apps while excluding their duplicate checkpoint checkouts', () => {
   const patterns: string[] = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).workspaces;
@@ -23,6 +24,7 @@ it('npm enrolls primary apps while excluding their duplicate checkpoint checkout
     const accepted = query();
     expect(accepted.status, accepted.stderr).toBe(0);
     expect(JSON.parse(accepted.stdout)).toEqual({ '@fixture/primary': '@fixture/primary', '@fixture/another': '@fixture/another' });
+    expect(expandWorkspaces(patterns, root).sort()).toEqual(['apps/another-app', 'apps/primary']);
     // The same physical population must fail when checkpoint enrollment returns.
     writeRoot(['apps/*']);
     const rejected = query();

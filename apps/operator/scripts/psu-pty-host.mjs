@@ -5713,6 +5713,96 @@ export function makeQuotaBlockDetector({
   };
 }
 
+/** Codex's own copy when its IN-MEMORY ChatGPT login can no longer be refreshed
+ *  (parked-agent-census-resumption-and-root-cause-2026-10-09 P-004). Every psu
+ *  codex CODEX_HOME/auth.json is a symlink to the one shared ~/.codex/auth.json,
+ *  and refresh tokens are single-use. When another session rotates the shared
+ *  token, a long-lived child keeps the spent token in memory and fails every
+ *  turn with this copy. A fresh child re-reads the shared file and works.
+ *  Measured 2026-10-10: 46 parked codex sessions sat on this error for 2+ days.
+ *  The strings are taken verbatim from the codex-cli 0.162.1 binary (`strings`
+ *  on vendor/x86_64-unknown-linux-musl/bin/codex). Widen only against copy
+ *  read the same way. */
+// `\s*` between words: the TUI wraps long errors and the ANSI strip can join
+// wrapped words without a space. A model quoting this copy in its own prose
+// can also match; the operator bounds auth recoveries per owner, so a false
+// positive costs at most a rare identity-preserving respawn.
+const CODEX_AUTH_FAILURE_PATTERNS = [
+  /your\s*access\s*token\s*could\s*not\s*be\s*refreshed/i,
+  /please\s*log\s*out\s*and\s*sign\s*in\s*again/i,
+];
+
+/** Match codex's auth-failure copy in a screen window. Non-codex agents never
+ *  match: claude's and omp's auth flows are different products. */
+export function codexAuthFailureMatch(text, agent = '') {
+  const a = String(agent ?? '').trim().toLowerCase();
+  if (a !== 'codex') return { matched: false, pattern: null, excerpt: null };
+  const visible = String(text ?? '');
+  for (const re of CODEX_AUTH_FAILURE_PATTERNS) {
+    const m = re.exec(visible);
+    if (m) {
+      const start = Math.max(0, m.index - 80);
+      return {
+        matched: true,
+        pattern: re.source,
+        excerpt: visible.slice(start, m.index + m[0].length + 80).replace(/\s+/g, ' ').trim(),
+      };
+    }
+  }
+  return { matched: false, pattern: null, excerpt: null };
+}
+
+/** Bounded like the quota window, so new real output evicts the error and the
+ *  level clears without timers. */
+const AUTH_BLOCK_BUFFER_CHARS = 8_192;
+
+/** P-004: auth-failure detector, the quota detector's twin. Feed it the same
+ *  raw pty bytes. `isBlocked()` reports whether codex's auth-failure copy is in
+ *  the recent screen. A resumed or forked child repaints its old transcript,
+ *  including old errors, so with `deferUntilSubmit` the detector arms only at
+ *  the first standalone submit keystroke. A recycle must call `reset()`: the
+ *  fresh child has its own login state. Pure (no timers, no I/O). */
+export function makeAuthBlockDetector({
+  capBytes = AUTH_BLOCK_BUFFER_CHARS,
+  agent = '',
+  now = Date.now,
+  deferUntilSubmit = false,
+} = {}) {
+  let buffer = '';
+  let blocked = false;
+  let awaitingSubmit = deferUntilSubmit;
+  /** @type {number | null} */
+  let blockedSinceMs = null;
+  let lastMatch = { matched: false, pattern: null, excerpt: null };
+  return {
+    /** Returns 'detected' | 'cleared' on a level change, else null. */
+    observe(chunk) {
+      if (awaitingSubmit) return null;
+      buffer = `${buffer}${String(chunk ?? '')}`;
+      if (buffer.length > capBytes) buffer = buffer.slice(-capBytes);
+      const hit = codexAuthFailureMatch(buffer, agent);
+      if (hit.matched) lastMatch = hit;
+      if (hit.matched === blocked) return null;
+      blocked = hit.matched;
+      blockedSinceMs = blocked ? now() : null;
+      return blocked ? 'detected' : 'cleared';
+    },
+    observeInput(input) {
+      if (awaitingSubmit && /^[\r\n]+$/.test(String(input))) awaitingSubmit = false;
+    },
+    isBlocked: () => blocked,
+    snapshot: () => ({ authBlocked: blocked, authBlockedSinceMs: blockedSinceMs }),
+    lastMatch: () => lastMatch,
+    reset() {
+      buffer = '';
+      blocked = false;
+      awaitingSubmit = deferUntilSubmit;
+      blockedSinceMs = null;
+      lastMatch = { matched: false, pattern: null, excerpt: null };
+    },
+  };
+}
+
 /** How often the discovery file's activity fields are refreshed. Coarse on
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */
@@ -5861,7 +5951,10 @@ export function decodeQuotaRecovery(o) {
     operationId !== o?.deliveryId ||
     recoveryOwnerId !== o?.ownerId
   ) return {};
-  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs } };
+  // P-004: the same recycle recovers a dead codex login ('auth'). The cause is
+  // diagnostic only; anything unrecognised is the original quota recovery.
+  const cause = q.cause === 'auth' ? 'auth' : 'quota';
+  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs, cause } };
 }
 
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
@@ -9557,6 +9650,13 @@ export function hostThroughPty(o) {
         blockedSinceMs: dismissed.blockedSinceMs,
       }),
   });
+  // P-004: codex auth-failure twin. Same resume/fork replay deferral as quota:
+  // a resumed transcript repaints its old errors before any new request.
+  const authBlockDetector = makeAuthBlockDetector({
+    agent: env.PAPERCUSP_AGENT,
+    deferUntilSubmit: env.PAPERCUSP_AGENT === 'codex' &&
+      args.some((arg) => arg === 'resume' || arg === 'fork'),
+  });
   // The interactive Codex CLI remains under the owner's control. Classify its
   // transient capacity copy for the durable event stream without retrying or
   // substituting models behind the owner's back.
@@ -9700,7 +9800,10 @@ export function hostThroughPty(o) {
     // convert one durable, headless account:auto wake into the existing recycle
     // path and then verify pickup by delivery id. Older hosts lack the cap and
     // therefore retain the old defer-only behavior.
-    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'native-turn-start'],
+    // 'auth-recovery' (parked-agent-census P-004): this host publishes
+    // authBlocked and resets it on recycle, so the operator may recycle a
+    // headless child whose in-memory login is dead.
+    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start'],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -9732,6 +9835,7 @@ export function hostThroughPty(o) {
       // corrupt each other's staging file.
       const tmp = `${metaPath}.${process.pid}.tmp`;
       writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
+        ...authBlockDetector.snapshot(),
         ...(env.PAPERCUSP_AGENT === 'codex' ? {
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
         } : {}),
@@ -10603,6 +10707,7 @@ export function hostThroughPty(o) {
               for (let i = 0; i < chunks.length; i++) {
                 try {
                   quotaBlockDetector.observeInput(chunks[i]);
+                  authBlockDetector.observeInput(chunks[i]);
                   child.write(chunks[i]);
                   if (chunks[i].includes('\r')) activeHeadlessCodexModelChoice?.complete();
                 } catch {
@@ -11739,6 +11844,7 @@ export function hostThroughPty(o) {
     childBackendFirstFrameAt = 0;
     lastMachineTurnWriteStartedAtMs = 0;
     quotaBlockDetector.reset();
+    authBlockDetector.reset();
     ownerComposerGate.markSubmitted();
     child = makeParkedChild();
     wireChildExit();
@@ -11827,6 +11933,7 @@ export function hostThroughPty(o) {
       parked,
       busy,
       quotaBlocked: quotaBlockDetector.isBlocked(),
+      authBlocked: authBlockDetector.isBlocked(),
       composerPending: ownerComposerGate.hasPending(),
       // Only pay for the transcript-dir scan once the child is idle enough to
       // park; before that the verdict refuses on idleness anyway.
@@ -12839,7 +12946,10 @@ export function hostThroughPty(o) {
               operationId: msg.quotaRecovery.operationId,
               recoveryOwnerId: msg.quotaRecovery.ownerId,
               startedAtMs: msg.quotaRecovery.startedAtMs,
-              accountRoutingMode: "auto",
+              cause: msg.quotaRecovery.cause ?? "quota",
+              // Quota recovery is gated on gateway auto-routing; auth recovery
+              // is not (any route re-reads the shared auth file).
+              accountRoutingMode: msg.quotaRecovery.cause === "auth" ? null : "auto",
             });
             const recovery = await recycleChild(msg.data, {
               quotaRecovery: msg.quotaRecovery,
@@ -13081,7 +13191,10 @@ export function hostThroughPty(o) {
                 };
               }
             }
-            if (msg.mode !== 'osc') quotaBlockDetector.observeInput(step.data);
+            if (msg.mode !== 'osc') {
+              quotaBlockDetector.observeInput(step.data);
+              authBlockDetector.observeInput(step.data);
+            }
             sink.write(step.data);
             if ((msg.mode === 'turn' || msg.mode === 'reset') && step.data.includes('\r')) {
               activeHeadlessCodexModelChoice?.complete();
@@ -13103,6 +13216,7 @@ export function hostThroughPty(o) {
               ownerComposerGate.observe(input);
               try {
                 quotaBlockDetector.observeInput(input);
+                authBlockDetector.observeInput(input);
                 child.write(input);
               } catch {
                 /* child exit is handled by the normal host cleanup path */
@@ -13587,6 +13701,24 @@ export function hostThroughPty(o) {
             : {},
         );
       }
+      // P-004: auth-failure twin, fed ANSI-stripped text (codex styles and
+      // wraps its error lines). Publish the edge at once, like quota.
+      const authTransition = authBlockDetector.observe(stripAnsi(raw) ?? '');
+      if (authTransition) {
+        writeMeta();
+        const hit = authTransition === 'detected' ? authBlockDetector.lastMatch() : null;
+        appendHostEvent(
+          ownerId,
+          authTransition === 'detected' ? 'auth-block-detected' : 'auth-block-cleared',
+          hit
+            ? {
+                agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+                matchedPattern: hit.pattern,
+                matchedExcerpt: hit.excerpt,
+              }
+            : {},
+        );
+      }
       const modelCapacity = modelCapacityDetector?.observe(stripAnsi(raw) ?? '') ?? null;
       if (modelCapacity) {
         appendHostEvent(ownerId, 'model-capacity-detected', {
@@ -13683,6 +13815,7 @@ export function hostThroughPty(o) {
     if (input.includes('\r') || input.includes('\n')) activeManagedCodexStartupUpdateDialog?.complete();
     try {
       quotaBlockDetector.observeInput(input);
+      authBlockDetector.observeInput(input);
       child.write(input);
     } catch {
       /* ignore */
@@ -14017,6 +14150,7 @@ export function hostThroughPty(o) {
               operationId: quotaRecovery.operationId,
               recoveryOwnerId: quotaRecovery.ownerId,
               startedAtMs: quotaRecovery.startedAtMs,
+              cause: quotaRecovery.cause ?? 'quota',
               reason,
               ...extra,
             },
@@ -14473,6 +14607,8 @@ export function hostThroughPty(o) {
         // WI-1386682 (1): a fresh child has no screen history and cannot
         // inherit the old child's wall.
         quotaBlockDetector.reset();
+        // P-004: nor the old child's dead login.
+        authBlockDetector.reset();
         // Composer state belongs to the child that was just killed. Carrying a
         // staged-line bit across this hard process boundary can make every wake
         // to the healthy successor defer forever, even though that successor's

@@ -247,3 +247,23 @@ export function previewProductShaping(planContent: string) {
 }
 
 const PREVIEW_BUDGET = 6000;
+
+/**
+ * Compact advisory for a plan CONTENT WRITE (plans:new with a body,
+ * plans:set-content): when the body has no usable Product shaping section the
+ * write still succeeds, and its response carries this preview with the scaffold
+ * so a hand-written plan meets shaping at the moment it is authored. Returns
+ * null once a section parses (gaps in it are plans:audit phase:shaping's job,
+ * not noise on every edit).
+ */
+export function productShapingWriteAdvisory(content: string) {
+  const preview = previewProductShaping(content);
+  if (preview.status !== 'missing' && preview.status !== 'invalid') return null;
+  return {
+    advisory: true as const,
+    status: preview.status,
+    diagnostics: preview.diagnostics.slice(0, 3),
+    scaffold: preview.scaffold,
+    next: 'Write accepted. Shape before requirements: add the scaffold section, then plans:audit { slug, phase:"shaping" } for gaps and the ownerWalkthrough that leads the owner\'s approval ask.',
+  };
+}

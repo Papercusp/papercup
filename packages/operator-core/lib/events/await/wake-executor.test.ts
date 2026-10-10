@@ -21,6 +21,9 @@ import {
   applyInjectionDoor,
   defaultSpawnDetached,
   decideQuotaWakeRecovery,
+  recentAuthRecoveryCount,
+  AUTH_RECOVERY_MAX_PER_WINDOW,
+  AUTH_RECOVERY_WINDOW_MS,
   quotaRecoveryPickupConfirmed,
   quotaRecoveryReceiptForDelivery,
   withClaudeResumeEffortClamp,
@@ -60,6 +63,59 @@ beforeAll(() => {
   process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = CODEX_HOMES_DIR;
 });
 
+describe('bounded codex auth recovery (parked-agent-census P-004)', () => {
+  const host: Parameters<typeof decideQuotaWakeRecovery>[0]['host'] = {
+    sock: '/tmp/auth.sock',
+    ownerId: 'su-auth',
+    bridgeTty: false,
+    authBlocked: true,
+    launchedBy: 'su-leader',
+    caps: ['quota-recovery', 'auth-recovery'],
+  };
+  const decide = (h: typeof host, extra: { accountMode?: string; priorAuthRecoveries?: number } = {}) =>
+    decideQuotaWakeRecovery({ host: h, subscriberId: 'su-auth', deliveryId: '77', ...extra });
+
+  it('recycles a dead codex login on ANY account route, tagged cause auth', () => {
+    for (const accountMode of ['auto', 'pin', 'default', undefined]) {
+      expect(decide(host, { accountMode })).toEqual({
+        eligible: true, reason: 'eligible', cause: 'auth', operationId: '77',
+      });
+    }
+  });
+
+  it('fails closed on every other gate, and auth outranks a stale quota reading', () => {
+    expect(decide({ ...host, bridgeTty: true })).toMatchObject({ eligible: false, reason: 'not-headless', cause: 'auth' });
+    expect(decide({ ...host, launchedBy: null })).toMatchObject({ eligible: false, reason: 'not-agent-launched' });
+    // An old host advertises quota-recovery only: it would not reset authBlocked.
+    expect(decide({ ...host, caps: ['quota-recovery'] })).toMatchObject({ eligible: false, reason: 'host-capability-missing' });
+    expect(decide({ ...host, ownerId: 'su-other' })).toMatchObject({ eligible: false, reason: 'wrong-owner' });
+    expect(decide({ ...host, quotaBlocked: true }, { accountMode: 'pin' })).toMatchObject({ eligible: true, cause: 'auth' });
+    expect(decide({ ...host, authBlocked: false }, { accountMode: 'pin' })).toMatchObject({ eligible: false, reason: 'not-quota-blocked' });
+  });
+
+  it('stops recycling once the per-owner bound is reached', () => {
+    expect(decide(host, { priorAuthRecoveries: AUTH_RECOVERY_MAX_PER_WINDOW - 1 })).toMatchObject({ eligible: true });
+    expect(decide(host, { priorAuthRecoveries: AUTH_RECOVERY_MAX_PER_WINDOW })).toMatchObject({
+      eligible: false, reason: 'auth-recovery-exhausted', cause: 'auth',
+    });
+  });
+
+  it('counts only this owner\'s auth recoveries inside the window', () => {
+    const now = 10 * AUTH_RECOVERY_WINDOW_MS;
+    const events = [
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', cause: 'auth', startedAtMs: now - 1000 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', cause: 'auth', startedAtMs: now - AUTH_RECOVERY_WINDOW_MS + 1 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', cause: 'auth', startedAtMs: now - AUTH_RECOVERY_WINDOW_MS - 1 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', cause: 'quota', startedAtMs: now - 1000 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-auth', startedAtMs: now - 1000 },
+      { kind: 'quota-recovery-started', recoveryOwnerId: 'su-other', cause: 'auth', startedAtMs: now - 1000 },
+      { kind: 'quota-recovery-ready', recoveryOwnerId: 'su-auth', cause: 'auth', startedAtMs: now - 1000 },
+    ] as unknown as Parameters<typeof recentAuthRecoveryCount>[0];
+    expect(recentAuthRecoveryCount(events, 'su-auth', now)).toBe(2);
+    expect(recentAuthRecoveryCount([], 'su-auth', now)).toBe(0);
+  });
+});
+
 describe('bounded quota recovery contract (measured-agent-productivity P-004)', () => {
   const host: Parameters<typeof decideQuotaWakeRecovery>[0]['host'] = {
     sock: '/tmp/quota.sock',
@@ -76,7 +132,7 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
       subscriberId: 'su-quota',
       deliveryId: '901',
       accountMode: 'auto',
-    })).toEqual({ eligible: true, reason: 'eligible', operationId: '901' });
+    })).toEqual({ eligible: true, reason: 'eligible', cause: 'quota', operationId: '901' });
 
     const mutations: Array<[typeof host, ReturnType<typeof decideQuotaWakeRecovery>['reason']]> = [
       [{ ...host, ownerId: 'su-other' }, 'wrong-owner'],

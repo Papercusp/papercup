@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-links.mjs';
 // Find workspaces affected by a git diff and run their vitest suites.
 //
 // Usage:
@@ -4737,26 +4738,7 @@ const workspaces = [
 const standaloneDirs = new Set(STANDALONE_PACKAGE_DIRS);
 
 function expandWorkspaces(patterns) {
-  const out = [];
-  for (const p of patterns) {
-    if (p.includes("*")) {
-      const base = p.replace(/\/\*$/, "");
-      const baseDir = join(ROOT, base);
-      if (!existsSync(baseDir)) continue;
-      for (const entry of execSync(`ls -1 ${JSON.stringify(baseDir)}`, {
-        encoding: "utf8",
-      })
-        .trim()
-        .split("\n")
-        .filter(Boolean)) {
-        const dir = join(base, entry);
-        if (existsSync(join(ROOT, dir, "package.json"))) out.push(dir);
-      }
-    } else if (existsSync(join(ROOT, p, "package.json"))) {
-      out.push(p);
-    }
-  }
-  return out;
+  return expandRootWorkspaces(patterns, ROOT);
 }
 
 const wsByName = new Map();

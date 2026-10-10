@@ -49,7 +49,7 @@ function startHarness(seed: ColdBootDrillLedgerEvent[] = []) {
     deps: {
       now: () => NOW,
       newId: () => 'drill-1',
-      findHost: () => HOST,
+      findHost: async () => HOST,
       resolveTranscript: async () => ({
         sourceKind: 'claude' as const,
         sessionId: 'current-native-id',
@@ -130,12 +130,25 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
     expect(h.injected[0].msg.ownerId).toBe('su-1');
   });
 
+  it('waits for asynchronous host discovery before deciding whether the host is live', async () => {
+    const h = startHarness();
+    let resolveHost!: (host: typeof HOST) => void;
+    const pendingHost = new Promise<typeof HOST>((resolve) => { resolveHost = resolve; });
+    const result = startColdBootDrill(
+      { ownerId: 'su-1', ownerLabel: 'su · 1' },
+      { ...h.deps, findHost: () => pendingHost },
+    );
+
+    resolveHost(HOST);
+    await expect(result).resolves.toMatchObject({ ok: true, queued: true });
+  });
+
   it('P-021: an OMITTED sessionClass defaults from the CANONICAL classifier (sessionClassForHost) — the drill ledger and live actuation share one vocabulary', async () => {
     // Headless host → 'claude-headless'.
     const h = startHarness();
     const headless = await startColdBootDrill(
       { ownerId: 'su-1', ownerLabel: 'su · 1' },
-      { ...h.deps, findHost: () => ({ ...HOST, bridgeTty: false }) },
+      { ...h.deps, findHost: async () => ({ ...HOST, bridgeTty: false }) },
     );
     expect(headless).toMatchObject({ ok: true, sessionClass: 'claude-headless' });
     expect(h.ledger[0]).toMatchObject({ kind: 'carry-drill-requested', sessionClass: 'claude-headless' });
@@ -149,7 +162,7 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
     const h3 = startHarness();
     const explicit = await startColdBootDrill(
       { ownerId: 'su-1', ownerLabel: 'su · 1', sessionClass: 'gateway-claude-headless' },
-      { ...h3.deps, findHost: () => ({ ...HOST, bridgeTty: false }) },
+      { ...h3.deps, findHost: async () => ({ ...HOST, bridgeTty: false }) },
     );
     expect(explicit).toMatchObject({ ok: true, sessionClass: 'gateway-claude-headless' });
   });
@@ -160,7 +173,7 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
       { ownerId: 'su-1', ownerLabel: 'su · 1' },
       {
         ...h.deps,
-        findHost: () => ({ ...HOST, command: 'codex' }),
+        findHost: async () => ({ ...HOST, command: 'codex' }),
         resolveTranscript: async () => ({
           sourceKind: 'codex',
           sessionId: 'codex-native-id',
@@ -587,7 +600,7 @@ describe('verifyColdBootDrill — post-start lifecycle self-check (EI-12655 fix 
     const dir = mkdtempSync('/tmp/pc-drill-');
     const sock = `${dir}/recorded.sock`;
     const server = createServer();
-    const find = vi.spyOn(discovery, 'findLiveHost').mockReturnValue({ ...HOST, pid: process.pid, sock });
+    const find = vi.spyOn(discovery, 'findLiveHostAsync').mockResolvedValue({ ...HOST, pid: process.pid, sock });
     try {
       await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(sock, resolve); });
       const result = await verifyColdBootDrill('su-1', { drillId: 'd-1' }, {

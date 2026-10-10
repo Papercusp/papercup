@@ -7449,3 +7449,55 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
     expect(unjoined([{ kind: 'wake-rearm-queued', deliveryId: 'lost' }])).toEqual(['lost']);
   });
 });
+
+describe('codex auth-failure detector (parked-agent-census P-004)', () => {
+  // Verbatim codex-cli 0.162.1 copy, wrapped and styled the way the TUI paints it.
+  const REAL = 'Your access token could not be refreshed. Please log out and sign in again.';
+
+  it('matches the real codex copy, including a wrapped, word-joined repaint', () => {
+    expect(realHost.codexAuthFailureMatch(`■ ${REAL}`, 'codex').matched).toBe(true);
+    expect(realHost.codexAuthFailureMatch('Your access token could not be\nrefreshed.', 'codex').matched).toBe(true);
+    expect(realHost.codexAuthFailureMatch('Please log out and sign inagain.', 'codex').matched).toBe(true);
+  });
+
+  it('never matches other agents or ordinary codex output', () => {
+    expect(realHost.codexAuthFailureMatch(REAL, 'claude').matched).toBe(false);
+    expect(realHost.codexAuthFailureMatch(REAL, '').matched).toBe(false);
+    expect(realHost.codexAuthFailureMatch('Refreshed the access list; sign in page renders.', 'codex').matched).toBe(false);
+  });
+
+  it('latches on the error, clears once new output evicts it, and resets on recycle', () => {
+    let t = 1000;
+    const d = realHost.makeAuthBlockDetector({ agent: 'codex', capBytes: 200, now: () => t });
+    expect(d.observe('working...')).toBeNull();
+    expect(d.observe(REAL)).toBe('detected');
+    expect(d.snapshot()).toEqual({ authBlocked: true, authBlockedSinceMs: 1000 });
+    expect(d.lastMatch().matched).toBe(true);
+    expect(d.observe('x'.repeat(250))).toBe('cleared');
+    expect(d.isBlocked()).toBe(false);
+    t = 2000;
+    expect(d.observe(REAL)).toBe('detected');
+    d.reset();
+    expect(d.snapshot()).toEqual({ authBlocked: false, authBlockedSinceMs: null });
+  });
+
+  it('ignores a resumed transcript replaying an old error until the first real submit', () => {
+    const d = realHost.makeAuthBlockDetector({ agent: 'codex', deferUntilSubmit: true });
+    expect(d.observe(REAL)).toBeNull();
+    d.observeInput('pasted text');
+    expect(d.observe(REAL)).toBeNull();
+    d.observeInput('\r');
+    expect(d.observe(REAL)).toBe('detected');
+  });
+
+  it('carries an auth cause through the recovery descriptor; unknown causes stay quota', () => {
+    const base = { deliveryId: '77', ownerId: 'su-a' };
+    const q = { operationId: '77', ownerId: 'su-a', startedAtMs: 5 };
+    expect(realHost.decodeQuotaRecovery({ ...base, quotaRecovery: { ...q, cause: 'auth' } }))
+      .toEqual({ quotaRecovery: { ...q, cause: 'auth' } });
+    expect(realHost.decodeQuotaRecovery({ ...base, quotaRecovery: { ...q, cause: 'bogus' } }))
+      .toEqual({ quotaRecovery: { ...q, cause: 'quota' } });
+    expect(realHost.decodeQuotaRecovery({ ...base, quotaRecovery: q }))
+      .toEqual({ quotaRecovery: { ...q, cause: 'quota' } });
+  });
+});

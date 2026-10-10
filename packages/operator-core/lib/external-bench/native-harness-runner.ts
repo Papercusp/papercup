@@ -42,6 +42,7 @@ import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { DbScope } from './reproducibility/db';
 import type { BenchHarnessOps } from './bench-harness-live';
 import { managedSpawn } from '../task-manager/managed-spawn';
+import { redactSensitiveText } from '../sensitive-text';
 import type { ChatEvent, RunAgentChatOptions } from '../agent-chat-stream';
 import {
   BASELINE_B_ARM,
@@ -157,7 +158,8 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
               return child!;
             },
           });
-          for await (const event of stream) if (event.type === 'error') error = event.message;
+          for await (const event of stream) if (event.type === 'error')
+            error = redactSensitiveText(`${event.message}${event.stderr?.trim() ? `\n${event.stderr.trim()}` : ''}`);
           await linked;
           if (!taskId) throw new Error(error ?? 'Stock native process never started.');
           if (error) throw new Error(error);

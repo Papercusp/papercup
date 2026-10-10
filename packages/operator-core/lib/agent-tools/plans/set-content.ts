@@ -55,6 +55,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
 import { parseRequirementBars } from '../../acceptance-bar-seed';
+import { productShapingWriteAdvisory } from './product-shaping';
 
 /**
  * `dev:pg_query` exposes PostgreSQL bigint values as decimal strings, while
@@ -745,6 +746,7 @@ export default defineTool({
       v.itemTextChanges,
       result.scope.harnessSlug,
     );
+    const shapingAdvisory = productShapingWriteAdvisory(args.content);
 
     return {
       content: [
@@ -772,6 +774,8 @@ export default defineTool({
             // removed. A whole-document write is the easiest way to reword an
             // item without noticing anyone is executing it.
             ...(planItemDrift ? { planItemDrift } : {}),
+            // R-9: advisory only — the write above already landed.
+            ...(shapingAdvisory ? { productShaping: shapingAdvisory } : {}),
           }),
         },
       ],
