@@ -245,15 +245,18 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
   if (!loop.enabled || loop.budgetKind !== 'lifetime' || loop.budgetUsd !== protocol.aggregateBudgetUsd ||
       canonicalJson(loop.meta) !== canonicalJson(meta)) throw new Error('Current benchmark governor registration differs from the frozen policy.');
   await sql.begin(async tx => {
+    // Store helpers only use the tagged-query surface. Keep this transaction
+    // confined to this callback despite DbScope's existing pool-client type.
+    const transactionScope = { ...scope, sql: tx as unknown as typeof sql };
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`benchmark-launch:${ws}`}, 0))`;
-    await assertNoActiveRun({ ...scope, sql: tx as typeof sql });
+    await assertNoActiveRun(transactionScope);
     if ((await tx`SELECT id FROM harness_shared.bench_runs WHERE workspace_id = ${ws} AND id = ${runId}`).length) {
       throw new Error('Current benchmark arm/seed already has a durable attempt; use a new frozen protocol.');
     }
     await upsertBenchRun({ id: runId, arm: arm.id, taskSetId: 'custom', suite: input.suite ?? 'swe-bench-pro', model: arm.model,
       source: 'ui', status: 'running', taskCount: backlog.length,
-      config: { current: { ...current, protocolRunId: protocol.runId }, protocol, resources, loopId } }, { ...scope, sql: tx as typeof sql });
-    for (const task of backlog) await upsertBenchRunTask(runId, { instanceId: task.instanceId, taskStatus: 'todo' }, { ...scope, sql: tx as typeof sql });
+      config: { current: { ...current, protocolRunId: protocol.runId }, protocol, resources, loopId } }, transactionScope);
+    for (const task of backlog) await upsertBenchRunTask(runId, { instanceId: task.instanceId, taskStatus: 'todo' }, transactionScope);
   });
   const abort = new AbortController();
   const active: ActiveRun = { runId, workspaceId: ws, arm: arm.id, taskSetId: 'custom', taskIds: protocol.taskIds,

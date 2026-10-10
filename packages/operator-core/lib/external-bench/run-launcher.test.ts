@@ -27,7 +27,8 @@ import { currentBenchLaunchSelection, launchBenchRun, cancelBenchRun, _resetActi
 
 const workspaceId = 'bench-host-launch-private';
 const context = { workspaceId, principal: { slug: 'verified-caller', workspaceId,
-  capabilities: new Set(['capability:terminal']) }, log: () => {} } as PapercuspUnifiedToolContext;
+  capabilities: new Set(['capability:terminal']) }, log: () => {}, signal: new AbortController().signal,
+  progress: () => {}, emit: () => {} } satisfies PapercuspUnifiedToolContext;
 let config: ReturnType<typeof currentProtocolFixture>;
 let input: LaunchBenchRunInput;
 let sql: ReturnType<typeof vi.fn> & { begin: ReturnType<typeof vi.fn> };

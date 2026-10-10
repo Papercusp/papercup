@@ -63,6 +63,9 @@ const launch = defineTool({
         principal: ctx.principal ? { ...ctx.principal, capabilities: new Set(ctx.principal.capabilities) } : null,
         workspaceId: body.current.workspaceId,
         log: message => ctx.log('info', message),
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
       } } : {});
       return Response.json({ ok: true, runId });
     } catch (e) {
