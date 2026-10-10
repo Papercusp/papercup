@@ -57,8 +57,9 @@ export const currentBenchmarkProtocolSchema = z.object({
   priceSchedule: z.object({ version: pin, rates: z.array(z.object({
     model: pin, inputUsdPerMillion: z.number().finite().nonnegative(),
     cachedInputUsdPerMillion: z.number().finite().nonnegative(), outputUsdPerMillion: z.number().finite().nonnegative(),
-    // Native admission reserves the complete provider input ceiling. A local
-    // token estimate or a requested client context window is not this proof.
+    // Native admission reserves a source-bound COMPLETE input ceiling. This is
+    // either the provider maximum or a cap checked against the provider's exact
+    // complete-request count; a local estimate/client window is not proof.
     inputTokenCeiling: z.number().int().positive().optional(),
     inputTokenCeilingSourceSha256: digest.optional(),
     // Freeze the most expensive supported cache-write tier before Claude sends.
