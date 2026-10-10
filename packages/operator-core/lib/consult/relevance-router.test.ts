@@ -151,9 +151,14 @@ describe('routing stage receipts', () => {
           const label = `${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
           callers.push(label);
           const telemetry = property(node.arguments[0], 'telemetry');
+          const recorder = property(node.arguments[1], 'recordTelemetry');
+          // An inert value cannot satisfy the production receipt requirement.
+          const recorderConfigured = recorder && ts.isPropertyAssignment(recorder)
+            && (ts.isArrowFunction(recorder.initializer) || ts.isFunctionExpression(recorder.initializer)
+              || (ts.isIdentifier(recorder.initializer) && recorder.initializer.text !== 'undefined'));
           if (!telemetry || !ts.isPropertyAssignment(telemetry)
             || !['caller', 'policy', 'buildSha'].every(key => property(telemetry.initializer, key))
-            || !property(node.arguments[1], 'recordTelemetry')) gaps.push(label);
+            || !recorderConfigured) gaps.push(label);
         }
         ts.forEachChild(node, inspect);
       };
