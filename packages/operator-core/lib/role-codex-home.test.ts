@@ -566,6 +566,39 @@ describe('writeSuCodexHome', () => {
     expect(existsSync(join(out.codexHome, 'auth.json'))).toBe(false);
   });
 
+  it('recovers a missing frozen home without ambient inheritance and preserves policy on a second repair', async () => {
+    const user = join(fakeHome, '.codex');
+    mkdirSync(join(user, 'prompts'), { recursive: true });
+    writeFileSync(join(user, 'prompts', 'ambient.md'), 'AMBIENT PROMPT');
+    writeFileSync(join(user, 'auth.json'), '{"user":"AMBIENT AUTH"}');
+    writeFileSync(join(fakeHome, '.claude.json'), JSON.stringify({ projects: {
+      '/frozen-assignment': { mcpServers: { ambient: { type: 'http', url: 'http://example.invalid' } } },
+    } }));
+    const { ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'missing-frozen-home', sid: 'su-missing-frozen-home',
+      mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'FROZEN ROLE',
+      projectDir: '/frozen-assignment', trustDir: null, recoverMissingHome: true };
+    const out = ensureSuCodexHomeConfig({ ...input, denyAmbientContext: true });
+    expect(out).toMatchObject({ repaired: true, promptRepaired: true });
+    expect(existsSync(join(out.codexHome, 'auth.json'))).toBe(false);
+    expect(existsSync(join(out.codexHome, 'prompts', 'ambient.md'))).toBe(false);
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(readFileSync(join(out.codexHome, 'AGENTS.md'), 'utf8')).toContain('FROZEN ROLE');
+    rmSync(out.configPath);
+    ensureSuCodexHomeConfig(input);
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(JSON.parse(readFileSync(join(out.codexHome, 'papercusp-diagnostics.json'), 'utf8')))
+      .toMatchObject({ denyAmbientContext: true });
+    // A stale config can still include an ambient server even when the
+    // expected frozen project-MCP block is empty. An empty substring check
+    // must not leave that server readable on a later repair.
+    writeFileSync(out.configPath, readFileSync(out.configPath, 'utf8') +
+      '\n[mcp_servers.ambient]\nurl = "http://example.invalid"\n');
+    expect(ensureSuCodexHomeConfig(input).repaired).toBe(true);
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('example.invalid');
+    expect(ensureSuCodexHomeConfig(input).repaired).toBe(false);
+  });
+
   it('sends the live native Codex session and repairs older configs without it', async () => {
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
     const opts = {

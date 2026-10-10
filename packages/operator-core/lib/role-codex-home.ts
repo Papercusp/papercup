@@ -1547,11 +1547,19 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   }
   // The recorded home can be repaired without the original launch options.
   // Reuse its existing diagnostics rather than granting ambient inheritance.
+  const diagnosticsPath = join(codexHome, 'papercusp-diagnostics.json');
+  let diagnostics: Record<string, unknown> = {};
   try {
-    if (JSON.parse(readFileSync(join(codexHome, 'papercusp-diagnostics.json'), 'utf8')).denyAmbientContext === true) {
+    const parsed = JSON.parse(readFileSync(diagnosticsPath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) diagnostics = parsed;
+    if (diagnostics.denyAmbientContext === true) {
       opts = { ...opts, denyAmbientContext: true };
     }
   } catch { /* Legacy/unconfined homes have no saved context policy. */ }
+  const contextPolicyRepaired = opts.denyAmbientContext === true && diagnostics.denyAmbientContext !== true;
+  if (contextPolicyRepaired) {
+    writeFileSync(diagnosticsPath, `${JSON.stringify({ ...diagnostics, denyAmbientContext: true }, null, 2)}\n`, { mode: 0o600 });
+  }
   mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
@@ -1601,7 +1609,8 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       current.includes(expectedLogDir) &&
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
       gatewayReady &&
-      headlessPolicyReady;
+      headlessPolicyReady &&
+      (!opts.denyAmbientContext || current === suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }));
   } catch {
     /* absent or unreadable — that is precisely the repair case */
   }
@@ -1642,7 +1651,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
     codexHome,
     sqliteHome,
     configPath,
-    repaired: !configReady || identity.repaired || promptRepaired,
+    repaired: !configReady || identity.repaired || promptRepaired || contextPolicyRepaired,
     identityRepaired: identity.repaired,
     promptRepaired,
   };
