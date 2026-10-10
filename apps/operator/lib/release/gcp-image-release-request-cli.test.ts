@@ -506,6 +506,16 @@ describe("parseGcpImageReleaseRequestCliArgs", () => {
 });
 
 describe("buildImageArtifact", () => {
+  it("rejects secret-shaped readiness fields even for a pre-build artifact", async () => {
+    const { args } = await fixture(
+      inputDocument({ readiness: { accessToken: "fixture-only" } }),
+      publicationManifest(),
+    );
+    await expect(buildImageArtifact(args, MEASURED)).rejects.toThrow(
+      /authorization|secret|accessToken/i,
+    );
+  });
+
   it("constructs the image artifact before release readiness exists", async () => {
     const input = inputDocument();
     delete input.readiness;

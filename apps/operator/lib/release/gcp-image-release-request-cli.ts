@@ -69,6 +69,7 @@ import {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_PACKER_BUILDER_KIND,
+  assertWorkspaceHostSecretIsolation,
   buildWorkspaceHostBuildManifest,
   type WorkspaceHostBuildManifestInput,
   type WorkspaceHostBuildMaterial,
@@ -85,7 +86,6 @@ import { GoogleComputeGcpImageFamilyComputeApi } from "@papercusp/operator-core/
 import {
   buildGcpImageFamilyExactPathReadinessConfig,
   isSupportedGcpImageFamilyCredentialRef,
-  type GcpImageFamilyExactPathReadinessConfig,
 } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family-production";
 
 /** Immutable GCP image reference. Family aliases are deliberately not accepted anywhere here. */
@@ -423,7 +423,6 @@ export interface ImageArtifactBuild {
   publishedAt: string;
   cleanRoom: { zone: string; serviceAccountEmail: string; subnetwork: string };
   compatibilityRequest: Record<string, unknown>;
-  readiness: GcpImageFamilyExactPathReadinessConfig;
 }
 
 /**
@@ -439,6 +438,11 @@ export async function buildImageArtifact(
   deps: GcpImageReleaseRequestDeps = {},
 ): Promise<ImageArtifactBuild> {
   const input = await readJson(resolve(args.inputFile), "input file");
+  // Readiness is optional for pre-build outputs, but ignoring it must never conceal a caller
+  // attempting to place authorization material in the public producer input.
+  if (input.readiness !== undefined) {
+    assertWorkspaceHostSecretIsolation(input.readiness, "gcpImageFamily.exactPathReadiness.input");
+  }
 
   const publicationManifestPath = resolve(
     requiredString(input.publicationManifest, "publicationManifest"),
@@ -651,16 +655,6 @@ export async function buildImageArtifact(
   };
 
   const cleanRoomInput = requiredRecord(input.cleanRoom, "cleanRoom");
-  const readiness = buildGcpImageFamilyExactPathReadinessConfig(
-    input.readiness,
-    {
-      // Captured by the producer rather than accepted from JSON: the consumer later compares these
-      // exact values to its live user/cwd immediately before the billable release seam.
-      username: userInfo().username,
-      cwd: await realpath(args.repoRoot),
-      source: buildManifest.source,
-    },
-  );
   return {
     artifact,
     trustReport,
@@ -682,7 +676,6 @@ export async function buildImageArtifact(
       input.compatibilityRequest,
       "compatibilityRequest",
     ),
-    readiness,
   };
 }
 
@@ -697,6 +690,18 @@ export async function composeRequest(
   deps: GcpImageReleaseRequestDeps = {},
 ): Promise<Record<string, unknown>> {
   const built = await buildImageArtifact(args, deps);
+  // Pre-build artifact/input emission does not authorize a release and needs no Git/agent
+  // delivery assertion. Capture readiness only for the release request; its consumer still
+  // verifies the exact identity, source and credential generations before invoking Packer.
+  const input = await readJson(resolve(args.inputFile), "input file");
+  const readiness = buildGcpImageFamilyExactPathReadinessConfig(
+    input.readiness,
+    {
+      username: userInfo().username,
+      cwd: await realpath(args.repoRoot),
+      source: built.artifact.buildManifest.source,
+    },
+  );
   const reportDocument = await readJson(
     resolve(args.cleanRoomReportFile!),
     "clean-room report",
@@ -748,21 +753,22 @@ export async function composeRequest(
       scope: { kind: "project", id: built.projectId },
       provider: { projectId: built.projectId },
     },
-    readiness: built.readiness,
+    readiness,
   };
 }
 
 export async function main(
   argv: readonly string[] = process.argv.slice(2),
+  deps: GcpImageReleaseRequestDeps = {},
 ): Promise<void> {
   const args = parseGcpImageReleaseRequestCliArgs(argv);
   if (args.emit === "request") {
     process.stdout.write(
-      `${JSON.stringify(await composeRequest(args), null, 2)}\n`,
+      `${JSON.stringify(await composeRequest(args, deps), null, 2)}\n`,
     );
     return;
   }
-  const built = await buildImageArtifact(args);
+  const built = await buildImageArtifact(args, deps);
   if (args.emit === "artifact") {
     process.stdout.write(
       `${JSON.stringify({ artifact: built.artifact }, null, 2)}\n`,
