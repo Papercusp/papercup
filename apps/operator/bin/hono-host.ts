@@ -99,7 +99,10 @@ import {
   type OwnerRpcClusterLike,
 } from '@papercusp/operator-core/lib/cluster-owner-rpc';
 import nodeCluster from 'node:cluster';
-import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
+import {
+  assertPgReadAllStatsCapabilityAtBoot,
+  startSinglePrimaryGuard,
+} from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
 import {
   ensureInvalidationListener,
@@ -869,7 +872,18 @@ const clusterHandle = sidecarMode ? null : startCluster({
     // LISTEN here too, or exactly the process holding the scout's keying latch
     // misses runtime flips. Idempotent with the worker-path call in single mode.
     void ensureFlagChangeListener();
-    return runBootstrap(); // background machinery (single process in cluster mode)
+    runBootstrap(); // background machinery (single process in cluster mode)
+    // EI-19447868110362941: all pg_stat_activity readers use the same org-admin role.
+    // Check its visibility capability once on this host's primary, after boot migrations,
+    // rather than repeating a pg_has_role probe in each reader or request worker.
+    void waitForBootMigrationGate()
+      .then(() => assertPgReadAllStatsCapabilityAtBoot())
+      .catch((error) => {
+        console.error(
+          '[system-health] pg_read_all_stats boot assertion was not completed because host boot or migrations failed:',
+          error instanceof Error ? error.message : error,
+        );
+      });
   },
   onWorker: () => {
     // A worker is request-only: runBootstrap with background gated off (fork env),

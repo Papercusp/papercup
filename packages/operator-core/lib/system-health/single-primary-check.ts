@@ -134,6 +134,7 @@ import {
 } from '../release-cut-launch';
 import {
   openEscalation,
+  listOpenEscalationsBySubjectSignature,
   resolveEscalation,
   type EscalationSeverity,
 } from '../agent-tools/coordination/escalations';
@@ -608,6 +609,122 @@ export async function countBackgroundPrimaries(sql: SqlLike): Promise<number | n
   }
   if (row.can_read_all_stats === false) return null;
   return row.n ?? null;
+}
+
+/** Stable dedup key for the one boot-time assertion shared by pg_stat_activity readers. */
+export const PG_READ_ALL_STATS_CAPABILITY_SUBJECT = 'system-health:pg-read-all-stats-capability';
+
+export interface PgReadAllStatsBootAssertionDeps {
+  /** Test seam; production uses the org-admin pool. */
+  sql?: SqlLike;
+  /** Test seams for the durable blocker and its owner notification. */
+  openEscalation?: (input: Parameters<typeof openEscalation>[1]) => ReturnType<typeof openEscalation>;
+  listOpenEscalations?: typeof listOpenEscalationsBySubjectSignature;
+  resolveEscalation?: (msgId: string, note: string) => Promise<unknown>;
+  notifyAttention?: typeof notifyAttention;
+}
+
+/**
+ * Assert the shared stats-reader capability once from the host's primary boot path.
+ * PostgreSQL masks restricted pg_stat_activity columns instead of raising an error, so
+ * per-reader checks cannot protect the readers that otherwise return a confident zero.
+ */
+export async function assertPgReadAllStatsCapabilityAtBoot(
+  deps: PgReadAllStatsBootAssertionDeps = {},
+): Promise<'available' | 'missing' | 'unavailable'> {
+  const sql = deps.sql ?? (getOrgPg().sql as SqlLike);
+  let rows: Array<{ role_name: string; can_read_all_stats: boolean }>;
+  try {
+    rows = await sql<Array<{ role_name: string; can_read_all_stats: boolean }>>`
+      SELECT current_user AS role_name,
+             (pg_has_role(current_user, 'pg_read_all_stats', 'member')
+              OR COALESCE((SELECT r.rolsuper FROM pg_roles r WHERE r.rolname = current_user), false))
+               AS can_read_all_stats`;
+  } catch (error) {
+    console.error(
+      '[system-health] pg_read_all_stats boot assertion could not run; capability remains unverified.',
+      error,
+    );
+    return 'unavailable';
+  }
+
+  const row = rows[0];
+  if (!row || typeof row.can_read_all_stats !== 'boolean') {
+    console.error(
+      '[system-health] pg_read_all_stats boot assertion returned no usable row; capability remains unverified.',
+      { rowCount: rows.length },
+    );
+    return 'unavailable';
+  }
+
+  const listOpen = deps.listOpenEscalations ?? listOpenEscalationsBySubjectSignature;
+  const resolve =
+    deps.resolveEscalation ??
+    ((msgId: string, note: string) =>
+      resolveEscalation({
+        msg_id: msgId,
+        choice: 'resolved',
+        note,
+        resolver: SINGLE_PRIMARY_IDENTITY.ownerId,
+      }));
+
+  if (row.can_read_all_stats) {
+    try {
+      const open = await listOpen(PG_READ_ALL_STATS_CAPABILITY_SUBJECT);
+      for (const escalation of open) {
+        await resolve(
+          escalation.msg_id,
+          'Boot assertion confirms current_user can read pg_stat_activity across roles.',
+        );
+      }
+    } catch (error) {
+      // Capability was directly measured as available. A failed cleanup must not turn that
+      // positive measurement into a missing-capability alarm.
+      console.error('[system-health] could not resolve an earlier pg_read_all_stats alert.', error);
+    }
+    return 'available';
+  }
+
+  const summary = `PostgreSQL role ${row.role_name} lacks pg_read_all_stats; pg_stat_activity readers may return false zeros`;
+  const body =
+    `The boot-time system-health assertion checked current_user=${row.role_name} and found no ` +
+    '`pg_read_all_stats` membership or superuser privilege. PostgreSQL masks other roles’ ' +
+    '`query` and `application_name` values instead of raising an error, so downstream readers ' +
+    'can return well-formed but incorrect zeros. Restore migration 733’s grant ' +
+    '(`GRANT pg_read_all_stats TO harness_admin`) through the normal migration path, then restart the host.';
+
+  const openEscalationWithIdentity =
+    deps.openEscalation ??
+    ((input: Parameters<typeof openEscalation>[1]) => openEscalation(SINGLE_PRIMARY_IDENTITY, input));
+  let escalation: Awaited<ReturnType<typeof openEscalation>> | null = null;
+  try {
+    escalation = await openEscalationWithIdentity({
+      severity: 'blocker',
+      summary,
+      body,
+      meta: { subjectSignature: PG_READ_ALL_STATS_CAPABILITY_SUBJECT },
+    });
+  } catch (error) {
+    // Still deliver an owner alert if durable escalation storage is unavailable.
+    console.error('[system-health] could not persist the pg_read_all_stats blocker.', error);
+  }
+
+  const repeatCount = (escalation as { repeatCount?: number } | null)?.repeatCount;
+  if (typeof repeatCount !== 'number' || repeatCount <= 1) {
+    try {
+      await (deps.notifyAttention ?? notifyAttention)({
+        kind: 'intervention',
+        title: 'PostgreSQL stats visibility BLOCKER',
+        body,
+        importance: 'urgent',
+        workspaceId: activeWorkspaceId(),
+        data: { key: PG_READ_ALL_STATS_CAPABILITY_SUBJECT },
+      });
+    } catch (error) {
+      console.error('[system-health] could not deliver the pg_read_all_stats owner alert.', error);
+    }
+  }
+  return 'missing';
 }
 
 /**

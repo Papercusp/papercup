@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   buildLaunchSpec: vi.fn(),
   ensureHome: vi.fn(),
   readSuperuserToken: vi.fn(),
+  allowsAmbient: vi.fn(),
 }));
 
 vi.mock('../../adv-sessions', async (original) => ({
@@ -24,6 +25,10 @@ vi.mock('../../role-codex-home', async (original) => ({
 vi.mock('../../superuser-token', async (original) => ({
   ...(await original<typeof import('../../superuser-token')>()),
   readSuperuserToken: mocks.readSuperuserToken,
+}));
+vi.mock('../../capability-envelope/session-confinement-port', async (original) => ({
+  ...(await original<typeof import('../../capability-envelope/session-confinement-port')>()),
+  sessionAllowsAmbientContext: mocks.allowsAmbient,
 }));
 
 import { defaultEnsureCodexHomeForWake } from './wake-executor';
@@ -53,9 +58,22 @@ beforeEach(() => {
   mocks.buildLaunchSpec.mockResolvedValue({ mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' });
   mocks.ensureHome.mockReturnValue({ repaired: true });
   mocks.readSuperuserToken.mockReturnValue('test-token');
+  mocks.allowsAmbient.mockResolvedValue(true);
 });
 
 describe('default Codex wake home repair', () => {
+  it.each([true, false])('preserves the authoritative ambient-context policy (%s) during wake repair', async (allowed) => {
+    mocks.allowsAmbient.mockResolvedValue(allowed);
+    mocks.getAdvSession.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex',
+      workspaceId: 'papercusp-workspace', cwd: '/frozen-assignment' });
+    expect(await defaultEnsureCodexHomeForWake({ advSessionId: 123, owner: OWNER,
+      codexHome: '/tmp/codex-home', headless: true })).toMatchObject({ ok: true, repaired: true });
+    expect(mocks.allowsAmbient).toHaveBeenCalledWith({ ownerId: OWNER, workspaceId: 'papercusp-workspace' });
+    const input = mocks.ensureHome.mock.calls[0][0];
+    expect(input.denyAmbientContext === true).toBe(!allowed);
+    expect(input.projectDir).toBe('/frozen-assignment');
+  });
+
   it.each([
     { name: 'equals form', launchArgv: ['psu', '--compaction-limit=250000'] },
     { name: 'space form', launchArgv: ['psu', '--compaction-limit', '250000'] },

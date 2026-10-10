@@ -57,6 +57,16 @@ function makeReport() {
     startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z',
     totalCostUsd: 1.25, capBreaches: ['cap-x'],
     timeout: { cause: 'wallclock_deadline', stage: 'sut_session_send', turnIndex: 0 },
+    llmCallDiagnostics: {
+      events: [{
+        callId: 'storage-call', attempt: 1, phase: 'transport-error', observedAt: '2026-01-01T00:00:10Z',
+        label: 'gateway-pool', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,
+        governorMode: 'shared-provider', requestedAccount: null, servedAccount: 'account-a',
+        providerRequestId: null, status: 503, transportFailureCode: 'ETIMEDOUT', callerAborted: false,
+      }],
+      total: 1,
+      omitted: 0,
+    },
     turns: [firstTurn, secondTurn],
     toolInvocations: [], continueChainRows: [],
   };
@@ -151,6 +161,16 @@ describe('persistRunReport (PG)', () => {
         cause: 'wallclock_deadline',
         stage: 'sut_session_send',
         turnIndex: 0,
+      },
+      llmCallDiagnostics: {
+        events: [{
+          callId: 'storage-call', attempt: 1, phase: 'transport-error', observedAt: '2026-01-01T00:00:10Z',
+          label: 'gateway-pool', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,
+          governorMode: 'shared-provider', requestedAccount: null, servedAccount: 'account-a',
+          providerRequestId: null, status: 503, transportFailureCode: 'ETIMEDOUT', callerAborted: false,
+        }],
+        total: 1,
+        omitted: 0,
       },
     });
     // transcript compressed on write → decompressTranscript restores the flattened rawSseTape.

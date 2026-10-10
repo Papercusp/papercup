@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   buildRole: vi.fn(),
   roleHome: vi.fn(),
   funding: vi.fn(),
+  allowsAmbient: vi.fn(),
 }));
 
 const OWNER = 'su-p006-pinned-codex';
@@ -69,6 +70,10 @@ vi.mock('../../../superuser-token', async (original) => ({
 vi.mock('../../../cupboard/identity-activation-restart', () => ({
   rebuildSuLaunchArtifactFunded: async (input: unknown) => ({ rebuilt: await mocks.rebuild(input) }),
 }));
+vi.mock('../../../capability-envelope/session-confinement-port', async (original) => ({
+  ...(await original<typeof import('../../../capability-envelope/session-confinement-port')>()),
+  sessionAllowsAmbientContext: mocks.allowsAmbient,
+}));
 
 let ensureCodexHome: (req: Request) => Promise<Response>;
 beforeAll(async () => {
@@ -91,6 +96,7 @@ beforeEach(() => {
   mocks.buildLaunchSpec.mockResolvedValue({ mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' });
   mocks.ensureHome.mockReturnValue({ repaired: true, promptRepaired: true,
     codexHome: '/tmp/p006-home' });
+  mocks.allowsAmbient.mockResolvedValue(true);
 });
 
 async function call(model?: string, extra: { requireGatewayProvider?: boolean } = {}) {
@@ -100,6 +106,26 @@ async function call(model?: string, extra: { requireGatewayProvider?: boolean } 
 }
 
 describe('ensure-codex-home pinned-source recovery', () => {
+  it.each([
+    { allowed: true, pinnedRecovery: false },
+    { allowed: false, pinnedRecovery: false },
+    { allowed: false, pinnedRecovery: true },
+  ])('retains context confinement while recovering a missing home ($allowed/$pinnedRecovery)', async ({ allowed, pinnedRecovery }) => {
+    mocks.allowsAmbient.mockResolvedValue(allowed);
+    if (pinnedRecovery) mocks.rebuild.mockRejectedValue(new Error('selected identity inherited source revision changed before SU artifact rebuild'));
+    else mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+    expect((await call()).status).toBe(200);
+    expect(mocks.allowsAmbient).toHaveBeenCalledWith({ ownerId: OWNER, workspaceId: 'papercusp-workspace' });
+    const input = mocks.ensureHome.mock.calls[0][0];
+    expect(input.recoverMissingHome).toBe(true);
+    expect(input.denyAmbientContext === true).toBe(!allowed);
+    expect(input.promptText).toBe('PINNED V1 INSTRUCTIONS');
+  });
+
   it('rebuilds an accepted role through its pinned operation instead of replacing it with SU grants', async () => {
     const accepted = {
       workItemId: 'WI-50', harnessSlug: 'research', operationId: 'daily-brief',

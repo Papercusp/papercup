@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import {
   evaluatePrimaryCount,
   countBackgroundPrimaries,
+  assertPgReadAllStatsCapabilityAtBoot,
+  PG_READ_ALL_STATS_CAPABILITY_SUBJECT,
   lastRoutineFireAgeSec,
   routinesDemonstrablyFiring,
   d026QuiescenceIsActive,
@@ -600,6 +602,87 @@ describe('evaluatePrimaryCount — unread count (WI-7291)', () => {
     });
     expect(verdict.key).toBe('no-primary');
     expect(verdict.countObserved).not.toBe(false);
+  });
+});
+
+describe('assertPgReadAllStatsCapabilityAtBoot (EI-19447868110362941)', () => {
+  it('opens one actionable blocker when the host role lacks stats visibility', async () => {
+    const sql = vi.fn(async (_query: TemplateStringsArray) => [
+      { role_name: 'harness_admin', can_read_all_stats: false },
+    ]);
+    const openEscalation = vi.fn(async (_input: unknown) => ({ msg_id: 'stats-missing', repeatCount: 1 }));
+    const notifyAttention = vi.fn(async (_input: unknown) => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(
+        assertPgReadAllStatsCapabilityAtBoot({
+          sql: sql as never,
+          openEscalation: openEscalation as never,
+          notifyAttention: notifyAttention as never,
+        }),
+      ).resolves.toBe('missing');
+
+      expect(sql).toHaveBeenCalledTimes(1);
+      const query = sql.mock.calls[0]?.[0].join(' ') ?? '';
+      expect(query).toContain("pg_has_role(current_user, 'pg_read_all_stats', 'member')");
+      expect(query).toContain('pg_roles');
+      expect(openEscalation).toHaveBeenCalledTimes(1);
+      expect(openEscalation.mock.calls[0]?.[0]).toMatchObject({
+        severity: 'blocker',
+        meta: { subjectSignature: PG_READ_ALL_STATS_CAPABILITY_SUBJECT },
+      });
+      expect(notifyAttention).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('does not send another urgent page while the same blocker is already open', async () => {
+    const sql = vi.fn(async (_query: TemplateStringsArray) => [
+      { role_name: 'harness_admin', can_read_all_stats: false },
+    ]);
+    const openEscalation = vi.fn(async (_input: unknown) => ({ msg_id: 'stats-missing', repeatCount: 2 }));
+    const notifyAttention = vi.fn(async (_input: unknown) => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(
+        assertPgReadAllStatsCapabilityAtBoot({
+          sql: sql as never,
+          openEscalation: openEscalation as never,
+          notifyAttention: notifyAttention as never,
+        }),
+      ).resolves.toBe('missing');
+
+      expect(openEscalation).toHaveBeenCalledTimes(1);
+      expect(notifyAttention).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('resolves the prior blocker once a later boot confirms the role capability', async () => {
+    const sql = vi.fn(async (_query: TemplateStringsArray) => [
+      { role_name: 'harness_admin', can_read_all_stats: true },
+    ]);
+    const listOpenEscalations = vi.fn(async (_subject: string) => [{ msg_id: 'stats-missing' }]);
+    const resolveEscalation = vi.fn(async (_msgId: string, _note: string) => ({ kind: 'resolved' }));
+
+    await expect(
+      assertPgReadAllStatsCapabilityAtBoot({
+        sql: sql as never,
+        listOpenEscalations,
+        resolveEscalation,
+      }),
+    ).resolves.toBe('available');
+
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(listOpenEscalations).toHaveBeenCalledWith(PG_READ_ALL_STATS_CAPABILITY_SUBJECT);
+    expect(resolveEscalation).toHaveBeenCalledWith(
+      'stats-missing',
+      'Boot assertion confirms current_user can read pg_stat_activity across roles.',
+    );
   });
 });
 
