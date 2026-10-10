@@ -80,7 +80,7 @@ it('enforces the scoped boundary through the actual launcher and final managed P
   }
 }, 30_000);
 
-it('delivers frozen context and a scoped work-item workflow through installed Codex and maintained handlers', async () => {
+it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped work-item workflow through installed Codex and maintained handlers (%s)', async route => {
   const fixtureRoot = mkdtempSync('/tmp/psu-native-frozen-context-');
   const cwd = join(fixtureRoot, 'checkout');
   const codexHome = join(cwd, 'codex-home');
@@ -104,6 +104,12 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
   let probe: Client | undefined;
   let child: ReturnType<typeof spawn> | undefined;
   let server: Server | undefined;
+  let metered: { stop: () => Promise<void> } | undefined;
+  let revokeProvider: (() => void) | undefined;
+  const admissionEvidence: Array<{ target: string; bodySha256: string; openBeforeSend: number }> = [];
+  const countedInputs: Record<string, unknown>[] = [];
+  const gatewayErrors: string[] = [];
+  let readReservations: (() => Promise<unknown>) | undefined;
   try {
   mkdirSync(cwd);
   // Match installed SRT's bounded `which` precondition before allocating the
@@ -157,7 +163,9 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
   const snapshotRoot = join(fixtureRoot, 'protocol'); mkdirSync(snapshotRoot);
   const snapshot = JSON.stringify({ entries: [{ key: 'permitted:fixture', text: frozenMarker }] });
   for (const name of ['corpus.json', 'memory.json']) writeFileSync(join(snapshotRoot, name), snapshot);
-  const config = currentProtocolFixture(owner);
+  const config = currentProtocolFixture(owner, 120_000);
+  for (const arm of config.arms) { arm.model = 'gpt-6-sol'; arm.effort = 'medium'; }
+  config.priceSchedule.rates[0].model = 'gpt-6-sol';
   config.context = { ...config.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
     corpusHash: createHash('sha256').update(snapshot).digest('hex'), memoryHash: createHash('sha256').update(snapshot).digest('hex') };
   const restored = restoreBenchmarkContext({ snapshotRoot, checkout: cwd, context: config.context,
@@ -253,6 +261,60 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
   });
     const port = await listen(server);
     const baseURL = `http://127.0.0.1:${port}`;
+    let nativeGateway: { baseURL: string; token: string; outputTokenLimit?: number } = { baseURL, token: 'a'.repeat(64) };
+    if (route === 'metered') {
+      const { currentBenchGatewayController, currentBenchProviderAuthenticator, currentBenchOpenAiInputReader,
+        currentBenchOpenAiInputContract } = await import('../../../packages/operator-core/lib/external-bench/current-su');
+      const { registerLearningLoop, getLearningSpendPositions } = await import('../../../packages/operator-core/lib/learning-governor/store');
+      const { makeBearerCredentialResolver } = await import('../../../packages/operator-core/lib/inference-gateway/credential-store');
+      const { startGatewayService } = await import('../../../packages/operator-core/lib/inference-gateway/launch');
+      const loopId = `native-workflow:${owner}`, preregHash = 'a'.repeat(64), workspaceId = 'native-frozen-private';
+      const key = join(fixtureRoot, 'private-provider-key');
+      writeFileSync(key, 'PRIVATE_OFFLINE_PROVIDER_CREDENTIAL', { mode: 0o600 });
+      const account = { id: 'private-native-provider', provider: 'codex' as const, credentialRef: `token:${key}` };
+      const inputTokens = 100_000;
+      config.priceSchedule.rates[0].inputTokenCeiling = inputTokens;
+      config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract('gpt-6-sol', inputTokens);
+      const resources = { inputTokens: 1_000_000, outputTokens: 4096, requestsPerArm: 50, usdPerArm: 3,
+        maxOpenUsd: config.maxInFlightUsd, wallClockMs: 120_000, wallClockMsPerArm: 120_000,
+        armIds: config.arms.map(arm => currentBenchAssignmentId(owner, arm.id, 't1', 1)) };
+      await registerLearningLoop(db.adminSql, { workspaceId, loopId, budgetKind: 'lifetime', budgetUsd: 60,
+        enabled: true, meta: { reservationBinding: preregHash, reservationResourceBudget: resources } });
+      readReservations = () => getLearningSpendPositions(db!.adminSql, { workspaceId, loopId, includeReservations: true });
+      const reader = currentBenchOpenAiInputReader({ model: 'gpt-6-sol', inputTokens }, { fetch: async (target, init) => {
+        expect(String(target)).toBe('https://api.openai.com/v1/responses/input_tokens');
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer PRIVATE_OFFLINE_PROVIDER_CREDENTIAL');
+        countedInputs.push(JSON.parse(String(init?.body)));
+        return Response.json({ object: 'response.input_tokens', input_tokens: 1000 });
+      } });
+      const auth = currentBenchProviderAuthenticator({ workspaceId, preregHash, protocol: config,
+        armId: 'papercusp', taskId: 't1', seed: 1, readNativeInputCeiling: reader.read }, {
+        readAccount: async (_workspace, id) => id === account.id ? account : null,
+        credentialResolver: (_provider, ref) => makeBearerCredentialResolver(ref),
+      });
+      revokeProvider = () => { auth.revoke(); reader.revoke(); };
+      const controller = currentBenchGatewayController({ workspaceId, loopId, token: 'a'.repeat(64), preregHash,
+        protocol: config, resources, armId: 'papercusp', taskId: 't1', seed: 1,
+        authenticateProvider: auth.authenticateProvider }, { enabled: async () => true, getSql: async () => db!.adminSql,
+        log: () => {} });
+      const hosted = await controller.startNativeGateway(message => { gatewayErrors.push(message); }, options =>
+        startGatewayService({ ...options, resolveAccounts: async () => [{ accountId: account.id,
+          credentialRef: account.credentialRef, source: 'env' }], resolveLocalBackends: async () => [],
+          observePool: () => () => {}, refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
+          fetchImpl: async (target, init) => {
+            const body = typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body as Uint8Array);
+            const positions = await getLearningSpendPositions(db!.adminSql, { workspaceId, loopId, includeReservations: true });
+            expect(positions.census?.status).toBe('complete');
+            if (positions.census?.status !== 'complete') throw new Error('Native send has no complete reservation census');
+            const bodySha256 = createHash('sha256').update(body).digest('hex');
+            expect(positions.census.reservations.some(row => row.status === 'open' &&
+              JSON.parse(row.note!).nativeGatewayAttempt.bodySha256 === bodySha256)).toBe(true);
+            admissionEvidence.push({ target: String(target), bodySha256, openBeforeSend: positions.positions.openAttempts });
+            expect(new Headers(init?.headers).get('authorization')).toBe('Bearer PRIVATE_OFFLINE_PROVIDER_CREDENTIAL');
+            return fetch(`${baseURL}/v1/responses`, init);
+          } }));
+      metered = hosted; nativeGateway = hosted.nativeGateway;
+    }
     const home = writeSuCodexHome({ sessionKey: owner, sid: owner, mcpUrl: `${baseURL}/mcp`, token: 'offline-fixture',
       model: 'gpt-6-sol:medium', promptText: `${roleMarker}\n${restored.contextText}`, headless: true, trustDir: cwd, denyAmbientContext: true });
     expect(home.codexHome).toBe(codexHome);
@@ -265,21 +327,21 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
     // The child must read the exact delivered AGENTS file and restored bytes.
     // Keep fixture-only provider and tool choices in CLI overrides, so a
     // replacement of the managed prompt cannot make this assertion pass.
-    const overrides = { model_provider: 'frozen_fixture',
+    const overrides = { ...(route === 'direct' ? { model_provider: 'frozen_fixture',
       'model_providers.frozen_fixture.name': 'Offline native fixture',
       'model_providers.frozen_fixture.base_url': `${baseURL}/v1`,
       'model_providers.frozen_fixture.wire_api': 'responses',
       'model_providers.frozen_fixture.requires_openai_auth': false,
       'model_providers.frozen_fixture.supports_websockets': false,
       'model_providers.frozen_fixture.request_max_retries': 0,
-      'model_providers.frozen_fixture.stream_max_retries': 0,
+      'model_providers.frozen_fixture.stream_max_retries': 0 } : {}),
       'features.apps': false, 'features.hooks': false, web_search: 'disabled' };
     const args = ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
       ...Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]), 'Read the frozen assignment context.'];
     const env = hermeticEnv({ PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome, PAPERCUSP_SID: owner,
       PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_PTY: '1', PAPERCUSP_MCP_PROXY: '0',
       PAPERCUSP_OPERATOR_URL: baseURL,
-      PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL, token: 'a'.repeat(64) }) });
+      PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify(nativeGateway) });
     const launcher = fileURLToPath(new URL('../scripts/psu-launcher.mjs', import.meta.url));
     const fixture = join(cwd, 'launcher-fixture.mjs');
     writeFileSync(fixture, `import { runWrapper } from ${JSON.stringify(launcher)};\nrunWrapper({wrapperBin:'codex',args:${JSON.stringify(args)},cwd:${JSON.stringify(cwd)},preserveCwd:true,envelopeEnv:process.env,reportSessionEndedImpl:async()=>{},onSpawn:()=>{}});\n`);
@@ -304,7 +366,8 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
           .flatMap(([key, entry]) => inputShapes(entry, `${path}.${key}`))];
       return [];
     };
-    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, requestPaths, mcpMethods, workflowCalls,
+    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, gatewayErrors, admissionEvidence,
+      countedInputCount: countedInputs.length, reservations: await readReservations?.(), requestPaths, mcpMethods, workflowCalls,
       dependencyPreflight, executablePath: env.PATH, discoveryRoot: env.PAPERCUSP_PSU_PTY_DIR,
       inputShapes: inputShapes(providerCalls[0]?.input),
       providerRequestKeys: providerCalls.map(request => Object.keys(request)),
@@ -341,10 +404,31 @@ it('delivers frozen context and a scoped work-item workflow through installed Co
       WHERE workspace_id = 'native-frozen-private' AND scope = ${workItemScope(own.harness, neighbor)}`;
     expect(notes).toHaveLength(0);
     expect(output).toContain('FROZEN_NATIVE_RECEIPT');
+    if (route === 'metered') {
+      const { getLearningSpendPositions } = await import('../../../packages/operator-core/lib/learning-governor/store');
+      const positions = await getLearningSpendPositions(db.adminSql, { workspaceId: 'native-frozen-private',
+        loopId: `native-workflow:${owner}`, includeReservations: true });
+      expect(admissionEvidence, diagnostics).toHaveLength(providerCalls.length);
+      expect(countedInputs, diagnostics).toHaveLength(providerCalls.length);
+      expect(admissionEvidence.every(row => row.target === 'https://api.openai.com/v1/responses')).toBe(true);
+      expect(providerCalls.every(request => request.max_output_tokens === 4096)).toBe(true);
+      expect(countedInputs.map(request => request.input)).toEqual(providerCalls.map(request => request.input));
+      expect(JSON.stringify(countedInputs[0])).toContain('additional_tools');
+      expect(positions.census?.status).toBe('complete');
+      if (positions.census?.status !== 'complete') throw new Error('Missing final native reservation census');
+      expect(positions.census.reservations).toHaveLength(providerCalls.length);
+      expect(positions.census.reservations.every(row => row.status === 'open' && row.usedUsd === 0 &&
+        JSON.parse(row.note!).nativeGatewayAttemptResult.outcome === 'response-completed')).toBe(true);
+      expect(positions.positions.openAttempts).toBe(providerCalls.length);
+      // Scripted usage is not a bill. Retain exposure rather than refunding it.
+      expect(positions.positions.unsettledUsd).toBeGreaterThan(0);
+      expect(JSON.stringify(positions)).not.toContain('PRIVATE_OFFLINE_PROVIDER_CREDENTIAL');
+    }
   } finally {
     if (child && child.exitCode === null) child.kill('SIGKILL');
     try {
       await probe?.close();
+      await metered?.stop(); revokeProvider?.();
       await Promise.allSettled(hosts.map(host => host.close()));
       if (server?.listening) await stop(server);
     } finally {
