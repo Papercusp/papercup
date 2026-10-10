@@ -66,10 +66,12 @@ export interface PsuPtyHost {
   terminalPid?: number | null;
   sock: string;
   command: string;
-  /** Exact argv of the hosted backend process. The writer has always persisted
-   *  this field; declaring it makes post-launch native-session attestation
-   *  possible instead of treating ownerId liveness as transcript identity. */
+  /** Initial launch argv. A carry replaces the child without changing these
+   *  arguments, so its requested resume UUID is not current native identity. */
   args?: string[];
+  /** Codex UUID observed through the current PTY child's writer lock. Null or
+   *  absent means unknown; never fall back to the requested argv UUID. */
+  nativeSessionId?: string | null;
   startedAt: number;
   // ── Activity annotation (liveness-hardening P-006; ADDITIVE — absent on
   //    files written by older hosts). The pty stream is a true mid-turn

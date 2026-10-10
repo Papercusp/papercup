@@ -1341,6 +1341,48 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
 });
 
 describe('verifyResumeStarted (resume liveness is three-state)', () => {
+  it('refuses an observed Codex successor even when launch argv requests the original UUID', async () => {
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: 'original-native',
+      findHost: () => ptyHostFixture({
+        args: ['resume', 'original-native'],
+        nativeSessionId: 'carry-successor',
+      } as never),
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({ started: false, mismatch: true,
+      expectedSessionId: 'original-native', actualSessionId: 'carry-successor' });
+  });
+
+  it.each([undefined, null])('keeps Codex argv-only identity unconfirmed (%s)', async (nativeSessionId) => {
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: 'original-native',
+      findHost: () => ptyHostFixture({
+        args: ['resume', 'original-native'], nativeSessionId,
+      } as never),
+      timeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({ started: null, mismatch: false,
+      expectedSessionId: 'original-native', actualSessionId: null });
+  });
+
+  it('waits for the current Codex child observation before confirming an exact resume', async () => {
+    const findHost = vi.fn()
+      .mockReturnValueOnce(ptyHostFixture({ args: ['resume', 'original-native'] }))
+      .mockReturnValue(ptyHostFixture({ args: ['resume', 'original-native'],
+        nativeSessionId: 'original-native' } as never));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const result = await verifyResumeStarted(OWNER, {
+      expectedSessionId: 'original-native', findHost, sleep, timeoutMs: 1000, pollMs: 1,
+    });
+
+    expect(result).toMatchObject({ started: true, mismatch: false,
+      actualSessionId: 'original-native' });
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
   it('confirms started once a live psu-pty host appears for the resumed identity', async () => {
     const findHost = vi
       .fn()
@@ -1365,6 +1407,7 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
         sock: `/run/psu-pty/${OWNER}.sock`,
         command: 'codex',
         args: ['--model', 'gpt-5.6-sol', 'resume', 'older-root-uuid'],
+        nativeSessionId: 'older-root-uuid',
       }) as never,
     });
 
@@ -1489,8 +1532,10 @@ describe('verifyResumeStarted prepared cross-backend continuation', () => {
 });
 
 describe('nativeSessionIdFromHost', () => {
-  it('reads Codex positional resume and Claude/OMP resume flags', () => {
-    expect(nativeSessionIdFromHost({ command: 'codex', args: ['-m', 'gpt-5.6-sol', 'resume', 'codex-uuid'] })).toBe('codex-uuid');
+  it('reads the physical Codex observation and Claude/OMP resume flags', () => {
+    expect(nativeSessionIdFromHost({ command: 'codex', nativeSessionId: 'codex-uuid',
+      args: ['-m', 'gpt-5.6-sol', 'resume', 'predecessor-uuid'] })).toBe('codex-uuid');
+    expect(nativeSessionIdFromHost({ command: '/usr/bin/codex', args: ['resume', 'requested-uuid'] })).toBeNull();
     expect(nativeSessionIdFromHost({ command: 'claude', args: ['--resume', 'claude-uuid'] })).toBe('claude-uuid');
     expect(nativeSessionIdFromHost({ command: 'omp', args: ['--resume-session=omp-uuid'] })).toBe('omp-uuid');
     expect(nativeSessionIdFromHost({ command: 'claude', args: ['--session-id', 'new-claude-uuid'] })).toBe('new-claude-uuid');

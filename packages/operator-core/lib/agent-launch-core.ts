@@ -2336,71 +2336,78 @@ export async function verifyResumeStarted(
       const expected = expectedSessionId?.trim() || null;
       const actual = nativeSessionIdFromHost(host);
       if (!expectedPort) {
-        const mismatch = expected != null && actual !== expected;
-        return {
-          started: !mismatch,
-          waitedMs: Date.now() - begun,
-          expectedSessionId: expected,
-          actualSessionId: actual,
-          mismatch,
-        };
+        // A Codex argv UUID is the requested predecessor, not an observation
+        // of the current child: an immediate carry can replace that transcript.
+        // Keep missing physical identity unknown instead of certifying argv.
+        if (expected == null || actual != null) {
+          const mismatch = expected != null && actual !== expected;
+          return {
+            started: !mismatch,
+            waitedMs: Date.now() - begun,
+            expectedSessionId: expected,
+            actualSessionId: actual,
+            mismatch,
+          };
+        }
       }
-      // A conversion deliberately creates a new native session. Owner liveness
-      // alone cannot distinguish it from a substituted or unrelated target.
-      // Missing receipts (or an unreadable probe) remain unknown; only a
-      // contradictory binding is an observed mismatch.
-      portActual = actual;
-      let verdict: boolean | null = null;
-      try {
-        const source = await readAdvSession(expectedPort.sourceAdvSessionId);
-        const targetId = Number(host.advSessionId);
-        const target = Number.isSafeInteger(targetId) && targetId > 0
-          ? await readAdvSession(targetId) : null;
-        if (source && target) {
-          const native = target.agent === 'omp' ? target.ompThreadId ?? target.sessionId : target.sessionId;
-          portExpected = native?.trim() || null;
-          const port = target.portId ? await readPort(target.portId, source.workspaceId) : null;
-          if (host.ownerId !== ownerId || source.coordOwnerId !== ownerId || target.coordOwnerId !== ownerId ||
-              target.workspaceId !== source.workspaceId || target.agent !== expectedPort.targetBackend ||
-              target.portSourceAdvSessionId !== expectedPort.sourceAdvSessionId) {
-            verdict = false;
-          } else if (port) {
-            const summary = port.metadata.summary as SessionPortContractSummary | undefined;
-            const proof = port.metadata.persistenceProof as { persisted?: unknown; nativeRef?: unknown; renderedHash?: unknown } | undefined;
-            if (port.sourceAdvSessionId !== expectedPort.sourceAdvSessionId || port.targetAdvSessionId !== target.id ||
-                port.sourceBackend !== source.agent || port.targetBackend !== expectedPort.targetBackend ||
-                port.metadata.sourceCoordOwnerId !== ownerId || port.metadata.targetCoordOwnerId !== ownerId ||
-                (summary && (summary.source.advSessionId !== source.id || summary.source.backend !== source.agent ||
-                  summary.source.workspaceId !== source.workspaceId || (expected != null && summary.source.nativeSessionId !== expected) ||
-                  summary.target.backend !== expectedPort.targetBackend ||
-                  (summary.target.ownerId != null && summary.target.ownerId !== ownerId) ||
-                  summary.hashes.rendered !== port.renderedHash)) ||
-                (portExpected != null && port.metadata.targetNativeSessionId !== portExpected) ||
-                (port.metadata.bootstrapReceiptTargetAdvSessionId != null && port.metadata.bootstrapReceiptTargetAdvSessionId !== target.id) ||
-                (proof?.renderedHash != null && proof.renderedHash !== port.renderedHash) ||
-                (portExpected != null && typeof proof?.nativeRef === 'string' && !proof.nativeRef.endsWith(`${portExpected}.jsonl`)) ||
-                port.status === 'failed' || port.status === 'expired') {
+      if (expectedPort) {
+        // A conversion deliberately creates a new native session. Owner liveness
+        // alone cannot distinguish it from a substituted or unrelated target.
+        // Missing receipts (or an unreadable probe) remain unknown; only a
+        // contradictory binding is an observed mismatch.
+        portActual = actual;
+        let verdict: boolean | null = null;
+        try {
+          const source = await readAdvSession(expectedPort.sourceAdvSessionId);
+          const targetId = Number(host.advSessionId);
+          const target = Number.isSafeInteger(targetId) && targetId > 0
+            ? await readAdvSession(targetId) : null;
+          if (source && target) {
+            const native = target.agent === 'omp' ? target.ompThreadId ?? target.sessionId : target.sessionId;
+            portExpected = native?.trim() || null;
+            const port = target.portId ? await readPort(target.portId, source.workspaceId) : null;
+            if (host.ownerId !== ownerId || source.coordOwnerId !== ownerId || target.coordOwnerId !== ownerId ||
+                target.workspaceId !== source.workspaceId || target.agent !== expectedPort.targetBackend ||
+                target.portSourceAdvSessionId !== expectedPort.sourceAdvSessionId) {
               verdict = false;
-            } else if (port.status === 'delivered' && target.portStatus === 'delivered' && summary &&
-                       port.metadata.bootstrapReceiptCommitted === true &&
-                       port.metadata.bootstrapReceiptTargetAdvSessionId === target.id &&
-                       typeof port.metadata.bootstrapRequestHash === 'string' && port.metadata.bootstrapRequestHash.length > 0 &&
-                       proof?.persisted === true && typeof proof.nativeRef === 'string' && proof.nativeRef.length > 0 &&
-                       proof.renderedHash === port.renderedHash && portExpected != null) {
-              verdict = actual === portExpected;
+            } else if (port) {
+              const summary = port.metadata.summary as SessionPortContractSummary | undefined;
+              const proof = port.metadata.persistenceProof as { persisted?: unknown; nativeRef?: unknown; renderedHash?: unknown } | undefined;
+              if (port.sourceAdvSessionId !== expectedPort.sourceAdvSessionId || port.targetAdvSessionId !== target.id ||
+                  port.sourceBackend !== source.agent || port.targetBackend !== expectedPort.targetBackend ||
+                  port.metadata.sourceCoordOwnerId !== ownerId || port.metadata.targetCoordOwnerId !== ownerId ||
+                  (summary && (summary.source.advSessionId !== source.id || summary.source.backend !== source.agent ||
+                    summary.source.workspaceId !== source.workspaceId || (expected != null && summary.source.nativeSessionId !== expected) ||
+                    summary.target.backend !== expectedPort.targetBackend ||
+                    (summary.target.ownerId != null && summary.target.ownerId !== ownerId) ||
+                    summary.hashes.rendered !== port.renderedHash)) ||
+                  (portExpected != null && port.metadata.targetNativeSessionId !== portExpected) ||
+                  (port.metadata.bootstrapReceiptTargetAdvSessionId != null && port.metadata.bootstrapReceiptTargetAdvSessionId !== target.id) ||
+                  (proof?.renderedHash != null && proof.renderedHash !== port.renderedHash) ||
+                  (portExpected != null && typeof proof?.nativeRef === 'string' && !proof.nativeRef.endsWith(`${portExpected}.jsonl`)) ||
+                  port.status === 'failed' || port.status === 'expired') {
+                verdict = false;
+              } else if (port.status === 'delivered' && target.portStatus === 'delivered' && summary &&
+                         port.metadata.bootstrapReceiptCommitted === true &&
+                         port.metadata.bootstrapReceiptTargetAdvSessionId === target.id &&
+                         typeof port.metadata.bootstrapRequestHash === 'string' && port.metadata.bootstrapRequestHash.length > 0 &&
+                         proof?.persisted === true && typeof proof.nativeRef === 'string' && proof.nativeRef.length > 0 &&
+                         proof.renderedHash === port.renderedHash && portExpected != null) {
+                verdict = actual === portExpected;
+              }
             }
           }
+        } catch {
+          // Instrument failure is not evidence that the launched session failed.
         }
-      } catch {
-        // Instrument failure is not evidence that the launched session failed.
+        if (verdict != null) return {
+          started: verdict,
+          waitedMs: Date.now() - begun,
+          expectedSessionId: portExpected,
+          actualSessionId: actual,
+          mismatch: !verdict,
+        };
       }
-      if (verdict != null) return {
-        started: verdict,
-        waitedMs: Date.now() - begun,
-        expectedSessionId: portExpected,
-        actualSessionId: actual,
-        mismatch: !verdict,
-      };
     }
     if (Date.now() - begun + pollMs > timeoutMs) {
       return {
@@ -2416,16 +2423,21 @@ export async function verifyResumeStarted(
 }
 
 /**
- * Extract the native transcript UUID from a live backend argv.
+ * Read the current native transcript UUID observed by the managed host.
  *
- * Codex spells this `codex … resume <uuid>`; Claude/OMP use `--resume <uuid>`,
+ * Codex requires the PID-bound writer observation. Its `resume <uuid>` argv
+ * remains the requested predecessor after a carry, so it cannot attest identity.
+ * Claude/OMP use `--resume <uuid>`,
  * `--resume=<uuid>`, or `--resume-session=<uuid>`. A prepared Claude conversion
  * forces its new UUID with `--session-id`. Unknown/missing argv is null,
  * never treated as an implicit match.
  */
 export function nativeSessionIdFromHost(
-  host: Pick<PsuPtyHost, 'command' | 'args'> | null | undefined,
+  host: Pick<PsuPtyHost, 'command' | 'args' | 'nativeSessionId'> | null | undefined,
 ): string | null {
+  if (/(^|[\\/])codex(?:\.exe|\.cmd)?$/i.test(host?.command ?? '')) {
+    return typeof host?.nativeSessionId === 'string' ? host.nativeSessionId.trim() || null : null;
+  }
   const args = Array.isArray(host?.args) ? host.args.filter((v): v is string => typeof v === 'string') : [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
