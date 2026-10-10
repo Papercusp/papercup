@@ -137,6 +137,13 @@ export interface GatewayCacheObservation {
   shape: 'unobserved' | 'observed' | 'oversized' | 'invalid';
   tools: GatewayCacheFingerprint | null;
   instructions: GatewayCacheFingerprint | null;
+  /** Versioned instruction semantics for native reproducibility. The full
+   * serialized request fingerprint above remains independent evidence. */
+  nativeInstructionTemplate?: {
+    version: 'codex-native-template-v1'; fingerprint: GatewayCacheFingerprint | null;
+    /** Must match the host-owned native home's bundled resource directory. */
+    skillsRootHash: string | null;
+  } | null;
   /** Per-section layout; computed only for an owner's first observed request (see GatewayCacheLayout). */
   layout: GatewayCacheLayout | null;
 }
@@ -144,11 +151,12 @@ export interface GatewayCacheObservation {
 const emptyCacheObservation = (): GatewayCacheObservation => ({
   servingAccountId: null, providerRequestId: null, inputTokens: null, cacheReadTokens: null,
   cacheWriteTokens: null, reuse: 'unobserved', missReason: 'unobserved', shape: 'unobserved',
-  tools: null, instructions: null, layout: null,
+  tools: null, instructions: null, nativeInstructionTemplate: null, layout: null,
 });
 const cloneCacheObservation = (cache: GatewayCacheObservation): GatewayCacheObservation => ({
   ...cache, tools: cache.tools ? { ...cache.tools } : null,
   instructions: cache.instructions ? { ...cache.instructions } : null,
+  nativeInstructionTemplate: cache.nativeInstructionTemplate ? structuredClone(cache.nativeInstructionTemplate) : null,
   layout: cache.layout ? structuredClone(cache.layout) : null,
 });
 
@@ -190,6 +198,40 @@ const fingerprintParts = (parts: unknown[]) => {
   const present = parts.filter(part => part !== null && part !== undefined);
   return cacheFingerprint(present.length === 1 ? present[0] : present.length ? present : null);
 };
+
+/** Only transport message ids and the explicitly declared native bundled-skill
+ * root vary without changing instruction semantics. Every other byte remains
+ * hashed. The root gets its own digest, verified against host enrollment before
+ * a benchmark can use this template. Ambiguous bindings fail closed. */
+function nativeInstructionTemplate(parts: unknown[]): NonNullable<GatewayCacheObservation['nativeInstructionTemplate']> | null {
+  let skillsRoot: string | null = null, valid = true;
+  const text = (value: string) => {
+    if (!value.includes('<skills_instructions>')) return value;
+    const blocks = value.match(/<skills_instructions>[\s\S]*?<\/skills_instructions>/g);
+    if (!blocks || blocks.length !== 1 || skillsRoot !== null) { valid = false; return value; }
+    const roots = [...blocks[0].matchAll(/^- [\x60]r0[\x60] = [\x60]([^\x60\r\n]+\/skills\/\.system)[\x60]$/gm)];
+    const root = roots[0]?.[1];
+    if (roots.length !== 1 || !root || !root.startsWith('/') || root.length > 4096 ||
+        /[\\\x00-\x1f]/.test(root) || root.includes('/../') || root.includes('/./')) { valid = false; return value; }
+    skillsRoot = root;
+    return value.replace(blocks[0], blocks[0].split(root).join('<codex-native-system-skills>'));
+  };
+  const normalized = parts.map(value => {
+    if (typeof value === 'string') return text(value);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const entry = value as Record<string, unknown>;
+    if (entry.type !== 'message' || !['developer', 'system'].includes(String(entry.role)) || !Array.isArray(entry.content)) return value;
+    const { id: _transportId, ...semantic } = entry;
+    return { ...semantic, content: entry.content.map(part => {
+      if (!part || typeof part !== 'object' || Array.isArray(part)) return part;
+      const content = part as Record<string, unknown>;
+      return content.type === 'input_text' && typeof content.text === 'string' ? { ...content, text: text(content.text) } : part;
+    }) };
+  });
+  if (!valid) return null;
+  return { version: 'codex-native-template-v1', fingerprint: fingerprintParts(normalized),
+    skillsRootHash: skillsRoot === null ? null : createHash('sha256').update(skillsRoot).digest('hex') };
+}
 
 export type GatewayCacheMarkerTtl = '5m' | '1h' | 'default';
 
@@ -1052,6 +1094,7 @@ export class GatewayRequestSpan {
   setCacheShape(body: Uint8Array): void {
     if (this.finished) return;
     this.forwardedEffort = null;
+    this.cache.nativeInstructionTemplate = null;
     const started = this.now();
     try {
       if (body.byteLength > 2_097_152) { this.cache.shape = 'oversized'; return; }
@@ -1066,6 +1109,8 @@ export class GatewayRequestSpan {
       const prefix = codexInputPrefix(parsed.input);
       this.cache.tools = fingerprintParts([parsed.tools, ...prefix.tools]);
       this.cache.instructions = fingerprintParts([parsed.system, parsed.instructions, ...prefix.instructions]);
+      if (this.provider === 'codex' && this.protocol === 'openai-responses')
+        this.cache.nativeInstructionTemplate = nativeInstructionTemplate([parsed.system, parsed.instructions, ...prefix.instructions]);
       // Layout is startup evidence only: skip it for every non-first request so steady-state
       // traffic does not pay the per-block hashing (D-077). Anthropic-shaped bodies only.
       if (this.ownerId !== null && this.previousObservedRequestGapMs === null && this.protocol === 'anthropic-messages') {

@@ -51,7 +51,11 @@ export const currentBenchmarkProtocolSchema = z.object({
     effort: pin,
     account: pin,
     generationBudget: generationCap,
-    runtime: z.object({ sourceRevision: pin, runtimeRevision: pin, clientVersion: pin, promptHash: digest, toolsHash: digest }).strict(),
+    runtime: z.object({ sourceRevision: pin, runtimeRevision: pin, clientVersion: pin, promptHash: digest, toolsHash: digest,
+      // Omission preserves historical exact-request pins. Native templates
+      // retain a separate full request hash and verified resource-path binding.
+      promptHashMode: z.enum(['exact-request-v1', 'codex-native-template-v1']).optional(),
+    }).strict(),
   }).strict()).min(2),
   aggregateBudgetUsd: z.number().finite().positive(),
   maxInFlightUsd: z.number().finite().positive(),

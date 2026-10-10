@@ -501,6 +501,36 @@ describe('GatewayRequestTelemetry', () => {
     expect(JSON.stringify(telemetry.snapshot())).not.toMatch(/stable instructions|first user turn|stable tool/);
   });
 
+  it('binds a native instruction template while retaining exact transport and resource-path hashes', () => {
+    const capture = (id: string, root: string, advice = 'Use the maintained instructions.') => {
+      const span = new GatewayRequestTelemetry().begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(Buffer.from(JSON.stringify({ input: [{ type: 'message', role: 'developer', id,
+        content: [{ type: 'input_text', text: `${advice}\n<skills_instructions>\n- \`r0\` = \`${root}\`\nRead \`${root}/imagegen/SKILL.md\`.\n</skills_instructions>` }] },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'A public task.' }] }] })));
+      return span.finish('gateway-error', 400)!.cache;
+    };
+    const first = capture('msg_first', '/private/home-1/skills/.system');
+    const second = capture('msg_second', '/private/home-2/skills/.system');
+    expect(first.instructions).not.toEqual(second.instructions);
+    expect(first.nativeInstructionTemplate?.fingerprint).toEqual(second.nativeInstructionTemplate?.fingerprint);
+    expect(first.nativeInstructionTemplate?.fingerprint?.bytes).toBeGreaterThan(0);
+    expect(first.nativeInstructionTemplate?.skillsRootHash).not.toBe(second.nativeInstructionTemplate?.skillsRootHash);
+    expect(capture('msg_third', '/private/home-2/skills/.system', 'Changed authority.').nativeInstructionTemplate?.fingerprint)
+      .not.toEqual(first.nativeInstructionTemplate?.fingerprint);
+    expect(JSON.stringify(first)).not.toMatch(/private\/home|maintained instructions|msg_first/);
+  });
+
+  it('leaves ambiguous or malformed native skill-root templates unmeasured', () => {
+    for (const text of ['<skills_instructions>missing root</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `relative/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a/skills/.system`\n- `r0` = `/b/skills/.system`\n</skills_instructions>']) {
+      const span = new GatewayRequestTelemetry().begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(Buffer.from(JSON.stringify({ input: [{ type: 'message', role: 'developer',
+        content: [{ type: 'input_text', text }] }] })));
+      expect(span.finish('gateway-error', 400)!.cache.nativeInstructionTemplate).toBeNull();
+    }
+  });
+
   it('includes both top-level and developer-prefix components when a request carries both', () => {
     const telemetry = new GatewayRequestTelemetry();
     const fingerprint = (prefixTool: string, prefixInstruction: string) => {

@@ -7,16 +7,35 @@
 > **[methodology doc](../apps/operator-docs/src/content/docs/benchmarks/methodology.mdx)**
 > (served at `/internal/docs/benchmarks/methodology`). This README is the *how*.
 
-> ⚠️ **Draft — numbers pending the pilots.** The protocol and commands below are real;
-> published *results* do not exist until the pilots run (`P-009` per-task floor;
-> `P-032` pot-backlog layer) and the owner signs off (`P-017`). Items that depend on
-> peer-owned code still shipping are marked **[provisional — confirm against code]**.
+> **Current pilot pending.** Historical results retain their original execution
+> identity and protocol. They do not measure today's maintained runtime. Current
+> pilot results require a committed protocol, verified execution and complete
+> measurement; a small pilot validates measurement and does not establish superiority.
 
-> ☕ **What we benchmark (D-010): the Pot, not the per-task harness.** The subject is
-> the **Mug + cup fleet** draining a whole backlog. The per-task `coding` run is the
-> **L1 competence floor** and the atomic unit the fleet places. The **headline baseline
-> is the Mug-ablated fleet** (same fleet, naive FIFO scheduler) — *not* the native
-> harness, which is now the serial floor.
+> **Historical scope (D-010).** The Pot/Mug/cup comparisons and earlier plan-item
+> references below describe the historical protocol. Current comparisons use the
+> maintained su execution path and the stock native CLI under matched controls.
+> Keep historical, synthetic, incomplete and current evidence explicitly labeled.
+
+## Current matched runs
+
+The existing preregistration config carries the current protocol defined in
+`packages/operator-core/lib/external-bench/reproducibility/schema.ts`. Freeze the
+task roster, seeds, arm/client/model/effort/account controls, equal generation
+caps, aggregate and in-flight caps, source and loaded runtime revisions, native
+client version, prompt and tool identities, prices and official grader identity
+before generation. Each assignment restores the same permitted corpus and memory
+bytes into a fresh isolated context; other arms' solutions and hidden grader
+answers remain forbidden. Runtime observations must match the frozen controls;
+requested settings alone do not establish execution identity.
+
+The approved measurement pilot is three tasks × three seeds × two arms with equal
+$3 generation caps and a $60 aggregate inference ceiling. Admission records a cap
+outcome when an attempt cannot fit. Retries, recovery and every participating role
+count toward spend. Keep actual provider billing and normalized cost at frozen
+prices distinct; unknown usage or billing remains unknown. Grader outages require
+repair/regrade or an inconclusive result. A withheld, power-planned confirmation
+study is required for a superiority claim and has no implied authorization to spend.
 
 ---
 
@@ -236,7 +255,7 @@ transaction, derives `cost_usd` via `priceRun()`, and fires
 |---|---|---|
 | `run_id` / `prereg_hash` / `suite` / `task_id` / `arm` / `seed` / `modality` | runner | identity; `prereg_hash` must match a `benchmark_prereg` row |
 | `generation_status` | runner | `completed` \| `error` \| `timeout` \| `budget_exhausted` |
-| `resolved` (**nullable**) | grader | headline; `NULL` ⇒ infra failure, **excluded from accuracy** |
+| `resolved` (**nullable**) | grader | per-submission verdict; `NULL` retains unavailable grading; the primary denominator is assigned work |
 | `grader_status` / `grader_family` / `grader_version` / `grader_error` | grader | `grader_error` is **distinct** from `resolved=false` |
 | `tokens_in` / `tokens_out` / `tokens_total` | runner | `tokens_total` = **SUM over ALL roles / candidates + verifier** |
 | `tokens_cache_read` / `tokens_cache_write` | runner | material to \$ on Opus |
@@ -244,12 +263,20 @@ transaction, derives `cost_usd` via `priceRun()`, and fires
 | `wall_clock_ms` / `turns` / `budget_tokens` / `capped` | runner | `budget_tokens` caps **generation only**; `capped` ≠ infra fail |
 | `model_id` / `harness_version` / `arm_meta` (jsonb) | runner | best-of-N puts `{n, candidates, verifier_tokens}` in `arm_meta`; fleet/coordination events for MAST |
 
-**Scoring rules (the aggregator honors these):** a row is **scoreable** iff
-`generation_status='completed'` AND `grader_status ∈ {passed, failed}` (so `resolved`
-is non-null). Infra rows (generation error/timeout/budget-exhausted, or grader
-error/timeout) → `resolved=NULL` → excluded from accuracy, reported as separate counts
-(retry first; never score an infra failure as a genuine fail). pass@1 = mean(`resolved`)
-over a task's ≥3 seeds; same k for every arm.
+**Primary assigned-task outcome:** verified successes divided by the frozen assigned
+population. Generation errors, timeouts, cap outcomes and non-attempts remain in
+that denominator. A submission whose grade is missing makes the primary result
+unavailable until repaired; a grader outage is not evidence of agent failure.
+
+**Secondary conditional graded quality:** verified successes divided by genuinely
+graded submissions. Its label and denominator must accompany the value. For
+example, one success among five assignments, with one generation error and three
+non-attempts, is **20% primary assigned outcome** and **100% conditional quality
+(1/1 graded)**. Report attempted, absent, generation-failure and missing-grade
+counts alongside both. Historical row-level `resolved=NULL` values stay intact;
+they are not a license to drop failed or absent assignments from the primary
+denominator. Seed counts are matched across arms; repeated seeds are not independent
+task observations for a confirmation claim.
 
 **Type source of truth:** `TaskRunResult` → `@papercusp/bench-metrics` (`P-011` —
 defined in `libs/generic/bench-metrics/src/schema.ts`, imported from the package root,
