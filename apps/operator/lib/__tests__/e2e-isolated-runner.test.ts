@@ -7,7 +7,7 @@
  * HARNESS_ADMIN_DATABASE_URL to a throwaway database, then run the command after `--`.
  * The stub playwright records the env and argv it was given and exits with a chosen code.
  */
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -132,8 +132,8 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
-  it.each([['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]] as const)(
-    'records failure and reaps the rig when interrupted by %s', async (signal, code) => {
+  it.each([['SIGINT', 130, false], ['SIGTERM', 143, false], ['SIGHUP', 129, false], ['SIGTERM', 143, true]] as const)(
+    'records failure and reaps the rig when interrupted by %s (exit: %s, whole group: %s)', async (signal, code, wholeGroup) => {
       const f = fixture(0);
       const stopped = join(f.dir, 'rig-stopped');
       writeFileSync(f.rig, [
@@ -143,7 +143,7 @@ describe('run-operator-e2e-isolated.sh', () => {
         // A finite stub also cleans up after the pre-fix counterexample.
         'for ((i=0; i<60; i++)); do sleep 0.05; done',
       ].join('\n'));
-      const child = spawn('bash', [RUNNER], { env: {
+      const child = spawn('bash', [RUNNER], { detached: wholeGroup, env: {
         ...process.env,
         HARNESS_ADMIN_DATABASE_URL: SHARED,
         OPERATOR_E2E_RIG: f.rig,
@@ -164,16 +164,38 @@ describe('run-operator-e2e-isolated.sh', () => {
             if (output.includes('RIG_WAITING')) { clearTimeout(deadline); ready(); }
           });
         });
-        child.kill(signal);
+        if (wholeGroup) process.kill(-child.pid!, signal);
+        else child.kill(signal);
         expect(await closed, output).toBe(code);
         expect(output).toContain('verdict=fail');
         expect(output).not.toContain('verdict=pass');
         expect(existsSync(stopped), 'The runner must terminate and wait for its owned rig').toBe(true);
+        const evidence = join(f.dir, 'evidence');
+        const runDirs = readdirSync(evidence).filter(name => /^\d{8}T\d{6}Z-/.test(name));
+        expect(runDirs).toHaveLength(1);
+        const phases = readFileSync(join(evidence, runDirs[0], 'phases.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(phases.find(phase => phase.phase === 'isolated-suite')?.status).toBe('failed');
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }
     }, 15_000,
   );
+
+  it('never passes an unfinished suite when an unhandled signal enters the EXIT trap with zero status', () => {
+    const f = fixture(0);
+    writeFileSync(f.rig, '#!/usr/bin/env bash\nkill -USR1 "$PPID"\nsleep 0.1\n');
+    const res = spawnSync('bash', [RUNNER], { env: {
+      ...process.env,
+      OPERATOR_E2E_RIG: f.rig,
+      OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
+    }, encoding: 'utf8', timeout: 15_000 });
+    expect(res.signal).toBe('SIGUSR1');
+    const evidence = join(f.dir, 'evidence');
+    const runDirs = readdirSync(evidence).filter(name => /^\d{8}T\d{6}Z-/.test(name));
+    expect(runDirs).toHaveLength(1);
+    const phases = readFileSync(join(evidence, runDirs[0], 'phases.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(phases.find(phase => phase.phase === 'isolated-suite')?.status).toBe('failed');
+  });
 
   it('exits with the playwright exit code when a spec fails', () => {
     const r = run(fixture(1), []);
