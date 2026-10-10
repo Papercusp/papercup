@@ -515,12 +515,28 @@ export default defineTool({
           : args.current.supplied
             ? args.current.fingerprints
             : undefined;
+    // Resolve plan-item selectors before the bounded evidence read. Otherwise a
+    // large unrelated part of the plan can exhaust the limit before these clauses
+    // are selected. Reuse the same clause snapshot when evaluating below.
+    const itemClauses = args.planItemIds === undefined ? undefined : await listSpecClauses({
+      harnessSlug,
+      planSlug: args.slug,
+      specIds: args.specIds ?? classResolution.contractSpecIds,
+      planItemIds: args.planItemIds,
+      revision: args.specRevision,
+    });
+    const itemSpecIds = itemClauses?.filter((clause) =>
+      (!classResolution.contractSpecIds || classResolution.contractSpecIds.includes(clause.specId)) &&
+      (!args.specFingerprint || clause.contentHash === args.specFingerprint),
+    ).map((clause) => clause.specId);
     const evidenceLimit = args.limit ?? 1000;
-    const allEvidence = await listSpecEvidence({
+    // An empty spec filter means all specs in the store. Never widen an empty
+    // plan-item selection into that read; the existing selection guard handles it.
+    const allEvidence = itemSpecIds?.length === 0 ? [] : await listSpecEvidence({
       harnessSlug,
       planSlugs: [args.slug],
       workItemIds: args.workItemIds,
-      specIds: args.specIds,
+      specIds: itemSpecIds ?? args.specIds,
       specRevision: args.specRevision,
       specFingerprint: args.specFingerprint,
       replaySnapshot: args.replaySnapshot === true,
@@ -624,7 +640,9 @@ export default defineTool({
     }
     const evidenceSpecIds = new Set(allEvidence.map((row) => row.specId));
     const requestedSpecIds = args.specIds ?? (bindingSelection ? [...evidenceSpecIds] : classResolution.contractSpecIds);
-    const clauses = await listSpecClauses({
+    const clauses = itemClauses?.filter((clause) =>
+      !requestedSpecIds || requestedSpecIds.includes(clause.specId),
+    ) ?? await listSpecClauses({
       harnessSlug,
       planSlug: args.slug,
       specIds: requestedSpecIds,
