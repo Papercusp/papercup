@@ -332,7 +332,10 @@ export default defineTool({
       const snapshot = await assemblePresenceSnapshot(resolved, {
         ...(args.owner ? { owner: args.owner } : {}),
         ...(detail ? { detail } : {}),
-        onDiagnostic: (diagnostic) => snapshotDiagnostics.push(diagnostic),
+        onDiagnostic: (diagnostic) => {
+          snapshotDiagnostics.push(diagnostic);
+          publishSnapshotDiagnostics();
+        },
       });
       publishSnapshotDiagnostics();
 
