@@ -424,7 +424,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(originalText.length).toBeGreaterThan(BUDGET_CHARS);
     writeFileSync(process.env.PAPERCUSP_SCRATCH_ROOT!, 'not a directory');
 
-    const result = await applyResultDoorAsync(
+    const result: DoorableResult = await applyResultDoorAsync(
       { content: [{ type: 'text' as const, text: originalText }] },
       {
         ...OPTS,

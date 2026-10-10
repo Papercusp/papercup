@@ -618,6 +618,24 @@ describe('plan-cleanup run store (real PG)', () => {
     });
   });
 
+  it('restart derives preserved outcomes and counters from cleanup findings rather than the empty inbox table', async () => {
+    const run = await createCleanupRun();
+    await seedFindings({ runId: run.runId, findings: scanFindings() });
+    await reportFindingOutcomes({ runId: run.runId, reports: [
+      { findingId: scanFindings()[0]!.findingId, outcome: 'auto_applied' },
+      { findingId: scanFindings()[1]!.findingId, outcome: 'recommended' },
+      { findingId: scanFindings()[2]!.findingId, outcome: 'failed', error: 'retained failed decision' },
+    ] });
+    const before = await getRunFindings(run.runId);
+    await failRunIfExecuting({ runId: run.runId, error: 'resolver exited' });
+    const restarted = await restartRun({ runId: run.runId, resolverOwner: 'su-next' });
+    expect(restarted).toMatchObject({ ok: true, preservedOutcomes: 3,
+      run: { phase: 'pending', autoResolved: 1, recommended: 1, failed: 1, skipped: 0 } });
+    const after = await getRunFindings(run.runId);
+    expect(after.map((f) => ({ id: f.findingId, outcome: f.outcome, decidedAt: f.decidedAt, error: f.error })))
+      .toEqual(before.map((f) => ({ id: f.findingId, outcome: f.outcome, decidedAt: f.decidedAt, error: f.error })));
+  });
+
   // ── kind-aware settle + review reads ──────────────────────────────────────
 
   it('settles a plan-cleanup run from its FINDINGS: recommended → review, all terminal → complete', async () => {

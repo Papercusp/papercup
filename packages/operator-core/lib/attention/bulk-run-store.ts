@@ -1580,11 +1580,16 @@ export async function restartRun(input: {
   // outcomes and re-states them correctly on the restarted run.
   await reportCountersOnly(input.runId, ws);
   const refreshed = (await getRun(input.runId, ws)) ?? mapRun(rows[0]);
-  const items = await getRunItems(input.runId, ws);
+  const preservedOutcomes = refreshed.runKind === 'plan-cleanup'
+    ? Number((await sql<Array<{ count: number }>>`
+        SELECT COUNT(*)::int AS count FROM harness_shared.plan_cleanup_run_findings
+         WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND outcome <> 'pending'
+      `)[0]?.count ?? 0)
+    : (await getRunItems(input.runId, ws)).filter((i) => i.outcome !== 'pending').length;
   return {
     ok: true,
     run: refreshed,
-    preservedOutcomes: items.filter((i) => i.outcome !== 'pending').length,
+    preservedOutcomes,
   };
 }
 
@@ -1907,7 +1912,14 @@ export async function markItemDismissed(input: {
 export async function reportCountersOnly(runId: string, workspaceId?: string): Promise<void> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
-  await recomputeCounters(sql, runId, ws);
+  await sql.begin(async (tx) => {
+    const rows = await tx<Array<{ run_kind: BulkRunKind }>>`
+      SELECT run_kind FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${runId} FOR UPDATE
+    `;
+    if (rows[0]?.run_kind === 'plan-cleanup') await recomputeCleanupCounters(tx, runId, ws);
+    else if (rows[0]) await recomputeCounters(tx, runId, ws);
+  });
 }
 
 /**

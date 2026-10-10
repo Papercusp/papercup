@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { compactLeaderBriefForResultDoor } from './leader-brief-shape';
-import { applyResultDoor, measureResultContextBytes, RESULT_DOOR_TOKENS } from '../../result-door';
+import { applyResultDoor, measureResultContextBytes, RESULT_DOOR_TOKENS, type DoorableResult } from '../../result-door';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
 import { parseScratchReference } from '../../scratch-reference';
 
@@ -238,7 +238,8 @@ describe('P-001 complete queue comparison and same-snapshot recovery', () => {
     try {
       const source = oversizedBrief();
       const original = JSON.stringify(source);
-      const result = applyResultDoor({ content: [{ type: 'text', text: original }] }, {
+      const input: DoorableResult = { content: [{ type: 'text', text: original }] };
+      const result = applyResultDoor(input, {
         ...route, workspaceId: 'fleet-core-test', runId: '11111111-2222-4333-8444-555555555555',
       });
       const body = JSON.parse((result.content.find((part) => part.type === 'text') as { text: string }).text);

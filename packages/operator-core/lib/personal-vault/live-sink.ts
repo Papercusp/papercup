@@ -205,6 +205,8 @@ export async function syncGoogleContacts(
   input: {
     workspaceId: string;
     userId: string;
+    sourceId: string;
+    providerAccountId: string;
     accessToken: string;
     fetchImpl?: typeof fetch;
     pageToken?: string | null;
@@ -234,11 +236,13 @@ export async function syncGoogleContacts(
       const primaryEmail = emails?.map((e) => e.value).find(Boolean) ?? null;
       return {
         source: 'contacts', datatypeId: 'contact', kind: 'contact', externalId: resourceName || primaryEmail,
+        sourceId: input.sourceId,
+        providerAccountId: input.providerAccountId,
         participants: emails?.map((e) => e.value ?? '').filter(Boolean) ?? [],
         title: names?.map((n) => n.displayName).find(Boolean) ?? primaryEmail ?? '(unnamed contact)',
         text: [...(emails?.map((e) => e.value) ?? []), ...(phones?.map((p) => p.value) ?? [])].filter(Boolean).join('\n'),
         metadata: person,
-        dedupeKey: `contacts:${resourceName || primaryEmail || JSON.stringify(person)}`,
+        dedupeKey: `contacts:${input.sourceId}:${resourceName || primaryEmail || JSON.stringify(person)}`,
       };
     });
     if (docs.length) await upsertPersonalDocuments(sql, input.workspaceId, input.userId, docs);

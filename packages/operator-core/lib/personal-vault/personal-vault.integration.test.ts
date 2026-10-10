@@ -350,13 +350,17 @@ describe('Personal Vault core', () => {
   });
 
   it('consumes normalized Gmail/Calendar events and paged Google Contacts locally', async () => {
-    const sources = await org.adminSql<Array<{ id: string }>>`
+    const sources = await org.adminSql<Array<{ id: string; kind: string }>>`
       INSERT INTO harness_shared.data_sources
         (workspace_id, kind, owner_user_id, provider_account_id, status)
-      VALUES (${WS}, 'gmail', ${userId}, 'owner@example.com', 'ready')
-      RETURNING id`;
-    const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, sources[0].id);
-    expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}:source:${sources[0].id}` });
+      VALUES
+        (${WS}, 'gmail', ${userId}, 'owner@example.com', 'ready'),
+        (${WS}, 'contacts', ${userId}, 'contacts@example.com', 'connected')
+      RETURNING id, kind`;
+    const gmailSource = sources.find((source) => source.kind === 'gmail')!;
+    const contactsSource = sources.find((source) => source.kind === 'contacts')!;
+    const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, gmailSource.id);
+    expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}:source:${gmailSource.id}` });
     const event = {
       id: 'live-m1', from: 'ada@example.com', to: ['bob@example.com'],
       subject: 'Live mail', text: 'Hello',
@@ -381,7 +385,14 @@ describe('Personal Vault core', () => {
     const fakeFetch = async () => new Response(JSON.stringify({
       connections: [{ resourceName: 'people/1', names: [{ displayName: 'Ada' }], emailAddresses: [{ value: 'ada@example.com' }] }],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
-    const synced = await syncGoogleContacts(org.adminSql, { workspaceId: WS, userId, accessToken: 'local-test-token', fetchImpl: fakeFetch as typeof fetch });
+    const synced = await syncGoogleContacts(org.adminSql, {
+      workspaceId: WS,
+      userId,
+      sourceId: contactsSource.id,
+      providerAccountId: 'contacts@example.com',
+      accessToken: 'local-test-token',
+      fetchImpl: fakeFetch as typeof fetch,
+    });
     expect(synced).toMatchObject({ contacts: 1, pages: 1, nextPageToken: null });
     const rows = await org.adminSql<Array<{
       source: string;
@@ -392,8 +403,12 @@ describe('Personal Vault core', () => {
         FROM harness_shared.documents
        WHERE user_id = ${userId} ORDER BY source`;
     expect(rows.map((r) => r.source)).toEqual(['contacts', 'mail']);
+    expect(rows.find((row) => row.source === 'contacts')).toMatchObject({
+      source_id: contactsSource.id,
+      provider_account_id: 'contacts@example.com',
+    });
     expect(rows.find((row) => row.source === 'mail')).toMatchObject({
-      source_id: sources[0].id,
+      source_id: gmailSource.id,
       provider_account_id: 'owner@example.com',
     });
   });
