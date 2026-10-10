@@ -133,7 +133,7 @@
         "availableInputTokens": 899131
       },
       "native_proof": {
-        "nativeRef": "~/.papercusp/su-codex-homes/session-39008/sessions/2026/10/09/rollout-2026-10-09T15-50-51-01a12237-e764-72e0-bcdf-37ec9ff0ce4e.jsonl",
+        "nativeRef": "$HOME/.papercusp/su-codex-homes/session-39008/sessions/2026/10/09/rollout-2026-10-09T15-50-51-01a12237-e764-72e0-bcdf-37ec9ff0ce4e.jsonl",
         "persisted": true,
         "renderedHash": "4f8a32f3c49e9449d4401012ee516c77fafb404dd78f27d8d2e94f4e28c0fd56"
       },
@@ -185,7 +185,7 @@
         "availableInputTokens": 899131
       },
       "native_proof": {
-        "nativeRef": "~/.papercusp/su-codex-homes/session-39012/sessions/2026/10/09/rollout-2026-10-09T15-52-52-01a12239-c18b-7911-bbc6-d82f5ea08127.jsonl",
+        "nativeRef": "$HOME/.papercusp/su-codex-homes/session-39012/sessions/2026/10/09/rollout-2026-10-09T15-52-52-01a12239-c18b-7911-bbc6-d82f5ea08127.jsonl",
         "persisted": true,
         "renderedHash": "61ad7cedd23ee19ddca0654015fc4f4236c2e2559a2b84494872967a7c9f4640"
       },
@@ -237,7 +237,7 @@
         "availableInputTokens": 899131
       },
       "native_proof": {
-        "nativeRef": "~/.papercusp/su-codex-homes/session-39015/sessions/2026/10/09/rollout-2026-10-09T15-54-06-01a1223a-e212-7633-a036-1e45ca780c09.jsonl",
+        "nativeRef": "$HOME/.papercusp/su-codex-homes/session-39015/sessions/2026/10/09/rollout-2026-10-09T15-54-06-01a1223a-e212-7633-a036-1e45ca780c09.jsonl",
         "persisted": true,
         "renderedHash": "3a4818efa4aa8f6e48d6af46b9cf4aaaa53321d003533b960212d587d89c6b55"
       },

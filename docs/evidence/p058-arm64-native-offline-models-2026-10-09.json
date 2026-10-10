@@ -5,12 +5,12 @@
   "framework": "node",
   "command": [
     "env",
-    "PAPERCUSP_MODEL_INFERENCE_BINDING=~/p058-armbuild8/output/arm64-model-qualification1/binding.json",
+    "PAPERCUSP_MODEL_INFERENCE_BINDING=$HOME/p058-armbuild8/output/arm64-model-qualification1/binding.json",
     "node",
     "--test",
-    "~/p058-armbuild8/tooling-epoch2/producer/papercusp-desktop/test/installed-local-model-inference.test.js"
+    "$HOME/p058-armbuild8/tooling-epoch2/producer/papercusp-desktop/test/installed-local-model-inference.test.js"
   ],
-  "cwd": "~",
+  "cwd": "$HOME",
   "startedAt": "2026-10-09T17:58:09Z",
   "finishedAt": "2026-10-09T17:58:26Z",
   "exitCode": 0,

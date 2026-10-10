@@ -6,7 +6,7 @@
   "command": [
     "env",
     "TMPDIR=/mnt/backup/portable-server-p058/elf-prune-regression-20261009/tmp",
-    "~/.local/node25/bin/node",
+    "$HOME/.local/node25/bin/node",
     "--test",
     "--test-global-setup=papercusp-desktop/test/monorepo-host-preflight.mjs",
     "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js",

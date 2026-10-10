@@ -6,7 +6,7 @@
   "command": [
     "env",
     "TMPDIR=/mnt/backup/portable-server-p058/elf-prune-regression-20261009/tmp",
-    "~/.local/node25/bin/node",
+    "$HOME/.local/node25/bin/node",
     "--test",
     "--test-global-setup=papercusp-desktop/test/monorepo-host-preflight.mjs",
     "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js",
@@ -66,7 +66,7 @@
   "supportingOperationalChecks": [
     {
       "taskId": "0mv1c7oz6vc8mwp1mcd",
-      "command": ["node", "~/p058-armbuild8/tooling-epoch4/producer/papercusp-desktop/bin/build-server-container.mjs", "native", "--config", "~/p058-armbuild8/config/native9-relocation-diagnostic2.config.json"],
+      "command": ["node", "$HOME/p058-armbuild8/tooling-epoch4/producer/papercusp-desktop/bin/build-server-container.mjs", "native", "--config", "$HOME/p058-armbuild8/config/native9-relocation-diagnostic2.config.json"],
       "startedAt": "2026-10-09T19:07:23.109Z",
       "finishedAt": "2026-10-09T19:07:26.320Z",
       "exitCode": 0,
