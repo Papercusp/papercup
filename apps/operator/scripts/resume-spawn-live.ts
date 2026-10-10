@@ -42,9 +42,9 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { isCliEntry } from '../../../packages/operator-core/lib/util/cli-entry';
 import { resumeCommandFor, wakeTurnText } from '../../../packages/operator-core/lib/events/await/wake-executor';
 import type { DeliveryWork } from '../../../packages/operator-core/lib/events/await/types';
 import { writeSpawnClaudeConfig } from '../../../libs/papercusp/packages/orchestrator/src/spawn-mcp';
@@ -585,7 +585,7 @@ async function main() {
   process.exit(0);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isCliEntry(import.meta.url)) {
   main().catch((e) => {
     log(`resume-spawn-live: ${e?.message ?? e}`);
     process.exit(2);

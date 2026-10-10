@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '../util/cli-entry';
 import { scanProcHolders, type HolderScan } from '../release-cut-reclaim';
 
 export interface RetireAcceptanceDependenciesOptions {
@@ -94,7 +94,7 @@ async function discoverDependencyTrees(checkout: string): Promise<string[]> {
   return trees;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isCliEntry(import.meta.url)) {
   const [checkout, expectedSha, ...args] = process.argv.slice(2);
   const execute = args.includes('--execute');
   const automatic = args.includes('--all-dependencies');

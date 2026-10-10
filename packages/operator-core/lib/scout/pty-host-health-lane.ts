@@ -80,6 +80,10 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'queued-turn-folded' ||
     kind === 'headless-codex-model-choice-kept-existing' ||
     kind === 'headless-codex-model-choice-select-existing' ||
+    // Sending Escape is a startup control action, not proof the dialog closed.
+    // Skipping a stale/shutdown child is intentional; write failure is separate.
+    kind === 'codex-startup-update-dialog-escape-sent' ||
+    kind === 'codex-startup-update-dialog-escape-skipped' ||
     kind === 'headless-claude-onboarding-advanced' ||
     kind === 'claude-resume-compaction-summary-selected' ||
     kind === 'shutdown-accepted' ||

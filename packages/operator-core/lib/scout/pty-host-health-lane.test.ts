@@ -115,6 +115,18 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('launch-kickoff-backend-frame-timeout')).toBe('failure');
   });
 
+  it('omits startup dialog control actions while retaining a failed Escape write', () => {
+    const actions = ['codex-startup-update-dialog-escape-sent', 'codex-startup-update-dialog-escape-skipped'];
+    for (const kind of actions) expect(classifyPtyHostEvent(kind), kind).toBe('routine');
+    expect(classifyPtyHostEvent('codex-startup-update-dialog-escape-failed')).toBe('failure');
+    expect(classifyPtyHostEvent('codex-startup-update-dialog-future-outcome')).toBe('unclassified');
+    const patterns = buildPtyHostHealthPatterns([
+      ...actions.map(kind => row(kind, 20)),
+      row('codex-startup-update-dialog-escape-failed', 1),
+    ]);
+    expect(patterns.map(pattern => pattern.ref)).toEqual(['pty-host:kind:codex-startup-update-dialog-escape-failed']);
+  });
+
   it('omits normal parking lifecycle signals while retaining failed parking and delivery outcomes', () => {
     const lifecycle = ['child-parked', 'child-park-deferred', 'child-unparked', 'parked-delivery-held'];
     const failures = ['child-park-failed', 'child-unpark-failed', 'parked-delivery-refused'];

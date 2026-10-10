@@ -17,8 +17,8 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { isCliEntry } from '../../util/cli-entry';
 import { emitReport } from './report-builder-pg';
 import { buildRunCapabilityAttribution, formatRunAttributionMarkdown } from './capability-attribution-report';
 import { resolveDb } from '../reproducibility/db';
@@ -113,7 +113,7 @@ export async function runReportCli(argv: string[]): Promise<number> {
   return 0;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isCliEntry(import.meta.url)) {
   try { process.exit(await runReportCli(process.argv.slice(2))); }
   catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exit(2); }
 }
