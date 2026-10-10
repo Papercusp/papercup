@@ -95,6 +95,7 @@ vi.mock('node:os', async (importOriginal) => ({
 }));
 import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, readAcceptanceDrainVisibility, ACCEPTANCE_DRAIN_VISIBILITY_SQL, countInvalidModelFailures, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
+import { markSpawnOffloadHost, resetSpawnOffloadHostForTest } from '../fleet/git-via-sidecar';
 import { PUSH_BACKLOG_DEADLINE_MS } from './push-backlog-reader';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import { GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS } from '../harness/git-sync/missing-checkout';
@@ -1524,8 +1525,14 @@ describe('systemHealthGitSidecarEnabled — WI-7160 (git-spawn stalls the main t
     expect(systemHealthGitSidecarEnabled({})).toBe(false);
   });
 
-  it('is ON when the shared enable var is set', () => {
-    expect(systemHealthGitSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+  it('ignores an inherited shared enable var unless this process is marked as the host', () => {
+    try {
+      expect(systemHealthGitSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(false);
+      markSpawnOffloadHost();
+      expect(systemHealthGitSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+    } finally {
+      resetSpawnOffloadHostForTest();
+    }
   });
 
   it("this caller's own explicit var can force it ON while the shared var is unset", () => {

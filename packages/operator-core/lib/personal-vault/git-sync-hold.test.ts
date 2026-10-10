@@ -124,6 +124,36 @@ describe('readGitSyncCensusStrict', () => {
     expect(census).toEqual([lock, hold]);
   });
 
+  it('reports start and settlement for each independent census leg', async () => {
+    const events: Array<[string, string]> = [];
+    await readGitSyncCensusStrict({
+      locks: async () => [lock],
+      restricted: async () => [hold],
+      window: async () => [hold],
+      onLeg: (leg, status) => events.push([leg, status]),
+    });
+
+    for (const leg of ['live-locks', 'restricted-holds', 'working-tree-window']) {
+      expect(events).toContainEqual([leg, 'started']);
+      expect(events).toContainEqual([leg, 'completed']);
+    }
+    expect(events).toHaveLength(6);
+  });
+
+  it('reports a failed census leg without swallowing its fail-closed error', async () => {
+    const events: Array<[string, string]> = [];
+    const failure = new Error('restricted ledger unavailable');
+    await expect(readGitSyncCensusStrict({
+      locks: async () => [lock],
+      restricted: async () => { throw failure; },
+      window: async () => [],
+      onLeg: (leg, status) => events.push([leg, status]),
+    })).rejects.toBe(failure);
+
+    expect(events).toContainEqual(['restricted-holds', 'started']);
+    expect(events).toContainEqual(['restricted-holds', 'failed']);
+  });
+
   it('throws when the restricted read fails, so git-sync skips the tick instead of staging', async () => {
     const refused = new DisclosureRefused('disclosure_ledger_unavailable', 'down');
     await expect(

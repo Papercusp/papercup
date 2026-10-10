@@ -375,6 +375,11 @@ export async function readGitSyncCensusStrict(
     restricted?: () => Promise<RestrictedEditHolding[]>;
     /** The tree git-sync is about to sweep. Production always passes it (git-sync-action.ts). */
     window?: { repoPath: string; runGit: HoldRunGit } | (() => Promise<RestrictedEditHolding[]>);
+    /** Progress for the three independent reads. Diagnostic callbacks never affect the fail-closed census. */
+    onLeg?: (
+      leg: 'live-locks' | 'restricted-holds' | 'working-tree-window',
+      status: 'started' | 'completed' | 'failed',
+    ) => void;
   } = {},
 ): Promise<LiveLockHolding[]> {
   const tree = deps.window;
@@ -384,10 +389,33 @@ export async function readGitSyncCensusStrict(
       : tree
         ? () => readRestrictedWindowHoldings({ listDirtyFiles: () => listDirtyFilesRecursive(tree.runGit, tree.repoPath) })
         : async () => [];
+
+  const observeLeg = async <T>(
+    leg: 'live-locks' | 'restricted-holds' | 'working-tree-window',
+    read: () => Promise<T>,
+  ): Promise<T> => {
+    const notify = (status: 'started' | 'completed' | 'failed'): void => {
+      try {
+        deps.onLeg?.(leg, status);
+      } catch {
+        // Diagnostic progress is best-effort and never weakens the strict census.
+      }
+    };
+    notify('started');
+    try {
+      const value = await read();
+      notify('completed');
+      return value;
+    } catch (error) {
+      notify('failed');
+      throw error;
+    }
+  };
+
   const [locks, restricted, windowHolds] = await Promise.all([
-    (deps.locks ?? liveLockHoldingsStrict)(),
-    (deps.restricted ?? (() => readRestrictedEditHoldings()))(),
-    readWindow(),
+    observeLeg('live-locks', deps.locks ?? liveLockHoldingsStrict),
+    observeLeg('restricted-holds', deps.restricted ?? (() => readRestrictedEditHoldings())),
+    observeLeg('working-tree-window', readWindow),
   ]);
   return [...locks, ...restricted, ...windowHolds];
 }

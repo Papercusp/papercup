@@ -18,7 +18,7 @@ import { execPath } from 'node:process';
 import { spawn } from 'node:child_process';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import {
-  hostThroughPty,
+  hostThroughPty as hostThroughPtyProduction,
   socketPathFor,
   metaPathFor,
   eventLogPathForOwner,
@@ -48,6 +48,14 @@ import {
   PSU_PTY_DIR,
   IDENTITY_ACTIVATION_REFUSED_REASON,
 } from '../scripts/psu-pty-host.mjs';
+
+// WI-10008170: the production default `onExit` is `process.exit` — right for the
+// CLI, fatal here. Every test in this file hosts in-process, so a host that ends
+// inside a test calls process.exit in the vitest worker, which vitest reports as
+// an unhandled error that fails the whole file even when every assertion passed.
+// Default it to a no-op for the file; a test that passes its own onExit still wins.
+const hostThroughPty: typeof hostThroughPtyProduction = (o) =>
+  hostThroughPtyProduction({ onExit: () => undefined, ...o });
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
 // subpath keeps this an integration test of the actual chain, not a re-impl.

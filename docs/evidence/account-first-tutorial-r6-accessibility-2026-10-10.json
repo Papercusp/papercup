@@ -128,9 +128,59 @@
     "scope": "One genuine hosted non-Cloud preference task. This adds supported-runtime task completion to the earlier mounted/jsdom proof; it does not establish every full-product task, pure Tab traversal, screen-reader/native input, provider/human-heard voice, novice, full-affected or final production acceptance.",
     "runtimeCleanup": "Browser terminal0 and Portal Postgres shutdown observed. Operator group SIGINT terminal130 stopped all exact owned processes and serving ports, but left private directories without the maintained cleanup-complete receipt. Manual directory cleanup is a temporary mitigation; lifecycle and startup PostgreSQL admission follow-up is owned as EI-25612926047410142."
   },
+  "mountedSettingsTabPreflight": {
+    "observedAt": "2026-10-10T17:38:38.490Z",
+    "testRunId": 20987694,
+    "bindingId": 34746,
+    "bindingCurrentness": "current",
+    "bindingVerification": "Current-build3170 re-read the exact testing:runs:20987694 reference. R6@1, source, test and testRun are current with no stale or unknown reasons; the existing registered Portal measurement is pinned to the actual run commit.",
+    "outcome": "pass",
+    "passed": 2,
+    "skipped": 0,
+    "retries": 0,
+    "worktreeDirty": false,
+    "portalCommit": "0b46166b1b700bb55e8d6c6f8b2bc0fc103d5bd5",
+    "operatorCommit": "efdcd30aeff97d2775d71f26aa44b73ac000c90d",
+    "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-0b46166b1b-wPEKAW",
+    "operatorRoot": "/dev/shm/pcv/papercusp-lint-as-committed-efdcd30aef-z6uZN8",
+    "testPath": "e2e/portal-product-tutorial.spec.ts",
+    "testSha256": "a6b051d7efa479e905cb58e11bb5ed1c5015299252d8625294b742db32b777ee",
+    "log": "/dev/shm/tutorial-settings-tab-clean-0b46166b-20261010T1739.log",
+    "logSha256": "c48b31efffc548c4980476c95d3bba5ca34dd1269b4a8037732df8985fbf8f5c",
+    "passedCaseTitles": [
+      "Settings preflight reaches and operates real Personalization by Tab and arrow keys at 200 percent text",
+      "Settings preflight real Portal Personalization preserves host light and dark themes through remount"
+    ],
+    "sourceCustody": {
+      "comparison": "Each listed file is byte-equal in canonical source, the retained test root and the cited committed blob. The actual core lesson import resolves inside retained efdcd; Settings imports use that same root.",
+      "portalPaths": [
+        "packages/ui/src/shell.tsx",
+        "app/tokens.css",
+        "app/globals.css",
+        "apps/host/src/operator-surface-build.mjs",
+        "apps/host/shims/router-compat-navigation.tsx",
+        "e2e/portal-product-tutorial.spec.ts",
+        "e2e/guide-write-observer.ts",
+        "e2e/guide-destination-observer.ts"
+      ],
+      "corePaths": [
+        "apps/operator/app/settings/layout.tsx",
+        "apps/operator/app/settings/personalization/page.tsx",
+        "packages/operator-ui/src/settings-slots.tsx"
+      ]
+    },
+    "verifiedBehavior": [
+      "At390px width,32px root font and reduced motion, Tab reaches the real Settings picker without locator.focus",
+      "Enter opens the picker, ArrowDown reaches Personalization and Enter selects it",
+      "Tab reaches the real Dark control and Enter selects the host theme",
+      "The separate remount case preserves both host Light and Dark selections"
+    ],
+    "ledgerQualification": "Raw execution_details contains the exact retained root and both passedCaseTitles. The summary root and runGroupId remain null; no historical row is relabeled.",
+    "scope": "Two selected mounted browser fixture cases with controlled profile/sync responses. This supplements the earlier hosted preference proof; it does not establish whole-app hosted Tab traversal, screen-reader/native input, wider full-product tasks, provider/human-heard voice, novice, full-affected or production acceptance. Original hosted20987419/binding34637 and8Rok artifact are unchanged."
+  },
   "limitations": [
     "The earlier integration and browser fields cover mounted fixtures/jsdom; the qualified hosted field covers one actual preference task.",
-    "Supported-runtime screen-reader announcements, pure Tab traversal and wider full-product accessibility task coverage remain unproved.",
+    "Supported-runtime screen-reader announcements, whole-app hosted Tab traversal and wider full-product accessibility task coverage remain unproved; mounted Settings Tab traversal has scoped proof20987694.",
     "No human-heard/provider/native-input/novice/full-affected/exact-production shipment claim."
   ]
 }

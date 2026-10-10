@@ -40,7 +40,7 @@ describe('host-code handoff launch provenance (EI-25370180511092356)', () => {
     })).toBeNull();
   });
 
-  it.each([{}, { PAPERCUSP_LAUNCHED_BY: '' }])('does not invent agent provenance for an unmarked host (%j)', (env) => {
+  it.each<Record<string, string>>([{}, { PAPERCUSP_LAUNCHED_BY: '' }])('does not invent agent provenance for an unmarked host (%j)', (env) => {
     const carried = carryEnv(env);
     expect(carried.PAPERCUSP_LAUNCHED_BY).toBeUndefined();
     expect(shutdownRefusalReason({

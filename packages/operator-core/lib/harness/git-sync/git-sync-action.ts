@@ -394,7 +394,7 @@ interface GitSyncActionLivenessGuard {
   /** Fail closed before starting a new operation after expiry. */
   assertActive(): void;
   /** Run one awaitable operation with a cancellation race that ignores late settlement. */
-  run<T>(operation: () => Promise<T>, phase: string): Promise<T>;
+  run<T>(operation: () => Promise<T>, phase: string | (() => string)): Promise<T>;
   /** Wait for the timeout callback's best-effort cleanup, if expiry occurred. */
   waitForTimeoutCleanup(): Promise<void>;
   /** Stop both deadline timers after the lock-held critical section settles. */
@@ -418,14 +418,23 @@ function createGitSyncActionLivenessGuard(opts: {
   let stopped = false;
   let timedOut = false;
   let timeoutError: GitSyncActionTimeoutError | null = null;
-  let activePhase = 'unidentified action phase';
+  let activePhase: () => string = () => 'unidentified action phase';
   let timeoutCleanup: Promise<void> | null = null;
+
+  const activePhaseName = (): string => {
+    try {
+      const phase = activePhase();
+      return phase.trim() || 'unidentified action phase';
+    } catch {
+      return 'unidentified action phase';
+    }
+  };
 
   const expire = (kind: 'idle' | 'hard'): void => {
     if (stopped || timedOut) return;
     timedOut = true;
     timeoutError = new GitSyncActionTimeoutError(
-      activePhase,
+      activePhaseName(),
       kind,
       kind === 'idle' ? opts.idleTimeoutMs : opts.hardTimeoutMs,
     );
@@ -468,11 +477,12 @@ function createGitSyncActionLivenessGuard(opts: {
   hardTimer.unref?.();
   armIdle();
 
-  const run = <T>(operation: () => Promise<T>, phase: string): Promise<T> => {
-    if (stopped) return Promise.reject(new Error(`git-sync action is already stopped before ${phase}`));
+  const run = <T>(operation: () => Promise<T>, phase: string | (() => string)): Promise<T> => {
+    const phaseName = typeof phase === 'string' ? () => phase : phase;
+    if (stopped) return Promise.reject(new Error(`git-sync action is already stopped before ${phaseName()}`));
     if (timedOut)
-      return Promise.reject(timeoutError ?? new GitSyncActionTimeoutError(phase, 'idle', opts.idleTimeoutMs));
-    activePhase = phase;
+      return Promise.reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs));
+    activePhase = phaseName;
     touch();
 
     let work: Promise<T>;
@@ -491,7 +501,7 @@ function createGitSyncActionLivenessGuard(opts: {
         if (settled) return;
         settled = true;
         finish();
-        reject(timeoutError ?? new GitSyncActionTimeoutError(phase, 'idle', opts.idleTimeoutMs));
+        reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs));
       };
       if (controller.signal.aborted) {
         onAbort();
@@ -504,7 +514,7 @@ function createGitSyncActionLivenessGuard(opts: {
           settled = true;
           finish();
           if (controller.signal.aborted) {
-            reject(timeoutError ?? new GitSyncActionTimeoutError(phase, 'idle', opts.idleTimeoutMs));
+            reject(timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs));
             return;
           }
           touch();
@@ -533,7 +543,7 @@ function createGitSyncActionLivenessGuard(opts: {
     },
     touch,
     assertActive: () => {
-      if (timedOut) throw timeoutError ?? new GitSyncActionTimeoutError(activePhase, 'idle', opts.idleTimeoutMs);
+      if (timedOut) throw timeoutError ?? new GitSyncActionTimeoutError(activePhaseName(), 'idle', opts.idleTimeoutMs);
       if (stopped) throw new Error('git-sync action liveness guard is stopped');
     },
     run,
@@ -3847,7 +3857,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         }
       });
   };
-  const guarded = <T>(phase: string, operation: () => Promise<T>): Promise<T> => liveness.run(operation, phase);
+  const guarded = <T>(phase: string | (() => string), operation: () => Promise<T>): Promise<T> =>
+    liveness.run(operation, phase);
   let outcome: GitSyncOutcome;
   // These values are consumed by the post-pipeline escalation/recording tail;
   // the surrounding catch rethrows every setup failure before that tail runs.
@@ -3903,21 +3914,75 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
     // maps these superproject-root-relative paths into each submodule before add.
     let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
+    type CensusLeg = 'live-locks' | 'restricted-holds' | 'working-tree-window';
+    type CensusLegState = {
+      status: 'not-started' | 'running' | 'complete' | 'failed';
+      startedAtMs?: number;
+      elapsedMs?: number;
+    };
+    let censusLegs: Record<CensusLeg, CensusLegState> | null = null;
+    let censusGitCommand: string | null = null;
+    const censusTimeoutPhase = (phase: string): string => {
+      if (!censusLegs) return phase;
+      const detail = (leg: CensusLeg): string => {
+        const state = censusLegs![leg];
+        if (state.status === 'running') {
+          return `${leg}=running:${Math.max(0, Date.now() - (state.startedAtMs ?? Date.now()))}ms`;
+        }
+        return `${leg}=${state.status}${state.elapsedMs == null ? '' : `:${state.elapsedMs}ms`}`;
+      };
+      return `${phase} [${detail('live-locks')}, ${detail('restricted-holds')}, ${detail('working-tree-window')}` +
+        `${censusGitCommand ? `; git=${censusGitCommand}` : ''}]`;
+    };
+    const observeCensusLeg = (leg: CensusLeg, status: 'started' | 'completed' | 'failed'): void => {
+      if (!censusLegs) return;
+      const state = censusLegs[leg];
+      const now = Date.now();
+      if (status === 'started') {
+        censusLegs[leg] = { status: 'running', startedAtMs: now };
+      } else {
+        censusLegs[leg] = {
+          status: status === 'completed' ? 'complete' : 'failed',
+          ...(state.startedAtMs == null ? {} : { startedAtMs: state.startedAtMs, elapsedMs: now - state.startedAtMs }),
+        };
+      }
+      // One leg settling is real progress even when a sibling census read is still pending.
+      liveness.touch();
+    };
     // WI-10005576 / R-10: the census also reads THIS tree, so a write made inside an
     // active personal-disclosure window without a native edit tool is held too. An explicit
     // null repoPath (manual fire) names no tree, so there is nothing for the window read to scan;
     // the ledger-backed restricted holdings still apply.
-    const readCensus = () =>
-      readGitSyncCensusStrict(
-        repoPath
+    const readCensus = () => {
+      censusLegs = {
+        'live-locks': { status: 'not-started' },
+        'restricted-holds': { status: 'not-started' },
+        'working-tree-window': { status: 'not-started' },
+      };
+      censusGitCommand = null;
+      return readGitSyncCensusStrict({
+        onLeg: observeCensusLeg,
+        ...(repoPath
           ? {
               window: {
                 repoPath,
-                runGit: (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args), { signal: liveness.signal }),
+                runGit: async (args, cwd) => {
+                  const command = args.slice(0, 3).join(' ');
+                  censusGitCommand = command;
+                  try {
+                    return await runGitBounded(args, cwd, gitTimeoutMsFor(args), {
+                      signal: liveness.signal,
+                      onProgress: () => liveness.touch(),
+                    });
+                  } finally {
+                    if (censusGitCommand === command) censusGitCommand = null;
+                  }
+                },
               },
             }
-          : {},
-      );
+          : {}),
+      });
+    };
     try {
       // EI-21876778499591361: ride out a TRANSIENT pg contention timeout on this read instead of
       // skipping the tick. Failing CLOSED below is right for an UNREADABLE lock plane — staging a
@@ -3931,7 +3996,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // (EI-1720); this read was simply never wrapped. The retry sits INSIDE `guarded` so it sees
       // the RAW error, before the liveness wrapper. Non-contention faults still fail closed on the
       // first attempt, unchanged. ~6s of backoff against a 600s (LOCK_TTL_SEC) idle deadline.
-      liveLockHoldingRows = await guarded('read-live-file-locks', () => acquireWithContentionRetry(readCensus));
+      liveLockHoldingRows = await guarded(() => censusTimeoutPhase('read-live-file-locks'), () =>
+        acquireWithContentionRetry(readCensus),
+      );
     } catch (error) {
       if (liveness.timedOut) throw liveness.timeoutError;
       // This read is a safety gate: treating an unreadable lock plane as [] lets
@@ -4101,7 +4168,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // initial census above protects setup, while this guarded callback closes
         // the longer submodule/guard window where a peer can acquire a lock.
         refreshLiveLockHoldings: async () => {
-          const rows = await guarded('refresh-live-file-locks', () => acquireWithContentionRetry(readCensus));
+          const rows = await guarded(() => censusTimeoutPhase('refresh-live-file-locks'), () =>
+            acquireWithContentionRetry(readCensus),
+          );
           // Coordinate identity can perform Git reads too. Keep that await inside
           // the same cancellation guard, with its own phase so a stalled identity
           // lookup is not reported as a lock-census read.

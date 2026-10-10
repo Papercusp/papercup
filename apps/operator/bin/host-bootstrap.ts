@@ -66,6 +66,7 @@ import {
   isSidecarEnabledFromEnv,
   registerSidecarShutdownHooks,
 } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
+import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via-sidecar';
 import { assertDbosWorkItemsImportContract } from '@papercusp/operator-core/lib/dbos/work-items-contract';
 import { reconcileLegacyVoiceServices } from '@papercusp/operator-core/lib/voice-node/legacy-service-reconcile';
 // The proxy's retry window, defined ONCE (WI-6738) and shared with psu-launcher.mjs, which
@@ -421,6 +422,15 @@ export function runBootstrap(): void {
   // explicit secondary hosts and for source-level boot guards.
   const requestOnly = requestOnlyHost();
   const utilityHost = utilityHostEnabled();
+  const backgroundWorkers = backgroundWorkersEnabled();
+  const backgroundSpawnerSidecarEnabled =
+    backgroundWorkers &&
+    !utilityHost &&
+    isSidecarEnabledFromEnv({
+      enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
+      modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+    });
+  if (backgroundSpawnerSidecarEnabled) markSpawnOffloadHost();
   if (requestOnly) {
     console.log('[host] request-only startup profile — deferring host-wide warmers and voice transports until an explicit request');
   }
@@ -1503,7 +1513,6 @@ export function runBootstrap(): void {
   // desktop app with no :3170, so this branch defaults ON there — correct.
   // EI-312 leg 1: the rule moved to the ONE shared evaluation so the
   // module-scope boot effects in agent-tools/index.ts gate on the same thing.
-  const backgroundWorkers = backgroundWorkersEnabled();
   if (!backgroundWorkers) {
     console.log(
       '[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)',
@@ -1870,20 +1879,7 @@ export function runBootstrap(): void {
   // opt-in, so an operator without the flag never starts an unused sidecar; skipped
   // on a short-lived utility host (EI-368) like the substrate boot above. Detached +
   // fully guarded — a warm-up failure can never wedge boot (lazy fallback covers it).
-  if (
-    backgroundWorkers &&
-    !utilityHost &&
-    // WI-3793: shared, defensively-guarded enable-check (also never fires
-    // from inside the sidecar's own re-exec'd child — see
-    // isSidecarEnabledFromEnv in sidecar-spawn-shared.ts) instead of a bare
-    // inline env read; behavior here is unchanged (backgroundWorkers is
-    // already false in the sidecar child today), it just closes the latent
-    // gap for any future caller of this same condition.
-    isSidecarEnabledFromEnv({
-      enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
-      modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
-    })
-  ) {
+  if (backgroundSpawnerSidecarEnabled) {
     void (async () => {
       try {
         const { spawnSpawnerSidecar, registerSpawnerSidecarShutdownHooks } =

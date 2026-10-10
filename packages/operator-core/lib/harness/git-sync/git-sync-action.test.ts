@@ -2798,6 +2798,11 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       const error = await running;
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain(stage === 'census' ? 'during refresh-live-file-locks' : 'during translate-refreshed-live-file-locks');
+      if (stage === 'census') {
+        expect((error as Error).message).toContain('live-locks=running:');
+        expect((error as Error).message).toContain('restricted-holds=complete:');
+        expect((error as Error).message).toContain('working-tree-window=complete:');
+      }
       expect(appendPipelineEventMock).not.toHaveBeenCalled();
     } finally {
       finish();

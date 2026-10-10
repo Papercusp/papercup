@@ -47,8 +47,17 @@ describe('gitSidecarEnabled', () => {
     expect(gitSidecarEnabled(undefined, {})).toBe(false);
   });
 
-  it('is ON when the shared enable var is set', () => {
-    expect(gitSidecarEnabled(undefined, { PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+  it('does not treat an inherited shared enable var as proof this process owns the host sidecar', () => {
+    expect(gitSidecarEnabled(undefined, { PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(false);
+  });
+
+  it('honors the shared enable var on a process marked as the offload host', () => {
+    try {
+      markSpawnOffloadHost();
+      expect(gitSidecarEnabled(undefined, { PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+    } finally {
+      resetSpawnOffloadHostForTest();
+    }
   });
 
   it('is OFF INSIDE the sidecar process itself, even with the enable var set', () => {
@@ -90,8 +99,13 @@ describe('gitSidecarEnabled', () => {
       PAPERCUSP_SPAWNER_SIDECAR: '1',
       PAPERCUSP_POT_GIT_SPAWN_SIDECAR: '0',
     };
-    expect(gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR', env)).toBe(false);
-    expect(gitSidecarEnabled('PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR', env)).toBe(true);
+    try {
+      markSpawnOffloadHost();
+      expect(gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR', env)).toBe(false);
+      expect(gitSidecarEnabled('PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR', env)).toBe(true);
+    } finally {
+      resetSpawnOffloadHostForTest();
+    }
   });
 });
 

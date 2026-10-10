@@ -46,6 +46,7 @@ import {
   type GitSyncStepRunner,
   type RunGit,
 } from './run-git-sync';
+import { markSpawnOffloadHost, resetSpawnOffloadHostForTest } from '../../fleet/git-via-sidecar';
 
 /** Run git synchronously for test setup; throws on failure. */
 function git(cwd: string, ...args: string[]): string {
@@ -474,19 +475,26 @@ describe('WI-1416 git subprocess hang guard', () => {
   }, 20_000);
 
   it('routes git through the sidecar only on the bg-host opt-in, never inside the sidecar itself', () => {
-    expect(gitSyncSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' } as NodeJS.ProcessEnv)).toBe(true);
-    expect(
-      gitSyncSidecarEnabled({
-        PAPERCUSP_SPAWNER_SIDECAR: '1',
-        PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
-      } as NodeJS.ProcessEnv),
-    ).toBe(false);
-    expect(
-      gitSyncSidecarEnabled({
-        PAPERCUSP_SPAWNER_SIDECAR: '1',
-        PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '0',
-      } as NodeJS.ProcessEnv),
-    ).toBe(false);
-    expect(gitSyncSidecarEnabled({ PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: 'true' } as NodeJS.ProcessEnv)).toBe(true);
+    try {
+      const hostEnv = { PAPERCUSP_SPAWNER_SIDECAR: '1' } as NodeJS.ProcessEnv;
+      expect(gitSyncSidecarEnabled(hostEnv)).toBe(false);
+      markSpawnOffloadHost();
+      expect(gitSyncSidecarEnabled(hostEnv)).toBe(true);
+      expect(
+        gitSyncSidecarEnabled({
+          PAPERCUSP_SPAWNER_SIDECAR: '1',
+          PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
+        } as NodeJS.ProcessEnv),
+      ).toBe(false);
+      expect(
+        gitSyncSidecarEnabled({
+          PAPERCUSP_SPAWNER_SIDECAR: '1',
+          PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '0',
+        } as NodeJS.ProcessEnv),
+      ).toBe(false);
+      expect(gitSyncSidecarEnabled({ PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: 'true' } as NodeJS.ProcessEnv)).toBe(true);
+    } finally {
+      resetSpawnOffloadHostForTest();
+    }
   });
 });

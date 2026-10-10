@@ -166,7 +166,9 @@ export function resetSpawnOffloadHostForTest(): void {
  *   2. `explicitVar` set → as set. The caller's own opt-in/opt-out override,
  *      letting one subsystem be switched independently while a change is being
  *      rolled out or bisected (and the kill-switch for this default).
- *   3. `PAPERCUSP_SPAWNER_SIDECAR=1` → ON (the bg-host).
+ *   3. `PAPERCUSP_SPAWNER_SIDECAR=1` → ON only in a process marked as an
+ *      offload host. The shared var is inherited by child shells, so by itself
+ *      it is not proof that this process owns the host's sidecar.
  *   4. Otherwise ON iff this process is a {@link markSpawnOffloadHost marked}
  *      spawn-offload host AND a spawner socket is already established for it
  *      (`PAPERCUSP_SPAWNER_IPC_SOCKET`, pinned at boot for a clustered host or set
@@ -183,7 +185,10 @@ export function gitSidecarEnabled(
   if (explicitVar && env[explicitVar] != null) {
     return isSidecarEnabledFromEnv({ enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar, explicitVar }, env);
   }
-  if (isSidecarEnabledFromEnv({ enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar }, env)) return true;
+  if (
+    isSpawnOffloadHost() &&
+    isSidecarEnabledFromEnv({ enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar }, env)
+  ) return true;
   return isSpawnOffloadHost() && Boolean(env[SPAWNER_SOCKET_ENV]?.trim());
 }
 
