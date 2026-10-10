@@ -12,7 +12,9 @@ import { PostgresHostedUsageStore, type OpenRouterGenerationBinding } from './us
 import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
 import { createHostedUsageSource } from './usage-service';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
-import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetExecutionGrant } from './budget-store';
+import { PostgresHostedBudgetStore, createLockedHostedStripeFundingReader, readLockedHostedBudgetPopulation,
+  type HostedBudgetContextReader, type HostedBudgetExecutionGrant } from './budget-store';
+import { accrueUsageMicros, readLockedMoneyJournalPopulation } from '../../../cupboard/money-journal-store';
 import { createRoutedModelPort } from '../../../agent-loop/provider-router';
 import { runAgentLoop } from '../../../agent-loop/loop';
 import { createHostedPrincipal } from '../../hosted-principal';
@@ -612,6 +614,134 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
     expect(await p.budget.reserve(p.request)).toMatchObject({ outcome: 'duplicate',
       receipt: { revision: 0, costMicros: null, providerFinal: false } });
     expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
+  });
+
+  // Compose the maintained source readers through the admission Sql. Empty
+  // Stripe evidence supplies neither cash backing nor entitlements, so this
+  // fixture deliberately returns no allowance, even after a successful census.
+  async function lockedPrivateFunding(scope: OpenRouterGenerationBinding['scope'], options: {
+    accountMismatch?: boolean;
+    organizationMismatch?: boolean;
+    fetchImpl?: typeof fetch;
+    inspect?: (sql: Sql) => Promise<void>;
+  } = {}) {
+    const accountId = 'acct_PrivateSourceFixture';
+    const customerId = 'cus_' + randomUUID().replaceAll('-', '');
+    await runService(sql => sql`INSERT INTO papercusp_auth.hosted_billing_customers
+      (organization_id, stripe_customer_id, livemode) VALUES (${scope.organizationId}::uuid, ${customerId}, true)`);
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = options.fetchImpl ?? (async (url, init) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk_live_fixture');
+      expect(init?.signal).toBeInstanceOf(AbortSignal); expect(init?.redirect).toBe('error');
+      const path = new URL(String(url)).pathname; calls.push(path);
+      let body: unknown;
+      if (path === '/v1/account') body = { object: 'account', id: options.accountMismatch ? 'acct_Foreign' : accountId };
+      else if (path === '/v1/customers/' + customerId) body = { object: 'customer', id: customerId,
+        livemode: true, metadata: { organizationId: options.organizationMismatch ? randomUUID() : scope.organizationId } };
+      else if (path === '/v1/balance') body = { object: 'balance', livemode: true, available: [], pending: [] };
+      else if (['/v1/charges', '/v1/refunds', '/v1/disputes', '/v1/balance_transactions'].includes(path))
+        body = { object: 'list', data: [], has_more: false };
+      else throw new Error('unexpected private funding fixture path');
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'request-id': 'req_PrivateSourceFixture' } });
+    });
+    const built = createLockedHostedStripeFundingReader({ pool: { controlWorkspaceId: scope.controlWorkspaceId,
+      stripeAccountId: accountId }, journalWorkspaceId: 'fixture-private-model-journal',
+      policy: { daoBasisPoints: 0, refundReserveBasisPoints: 0 }, maximumAgeMs: 1000 },
+    { secretKey: 'sk_live_fixture', liveModeAllowed: true, fetchImpl, now: () => T, maximumDurationMs: 150 });
+    if (!built.ok) throw new Error('invalid funding fixture');
+    let fundingResult: Awaited<ReturnType<typeof built.read>> | undefined; let inspected = false;
+    let settled!: () => void; const readSettled = new Promise<void>(resolve => { settled = resolve; });
+    const readContext: HostedBudgetContextReader = async (sql, request) => {
+      try {
+        fundingResult = await built.read(sql, request.scope);
+        await options.inspect?.(sql);
+        inspected = true;
+        return null;
+      } finally { settled(); }
+    };
+    return { readContext, calls, readSettled, result: () => fundingResult, inspected: () => inspected };
+  }
+
+  it('joins locked funding, journal, usage and budget populations without turning an empty census into admission', async () => {
+    const scope = await tenant(); const prior = captureRequest(scope);
+    expect(await budgetStore().reserve(prior)).toMatchObject({ outcome: 'reserved' });
+    const liabilityId = randomUUID();
+    expect(await accrueUsageMicros({ workspaceId: 'fixture-private-model-journal', rollupId: liabilityId,
+      accrualId: liabilityId, micros: 1, microsExact: '1.25' }, { sql: db.adminSql })).toMatchObject({ ok: true });
+    const funding = await lockedPrivateFunding(scope, { inspect: async sql => {
+      const population = await readLockedHostedBudgetPopulation(sql);
+      expect(population.latest).toContainEqual(expect.objectContaining({ reservationId: prior.reservationId,
+        costMicros: null, providerFinal: false }));
+      const journal = await readLockedMoneyJournalPopulation(sql);
+      expect(journal.accruals).toContainEqual(expect.objectContaining({ accrualId: liabilityId, microsExact: '1.25' }));
+      expect(journal.rollups).toContainEqual(expect.objectContaining({ rollup: expect.objectContaining({
+        rollupId: liabilityId, totalMicrosExact: '1.25' }) }));
+      await store().readLockedPopulation(sql);
+      // Every source lock survives the remote collection and inspection.
+      await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await tx`UPDATE harness_shared.payment_receipts SET workspace_id = workspace_id WHERE false`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    } });
+    const p = await privateCustomerModel(scope, { readContext: funding.readContext });
+    expect((await p.consume()).at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
+    expect(funding.result()).toMatchObject({ ok: true, payments: [], allocations: [], entries: [] });
+    expect(funding.inspected()).toBe(true);
+    expect(funding.result()).not.toHaveProperty('cashBacking');
+    expect(funding.calls).toContain('/v1/balance');
+    expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
+    expect(await p.budget.reserve(prior)).toMatchObject({ outcome: 'duplicate' });
+    expect(await db.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts
+      WHERE control_workspace_id = ${scope.controlWorkspaceId} AND organization_id = ${scope.organizationId}`)
+      .toHaveLength(1);
+  });
+
+  it.each(['account', 'organization'] as const)('refuses mismatched Stripe %s identity in the private model admission join', async mismatch => {
+    const scope = await tenant(); const funding = await lockedPrivateFunding(scope,
+      { accountMismatch: mismatch === 'account', organizationMismatch: mismatch === 'organization' });
+    const p = await privateCustomerModel(scope, { readContext: funding.readContext });
+    expect((await p.consume()).at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
+    expect(funding.result()).toMatchObject({ ok: false });
+    expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
+    expect(await db.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts
+      WHERE control_workspace_id = ${scope.controlWorkspaceId} AND organization_id = ${scope.organizationId}`)
+      .toEqual([]);
+  });
+
+  it('bounds private cancellation and retains locked Stripe sources until an abort-ignoring transport settles late', async () => {
+    const scope = await tenant(); let entered!: () => void; let release!: () => void; let aborted!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const observedAbort = new Promise<void>(resolve => { aborted = resolve; });
+    const funding = await lockedPrivateFunding(scope, { fetchImpl: async (_url, init) => {
+      init?.signal?.addEventListener('abort', aborted, { once: true });
+      entered(); await gate;
+      return new Response(JSON.stringify({ object: 'account', id: 'acct_PrivateSourceFixture' }),
+        { status: 200, headers: { 'request-id': 'req_PrivateSourceFixture' } });
+    } });
+    const p = await privateCustomerModel(scope, { readContext: funding.readContext });
+    const events = p.consume(); let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([started, events.then(() => { throw new Error('admission ended before Stripe collection'); })]);
+      p.abort.abort();
+      const completed = await Promise.race([events.then(() => true),
+        new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), 500); })]);
+      expect(completed).toBe(true);
+      await observedAbort;
+      await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await tx`UPDATE harness_shared.payment_receipts SET workspace_id = workspace_id WHERE false`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    } finally { clearTimeout(timeout); release(); await events; await funding.readSettled; }
+    expect(funding.result()).toMatchObject({ ok: false });
+    expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
+    await db.adminSql.begin(async tx => {
+      await tx.unsafe("SET LOCAL lock_timeout = '1s'");
+      await tx`UPDATE harness_shared.payment_receipts SET workspace_id = workspace_id WHERE false`;
+    });
+    expect(await db.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts
+      WHERE control_workspace_id = ${scope.controlWorkspaceId} AND organization_id = ${scope.organizationId}`)
+      .toEqual([]);
   });
 
   it.each(['error', 'abort-before-wire'] as const)('composes actual native routing with committed admission and early binding on %s', async ending => {
