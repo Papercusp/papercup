@@ -20,6 +20,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism, tmpdir } from 'node:os';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
+import { expandWorkspaces } from './assert-workspace-links.mjs';
 import {
   parseSummaryFailedCounts,
   parseTransformFailure,
@@ -239,27 +240,7 @@ function workspaceDirs(root) {
   }
   if (!Array.isArray(patterns)) patterns = [];
 
-  const dirs = [];
-  for (const pattern of patterns) {
-    if (typeof pattern !== 'string') continue;
-    if (pattern.endsWith('/*')) {
-      const parent = resolve(root, pattern.slice(0, -2));
-      let entries;
-      try {
-        entries = readdirSync(parent);
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        if (entry.startsWith('.') || !existsSync(resolve(parent, entry, 'package.json'))) continue;
-        dirs.push(resolve(parent, entry));
-      }
-    } else if (existsSync(resolve(root, pattern, 'package.json'))) {
-      dirs.push(resolve(root, pattern));
-    }
-  }
-
-  const result = [...new Set(dirs)];
+  const result = expandWorkspaces(patterns, root).map(dir => resolve(root, dir));
   workspaceDirsCache.set(root, result);
   return result;
 }
