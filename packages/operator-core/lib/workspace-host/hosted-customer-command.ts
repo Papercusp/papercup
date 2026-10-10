@@ -59,8 +59,12 @@ function binding(principal: HostedPrincipal): HostedCustomerSessionBinding {
     sessionId: principal.sessionId, sessionVersion: principal.sessionVersion });
 }
 
-export async function awaitHostedCustomerOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+export async function awaitHostedCustomerOperation<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) throw denied();
+  const operation = Promise.resolve().then(() => {
+    if (signal.aborted) throw denied();
+    return start();
+  });
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
     onAbort = () => reject(denied());
@@ -76,7 +80,7 @@ async function authorize(
   signal: AbortSignal, expected?: HostedCustomerSessionBinding,
 ): Promise<HostedCustomerSessionBinding> {
   try {
-    const result = await awaitHostedCustomerOperation(Promise.resolve().then(() => resolve(new Headers(headers))), signal);
+    const result = await awaitHostedCustomerOperation(() => resolve(new Headers(headers)), signal);
     if (signal.aborted || !result.ok || !isHostedPrincipal(result.principal)
       || !result.principal.permissions.has('workspace:operate')
       || result.principal.selectedWorkspaceId !== workspaceId) throw denied();

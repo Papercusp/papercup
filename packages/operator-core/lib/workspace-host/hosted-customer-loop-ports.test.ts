@@ -30,7 +30,7 @@ async function fixture(options: { tool?: Partial<ProjectedTool>; deps?: Dispatch
     activeOrganizationId: 'customer-org', selectedWorkspaceId: 'customer-workspace',
     sessionId: 'authenticated-session', sessionVersion: 1, permissions: ['workspace:operate'] });
   const resolve: HostedPrincipalResolver = vi.fn(async () => ({ ok: true, principal: current } as HostedPrincipalResolution));
-  const localHandler = vi.fn(async () => ({ content: [{ type: 'text', text: 'operator-local' }] }));
+  const localHandler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'operator-local' }] }));
   const tool: ProjectedTool = { pluginName: 'fixture', description: 'shell',
     capabilities: ['capability:bash'], expose: { mcp: { name: 'capability:bash' } },
     inputSchema: { type: 'object', properties: { command: { type: 'string' }, cmd: { type: 'string' },
@@ -148,6 +148,15 @@ describe('private customer loop port composition', () => {
     const rejected = expect(pending).rejects.toThrow('hosted_customer_model_unavailable');
     f.controller.abort(); await rejected; release({ stream: f.modelStream }); await Promise.resolve();
     expect(f.modelStream).not.toHaveBeenCalled();
+  });
+
+  it('never authorizes tools or starts model admission after invocation cancellation', async () => {
+    const f = await fixture(); vi.mocked(f.resolve).mockClear(); f.controller.abort();
+    await expect(consume(f.ports.modelPort)).rejects.toThrow('hosted_customer_execution_denied');
+    await expect(f.ports.dispatch('capability:bash', { command: 'touch forbidden' }))
+      .rejects.toThrow('hosted_customer_execution_denied');
+    expect(f.resolve).not.toHaveBeenCalled(); expect(f.modelFactory).not.toHaveBeenCalled();
+    expect(f.transform).not.toHaveBeenCalled();
   });
 
   it('cancels a running customer command through the dispatcher signal and closes its task', async () => {

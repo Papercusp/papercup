@@ -38,6 +38,7 @@ export async function bindHostedCustomerLoopPorts(deps: HostedCustomerLoopPortDe
     || tool.needsWorkspaceTx) throw new Error('hosted_customer_tool_unavailable');
   const projectDir = deps.projectDir;
   const signal = deps.signal;
+  if (!(signal instanceof AbortSignal)) throw new Error('hosted_customer_execution_denied');
   const createModelPort = deps.createModelPort;
   if (typeof createModelPort !== 'function') throw new Error('hosted_customer_model_unavailable');
   const dispatchDeps: DispatchProjectedDeps = { ...deps.dispatchDeps,
@@ -89,7 +90,7 @@ export async function bindHostedCustomerLoopPorts(deps: HostedCustomerLoopPortDe
       const session = await command.authorize(streamSignal);
       let port: ModelPort;
       try { port = await awaitHostedCustomerOperation(
-        Promise.resolve().then(() => createModelPort(session, streamSignal)), streamSignal); }
+        () => Promise.resolve(createModelPort(session, streamSignal)), streamSignal); }
       catch { throw new Error('hosted_customer_model_unavailable'); }
       await command.authorize(streamSignal);
       if (typeof port?.stream !== 'function') throw new Error('hosted_customer_model_unavailable');
