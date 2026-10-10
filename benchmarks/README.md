@@ -48,6 +48,102 @@ prices distinct; unknown usage or billing remains unknown. Grader outages requir
 repair/regrade or an inconclusive result. A withheld, power-planned confirmation
 study is required for a superiority claim and has no implied authorization to spend.
 
+### Current launch prerequisites and verification
+
+Current generation uses `run-launcher.ts` and the authenticated
+`POST /api/external-bench/runs/launch` route. The Evaluation launch form selects
+the committed protocol ID, isolated workspace, current arm and registered seed.
+Its existing estimate read checks the committed protocol, API account and loaded
+host, then derives the exact launch controls. A historical launch or a successful
+refusal fixture does not establish current measured generation or provider billing.
+
+1. Select the `operator-api` current-build route with
+   `dev:pipeline_position { path: "packages/operator-core/lib/external-bench/current-su.ts", testClass: "operator-api" }`.
+   Verify that its serving runtime contains the tested source. Ordinary acceptance
+   uses that current build; final shipment requires separate green-release proof.
+2. Register an OpenAI API bearer account **in the isolated benchmark workspace**.
+   The current Codex budget authenticator accepts `bearer-http` to the official
+   Responses API. Subscription/OAuth and CLI bridge credentials cannot preserve
+   the enforced native output limit and are refused. A production account pool
+   entry does not populate the benchmark workspace. Never disable admission or
+   substitute an ambient login to make a run start.
+3. Before freezing the study, calibrate each arm's actual native client, served
+   model, effort, loaded source/runtime, instructions and tools on separate
+   non-study work. Native template mode must be explicitly pinned as
+   `codex-native-template-v1`; retain the exact request hash and host-home binding
+   alongside its template hash. Offline fixtures and configured aliases cannot
+   supply these measurements. Record calibration spend within the authorized
+   aggregate ceiling.
+4. Use the existing `preregister()` function to write the canonical protocol and
+   its database row. Git-sync owns the commit. `requireCommittedPreregistration()`
+   must verify the introducing commit before study generation. Store the same
+   permitted corpus/memory bytes at the protocol's repository-relative references.
+   Current-study task IDs and the official grader must be selected before new
+   study outcomes are observed; calibration tasks stay outside that roster.
+5. Launch one registered arm/seed at a time. The request is derived from the
+   committed protocol, with this shape (replace the descriptive placeholders):
+
+   ```json
+   {
+     "arm": "papercusp",
+     "taskSetId": "custom",
+     "current": {
+       "workspaceId": "benchmarks",
+       "protocolRunId": "registered-study-id",
+       "preregHash": "64-character-canonical-config-sha256",
+       "seed": 1,
+       "observation": {
+         "runtimeWorkspaceId": "workspace-of-the-execution-host-boot-ledger",
+         "workerUnit": "execution-host-boot-unit",
+         "gatewayUnit": "execution-host-boot-unit"
+       }
+     }
+   }
+   ```
+
+   `baseline` selects the stock Codex arm; `papercusp` selects current su. The
+   seed must be registered. The host-issued private gateway runs in the worker
+   process, so both observation unit fields identify that actual boot unit.
+   The observation reader checks the process/kernel identity; these fields do
+   not create a runtime receipt. Optional model, task IDs, concurrency and caps
+   must equal the frozen protocol. The route supplies authenticated host authority;
+   JSON cannot supply a principal. A successful response returns a managed run ID,
+   not a completed or graded result. A second attempt of the same arm/seed is
+   refused; create a new preregistration for a different protocol.
+6. Reconcile the complete task/session/request reservation population at terminal
+   state. Inspect `currentExecution.protocolIdentity`, native transcript source
+   hashes, provider response IDs, per-event billing evidence, and governor
+   settlements. Missing measurement keeps efficiency claims closed. Verify
+   cancellation/restart retires the run-owned task subtree, including descendants.
+7. Configure the official grading host paths listed above and call
+   `POST /api/external-bench/runs/<runId>/grade` in that run's workspace. Retain the
+   official source/CSV/image receipt, actual image-use trace and per-task test
+   output. A grader error is missing measurement; repair/regrade it or publish an
+   inconclusive measurement. Export with
+   `GET /api/external-bench/runs/<runId>/export` and compare its frozen assignments,
+   outcome denominator and source hashes with the stored run.
+
+The regression checks use the project's real test runner:
+
+```bash
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- \
+  packages/operator-core/lib/external-bench/run-launcher.test.ts \
+  packages/operator-core/lib/external-bench/current-su.test.ts \
+  packages/operator-core/lib/external-bench/current-su.integration.test.ts \
+  packages/operator-core/lib/external-bench/native-stock-harness.integration.test.ts \
+  packages/operator-core/lib/external-bench/reproducibility/prereg.integration.test.ts \
+  packages/operator-core/lib/external-bench/reproducibility/context.test.ts \
+  packages/operator-core/lib/external-bench/xbench-grade-current.test.ts
+```
+
+These tests cover protocol drift, host identity, isolation, native lifecycle,
+context and grader receipt checks. Their private/no-forwarding fixtures are
+regression evidence only. The paid calibration, all eighteen study assignments,
+official Docker grading, current workload outcomes, independent certification and
+exact shipped-artifact observation need separate measured evidence. Retain test
+ledger IDs and source/test/fixture fingerprints; never convert skipped tests or
+unmeasured provider bills into passes.
+
 ---
 
 ## The one invariant
