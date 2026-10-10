@@ -5131,6 +5131,68 @@ describe('work_items:checkpoint — absence-premise continuity lint (WI-7238)', 
     expect(result.ok).toBe(true);
     expect(result).not.toHaveProperty('absenceLint');
   });
+
+  it('covers an unaccounted group/task absence with its matching unfiltered live-process census', async () => {
+    const body = 'There is no current unaccounted group/task id for the descriptor probe.';
+    const processCensus = {
+      claim:
+        'Fresh processes:list with live:true and no state/task selectors returned scannedProcesses=2506, ' +
+        'unaccountedCount=0, unaccountedPidCount=0, and unaccountedGroups=[].',
+      recheck: 'Repeat processes:list { live:true, limit:1 } without state/task selectors.',
+      verified: 'The unfiltered live census returned zero unaccounted groups.',
+    };
+    const stored = withCarryNoteChecks(body, [processCensus]);
+    getWorkItem.mockResolvedValue({ id: 'WI-LIVE-PROCESS-ABSENCE', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({
+      id: 'WI-LIVE-PROCESS-ABSENCE',
+      checkpoint: body,
+      checks: [processCensus],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('absenceLint');
+  });
+
+  it('recommends a live-process ledger probe for an uncovered runtime absence, not a repository search', async () => {
+    const body = 'There is no current unaccounted group/task id for the descriptor probe.';
+    getWorkItem.mockResolvedValue({ id: 'WI-LIVE-PROCESS-ABSENCE-UNCHECKED', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-LIVE-PROCESS-ABSENCE-UNCHECKED', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.absenceLint?.flagged).toBe(true);
+    expect(result.absenceLint?.claims[0]?.recheck).toMatch(/processes:list/i);
+    expect(result.absenceLint?.claims[0]?.recheck).not.toMatch(/search for|grep|whole repo/i);
+  });
+
+  it('does not accept a filtered process census as proof of a global unaccounted-group absence', async () => {
+    const body = 'There is no current unaccounted group/task id for the descriptor probe.';
+    const filteredCensus = {
+      claim:
+        'processes:list with live:true and state=running returned scannedProcesses=2506, ' +
+        'unaccountedCount=0, unaccountedPidCount=0, and unaccountedGroups=[].',
+      recheck: 'Repeat the processes:list call for the running state only.',
+      verified: 'The filtered running-state census returned zero unaccounted groups.',
+    };
+    const stored = withCarryNoteChecks(body, [filteredCensus]);
+    getWorkItem.mockResolvedValue({ id: 'WI-LIVE-PROCESS-ABSENCE-FILTERED', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({
+      id: 'WI-LIVE-PROCESS-ABSENCE-FILTERED',
+      checkpoint: body,
+      checks: [filteredCensus],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.absenceLint?.flagged).toBe(true);
+  });
 });
 
 describe('work_items:checkpoint — prose path continuity lint (EI-22386514939689944)', () => {
