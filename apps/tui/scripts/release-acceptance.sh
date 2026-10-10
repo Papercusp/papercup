@@ -85,11 +85,18 @@ checkouts="$(cd "$checkouts" && pwd -P)"
 # leftover child of an earlier run holds it too (`fuser -v <slot>.lock`).
 checkout=""
 for slot in 1 2 3; do
+  # Offload-backed caches can retain legacy symlinked slots. The cleanup helper
+  # correctly refuses those aliases; skip them here and use another physical
+  # slot instead of aborting before the acceptance stage starts.
+  if [ -L "$checkouts/slot-$slot" ]; then
+    echo "release-acceptance: skipping symlinked checkout slot $slot" >&2
+    continue
+  fi
   exec 9>"$checkouts/slot-$slot.lock"
   if flock -n 9; then checkout="$checkouts/slot-$slot"; break; fi
   exec 9>&-
 done
-[ -n "$checkout" ] || fail "all three acceptance checkouts under $checkouts are held by other runs"
+[ -n "$checkout" ] || fail "no free physical acceptance slot under $checkouts (all three slots are held or nonphysical)"
 
 # A killed prior parent may have missed its EXIT cleanup. Clear that slot's
 # verified, idle copies before admission, so an otherwise admissible retry is
