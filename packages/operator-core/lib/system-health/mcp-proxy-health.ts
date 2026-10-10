@@ -15,9 +15,9 @@
  * with the other SLOs in ./thresholds.ts — `infraStatus` + `MCP_PROXY_HARD_FAIL_CRIT`.)
  *
  * BOUNDED + fail-soft (perf + correctness floor):
- *  - the reader reads only the TAIL of the ledger (last READ_CAP_BYTES) via a positioned
- *    read, so a ledger that grows under a sustained regression never makes the health
- *    tick read an unbounded file (perf anti-pattern A-list: no full-file slurp);
+ *  - the reader reads bounded tails from the active and one rotated file, each up to the
+ *    writer's shared 10MiB rotation bound, so an ordinary rollover does not cut the 1h
+ *    health window and total I/O remains capped;
  *  - an ABSENT ledger = no failures recorded yet = a healthy zero (`[]`), NOT an error;
  *  - a read/parse error yields `null` ⇒ the Infra panel greys THIS leg (never blanks);
  *  - the summarizer is PURE (no fs) so the window/classification logic unit-tests hermetically.
@@ -35,10 +35,10 @@ export function mcpProxyFailureLogPath(): string {
   return process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG || join(homedir(), '.papercusp', 'mcp-proxy-failures.jsonl');
 }
 
-/** Tail bytes read from the ledger — bounded regardless of total file size. 256KB holds
- *  far more than a 1h window's worth of records at any rate that isn't already a loud
- *  crit (a sustained >256KB/h failure stream reds the panel long before the tail clips). */
-export const MCP_PROXY_READ_CAP_BYTES = 256 * 1024;
+/** Shared active/rotated ledger-file bound. Keep the writer and reader on one value so a
+ *  normal rotation never cuts the one-hour health window at the former 256KiB read cap. */
+export const MCP_PROXY_FAILURE_LOG_MAX_BYTES = 10 * 1024 * 1024;
+export const MCP_PROXY_READ_CAP_BYTES = MCP_PROXY_FAILURE_LOG_MAX_BYTES;
 
 /** The default SLO lookback window (1h) — mirrors the dashboard's "this window". */
 export const MCP_PROXY_WINDOW_MS = 60 * 60_000;
@@ -106,24 +106,19 @@ export function isBenignProbe(rec: Pick<McpProxyFailureRecord, 'status' | 'metho
   return rec.status === 408 || (rec.method === 'GET' && rec.status === 405);
 }
 
-/**
- * Read the TAIL of the JSONL ledger and return the parsed records (best-effort). A partial
- * leading line (the tail may start mid-record) is skipped; a malformed line is skipped.
- * Returns `[]` when the ledger is absent/empty (a healthy zero) and `null` on a genuine
- * read error (⇒ the collector greys the leg, fail-soft). Synchronous + bounded: at most
- * one statSync + one positioned readSync of ≤ capBytes — negligible on the health tick.
- */
-export function readMcpProxyFailureTail(
-  path: string = mcpProxyFailureLogPath(),
-  capBytes: number = MCP_PROXY_READ_CAP_BYTES,
+/** Read one retained JSONL segment, best-effort and byte-bounded. */
+function readMcpProxyFailureSegment(
+  path: string,
+  capBytes: number,
 ): McpProxyFailureRecord[] | null {
   let fd: number | undefined;
   try {
     let size: number;
     try {
       size = statSync(path).size;
-    } catch {
-      return []; // absent ledger ⇒ nothing has failed yet ⇒ healthy zero (not an error)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      return null;
     }
     if (size === 0) return [];
     const start = Math.max(0, size - capBytes);
@@ -161,6 +156,24 @@ export function readMcpProxyFailureTail(
       }
     }
   }
+}
+
+/**
+ * Read the active JSONL ledger plus its single retained rotation. Each positioned read is
+ * capped at the same limit the writer uses before rotating, so one-hour summaries retain
+ * failures on both sides of a normal rollover while total I/O stays bounded at 20MiB.
+ * Partial leading lines are skipped and malformed lines ignored. Both files absent means
+ * `[]`; any other read error returns `null` so callers do not mistake it for a healthy zero.
+ */
+export function readMcpProxyFailureTail(
+  path: string = mcpProxyFailureLogPath(),
+  capBytes: number = MCP_PROXY_READ_CAP_BYTES,
+): McpProxyFailureRecord[] | null {
+  const rotated = readMcpProxyFailureSegment(`${path}.1`, capBytes);
+  if (rotated === null) return null;
+  const active = readMcpProxyFailureSegment(path, capBytes);
+  if (active === null) return null;
+  return [...rotated, ...active];
 }
 
 /** True when a forwarded non-2xx bears the W1.3 stale-socket-400 signature: HTTP 400 with

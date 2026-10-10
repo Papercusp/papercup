@@ -56,6 +56,7 @@ import {
   isCheapRepeatingBeat,
   isFastFailPrecheck,
 } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
+import { MCP_PROXY_FAILURE_LOG_MAX_BYTES } from "@papercusp/operator-core/lib/system-health/mcp-proxy-health";
 import {
   isBoundedDevTelemetryArgs,
   isBoundedCoordPresenceArgs,
@@ -205,7 +206,7 @@ function failureLogPath(): string {
     join(homedir(), ".papercusp", "mcp-proxy-failures.jsonl")
   );
 }
-export const DEFAULT_FAILURE_LOG_MAX_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_FAILURE_LOG_MAX_BYTES = MCP_PROXY_FAILURE_LOG_MAX_BYTES;
 function failureLogMaxBytes(): number {
   const configured = Number(
     process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES,
