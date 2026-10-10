@@ -344,6 +344,29 @@ describe('deriveBindingFromTestRun', () => {
     expect(!out.ok && out.message).toContain('outcome="failed"');
   });
 
+  it('round-trips a prior canonical pass adequacy outcome against its governed test run', () => {
+    const out = deriveBindingFromTestRun(
+      input({ details: { adequacy: { outcome: 'pass', pathReachable: true } } }),
+      run({ status: 'pass' }),
+      root,
+      'run',
+    );
+    expect(out).toMatchObject({
+      ok: true,
+      binding: { details: { adequacy: { outcome: 'passed', pathReachable: true } } },
+    });
+
+    // A caught mutant is not an alias for a passing ordinary test. Keep the polarity check
+    // when the same binder handles a mutant run as counterexample evidence.
+    const mutant = run({ source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } });
+    expect(deriveBindingFromTestRun(
+      input({ evidenceKind: 'counterexample', details: { adequacy: { outcome: 'caught' } } }),
+      mutant,
+      root,
+      'run',
+    )).toMatchObject({ ok: false, error: 'run_contradicts_declared_adequacy' });
+  });
+
   it('reports a collection failure as not collected and a skip as skipped', () => {
     expect(
       deriveBindingFromTestRun(input(), run({ status: 'fail', execution_details: { collectionFailed: true } }), root, 'run'),
@@ -505,6 +528,21 @@ describe('expandTestRunBinding: harness attribution', () => {
   // WI-10006836: report-cargo-tests.mjs records `<crate-dir>::<test>`, which is not a file, so the
   // generic mapping handed realpath an impossible path and every cargo row refused with ENOENT.
   describe('cargo rows map through a canonicalTestPath that defines the test', () => {
+    it('follows a target declaration to the qualified test module and rejects an unrelated same-named function', async () => {
+      const target = 'native-target/src/main.rs';
+      const module = 'native-target/src/native_console.rs';
+      const other = 'native-target/src/other.rs';
+      await mkdir(path.join(root, 'native-target/src'), { recursive: true });
+      await writeFile(path.join(root, target), 'mod native_console; mod other;\n');
+      const body = '#[cfg(test)] mod tests { #[test] fn prepares_both_entrypoints() {} }\n';
+      await writeFile(path.join(root, module), body);
+      await writeFile(path.join(root, other), body);
+      const ref = cargoTestRef(`${target}::native_console::tests::prepares_both_entrypoints`)!;
+      expect(cargoCanonicalTestPathRefusal(root, ref, module)).toBeNull();
+      expect(cargoCanonicalTestPathRefusal(root, ref, other)).toContain('declared test module');
+      expect(cargoCanonicalTestPathRefusal(root, { ...ref, testName: 'missing::tests::prepares_both_entrypoints' }, module))
+        .toContain('declared test module');
+    });
     const CRATE = 'app/src-tauri';
     const RS = `${CRATE}/src/main.rs`;
     const CARGO_TEST = `${CRATE}::tests::tracker_measures_the_stretch`;

@@ -38,7 +38,7 @@
  * scopes them by source/commit, so stamping one would move it between populations. A run
  * attributed to ANOTHER harness is refused, never re-stamped.
  */
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
@@ -227,7 +227,27 @@ export function cargoCanonicalTestPathRefusal(
 ): string | null {
   const fnName = ref.testName.split('::').pop() ?? '';
   if (ref.sourcePath && canonicalTestPath !== ref.sourcePath) {
-    return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} differs from the recorded target source ${JSON.stringify(ref.sourcePath)}.`;
+    // Cargo names the compiled target (often main.rs), while libtest names a
+    // test in an external module. Follow only declarations in that target's
+    // qualified module chain; a same-named function elsewhere is not proof.
+    let source = ref.sourcePath;
+    for (const module of ref.testName.split('::').slice(0, -1)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(module)) break;
+      let text: string;
+      try { text = stripComments(readFileSync(resolve(root, source), 'utf8')); } catch { break; }
+      const declaration = new RegExp(`\\bmod\\s+${module}\\s*([;{])`).exec(text);
+      if (!declaration) break;
+      if (declaration[1] === '{') continue;
+      const directory = /(?:^|\/)(?:main|lib|mod)\.rs$/.test(source)
+        ? dirname(source) : source.slice(0, -3);
+      const candidates = [`${directory}/${module}.rs`, `${directory}/${module}/mod.rs`]
+        .filter((file) => { try { readFileSync(resolve(root, file)); return true; } catch { return false; } });
+      if (candidates.length !== 1) break;
+      source = candidates[0]!;
+    }
+    if (canonicalTestPath !== source) {
+      return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} differs from the recorded target source ${JSON.stringify(ref.sourcePath)} and its declared test module.`;
+    }
   }
   if (!canonicalTestPath.endsWith('.rs') || (!ref.sourcePath && !canonicalTestPath.startsWith(`${ref.crateDir}/`))) {
     return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} is not a .rs file inside the recorded crate ${JSON.stringify(ref.crateDir)}.`;
@@ -608,6 +628,25 @@ interface RunFacts {
   testLayer?: RecordedTestLayer;
 }
 
+/** The adequacy reader accepts these aliases; compare them semantically while preserving polarity. */
+const ADEQUACY_OUTCOME_CANONICAL: Readonly<Record<string, string>> = {
+  pass: 'passed',
+  passed: 'passed',
+  success: 'passed',
+  succeeded: 'passed',
+  fail: 'failed',
+  failed: 'failed',
+  skip: 'skipped',
+  skipped: 'skipped',
+  caught: 'caught',
+  killed: 'caught',
+};
+
+function canonicalAdequacyOutcome(value: unknown): string {
+  const outcome = String(value).toLowerCase();
+  return ADEQUACY_OUTCOME_CANONICAL[outcome] ?? outcome;
+}
+
 function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidenceKind']): RunFacts {
   const testLayer = recordedTestLayer(row.execution_details);
   const status = String(row.status ?? '');
@@ -734,7 +773,7 @@ export function deriveBindingFromTestRun(
     (key) =>
       declaredAdequacy[key] !== undefined &&
       (key === 'outcome'
-        ? String(declaredAdequacy[key]).toLowerCase() !== facts.outcome
+        ? canonicalAdequacyOutcome(declaredAdequacy[key]) !== canonicalAdequacyOutcome(facts.outcome)
         : declaredAdequacy[key] !== facts[key]),
   );
   if (contradictions.length > 0) {
@@ -1088,7 +1127,15 @@ export async function expandTestRunBinding(
   // WI-10006836: a cargo row names a test, not a file, so it maps only through an explicit
   // canonicalTestPath that defines that test inside the recorded crate (any source: a local run
   // and an in-tree mutation probe record the same shape).
-  const cargo = row.framework === 'cargo' ? cargoTestRef(row.file_path) : null;
+  let cargo = row.framework === 'cargo' ? cargoTestRef(row.file_path) : null;
+  let cargoMapping: AsCommittedMapping | null = null;
+  if (cargo?.sourcePath) {
+    const targetRow = { ...row, file_path: cargo.sourcePath };
+    const recordedTarget = await recordedTestPath(root, targetRow, deps.git);
+    if (!recordedTarget) cargoMapping = await asCommittedTestPath(root, targetRow, deps.git);
+    const target = recordedTarget ?? cargoMapping?.testPath;
+    if (target) cargo = { ...cargo, sourcePath: target, crateDir: dirname(target) };
+  }
   if (row.framework === 'cargo') {
     if (!cargo) {
       return {
@@ -1117,6 +1164,13 @@ export async function expandTestRunBinding(
   let testPath = cargo && input.canonicalTestPath ? input.canonicalTestPath : await recordedTestPath(root, row, deps.git);
   // WI-10004898: a clean run in a disposable clone (lint:as-committed) maps by commit content.
   let asCommitted: AsCommittedMapping | null = null;
+  if (cargo && input.canonicalTestPath && row.worktree_dirty === false && row.commit_sha && FULL_SHA_RE.test(row.commit_sha)) {
+    asCommitted = cargoMapping
+      ? { ...cargoMapping, testPath: input.canonicalTestPath }
+      : { testPath: input.canonicalTestPath,
+        repoPrefix: await canonicalAsCommittedPrefix(root, input.canonicalTestPath, row.commit_sha, deps.git),
+        commitSha: row.commit_sha };
+  }
   if (input.canonicalTestPath && !cargo) {
     const recordedRelative = row.root && isAbsolute(row.root) && row.file_path
       ? repoRelativeTestPath(row.root, row.file_path)
