@@ -73,7 +73,7 @@ export function readInspectorProcessIdentity({ pid, port, expectedEntry, expecte
  * it disconnects its own socket without closing the target's pre-opened inspector.
  * @param {{ pid: number, durationMs?: number, startPort?: number, attachExisting?: boolean,
  *   expectedEntry?: string, expectedArg?: string, deadlineMs?: number, procIdentity?: boolean,
- *   resumeStartup?: boolean }} options
+ *   resumeStartup?: boolean, requestTimeoutMs?: number }} options
  */
 export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9229,
   attachExisting = false, expectedEntry, expectedArg, deadlineMs = 50000, procIdentity = false,
