@@ -127,6 +127,11 @@ export interface NativeGymProviderAuthorization {
   outputTokens: number;
   validUntilMonotonicMs: number;
   validateAuthorization: () => void;
+  inputEvidence?: {
+    kind: 'provider-input-count'; sourceSha256: string; bodySha256: string;
+    countBodySha256: string; responseSha256: string; requestId: string | null;
+    measuredInputTokens: number;
+  };
 }
 
 /** Issue authority through the existing cycle ledger and gateway receipt. No
@@ -202,6 +207,16 @@ export function createNativeGymGatewayController(input: {
           typeof authority.validateAuthorization !== 'function' ||
           !Number.isFinite(authority.validUntilMonotonicMs) || processMonotonicClock.now() >= authority.validUntilMonotonicMs) return null;
         const resources = { armId, inputTokens: authority.inputTokens, outputTokens: authority.outputTokens };
+        const proof = authority.inputEvidence;
+        if (proof && (proof.kind !== 'provider-input-count' ||
+            ![proof.sourceSha256, proof.bodySha256, proof.countBodySha256, proof.responseSha256].every(value => /^[a-f0-9]{64}$/.test(value)) ||
+            proof.bodySha256 !== attempt.bodySha256 || !count(proof.measuredInputTokens) || proof.measuredInputTokens > authority.inputTokens ||
+            proof.requestId !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(proof.requestId))) return null;
+        // Copy only validated evidence fields. Never serialize a host callback
+        // object wholesale: extra properties could carry credential material.
+        const inputEvidence = proof ? { kind: proof.kind, sourceSha256: proof.sourceSha256, bodySha256: proof.bodySha256,
+          countBodySha256: proof.countBodySha256, responseSha256: proof.responseSha256,
+          requestId: proof.requestId, measuredInputTokens: proof.measuredInputTokens } : undefined;
         const expectedResourceBudget = { ...resourceBudget, armIds: [...resourceBudget.armIds] };
         const cycle: CycleSpendReservationScope | undefined = runId === undefined ? undefined :
           { runId, budgetUsd, resources, expectedResourceBudget };
@@ -215,7 +230,7 @@ export function createNativeGymGatewayController(input: {
           const completion = runGovernedSpendAttempt({ workspaceId, loopId, potSlug,
             attemptKind: authority.attemptKind, requestedUsd: authority.requestedUsd,
             ...(exact ? { exact, floorUsd: 0 } : { cycle }),
-            note: JSON.stringify({ nativeGatewayAttempt: identity }),
+            note: JSON.stringify({ nativeGatewayAttempt: identity, ...(inputEvidence ? { inputEvidence } : {}) }),
             async run(grant) {
               if (!live || attempt.signal.aborted || grant.clamped || grant.reservedUsd !== authority.requestedUsd) {
                 throw Object.assign(new Error('Native Gym gateway grant revoked'), { costUsd: 0 });

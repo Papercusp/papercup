@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialLessonIds, productTutorialTargetAvailability, type ProductTutorialLesson } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import type { AccountTutorialProgressRecord } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-progress';
 import { captureBrowserTelemetry } from '../browser-telemetry';
+import { createVoiceOutputPlayback, type VoiceOutputPlaybackStatus } from '@papercusp/operator-core/lib/voice-output-playback';
 
 type GuideCapture = typeof captureBrowserTelemetry;
 /** The host supplies its maintained voice transport; the guide owns consent. */
@@ -92,8 +93,8 @@ export function ProductTutorialVoiceQuestion({ account, lesson, openVoice, onQue
   </section>;
 }
 /** Advisory text only. This component has no progress or product mutator. */
-export function ProductTutorialAssistance({ account, lesson, onQuestion, openVoice }: {
-  account: ProductTutorialAccount; lesson: ProductTutorialLesson; onQuestion?: () => void; openVoice?: ProductTutorialVoiceLauncher;
+export function ProductTutorialAssistance({ account, lesson, onQuestion, openVoice, speechEnabled = false }: {
+  account: ProductTutorialAccount; lesson: ProductTutorialLesson; onQuestion?: () => void; openVoice?: ProductTutorialVoiceLauncher; speechEnabled?: boolean;
 }) {
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<string | null>(null);
@@ -101,16 +102,37 @@ export function ProductTutorialAssistance({ account, lesson, onQuestion, openVoi
   const [busy, setBusy] = useState(false);
   const pending = useRef<AbortController | null>(null);
   const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const identity = `${account.tenantId}:${account.userId}:${account.sessionId}:${lesson.id}`;
+  const [speechStatus, setSpeechStatus] = useState<VoiceOutputPlaybackStatus>('idle');
+  const [muted, setMuted] = useState(false);
+  const outputMuted = useRef(false);
+  const guidance = `${lesson.title}. ${lesson.introduction} ${lesson.help}`.slice(0, 2000);
+  const lastSpoken = useRef(guidance);
+  const requestScope = useRef({ account, lesson }); requestScope.current = { account, lesson };
+  const playback = useMemo(() => createVoiceOutputPlayback(async (text, engine, voiceId, signal) => {
+    const current = requestScope.current;
+    const response = await fetch('/api/hosted/browser/onboarding/tutorial-speech', { method: 'POST', credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' }, signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+      body: JSON.stringify({ expectedScope: { tenantId: current.account.tenantId, userId: current.account.userId },
+        context: { version: 3, step: current.lesson.id, status: 'ready' }, question: text, engine, ...(voiceId ? { voiceId } : {}) }) });
+    if (!response.ok) throw new Error('tutorial_speech_unavailable');
+    return response.blob();
+  }, setSpeechStatus, { isMuted: () => outputMuted.current, settings: () => ({ engine: 'kokoro', voiceId: null, rate: 1 }) }), []);
+  const identity = `${account.tenantId}:${account.userId}:${account.sessionId}:${account.workspaceId}:${lesson.id}`;
   useEffect(() => {
-    setQuestion(''); setAnswer(null); setError(null); setBusy(false);
-    return () => { pending.current?.abort(); pending.current = null; if (timeout.current) clearTimeout(timeout.current); timeout.current = null; };
-  }, [identity]);
+    setQuestion(''); setAnswer(null); setError(null); setBusy(false); lastSpoken.current = guidance;
+    return () => { pending.current?.abort(); pending.current = null; if (timeout.current) clearTimeout(timeout.current); timeout.current = null; playback.stop(); };
+  }, [identity, playback]);
+  useEffect(() => {
+    if (!speechEnabled) playback.stop();
+    const hidden = () => { if (document.visibilityState === 'hidden') playback.stop(); };
+    document.addEventListener('visibilitychange', hidden);
+    return () => { document.removeEventListener('visibilitychange', hidden); playback.stop(); };
+  }, [speechEnabled, playback]);
   const cancel = () => { pending.current?.abort(); pending.current = null; if (timeout.current) clearTimeout(timeout.current); timeout.current = null; setBusy(false); };
   async function ask() {
     if (pending.current || !question.trim()) return;
     const controller = new AbortController(); pending.current = controller;
-    setBusy(true); setError(null); setAnswer(null); onQuestion?.();
+    setBusy(true); setError(null); setAnswer(null); playback.stop(); onQuestion?.();
     const timer = setTimeout(() => {
       if (pending.current !== controller) return;
       controller.abort(); pending.current = null; setBusy(false);
@@ -127,7 +149,8 @@ export function ProductTutorialAssistance({ account, lesson, onQuestion, openVoi
       if (pending.current !== controller || controller.signal.aborted) return;
       const value = (body as { answer?: unknown })?.answer;
       if (typeof value !== 'string' || !value.trim()) throw new Error('empty');
-      setAnswer(value.trim().slice(0, 2000));
+      const text = value.trim().slice(0, 2000);
+      setAnswer(text); lastSpoken.current = text;
     } catch {
       if (pending.current === controller && !controller.signal.aborted) setError('AI Help is unavailable. You can continue with the lesson instructions.');
     } finally {
@@ -138,6 +161,14 @@ export function ProductTutorialAssistance({ account, lesson, onQuestion, openVoi
   }
   return <section aria-label="Ask about this lesson">
     <p>Ask about this lesson. Keep credentials and private workspace content out of your question.</p>
+    {speechEnabled && <section aria-label="Spoken lesson guidance">
+      <button type="button" disabled={muted} onClick={() => { lastSpoken.current = guidance; void playback.play(guidance); }}>Speak lesson</button>
+      {answer && <button type="button" disabled={muted} onClick={() => { lastSpoken.current = answer; void playback.play(answer); }}>Speak answer</button>}
+      <button type="button" aria-pressed={muted} onClick={() => { outputMuted.current = !muted; setMuted(!muted); playback.stop(); }}>{muted ? 'Unmute guide' : 'Mute guide'}</button>
+      <button type="button" onClick={playback.stop}>Stop speech</button>
+      <button type="button" disabled={muted} onClick={() => void playback.play(lastSpoken.current)}>Replay speech</button>
+      <p role="status">{muted ? 'Guide speech is muted.' : speechStatus === 'loading' ? 'Preparing speech…' : speechStatus === 'playing' ? 'Speaking the lesson.' : speechStatus === 'unavailable' ? 'Speech could not be played. The text remains available; use Replay speech to try again.' : 'Speech is ready.'}</p>
+    </section>}
     <form onSubmit={event => { event.preventDefault(); void ask(); }}>
       <label>Lesson question<textarea value={question} maxLength={2000} disabled={busy} onChange={event => setQuestion(event.target.value)} /></label>
       <button disabled={busy || !question.trim()} type="submit">Ask AI Help</button>
@@ -145,7 +176,7 @@ export function ProductTutorialAssistance({ account, lesson, onQuestion, openVoi
     </form>
     {busy && <p role="status">Asking about this lesson…</p>}
     {answer && <p aria-live="polite">{answer}</p>}{error && <p role="alert">{error}</p>}
-    {openVoice && <ProductTutorialVoiceQuestion account={account} lesson={lesson} openVoice={openVoice} onQuestion={onQuestion} />}
+    {openVoice && <ProductTutorialVoiceQuestion account={account} lesson={lesson} openVoice={openVoice} onQuestion={() => { playback.stop(); onQuestion?.(); }} />}
   </section>;
 }
 /** Observe saved learning records. Explanation review is never domain success. */
@@ -331,7 +362,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
           <a href={href} onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, href); }}>Open {target.id}</a>}</li>;
       })}</ul> : <p>You can read this lesson before selecting a workspace. The navigation lesson shows where the product controls live.</p>}
     </section>
-    <details onToggle={event => { setHelpOpen(event.currentTarget.open); if (event.currentTarget.open) analytics.current?.observer.help(lesson.id); }}><summary>Help with this lesson</summary><p>{lesson.help}</p><a href="/docs">Read public Docs</a>{' · '}<a href="/?app=support" onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, '/?app=support'); }}>Open Support</a><ProductTutorialAssistance key={identity + lesson.id} account={account} lesson={lesson} openVoice={!busy && helpOpen ? openVoice : undefined} onQuestion={() => analytics.current?.observer.help(lesson.id)} /></details>
+    <details onToggle={event => { setHelpOpen(event.currentTarget.open); if (event.currentTarget.open) analytics.current?.observer.help(lesson.id); }}><summary>Help with this lesson</summary><p>{lesson.help}</p><a href="/docs">Read public Docs</a>{' · '}<a href="/?app=support" onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, '/?app=support'); }}>Open Support</a><ProductTutorialAssistance key={identity + lesson.id} account={account} lesson={lesson} speechEnabled={!busy && helpOpen} openVoice={!busy && helpOpen ? openVoice : undefined} onQuestion={() => analytics.current?.observer.help(lesson.id)} /></details>
     <p role="status">{busy ? 'Saving your choice…' : `${record.reviewedLessonIds.length} explanations reviewed. Product tasks are verified separately.`}</p>
     {error && <p role="alert">{error}</p>}{pending.current && error && <button disabled={busy} onClick={() => save(pending.current!.patch, pending.current!.href)}>Retry saving choice</button>}
     <div className="product-guide-actions">

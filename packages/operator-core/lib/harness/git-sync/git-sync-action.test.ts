@@ -3923,6 +3923,36 @@ describe('clean sync outcome', () => {
     ]);
   });
 
+  it.each([errorOutcome, conflictOutcome])('EI-25545265520729999: records measured HEAD while preserving a $status outcome', async (partial) => {
+    const head = 'e'.repeat(40);
+    runGitSyncMock.mockResolvedValue({ ...partial, headSha: head, committedCount: 1 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+
+      expect(routinePatches()[0]).toMatchObject({
+        head_sha: head,
+        local_sync_head_sha: head,
+        local_sync_status: partial.status,
+        last_status: partial.status,
+        last_pushed: partial.pushed,
+      });
+      expect(enqueueDocSweepMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([undefined, ''])('EI-25545265520729999: preserves sticky HEAD when an error supplies no measured tip (%j)', async (headSha) => {
+    runGitSyncMock.mockResolvedValue({ ...errorOutcome, ...(headSha === undefined ? {} : { headSha }) });
+
+    await action(ctx);
+
+    expect(routinePatches()[0]).toMatchObject({ local_sync_status: 'error' });
+    expect(routinePatches()[0]).not.toHaveProperty('head_sha');
+    expect(routinePatches()[0]).not.toHaveProperty('local_sync_head_sha');
+  });
+
   it("a 'nothing' pass also clears escalations but records no head_sha and runs no doc sweep", async () => {
     runGitSyncMock.mockResolvedValue({
       status: 'nothing',

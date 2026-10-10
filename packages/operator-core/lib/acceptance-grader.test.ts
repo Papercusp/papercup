@@ -83,6 +83,21 @@ describe('native terminal API-error provenance', () => {
       nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId, maxRechecks: 0, detectStartupStall: false,
     })).resolves.toBeNull();
   });
+
+  it.each([
+    [400, "API Error: 400 role 'system' is not supported on this model"],
+    [429, 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s'],
+  ])('uses native completed API %s proof when the PTY omits its footer', async (status, error) => {
+    const log = `●${error}\n❯`;
+    const options = { nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
+      maxRechecks: 0, detectStartupStall: false };
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options, readLogTail: (path) => path === 'native.jsonl' ? record({ apiErrorStatus: status }) : log,
+    })).resolves.toMatchObject({ code: 'inference_gateway_error' });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      ...options, readLogTail: (path) => path === 'native.jsonl' ? record({ type: 'user' }) : log,
+    })).resolves.toBeNull();
+  });
 });
 
 describe('answeringOwnerAtCursor (WI-10003786)', () => {

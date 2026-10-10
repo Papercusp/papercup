@@ -4239,6 +4239,7 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // that existed on no other disk.
       expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
+      expect(out.headSha).toBe(git(repo, 'rev-parse', 'HEAD'));
     });
   });
 });
@@ -4332,6 +4333,7 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
       // every agent's work for 12h behind one unreconcilable submodule.
       expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
+      expect(out.headSha).toBe(git(repo, 'rev-parse', 'HEAD'));
     });
   });
 
@@ -4736,6 +4738,21 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     expect(out.status).toBe('synced');
     expect(commitAttempts).toBe(2);
     expect(logs.join('\n')).toContain("'git commit' hit live index.lock contention");
+  });
+
+  it('EI-25545265520729999: a failed HEAD read cannot supply partial-outcome head evidence', async () => {
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j === 'submodule sync --recursive') return { code: 1, stderr: 'canonical URL sync unavailable' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' };
+      if (j === 'rev-parse HEAD') return { code: 1, stdout: 'd'.repeat(40), stderr: 'HEAD read failed' };
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', { repoPath: '/fake', runGit: run, submodulePaths: ['libs/sub'] });
+
+    expect(out.status).toBe('error');
+    expect(out).not.toHaveProperty('headSha');
   });
 
   it('EI-20329530284626235: a failed canonical submodule URL sync is loud and blocks pushes', async () => {

@@ -2950,6 +2950,37 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('recovers a fresh auditor rejected by its native API without a PTY footer', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-native-api-refusal')]);
+    d.launch.mockResolvedValueOnce(launchResult({
+      deduped: false,
+      launch: { agentStarted: true, tasks: [{
+        taskId: 'task-native-api-refusal', logPath: '/tmp/native-api-refusal.log',
+        kickoffProof: { persisted: true, nativeRef: '/tmp/native-api-refusal.jsonl' },
+        nativeSession: { backend: 'claude', sessionId: 'native-api-refusal-session' },
+      }] },
+    })).mockResolvedValueOnce(launchResult({
+      deduped: false, launch: { agentStarted: true,
+        tasks: [{ taskId: 'task-native-api-fallback', logPath: '/tmp/healthy-fallback.log' }] },
+    }));
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const native = JSON.stringify({ type: 'assistant', sessionId: 'native-api-refusal-session',
+      isApiErrorMessage: true, apiErrorStatus: 400,
+      message: { role: 'assistant', stop_reason: 'stop_sequence' } });
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-native-api-refusal'], ctx, harness: 'papercusp' },
+      { ...d, killTask, sleep: async () => undefined, terminalLogMaxRechecks: 0,
+        readLogTail: (path: string) => path.endsWith('.jsonl') ? native :
+          path.includes('native-api-refusal') ? "●API Error: 400 role 'system' is not supported on this model\n❯" : 'healthy fallback boot' },
+    );
+    expect(killTask).toHaveBeenCalledWith('task-native-api-refusal', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(d.launch).toHaveBeenLastCalledWith(expect.objectContaining({ agent: 'codex', account: 'auto' }), auditorCtx);
+    expect(result.receipts[0]).toMatchObject({ state: 'launched',
+      terminalRecovery: { retiredTaskIds: ['task-native-api-refusal'], codes: ['inference_gateway_error'] } });
+  });
+
   it('keeps a judge whose native kickoff marker arrived late but whose turn was observed', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-late-marker')]);

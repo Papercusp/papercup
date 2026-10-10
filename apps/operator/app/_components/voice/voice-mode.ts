@@ -53,6 +53,7 @@ import {
 import type { VoiceTurnEvent } from '@papercusp/chat-protocol';
 import { splitSpeechText } from '@papercusp/operator-core/lib/voice-turn-sentences';
 import { prepareForReading } from '@papercusp/operator-core/lib/voice-engines/prepareForTTS';
+import { createVoiceOutputPlayback as createOutputPlayback } from '@papercusp/operator-core/lib/voice-output-playback';
 
 export interface ReadingState {
   readingId: string | null;
@@ -3319,52 +3320,14 @@ export function createVoiceOutputPlayback(
   requestSpeech: (text: string, engine: string, voiceId: string | null, signal: AbortSignal) => Promise<Blob>,
   onStatus: (status: 'idle' | 'loading' | 'playing' | 'unavailable') => void,
 ) {
-  let current: AbortController | null = null;
-  let disposeAudio: (() => void) | null = null;
-  const stop = () => {
-    current?.abort(); current = null;
-    disposeAudio?.(); disposeAudio = null;
-    onStatus('idle');
-  };
-  return {
-    stop,
-    async play(text: string) {
-      stop();
-      if (isVoiceOutputMuted() || !text.trim()) return;
-      const controller = new AbortController(); current = controller;
-      const signal = controller.signal;
-      onStatus('loading');
-      try {
-        const engine = loadVoicePrefsClient().ttsEngine ?? 'kokoro';
-        if (engine === 'browser') {
-          if (!window.speechSynthesis) throw new Error('speech_unavailable');
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.rate = config.rate;
-          const name = voiceForRole('system:operator');
-          utterance.voice = window.speechSynthesis.getVoices().find(voice => voice.name === name) ?? null;
-          disposeAudio = () => window.speechSynthesis.cancel();
-          utterance.onstart = () => { if (!signal.aborted) onStatus('playing'); };
-          utterance.onend = () => { if (!signal.aborted) onStatus('idle'); };
-          utterance.onerror = () => { if (!signal.aborted) onStatus('unavailable'); };
-          window.speechSynthesis.speak(utterance);
-          return;
-        }
-        const blob = await requestSpeech(text, engine, voiceForEngineRole(engine, 'system:operator'), signal);
-        if (signal.aborted || current !== controller || isVoiceOutputMuted()) return;
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        let disposed = false;
-        const dispose = () => { if (!disposed) { disposed = true; audio.pause(); audio.removeAttribute('src'); URL.revokeObjectURL(url); } };
-        disposeAudio = dispose;
-        audio.onended = () => { dispose(); if (!signal.aborted) onStatus('idle'); };
-        audio.onerror = () => { dispose(); if (!signal.aborted) onStatus('unavailable'); };
-        await audio.play();
-        if (!signal.aborted && !disposed) onStatus('playing');
-      } catch {
-        if (!signal.aborted && current === controller) { disposeAudio?.(); disposeAudio = null; onStatus('unavailable'); }
-      }
+  return createOutputPlayback(requestSpeech, onStatus, {
+    isMuted: isVoiceOutputMuted,
+    settings: () => {
+      const engine = loadVoicePrefsClient().ttsEngine ?? 'kokoro';
+      return { engine, rate: config.rate, voiceId: engine === 'browser'
+        ? voiceForRole('system:operator') : voiceForEngineRole(engine, 'system:operator') };
     },
-  };
+  });
 }
 
 /**

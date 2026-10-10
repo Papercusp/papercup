@@ -1566,9 +1566,11 @@ export async function dispatchPendingGradingAudits(
       logPath: string | null,
       maxRechecks = deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
       allowGatewayErrorWithoutFooter = true,
+      nativeProof?: { nativeTranscriptPath: string; nativeSessionId: string },
     ) =>
       detectAcceptanceGraderTerminalFailure(logPath, {
         readLogTail,
+        ...nativeProof,
         ...(deps.sleep ? { sleep: deps.sleep } : {}),
         delayMs: deps.terminalLogRecheckDelayMs ?? GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS,
         maxRechecks,
@@ -2028,7 +2030,8 @@ export async function dispatchPendingGradingAudits(
               tasks?: Array<{
                 taskId?: unknown;
                 logPath?: unknown;
-                kickoffProof?: { persisted?: unknown; reason?: unknown } | null;
+                kickoffProof?: { persisted?: unknown; reason?: unknown; nativeRef?: unknown } | null;
+                nativeSession?: { backend?: unknown; sessionId?: unknown } | null;
               }>;
               agentStarted?: boolean | null;
             }
@@ -2055,6 +2058,12 @@ export async function dispatchPendingGradingAudits(
           launchData?.agentStarted !== true &&
           (launchData?.agentStarted === false || kickoffNotSubmitted);
 
+        const nativeProof = launchedTask?.nativeSession?.backend === 'claude' &&
+          typeof launchedTask.nativeSession.sessionId === 'string' &&
+          typeof launchedTask.kickoffProof?.nativeRef === 'string'
+          ? { nativeTranscriptPath: launchedTask.kickoffProof.nativeRef,
+              nativeSessionId: launchedTask.nativeSession.sessionId }
+          : undefined;
         let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = kickoffFailureIsConclusive
           ? {
               code: 'launch_kickoff_not_persisted',
@@ -2064,7 +2073,7 @@ export async function dispatchPendingGradingAudits(
                 `agentStarted=${String(launchData?.agentStarted ?? 'unreported')}`,
             }
           : logPath
-            ? await detectTerminalFailure(logPath)
+            ? await detectTerminalFailure(logPath, undefined, true, nativeProof)
             : null;
 
         // A stable launch receipt can outlive the task it represented. Log

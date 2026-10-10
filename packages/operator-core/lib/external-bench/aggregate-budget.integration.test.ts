@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { registerLearningLoop, reserveLearningSpend, settleLearningSpend,
-  listLearningSpendReservations, cycleReservationRunRef,
+  listLearningSpendReservations, getLearningSpendPositions, cycleReservationRunRef,
   type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { OrgSql } from './reproducibility/db';
 import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator } from './current-su';
@@ -141,6 +141,51 @@ describe('strict benchmark aggregate reservation bounds', () => {
     expect((await reserveLearningSpend(sql, first)).ok).toBe(true);
     await sql`UPDATE harness_shared.learning_spend_reservations SET run_ref = 'foreign-manifest' WHERE id = ${first.exact.reservationId}`;
     expect(await reserveLearningSpend(sql, request(loop, budget))).toMatchObject({ ok: false, reason: 'resource-accounting-incomplete' });
+  });
+});
+
+describe('complete benchmark reservation census', () => {
+  it('includes more than the list ceiling across roles, retries and recovery in one position snapshot', async () => {
+    const loopId = await setup();
+    // Synthetic ledger population tests the REAL production SQL reader. These
+    // are not native/provider observations or proof of billed dollars.
+    await sql`INSERT INTO harness_shared.learning_spend_reservations
+      (workspace_id, loop_id, requested_usd, reserved_usd, used_usd, status, note)
+      SELECT ${WS}, ${loopId}, 0.001, 0.001, 0, 'open',
+        json_build_object('role', CASE n % 3 WHEN 0 THEN 'solver' WHEN 1 THEN 'reviewer' ELSE 'recovery' END)::text
+      FROM generate_series(1, 501) n`;
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId, limit: 1000 })).toHaveLength(500);
+    const first = await getLearningSpendPositions(sql, { workspaceId: WS, loopId, includeReservations: true });
+    expect(first.census?.status).toBe('complete');
+    if (first.census?.status !== 'complete') throw new Error('No complete census');
+    expect(first.census.reservations).toHaveLength(501);
+    expect(new Set(first.census.reservations.map(row => JSON.parse(row.note!).role))).toEqual(new Set(['solver', 'reviewer', 'recovery']));
+    expect(first.positions).toMatchObject({ openAttempts: 501, usedUsd: 0 });
+    expect(first.positions.unsettledUsd).toBeCloseTo(0.501);
+    expect(first.spend.settledAt).toBeUndefined();
+    const same = await getLearningSpendPositions(sql, { workspaceId: WS, loopId, includeReservations: true });
+    expect(same.census).toEqual(first.census);
+    const id = first.census.reservations[0].id;
+    await sql`UPDATE harness_shared.learning_spend_reservations SET used_usd = 0.001, status = 'failed', settled_at = now() WHERE id = ${id}`;
+    const after = await getLearningSpendPositions(sql, { workspaceId: WS, loopId, includeReservations: true });
+    expect(after.census?.status).toBe('complete');
+    if (after.census?.status !== 'complete') throw new Error('No complete census after settlement');
+    expect(after.census.populationSha256).not.toBe(first.census.populationSha256);
+    expect(after.positions).toMatchObject({ openAttempts: 500, usedUsd: 0.001 });
+    expect(after.positions.unsettledUsd).toBeCloseTo(0.5);
+  });
+  it('scopes empty coverage and never treats a missing ledger as complete', async () => {
+    const loopId = await setup();
+    const empty = await getLearningSpendPositions(sql, { workspaceId: WS, loopId, includeReservations: true });
+    expect(empty.census).toMatchObject({ status: 'complete', reservations: [] });
+    await expect(getLearningSpendPositions(sql, { workspaceId: WS, includeReservations: true })).rejects.toThrow(/exact workspace and loop/);
+    await sql.unsafe('ALTER TABLE harness_shared.learning_spend_reservations RENAME TO private_missing_reservations');
+    try {
+      const missing = await getLearningSpendPositions(sql, { workspaceId: WS, loopId, includeReservations: true });
+      expect(missing.census).toEqual({ status: 'unavailable', source: 'learning-spend-reservations', reason: 'schema-unavailable' });
+    } finally {
+      await sql.unsafe('ALTER TABLE harness_shared.private_missing_reservations RENAME TO learning_spend_reservations');
+    }
   });
 });
 

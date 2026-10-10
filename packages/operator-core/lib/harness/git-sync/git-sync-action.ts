@@ -2620,8 +2620,9 @@ async function recordOutcome(
       // promote an owner-actionable egress failure into the top-level last_status /
       // last_error fields. Keep the local commit stage explicit so readers can still
       // distinguish a clean/local commit result from a bridge-only failure. The head
-      // value is sticky, just like the legacy head_sha field: only a new local commit
-      // writes it, while nothing/error/conflict ticks preserve the last observed head.
+      // value is sticky, just like the legacy head_sha field: a measured partial
+      // error/conflict outcome updates it too; an outcome without HEAD evidence
+      // preserves the last observed head.
       local_sync_status: outcome.status,
       // A tick with no locked-path exclusions supersedes any earlier lock skip.
       // JSONB patches are additive, so leaving these fields untouched makes a later
@@ -2679,7 +2680,7 @@ async function recordOutcome(
       // the vanished-checkout marker in this same write (no extra round-trip per fire), so a
       // checkout that comes back and later vanishes again starts a fresh retirement clock.
       missing_checkout: null,
-      ...(outcome.status === 'synced' ? { head_sha: outcome.headSha, local_sync_head_sha: outcome.headSha } : {}),
+      ...(outcome.headSha ? { head_sha: outcome.headSha, local_sync_head_sha: outcome.headSha } : {}),
     },
     {
       ts: localSyncRecordedAt,

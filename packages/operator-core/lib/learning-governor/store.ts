@@ -880,19 +880,40 @@ export async function listLearningSpendReservations(
  * `LearningSpend` a learning contract embeds verbatim, so a candidate's spend
  * record is the governor's ledger rather than a number reassembled beside it.
  */
+/** Complete coverage of this ledger only. A native request/session census is
+ * still required to establish that no inference bypassed this ledger. */
+export type LearningSpendReservationCensus = {
+  status: 'complete'; source: 'learning-spend-reservations'; populationSha256: string;
+  reservations: LearningSpendReservation[];
+} | { status: 'unavailable'; source: 'learning-spend-reservations'; reason: 'schema-unavailable' };
+
 export async function getLearningSpendPositions(
   sql: Sql,
-  q: { workspaceId: string; loopId?: string; sinceMs?: number },
-): Promise<{ positions: LearningSpendPositions; spend: LearningSpend }> {
+  q: { workspaceId: string; loopId?: string; sinceMs?: number; includeReservations?: boolean },
+): Promise<{ positions: LearningSpendPositions; spend: LearningSpend; census?: LearningSpendReservationCensus }> {
+  if (q.includeReservations && (!q.workspaceId.trim() || !q.loopId?.trim())) {
+    throw new Error('A complete reservation census requires its exact workspace and loop.');
+  }
   let positions: LearningSpendPositions;
+  let census: LearningSpendReservationCensus | undefined;
   try {
     const since = q.sinceMs === undefined ? null : new Date(q.sinceMs).toISOString();
     const rows = (await sql`
-      SELECT requested_usd, reserved_usd, used_usd, status
+      SELECT ${q.includeReservations ? sql`*` : sql`requested_usd, reserved_usd, used_usd, status`}
         FROM harness_shared.learning_spend_reservations
        WHERE workspace_id = ${q.workspaceId}
          ${q.loopId ? sql`AND loop_id = ${q.loopId}` : sql``}
-         ${since ? sql`AND created_at >= ${since}` : sql``}`) as Row[];
+         ${since ? sql`AND created_at >= ${since}` : sql``}
+       ORDER BY id`) as Row[];
+    // The same unbounded SELECT supplies both the positions and the census:
+    // no pagination limit or separate read can silently omit an older retry or
+    // let a concurrent settlement produce contradictory evidence.
+    if (q.includeReservations) {
+      const reservations = rows.map(mapReservation);
+      census = { status: 'complete', source: 'learning-spend-reservations', reservations,
+        populationSha256: createHash('sha256').update(JSON.stringify({ version: 1, workspaceId: q.workspaceId,
+          loopId: q.loopId, sinceMs: q.sinceMs ?? null, reservations })).digest('hex') };
+    }
     positions = summarizeSpendPositions(
       rows.map((r) => ({
         requestedUsd: Number(r.requested_usd ?? 0),
@@ -904,6 +925,7 @@ export async function getLearningSpendPositions(
   } catch (e) {
     if (!isUndefinedTable(e)) throw e;
     positions = summarizeSpendPositions([]);
+    if (q.includeReservations) census = { status: 'unavailable', source: 'learning-spend-reservations', reason: 'schema-unavailable' };
   }
-  return { positions, spend: toLearningSpend(positions, new Date().toISOString()) };
+  return { positions, spend: toLearningSpend(positions, new Date().toISOString()), ...(census ? { census } : {}) };
 }

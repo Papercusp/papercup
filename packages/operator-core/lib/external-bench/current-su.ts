@@ -48,14 +48,124 @@ function currentBenchRequestExposureUsd(rate: FrozenBenchRate, input: number, ou
   return Math.max(1, Number(micros)) / 1_000_000;
 }
 
-/** A host-observed provider contract, not configured native-client context.
- * The host must supply its source-bound reader; missing proof refuses sends. */
+/** A host-observed complete request bound, not configured client context. */
 export interface CurrentBenchNativeInputCeiling {
   model: string;
   inputTokens: number;
   sourceSha256: string;
   validUntilMonotonicMs: number;
   validateAuthorization: () => void;
+  evidence?: NativeGymProviderAuthorization['inputEvidence'];
+}
+
+/** The host passes the already authenticated final credential privately. It
+ * must never enter a receipt, task argument, reservation note or exported run. */
+interface CurrentBenchInputCredential { readonly secret: string }
+
+const openAiCountFields = ['model', 'input', 'instructions', 'parallel_tool_calls', 'personality',
+  'reasoning', 'text', 'tool_choice', 'tools', 'truncation'] as const;
+const openAiGenerationFields = ['max_output_tokens', 'stream', 'store', 'include', 'metadata',
+  'prompt_cache_key', 'prompt_cache_retention', 'safety_identifier', 'user', 'service_tier', 'background'] as const;
+const openAiCountTarget = 'https://api.openai.com/v1/responses/input_tokens';
+
+/** Freeze the maintained admission contract with the input cap. Its source is
+ * the exact provider counting API plus the self-contained request restriction,
+ * rather than a configured model window. Every send still needs a NEW measured
+ * provider count of its final body; this hash alone grants no send authority.
+ * https://developers.openai.com/api/docs/guides/token-counting */
+export function currentBenchOpenAiInputContract(model: string, inputTokens: number): string {
+  if (!model.trim() || !Number.isSafeInteger(inputTokens) || inputTokens <= 0) throw new Error('Invalid native input contract.');
+  return createHash('sha256').update(canonicalJson({ version: 1, model, inputTokens,
+    target: openAiCountTarget, fields: openAiCountFields, generationFields: openAiGenerationFields,
+    input: 'self-contained-text-and-local-tools', tier: 'default' })).digest('hex');
+}
+
+/** Refuse mutable server/remote context and separately billed provider tools.
+ * Counting and sending must refer to the same complete, immutable input. */
+function selfContainedOpenAiInput(body: Record<string, unknown>): boolean {
+  if (Object.keys(body).some(key => ![...openAiCountFields, ...openAiGenerationFields,
+    'previous_response_id', 'conversation'].includes(key as never)) ||
+    body.previous_response_id != null || body.conversation != null ||
+    body.service_tier != null && body.service_tier !== 'default' || body.background === true) return false;
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (body.tools !== undefined && (!Array.isArray(body.tools) ||
+      body.tools.some(tool => !object(tool) || !['function', 'custom'].includes(String(tool.type))))) return false;
+  const content = (value: unknown) => typeof value === 'string' || Array.isArray(value) && value.every(part =>
+    object(part) && ['input_text', 'output_text'].includes(String(part.type)) && typeof part.text === 'string');
+  if (typeof body.input === 'string') return true;
+  if (!Array.isArray(body.input)) return false;
+  return body.input.every(item => {
+    if (!object(item)) return false;
+    switch (item.type ?? 'message') {
+      case 'message': return ['system', 'developer', 'user', 'assistant'].includes(String(item.role)) && content(item.content);
+      case 'function_call': return typeof item.name === 'string' && typeof item.arguments === 'string' && typeof item.call_id === 'string';
+      case 'custom_tool_call': return typeof item.name === 'string' && typeof item.input === 'string' && typeof item.call_id === 'string';
+      case 'function_call_output': case 'custom_tool_call_output': return typeof item.call_id === 'string' && content(item.output);
+      case 'reasoning': case 'compaction': return typeof item.encrypted_content === 'string';
+      default: return false;
+    }
+  });
+}
+
+/** Use the actual authenticated provider API to count ALL native input, tools
+ * and formatting before reserving the frozen cap. No local token estimator or
+ * fallback catalog is consulted. Network errors and unsupported input refuse
+ * generation. The IO port is for conventional offline tests; production uses
+ * the official HTTPS target with redirects and automatic retries disabled. */
+export function currentBenchOpenAiInputReader(input: { model: string; inputTokens: number },
+  ports: { fetch: typeof globalThis.fetch } = { fetch: globalThis.fetch },
+): { read: (attempt: GatewayCarryTrialAttempt, credential: CurrentBenchInputCredential) => Promise<CurrentBenchNativeInputCeiling | null>;
+  revoke: () => void } {
+  const { model, inputTokens } = input;
+  const sourceSha256 = currentBenchOpenAiInputContract(model, inputTokens), send = ports.fetch;
+  let live = true;
+  return { revoke() { live = false; }, async read(value, credential) {
+    const attempt = Object.freeze({ ...value }), secret = credential.secret;
+    try {
+      const body = JSON.parse(attempt.body);
+      if (!live || attempt.signal.aborted || attempt.clockId !== processMonotonicClock.id ||
+          attempt.transport !== 'bearer-http' || attempt.target !== 'https://api.openai.com/v1/responses' ||
+          attempt.credentialHeader !== 'authorization' || !secret ||
+          attempt.credentialSha256 !== createHash('sha256').update(`Bearer ${secret}`).digest('hex') ||
+          attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex') ||
+          body.model !== model || !selfContainedOpenAiInput(body)) return null;
+      const countedBody = Object.fromEntries(openAiCountFields.filter(key => key in body).map(key => [key, body[key]]));
+      const countBody = JSON.stringify(countedBody);
+      const response = await send(openAiCountTarget, { method: 'POST', redirect: 'error',
+        headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+        body: countBody, signal: AbortSignal.any([attempt.signal, AbortSignal.timeout(3000)]) });
+      if (response.status !== 200 || !response.body) { await response.body?.cancel(); return null; }
+      const reader = response.body.getReader();
+      let bytes = 0;
+      const chunks: Uint8Array[] = [];
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 4096) { await reader.cancel(); return null; }
+          chunks.push(chunk.value);
+        }
+      } finally { reader.releaseLock(); }
+      const responseBytes = Buffer.concat(chunks), measured = JSON.parse(responseBytes.toString('utf8'));
+      if (!live || attempt.signal.aborted || measured.object !== 'response.input_tokens' ||
+          !Number.isSafeInteger(measured.input_tokens) || measured.input_tokens < 0 || measured.input_tokens > inputTokens) return null;
+      const validUntilMonotonicMs = processMonotonicClock.now() + 5000;
+      const requestId = response.headers.get('x-request-id');
+      return { model, inputTokens, sourceSha256, validUntilMonotonicMs,
+        evidence: Object.freeze({ kind: 'provider-input-count', sourceSha256, bodySha256: attempt.bodySha256,
+          countBodySha256: createHash('sha256').update(countBody).digest('hex'),
+          responseSha256: createHash('sha256').update(responseBytes).digest('hex'),
+          requestId: requestId !== null && /^[a-zA-Z0-9_-]{1,128}$/.test(requestId) ? requestId : null,
+          measuredInputTokens: measured.input_tokens }),
+        validateAuthorization() {
+          if (!live || attempt.signal.aborted || processMonotonicClock.now() >= validUntilMonotonicMs) {
+            throw new Error('Provider-counted benchmark input authority expired or revoked.');
+          }
+        } };
+    } catch { return null; }
+  } };
 }
 
 /** Reuse registered account and credential readers to authenticate the FINAL
@@ -64,7 +174,7 @@ export interface CurrentBenchNativeInputCeiling {
 export function currentBenchProviderAuthenticator(input: {
   workspaceId: string; preregHash: string; protocol: CurrentBenchmarkProtocol;
   armId: string; taskId: string; seed: number;
-  readNativeInputCeiling: (attempt: GatewayCarryTrialAttempt) => Promise<CurrentBenchNativeInputCeiling | null>;
+  readNativeInputCeiling?: (attempt: GatewayCarryTrialAttempt, credential: CurrentBenchInputCredential) => Promise<CurrentBenchNativeInputCeiling | null>;
 }, ports?: {
   readAccount: (workspaceId: string, accountId: string) => Promise<{ id: string; provider: 'claude' | 'codex'; credentialRef: string } | null>;
   credentialResolver: (provider: 'claude' | 'codex', ref: string) => CredentialResolver;
@@ -72,15 +182,20 @@ export function currentBenchProviderAuthenticator(input: {
   const protocol = currentBenchmarkProtocolSchema.parse(input.protocol);
   const arm = protocol.arms.find(value => value.id === input.armId);
   if (!arm || !protocol.taskIds.includes(input.taskId) || !protocol.seeds.includes(input.seed) ||
-      !/^[a-f0-9]{64}$/.test(input.preregHash) || typeof input.readNativeInputCeiling !== 'function') {
+      !/^[a-f0-9]{64}$/.test(input.preregHash) ||
+      input.readNativeInputCeiling !== undefined && typeof input.readNativeInputCeiling !== 'function') {
     throw new Error('Benchmark provider authentication requires its frozen assignment and native input proof.');
   }
   resolveBenchWorkspace(input.workspaceId);
-  const { workspaceId, preregHash, readNativeInputCeiling } = input;
+  const { workspaceId, preregHash } = input;
   const assignmentId = currentBenchAssignmentId(protocol.runId, arm.id, input.taskId, input.seed);
   const rate = protocol.priceSchedule.rates.find(value => value.model === arm.model)!;
+  const providerReader = input.readNativeInputCeiling === undefined && arm.agent === 'codex' && rate.inputTokenCeiling !== undefined &&
+    rate.inputTokenCeilingSourceSha256 === currentBenchOpenAiInputContract(arm.model, rate.inputTokenCeiling)
+    ? currentBenchOpenAiInputReader({ model: arm.model, inputTokens: rate.inputTokenCeiling }) : null;
+  const readNativeInputCeiling = input.readNativeInputCeiling ?? providerReader?.read;
   let live = true;
-  return { revoke() { live = false; }, async authenticateProvider(value) {
+  return { revoke() { live = false; providerReader?.revoke(); }, async authenticateProvider(value) {
     const attempt = Object.freeze({ ...value });
     try {
       const claude = attempt.transport === 'anthropic-http';
@@ -92,7 +207,7 @@ export function currentBenchProviderAuthenticator(input: {
           attempt.transport !== (arm.agent === 'claude' ? 'anthropic-http' : 'bearer-http') ||
           attempt.target !== (claude ? 'https://api.anthropic.com/v1/messages' : 'https://api.openai.com/v1/responses') ||
           attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex') ||
-          rate.inputTokenCeiling === undefined || rate.inputTokenCeilingSourceSha256 === undefined ||
+          rate.inputTokenCeiling === undefined || rate.inputTokenCeilingSourceSha256 === undefined || !readNativeInputCeiling ||
           !['auto', 'default'].includes(arm.account) && attempt.accountId !== arm.account) return null;
       const body = JSON.parse(attempt.body);
       const output = claude ? body.max_tokens : body.max_output_tokens;
@@ -117,7 +232,7 @@ export function currentBenchProviderAuthenticator(input: {
       const secret = await resolver.current();
       if (!secret || attempt.credentialHeader !== credentialHeader ||
           attempt.credentialSha256 !== createHash('sha256').update(credentialHeader === 'authorization' ? `Bearer ${secret}` : secret).digest('hex')) return null;
-      const supplied = await readNativeInputCeiling(attempt);
+      const supplied = await readNativeInputCeiling(attempt, { secret });
       const ceiling = supplied ? Object.freeze({ ...supplied }) : null;
       const current = await readAccount(workspaceId, attempt.accountId);
       if (!live || attempt.signal.aborted || !current || canonicalJson(current) !== canonicalJson(snapshot) ||
@@ -141,7 +256,7 @@ export function currentBenchProviderAuthenticator(input: {
       };
       validateAuthorization();
       return { attemptKind: 'evaluation', requestedUsd, inputTokens: ceiling.inputTokens, outputTokens: output,
-        validUntilMonotonicMs, validateAuthorization };
+        validUntilMonotonicMs, validateAuthorization, ...(ceiling.evidence ? { inputEvidence: ceiling.evidence } : {}) };
     } catch { return null; }
   } };
 }
