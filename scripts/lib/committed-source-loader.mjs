@@ -18,8 +18,8 @@
 //   commonjs     a checkout module reached through CommonJS throws: that path never passes the ES
 //                load hook, so its bytes cannot be judged. The census closure is ES-only; the
 //                committed-source tests pin that by running the real census under this loader.
-// Outside every checkout (node's own modules) and under node_modules, bytes run as read: those
-// paths are not tracked, so the census could not see a restricted write there either.
+// Outside every checkout (node's own modules) and under real node_modules dependencies, bytes
+// run as read. Workspace symlinks are judged at their real target, which may be tracked source.
 //
 // Order matters: hooks registered later run FIRST. Registered before tsx, tsx's load hook calls
 // this one through nextLoad for the raw bytes and then transforms whatever this one returns.
@@ -32,7 +32,7 @@
 // code; the installed PreToolUse hook applies that same decision to client-native egress.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, realpathSync } from 'node:fs';
 import Module, { register } from 'node:module';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,9 +116,12 @@ function isIgnored(top, rel) {
 
 /** Where `file` sits: outside every checkout, under node_modules, or a checkout path. */
 function locate(file) {
-  const top = checkoutTop(file);
+  // Node can preserve a workspace package's node_modules symlink in its module URL.
+  // Classify the target before exempting dependencies, for both ESM and CommonJS.
+  const target = realpathSync(file);
+  const top = checkoutTop(target);
   if (!top) return { place: 'outside' };
-  const rel = relative(top, file).split(sep).join('/');
+  const rel = relative(top, target).split(sep).join('/');
   if (rel.split('/').includes('node_modules')) return { place: 'dependency', top, rel };
   return { place: 'checkout', top, rel };
 }

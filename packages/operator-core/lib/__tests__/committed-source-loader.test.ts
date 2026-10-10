@@ -16,6 +16,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -28,6 +29,7 @@ import {
 } from '../../../../scripts/lib/restricted-hold-preflight.mjs';
 
 const REPO = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
+const TSX_LOADER = createRequire(import.meta.url).resolve('tsx');
 const AUDIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_AUDIT';
 
 type AuditRecord = { via: 'esm' | 'cjs'; kind: string; file: string; rel: string | null;
@@ -77,9 +79,12 @@ beforeAll(() => {
   put(fixture, 'cjs-entry.mjs', "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('./c.cjs');\n");
   put(fixture, 'c.cjs', "console.log('CJS-RAN');\n");
   put(fixture, 'dep-entry.mjs', "import { d } from 'dep';\nconsole.log(`D=${d}`);\n");
-  put(fixture, 'packages/workspace/package.json', '{ "name": "workspace", "type": "module", "exports": "./value.mjs" }\n');
+  put(fixture, 'packages/workspace/package.json', '{ "name": "workspace", "type": "module", "exports": { ".": "./value.mjs", "./new": "./new.mjs", "./cjs": "./value.cjs" } }\n');
   put(fixture, 'packages/workspace/value.mjs', "export const v = 'HEAD';\n");
+  put(fixture, 'packages/workspace/value.cjs', "console.log('WORKSPACE-CJS-RAN');\n");
   put(fixture, 'workspace-entry.mjs', "import { v } from 'workspace';\nconsole.log(`WORKSPACE=${v}`);\n");
+  put(fixture, 'workspace-new-entry.mjs', "import 'workspace/new';\nconsole.log('WORKSPACE-ENTRY-RAN');\n");
+  put(fixture, 'workspace-cjs-entry.mjs', "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('workspace/cjs');\n");
   // The census's closure walk forks its worker with execArgv: [] — only NODE_OPTIONS reaches it.
   put(fixture, 'fork-entry.mjs', [
     "import { fork } from 'node:child_process';",
@@ -103,6 +108,7 @@ beforeAll(() => {
   put(fixture, 'node_modules/dep/package.json', '{ "name": "dep", "type": "module", "exports": "./index.mjs" }\n');
   put(fixture, 'node_modules/dep/index.mjs', "export const d = 'DEP';\n");
   put(fixture, 'packages/workspace/value.mjs', "export const v = 'DIRTY';\n");
+  put(fixture, 'packages/workspace/new.mjs', "console.log('WORKSPACE-NEW-RAN');\n");
   symlinkSync(join(fixture, 'packages/workspace'), join(fixture, 'node_modules/workspace'), 'dir');
   // `--import tsx` resolves from the cwd; the real package lives under the repo's node_modules.
   symlinkSync(join(REPO, 'node_modules', 'tsx'), join(fixture, 'node_modules', 'tsx'), 'dir');
@@ -244,16 +250,20 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(records.find((r) => r.rel === 'node_modules/dep/index.mjs')?.kind).toBe('dependency');
   }, 60_000);
 
-  it.each([false, true])('loads committed workspace alias bytes with preserveSymlinks=%s', (preserveSymlinks) => {
+  it.each([[false, false], [false, true], [true, false], [true, true]])('loads committed workspace alias bytes with preserveSymlinks=%s and tsx=%s', (preserveSymlinks, withTsx) => {
     const options = preserveSymlinks ? ['--preserve-symlinks'] : [];
     const control = run([...options, 'workspace-entry.mjs'], cleanEnv());
-    expect(control.status).toBe(0);
+    expect(control.status, control.stderr).toBe(0);
     expect(control.stdout).toContain('WORKSPACE=DIRTY');
 
     const { prefix, env } = censusPrefix();
-    const audit = join(scratch, `workspace-${preserveSymlinks}.audit`);
-    const loaded = run([...options, ...prefix, 'workspace-entry.mjs'], env, audit);
-    expect(loaded.status).toBe(0);
+    // Keep tsx in its installed dependency tree: --preserve-symlinks would resolve its
+    // get-tsconfig dependency inside this fixture if we loaded the fixture's tsx link.
+    const aliasPrefix = withTsx ? prefix.map((arg) => arg === 'tsx' ? TSX_LOADER : arg) : ['--import', COMMITTED_SOURCE_LOADER];
+    const aliasEnv = withTsx ? env : cleanEnv();
+    const audit = join(scratch, `workspace-${preserveSymlinks}-${withTsx}.audit`);
+    const loaded = run([...options, ...aliasPrefix, 'workspace-entry.mjs'], aliasEnv, audit);
+    expect(loaded.status, loaded.stderr).toBe(0);
     expect(loaded.stdout).toContain('WORKSPACE=HEAD');
     expect(loaded.stdout).not.toContain('WORKSPACE=DIRTY');
     expect(readAudit(audit).find((record) => record.rel === 'packages/workspace/value.mjs')).toMatchObject({
@@ -269,6 +279,29 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(loaded.status).not.toBe(0);
     expect(loaded.stderr).toContain('COMMITTED_SOURCE refused c.cjs');
     expect(loaded.stdout).not.toContain('CJS-RAN');
+  }, 60_000);
+
+  it.each([false, true])('refuses uncommitted workspace alias bytes with preserveSymlinks=%s', (preserveSymlinks) => {
+    const options = preserveSymlinks ? ['--preserve-symlinks'] : [];
+    const control = run([...options, 'workspace-new-entry.mjs'], cleanEnv());
+    expect(control.status, control.stderr).toBe(0);
+    expect(control.stdout).toContain('WORKSPACE-NEW-RAN');
+    const loaded = run([...options, '--import', COMMITTED_SOURCE_LOADER, 'workspace-new-entry.mjs'], cleanEnv());
+    expect(loaded.status, loaded.stderr).not.toBe(0);
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused packages/workspace/new.mjs');
+    expect(loaded.stdout).not.toContain('WORKSPACE-NEW-RAN');
+    expect(loaded.stdout).not.toContain('WORKSPACE-ENTRY-RAN');
+  }, 60_000);
+
+  it.each([false, true])('refuses CommonJS workspace alias bytes with preserveSymlinks=%s', (preserveSymlinks) => {
+    const options = preserveSymlinks ? ['--preserve-symlinks'] : [];
+    const control = run([...options, 'workspace-cjs-entry.mjs'], cleanEnv());
+    expect(control.status, control.stderr).toBe(0);
+    expect(control.stdout).toContain('WORKSPACE-CJS-RAN');
+    const loaded = run([...options, '--import', COMMITTED_SOURCE_LOADER, 'workspace-cjs-entry.mjs'], cleanEnv());
+    expect(loaded.status, loaded.stderr).not.toBe(0);
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused packages/workspace/value.cjs');
+    expect(loaded.stdout).not.toContain('WORKSPACE-CJS-RAN');
   }, 60_000);
 
   it('reaches a child forked with execArgv: [] through NODE_OPTIONS, and only through it', () => {
