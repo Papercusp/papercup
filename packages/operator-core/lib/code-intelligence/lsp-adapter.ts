@@ -32,7 +32,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Dir
 import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 
@@ -854,7 +854,7 @@ export function resolveProjectRoot(
   if (language === 'typescript') return { root: fallbackRoot, error: null };
 
   const markers = specForLanguage(language).projectMarkers;
-  let dir = dirname(resolve(file));
+  let dir = dirname(resolvePath(file));
   while (withinProjectBoundary(dir, fallbackRoot)) {
     if (markers.some(marker => existsSync(join(dir, marker)))) return { root: dir, error: null };
     const parent = dirname(dir);
@@ -871,7 +871,7 @@ export function resolveProjectRoot(
 }
 
 function withinProjectBoundary(path: string, root: string): boolean {
-  const canonical = (value: string) => existsSync(value) ? realpathSync(value) : resolve(value);
+  const canonical = (value: string) => existsSync(value) ? realpathSync(value) : resolvePath(value);
   const rel = relative(canonical(root), canonical(path));
   return rel === '' || (rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel));
 }
