@@ -48,6 +48,7 @@ const h = vi.hoisted(() => ({
   previousDumpSize: null as number | null,
   readdirNames: [] as string[],
   hostCoverageCovered: false,
+  hostCoverageInProgress: false,
   hostCoverageReason: 'no host-dump receipt',
   statfsCalls: 0,
   holdGuardOpen: false,
@@ -152,10 +153,14 @@ vi.mock('node:fs/promises', () => ({
 vi.mock('./host-dump-coverage', () => ({
   hostDumpStatusPath: vi.fn(() => '/host/STATUS.json'),
   readHostDumpStatus: vi.fn(async () => (h.hostCoverageCovered ? { ok: true } : null)),
+  readHostDumpInProgress: vi.fn(async () => h.hostCoverageInProgress
+    ? { pid: 4242, processStartTicks: '100', startedAtEpoch: 1_788_100_000, phase: 'guard-queued', source: 'guard' }
+    : null),
   probeSystemIdentifier: vi.fn(async () => (h.hostCoverageCovered ? 'cluster-1' : null)),
   evaluateHostDumpCoverage: vi.fn(() => ({
-    covered: h.hostCoverageCovered,
-    reason: h.hostCoverageReason,
+    covered: h.hostCoverageCovered && !h.hostCoverageInProgress,
+    inProgress: h.hostCoverageInProgress,
+    reason: h.hostCoverageInProgress ? 'host backup is in progress (phase guard-queued, pid 4242)' : h.hostCoverageReason,
   })),
 }));
 
@@ -221,6 +226,7 @@ beforeEach(() => {
   h.previousDumpSize = null;
   h.readdirNames = [];
   h.hostCoverageCovered = false;
+  h.hostCoverageInProgress = false;
   h.hostCoverageReason = 'no host-dump receipt';
   h.statfsCalls = 0;
   h.holdGuardOpen = false;
@@ -287,6 +293,21 @@ describe('cross-process dump transaction isolation', () => {
 });
 
 describe('runPreSnapshotHook admin-URL → spawn args', () => {
+  it('returns degraded without starting a duplicate dump while the host writer is active', async () => {
+    // A prior completion receipt cannot outrank a live writer marker.
+    h.hostCoverageCovered = true;
+    h.hostCoverageInProgress = true;
+
+    await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({
+      ok: false,
+      error: 'host backup is in progress (phase guard-queued, pid 4242)',
+    });
+
+    expect(pgDumpCall()).toBeUndefined();
+    expect(h.statfsCalls).toBe(0);
+    expect(h.logLines.join('')).toContain('hook done (degraded: host-backup-in-progress)');
+  });
+
   it('runs pg_dump through the shared wait-mode backup guard', async () => {
     await runPreSnapshotHook(ctx);
     const c = pgDumpCall()!;

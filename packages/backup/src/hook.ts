@@ -58,6 +58,7 @@ import { backupHost } from './config';
 import { WORKSPACE_BACKUP_APPLICATION_NAME } from './application-names';
 import {
   evaluateHostDumpCoverage,
+  readHostDumpInProgress,
   hostDumpStatusPath,
   probeSystemIdentifier,
   readHostDumpStatus,
@@ -494,16 +495,27 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
   // a deployment with no host job (the desktop ship target) never pays for a
   // psql spawn it can never act on.
   const hostStatus = await readHostDumpStatus(hostDumpStatusPath());
+  const targetSystemIdentifier = hostStatus ? await probeSystemIdentifier(target) : null;
+  // Read progress after the completion receipt and cluster probe. A host run
+  // can begin while those reads are in flight; the fresh marker must win over a
+  // stale STATUS.json and keep this hook from launching a duplicate dump.
+  const hostInProgress = await readHostDumpInProgress();
   const coverage = evaluateHostDumpCoverage({
     database: target.database,
-    targetSystemIdentifier: hostStatus ? await probeSystemIdentifier(target) : null,
+    targetSystemIdentifier,
     status: hostStatus,
+    inProgress: hostInProgress,
     nowEpoch: Math.floor(Date.now() / 1000),
   });
   if (coverage.covered) {
     await log(`pg SKIP: ${coverage.reason}`);
     await log('hook done (skipped: host-covered)');
     return { ok: true, skipped: coverage.reason };
+  }
+  if (coverage.inProgress) {
+    await log(`pg SKIP: ${coverage.reason}`);
+    await log('hook done (degraded: host-backup-in-progress)');
+    return { ok: false, error: coverage.reason };
   }
   if (hostStatus) await log(`host-dump coverage not established: ${coverage.reason}`);
 

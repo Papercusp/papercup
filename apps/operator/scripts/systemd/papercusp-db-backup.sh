@@ -206,6 +206,35 @@ if ! mkdir -p "$DUMP"; then
     "$(date -Iseconds)" "$DUMP" >&2
   exit 1
 fi
+
+# STATUS.json is a completion receipt, so publish a separate, bounded signal
+# while this writer is active. The consumer verifies the PID generation against
+# /proc and ignores a stale marker left by SIGKILL. This marker is best-effort;
+# it must never turn a bookkeeping failure into a skipped backup.
+HOST_BACKUP_PROGRESS_PATH="$DUMP/IN_PROGRESS.$$.json"
+write_host_backup_progress_marker() {
+  local stat_line start_ticks started_at tmp
+  stat_line=$(cat "/proc/$$/stat" 2>/dev/null) || return 0
+  start_ticks=$(printf '%s\n' "$stat_line" | awk '{ sub(/^.*\) /, ""); print $20 }')
+  [[ "$start_ticks" =~ ^[0-9]+$ ]] || return 0
+  started_at=$(date +%s)
+  [[ "$started_at" =~ ^[0-9]+$ ]] || return 0
+  tmp="${HOST_BACKUP_PROGRESS_PATH}.tmp.$$"
+  if ! printf '{"pid":%s,"processStartTicks":"%s","startedAtEpoch":%s,"phase":"host-backup"}\n' \
+      "$$" "$start_ticks" "$started_at" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  mv -f "$tmp" "$HOST_BACKUP_PROGRESS_PATH" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+cleanup_host_backup_progress_marker() {
+  [ -z "${HOST_BACKUP_PROGRESS_PATH:-}" ] || \
+    rm -f "$HOST_BACKUP_PROGRESS_PATH" "${HOST_BACKUP_PROGRESS_PATH}.tmp.$$" 2>/dev/null || true
+}
+trap cleanup_host_backup_progress_marker EXIT
+write_host_backup_progress_marker
+
 if ! mkdir -p "$(dirname "$LOCK")"; then
   log "FATAL: unable to create backup lock directory $(dirname "$LOCK") — refusing to skip this backup"
   exit 1
@@ -415,7 +444,7 @@ release_migration_rendezvous() {
   BACKUP_MIGRATION_LOCK_LEG=''
 }
 
-trap release_migration_rendezvous EXIT
+trap 'release_migration_rendezvous; cleanup_host_backup_progress_marker' EXIT
 
 # Ask kopia-backup-guard.sh to hand the host-wide Kopia lock back while this
 # script goes on running (WI-10004870). The guard holds that lock, not this

@@ -281,6 +281,38 @@ mkdir -p "$(dirname "$lock_path")" || exit 73
 exec 9>>"$lock_path" || exit 73
 umask "$lock_umask"
 
+# The workspace dump hook can read this PID-scoped receipt while the db-dump
+# guard is waiting for the shared Kopia lock, before the host script starts.
+# It is advisory only: failures writing the marker never fail or defer a backup.
+guard_progress_path=
+guard_progress_started_at=
+guard_progress_start_ticks=
+if [ "$label" = "db-dump" ]; then
+  guard_progress_path="${lock_path}.db-dump.$$.run"
+  guard_progress_started_at=$(date +%s)
+  # /proc/<pid>/stat field 22, after stripping the variable-width comm field.
+  guard_progress_start_ticks=$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$$/stat" 2>/dev/null)
+fi
+write_guard_progress() {
+  local phase="$1" tmp
+  [ -n "$guard_progress_path" ] || return 0
+  [[ "$guard_progress_start_ticks" =~ ^[0-9]+$ ]] || return 0
+  [[ "$guard_progress_started_at" =~ ^[0-9]+$ ]] || return 0
+  tmp="${guard_progress_path}.tmp.$$"
+  if ! printf '{"pid":%s,"processStartTicks":"%s","startedAtEpoch":%s,"phase":"%s"}\n' \
+      "$$" "$guard_progress_start_ticks" "$guard_progress_started_at" "$phase" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  mv -f "$tmp" "$guard_progress_path" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+cleanup_guard_progress() {
+  [ -z "$guard_progress_path" ] || rm -f "$guard_progress_path" "${guard_progress_path}.tmp.$$" 2>/dev/null || true
+}
+trap cleanup_guard_progress EXIT
+write_guard_progress guard-queued
+
 priority_request_path=
 priority_due_path=
 cleanup_priority_request() {
@@ -339,7 +371,7 @@ register_priority_request() {
   local base due
   priority_request_path="${lock_path}.${state_key}.$$.wait"
   priority_due_path=
-  trap cleanup_priority_request EXIT
+  trap 'cleanup_priority_request; cleanup_guard_progress' EXIT
   if [ "$mode" = scheduled ] && base=$(read_stamp "$deadline_base_path"); then
     due=$(awk -v base="$base" -v defer="$max_defer" 'BEGIN { printf "%d", base + defer }')
     priority_due_path="${lock_path}.${state_key}.$$.due"
@@ -715,12 +747,14 @@ lock_waited_sec=0
 handoff_note_age=
 acquire_scheduled_lock() {
   local lock_wait_started
+  write_guard_progress guard-queued
   lock_handoff_requested=0
   lock_waited_sec=0
   handoff_note_age=
   if flock -n 9; then
     # No request was registered, so no sweep yielded for this cycle: drop any note.
     rm -f "$handoff_note_path" 2>/dev/null || true
+    write_guard_progress guard-running
     return 0
   fi
   if [ "$pressure_escalated" = 1 ]; then
@@ -736,6 +770,7 @@ acquire_scheduled_lock() {
   lock_handoff_requested=1
   lock_wait_started=$(date +%s)
   flock 9 || exit "$scheduled_defer_exit"
+  write_guard_progress guard-running
   lock_waited_sec=$(( $(date +%s) - lock_wait_started ))
   handoff_note_age=$(take_handoff_note) || handoff_note_age=
   cleanup_priority_request
@@ -909,6 +944,7 @@ if [ "$mode" = scheduled ]; then
     # wait_out_admission_pressure), then re-take it through the same branches
     # and re-check: a long lock wait can outlast the lull that ended the
     # pressure wait. The budget spans every pass, so this loop terminates.
+    write_guard_progress guard-queued
     flock -u 9
     if ! wait_out_admission_pressure; then
       guard_log "result=deferred reason=$admission_block_reason $staleness_override_reason waited_sec=$pressure_waited_sec"
@@ -918,6 +954,7 @@ if [ "$mode" = scheduled ]; then
     evaluate_admission
   done
 else
+  write_guard_progress guard-queued
   register_priority_request
   guard_log "result=waiting reason=lock"
   guard_lock_wait_timeout_sec="${KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC:-900}"
@@ -933,6 +970,7 @@ else
     guard_log "result=failed mode=wait reason=lock-timeout timeout_sec=$guard_lock_wait_timeout_sec"
     exit 75
   fi
+  write_guard_progress guard-running
   signal_hook_ready || exit 74
   # A note left by a sweep that yielded to this wait-mode producer is spent here.
   rm -f "$handoff_note_path" 2>/dev/null || true
