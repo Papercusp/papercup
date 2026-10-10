@@ -19,6 +19,7 @@ import {
   hostedCustomerAgentCommand,
   hostedCustomerAgentIdentitySpec,
   hostedCustomerAgentSpawnTransform,
+  hostedCustomerCommandSpawnTransform,
   hostedHeavyAdmissionEnv,
   hostedTscServiceEnv,
   installHostedCustomerAgentIdentity,
@@ -74,6 +75,35 @@ afterEach(() => {
 });
 
 describe('hosted customer agent identity (D-421)', () => {
+  it('plans native commands with the same pinned customer SSH identity and no shipped runtime', () => {
+    const plan = hostedCustomerCommandSpawnTransform(withToolchain())({
+      backend: 'native-command', command: '/bin/bash', args: ['-c', 'printf customer'],
+      cwd: undefined, env: {}, stagedDirs: [],
+    });
+    expect(plan.command).toBe('/usr/bin/ssh');
+    expect(plan.args.slice(0, -1)).toEqual(expect.arrayContaining(hostedWorkspaceSshArgs({ tty: false })));
+    const h = header(plan.stdinPrelude);
+    expect(h.argv).toEqual(['/bin/bash', '-c', 'printf customer']);
+    expect(h.env.HOME).toBe(HOSTED_WORKSPACE_ACCOUNT_HOME);
+    expect(h.env.PATH).not.toContain('/opt/papercusp');
+    expect(h.files).toEqual([]);
+    expect(h.links).toEqual([]);
+  });
+
+  it('refuses native commands when the customer Node toolchain is absent', () => {
+    expect(() => hostedCustomerCommandSpawnTransform(withToolchain({ exists: () => false }))({
+      backend: 'native-command', command: '/bin/bash', args: [], cwd: undefined, env: {}, stagedDirs: [],
+    })).toThrow(/toolchain unavailable/);
+  });
+
+  it('refuses a substituted executable or runtime staging on the native command seam', () => {
+    const transform = hostedCustomerCommandSpawnTransform(withToolchain());
+    for (const request of [codexRequest(), { ...codexRequest(), backend: 'native-command', command: '/bin/bash' },
+      { ...codexRequest(), backend: 'native-command', stagedDirs: [] }]) {
+      expect(() => transform(request)).toThrow(/invalid customer command execution plan/);
+    }
+  });
+
   it('runs the agent over the pinned loopback SSH vector as the customer account, without a TTY', () => {
     const plan = hostedCustomerAgentSpawnTransform(withToolchain())(codexRequest());
     expect(plan.command).toBe('/usr/bin/ssh');
