@@ -8,6 +8,7 @@ import { build } from 'esbuild';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { getMessageById, readInbox } from '../lib/agent-tools/coordination/messages';
 import { verifyPrivateStopReceipt } from './private-coord-receipt';
+import { portalNuqsPlugin } from './private-http-workspace-preflight';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 
@@ -24,11 +25,11 @@ type PortalRosterBrowserInput = {
   };
 };
 
-export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
-  const { evidence, base, workspace, selected, neighbor } = input;
+/** Compile the actual component graph without a browser, API or private PG. */
+export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop'>) {
+  const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
-  const spa = join(evidence, 'portal-roster-spa');
-  mkdirSync(spa, { recursive: true });
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
     intent: 'Private browser roster canary', feature: null, currentPlanSlug: null, liveness: 'live',
     sessionState: 'live', heartbeatAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
@@ -75,12 +76,11 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const result = await build({ absWorkingDir: portal,
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
-    alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom'),
-      nuqs: resolve(portal, 'node_modules/nuqs') },
+    alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
     loader: { '.css': 'empty' },
     bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false,
-    plugins: [{ name: 'retain-executed-browser-inputs', setup(builder) {
+    plugins: [portalNuqsPlugin(portal), { name: 'retain-executed-browser-inputs', setup(builder) {
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, ({ path }) => {
         const contents = readFileSync(path);
         originals.set(path, { sha256: digest(contents), bytes: contents.length });
@@ -94,6 +94,14 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     `Browser input changed during build: ${path}`);
   assert.ok([...originals.keys()].some(path => path.endsWith('/packages/ui/src/agents-popover.tsx')),
     'Executed bundle must contain the actual Portal control');
+  return { portal, entry, bundle, originals };
+}
+
+export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
+  const { evidence, base, workspace, selected, neighbor } = input;
+  const { portal, entry, bundle, originals } = await buildPortalRosterBrowser(input);
+  const spa = join(evidence, 'portal-roster-spa');
+  mkdirSync(spa, { recursive: true });
   writeFileSync(join(spa, 'portal-roster.js'), bundle);
   writeFileSync(join(spa, 'portal-roster.css'), readFileSync(join(portal, 'app/tokens.css'), 'utf8') + '\n'
     + readFileSync(join(portal, 'app/globals.css'), 'utf8'));
