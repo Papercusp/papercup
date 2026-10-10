@@ -33,6 +33,9 @@ vi.mock('../../service-health', async (importOriginal) => ({
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 }, note: 'resumable' })),
 }));
+vi.mock('../../events/await/predicate-watch', () => ({
+  getPredicateWatch: vi.fn(async () => null),
+}));
 vi.mock('../../events/await/store', () => ({
   registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 99, eventKey: i.eventKey, expiresTs: '2030-01-01', timeoutBehavior: i.timeoutBehavior })),
   // EI-21124063749265204: the post-registration egress-latch reconciliation
@@ -161,6 +164,7 @@ import { mockImplementationTyped } from '../../testing/typed-mock';
 import { assertMockCoversImports } from '../../testing/mock-import-coverage';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
+import { getPredicateWatch } from '../../events/await/predicate-watch';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import { liveBlockedState, liveSettledProbe, liveAssigneeProbe, liveWorkItemClaimableEventPayload } from '../../work-items-events';
@@ -732,6 +736,76 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(out.ok).toBe(true);
     expect(out.await_id).toBe(99);
     expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('recognizes an active predicate-watch row as the emitter for its synthetic key', async () => {
+    const event = 'predicate:watch-123';
+    vi.mocked(getPredicateWatch).mockResolvedValueOnce({ eventKey: event, active: true } as never);
+    vi.mocked(registerAwait).mockResolvedValueOnce({
+      id: 101,
+      eventKey: event,
+      policy: 'wake',
+      once: true,
+      firedAt: null,
+      cancelledAt: null,
+      expiresTs: '2099-01-01T00:00:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      wakeHandle: null,
+      timeoutBehavior: 'wake',
+    } as AwaitRow);
+
+    const out = await call({ event });
+
+    expect(getPredicateWatch).toHaveBeenCalledWith('watch-123');
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.uncatalogued_event_key).toBeUndefined();
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    expect(out.operational_brief.owner).toEqual({
+      status: 'known',
+      value: 'watch:create predicate poller',
+      source: 'predicate_watches',
+    });
+    expect(out.operational_brief.nextAction.value).toContain('check that watch:create predicate poller is progressing');
+  });
+
+  it('does not accept a retired predicate-watch row as a live emitter', async () => {
+    const event = 'predicate:watch-retired';
+    vi.mocked(getPredicateWatch).mockResolvedValueOnce({ eventKey: event, active: false } as never);
+
+    const out = await call({ event });
+
+    expect(out.unknown_event_key).toBe(true);
+    expect(probeKeyFireEvidence).toHaveBeenCalledWith(event);
+  });
+
+  it('keeps an unavailable predicate-watch registry inconclusive instead of warning orphaned', async () => {
+    const event = 'predicate:watch-unreadable';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getPredicateWatch).mockRejectedValueOnce(new Error('predicate registry unavailable'));
+    vi.mocked(registerAwait).mockResolvedValueOnce({
+      id: 102,
+      eventKey: event,
+      policy: 'wake',
+      once: true,
+      firedAt: null,
+      cancelledAt: null,
+      expiresTs: '2099-01-01T00:00:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      wakeHandle: null,
+      timeoutBehavior: 'wake',
+    } as AwaitRow);
+
+    const out = await call({ event });
+
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    expect(out.operational_brief.owner).toEqual({
+      status: 'unknown',
+      reason: 'predicate_watches probe error while this await was registered; emitter presence and owner are unknown',
+    });
+    expect(out.operational_brief.nextAction.value).toContain('do not treat this as proof that the key has no emitter');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:predicateWatchEmitter'));
+    warn.mockRestore();
   });
 
   it('recognizes consult reply park keys as catalogued emitter-backed awaits', async () => {

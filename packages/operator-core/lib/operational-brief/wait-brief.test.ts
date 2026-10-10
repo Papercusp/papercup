@@ -251,7 +251,27 @@ describe('projectAwaitWaitOperationalBrief — a pending one-shot wake await', (
     },
   );
 
+  it('a predicate-watch registry probe failure is inconclusive, not a confirmed missing emitter', () => {
+    const brief = projectAwaitWaitOperationalBrief({
+      wakeAwait: row({ ...awaitRow, eventKey: 'predicate:watch-123' }),
+      predicateWatchProbeFailure: 'error',
+      nowMs: NOW,
+    });
+    expect(brief!.owner).toEqual({
+      status: 'unknown',
+      reason: 'predicate_watches probe error while this await was registered; emitter presence and owner are unknown',
+    });
+    expect(brief!.blockers.value).toContain('predicate_watches probe error; emitter presence is unverified');
+    expect(brief!.nextAction.value).toContain('do not treat this as proof that the key has no emitter');
+    expect(brief!.nextAction.value).not.toMatch(/^Nothing is known to fire/);
+  });
+
   it('emitter hints keep the owner gap truthful for pattern / uncatalogued / out-of-scope keys', () => {
+    expect(projectAwaitWaitOperationalBrief({ wakeAwait: awaitRow, emitterHint: 'active-predicate-watch', nowMs: NOW })!.owner).toEqual({
+      status: 'known',
+      value: 'watch:create predicate poller',
+      source: 'predicate_watches',
+    });
     expect(projectAwaitWaitOperationalBrief({ wakeAwait: awaitRow, emitterHint: 'pattern', nowMs: NOW })!.owner).toEqual({
       status: 'unknown',
       reason: 'a pattern await matches many keys; the first to fire wakes you and each has its own emitter',

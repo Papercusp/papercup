@@ -26,6 +26,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { getMessageById } from '../coordination/messages';
 import { readGateRefs } from '../coordination/ref-hydrate';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
+import { getPredicateWatch } from '../../events/await/predicate-watch';
 import {
   familyAdmitsKey,
   keyMatchesCatalog,
@@ -668,6 +669,36 @@ export default defineTool({
       } else {
         unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
         catalogEmitter = probe.value.find((entry) => familyAdmitsKey(entry, eventKey))?.emitter ?? null;
+      }
+    }
+
+    // Predicate-watch keys are minted at runtime and have no static catalog family.
+    // The durable predicate_watches row is their emitter contract: if the exact row is
+    // still active, the poller can fire this key even before its first edge has fired.
+    // Check that registry before announcement/fire history, which cannot know a fresh
+    // predicate key yet.
+    let activePredicateWatchEmitter = false;
+    let predicateWatchProbeFailure: 'timeout' | 'aborted' | 'error' | null = null;
+    if (unknownEventKey && eventKey.startsWith('predicate:')) {
+      const predicateId = eventKey.slice('predicate:'.length);
+      if (predicateId) {
+        const predicateProbe = await withBoundedTimeout(getPredicateWatch(predicateId), {
+          fallback: null,
+          timeoutMs: 1_000,
+          label: 'events-await:predicateWatchEmitter',
+        });
+        const predicateWatch = predicateProbe.value;
+        if (predicateProbe.degraded || predicateProbe.value === null) {
+          if (predicateProbe.degraded) {
+            predicateWatchProbeFailure = predicateProbe.reason ?? 'error';
+            // The dynamic emitter registry could not answer. Preserve that gap instead
+            // of turning missing data into an orphan warning.
+            unknownEventKey = false;
+          }
+        } else if (predicateWatch?.active && predicateWatch.eventKey === eventKey) {
+          unknownEventKey = false;
+          activePredicateWatchEmitter = true;
+        }
       }
     }
 
@@ -1549,13 +1580,16 @@ export default defineTool({
         : null,
       catalogEmitter,
       catalogProbeFailure,
+      predicateWatchProbeFailure,
       emitterHint: patternAwait
         ? 'pattern'
-        : declaredAnnouncement
-          ? 'declared-out-of-scope'
-          : emitterEvidence
-            ? 'fired-uncatalogued'
-            : null,
+        : activePredicateWatchEmitter
+          ? 'active-predicate-watch'
+          : declaredAnnouncement
+            ? 'declared-out-of-scope'
+            : emitterEvidence
+              ? 'fired-uncatalogued'
+              : null,
       noKnownEmitter: unknownEventKey || noKnownEmitterForAnnouncedGate !== null,
       wakeHandleNote: handleNote,
     });

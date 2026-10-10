@@ -27,6 +27,7 @@ const LOCK_HOLDER_SOURCE = 'agent_locks holder snapshot';
 const AWAIT_SOURCE = 'event_awaits';
 const ANNOUNCEMENT_SOURCE = 'events:emit announce declaration';
 const CATALOG_SOURCE = 'events:catalog emitter';
+const PREDICATE_WATCH_SOURCE = 'predicate_watches';
 
 /** A current holder of a path the waiter queued on (the `busy` rows locks:acquire returns). */
 export interface LockWaitHolder {
@@ -81,7 +82,7 @@ export interface AwaitWaitAnnouncement {
  *  - `fired-uncatalogued`: the key has fired before but its family is not catalogued;
  *  - `declared-out-of-scope`: an announcement the caller cannot see declared the key.
  */
-export type AwaitEmitterHint = 'pattern' | 'fired-uncatalogued' | 'declared-out-of-scope';
+export type AwaitEmitterHint = 'pattern' | 'fired-uncatalogued' | 'declared-out-of-scope' | 'active-predicate-watch';
 
 export interface ProjectAwaitWaitBriefInput {
   wakeAwait: AwaitRow;
@@ -91,6 +92,8 @@ export interface ProjectAwaitWaitBriefInput {
   catalogEmitter?: string | null;
   /** Why the catalog probe was unavailable; absence is only asserted after a successful probe. */
   catalogProbeFailure?: 'timeout' | 'aborted' | 'error' | null;
+  /** Why the dynamic predicate-watch emitter lookup was unavailable. */
+  predicateWatchProbeFailure?: 'timeout' | 'aborted' | 'error' | null;
   /** Why the emitter is unnameable when it is not an orphan (see AwaitEmitterHint). */
   emitterHint?: AwaitEmitterHint | null;
   /** The registration found no known emitter for the key (it may only ever time out). */
@@ -203,6 +206,8 @@ function awaitOwner(input: ProjectAwaitWaitBriefInput): BriefField<string | null
   if (input.announcement?.announcedBy) return known(input.announcement.announcedBy, ANNOUNCEMENT_SOURCE);
   if (input.catalogEmitter) return known(input.catalogEmitter, CATALOG_SOURCE);
   switch (input.emitterHint) {
+    case 'active-predicate-watch':
+      return known('watch:create predicate poller', PREDICATE_WATCH_SOURCE);
     case 'pattern':
       return unknown('a pattern await matches many keys; the first to fire wakes you and each has its own emitter');
     case 'fired-uncatalogued':
@@ -215,6 +220,11 @@ function awaitOwner(input: ProjectAwaitWaitBriefInput): BriefField<string | null
   if (input.catalogProbeFailure) {
     return unknown(
       `events:catalog probe ${input.catalogProbeFailure} while this await was registered; emitter presence and owner are unknown`,
+    );
+  }
+  if (input.predicateWatchProbeFailure) {
+    return unknown(
+      `predicate_watches probe ${input.predicateWatchProbeFailure} while this await was registered; emitter presence and owner are unknown`,
     );
   }
   return unknown(
@@ -232,6 +242,9 @@ function awaitBlockers(input: ProjectAwaitWaitBriefInput): string[] {
   if (input.catalogProbeFailure) {
     out.push(`events:catalog probe ${input.catalogProbeFailure}; emitter presence is unverified`);
   }
+  if (input.predicateWatchProbeFailure) {
+    out.push(`predicate_watches probe ${input.predicateWatchProbeFailure}; emitter presence is unverified`);
+  }
   if (input.noKnownEmitter) out.push('no emitter is known to fire this exact key; it may only ever time out');
   return out;
 }
@@ -248,6 +261,15 @@ function awaitNextAction(input: ProjectAwaitWaitBriefInput, owner: BriefField<st
       return `${probeNote} If ${row.eventKey} has not fired${byDeadline} this await EXPIRES SILENTLY and nothing wakes you: keep another wake source (loop:arm) or re-register with on_timeout:'wake'.`;
     }
     return `${probeNote} Check events:catalog or the producer contract before canceling. END YOUR TURN. You are re-invoked when ${row.eventKey} fires, or with a timeout wake${byDeadline}. On a timeout wake, check that its emitter is progressing before re-arming.`;
+  }
+  if (input.predicateWatchProbeFailure) {
+    const probeNote =
+      `predicate_watches probe ${input.predicateWatchProbeFailure} while this await was registered, so emitter presence is unverified; ` +
+      'do not treat this as proof that the key has no emitter.';
+    if (row.timeoutBehavior === 'expire') {
+      return `${probeNote} If ${row.eventKey} has not fired${byDeadline} this await EXPIRES SILENTLY and nothing wakes you: keep another wake source (loop:arm) or re-register with on_timeout:'wake'.`;
+    }
+    return `${probeNote} Check the predicate-watch registration before canceling. END YOUR TURN. You are re-invoked if ${row.eventKey} fires, or with a timeout wake${byDeadline}. On a timeout wake, re-check that its predicate poller is progressing before re-arming.`;
   }
   if (input.noKnownEmitter) {
     return `Nothing is known to fire ${row.eventKey}: confirm with the party that owns this completion that it will emit this EXACT key (events:catalog lists catalogued keys), or events:cancel { await_id: ${row.id} } and await the right key. Otherwise END YOUR TURN.`;
