@@ -442,6 +442,42 @@
     "affected": { "log": "/dev/shm/tutorial-saved-prompts-core-affected-20261010T2035.log", "outcome": "Owned attempt canceled after queued admission; terminal1, no full suite verdict. Required affected verification remains open." },
     "limitations": "No new hosted/native/provider/novice/full-product/production acceptance or shipment verdict. Boundary edits and final corrected core test need normal commit and exact-source renewed proof. No active browser runtime or command handles remain."
   },
+  "hostedSettingsFinalCandidate2058": {
+    "portalCommit": "30e9489887f8f8a9f7b9898be4989283fa63a464",
+    "coreCommit": "c63f8acc72d4e7e633fa043d8012b5ce272d1f3a",
+    "coreRoot": "/dev/shm/pcv/papercusp-lint-as-committed-c63f8acc72-ZIvFfO",
+    "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-30e9489887-pn5sbC",
+    "committedTests": [
+      { "testRunId": 20997562, "scope": "Full Personalization composition suite", "passed": 4, "failed": 0, "skipped": 0 },
+      { "testRunId": 20997563, "scope": "Full maintained guide write observer suite", "passed": 23, "failed": 0, "skipped": 0 },
+      { "testRunId": 20997565, "scope": "Full Portal shell suite", "passed": 110, "failed": 0, "skipped": 0 }
+    ],
+    "buildId": "6GHerXs3F8XLCBGNiKKbY",
+    "release": "/dev/shm/tutorial-final-runtime-30e94898-c63f8-20261010T2058/releases/6GHerXs3F8XLCBGNiKKbY-20261010205930618-1773061-6ac12404",
+    "sourceRootDigest": "043d5a5f8202c57ebd6ca95c9eec873d2f395d5ecc3721b479c6df64cc9cc5c6",
+    "fixtureReceipt": "/dev/shm/tutorial-final-verifier-30e94898-20261010T2102.receipt.json",
+    "fixtureRoot": "/dev/shm/pcv/tutorial-final-verifier-30e94898-20261010T2102",
+    "custody": "Retained source roots clean after successful build; independent 586-file verifier receipt, actual five guide imports and maintained source-custody guard passed. Native browser and Speech Dispatcher preflight passed; these are prerequisites only.",
+    "failedStartup": {
+      "nonce": "20261010T2104-7a",
+      "log": "/dev/shm/tutorial-final-operator-inner-20261010T2104.log",
+      "outcome": "Failed before config-ready receipt, health, browser or native acceptance. No production promotion or deployment.",
+      "rootCause": "Supervisor source9c646 lacked migration1441-wake-delivery-turn-proof.sql while candidatec63 included it. with-test-pg selected supervisor SQL before the candidate override; operator boot refused the absent migration reservation. Child-exit cleanup sent TERM to its group but removed private state without awaiting or escalating the surviving descendant.",
+      "followUp": "EI-25627804892543692",
+      "teardown": "Supervisor terminal1 and private PG removed; surviving owned candidate child was then SIGKILLed and verified absent. All recorded command handles drained."
+    },
+    "cleanupRepairWorkingProof": {
+      "workItemId": "EI-25627804892543692",
+      "log": "/dev/shm/tutorial-runtime-cleanup-stable-working-20261010T2121.log",
+      "logSha256": "e3889118186d94263b19cb59ac5fbc92169f3c209f14b029c0843569c1e2f577",
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "sourceQualification": "Stable working source at HEADdc0efd7349 with both test files uncommitted; terminal0 and no source drift. Clean committed repair verification remains open.",
+      "guard": "Existing process-group lifetime extended with bounded TERM/KILL/wait before DB removal; command and profile teardown reuse it. Real stubborn-grandchild tests cover ordinary child exit and supervisor cancellation. Explicit candidate migration inventory mismatch is refused before PG allocation."
+    },
+    "limitations": "Committed component/observer/shell proofs and successful retained build do not establish new hosted/native/provider/novice/full-affected/full-product or production shipment acceptance. Attended review must end SKIP; ordinary automated acceptance uses a distinct fresh account and run. Prior failed20997335, failed20993954 and native2018 evidence is preserved."
+  },
   "limitations": [
     "The earlier integration and browser fields cover mounted fixtures/jsdom; the qualified hosted field covers one actual preference task.",
     "The new partial native review records scoped Orca and native-key observations. Complete supported-runtime and wider full-product accessibility acceptance remain open; mounted Settings Tab proof20987694 and hosted pure Tab/arrow proof20988435 retain their stated narrow scopes.",
