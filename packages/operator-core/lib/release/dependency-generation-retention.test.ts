@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runDependencyGenerationRetention } from './dependency-generation-retention';
+import { resolveDependencyGenerationRoot } from './dependency-generation-prebuild';
 
 const registry = vi.hoisted(() => ({
   read: vi.fn(),
@@ -51,9 +53,9 @@ afterEach(() => {
   rmSync(fixture, { recursive: true, force: true });
 });
 
-function recordStore(store: string): void {
+function recordStore(store: string, previous: string[] = []): void {
   mkdirSync(join(integration, '.papercusp'), { recursive: true });
-  writeFileSync(join(integration, '.papercusp/dependency-generation-root'), `${store}\n`);
+  writeFileSync(join(integration, '.papercusp/dependency-generation-root'), `${[store, ...previous].join('\n')}\n`);
 }
 
 function pruneArguments(): string[] {
@@ -61,6 +63,78 @@ function pruneArguments(): string[] {
 }
 
 describe('hourly dependency-generation retention discovery', () => {
+  it('sweeps recorded former stores with their existing pin/lease guard, preserving first-line selection', async () => {
+    const current = join(fixture, 'current');
+    const old = join(fixture, 'old');
+    mkdirSync(current); mkdirSync(old);
+    recordStore(current, [old, old, 'relative-not-a-store', current]);
+    expect(resolveDependencyGenerationRoot(integration, {})).toBe(current);
+    await runDependencyGenerationRetention();
+    expect(pruneArguments()).toEqual([
+      '--integration', integration, '--generation-root', current, '--prune-only',
+      '--integration', integration, '--generation-root', old, '--prune-only', '--retired-store',
+    ]);
+    expect(governed.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the current store on line one across real shell root moves', () => {
+    const actual = resolve(__dirname, '../../../../apps/operator/bin/release/dependency-generation.sh');
+    const roots = ['first', 'second', 'third'].map((name) => join(fixture, name));
+    roots.forEach((root) => mkdirSync(root));
+    const result = spawnSync('bash', ['-c',
+      'source "$1"; for store in "$3" "$4" "$5" "$4"; do PAPERCUSP_DEPENDENCY_GENERATION_ROOT="$store" dependency_generation_resolve_root "$2" >/dev/null || exit; done',
+      '_', actual, integration, ...roots], { encoding: 'utf8', timeout: 10_000 });
+    expect(result.status, result.stderr).toBe(0);
+    const lines = readFileSync(join(integration, '.papercusp/dependency-generation-root'), 'utf8').trim().split('\n');
+    expect(lines[0]).toBe(roots[1]);
+    expect(new Set(lines)).toEqual(new Set(roots));
+    expect(lines).toHaveLength(3);
+    expect(resolveDependencyGenerationRoot(integration, {})).toBe(roots[1]);
+  });
+
+  it('retired-store pruning keeps real pins, foreign leases, and the replacement store', () => {
+    const actual = resolve(__dirname, '../../../../apps/operator/bin/release/dependency-generation.sh');
+    const current = join(fixture, 'current');
+    const old = join(fixture, 'old');
+    mkdirSync(current); mkdirSync(old);
+    const ids = ['a', 'b', 'c'].map((value) => `v1-${value.repeat(64)}`);
+    ids.forEach((id) => {
+      mkdirSync(join(old, id, 'tree'), { recursive: true });
+      writeFileSync(join(old, id, '.papercusp-dependency-generation'), `identity=${id}\nsnapshot=fixture\ncreated=1\n`);
+      writeFileSync(join(old, id, 'tree/dependency.txt'), 'rebuildable');
+    });
+    const consumer = join(fixture, 'consumer');
+    mkdirSync(join(consumer, 'node_modules'), { recursive: true });
+    writeFileSync(join(consumer, 'node_modules/.papercusp-dependency-generation'), `identity=${ids[0]}\n`);
+    mkdirSync(join(old, '.pins')); mkdirSync(join(old, '.leases'));
+    writeFileSync(join(old, '.pins/consumer'), `identity=${ids[0]}\ncheckout=${consumer}\n`);
+    writeFileSync(join(old, '.leases/foreign'), `identity=${ids[2]}\nhost=foreign-fixture-host\npid=1\n`);
+    writeFileSync(join(current, 'retained.txt'), 'current');
+    recordStore(current, [old]);
+    const notReady = spawnSync('bash', [actual, '--integration', integration, '--generation-root', old,
+      '--prune-only', '--retired-store'], { encoding: 'utf8', timeout: 10_000 });
+    expect(notReady.status, notReady.stderr).toBe(2);
+    expect(notReady.stderr).toContain('replacement dependency store is not published');
+    expect(existsSync(join(old, ids[1]!))).toBe(true);
+    const replacementId = `v1-${'d'.repeat(64)}`;
+    mkdirSync(join(current, replacementId, 'tree'), { recursive: true });
+    writeFileSync(join(current, replacementId, '.papercusp-dependency-generation'), `identity=${replacementId}\nsnapshot=fixture\ncreated=2\n`);
+    // The pre-existing actor's current-store-only invocation must also retire
+    // former stores, even before a background host loads the new TS discovery.
+    const result = spawnSync('bash', [actual, '--integration', integration, '--generation-root', current,
+      '--prune-only'], { encoding: 'utf8', timeout: 10_000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(old, ids[0]!))).toBe(true);
+    expect(existsSync(join(old, ids[1]!))).toBe(false);
+    expect(existsSync(join(old, ids[2]!))).toBe(true);
+    expect(existsSync(join(current, replacementId))).toBe(true);
+    expect(readFileSync(join(current, 'retained.txt'), 'utf8')).toBe('current');
+    const refused = spawnSync('bash', [actual, '--integration', integration, '--generation-root', current,
+      '--prune-only', '--retired-store'], { encoding: 'utf8', timeout: 10_000 });
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('cannot retire the current');
+  });
+
   it('invokes prune-only for a recorded store without a legacy directory', async () => {
     const store = join(fixture, 'recorded-store');
     mkdirSync(store);

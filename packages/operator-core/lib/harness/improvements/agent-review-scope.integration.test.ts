@@ -1,5 +1,8 @@
 /** P-026: real pickup queries against migrated PG, with a full excluded page. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import type { WorkItem } from '../../work-items';
 
@@ -17,11 +20,30 @@ const { claimNextAgentReview, claimNextVerificationTask } = await import('./agen
 const { buildP2pLaneFence } = await import('../../scheduler/p2p-lane-fence');
 const WS = 'ws-verifier-scope';
 const HARNESS = 'papercusp';
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+
+async function ensureClaimNextIndex(db: OrgTestDb) {
+  const existing = await db.adminSql`SELECT 1 FROM pg_indexes
+    WHERE schemaname = 'harness_shared' AND indexname = 'work_items_agent_review_claim_next_idx'`;
+  if (existing.length) return;
+
+  // During migration authoring the allocated .DRAFT is intentionally invisible to
+  // the migration runner. Apply that one additive DDL in this isolated test DB so
+  // the integration assertion exercises the exact draft before it is armed.
+  const candidates = [
+    resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql/1435-agent-review-claim-next-index.sql.DRAFT'),
+    resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql/1435-agent-review-claim-next-index.sql'),
+  ];
+  const path = candidates.find(existsSync);
+  if (!path) throw new Error('1435 agent-review claim-next migration is missing');
+  await db.adminSql.unsafe(readFileSync(path, 'utf8'));
+}
 
 describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
   let db: OrgTestDb;
   beforeAll(async () => {
     db = await createOrgTestDb();
+    await ensureClaimNextIndex(db);
     h.sql = db.adminSql;
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
@@ -71,5 +93,20 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
     expect(claimWorkItem.mock.calls.map((c) => c[0])).toEqual(['WI-IN']);
     const held = await db.adminSql`SELECT feature_id FROM harness_shared.work_items WHERE workspace_id=${WS} AND taken_by IS NOT NULL`;
     expect(held.map((row) => row.feature_id)).toEqual(['WI-IN']);
+  });
+
+  it('keeps the pending-review projection and claim-next partial index aligned (EI-25555666233005302)', async () => {
+    await seed('WI-PROJECTION', true, 1, null);
+
+    const [row] = await db.adminSql`SELECT agent_review_projection
+      FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-PROJECTION'`;
+    const [index] = await db.adminSql`SELECT indexdef FROM pg_indexes
+      WHERE schemaname = 'harness_shared' AND indexname = 'work_items_agent_review_claim_next_idx'`;
+
+    expect(row?.agent_review_projection).toMatchObject({ status: 'pending', submittedBy: 'su-filer' });
+    expect(index?.indexdef).toContain("agent_review_projection ->> 'status' = 'pending'");
+    expect(index?.indexdef).toContain("status = 'open'");
+    expect(index?.indexdef).toContain("btrim(taken_by) = ''");
   });
 });
