@@ -291,6 +291,9 @@ export function makeDelivery(
     source: partial.source ?? null,
     wakeHandle: partial.wakeHandle ?? null,
     note: partial.note ?? null,
+    turnProof: partial.turnProof ?? null,
+    turnStartedAt: partial.turnStartedAt ?? null,
+    pickupDeadlineAt: partial.pickupDeadlineAt ?? null,
   };
 }
 

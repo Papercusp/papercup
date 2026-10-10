@@ -188,6 +188,9 @@ function workRow(over: Partial<DeliveryWork> = {}): DeliveryWork {
     source: null,
     wakeHandle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 },
     note: null,
+    turnProof: null,
+    turnStartedAt: null,
+    pickupDeadlineAt: null,
     ...over,
   };
 }
