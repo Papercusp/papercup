@@ -13,7 +13,14 @@ import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateSt
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
-import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl } from '../test/portal-roster-browser-fixture';
+import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial } from '../test/portal-roster-browser-fixture';
+
+it('preflights native HUD read policy and the exact host denial before private PG', async () => {
+  expect(await verifyPrivateHudReadPolicy()).toEqual({ denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 });
+  expect(() => verifyPrivateHudHostDenial(200, JSON.stringify({ rows: [] }))).toThrow();
+  expect(() => verifyPrivateHudHostDenial(403, JSON.stringify({ error: 'loopback_only' }))).toThrow();
+  expect(() => verifyPrivateHudHostDenial(403, JSON.stringify({ error: { code: 'unrelated_denial' } }))).toThrow();
+});
 
 it('checks private socket capacity in bytes before runtime allocation, including multibyte scratch roots', () => {
   const suffix = '/papercusp-test-runtime-XXXXXX/tmp/rs-XXXXXX/su-rs-123456789-neighbor.sock';

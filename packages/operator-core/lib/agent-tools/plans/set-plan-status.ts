@@ -213,8 +213,8 @@ type SetPlanStatusValue =
     }
   | { ok: false; code: 'not_found' | 'no_status_line' | 'unexpected_status'; current?: string | null };
 
-/** Frontmatter `status:` line, captured value in group 2, trailing ws in group 3. */
-const STATUS_LINE_RE = /^(status:[ \t]*)([A-Za-z][\w-]*)([ \t]*)$/m;
+/** Frontmatter status with matched YAML quotes; preserve its style and trailing whitespace. */
+const STATUS_LINE_RE = /^(status:[ \t]*)(["']?)([A-Za-z][\w-]*)\2([ \t]*\r?)$/m;
 
 /**
  * Pure decision function — flip the frontmatter `status:` line within
@@ -238,7 +238,7 @@ export function flipPlanFrontmatterStatus(
   const rest = body.slice(close);
   const m = STATUS_LINE_RE.exec(fm);
   if (!m) return { newBody: null, oldStatus: null, code: 'no_status_line' };
-  const oldStatus = m[2] ?? null;
+  const oldStatus = m[3] ?? null;
   if (expectedCurrent && oldStatus !== expectedCurrent) {
     return { newBody: null, oldStatus, code: 'unexpected_status' };
   }
@@ -246,8 +246,8 @@ export function flipPlanFrontmatterStatus(
     return { newBody: null, oldStatus, code: 'noop' };
   }
   // String replacement: `target` is an enum value (no `$` substitution
-  // sequences), trailing whitespace ($3) preserved.
-  const newFm = fm.replace(STATUS_LINE_RE, `$1${target}$3`);
+  // sequences), matched quote style ($2) and trailing whitespace ($4) preserved.
+  const newFm = fm.replace(STATUS_LINE_RE, `$1$2${target}$2$4`);
   return { newBody: newFm + rest, oldStatus };
 }
 

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -28,6 +29,56 @@ function functionBody(name: string): string {
 }
 
 describe('papercusp database-backup progress watchdog', () => {
+  it('publishes a PID-bound host writer marker and removes it on EXIT', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'backup-host-progress-marker-'));
+    try {
+      const dump = join(root, 'dump');
+      const ready = join(root, 'ready');
+      const release = join(root, 'release');
+      const harness = join(root, 'marker-harness.sh');
+      const markerWriter = functionBody('write_host_backup_progress_marker');
+      const markerCleanup = functionBody('cleanup_host_backup_progress_marker');
+      writeFileSync(harness, [
+        '#!/usr/bin/env bash',
+        'set -uo pipefail',
+        'DUMP="$TEST_DUMP"',
+        'mkdir -p "$DUMP"',
+        'HOST_BACKUP_PROGRESS_PATH="$DUMP/IN_PROGRESS.$$.json"',
+        markerWriter,
+        markerCleanup,
+        'trap cleanup_host_backup_progress_marker EXIT',
+        'write_host_backup_progress_marker',
+        'touch "$READY_PATH"',
+        'while [ ! -e "$RELEASE_PATH" ]; do sleep 0.01; done',
+        '',
+      ].join('\n'));
+      chmodSync(harness, 0o755);
+
+      const child = spawn('bash', [harness], {
+        env: { ...process.env, TEST_DUMP: dump, READY_PATH: ready, RELEASE_PATH: release },
+        stdio: 'ignore',
+      });
+      const closed = new Promise<number | null>((resolve) => child.once('close', resolve));
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(ready) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(existsSync(ready)).toBe(true);
+
+      const markerPath = join(dump, `IN_PROGRESS.${child.pid}.json`);
+      const marker = JSON.parse(readFileSync(markerPath, 'utf8')) as Record<string, unknown>;
+      expect(marker).toMatchObject({ pid: child.pid, phase: 'host-backup' });
+      expect(marker.processStartTicks).toMatch(/^\d+$/);
+      expect(marker.startedAtEpoch).toBeTypeOf('number');
+
+      writeFileSync(release, 'finish');
+      expect(await closed).toBe(0);
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a finite floor and a larger absolute ceiling', () => {
     expect(source).toContain('TIMEOUT_SEC="${PC_BACKUP_TIMEOUT_SEC:-2700}"');
     expect(source).toContain('TIMEOUT_MAX_SEC="${PC_BACKUP_TIMEOUT_MAX_SEC:-5400}"');

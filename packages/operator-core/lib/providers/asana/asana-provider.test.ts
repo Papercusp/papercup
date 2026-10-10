@@ -14,6 +14,7 @@
  * the writes (ticket.read, ticket.comment, ticket.transition). The real-driver/Postgres proof is
  * asana-provider.integration.test.ts.
  */
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -149,6 +150,51 @@ function thrown(fn: () => unknown): Error & { kind?: string; retryAfterSeconds?:
   throw new Error('expected a throw');
 }
 
+/**
+ * Every `rest(host, <source>, '<METHOD>', '<path>' | `<path>`)` call in the plugin source. Path
+ * segments holding a `${…}` substitution collapse to `{}`. A call through a variable path is not
+ * resolvable here, which is why the scope test below also pins those scopes by name.
+ */
+function restCallsIn(source: string): Array<{ method: string; path: string }> {
+  const out: Array<{ method: string; path: string }> = [];
+  for (const m of source.matchAll(/rest\(host,\s*[^,]+,\s*'([A-Z]+)',\s*(?:'([^']+)'|`([^`]*)`)/g)) {
+    const raw = m[2] ?? m[3] ?? '';
+    out.push({ method: m[1], path: raw.split('/').map((s) => (s.includes('${') ? '{}' : s)).join('/') });
+  }
+  return out;
+}
+
+/**
+ * Asana's granular OAuth scope per endpoint, transcribed from https://developers.asana.com/docs/oauth-scopes
+ * (fetched 2026-10-10). Only the endpoints this plugin calls are listed. An endpoint that table does
+ * not list at all maps to 'none-documented'. A call missing from this map returns null, so adding an
+ * Asana call without deciding its scope fails the test below.
+ */
+const ASANA_ENDPOINT_SCOPES: Record<string, string> = {
+  'GET /events': 'none-documented',
+  'GET /projects/{}/sections': 'none-documented',
+  'GET /users/me': 'users:read',
+  'GET /tasks/{}': 'tasks:read',
+  'GET /tasks/{}/stories': 'stories:read',
+  'POST /tasks/{}/stories': 'stories:write',
+  'PUT /tasks/{}': 'tasks:write',
+  'POST /tasks': 'tasks:write',
+  'POST /sections/{}/addTask': 'tasks:write',
+  'POST /projects': 'projects:write',
+  'GET /webhooks/{}': 'webhooks:read',
+  'POST /webhooks': 'webhooks:write',
+  'DELETE /webhooks/{}': 'webhooks:delete',
+};
+const asanaScopeFor = (method: string, path: string): string | null => ASANA_ENDPOINT_SCOPES[`${method} ${path}`] ?? null;
+
+/** The calls whose scope is unmapped, or mapped but not in `scopes`. */
+function unscopedCalls(calls: Array<{ method: string; path: string }>, scopes: string[]): string[] {
+  return calls
+    .map((c) => ({ call: `${c.method} ${c.path}`, scope: asanaScopeFor(c.method, c.path) }))
+    .filter(({ scope }) => scope === null || (scope !== 'none-documented' && !scopes.includes(scope)))
+    .map(({ call }) => call);
+}
+
 describe('the Asana package declares an Asana ticket provider', () => {
   it('describes itself: datatypes, write capabilities, OAuth, egress and the config it needs', async () => {
     const descriptor = await adapter.describe();
@@ -171,6 +217,41 @@ describe('the Asana package declares an Asana ticket provider', () => {
       configSchema: { required: ['projectGids'] },
     });
     expect(descriptor.oauth.scopes).toEqual(expect.arrayContaining(['tasks:read', 'tasks:write', 'stories:read', 'stories:write', 'projects:read']));
+  });
+
+  // WI-10008135: a granular-scope token gets 403 from any endpoint whose scope the connect flow never
+  // requested. The bug drill could not create its Asana project (no projects:write), and
+  // push.subscribe/unsubscribe call /webhooks while the descriptor requested no webhooks:* scope.
+  it('requests an OAuth scope for every Asana endpoint the plugin calls (WI-10008135)', async () => {
+    const descriptor = await adapter.describe();
+    const calls = restCallsIn(readFileSync(resolve(REPO_ROOT, 'libs/papercusp/plugins/asana/index.cjs'), 'utf8'));
+    // Positive control: if the extractor stopped seeing the plugin's calls this test would pass vacuously.
+    expect(calls.length).toBeGreaterThanOrEqual(12);
+    expect(unscopedCalls(calls, descriptor.oauth.scopes)).toEqual([]);
+    // The webhook GET in reconcile goes through a variable path the extractor cannot see, and the
+    // drill's agents create Asana projects outside this plugin, so pin those scopes by name.
+    expect(descriptor.oauth.scopes).toEqual(
+      expect.arrayContaining(['projects:write', 'webhooks:read', 'webhooks:write', 'webhooks:delete']),
+    );
+  });
+
+  it('the endpoint-scope guard flags unmapped calls and maps template paths (calibrates the test above)', () => {
+    const calls = restCallsIn(
+      "await rest(host, src, 'POST', '/projects', {});\n" +
+        'await rest(host, src, \'GET\', `/goals/${encodeURIComponent(g)}/stories`);\n' +
+        "await rest(host, src, 'GET', path);",
+    );
+    expect(calls).toEqual([
+      { method: 'POST', path: '/projects' },
+      { method: 'GET', path: '/goals/{}/stories' },
+    ]);
+    expect(asanaScopeFor('POST', '/projects')).toBe('projects:write');
+    expect(asanaScopeFor('GET', '/goals/{}/stories')).toBeNull();
+    // The pre-WI-10008135 scope list: the guard must flag both the missing projects:write and the
+    // unmapped endpoint, while a 'none-documented' endpoint passes.
+    const preFix = ['tasks:read', 'tasks:write', 'stories:read', 'stories:write', 'projects:read', 'users:read'];
+    expect(unscopedCalls([...calls, { method: 'GET', path: '/events' }], preFix)).toEqual(['POST /projects', 'GET /goals/{}/stories']);
+    expect(unscopedCalls([{ method: 'POST', path: '/webhooks' }], preFix)).toEqual(['POST /webhooks']);
   });
 
   it('agrees with the ticket vocabulary on every transition between two columns', () => {

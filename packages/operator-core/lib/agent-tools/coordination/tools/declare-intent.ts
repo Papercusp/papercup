@@ -360,10 +360,14 @@ export default defineTool({
         // failure (or a flag-IO error) NEVER breaks declare-intent — the lane stays
         // claimed regardless. Fail-safe to OFF on a flag-read error.
         const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
+        // WI-10008137: a coded refusal (e.g. activation_audit_required on an unaudited
+        // draft plan) is reported back instead of discarded, so the caller learns the
+        // lane holds a lease but no work started.
+        const notConverted: Array<{ item: string; code: string; reason: string }> = [];
         if (autoConvert) {
           const held = [...reconciled.claimed, ...reconciled.alreadyHeld];
           for (const itemId of held) {
-            await convertPlanItem({
+            const conv = await convertPlanItem({
               workspaceId: scope.workspaceId,
               harnessSlug: scope.harnessSlug,
               planSlug: declaredPlanSlug,
@@ -373,23 +377,28 @@ export default defineTool({
               ownerName,
               ownerUser: bestEffortOwnerUser(ctx),
               intent: args.intent,
-            }).catch((e) =>
+            }).catch((e) => {
               console.warn(
                 `[coord:declare-intent] auto-convert ${declaredPlanSlug}#${itemId} failed:`,
                 (e as Error)?.message ?? e,
-              ),
-            );
+              );
+              return null;
+            });
+            if (conv?.status === 'refused' && conv.code) {
+              notConverted.push({ item: itemId, code: conv.code, reason: conv.reason });
+            }
           }
         }
 
+        const withRefusals = notConverted.length > 0 ? { ...reconciled, notConverted } : reconciled;
         claims =
           unknown.length > 0
             ? {
-                ...reconciled,
+                ...withRefusals,
                 unknown,
                 hint: 'unknown items do not parse as items of this plan (plans:set-status would return item_not_found) and were not claimed — fix the plan format or the ids.',
               }
-            : reconciled;
+            : withRefusals;
       }
     }
 

@@ -104,7 +104,7 @@ vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({
   listEventKeySubscribers: h.listEventKeySubscribers,
   eventKeySubscriberScope: () => ({ workspaceId: 'default', targetKind: 'event' }),
 }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test', backgroundWorkspaceIds: () => ['ws-test'] }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
 vi.mock('../../agent-tools/coordination/inbox-read-freshness', () => ({
@@ -136,9 +136,11 @@ const {
   cancelSupersededCandidateAwaits,
   isInboxWakeGroupRedundant,
   setAutoPumpEnabledForTests,
+  sweepAllWorkspaces,
   sweepOnce,
   wakeClaimableAwaitersForSubscribers,
 } = await import('./engine');
+const { setPumpHealthTrackerForTests } = await import('./pump-health');
 
 function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
   return {
@@ -2304,5 +2306,45 @@ describe('pumpWakeDeliveries — P-024: a wake with nothing to act on costs no t
     await pumpWakeDeliveries('ws-test');
     expect(h.getLineEnvelopeById).not.toHaveBeenCalled();
     expect(h.executeWake).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('WI-10008194 — every pump / sweep run reports its outcome to pump health', () => {
+  const tracker = { recordFailure: vi.fn(), recordSuccess: vi.fn(), streaks: () => [] };
+  let previous: ReturnType<typeof setPumpHealthTrackerForTests>;
+  const OUTAGE = new Error('column "turn_proof" of relation "event_wake_deliveries" does not exist');
+
+  beforeEach(() => {
+    tracker.recordFailure.mockReset();
+    tracker.recordSuccess.mockReset();
+    previous = setPumpHealthTrackerForTests(tracker);
+  });
+  afterEach(() => {
+    setPumpHealthTrackerForTests(previous);
+  });
+
+  it('a throwing pump records a pump FAILURE and still rethrows to the kick site', async () => {
+    h.store.claimDueDeliveries.mockRejectedValueOnce(OUTAGE);
+    await expect(pumpWakeDeliveries('ws-test')).rejects.toThrow(OUTAGE.message);
+    expect(tracker.recordFailure).toHaveBeenCalledWith('ws-test', 'pump', OUTAGE);
+    expect(tracker.recordSuccess).not.toHaveBeenCalledWith('ws-test', 'pump');
+  });
+
+  it('a completed pump (even an empty one) records a pump SUCCESS', async () => {
+    await pumpWakeDeliveries('ws-test');
+    expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'pump');
+    expect(tracker.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('the production sweeper records a sweep FAILURE without throwing, and a sweep SUCCESS when it completes', async () => {
+    h.store.compactSupersededLoopDeliveries.mockRejectedValueOnce(OUTAGE);
+    await expect(sweepAllWorkspaces()).resolves.toBeUndefined();
+    expect(tracker.recordFailure).toHaveBeenCalledWith('ws-test', 'sweep', OUTAGE);
+
+    tracker.recordFailure.mockReset();
+    await sweepAllWorkspaces();
+    expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'sweep');
+    expect(tracker.recordSuccess).toHaveBeenCalledWith('ws-test', 'pump');
+    expect(tracker.recordFailure).not.toHaveBeenCalledWith('ws-test', 'sweep', expect.anything());
   });
 });

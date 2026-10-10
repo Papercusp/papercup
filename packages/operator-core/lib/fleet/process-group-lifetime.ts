@@ -47,8 +47,16 @@ export function processGroupLifetime(child: ChildProcess, report: (message: stri
         }
       }
     },
-    async waitForExit(): Promise<void> {
+    async waitForExit(options: { timeoutMs?: number } = {}): Promise<void> {
+      if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)) {
+        throw new Error('process-group exit deadline must be a positive safe integer');
+      }
+      const deadline = options.timeoutMs === undefined ? Infinity : Date.now() + options.timeoutMs;
       if (group === undefined) {
+        while (child.exitCode === null && child.signalCode === null) {
+          if (Date.now() >= deadline) throw new Error('child exit unverified before deadline');
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
         shutdownGroups.delete(lifetime.signal);
         return;
       }
@@ -68,8 +76,21 @@ export function processGroupLifetime(child: ChildProcess, report: (message: stri
             probeFailureReported = true;
           }
         }
+        if (Date.now() >= deadline) throw new Error(`process-group ${group} exit unverified before deadline`);
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
+    },
+    /** Keep escalation and the exit fence alive even after the leader exits. */
+    async terminate(options: { graceMs?: number; killWaitMs?: number } = {}): Promise<void> {
+      const graceMs = options.graceMs ?? 5_000;
+      const killWaitMs = options.killWaitMs ?? 5_000;
+      if (![graceMs, killWaitMs, graceMs + killWaitMs].every(ms => Number.isSafeInteger(ms) && ms > 0)) {
+        throw new Error('process-group termination deadlines must be positive safe integers');
+      }
+      lifetime.signal('SIGTERM');
+      const escalation = setTimeout(() => lifetime.signal('SIGKILL'), graceMs);
+      try { await lifetime.waitForExit({ timeoutMs: graceMs + killWaitMs }); }
+      finally { clearTimeout(escalation); }
     },
   };
   if (child.pid !== undefined) shutdownGroups.add(lifetime.signal);

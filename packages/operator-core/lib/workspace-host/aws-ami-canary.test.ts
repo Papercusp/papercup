@@ -4,20 +4,21 @@
  * through injected fake cloud deps. The round trip through executeAwsAmiRelease's validator
  * lives in aws-ami-release.test.ts.
  */
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 
 import { describe, expect, it } from 'vitest';
+import { WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER } from '@papercusp/deployment-driver';
+import { AWS_DATA_DEVICE_WAIT_SEC, AWS_HOST_BOOTSTRAP_UNIT, awsEbsNvmeDevicePathCore, renderDurableFilesystemScriptCore } from './aws-host-bootstrap-push-core.mjs';
 
 import {
   ATTESTATION_PREFIX,
   BOOT_CONSOLE_POLL_EVERY,
-  CANARY_RUN_DIR,
   CANARY_RUN_TAG,
   CANARY_BUDGETS,
+  CANARY_DATA_VOLUME_DEVICE,
+  CANARY_DATA_VOLUME_GIB,
+  CANARY_DATA_VOLUME_TYPE,
   DIAGNOSTICS_MAX_CHARS,
   buildAwsAmiCanaryProof,
   canaryRoleArn,
@@ -67,6 +68,12 @@ interface FakeOptions {
   attestation?: Record<string, unknown> | null;
   terminateThrows?: boolean;
   bootstrapNeverTerminal?: boolean;
+  bootstrapPushNeverTerminal?: boolean;
+  volumeNeverAvailable?: boolean;
+  volumeNeverAttached?: boolean;
+  volumeDeleteThrows?: boolean;
+  volumeDeleteEvidence?: 'missing' | 'unknown';
+  bootstrapStatus?: string;
   leftover?: string[];
   censusThrows?: boolean;
   bootstrapFails?: boolean;
@@ -92,9 +99,15 @@ const JOURNAL_CAUSE = 'journal: Error: EACCES: permission denied, open /var/lib/
 function fakeDeps(options: FakeOptions = {}) {
   let clock = 0;
   let state = 'none';
+  let dataVolumeState = 'none';
+  let attachmentState: string | null = null;
+  let attachedInstanceId: string | null = null;
+  let bootstrapPushed = false;
   const calls: string[] = [];
+  const volumeCalls: string[] = [];
   const sent: string[][] = [];
   const tagsSeen: string[] = [];
+  const volumeRequests: unknown[] = [];
   const attestation = options.attestation === undefined ? { status: 'healthy', hostId: 'aws-clean-x' } : options.attestation;
   const deps: AwsAmiCanaryDeps = {
     runId: () => 'run0001',
@@ -109,7 +122,47 @@ function fakeDeps(options: FakeOptions = {}) {
       rootDeviceName: '/dev/xvda',
       ...(options.rootEncrypted === undefined ? {} : { rootEncrypted: options.rootEncrypted }),
     }),
-    describeSubnet: async (subnetId) => ({ subnetId }),
+    describeSubnet: async (subnetId) => ({ subnetId, availabilityZone: 'us-east-1a' }),
+    createDataVolume: async (request) => {
+      volumeCalls.push('create');
+      volumeRequests.push(request);
+      dataVolumeState = options.volumeNeverAvailable ? 'creating' : 'available';
+      tagsSeen.push(...request.tags.map((tag) => `${tag.Key}=${tag.Value}`));
+      tagsSeen.push(`volume-spec:${request.availabilityZone}:${request.sizeGiB}:${request.volumeType}:${request.encrypted}`);
+      return 'vol-0deadbeef';
+    },
+    describeVolume: async () => {
+      if (dataVolumeState === 'none') return null;
+      if (dataVolumeState === 'deleted') {
+        if (options.volumeDeleteEvidence === 'missing') return null;
+        if (options.volumeDeleteEvidence === 'unknown') return { state: 'unknown' };
+        return { state: 'deleted' };
+      }
+      if (dataVolumeState === 'creating' && !options.volumeNeverAvailable) dataVolumeState = 'available';
+      if (attachmentState === 'attaching' && !options.volumeNeverAttached) attachmentState = 'attached';
+      return {
+        state: dataVolumeState,
+        ...(attachmentState ? { attachmentState } : {}),
+        ...(attachedInstanceId ? { attachedInstanceId } : {}),
+      };
+    },
+    attachVolume: async ({ instanceId, deviceName }) => {
+      volumeCalls.push('attach:' + deviceName);
+      dataVolumeState = 'in-use';
+      attachmentState = options.volumeNeverAttached ? 'attaching' : 'attached';
+      attachedInstanceId = instanceId;
+    },
+    detachVolume: async () => {
+      volumeCalls.push('detach');
+      dataVolumeState = 'available';
+      attachmentState = null;
+      attachedInstanceId = null;
+    },
+    deleteVolume: async () => {
+      volumeCalls.push('delete');
+      if (options.volumeDeleteThrows) throw new Error('DeleteVolume denied');
+      dataVolumeState = 'deleted';
+    },
     runInstance: async (input) => {
       calls.push(`run:${input.instanceType}`);
       // WI-10006110: the AMI-restored root volume is initialized at a fixed rate, not lazily.
@@ -128,28 +181,31 @@ function fakeDeps(options: FakeOptions = {}) {
     },
     ssmPingStatus: async () => (options.ssmNeverOnline ? 'ConnectionLost' : 'Online'),
     consoleOutput: async () => {
-      calls.push('console');
+      calls.push(bootstrapPushed ? 'bootstrap-status-console' : 'console');
       if (options.console instanceof Error) throw options.console;
+      if (bootstrapPushed) {
+        const status = options.bootstrapStatus ?? (options.bootstrapFails ? 'failed exit=1 phase=install-runtime error=workspace service failed to start' : options.bootstrapNeverTerminal ? 'running' : 'succeeded');
+        return `${WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER} ${status}\n`;
+      }
       return options.console ?? '[  OK  ] Reached target multi-user.target\n';
     },
     sendCommand: async ({ commands }) => {
-      if (commands.join('\n').includes('--- bootstrap ERROR lines ---')) {
+      const commandText = commands.join('\n');
+      if (commandText.includes('--- bootstrap systemd journal ---')) {
         calls.push('diagnostics');
         if (options.diagnosticsThrows) throw new Error('SendCommand throttled');
       }
+      if (commandText.includes('systemd-run --unit=')) bootstrapPushed = true;
       sent.push([...commands]);
       return `cmd-${sent.length}`;
     },
     getInvocation: async ({ commandId }) => {
       const joined = sent[Number(commandId.slice(4)) - 1].join('\n');
-      if (joined.includes('--- bootstrap ERROR lines ---')) {
-        return { status: 'Success', stdout: `${JOURNAL_CAUSE}\n--- bootstrap ERROR lines ---\n9:ERROR: workspace service failed to start\n` };
+      if (joined.includes('--- bootstrap systemd journal ---')) {
+        return { status: 'Success', stdout: `${JOURNAL_CAUSE}\nERROR: workspace service failed to start\n` };
       }
-      if (options.bootstrapNeverTerminal && joined.includes('bootstrap.sh > ')) {
-        return { status: 'InProgress', stdout: 'bootstrap is still running\n' };
-      }
-      if (options.bootstrapFails && joined.includes('bootstrap.sh > ')) {
-        return { status: 'Failed', stdout: 'ADDON LOADED OK\nPAPERCUSP_CANARY_BOOTSTRAP_EXIT=1\n', responseCode: 1 };
+      if (options.bootstrapPushNeverTerminal && joined.includes('systemd-run --unit=')) {
+        return { status: 'InProgress', stdout: 'bootstrap push is still running\n' };
       }
       if (joined.includes(`grep '^${ATTESTATION_PREFIX}'`)) {
         return {
@@ -174,10 +230,10 @@ function fakeDeps(options: FakeOptions = {}) {
     censusByRunTag: async (runId) => {
       calls.push(`census:${runId}`);
       if (options.censusThrows) throw new Error('DescribeVolumes throttled');
-      return options.leftover ?? [];
+      return [...(options.leftover ?? []), ...(dataVolumeState !== 'none' && dataVolumeState !== 'deleted' ? ['vol-0deadbeef'] : [])];
     },
   };
-  return { deps, calls, sent, tagsSeen };
+  return { deps, calls, sent, tagsSeen, volumeRequests, volumeCalls };
 }
 
 describe('parseAwsAmiCanaryInput', () => {
@@ -222,92 +278,36 @@ describe('canary identity and sizing', () => {
 });
 
 describe('ssmScriptPlan', () => {
-  it('ships the script as bounded base64 chunks that reassemble exactly and re-verify the digest on the host', () => {
+  it('uses the production gzip, checksum, durable-mount and detached-unit renderer', () => {
     const big = `#!/usr/bin/env bash\n${'echo payload-line\n'.repeat(5000)}`;
     const fixture = { fixtureId: 'f', bootstrapScript: big, bootstrapScriptSha256: sha(big), serviceName: 'svc.service' };
-    const plan = ssmScriptPlan(fixture, 10_000);
-    expect(plan.uploads.length).toBeGreaterThan(1);
-    const chunks = plan.uploads.map((commands) => /printf '%s' '([A-Za-z0-9+/=]+)'/.exec(commands.at(-1)!)![1]);
-    expect(chunks.every((chunk) => chunk.length <= 10_000)).toBe(true);
-    expect(Buffer.from(chunks.join(''), 'base64').toString('utf8')).toBe(big);
-    expect(plan.run.join('\n')).toContain(`${sha(big)}  /run/papercusp-ami-canary/bootstrap.sh' | sha256sum -c -`);
-    expect(plan.serviceCheck).toEqual(['systemctl is-active svc.service']);
+    const volumeId = 'vol-0123456789abcdef0';
+    const plan = ssmScriptPlan(fixture, volumeId);
+    const expectedScript = renderDurableFilesystemScriptCore({
+      devicePath: awsEbsNvmeDevicePathCore(volumeId),
+      deviceWaitSec: AWS_DATA_DEVICE_WAIT_SEC,
+      hostBootstrapScript: big,
+    });
+    const payloadCommand = plan.run.find((command) => /base64 -d \| gunzip/.test(command));
+    const payload = /printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d \| gunzip/.exec(payloadCommand ?? '')?.[1];
+    expect(payload).toBeDefined();
+    expect(gunzipSync(Buffer.from(payload ?? '', 'base64')).toString('utf8')).toBe(expectedScript);
+    expect(plan.run.join('\n')).toContain(sha(expectedScript));
+    expect(plan.run.join('\n')).toContain("systemd-run --unit='" + AWS_HOST_BOOTSTRAP_UNIT + "' --collect");
+    expect(plan.run.join('\n')).toContain(WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER);
+    expect(expectedScript).toContain("data_mount='/var/lib/papercusp'");
+    expect(expectedScript).toContain('/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol0123456789abcdef0');
+    expect(plan.serviceCheck).toEqual(["systemctl is-active 'svc.service'"]);
+    expect(plan.readAttestation.join('\n')).toContain("journalctl --unit='" + AWS_HOST_BOOTSTRAP_UNIT + ".service'");
   });
 
-  it('readDiagnostics extracts the status + journal section, not the addon inventory, and falls back to the log tail', () => {
+  it('reads bounded diagnostics from the detached bootstrap unit journal', () => {
     const fixture = { fixtureId: 'f', bootstrapScript: SCRIPT, bootstrapScriptSha256: sha(SCRIPT), serviceName: 'svc.service' };
-    const plan = ssmScriptPlan(fixture);
-    const dir = mkdtempSync(join(tmpdir(), 'aws-ami-canary-diag-'));
-    try {
-      const run = () =>
-        spawnSync('bash', ['-c', plan.readDiagnostics.join('\n').replaceAll(CANARY_RUN_DIR, dir)], { encoding: 'utf8' });
-      writeFileSync(
-        join(dir, 'out.log'),
-        [
-          '[workspace-host-bootstrap] phase:configure-service',
-          '[workspace-host-bootstrap] --- systemctl status svc.service ---',
-          'Active: failed (Result: exit-code)',
-          '[workspace-host-bootstrap] --- journalctl -u svc.service (service output) ---',
-          JOURNAL_CAUSE,
-          '[workspace-host-bootstrap] --- native addon inventory under /opt/papercusp/releases/x ---',
-          'inventory-noise rocksdb-native.node',
-          '[workspace-host-bootstrap] --- start samples: first, then last (every 10s during systemctl restart) ---',
-          '=== start sample t+0s',
-          'diskstats 259 0 nvme0n1 1200 0 96000 30000',
-          '...',
-          '=== start sample t+120s',
-          '   2506 Dsl  folio_wait_bit_common      110 00:00:06 369168 node serve.mjs',
-          '[workspace-host-bootstrap] --- recent logs under /var/lib/papercusp ---',
-          '## /var/lib/papercusp/embedded-pg/postmaster.log',
-          'LOG:  database system is ready to accept connections',
-          '[workspace-host-bootstrap] --- SELinux denials this boot ---',
-          'audit: avc:  denied { open } selinux-noise',
-          '[workspace-host-bootstrap] ERROR: workspace service failed to start',
-          '',
-        ].join('\n'),
-      );
-      const out = run();
-      expect(out.status).toBe(0);
-      expect(out.stdout).toContain('Active: failed (Result: exit-code)');
-      expect(out.stdout).toContain(JOURNAL_CAUSE);
-      expect(out.stdout).not.toContain('inventory-noise');
-      // The start sampler's readings and recent state logs are printed after the addon
-      // inventory, so they need their own extraction (WI-10006110).
-      expect(out.stdout).toContain('=== start sample t+0s');
-      expect(out.stdout).toContain('folio_wait_bit_common');
-      expect(out.stdout).toContain('database system is ready to accept connections');
-      expect(out.stdout).not.toContain('selinux-noise');
-      expect(out.stdout).toContain('ERROR: workspace service failed to start');
-
-      // A sampler section larger than its budget keeps its LAST readings.
-      const manySamples = Array.from({ length: 400 }, (_, i) => `=== start sample t+${i * 10}s diskstats nvme0n1 ${i}`);
-      writeFileSync(
-        join(dir, 'out.log'),
-        [
-          '[workspace-host-bootstrap] --- systemctl status svc.service ---',
-          'Active: failed (Result: exit-code)',
-          '[workspace-host-bootstrap] --- native addon inventory under /opt/papercusp/releases/x ---',
-          '[workspace-host-bootstrap] --- start samples: first, then last (every 10s during systemctl restart) ---',
-          ...manySamples,
-          '[workspace-host-bootstrap] --- recent logs under /var/lib/papercusp ---',
-          '',
-        ].join('\n'),
-      );
-      const bounded = run();
-      expect(bounded.status).toBe(0);
-      expect(bounded.stdout).toContain(manySamples.at(-1));
-      expect(bounded.stdout).not.toContain(`${manySamples[0]}\n`);
-      expect(bounded.stdout.length).toBeLessThanOrEqual(DIAGNOSTICS_MAX_CHARS + 2_000);
-
-      // No diagnostics section (the bootstrap died earlier): the raw tail is returned instead.
-      writeFileSync(join(dir, 'out.log'), 'phase:install-runtime\nmanifest fetch failed\n');
-      const fallback = run();
-      expect(fallback.status).toBe(0);
-      expect(fallback.stdout).toContain('manifest fetch failed');
-      expect(fallback.stdout.length).toBeLessThanOrEqual(DIAGNOSTICS_MAX_CHARS + 200);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const plan = ssmScriptPlan(fixture, 'vol-0123456789abcdef0');
+    const diagnostics = plan.readDiagnostics.join('\n');
+    expect(diagnostics).toContain("journalctl --unit='" + AWS_HOST_BOOTSTRAP_UNIT + ".service'");
+    expect(diagnostics).toContain('tail -c ' + DIAGNOSTICS_MAX_CHARS);
+    expect(diagnostics).toContain('exit 0');
   });
 });
 
@@ -348,8 +348,8 @@ describe('summarizeBootConsole', () => {
 describe('runAwsAmiCleanAccountCanary', () => {
   const input = parseAwsAmiCanaryInput(rawInput());
 
-  it('proves SSM, bootstrap and service, then terminates and censuses zero residue', async () => {
-    const { deps, calls, tagsSeen } = fakeDeps();
+  it('proves production bootstrap and the encrypted durable-volume lifecycle, then censuses zero residue', async () => {
+    const { deps, calls, tagsSeen, volumeRequests, volumeCalls } = fakeDeps();
     const observed = await runAwsAmiCleanAccountCanary(input, deps);
     const proof = buildAwsAmiCanaryProof(input, observed, '2026-10-02T20:00:00.000Z');
     expect(proof).toMatchObject({
@@ -361,11 +361,16 @@ describe('runAwsAmiCleanAccountCanary', () => {
       serviceHealthy: true,
       publicIpv4Assigned: false,
       terminated: true,
+      dataVolumeId: 'vol-0deadbeef',
+      dataVolumeDeleted: true,
       residualResourceIds: [],
     });
     expect(proof.evidenceRef).toMatch(/^aws-ami-canary:i-0abc:[0-9a-f]{32}$/);
-    expect(calls).toEqual(['run:t3.medium', 'terminate', 'census:run0001']);
+    expect(calls).toEqual(['run:t3.medium', 'bootstrap-status-console', 'terminate', 'census:run0001']);
+    expect(volumeRequests[0]).toMatchObject({ availabilityZone: 'us-east-1a', sizeGiB: CANARY_DATA_VOLUME_GIB, volumeType: CANARY_DATA_VOLUME_TYPE, encrypted: true });
+    expect(volumeCalls).toEqual(['create', 'attach:' + CANARY_DATA_VOLUME_DEVICE, 'detach', 'delete']);
     expect(tagsSeen).toContain(`${CANARY_RUN_TAG}=run0001`);
+    expect(tagsSeen).toContain('Name=pc-ami-canary-data-run0001');
     expect(tagsSeen).toContain('root-init:/dev/xvda@300');
   });
 
@@ -414,7 +419,7 @@ describe('runAwsAmiCleanAccountCanary', () => {
   it('reports an un-terminated instance and leftovers as residue instead of a clean run', async () => {
     const stuck = await runAwsAmiCleanAccountCanary(input, fakeDeps({ terminateThrows: true, leftover: ['vol-0leak'] }).deps);
     expect(stuck.terminated).toBe(false);
-    expect(stuck.residualResourceIds).toEqual(['i-0abc', 'vol-0leak']);
+    expect(stuck.residualResourceIds).toEqual(['i-0abc', 'vol-0deadbeef', 'vol-0leak']);
     expect(stuck.teardownErrors.join(' ')).toContain('TerminateInstances denied');
   });
 
@@ -423,10 +428,18 @@ describe('runAwsAmiCleanAccountCanary', () => {
     expect(observed.residualResourceIds).toEqual(['census-unmeasured:run0001']);
   });
 
+  it.each(['missing', 'unknown'] as const)('keeps %s EBS deletion evidence as residue', async (volumeDeleteEvidence) => {
+    const observed = await runAwsAmiCleanAccountCanary(input, fakeDeps({ volumeDeleteEvidence }).deps);
+    const proof = buildAwsAmiCanaryProof(input, observed, '2026-10-02T20:00:00.000Z');
+    expect(proof.dataVolumeDeleted).toBe(false);
+    expect(proof.residualResourceIds).toContain('vol-0deadbeef');
+    expect(observed.teardownErrors.join(' ')).toContain('canary data volume deleted did not happen within 300s');
+  });
+
   it('reads the service diagnostics off the instance BEFORE teardown when bootstrap fails, and carries them last', async () => {
     const { deps, calls } = fakeDeps({ bootstrapFails: true });
     const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & { details: Record<string, unknown> };
-    expect(error.message).toContain('SSM bootstrap ended Failed');
+    expect(error.message).toContain('EC2 bootstrap failed in install-runtime');
     expect(calls.slice(-3)).toEqual(['diagnostics', 'terminate', 'census:run0001']);
     expect(error.details.bootstrapDiagnostics).toContain(JOURNAL_CAUSE);
     // Callers keep the TAIL of the serialized payload, so the cause must be the last key.
@@ -436,7 +449,7 @@ describe('runAwsAmiCleanAccountCanary', () => {
   it('never lets an unreadable diagnostic mask the bootstrap failure, and reads none on success', async () => {
     const { deps, calls } = fakeDeps({ bootstrapFails: true, diagnosticsThrows: true });
     const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & { details: Record<string, unknown> };
-    expect(error.message).toContain('SSM bootstrap ended Failed');
+    expect(error.message).toContain('EC2 bootstrap failed in install-runtime');
     expect(String(error.details.bootstrapDiagnostics)).toMatch(/^diagnostics unreadable: SendCommand throttled/);
     expect(calls.slice(-2)).toEqual(['terminate', 'census:run0001']);
 
@@ -450,7 +463,7 @@ describe('runAwsAmiCleanAccountCanary', () => {
     const error = (await runAwsAmiCleanAccountCanary(input, deps).catch((e: unknown) => e)) as Error & {
       details: Record<string, unknown>;
     };
-    expect(error.message).toContain('SSM bootstrap did not happen within');
+    expect(error.message).toContain('EC2 bootstrap terminal status did not happen within');
     expect(calls.slice(-3)).toEqual(['diagnostics', 'terminate', 'census:run0001']);
     expect(error.details.bootstrapDiagnostics).toContain(JOURNAL_CAUSE);
     expect(Object.keys(error.details).at(-1)).toBe('bootstrapDiagnostics');

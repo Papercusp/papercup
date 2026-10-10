@@ -11,11 +11,42 @@
     "direction": "vertical",
     "children": [
       {
-        "kind": "heading",
-        "copy": {
-          "default": "Reports",
-          "key": "reports.0.copy"
-        }
+        "kind": "stack",
+        "direction": "horizontal",
+        "children": [
+          {
+            "kind": "heading",
+            "copy": {
+              "key": "reports.title",
+              "default": "Reports"
+            }
+          },
+          {
+            "kind": "text",
+            "copy": {
+              "key": "reports.counts",
+              "default": "Live report and today counts; capped results labeled as lower bounds"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "search",
+            "label": {
+              "key": "reports.search.label",
+              "default": "Search reports"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.search.a11y",
+                "default": "Search reports"
+              }
+            },
+            "interactions": [
+              "URL:q",
+              "keyboard:/"
+            ]
+          }
+        ]
       },
       {
         "kind": "stack",
@@ -23,65 +54,32 @@
         "children": [
           {
             "kind": "component",
+            "ref": "kind",
             "label": {
-              "default": "Search reports",
-              "key": "reports.1.0.label"
+              "key": "reports.kind.label",
+              "default": "Report kind"
             },
-            "interactions": [
-              "URL:q"
-            ],
             "a11y": {
               "ariaLabel": {
-                "key": "reports.1.0.a11y",
-                "default": "Search reports"
-              }
-            },
-            "ref": "search"
-          },
-          {
-            "kind": "component",
-            "label": {
-              "default": "Report kind",
-              "key": "reports.1.1.label"
-            },
-            "interactions": [
-              "URL:kind"
-            ],
-            "a11y": {
-              "ariaLabel": {
-                "key": "reports.1.1.a11y",
+                "key": "reports.kind.a11y",
                 "default": "Report kind"
               }
             },
-            "ref": "kind"
+            "interactions": [
+              "URL:kind"
+            ]
           },
           {
             "kind": "component",
+            "ref": "subject",
             "label": {
-              "default": "Visibility",
-              "key": "reports.1.2.label"
-            },
-            "interactions": [
-              "URL:vis"
-            ],
-            "a11y": {
-              "ariaLabel": {
-                "key": "reports.1.2.a11y",
-                "default": "Visibility"
-              }
-            },
-            "ref": "visibility"
-          },
-          {
-            "kind": "input",
-            "label": {
-              "key": "reports.subject",
-              "default": "subject"
+              "key": "reports.subject.label",
+              "default": "About: any subject"
             },
             "a11y": {
               "ariaLabel": {
-                "key": "reports.subject.label",
-                "default": "Filter by subject"
+                "key": "reports.subject.a11y",
+                "default": "About: any subject"
               }
             },
             "interactions": [
@@ -89,15 +87,90 @@
             ]
           },
           {
-            "kind": "input",
+            "kind": "component",
+            "ref": "since",
             "label": {
-              "key": "reports.pot",
-              "default": "pot"
+              "key": "reports.since.label",
+              "default": "Published since"
             },
             "a11y": {
               "ariaLabel": {
-                "key": "reports.pot.label",
-                "default": "Filter by pot"
+                "key": "reports.since.a11y",
+                "default": "Published since"
+              }
+            },
+            "interactions": [
+              "URL:since"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "more",
+            "label": {
+              "key": "reports.more.label",
+              "default": "More filters"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.more.a11y",
+                "default": "More filters"
+              }
+            },
+            "interactions": [
+              "toggle:advanced"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "clear",
+            "label": {
+              "key": "reports.clear.label",
+              "default": "Clear filters"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.clear.a11y",
+                "default": "Clear filters"
+              }
+            },
+            "interactions": [
+              "URL:filters-clear"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "stack",
+        "direction": "horizontal",
+        "children": [
+          {
+            "kind": "component",
+            "ref": "visibility",
+            "label": {
+              "key": "reports.visibility.label",
+              "default": "Report visibility"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.visibility.a11y",
+                "default": "Report visibility"
+              }
+            },
+            "interactions": [
+              "URL:vis"
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "pot",
+            "label": {
+              "key": "reports.pot.label",
+              "default": "Origin pot"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.pot.a11y",
+                "default": "Origin pot"
               }
             },
             "interactions": [
@@ -105,35 +178,20 @@
             ]
           },
           {
-            "kind": "input",
+            "kind": "component",
+            "ref": "tags",
             "label": {
-              "key": "reports.tag",
-              "default": "tag"
+              "key": "reports.tags.label",
+              "default": "Report tags"
             },
             "a11y": {
               "ariaLabel": {
-                "key": "reports.tag.label",
-                "default": "Filter by tag"
+                "key": "reports.tags.a11y",
+                "default": "Report tags"
               }
             },
             "interactions": [
               "URL:tag"
-            ]
-          },
-          {
-            "kind": "input",
-            "label": {
-              "key": "reports.since",
-              "default": "since"
-            },
-            "a11y": {
-              "ariaLabel": {
-                "key": "reports.since.label",
-                "default": "Filter by since"
-              }
-            },
-            "interactions": [
-              "URL:since"
             ]
           }
         ]
@@ -152,8 +210,8 @@
             "item": {
               "kind": "button",
               "copy": {
-                "default": "Report title and summary",
-                "key": "reports.2.0.item.copy"
+                "key": "reports.list.row",
+                "default": "Kind badge, subject, title, summary, relative time, unread state and revised-edition hint"
               },
               "interactions": [
                 "URL:sel"
@@ -178,59 +236,165 @@
             "direction": "vertical",
             "children": [
               {
+                "kind": "text",
+                "copy": {
+                  "key": "reports.breadcrumb",
+                  "default": "Kind and linked subject"
+                }
+              },
+              {
                 "kind": "heading",
                 "copy": {
-                  "default": "Selected report",
-                  "key": "reports.2.1.0.copy"
+                  "key": "reports.selected",
+                  "default": "Selected report"
                 }
               },
               {
                 "kind": "text",
                 "copy": {
-                  "default": "Author, pot, subject, visibility and publication date",
-                  "key": "reports.2.1.1.copy"
+                  "key": "reports.byline",
+                  "default": "Author, published time, reading time and visibility"
+                }
+              },
+              {
+                "kind": "stack",
+                "direction": "horizontal",
+                "children": [
+                  {
+                    "kind": "component",
+                    "ref": "editions",
+                    "label": {
+                      "key": "reports.editions.label",
+                      "default": "Report edition"
+                    },
+                    "a11y": {
+                      "ariaLabel": {
+                        "key": "reports.editions.a11y",
+                        "default": "Report edition"
+                      }
+                    },
+                    "interactions": [
+                      "URL:sel"
+                    ]
+                  },
+                  {
+                    "kind": "component",
+                    "ref": "copy",
+                    "label": {
+                      "key": "reports.copy.label",
+                      "default": "Copy as Markdown"
+                    },
+                    "a11y": {
+                      "ariaLabel": {
+                        "key": "reports.copy.a11y",
+                        "default": "Copy as Markdown"
+                      }
+                    },
+                    "interactions": [
+                      "clipboard:markdown"
+                    ]
+                  },
+                  {
+                    "kind": "component",
+                    "ref": "history",
+                    "label": {
+                      "key": "reports.history.label",
+                      "default": "Version history"
+                    },
+                    "a11y": {
+                      "ariaLabel": {
+                        "key": "reports.history.a11y",
+                        "default": "Version history"
+                      }
+                    },
+                    "interactions": [
+                      "URL:hist"
+                    ]
+                  },
+                  {
+                    "kind": "component",
+                    "ref": "compare",
+                    "label": {
+                      "key": "reports.compare.label",
+                      "default": "Compare editions"
+                    },
+                    "a11y": {
+                      "ariaLabel": {
+                        "key": "reports.compare.a11y",
+                        "default": "Compare editions"
+                      }
+                    },
+                    "interactions": [
+                      "toggle:comparison"
+                    ]
+                  },
+                  {
+                    "kind": "component",
+                    "ref": "followup",
+                    "label": {
+                      "key": "reports.followup.label",
+                      "default": "Ask a follow-up"
+                    },
+                    "a11y": {
+                      "ariaLabel": {
+                        "key": "reports.followup.a11y",
+                        "default": "Ask a follow-up"
+                      }
+                    },
+                    "interactions": [
+                      "chat:seed-exact-report",
+                      "URL:chat"
+                    ]
+                  }
+                ]
+              },
+              {
+                "kind": "banner",
+                "copy": {
+                  "key": "reports.summary",
+                  "default": "Summary"
                 }
               },
               {
                 "kind": "text",
                 "copy": {
-                  "default": "Existing MarkdownPreview renders the full report and Mermaid diagrams",
-                  "key": "reports.2.1.2.copy"
+                  "key": "reports.markdown",
+                  "default": "Full Markdown rendered by existing MarkdownPreview, including Mermaid; summary precedes body"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "stack",
+            "direction": "vertical",
+            "children": [
+              {
+                "kind": "heading",
+                "copy": {
+                  "key": "reports.outline",
+                  "default": "On this page"
                 }
               },
               {
-                "kind": "component",
+                "kind": "text",
                 "copy": {
-                  "default": "Copy as Markdown",
-                  "key": "reports.2.1.3.copy"
-                },
-                "interactions": [
-                  "clipboard:markdown"
-                ],
-                "a11y": {
-                  "ariaLabel": {
-                    "key": "reports.2.1.3.a11y",
-                    "default": "Copy as Markdown"
-                  }
-                },
-                "ref": "copy"
+                  "key": "reports.outline.links",
+                  "default": "Rendered-heading navigation with scroll-spy and reading progress"
+                }
               },
               {
-                "kind": "component",
+                "kind": "text",
                 "copy": {
-                  "default": "Version history",
-                  "key": "reports.2.1.4.copy"
-                },
-                "interactions": [
-                  "URL:hist"
-                ],
-                "a11y": {
-                  "ariaLabel": {
-                    "key": "reports.2.1.4.a11y",
-                    "default": "Version history"
-                  }
-                },
-                "ref": "history"
+                  "key": "reports.rail.tags",
+                  "default": "Linked report tags"
+                }
+              },
+              {
+                "kind": "text",
+                "copy": {
+                  "key": "reports.rail.details",
+                  "default": "Quiet metadata: report ID, origin, subject, visibility, source and publication time"
+                }
               }
             ]
           }
@@ -292,10 +456,38 @@
     },
     {
       "id": "kind",
-      "registry": "control.select"
+      "registry": "action.secondary"
+    },
+    {
+      "id": "subject",
+      "registry": "overlay.popover"
+    },
+    {
+      "id": "since",
+      "registry": "control.text"
+    },
+    {
+      "id": "more",
+      "registry": "action.secondary"
+    },
+    {
+      "id": "clear",
+      "registry": "action.secondary"
     },
     {
       "id": "visibility",
+      "registry": "control.select"
+    },
+    {
+      "id": "pot",
+      "registry": "control.text"
+    },
+    {
+      "id": "tags",
+      "registry": "control.text"
+    },
+    {
+      "id": "editions",
       "registry": "control.select"
     },
     {
@@ -304,6 +496,14 @@
     },
     {
       "id": "history",
+      "registry": "action.secondary"
+    },
+    {
+      "id": "compare",
+      "registry": "action.secondary"
+    },
+    {
+      "id": "followup",
       "registry": "action.secondary"
     }
   ]

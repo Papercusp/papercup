@@ -62,8 +62,8 @@ test('native cleanup review selector opens an older packet with its actual findi
       // rules. Bind DATABASE_URL explicitly so inherited shared DB settings
       // cannot redirect fixture writes out of this disposable rig.
       const seeded = await run(process.execPath, [
-        '--import', 'tsx',
         '--import', resolve(sourceRoot, 'scripts/lib/committed-source-loader.mjs'),
+        '--import', 'tsx',
         '--input-type=module', '-e', `
           const { createRun, settleRunPhase } = await import('./packages/operator-core/lib/attention/bulk-run-store.ts');
           const { seedFindings } = await import('./packages/operator-core/lib/plan-cleanup/run-store.ts');

@@ -1057,6 +1057,28 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // Caller-DX (P-006): truncate an over-long inline note instead of rejecting.
   const { note: inlineNote, truncated: noteTruncated } = truncateInlineNote(it.note);
 
+  // WI-10008137: an item may not START on a draft plan that has no activation audit.
+  // Checked before the claim side effects below, so a refusal changes nothing.
+  // Items already in progress (wip, or covered by an open work-item) pass.
+  // A lookup failure fails OPEN (logged): this is an additional item-level check, and
+  // the plan's own activation stays fail-closed in with-plan-lock.ts.
+  if (it.status === 'wip' || it.status === 'done') try {
+    const { checkDraftItemStartGateLive } = await import('./draft-item-start-gate');
+    // Scope resolves exactly like the claim path below (resolvePlanScope({ harnessSlug })).
+    const refusal = await checkDraftItemStartGateLive({
+      harnessSlug,
+      slug: it.slug,
+      itemId: it.itemId,
+      toStatus: it.status,
+    });
+    if (refusal) return { ...refusal };
+  } catch (error) {
+    console.warn(
+      `[plans:set-status] draft item-start gate skipped for ${it.slug}#${it.itemId}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+
   // Claim discipline (claim-discipline-enforcement-2026-06-10): the flip IS
   // the claim. An agent flipping an item to `wip` auto-claims it here, and a
   // LIVE peer claim rejects the flip — the collision the lease exists to

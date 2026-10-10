@@ -13,8 +13,8 @@ export async function seedFakeLlmHarness(): Promise<string> {
   const database = new URL(admin);
   if (!['127.0.0.1', 'localhost'].includes(database.hostname) || !database.port || database.port === '5432') throw new Error('Refusing shared chat fixture database');
   await promisify(execFile)(process.execPath, [
-    '--import', 'tsx',
-    '--import', resolve(root, 'scripts/lib/committed-source-loader.mjs'), '--input-type=module', '-e',
+    '--import', resolve(root, 'scripts/lib/committed-source-loader.mjs'),
+    '--import', 'tsx', '--input-type=module', '-e',
     `const { loadHarnessRegistry, saveHarnessRegistry } = await import('./packages/operator-core/lib/harness-registry.ts');
      const ws = process.env.PAPERCUSP_WORKSPACE_ID;
      const reg = await loadHarnessRegistry(ws);

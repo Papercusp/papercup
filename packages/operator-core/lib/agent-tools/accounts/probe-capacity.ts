@@ -151,6 +151,7 @@ function reportRow(r: CapacityProbeResult) {
           ? 'UNWALLED (stale projection)'
           : 'confirmed',
     ...(r.error ? { error: r.error } : {}),
+    ...(r.httpRefusal ? { httpRefusal: r.httpRefusal } : {}),
   };
 }
 

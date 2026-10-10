@@ -156,6 +156,30 @@ describe('flipPlanFrontmatterStatus with mapped aliases', () => {
   });
 });
 
+describe('flipPlanFrontmatterStatus accepted YAML styles', () => {
+  it.each(['', "'", '"'])('preserves %s quoting and the expected-current guard', quote => {
+    const body = `---\ntitle: T\nstatus: ${quote}draft${quote}  \n---\n\n# Body\n`;
+    expect(flipPlanFrontmatterStatus(body, 'ready', 'draft')).toEqual({
+      oldStatus: 'draft',
+      newBody: body.replace(`${quote}draft${quote}`, `${quote}ready${quote}`),
+    });
+    expect(flipPlanFrontmatterStatus(body, 'ready', 'shipped')).toEqual({
+      oldStatus: 'draft', newBody: null, code: 'unexpected_status',
+    });
+  });
+
+  it('preserves a quoted CRLF status line', () => {
+    const body = '---\r\nstatus: "draft"\r\n---\r\n# Body\r\n';
+    expect(flipPlanFrontmatterStatus(body, 'ready', 'draft').newBody)
+      .toBe(body.replace('"draft"', '"ready"'));
+  });
+
+  it.each(['"draft\'', '\'draft"', '"draft', 'draft"'])('refuses mismatched quotes: %s', value => {
+    expect(flipPlanFrontmatterStatus(`---\nstatus: ${value}\n---\n`, 'ready'))
+      .toEqual({ oldStatus: null, newBody: null, code: 'no_status_line' });
+  });
+});
+
 describe('launchAcceptanceGraderForGate (D-006)', () => {
   it.each(['acceptance_ungraded', 'self_graded_only'])('launches once for %s', async (code) => {
     const launch = vi.fn(async () => ({

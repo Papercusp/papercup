@@ -15,6 +15,37 @@ import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private
 import { portalBrowserPackagesPlugin, portalBrowserSurfaceBuild } from './private-http-workspace-preflight';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+
+/** The host rejects this request before the inner auth:loopback route runs. */
+export function verifyPrivateHudHostDenial(status: number, body: string) {
+  assert.equal(status, 403, 'external Host must be denied by the actual operator host policy');
+  assert.equal(JSON.parse(body).error?.code, 'host_not_allowed', 'HUD denial must identify the host guard');
+}
+
+/** Exercise the production middleware order before allocating a private PG. */
+export async function verifyPrivateHudReadPolicy() {
+  const { Hono } = await import('hono');
+  const { hostRebindingGuard } = await import('../../../apps/operator/bin/host-rebinding-guard');
+  const { requireLoopbackOr403 } = await import('../lib/endpoint-route/loopback-guard');
+  const app = new Hono();
+  let handlerReads = 0;
+  app.use('/api/*', hostRebindingGuard);
+  app.get('/api/zero-harness/rest-query', c => {
+    const refused = requireLoopbackOr403(c.req.raw);
+    if (refused) return refused;
+    handlerReads++;
+    return c.json({ rows: [] });
+  });
+  const url = 'http://127.0.0.1/api/zero-harness/rest-query?name=advRoster.list';
+  for (const token of ['selected-cookie', 'foreign-cookie']) {
+    const allowed = await app.request(url, { headers: { host: '127.0.0.1', cookie: `session=${token}` } });
+    assert.equal(allowed.status, 200, 'native read authorization is loopback, independently of workspace cookies');
+  }
+  const denied = await app.request(url, { headers: { host: 'foreign-roster.invalid', cookie: 'session=selected-cookie' } });
+  verifyPrivateHudHostDenial(denied.status, await denied.text());
+  assert.equal(handlerReads, 2, 'external Host must not reach the native read handler');
+  return { denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 };
+}
 // Reuse the installed version that the actual MarkdownPreview imports. The
 // production SPA likewise mounts its package tree at /vditor; Vditor appends
 // /dist/js/lute/lute.min.js to that CDN root itself.
@@ -500,8 +531,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       writeFileSync(join(evidence, 'portal-hud-denial.json'), JSON.stringify({
         url: read.url, host: deniedHost, status: deniedStatus, body: deniedBody,
         authPlane: 'private-loopback-with-cookie' }, null, 2));
-      assert.equal(deniedStatus, 403, 'external Host must be denied by the actual loopback roster policy');
-      assert.equal(JSON.parse(deniedBody).error, 'loopback_only');
+      verifyPrivateHudHostDenial(deniedStatus, deniedBody);
       assert.equal(await search.inputValue(), selected, 'denied read must preserve the selected filter');
       await selectedCard.waitFor();
       await page.reload();

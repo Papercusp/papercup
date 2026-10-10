@@ -753,7 +753,28 @@ export interface ExpertiseRoutingReceipt {
   verdict: RouteResult['verdict'] | null;
   errorCode: string | null;
   /** Missing means not exercised, never a zero-duration observation. */
-  stages: Partial<Record<ExpertiseRoutingStage, { durationMs: number; outcome: 'returned' | 'threw' }>>;
+  stages: Partial<Record<ExpertiseRoutingStage, {
+    durationMs: number;
+    outcome: 'returned' | 'threw';
+    /** Safe structured cause for failed stages, including recovered failures.
+     * Absent on legacy receipts and successful stages; never raw error text. */
+    errorCode?: string;
+  }>>;
+}
+
+function routingErrorCode(error: unknown): string {
+  // Sidecar wrappers retain the provider cause. Bound traversal for malformed
+  // or cyclic chains, and do not let diagnostic getters replace route behavior.
+  try {
+    for (let depth = 0; depth < 4 && error && typeof error === 'object'; depth++) {
+      const cause = error as { code?: unknown; name?: unknown; cause?: unknown };
+      if (typeof cause.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(cause.code)) return cause.code;
+      if (cause.name === 'AbortError') return 'ABORT_ERR';
+      if (cause.name === 'TimeoutError') return 'ETIMEDOUT';
+      error = cause.cause;
+    }
+  } catch { /* diagnostics must not replace the original result or exception */ }
+  return 'routing_exception';
 }
 
 /** Measure the shared seam, including exceptions before a consult row exists. */
@@ -776,7 +797,7 @@ export async function routeConsult(params: ConsultRouteParams, deps: ConsultRout
       receipt.stages[stage] = { durationMs: elapsed(at), outcome: 'returned' };
       return value;
     } catch (error) {
-      receipt.stages[stage] = { durationMs: elapsed(at), outcome: 'threw' };
+      receipt.stages[stage] = { durationMs: elapsed(at), outcome: 'threw', errorCode: routingErrorCode(error) };
       throw error;
     }
   };
@@ -789,9 +810,8 @@ export async function routeConsult(params: ConsultRouteParams, deps: ConsultRout
     if (params.telemetry || deps.recordTelemetry) result.snapshot.measurement = structuredClone(receipt);
     return result;
   } catch (error) {
-    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
     // Raw error text can contain questions, SQL values or credentials.
-    receipt.errorCode = /^[A-Z0-9_]{1,40}$/.test(code) ? code : 'routing_exception';
+    receipt.errorCode = routingErrorCode(error);
     throw error;
   } finally {
     if (receipt.outcome === 'threw') receipt.durationMs = elapsed(started);

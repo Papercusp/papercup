@@ -29,15 +29,16 @@
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { access, stat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { constants, existsSync, readFileSync } from 'node:fs';
+import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
 import AsyncExitHook from 'async-exit-hook';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
 import { browserCachePath } from './ensure-playwright-browsers.mjs';
 import { defaultEvidenceRoot } from '../libs/generic/verification-harness/src/evidence-root.ts';
+import { processGroupLifetime } from '../packages/operator-core/lib/fleet/process-group-lifetime.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -91,7 +92,25 @@ function resolveSqlDir() {
   ].filter(Boolean);
   const hit = candidates.find((d) => existsSync(d));
   if (!hit) throw new Error(`no migrations dir found (looked in: ${candidates.join(', ')})`);
+  // An explicit candidate SQL source is a custody assertion. ROOT wins the
+  // resolution chain, so a mixed supervisor must fail before allocating PG
+  // rather than silently seed a different migration inventory.
+  const expected = process.env.PAPERCUSP_PG_SQL_DIR?.trim();
+  if (expected && resolve(expected) !== resolve(hit)) {
+    const inventory = dir => readdirSync(dir).filter(name => name.endsWith('.sql')).sort()
+      .map(name => [name, createHash('sha256').update(readFileSync(join(dir, name))).digest('hex')]);
+    if (JSON.stringify(inventory(hit)) !== JSON.stringify(inventory(expected))) {
+      throw new Error(`migration source inventory mismatch: supervisor ${hit}; candidate ${expected}`);
+    }
+  }
   return hit;
+}
+
+let sqlDir;
+try { sqlDir = resolveSqlDir(); }
+catch (error) {
+  console.error('[with-test-pg] migration preflight failed: ' + error.message);
+  process.exit(1);
 }
 
 /** Ask the OS for a free TCP port. Never hardcode 5432 — that is the host's own PG. */
@@ -119,11 +138,13 @@ const dataDir = await mkdtemp(join(tmpdir(), 'papercusp-test-pg-'));
 const runtimeRoot = isolatedRuntime ? await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-')) : null;
 const runtimeId = isolatedRuntime ? `test-runtime-${randomUUID().slice(0, 12)}` : null;
 const port = await freePort();
-const sqlDir = resolveSqlDir();
 
 let pg = null;
 let profileProcess = null;
+let profileLifetime = null;
 let child = null;
+let childLifetime = null;
+let childFinishPromise = null;
 let cleanupPromise = null;
 let terminatingSignal = null;
 let cleanupStartedAt = null;
@@ -190,15 +211,14 @@ async function cleanup() {
 async function cleanupOwnedState() {
   cleanupStartedAt = Date.now();
   cleanupStage('start');
-  if (profileProcess && profileProcess.exitCode === null && profileProcess.signalCode === null) {
+  if (childLifetime) {
+    cleanupStage('child-group-stop', { pid: child.pid });
+    await childLifetime.terminate();
+    cleanupStage('child-group-stopped', { pid: child.pid });
+  }
+  if (profileLifetime) {
     cleanupStage('profile-stop', { pid: profileProcess.pid });
-    const exited = new Promise((res) => profileProcess.once('exit', res));
-    try { process.kill(-profileProcess.pid, 'SIGTERM'); } catch { /* already exited */ }
-    await Promise.race([exited, new Promise((res) => setTimeout(res, 5000))]);
-    if (profileProcess.exitCode === null && profileProcess.signalCode === null) {
-      try { process.kill(-profileProcess.pid, 'SIGKILL'); } catch { /* already exited */ }
-      await exited;
-    }
+    await profileLifetime.terminate();
   }
   const stopObserving = observePrivatePgStop();
   // Elapsed waiting is not measured I/O progress and must not renew the proof
@@ -251,7 +271,9 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     }
     if (child?.pid) {
       if (isolatedRuntime) {
-        try { process.kill(-child.pid, sig); } catch { /* already exited */ }
+        // Cancellation cannot depend on a cooperative child exit: it may
+        // ignore TERM, while its group still holds the private database.
+        void finishChild(null, sig);
       } else child.kill(sig);
     }
   });
@@ -483,6 +505,7 @@ if (operatorApi) {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'], detached: true,
     });
     let errors = '';
+    profileLifetime = processGroupLifetime(profileProcess, message => console.error('[with-test-pg] ' + message));
     for (const stream of [profileProcess.stdout, profileProcess.stderr]) {
       stream.on('data', (chunk) => { errors = (errors + chunk.toString()).slice(-6000); });
     }
@@ -570,6 +593,9 @@ child = spawn(cmd[0], childArgs, {
   },
   detached: isolatedRuntime,
 });
+if (isolatedRuntime && child.pid) {
+  childLifetime = processGroupLifetime(child, message => console.error('[with-test-pg] ' + message));
+}
 
 // The test parent measures these PIDs during their actual lifetime. Ordinary
 // runs have no IPC observer and pay no receipt cost.
@@ -600,13 +626,21 @@ child.on('error', async (error) => {
 });
 
 child.on('exit', async (code, signal) => {
+  await finishChild(code, signal);
+});
+}
+
+function finishChild(code, signal) {
+  return childFinishPromise ??= finishChildOwned(code, signal).catch(error => {
+    // Unverified descendants must retain the private state, never report a
+    // successful cleanup or propagate the child's successful exit code.
+    console.error('[with-test-pg] cleanup failed: ' + (error?.stack ?? error));
+    process.exit(1);
+  });
+}
+async function finishChildOwned(code, signal) {
   if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send) {
     process.send({ kind: 'isolated-runtime-stopping', childPid: child.pid, exitCode: code, signal });
-  }
-  if (isolatedRuntime && child.pid) {
-    // A short-lived assertion can spawn a long-lived test host. Reap its owned
-    // process group before deleting the private DB/identity it was using.
-    try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already exited */ }
   }
   await cleanup();
   if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send) {
@@ -620,7 +654,6 @@ child.on('exit', async (code, signal) => {
     process.kill(process.pid, signal);
   }
   else process.exit(code ?? 1);
-});
 }
 
 main().catch(async error => {

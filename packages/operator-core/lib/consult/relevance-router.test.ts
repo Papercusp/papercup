@@ -10,6 +10,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
   selectResponders,
   routeConsult,
@@ -231,6 +233,40 @@ describe('routing stage receipts', () => {
         recordTelemetry,
       })).rejects.toBe(error);
     }
+  });
+
+  it.each([
+    ['provider code', Object.assign(new Error('private provider text'), { code: 'ECONNREFUSED' }), 'ECONNREFUSED'],
+    ['wrapped abort', new Error('private wrapper', { cause: new DOMException('private abort text', 'AbortError') }), 'ABORT_ERR'],
+    ['wrapped timeout', new Error('private wrapper', { cause: new DOMException('private timeout text', 'TimeoutError') }), 'ETIMEDOUT'],
+    ['unsafe code', Object.assign(new Error('private error'), { code: 'private credential value' }), 'routing_exception'],
+  ])('retains a safe %s for an embedding exception recovered by lexical fallback', async (_label, error, code) => {
+    const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+    const receipts: ExpertiseRoutingReceipt[] = [];
+    const result = await routeConsult(params, {
+      getSql: () => sql, embed: async () => { throw error; },
+      embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
+      embeddingMode: 'gemma', recordTelemetry: r => { receipts.push(r); },
+    });
+    expect(result.verdict).toBe('relevance_unmeasured');
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ outcome: 'degraded', errorCode: null,
+      stages: { embedding: { outcome: 'threw', errorCode: code } } });
+    expect(result.snapshot.measurement).toEqual(receipts[0]);
+    expect(JSON.stringify(receipts)).not.toContain('private');
+  });
+
+  it('bounds cyclic error causes without replacing the recovered routing result', async () => {
+    const error = Object.assign(new Error('private cycle'), { cause: null as unknown });
+    error.cause = error;
+    const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+    const result = await routeConsult(params, {
+      getSql: () => sql, embed: async () => { throw error; },
+      embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
+      embeddingMode: 'gemma',
+    });
+    expect(result.verdict).toBe('relevance_unmeasured');
+    expect(result.snapshot.measurement?.stages.embedding).toMatchObject({ errorCode: 'routing_exception' });
   });
 });
 

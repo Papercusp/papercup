@@ -194,7 +194,13 @@ describe('pot-git defaultRunGit', () => {
       { timeoutMs: 30_000, signal: controller.signal });
     let pid = 0;
     try {
-      await vi.waitFor(async () => { pid = Number(await readFile(receipt, 'utf8')); expect(pid).toBeGreaterThan(0); });
+      // vi.waitFor defaults to a 1s budget. Spawning git, which then runs the alias
+      // shell that writes the receipt, exceeded that under gate load (ENOENT at
+      // 33144c00, WI-10008204), so give the spawn the room its own 30s timeout implies.
+      await vi.waitFor(
+        async () => { pid = Number(await readFile(receipt, 'utf8')); expect(pid).toBeGreaterThan(0); },
+        { timeout: 15_000, interval: 50 },
+      );
       controller.abort();
       expect((await result).code).toBe(-1);
       expect(() => process.kill(pid, 0)).toThrow();
@@ -202,7 +208,7 @@ describe('pot-git defaultRunGit', () => {
       controller.abort();
       await result;
     }
-  }, 15_000);
+  }, 30_000);
 });
 
 describe('pot-git local-spawn RSS admission (EI-20282995952031769)', () => {

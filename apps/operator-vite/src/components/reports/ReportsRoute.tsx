@@ -162,7 +162,10 @@ function ReportReader({ report, onSelect, historyOpen, onHistoryChange, onFollow
       <nav aria-label="On this page"><h3>On this page</h3>
         {!outline.length && <p className="reports-muted">No section headings</p>}
         {outline.map(item => <a key={item.id} href={`#${encodeURIComponent(item.id)}`} style={{ paddingLeft: `${12 + Math.max(0, item.level - 2) * 10}px` }}
-          aria-current={reading.active === item.id ? 'location' : undefined} onClick={event => { event.preventDefault(); item.node.scrollIntoView({ block: 'start', behavior: 'smooth' });
+          aria-current={reading.active === item.id ? 'location' : undefined} onClick={event => { event.preventDefault();
+            const root = scroller.current;
+            if (root) root.scrollTo({ top: root.scrollTop + item.node.getBoundingClientRect().top - root.getBoundingClientRect().top - 24,
+              behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
             setReading(value => ({ ...value, active: item.id })); }}>{item.text}</a>)}
       </nav>
       <progress aria-label="Reading progress" max={100} value={reading.progress} /><span className="reports-muted">{reading.progress}% read</span>

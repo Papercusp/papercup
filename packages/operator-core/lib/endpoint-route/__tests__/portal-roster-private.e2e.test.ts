@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
-import { buildPortalRosterBrowser, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateProfileOriginControl } from '../../../test/portal-roster-browser-fixture';
+import { buildPortalRosterBrowser, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy } from '../../../test/portal-roster-browser-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
@@ -21,6 +21,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real private Portal HUD filters the intended session and retains its filter across reload', async context => {
     preparePrivateRosterSocketRoot();
+    await verifyPrivateHudReadPolicy();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource,
       selected: 'preflight-selected', neighbor: 'preflight-neighbor', hud: true });

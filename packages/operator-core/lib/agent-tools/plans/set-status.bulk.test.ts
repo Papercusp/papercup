@@ -32,6 +32,8 @@ vi.mock('../_harness-scope', async (orig) => {
   };
 });
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: (ctx: { harnessSlug?: string }) => ctx.harnessSlug ?? null }));
+// WI-10008137: the draft-plan item-start gate has its own suite (draft-item-start-gate.test.ts).
+vi.mock('./draft-item-start-gate', () => ({ checkDraftItemStartGateLive: vi.fn(async () => null) }));
 const slugScopeM = vi.hoisted(() => ({ recover: vi.fn() }));
 vi.mock('./slug-scope', async (orig) => ({
   ...(await orig<typeof import('./slug-scope')>()),

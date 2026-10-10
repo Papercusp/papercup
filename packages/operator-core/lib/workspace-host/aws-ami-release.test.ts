@@ -7,6 +7,7 @@ import {
   WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   buildWorkspaceHostBuildManifest,
@@ -454,6 +455,8 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
       serviceHealthy: true,
       publicIpv4Assigned: false,
       terminated: true,
+      dataVolumeId: 'vol-0123456789abcdef0',
+      dataVolumeDeleted: true,
       residualResourceIds: this.proofResidue,
       observedAt,
       fixtureId: input.fixture.fixtureId,
@@ -627,6 +630,14 @@ describe('AWS workspace-host AMI release', () => {
     expect(adapter.calls.some((call) => call.startsWith('deprecate:'))).toBe(false);
   });
 
+  it('does not publish when the canary cannot confirm data-volume deletion', async () => {
+    const adapter = new FakeAdapter();
+    adapter.proofOverride = (proof) => ({ ...proof, dataVolumeDeleted: false });
+    await expect(executeAwsAmiRelease(request(), adapter)).rejects.toThrow('confirmed instance and data-volume teardown');
+    expect(adapter.calls).not.toContain('publish-manifest');
+    expect(adapter.calls).not.toContain('activate-pins');
+  });
+
   it('hands the canary the canonical clean-room fixture whose script matches its own digest (WI-10005604)', async () => {
     const adapter = new FakeAdapter();
     await executeAwsAmiRelease(request(), adapter);
@@ -672,19 +683,34 @@ describe('AWS workspace-host AMI release', () => {
         ).toString('base64')}\n`;
         const sent: string[] = [];
         let state = 'running';
+        let clock = 0;
+        let dataVolumeState = 'none';
+        let attachmentState: string | null = null;
+        let attachedInstanceId: string | null = null;
+        let bootstrapPushed = false;
         const observed = await runAwsAmiCleanAccountCanary(bound, {
           runId: () => 'roundtrip',
-          now: () => 0,
-          sleep: async () => {},
+          now: () => clock,
+          sleep: async (ms) => { clock += ms; },
           callerAccount: async () => input.accountId,
           describeImage: async () => ({ state: 'available', architecture: 'x86_64' }),
-          describeSubnet: async (subnetId) => ({ subnetId }),
+          describeSubnet: async (subnetId) => ({ subnetId, availabilityZone: 'us-east-1a' }),
+          createDataVolume: async () => { dataVolumeState = 'available'; return 'vol-0123456789abcdef0'; },
+          describeVolume: async () => ({
+            state: dataVolumeState,
+            ...(attachmentState ? { attachmentState } : {}),
+            ...(attachedInstanceId ? { attachedInstanceId } : {}),
+          }),
+          attachVolume: async ({ instanceId }) => { dataVolumeState = 'in-use'; attachmentState = 'attached'; attachedInstanceId = instanceId; },
+          detachVolume: async () => { dataVolumeState = 'available'; attachmentState = null; attachedInstanceId = null; },
+          deleteVolume: async () => { dataVolumeState = 'deleted'; },
           runInstance: async () => 'i-0roundtrip',
           describeInstance: async () => ({ state, publicIpv4: null }),
           ssmPingStatus: async () => 'Online',
-          consoleOutput: async () => null,
+          consoleOutput: async () => bootstrapPushed ? `${WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER} succeeded\n` : null,
           sendCommand: async ({ commands }) => {
             sent.push(commands.join('\n'));
+            if (commands.join('\n').includes('systemd-run --unit=')) bootstrapPushed = true;
             return String(sent.length - 1);
           },
           getInvocation: async ({ commandId }) => {

@@ -310,6 +310,41 @@ function existingCodexHomeOwnerSid(codexHome: string): string | null {
   }
 }
 
+async function existingCodexHomeOwnerSidAsync(codexHome: string): Promise<string | null> {
+  try {
+    const value = (await readFile(join(codexHome, '.owner-sid'), 'utf8')).trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+const codexHomeAsyncWriteTails = new Map<string, Promise<void>>();
+
+/** Serialize async home mutations across their sentinel read/write boundary. */
+async function withCodexHomeAsyncWriteLock<T>(codexHome: string, action: () => Promise<T>): Promise<T> {
+  const previous = codexHomeAsyncWriteTails.get(codexHome) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => current);
+  codexHomeAsyncWriteTails.set(codexHome, tail);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (codexHomeAsyncWriteTails.get(codexHome) === tail) codexHomeAsyncWriteTails.delete(codexHome);
+  }
+}
+
+async function stampCodexHomeOwnerSidAsync(codexHome: string, sid: string): Promise<void> {
+  try {
+    await (await import('node:fs/promises')).writeFile(join(codexHome, '.owner-sid'), sid, { mode: 0o600 });
+  } catch {
+    /* non-fatal: the collision guard simply skips on the next write */
+  }
+}
+
 /** Async preflight for bootstrap callers: keep the psu-host liveness probe off
  *  the operator event loop before the synchronous home materialization begins. */
 export async function assertSuCodexHomeNotOwnedByLiveSession(

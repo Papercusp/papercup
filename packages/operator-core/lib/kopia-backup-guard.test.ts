@@ -124,6 +124,22 @@ async function waitForOutput(read: () => string, text: string, timeoutMs = 10_00
   }
 }
 
+async function waitForProgressPhase(path: string, phase: string, timeoutMs = 10_000): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  let last = '';
+  while (Date.now() < deadline) {
+    try {
+      last = readFileSync(path, 'utf8');
+      const marker = JSON.parse(last) as Record<string, unknown>;
+      if (marker.phase === phase) return marker;
+    } catch {
+      // The atomic rename can leave the previous marker visible for one turn.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for progress phase ${phase} in ${path}: ${last}`);
+}
+
 async function waitForKernelFlockBlock(pidPath: string, timeoutMs = 10_000): Promise<void> {
   await waitForPath(pidPath, timeoutMs);
   const pid = Number(readFileSync(pidPath, 'utf8').trim());
@@ -222,6 +238,62 @@ afterEach(() => {
 });
 
 describe('Kopia global backup guard', () => {
+  it('publishes a live db-dump marker while queued, advances it after lock acquisition, then removes it', async () => {
+    const { dir, env } = fixture();
+    const ready = join(dir, 'holder-ready');
+    const release = join(dir, 'release-holder');
+    const holder = spawn('bash', ['-c',
+      'exec 9>>"$KOPIA_BACKUP_LOCK_PATH"; /usr/bin/flock 9; touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done',
+    ], { env: { ...env, READY: ready, RELEASE: release }, stdio: 'ignore', detached: true });
+    const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+    let child: ReturnType<typeof spawn> | undefined;
+    let closed: Promise<number | null> | undefined;
+    let output = '';
+    try {
+      await waitForPath(ready);
+      child = spawn('bash', [
+        guard,
+        '--mode', 'scheduled',
+        '--label', 'db-dump',
+        '--no-restart-safe',
+        '--priority-on-contention',
+        '--',
+        'bash', '-c', 'sleep 0.5',
+      ], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      closed = new Promise<number | null>((resolve) => child!.once('close', resolve));
+      child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+      child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+
+      const markerPath = `${env.KOPIA_BACKUP_LOCK_PATH}.db-dump.${child.pid}.run`;
+      await waitForPath(markerPath);
+      const queued = JSON.parse(readFileSync(markerPath, 'utf8')) as Record<string, unknown>;
+      expect(queued).toMatchObject({ pid: child.pid, phase: 'guard-queued' });
+      expect(queued.processStartTicks).toMatch(/^\d+$/);
+      expect(queued.startedAtEpoch).toBeTypeOf('number');
+      await waitForOutput(() => output, 'result=waiting reason=priority-on-contention');
+      expect(readFileSync(markerPath, 'utf8')).toContain('"phase":"guard-queued"');
+
+      writeFileSync(release, 'release lock for db-dump');
+      const running = await waitForProgressPhase(markerPath, 'guard-running');
+      expect(running.pid).toBe(child.pid);
+      expect(await closed).toBe(0);
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      writeFileSync(release, 'cleanup');
+      if (child && closed) await stopFixtureGroup(child, closed);
+      await stopFixtureGroup(holder, holderClosed);
+    }
+  }, 20_000);
+
+  it('does not publish a db-dump progress marker for another label', () => {
+    const { dir, env } = fixture();
+    const marker = join(dir, 'ran');
+    const result = run(['--mode', 'scheduled', '--label', 'hot', '--', 'touch', marker], env);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readdirSync(dir).some((entry) => entry.includes('.db-dump.') && entry.endsWith('.run'))).toBe(false);
+  });
+
   it('keeps the default staleness override below the primary freshness alarm', () => {
     const guardSource = readFileSync(guard, 'utf8');
     const healthCheckSource = readFileSync(backupHealthCheckPath, 'utf8');

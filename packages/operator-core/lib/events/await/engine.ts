@@ -937,7 +937,8 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
   }
   pumpsInFlight.add(ws);
   // WI-10008194: report every run's outcome so a pump that fails on every kick pages
-  // instead of only logging (the 2026-10-10 20:28-20:44Z fleet-wide wake outage).
+  // instead of only logging (2026-10-10 20:28-20:44Z: bg-host's pump failed on every kick and
+  // stranded ~390 deliveries while another host's pump kept delivering; WI-10008205).
   let pumpThrew = false;
   let pumpError: unknown;
   try {

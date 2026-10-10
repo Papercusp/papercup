@@ -236,6 +236,94 @@ it.each([0, 7])('reports real private PG cleanup for an ordinary no-IPC isolated
   }
 }, workerOptions.testTimeoutMs);
 
+it('rejects a mixed candidate migration inventory before allocating private Postgres', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-migration-mismatch-'));
+  try {
+    const sqlDir = join(evidenceDir, 'candidate-sql');
+    await mkdir(sqlDir);
+    await writeFile(join(sqlDir, '9999-candidate-only.sql'), 'SELECT 1;');
+    const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--', process.execPath, '-e', 'throw new Error("child must not start");',
+    ], { cwd: root, env: { ...process.env, TMPDIR: evidenceDir, PAPERCUSP_PG_SQL_DIR: sqlDir },
+      stdio: ['ignore', 'pipe', 'pipe'] });
+    const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 30_000 });
+    expect(result).toMatchObject({ code: 1, signal: null, timedOut: false, stdioDrainTimedOut: false });
+    expect(result.output).toContain('migration source inventory mismatch');
+    expect(result.output).not.toContain('datadir ');
+    expect(result.output).not.toContain('child must not start');
+  } finally { await rm(evidenceDir, { recursive: true, force: true }); }
+});
+
+it.each(['child-exit', 'supervisor-SIGTERM'] as const)(
+  'stops a stubborn grandchild before private-state removal after %s', async ending => {
+    const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-stubborn-grandchild-'));
+    const pidFile = join(evidenceDir, 'owned-pids.json');
+    const signalFile = join(evidenceDir, 'grandchild-term.json');
+    const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: evidenceDir };
+    delete env.PC_ISOLATED_RUNTIME_PROOF;
+    delete env.PC_HEAVY_PREEMPT_READY_FILE;
+    delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    const grandchildSource = `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(signalFile)}, JSON.stringify({
+        runtimeExists: fs.existsSync(process.env.HOME), pid: process.pid,
+      })));
+      process.send(process.pid);
+      setInterval(() => {}, 1000);
+    `;
+    const childSource = `
+      const { spawn } = require('node:child_process');
+      const fs = require('node:fs');
+      ${ending === 'supervisor-SIGTERM' ? "process.on('SIGTERM', () => {});" : ''}
+      const helper = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}],
+        { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      helper.on('message', pid => {
+        fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ leader: process.pid, helper: pid }));
+        helper.disconnect();
+        ${ending === 'child-exit' ? 'process.exit(7);' : 'setInterval(() => {}, 1000);'}
+      });
+    `;
+    const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--', process.execPath, '-e', childSource,
+    ], { cwd: root, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let owned: { leader: number; helper: number } | undefined;
+    try {
+      const captured = captureIsolatedWorker(child, evidenceDir, { ...workerOptions, cleanupFromStdout: true });
+      if (ending === 'supervisor-SIGTERM') {
+        while (!existsSync(pidFile) && child.exitCode === null && child.signalCode === null) {
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        expect(existsSync(pidFile)).toBe(true);
+        child.kill('SIGTERM');
+      }
+      const result = await captured;
+      owned = JSON.parse(readFileSync(pidFile, 'utf8'));
+      expect(result, result.output.slice(-8000)).toMatchObject({
+        code: ending === 'child-exit' ? 7 : null, signal: ending === 'child-exit' ? null : 'SIGTERM',
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
+      });
+      expect(JSON.parse(readFileSync(signalFile, 'utf8'))).toEqual({ runtimeExists: true, pid: owned!.helper });
+      const stages = result.output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
+        .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
+      const names = stages.map(stage => stage.stage);
+      expect(names.indexOf('child-group-stopped')).toBeGreaterThan(names.indexOf('child-group-stop'));
+      expect(names.indexOf('pg-stop')).toBeGreaterThan(names.indexOf('child-group-stopped'));
+      expect(names.indexOf('remove-private-state')).toBeGreaterThan(names.indexOf('pg-stopped'));
+      expect(stages.find(stage => stage.stage === 'complete')).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
+      for (const pid of [owned!.leader, owned!.helper]) expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      if (existsSync(pidFile)) owned = JSON.parse(readFileSync(pidFile, 'utf8'));
+      if (owned) { try { process.kill(-owned.leader, 'SIGKILL'); } catch { /* owned group already gone */ } }
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise(resolve => child.once('exit', resolve));
+        process.kill(-child.pid!, 'SIGKILL');
+        await exited;
+      }
+      await rm(evidenceDir, { recursive: true, force: true });
+    }
+  }, workerOptions.testTimeoutMs,
+);
+
 it('cleans owned state when cancelled during real initdb before runtime-start', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-bootstrap-cancel-'));
   const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', TMPDIR: evidenceDir };
