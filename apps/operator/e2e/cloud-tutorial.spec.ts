@@ -676,18 +676,34 @@ test('guide speaks current instructions and scoped help with real browser audio 
   await test.info().attach('guide-audio-playback-events', { body: JSON.stringify(await page.evaluate(() => (window as unknown as { __tutorialAudioEvents: string[] }).__tutorialAudioEvents)), contentType: 'application/json' });
 });
 
-for (const existing of [false, true]) {
-  test(`${existing ? 'existing workspace' : 'new user'} completes the actual Cloud first-agent journey`, async ({ page }) => {
+for (const existing of [false, true]) for (const accessible of [false, true]) {
+  test(`${existing ? 'existing workspace' : 'new user'} completes the actual Cloud first-agent journey${accessible ? ' with narrow enlarged text, reduced motion and keyboard activation' : ''}`, async ({ page }) => {
     const fixture = await setupJourney(page, existing);
+    // Run the whole product journey under these settings. Inspecting a narrow
+    // row then restoring the desktop viewport does not prove task completion.
+    // Focus is seeded at each named control; Tab still verifies form/terminal
+    // transitions. This is not a claim of whole-app pure-Tab or native zoom.
+    if (accessible) {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+    }
     await page.goto(existing ? '/cloud-workspaces?step=operate&host=host-tutorial&tab=cost' : '/cloud-workspaces', { waitUntil: 'domcontentloaded' });
     await fixture.sync.waitForServed(['workspaceHosts.control']);
+    if (accessible) await page.addStyleTag({ content: 'html{font-size:200%}' });
+    const activate = async (control: ReturnType<Page['getByRole']>) => {
+      if (!accessible) return control.click();
+      await control.focus();
+      await expect(control).toBeFocused();
+      await page.keyboard.press('Enter');
+    };
     const guide = page.getByRole('region', { name: 'First agent guide' });
     await expect(guide).toBeVisible();
     expect(fixture.writes).toEqual([]);
     if (!existing) {
       await expect(guide.getByRole('heading', { name: 'Connect Google Cloud' })).toBeVisible();
-      await guide.getByRole('button', { name: 'Show me' }).click();
+      await activate(guide.getByRole('button', { name: 'Show me' }));
       const label = page.getByRole('textbox', { name: 'Connection label' });
+      await expect(label).toBeFocused();
       await label.fill('My GCP');
       await label.press('Tab');
       await expect(page.getByRole('textbox', { name: 'Injected credential reference' })).toBeFocused();
@@ -695,7 +711,7 @@ for (const existing of [false, true]) {
       await page.getByRole('textbox', { name: 'Google Cloud project ID' }).fill('tutorial-project');
       await page.getByRole('textbox', { name: 'Runtime service account email' }).fill('runtime@tutorial-project.iam.gserviceaccount.com');
       expect(fixture.writes).toEqual([]);
-      await page.getByRole('button', { name: 'Connect and validate' }).click();
+      await activate(page.getByRole('button', { name: 'Connect and validate' }));
     }
     await expect(guide.getByRole('heading', { name: 'Review configuration and cost' })).toBeVisible();
     const showConfiguration = guide.getByRole('button', { name: 'Show me' });
@@ -716,24 +732,24 @@ for (const existing of [false, true]) {
       await page.keyboard.press('Tab');
       await expect(name).toHaveValue('My workspace');
     }
-    await page.getByRole('button', { name: "I've reviewed the configuration and cost" }).click();
+    await activate(page.getByRole('button', { name: "I've reviewed the configuration and cost" }));
     await expect(guide.getByRole('heading', { name: 'Wait for a healthy workspace' })).toBeVisible();
     if (!existing) {
       expect(fixture.writes.filter(write => write.path.endsWith('/provision'))).toHaveLength(0);
-      await page.getByRole('button', { name: 'Provision workspace' }).click();
+      await activate(page.getByRole('button', { name: 'Provision workspace' }));
       await expect.poll(() => fixture.writes.find(write => write.path.endsWith('/provision'))?.body.name).toBe('My workspace');
-      await page.getByRole('button', { name: 'Show me', exact: true }).click();
+      await activate(page.getByRole('button', { name: 'Show me', exact: true }));
       // The prepared-workspace entry also names this host. Select the actual
       // Operate row so this legacy BYOC journey never opts into version 2.
-      await page.getByRole('list', { name: 'Managed workspace hosts' })
-        .getByRole('button', { name: 'My workspace GCP', exact: false }).click();
+      await activate(page.getByRole('list', { name: 'Managed workspace hosts' })
+        .getByRole('button', { name: 'My workspace GCP', exact: false }));
       expect(new URL(page.url()).searchParams.get('tutorial')).not.toBe('beginner');
     }
     await expect(guide.getByRole('heading', { name: 'Get your first agent running', exact: true })).toBeVisible();
     // A 640 CSS-pixel viewport exercises the same layout width as the native
     // 200% zoom review. Measure rendered text, including overflowing glyphs.
     const fullViewport = page.viewportSize()!;
-    await page.setViewportSize({ width: 640, height: 900 });
+    if (!accessible) await page.setViewportSize({ width: 640, height: 900 });
     const workspaceRow = page.getByRole('button', { name: 'My workspace GCP', exact: false }).first();
     await workspaceRow.scrollIntoViewIfNeeded();
     const rowLayout = await workspaceRow.evaluate(element => {
@@ -749,8 +765,8 @@ for (const existing of [false, true]) {
     await test.info().attach('narrow-workspace-name-layout', { body: JSON.stringify(rowLayout), contentType: 'application/json' });
     expect(rowLayout.lines.length).toBeGreaterThan(0);
     expect(rowLayout.overlaps).toBe(false);
-    await page.setViewportSize(fullViewport);
-    await page.getByRole('region', { name: 'Browser workspace session for My workspace' }).getByRole('button', { name: 'Connect', exact: true }).click();
+    if (!accessible) await page.setViewportSize(fullViewport);
+    await activate(page.getByRole('region', { name: 'Browser workspace session for My workspace' }).getByRole('button', { name: 'Connect', exact: true }));
     await expect(guide.getByRole('heading', { name: 'Launch your first agent' })).toBeVisible();
     const heights = await page.getByRole('region', { name: 'Browser workspace session for My workspace' }).locator('.xterm').evaluate(async element => {
       const samples: number[] = [];
@@ -773,17 +789,18 @@ for (const existing of [false, true]) {
     await expect(terminalInput).not.toBeFocused();
     expect(fixture.writes.filter(write => write.path.endsWith('/launch-su'))).toHaveLength(0);
     expect(fixture.socketMessages.filter(message => message.type === 'desktop.start')).toHaveLength(0);
-    await page.getByRole('button', { name: '+ New session', exact: true }).click();
+    await activate(page.getByRole('button', { name: '+ New session', exact: true }));
     await expect(guide.getByRole('heading', { name: 'Submit a small read-only task' })).toBeVisible();
     const launch = fixture.writes.filter(write => write.path.endsWith('/launch-su'));
     expect(launch).toHaveLength(1); expect(launch[0].body.mode).toBeNull();
-    await page.getByRole('button', { name: 'Send sample task', exact: true }).click();
+    await activate(page.getByRole('button', { name: 'Send sample task', exact: true }));
     await expect.poll(() => fixture.prompt).toContain('Lesson request:');
     await expect(guide.getByRole('heading', { name: 'Inspect the result' })).toBeVisible();
     await expect(page.locator('[data-tutorial-target="cloud-result"]')).toContainText(ANSWER);
     // Pause through the product control so the spotlight no longer overlaps
     // the answer. An inconclusive axe row is not a measured contrast pass.
-    await guide.getByRole('button', { name: 'Pause', exact: true }).click();
+    await activate(guide.getByRole('button', { name: 'Pause', exact: true }));
+    if (accessible) await expect(guide.getByRole('button', { name: 'Resume guide', exact: true })).toBeFocused();
     for (const role of ['user', 'assistant'] as const) {
       const selector = `[data-tutorial-target="cloud-result"] .pc-chat__turn--${role} .pc-chat__p`;
       const resultText = page.locator(selector).first();
@@ -797,8 +814,8 @@ for (const existing of [false, true]) {
       expect(resultContrast.incomplete.filter(result => result.id === 'color-contrast')).toEqual([]);
       expect(resultContrast.passes.find(result => result.id === 'color-contrast')?.nodes.length).toBeGreaterThan(0);
     }
-    await guide.getByRole('button', { name: 'Resume guide', exact: true }).click();
-    await page.getByRole('button', { name: "I've inspected this answer" }).click();
+    await activate(guide.getByRole('button', { name: 'Resume guide', exact: true }));
+    await activate(page.getByRole('button', { name: "I've inspected this answer" }));
     await expect(guide).toContainText('Your first agent lesson is complete.');
     await expect(guide).toContainText('6 of 6 steps confirmed');
     expect(fixture.writes.filter(write => write.path.endsWith('/coord/send'))).toHaveLength(1);
@@ -806,5 +823,23 @@ for (const existing of [false, true]) {
     await test.info().attach('browser-resize-errors', { body: JSON.stringify(resizeErrors), contentType: 'application/json' });
     expect(resizeErrors).toEqual([]);
     fixture.sync.assertServed('workspaceHosts.control');
+    if (accessible) {
+      expect(page.viewportSize()).toEqual({ width: 390, height: 844 });
+      const settings = await page.evaluate(() => ({
+        reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        rootFontSize: getComputedStyle(document.documentElement).fontSize,
+        viewportWidth: innerWidth, documentWidth: document.documentElement.scrollWidth,
+      }));
+      expect(settings.reducedMotion).toBe(true);
+      expect(parseFloat(settings.rootFontSize)).toBeGreaterThanOrEqual(32);
+      await test.info().attach('accessible-highlighted-task-completion', {
+        contentType: 'application/json', body: JSON.stringify({ settings,
+          completedSteps: 6, inspectedAnswer: ANSWER,
+          productWrites: fixture.writes.map(write => ({ path: write.path })),
+          boundary: 'Real product components in Chromium; authenticated API, provider and agent results are controlled fixtures',
+          keyboard: 'Named-control focus and Enter activation; form and terminal Tab transitions',
+        }),
+      });
+    }
   });
 }
