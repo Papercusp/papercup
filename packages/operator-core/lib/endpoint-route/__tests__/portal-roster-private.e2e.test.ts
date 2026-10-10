@@ -10,6 +10,64 @@ const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal HUD browser graph compiles through the maintained standalone boundary', async () => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    const built = await buildPortalRosterBrowser({ portalSourceRoot: portalSource,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', hud: true });
+    expect(built.bundle.length).toBeGreaterThan(0);
+    expect([...built.originals.keys()].some(path => path.endsWith('/app/adv/hud/HudView.tsx'))).toBe(true);
+  }, 180_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real private Portal HUD filters the intended session and retains its filter across reload', async context => {
+    preparePrivateRosterSocketRoot();
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    await buildPortalRosterBrowser({ portalSourceRoot: portalSource,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', hud: true });
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+        'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/adv-roster.ts',
+        'packages/operator-core/lib/adv-sessions.ts', 'packages/operator-core/lib/agent-tools/coordination/presence.ts',
+        'apps/operator/app/adv/hud/HudView.tsx', 'apps/operator/app/adv/hud/HudBoard.tsx',
+        'apps/operator/app/adv/hud/HudSearchBox.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+      execute: async (observe, evidenceDir) => {
+        await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1',
+          ROSTER_HUD_BROWSER_PROOF: '1' };
+        for (const key of ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION',
+          'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
+          'ROSTER_SETTINGS_BROWSER_PROOF', 'ROSTER_PROMPTS_BROWSER_PROOF', 'ROSTER_INBOX_BROWSER_PROOF',
+          'ROSTER_PLANS_BROWSER_PROOF', 'ROSTER_DOCS_BROWSER_PROOF']) delete env[key];
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+          '--portal-source=' + portalSource],
+        { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
+          if (line.startsWith('ROSTER_STOP_HTTP_PHASE ')) console.info(line); });
+        let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+        try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+        finally { await rm(join(evidenceDir, 'node_modules')); }
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
+          exitWaitTimedOut: false, stdioDrainTimedOut: false, code: 0 });
+        expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
+        const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_BROWSER_RECEIPT '));
+        expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+        expect(JSON.parse(line!.slice('ROSTER_COORD_BROWSER_RECEIPT '.length))).toMatchObject({
+          workspace: expect.stringMatching(/^test-runtime-/), authMethod: 'private-cookie-HUD-roster',
+          keyboardFilter: true, selectedRetained: true, neighborFiltered: true, filterReset: true,
+          deepLinkReload: true, shellQueryPreserved: true, denialStatus: 403,
+          denialTransport: 'actual-private-roster-request', retryReload: true });
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ROSTER_HUD_BROWSER_PROOF_RUN ' + runId);
+  }, options.testTimeoutMs);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal Overview opens its destination by keyboard and preserves it across reload', async () => {
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     expect(await verifyPortalOverviewNavigation(portalSource)).toMatchObject({

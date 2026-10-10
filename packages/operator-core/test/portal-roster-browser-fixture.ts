@@ -28,6 +28,7 @@ type PortalRosterBrowserInput = {
   settings?: boolean;
   prompts?: boolean;
   overview?: boolean;
+  hud?: boolean;
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
   markdownPreflight?: { value: string; heading: string };
   plans?: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string };
@@ -44,7 +45,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -77,6 +78,18 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
       React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
         React.createElement(Fixture))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.hud ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import HudView from ${JSON.stringify(join(operatorRoot, 'app/adv/hud/HudView.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(HudView))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.docs ? `
@@ -186,8 +199,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans || input.docs || input.overview
-    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.overview) }) : undefined;
+  const boundary = input.inbox || input.plans || input.docs || input.overview || input.hud
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.overview || input.hud) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -223,7 +236,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
   assert.ok([...originals.keys()].some(path => path.endsWith(input.overview
-    ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.docs
+    ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.hud
+    ? '/apps/operator/app/adv/hud/HudView.tsx' : input.docs
     ? '/apps/operator/app/adv/harnesses/AdvDocsTab.tsx' : input.plans
     ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
@@ -405,25 +419,26 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.stack ?? error.message));
-    if (input.inbox || input.plans) page.on('response', response => {
+    if (input.inbox || input.plans || input.hud) page.on('response', response => {
       const url = new URL(response.url());
       const name = url.searchParams.get('name');
-      const queryName = input.plans ? 'plans.list' : 'plans.attention';
+      const queryName = input.hud ? 'advRoster.list' : input.plans ? 'plans.list' : 'plans.attention';
       if (!url.pathname.endsWith('/rest-query') || !name?.startsWith(queryName)) return;
-      const observation = { at: new Date().toISOString(), name, args: url.searchParams.get('args'),
+      const observation = { at: new Date().toISOString(), url: response.url(), name, args: url.searchParams.get('args'),
         delta: url.searchParams.get('delta'), status: response.status() };
       const capture = response.json().then(body => {
         syncReads.push({ ...observation, body });
       }, error => {
         syncReads.push({ ...observation, error: String(error) });
       }).then(() => {
-        writeFileSync(join(evidence, input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
+        writeFileSync(join(evidence, input.hud ? 'portal-hud-reads.json' : input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
           JSON.stringify(syncReads, null, 2));
       });
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.docs ? '/?app=docs&q=retained-shell-search'
+    const url = new URL(input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
+      : input.docs ? '/?app=docs&q=retained-shell-search'
       : input.plans ? '/?app=plans&q=retained-shell-search'
       : input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
       : input.prompts ? '/?app=overview&panel=quick&q=retained-shell-search'
@@ -433,6 +448,55 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       url.searchParams.set('docpath', input.docs.neighborDoc);
     }
     await page.goto(url.href);
+    if (input.hud) {
+      const search = page.getByTestId('hud-session-search');
+      await search.waitFor();
+      const selectedCard = page.locator('.hud__card').filter({ hasText: `HUD selected ${selected}` });
+      const neighborCard = page.locator('.hud__card').filter({ hasText: `HUD neighbor ${neighbor}` });
+      await selectedCard.waitFor();
+      await neighborCard.waitFor();
+      await search.focus();
+      await search.pressSequentially(selected);
+      await page.waitForURL(value => value.searchParams.get('hudsq') === selected);
+      await selectedCard.waitFor();
+      await neighborCard.waitFor({ state: 'hidden' });
+      const filteredUrl = page.url();
+      await page.reload();
+      await selectedCard.waitFor();
+      assert.equal(await search.inputValue(), selected);
+      assert.equal(await neighborCard.count(), 0);
+      assert.equal(page.url(), filteredUrl);
+      assert.equal(new URL(page.url()).searchParams.get('q'), 'retained-shell-search');
+      await Promise.all([...syncReadCaptures]);
+      const read = syncReads.find(value => value.status === 200 && typeof value.url === 'string');
+      assert.ok(read, 'HUD must read the actual private roster endpoint');
+      await context.addCookies([cookie(input.foreignToken)]);
+      let deniedStatus: number;
+      try {
+        const denied = await context.request.get(read.url as string,
+          { headers: { 'x-papercusp-workspace': workspace } });
+        deniedStatus = denied.status();
+        writeFileSync(join(evidence, 'portal-hud-denial.json'), JSON.stringify({
+          url: read.url, status: deniedStatus, body: await denied.text() }, null, 2));
+        assert.equal(deniedStatus, 403, 'foreign workspace identity must not read the retained workspace roster');
+      } finally { await context.addCookies([cookie(input.ownToken)]); }
+      assert.equal(await search.inputValue(), selected, 'denied read must preserve the selected filter');
+      await selectedCard.waitFor();
+      await page.reload();
+      await selectedCard.waitFor();
+      assert.equal(await search.inputValue(), selected);
+      await search.fill('');
+      await neighborCard.waitFor();
+      await selectedCard.waitFor();
+      assert.deepEqual(pageErrors, [], 'actual HUD session workflow must stay browser-safe');
+      const retained = { workspace, authMethod: 'private-cookie-HUD-roster', selected, neighbor,
+        keyboardFilter: true, selectedRetained: true, neighborFiltered: true,
+        filterReset: true, deepLinkReload: true, shellQueryPreserved: true,
+        denialStatus: deniedStatus, denialTransport: 'actual-private-roster-request', retryReload: true,
+        browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.docs) {
       const receipt = await runPrivateDocsPage(page, context, input);
       assert.deepEqual(pageErrors, [], 'real Docs panel must complete without browser errors');
