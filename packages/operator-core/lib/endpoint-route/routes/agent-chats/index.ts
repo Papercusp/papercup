@@ -55,6 +55,8 @@ import { suSessionRoutes } from './su-session';
 import externalTurnRoutes from './external-turns';
 import { customerAgentExecutionRequired } from '../../../auth/loopback-peer-trust';
 import { HOSTED_PRINCIPAL_USER_HEADER, HOSTED_PRINCIPAL_SESSION_HEADER } from '../../../workspace-host/hosted-operator-http';
+import type { OperatorOwnedLoopPortOptions } from '../../../agent-loop/headless-invoke';
+import { awaitHostedCustomerOperation } from '../../../workspace-host/hosted-customer-command';
 
 /**
  * P-008 (own-tui-full-divorce-2026-08-24): doors whose calls route through
@@ -307,7 +309,14 @@ const continueChatRoute = defineTool({
   },
 });
 
-const messagesRoute = defineTool({
+/** Private host injection reuses this route's locking, prompt, session and
+ * transcript persistence. Only an authenticated channel closure can supply
+ * execution; the default mounted route retains its hosted-native refusal. */
+export function createAgentChatMessagesRoute(
+  execution?: NonNullable<OperatorOwnedLoopPortOptions['customerExecution']>,
+) {
+  const customerExecution = execution && Object.freeze({ ...execution });
+  return defineTool({
   method: 'POST',
   path: '/harness/:slug/agent-chats/:chatId/messages',
   auth: 'loopback',
@@ -369,7 +378,7 @@ const messagesRoute = defineTool({
     // the customer CLI identity transform. Until a customer-bound native host
     // is composed, neither a connector relay nor a multi-account host may
     // enter it. The peer-policy opt-out changes TCP trust, not OS authority.
-    if (useLoopEngine && (
+    if (useLoopEngine && !customerExecution && (
       req.headers.has(HOSTED_PRINCIPAL_USER_HEADER)
       || req.headers.has(HOSTED_PRINCIPAL_SESSION_HEADER)
       || customerAgentExecutionRequired()
@@ -378,6 +387,22 @@ const messagesRoute = defineTool({
         error: 'hosted_native_loop_unavailable',
         detail: 'Native-loop sessions are unavailable on hosted workspaces. Start a customer CLI session.',
       }, { status: 403 });
+    }
+    let customerBinding: Awaited<ReturnType<NonNullable<OperatorOwnedLoopPortOptions['customerExecution']>['bind']>> | undefined;
+    if (customerExecution) {
+      try {
+        // Check local workspace/cwd BEFORE the lock, prompt reads or writes.
+        // A request body/header/RouteContext principal cannot install this host.
+        if (!useLoopEngine || req.signal.aborted
+          || activeWorkspaceId() !== customerExecution.workspaceId
+          || await projectDirForSlug(slug) !== customerExecution.projectDir) throw new Error('denied');
+        const bound = await awaitHostedCustomerOperation(() => customerExecution.bind(req.signal), req.signal);
+        if (typeof bound?.modelPort?.stream !== 'function' || !Array.isArray(bound.tools)
+          || !(bound.signal instanceof AbortSignal) || bound.signal.aborted || req.signal.aborted) throw new Error('denied');
+        customerBinding = { ...bound, signal: AbortSignal.any([req.signal, bound.signal]) };
+      } catch {
+        return Response.json({ error: 'hosted_native_loop_unavailable' }, { status: 403 });
+      }
     }
     // Tier menus are shared with the legacy OMP lane, so an explicit picker
     // value may be valid there but unavailable to the in-process loop. Reject
@@ -534,7 +559,7 @@ const messagesRoute = defineTool({
       // ~/.restart-harness-projects.json — so any harness that exists only in
       // the live registry fails to assemble (same class as role-launch-spec
       // step 0 / EI-220).
-      const projectDir = await projectDirForSlug(slug);
+      const projectDir = customerExecution?.projectDir ?? await projectDirForSlug(slug);
       if (!projectDir) {
         return Response.json(
           {
@@ -691,7 +716,8 @@ const messagesRoute = defineTool({
     if (useLoopEngine) {
       const workspaceId = activeWorkspaceId();
       const effectiveModel = resolvedLoopModel!;
-      const accountRoute = account ?? 'auto';
+      const accountRoute = customerBinding ? 'auto' : account ?? 'auto';
+      const executionSignal = customerBinding?.signal ?? req.signal;
       const ownedLoopSpawnId = `agent-loop-${chatId}`;
       // The principal-bound execution chokepoint (capability-toolset's seam):
       // every loop tool call rides the SAME dispatcher stack as tools:invoke —
@@ -754,7 +780,9 @@ const messagesRoute = defineTool({
       };
       let tools: LoopTool[] = [];
       try {
-        tools = capabilityToolset({
+        tools = customerBinding ? customerBinding.tools.map(tool => ({ ...tool,
+          needsApproval: LOOP_APPROVAL_GATED_DOORS.has(tool.name),
+        })) : capabilityToolset({
           ...OWNED_LOOP_TOOL_SELECTION,
           dispatch,
           needsApproval: (toolName) => LOOP_APPROVAL_GATED_DOORS.has(toolName),
@@ -767,7 +795,7 @@ const messagesRoute = defineTool({
       }
 
       return sseResponse({
-        signal: req.signal,
+        signal: executionSignal,
         setup: async (sink) => {
           // Announce what will ACTUALLY run before the first model event. The
           // client attaches this to the in-flight bubble; the same values are
@@ -790,9 +818,10 @@ const messagesRoute = defineTool({
               sink,
               model: effectiveModel,
               ...(effort ? { effort } : {}),
-              ...(account ? { account } : {}),
+              ...(!customerBinding && account ? { account } : {}),
               ownerId: ownedLoopSpawnId,
-              signal: req.signal,
+              signal: executionSignal,
+              ...(customerBinding ? { port: customerBinding.modelPort } : {}),
               // This route is the interactive PUI chat surface. Untiered
               // inference is starved behind fleet work, so keep the admission
               // intent explicit at the route boundary.
@@ -1134,7 +1163,10 @@ const messagesRoute = defineTool({
       },
     });
   },
-});
+  });
+}
+
+const messagesRoute = createAgentChatMessagesRoute();
 
 /**
  * P-008: pending HITL approvals for a loop-engine chat — a (re)connecting
