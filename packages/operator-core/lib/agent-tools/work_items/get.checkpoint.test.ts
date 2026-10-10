@@ -223,6 +223,42 @@ it('resume documents and enforces its standalone contract', () => {
   expect(() => parse({ id: 'WI-a', resume: true, operationalBrief: true })).toThrow(/operationalBrief/);
 });
 
+it('declares resume checks as a rows ledger in the published output contract', () => {
+  const schema = z.toJSONSchema(get.result as never) as any;
+  const resume = schema.properties.results.items.properties.resume;
+  expect(resume).toBeDefined();
+  expect(resume.properties.schemaVersion.const).toBe('work-item-resume-v1');
+  expect(resume.properties.checks.type).toBe('object');
+  expect(resume.properties.checks.properties.rows.type).toBe('array');
+  expect(resume.properties.checks.properties.rows.items.properties.claim.type).toBe('string');
+  expect(resume.properties.checks.properties.omitted.type).toBe('integer');
+  expect(resume.properties.checks.required).toEqual(expect.arrayContaining(['rows', 'omitted']));
+});
+
+it('validates the real resume check ledger and rejects the caller array assumption', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-resume-check-contract', harness: 'canonical' });
+  getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: withCarryNoteChecks('Saved progress', [
+    { id: 'saved-proof', claim: 'Saved proof is current', recheck: 'Read its source receipt' },
+  ]), updatedAtMs: 123 });
+  resumeEvidence.mockResolvedValue([]);
+  const output = await env({ id: 'WI-resume-check-contract', resume: true });
+  const schema = (get as unknown as {
+    result: { safeParse: (value: unknown) => { success: boolean } };
+  }).result;
+  const packet = output.results[0].resume;
+  expect(packet.checks).toMatchObject({ rows: [{ id: 'saved-proof' }], omitted: 0 });
+  for (const tier of ['standard', 'trimmed'] as const) {
+    expect(schema.safeParse(shapeWorkItemsGet(output, tier)).success).toBe(true);
+  }
+  for (const checks of [[], { rows: {}, omitted: 0 }, { rows: [], omitted: -1 }, { rows: [] }]) {
+    const invalid = { ...output, results: [{ ...output.results[0], resume: { ...packet, checks } }] };
+    expect(schema.safeParse(invalid).success, JSON.stringify(checks)).toBe(false);
+  }
+  const resumeDescription = String((get.args as any).shape.resume.description);
+  expect(resumeDescription).toContain('resume.checks.rows');
+  expect(resumeDescription).toContain('resume.checks.omitted');
+});
+
 it('declares the actual checkpoint/comment window output with writer-owned numeric post identity', async () => {
   getWorkItem.mockResolvedValue({ id: 'WI-contract', title: 'contract' });
   const post: ThreadPostRow = {
