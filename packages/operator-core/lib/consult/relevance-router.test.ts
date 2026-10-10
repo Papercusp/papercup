@@ -8,9 +8,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
-import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { buildSidecarFirstEmbedder, EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
   selectResponders,
@@ -254,6 +255,53 @@ describe('routing stage receipts', () => {
       stages: { embedding: { outcome: 'threw', errorCode: code } } });
     expect(result.snapshot.measurement).toEqual(receipts[0]);
     expect(JSON.stringify(receipts)).not.toContain('private');
+  });
+
+  it('retains a native HTTP timeout through the sidecar wrapper and recovered router stage', async () => {
+    let received = 0;
+    let healthy = true;
+    const server = createServer((request, response) => {
+      received++;
+      request.resume();
+      if (healthy) {
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ vectors: [[1, 0]], dims: 2, runtime: 'test', modelRev: 'test' }));
+      }
+      // The second request reaches HTTP but never answers. The production
+      // client's own deadline must survive its terminal wrapper and the
+      // router's lexical recovery as a safe code, without retaining the query.
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      expect(address).not.toBeNull();
+      if (!address || typeof address === 'string') throw new Error('missing private HTTP port');
+      const fallback = vi.fn(() => { throw new Error('unexpected fallback'); });
+      const embed = buildSidecarFirstEmbedder({
+        url: `http://127.0.0.1:${address.port}`, model: 'gemma', kind: 'query',
+        timeoutMs: 1000, maxAttempts: 1, fallback, onTransition: () => {},
+      });
+      expect(await embed('healthy control')).toEqual([1, 0]);
+      healthy = false;
+      const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+      const receipts: ExpertiseRoutingReceipt[] = [];
+      const result = await routeConsult({ ...params, question: 'private HTTP timeout query' }, {
+        getSql: () => sql, embed,
+        embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
+        embeddingMode: 'gemma', recordTelemetry: receipt => { receipts.push(receipt); },
+      });
+      expect(received).toBe(2);
+      expect(fallback).not.toHaveBeenCalled();
+      expect(result.verdict).toBe('relevance_unmeasured');
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({ outcome: 'degraded', errorCode: null,
+        stages: { embedding: { outcome: 'threw', errorCode: 'ABORT_ERR' } } });
+      expect(result.snapshot.measurement).toEqual(receipts[0]);
+      expect(JSON.stringify(receipts)).not.toContain('private HTTP timeout query');
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
   });
 
   it('bounds cyclic error causes without replacing the recovered routing result', async () => {
