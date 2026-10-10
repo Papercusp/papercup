@@ -1302,8 +1302,9 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     let testFingerprint = nullableTrimmed(input.testFingerprint);
     let fixtureFingerprint = nullableTrimmed(input.fixtureFingerprint);
     let rubricFingerprint = nullableTrimmed(input.rubricFingerprint);
-    // A binding-time observation must never replace the runtime the execution measured.
-    let environmentFingerprint = runtimeUnits
+    // Test runs must retain their execution-time witness. A manual live probe has
+    // no test run; keep the server-measured runtime of that observation instead.
+    let environmentFingerprint = runtimeUnits && input.testRunId != null
       ? executionRuntimeFingerprint : nullableTrimmed(input.environmentFingerprint);
     const priorTestRunBinding = input.testRunId == null
       ? undefined

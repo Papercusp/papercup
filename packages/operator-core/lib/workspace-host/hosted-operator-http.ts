@@ -147,7 +147,12 @@ export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   { method: 'DELETE', pattern: /^\/api\/publish-credentials$/, surface: 'publishing settings remove' },
   { method: 'GET', pattern: /^\/api\/admin\/deploy-accounts(?:\/session-override)?$/, surface: 'deployment account settings read' },
   { method: 'GET', pattern: /^\/api\/admin\/inference-gateway\/stats$/, surface: 'deployment account settings stats' },
-  { method: 'POST', pattern: /^\/api\/admin\/deploy-accounts\/(?:session-override|register|link-start|link-status|link-complete|remove)$/, surface: 'deployment account settings save' },
+  // Provider CLIs may spend 30s producing a URL and another 30s producing a
+  // device code; completion may wait 60s for the credential. Let the account
+  // route's finite watchdog answer instead of losing its result at the relay's
+  // 30s header boundary. The portal consumes this same route-budget decision.
+  { method: 'POST', pattern: /^\/api\/admin\/deploy-accounts\/(?:link-start|link-complete)$/, surface: 'deployment account login', awaitsRouteBudget: true },
+  { method: 'POST', pattern: /^\/api\/admin\/deploy-accounts\/(?:session-override|register|link-status|remove)$/, surface: 'deployment account settings save' },
   { method: 'POST', pattern: /^\/api\/flags\/set$/, surface: 'storage settings flag' },
   { method: 'GET', pattern: /^\/api\/workspaces$/, surface: 'remote access workspace list' },
   { method: 'POST', pattern: /^\/api\/remote-access(?:\/(?:pause|revoke|scopes|own-tunnel\/enabled|portal-relay\/(?:consent|connect|cancel|disconnect)))?$/, surface: 'remote access settings save' },

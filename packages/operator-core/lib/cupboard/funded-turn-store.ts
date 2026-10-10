@@ -15,7 +15,22 @@ import type { UsageReceiptWire, IdentityMarkupOriginWire } from './metered-invoc
 import { readIdentityTurnBilledCost, type IdentityTurnUsageBinding,
   type IdentityTurnBilledCost } from './shadow-metering-reader';
 
+/** Attribution supplied by the authenticated host, never a command argument. */
+export interface IdentityWorkItemBinding {
+  readonly id: string;
+  readonly harness: string;
+}
+export function isIdentityWorkItemBinding(value: unknown): value is IdentityWorkItemBinding {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const ref = value as Record<string, unknown>;
+  return Object.keys(ref).length === 2 && typeof ref.id === 'string' && ref.id.length <= 200 &&
+    /^(?:WI|EI|F)-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(ref.id) &&
+    typeof ref.harness === 'string' && /^[a-z0-9][a-z0-9._-]{0,119}$/.test(ref.harness);
+}
+
 export interface FundedIdentityTurnBinding extends Omit<IdentityTurnUsageBinding, 'usageEventKeys' | 'nativeTurnId'> {
+  /** Missing on legacy/unlinked turns; absence cannot prove an accepted outcome. */
+  readonly workItem?: IdentityWorkItemBinding;
   /** Host admission nonce, distinct from the backend's eventual usage identity. */
   readonly admissionId?: string;
   readonly nativeTurnId: string | null;
@@ -72,6 +87,9 @@ export const fundedIdentityTurnId = (b: FundedIdentityTurnBinding): string =>
     : hash(['native-admission-v1', b.workspaceId, b.nativeSessionId, b.admissionId, b.offerId]);
 
 function validateBinding(b: FundedIdentityTurnBinding): Refused | null {
+  if (b.workItem !== undefined && !isIdentityWorkItemBinding(b.workItem)) {
+    return fail('invalid-turn-binding', 'outcome attribution requires one exact work-item id and harness');
+  }
   if ([b.workspaceId, b.ownerId, b.principalId, b.nativeSessionId,
     b.specificationRevision, b.stateRevision, b.payer, b.seller, b.offerId, b.channelId]
     .some((v) => typeof v !== 'string' || !v.trim() || v.length > 2000) ||
@@ -123,6 +141,15 @@ function fundingMatches(turn: FundedIdentityTurn, r: UsageReceiptWire): boolean 
 /** No database locks are held across hosted IO or signing. */
 export class FundedIdentityTurnStore {
   constructor(private readonly sql: Sql) {}
+
+  /** Complete local release population, or one overflow row. Never average a page. */
+  async readReleasePopulation(workspaceId: string, releaseRef: string): Promise<FundedIdentityTurn[]> {
+    const rows = await this.sql<TurnRow[]>`SELECT * FROM harness_shared.cupboard_funded_turns
+      WHERE workspace_id = ${workspaceId} AND binding->'offer'->>'skuRef' = ${releaseRef}
+        AND binding->>'kind' IS DISTINCT FROM 'tool'
+      ORDER BY turn_id LIMIT 501`;
+    return rows.map(fromRow);
+  }
 
   async read(workspaceId: string, turnId: string): Promise<FundedIdentityTurn | null> {
     const [row] = await this.sql<TurnRow[]>`SELECT * FROM harness_shared.cupboard_funded_turns

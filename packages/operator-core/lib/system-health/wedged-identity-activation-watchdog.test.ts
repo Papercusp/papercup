@@ -79,7 +79,7 @@ function row(overrides: Partial<CandidateRow> = {}): CandidateRow {
 function deps(overrides: Partial<WedgedIdentitySweepDeps> = {}): WedgedIdentitySweepDeps {
   return {
     loadCandidates: async () => [row()],
-    verdictCache: { verdicts: new Map(), lastReused: 0, lastScanned: 0 },
+    verdictCache: { verdicts: new Map(), lastReused: 0, lastScanned: 0, lastRetired: 0 },
     yieldAfterClassified: async (classifiedSoFar) => classifiedSoFar + 1,
     resolveLiveness: async (ids) => new Map(ids.map((id) => [id, 'live' as WedgedLiveness])),
     escalateWedged: vi.fn(async () => {}),
@@ -335,7 +335,7 @@ describe('runWedgedIdentitySweepOnce — paged candidates', () => {
 
 describe('runWedgedIdentitySweepOnce — carried verdicts (WI-10005391)', () => {
   type Cache = WedgedIdentitySweepDeps['verdictCache'];
-  const freshCache = (): Cache => ({ verdicts: new Map(), lastReused: 0, lastScanned: 0 });
+  const freshCache = (): Cache => ({ verdicts: new Map(), lastReused: 0, lastScanned: 0, lastRetired: 0 });
 
   /**
    * Behaves like the SQL loader: a row whose key the sweep already holds comes
@@ -415,6 +415,46 @@ describe('runWedgedIdentitySweepOnce — carried verdicts (WI-10005391)', () => 
 
     await runWedgedIdentitySweepOnce(deps({ verdictCache, loadCandidates: omittingLoader([row({ verdictKey: '4:1:d' })]) }));
     expect([...verdictCache.verdicts.keys()]).toEqual(['4:1:d']);
+  });
+
+  // WI-10008237 — retired owners: every launch record closed long ago.
+  it('never classifies a retired row: a launch record that WOULD read as wedged stays out of the findings', async () => {
+    // `launchSpec: {}` classifies as receipt-missing (see the carried-verdict
+    // tests above), so a clean verdict here proves the row was not classified.
+    const escalateWedged = vi.fn(async () => {});
+    const verdictCache = freshCache();
+    const out = await runWedgedIdentitySweepOnce(deps({
+      verdictCache,
+      escalateWedged,
+      loadCandidates: async () => [
+        row({ ownerId: 'su-long-ended', launchSpec: {}, verdictKey: '6:1:f', retired: true }),
+        row({ verdictKey: '7:1:g' }),
+      ],
+    }));
+    expect(out).toEqual({ verdict: 'clean', scanned: 2, escalated: 0 });
+    expect(escalateWedged).not.toHaveBeenCalled();
+    expect(verdictCache).toMatchObject({ lastScanned: 2, lastRetired: 1, lastReused: 0 });
+    // Not carried: if the owner resumes, its next row is classified afresh.
+    expect([...verdictCache.verdicts.keys()]).toEqual(['7:1:g']);
+  });
+
+  it('does not fail closed on a retired row whose launch record the loader withheld', async () => {
+    const escalateNotMeasured = vi.fn(async () => {});
+    const out = await runWedgedIdentitySweepOnce(deps({
+      escalateNotMeasured,
+      loadCandidates: async () => [
+        row({ launchSpec: undefined, launchSpecOmitted: true, verdictKey: '8:1:h', retired: true }),
+      ],
+    }));
+    expect(out).toEqual({ verdict: 'clean', scanned: 1, escalated: 0 });
+    expect(escalateNotMeasured).not.toHaveBeenCalled();
+  });
+
+  it('still counts retired rows toward the positive control, so an all-retired scan is clean, not unmeasured', async () => {
+    const out = await runWedgedIdentitySweepOnce(deps({
+      loadCandidates: async () => [row({ launchSpec: undefined, verdictKey: '9:1:i', retired: true })],
+    }));
+    expect(out).toEqual({ verdict: 'clean', scanned: 1, escalated: 0 });
   });
 
   it('yields after each CLASSIFIED row and never after a reused one', async () => {

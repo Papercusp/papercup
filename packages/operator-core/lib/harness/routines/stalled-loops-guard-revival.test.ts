@@ -29,6 +29,14 @@ import {
 } from './stalled-loops-guard';
 import { deactivateLoop, reviveDisarmedLoop, LOOP_END_PAUSE_PREFIX, type LoopStatus } from './loop';
 
+// P-007: keep the sweep's default host reader off the real ~/.papercusp/psu-pty directory — see
+// the same mock in stalled-loops-guard.test.ts.
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/await/psu-pty-discovery')>()),
+  findLiveHostAsync: vi.fn(async () => null),
+  readHostEventTailAsync: vi.fn(async () => []),
+}));
+
 // Bound to the REAL dep signatures for the reason the sibling file documents at length: a bare
 // `vi.fn(async () => {})` records a ZERO-arg call tuple, so every `.mock.calls[0][1]` read below
 // is a lint:tsc error that a green vitest run cannot see.

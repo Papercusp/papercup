@@ -951,6 +951,8 @@ describe('work_items:burn_down', () => {
       park('WI-clear-broad', { ...contract, trigger: 'coord:inbox-wake:su-parker', reachability: 'satisfied' }),
       park('WI-clear-specific', { ...contract, trigger: 'work-item:done:WI-dep', reachability: 'satisfied' }),
       park('WI-clear-tracked', { ...contract, trigger: 'work-item:done:WI-dep', reachability: 'reachable' }),
+      // A park released only by its own completion is a reservation, never a reachable release.
+      park('WI-clear-self', { ...contract, trigger: 'work-item:done:WI-clear-self', reachability: 'reachable' }),
     ];
     const result = await buildFleetMetricsResult(resolution, rows, {
       sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts,
@@ -958,7 +960,7 @@ describe('work_items:burn_down', () => {
     });
     expect(result.ok).toBe(true); if (!result.ok) return;
     const examples = result.snapshot.queueHealth!.releaseConditions.examples;
-    expect(examples).toMatchObject({ total: 5, omitted: 0 });
+    expect(examples).toMatchObject({ total: 6, omitted: 0 });
     const byId = new Map(examples.rows.map(row => [row.id, row]));
     expect(byId.get('WI-clear-missing')).toMatchObject({ clearer: null, trigger: null,
       nextAction: expect.stringContaining('Repair the missing or unverified release contract'),
@@ -976,6 +978,8 @@ describe('work_items:burn_down', () => {
       nextAction: expect.stringContaining('Reconcile this park with condition evidence') });
     expect(byId.get('WI-clear-tracked')).toMatchObject({ clearer: 'su-clearer', reachability: 'reachable',
       nextAction: expect.stringContaining('Retain the park') });
+    expect(byId.get('WI-clear-self')).toMatchObject({ clearer: 'su-clearer', reachability: 'blocked',
+      nextAction: expect.stringContaining('Repair the missing or unverified release contract') });
     for (const row of examples.rows) {
       expect(row.nextAction.length).toBeGreaterThan(0);
       expect(row.recheck.length).toBeGreaterThan(0);

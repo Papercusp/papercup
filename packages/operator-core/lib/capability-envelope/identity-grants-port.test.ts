@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { pathToFileURL } from 'node:url';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
+import { compileAgentSpecification, replayAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, appliedOrCurrentIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, readIdentityReactionCeiling, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, appliedOrCurrentIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, resolveIdentityArtifact, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, readIdentityReactionCeiling, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { identityRefusalContract } from './identity-refusal-contract';
 import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from './lazy-launch-record';
@@ -1023,6 +1023,42 @@ describe('P-018 appliedOrCurrentIdentityArtifact (worn-content reads)', () => {
     expect(appliedOrCurrentIdentityArtifact(f.record, null)).toBeNull();
     expect(appliedOrCurrentIdentityArtifact({ ...f.record, specificationArtifact: undefined },
       { ...f.applied, stateRevision: 'state-b' })).toBeNull();
+  });
+});
+
+describe('resolveIdentityArtifact — one replay per distinct artifact (WI-10008237)', () => {
+  it('replays once when the applied receipt IS the record, with the same verdict as two replays', () => {
+    const f = fixture();
+    const replay = vi.fn(replayAgentSpecification);
+    const out = resolveIdentityArtifact(f.record, f.applied, replay);
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ kind: 'governed' });
+    if (out.kind !== 'governed') throw new Error('unreachable');
+    expect(out.artifact.specificationRevision).toBe(f.artifact.specificationRevision);
+    expect(out.current).toBe(out.artifact);
+  });
+
+  it('still replays BOTH when the applied receipt is a different, historical artifact', () => {
+    const older = fixture();
+    const newer = compileAgentSpecification({
+      source: { id: 'grant-port-next', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+      prompt: { role: 'worker', text: 'Next.' }, inputClosure: [],
+    });
+    const record = {
+      workspaceId: 'ws-a', harnessSlug: 'sales',
+      specificationRevision: newer.specificationRevision, stateRevision: 'state-b', specificationArtifact: newer,
+      identityHistory: [{ ...older.applied, specificationArtifact: older.artifact }],
+    };
+    const replay = vi.fn(replayAgentSpecification);
+    resolveIdentityArtifact(record, older.applied, replay);
+    expect(replay).toHaveBeenCalledTimes(2);
+    expect(replay.mock.calls.map(([v]) => v)).toEqual([older.artifact, newer]);
+  });
+
+  it('a throwing replay is not remembered: the resolution still fails closed as replay-failed', () => {
+    const f = fixture();
+    const replay = vi.fn(() => { throw new Error('specification-hash-mismatch'); });
+    expect(resolveIdentityArtifact(f.record, f.applied, replay)).toEqual({ kind: 'stale-artifact', reason: 'replay-failed' });
   });
 });
 

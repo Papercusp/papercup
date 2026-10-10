@@ -13,7 +13,9 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { readReleaseFunding } from './identity-release-funding-store';
 import { FundedToolTurnHost, FundedIdentityTurnHost, type FundedIdentityTurnHostDeps } from './funded-turn-host';
 import { FundedToolTurnStore } from './funded-tool-turn-store';
-import { FundedIdentityTurnStore, type FundedIdentityTurnBinding } from './funded-turn-store';
+import { FundedIdentityTurnStore, isIdentityWorkItemBinding, type FundedIdentityTurnBinding,
+  type IdentityWorkItemBinding } from './funded-turn-store';
+import type { WorkItem } from '../work-items';
 import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
 import type { readAppliedIdentityRules } from '../agent-identities/sync-hook-rules';
 import type { resolveAppliedIdentityReleaseLayers } from './identity-activation-gate-io';
@@ -204,6 +206,7 @@ export async function productionFundedIdentityTurnHost(input: FundedIdentityTurn
   readApplied?: typeof readAppliedIdentityRules;
   resolveLayers?: typeof resolveAppliedIdentityReleaseLayers;
   createIdentityHost?: (deps: FundedIdentityTurnHostDeps) => FundedIdentityTurnHost;
+  readWorkItem?: (ref: IdentityWorkItemBinding) => Promise<Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'state'> | null>;
 } = {}): Promise<FundedIdentityTurnHost | undefined> {
   const binding = structuredClone(input), readKey = deps.readKey ?? readIntegrationKey;
   const bindingHash = (value: FundedIdentityTurnBinding) => hash({ ...value,
@@ -211,6 +214,8 @@ export async function productionFundedIdentityTurnHost(input: FundedIdentityTurn
   const nowMs = deps.nowMs ?? Date.now;
   if ((deps.workspaceId ?? activeWorkspaceId)() !== binding.workspaceId)
     throw new Error('identity-funding-workspace-mismatch');
+  if (binding.workItem !== undefined && !isIdentityWorkItemBinding(binding.workItem))
+    throw new Error('identity-funding-work-item-invalid');
   const raw = await readKey(INSTALLED_TOOL_FUNDING_CONFIG);
   if (raw === undefined) return undefined;
   const config = configSchema.safeParse(JSON.parse(raw));
@@ -254,6 +259,14 @@ export async function productionFundedIdentityTurnHost(input: FundedIdentityTurn
     if (bindingHash(candidate) !== bindingHash(binding) || (deps.workspaceId ?? activeWorkspaceId)() !== binding.workspaceId ||
         binding.expiresAtMs <= nowMs() || grant.expiresAtMs <= nowMs())
       throw new Error('identity-funding-authority-expired-or-changed');
+    if (binding.workItem) {
+      const readWorkItem = deps.readWorkItem ?? (async (ref: IdentityWorkItemBinding) =>
+        (await import('../work-items')).getWorkItem(ref.id, ref.harness, {}, sql));
+      const item = await readWorkItem(structuredClone(binding.workItem));
+      if (!item || item.id !== binding.workItem.id || item.harness !== binding.workItem.harness ||
+          item.assignee !== binding.ownerId || !['open', 'todo', 'wip', 'blocked'].includes(item.state))
+        throw new Error('identity-funding-work-item-unclaimed-or-changed');
+    }
     const currentRaw = await readKey(INSTALLED_TOOL_FUNDING_CONFIG);
     const current = configSchema.safeParse(currentRaw === undefined ? undefined : JSON.parse(currentRaw));
     if (!current.success || current.data.grants.filter(value => hash(value) === grantHash).length !== 1)

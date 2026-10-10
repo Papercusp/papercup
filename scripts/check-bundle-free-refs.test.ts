@@ -116,7 +116,7 @@ describe('repoOwnedInputs', () => {
 });
 
 describe('checkInputs', () => {
-  it('reports an unreadable or unparseable file as unparsed, never as a finding', () => {
+  it('separates unreadable files from parser gaps', () => {
     const files: Record<string, string> = {
       '/r/bad-syntax.ts': 'const = ;',
       '/r/free.ts': 'export const v = freeOne;',
@@ -125,13 +125,13 @@ describe('checkInputs', () => {
       if (!(f in files)) throw Object.assign(new Error('nope'), { code: 'ENOENT' });
       return files[f];
     };
-    const { findings, unparsed } = checkInputs(['/r/bad-syntax.ts', '/r/free.ts', '/r/gone.ts'], {
+    const { findings, unreadable, unparsed } = checkInputs(['/r/bad-syntax.ts', '/r/free.ts', '/r/gone.ts'], {
       known: knownGlobalNames(),
       readFile,
     });
     expect(findings).toEqual([{ file: '/r/free.ts', name: 'freeOne', line: 1, column: 18 }]);
-    expect(unparsed.map((u) => u.file)).toEqual(['/r/bad-syntax.ts', '/r/gone.ts']);
-    expect(unparsed[1].error).toBe('unreadable: ENOENT');
+    expect(unreadable).toEqual([{ file: '/r/gone.ts', error: 'unreadable: ENOENT' }]);
+    expect(unparsed.map((u) => u.file)).toEqual(['/r/bad-syntax.ts']);
   });
 });
 
@@ -169,7 +169,7 @@ describe('main (the CLI bundle-host.sh runs)', () => {
   it('checks only inputs modified after the last-known-good bundle and refuses on a free reference', () => {
     const code = main(['--metafile', metafilePath, '--base-dir', dir, '--since', baseline], io());
     expect(code).toBe(1);
-    expect(result()).toMatch(/status=refused selection=changed-since-baseline inputs=3 checked=1 findings=1 unparsed=0/);
+    expect(result()).toMatch(/status=refused selection=changed-since-baseline inputs=3 checked=1 findings=1 unreadable=0 unparsed=0/);
     expect(errors.join('\n')).toContain('`freshFree`');
     expect(errors.join('\n')).not.toContain('staleFree');
   });
@@ -178,7 +178,7 @@ describe('main (the CLI bundle-host.sh runs)', () => {
     writeFileSync(path.join(dir, 'new.ts'), "import { freshFree } from './f';\nexport const f = freshFree;");
     const code = main(['--metafile', metafilePath, '--base-dir', dir, '--since', baseline], io());
     expect(code).toBe(0);
-    expect(result()).toMatch(/status=clean selection=changed-since-baseline inputs=3 checked=1 findings=0/);
+    expect(result()).toMatch(/status=clean selection=changed-since-baseline inputs=3 checked=1 findings=0 unreadable=0/);
   });
 
   it("honours esbuild's own --define:NAME=VALUE arguments, passed through verbatim", () => {
@@ -191,6 +191,16 @@ describe('main (the CLI bundle-host.sh runs)', () => {
     const code = main(['--metafile', metafilePath, '--base-dir', dir, '--since', path.join(dir, 'absent.mjs')], io());
     expect(code).toBe(0);
     expect(result()).toMatch(/status=skipped selection=no-baseline inputs=3 checked=0/);
+  });
+
+  it('refuses when a metafile input cannot be read instead of reporting a clean analysis', () => {
+    const missingMeta = path.join(dir, 'missing-input-meta.json');
+    writeFileSync(missingMeta, JSON.stringify({ inputs: { 'missing.ts': {} } }));
+    const code = main(['--metafile', missingMeta, '--base-dir', dir, '--all'], io());
+    expect(code).toBe(1);
+    expect(result()).toMatch(/status=refused selection=all inputs=1 checked=1 findings=0 unreadable=1 unparsed=0/);
+    expect(errors.join('\n')).toContain('could not read');
+    expect(errors.join('\n')).toContain('refusing to publish an input the guard could not analyze');
   });
 
   it('--all checks every repo-owned input', () => {
@@ -221,6 +231,9 @@ describe('bundle-host.sh wiring', () => {
     const invocation = script.slice(guard, script.indexOf('\n  fi\n', guard));
     expect(invocation).toContain('--since "$OUTFILE"');
     expect(invocation).toContain('--metafile "$METAFILE"');
+    // esbuild's metafile input keys are repository-root relative. A wrong base can
+    // turn every input into ENOENT, so keep the caller aligned with that path basis.
+    expect(invocation).toContain('--base-dir "$REPO_ROOT"');
     expect(invocation).toContain('exit 1');
   });
 });

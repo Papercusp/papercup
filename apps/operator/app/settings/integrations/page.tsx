@@ -42,6 +42,7 @@ import { Button } from '../../harness/Button';
 import { Select, type SelectOption } from '../../harness/Select';
 import { isExternalWebUrl, openExternalWebUrl } from '../../_components/ExternalLinkProvider';
 import { isDesktop } from '@/lib/ipc-status-tauri';
+import { SlackSetupCard } from './SlackSetupCard';
 
 export const PANELS = ['scope', 'mapping', 'rules'] as const;
 type Panel = (typeof PANELS)[number];
@@ -195,6 +196,7 @@ export default function IntegrationsSettingsPage() {
           onClose={closePanel}
         />
       ))}
+      <SlackSetupCard />
     </div>
   );
 }

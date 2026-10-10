@@ -22,6 +22,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { FLAGS } from '@papercusp/flags';
+import { OperatorWorkspaceLocationProvider } from '@papercusp/operator-ui';
 
 /** Per-key so one flag can be flipped without disturbing the others — a blanket
  *  `() => true` / `() => false` mock cannot express "both gates" at all, which is
@@ -61,6 +62,21 @@ afterEach(() => {
 const renderNav = () => render(<SettingsLayout>{null}</SettingsLayout>);
 const autonomyLink = () =>
   document.querySelector('nav a[href="/settings/autonomy"]');
+
+describe('Settings setup progress per workspace location', () => {
+  it('does not request desktop setup state from a hosted account', () => {
+    render(<OperatorWorkspaceLocationProvider location="cloud">
+      <SettingsLayout>{null}</SettingsLayout>
+    </OperatorWorkspaceLocationProvider>);
+    expect(screen.getByRole('navigation', { name: 'Settings pages' })).toBeTruthy();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the desktop setup progress request on the local profile', () => {
+    renderNav();
+    expect(fetch).toHaveBeenCalledWith('/api/desktop/setup-wizard-state', { cache: 'no-store' });
+  });
+});
 
 describe('settings nav — /settings/autonomy is permanently hidden (P-011 / D-021, P-068 / D-098)', () => {
   // This block used to assert a two-flag AND, with a SHOW CONTROL that turned both

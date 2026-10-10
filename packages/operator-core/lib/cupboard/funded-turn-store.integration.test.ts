@@ -91,6 +91,26 @@ function ack(t: FundedIdentityTurn): UsageReceiptWire {
 }
 
 describe('funded native turn SQL history', () => {
+  it('retains exact outcome attribution through restart, closure and settlement, and refuses retargeting', async () => {
+    const b = binding({ workItem: { id: 'WI-123', harness: 'papercusp' } });
+    const c = await closed(b);
+    expect((await peer.read(b.workspaceId, c.turnId))!.binding.workItem).toEqual(b.workItem);
+    const s = accepted(await peer.stageSettlement(b.workspaceId, c.turnId, c.revision,
+      { signReceipt: sign, readUsage: usage(999n) }));
+    const settled = accepted(await store.acknowledgeSettlement(b.workspaceId, s.turnId, s.revision, ack(s)));
+    expect(settled.binding.workItem).toEqual(b.workItem);
+    for (const workItem of [{ ...b.workItem!, id: 'WI-124' }, { ...b.workItem!, harness: 'other' }, undefined]) {
+      expect(await peer.prepare({ ...b, workItem })).toMatchObject({ ok: false, code: 'turn-binding-changed' });
+    }
+  });
+
+  it.each([{ id: '', harness: 'papercusp' }, { id: 'WI-123', harness: '../other' },
+    { id: 'WI-123', harness: 'papercusp', accepted: true }])('refuses malformed outcome binding before any SQL write %j', async workItem => {
+    const b = binding({ workItem });
+    expect(await store.prepare(b)).toMatchObject({ ok: false, code: 'invalid-turn-binding' });
+    expect(await store.read(b.workspaceId, fundedIdentityTurnId(b))).toBeNull();
+  });
+
   it('reserves before a native ID exists, then retains the same funding nonce across binding and restart', async () => {
     const b = binding({ admissionId: 'host-owner-turn-1', nativeTurnId: null });
     const f = await funded(b);
@@ -377,6 +397,20 @@ describe('funded native turn SQL history', () => {
     expect(await peer.read(b.workspaceId + '-other', a.turnId)).toBeNull();
     expect(other.turnId).not.toBe(a.turnId);
     expect(accepted(await peer.prepare({ ...b, offerId: 'another-offer' })).state).toBe('prepared');
+  });
+
+  it('reads the complete exact local release population, retaining pending and legacy unlinked turns', async () => {
+    const b = binding({ workItem: { id: 'WI-123', harness: 'papercusp' } });
+    const first = accepted(await store.prepare(b));
+    const legacy = accepted(await store.prepare({ ...b, offerId: 'offer-2', nativeTurnId: 'turn-2', workItem: undefined }));
+    await peer.prepare({ ...b, workspaceId: b.workspaceId + '-other' });
+    const otherTerms = identityPerUseOfferTerms({ identity: { id: 'other', version: '1.0.0' }, markupBps: 2500 });
+    if (!otherTerms.ok) throw new Error(otherTerms.detail);
+    await store.prepare({ ...b, offerId: 'other-release', offer: otherTerms.terms });
+    const population = await peer.readReleasePopulation(b.workspaceId, b.offer.skuRef);
+    expect(population.map(t => t.turnId).sort()).toEqual([first.turnId, legacy.turnId].sort());
+    expect(population.every(t => t.state === 'prepared')).toBe(true);
+    expect(population.find(t => t.turnId === legacy.turnId)!.binding.workItem).toBeUndefined();
   });
 
   it('database constraints refuse impossible phase or fractional remainder', async () => {

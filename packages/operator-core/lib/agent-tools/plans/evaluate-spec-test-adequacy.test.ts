@@ -838,6 +838,92 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(listClauses).toHaveBeenCalledWith(expect.objectContaining({ planItemIds: ['P-001'] }));
   });
 
+  it('grades selected plan-item clauses despite more unrelated evidence than the read limit', async () => {
+    const selected = [clause('active'), { ...clause('active'), specId: 'SPEC-UNCOVERED' }];
+    const unrelated = { ...clause('active'), specId: 'SPEC-OTHER', planItemId: 'P-002' };
+    listClauses.mockImplementation(async (options) => [...selected, unrelated].filter((row) =>
+      (!options.planItemIds || options.planItemIds.includes(row.planItemId)) &&
+      (!options.specIds || options.specIds.includes(row.specId)),
+    ));
+    const pool = [
+      ...Array.from({ length: 25 }, (_, index) => ({ id: index + 1, specId: unrelated.specId })),
+      { id: 26, specId: selected[0].specId },
+    ];
+    listEvidence.mockImplementation(async (options) => pool
+      .filter((row) => !options.specIds || options.specIds.includes(row.specId))
+      .slice(0, options.limit) as never);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20,
+    });
+
+    expect(result).toMatchObject({ ok: true, governing: true, count: 2 });
+    expect(result.rows.map((row: { specId: string }) => row.specId)).toEqual(['SPEC-001', 'SPEC-UNCOVERED']);
+    // A clause with no bound proof must still be graded and fail, rather than disappear.
+    expect(result.rows[1].wouldBlock.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { workItemIds: ['WI-selected'] },
+    { evidenceRefs: ['test:selected'] },
+    { bindingIds: [26] },
+  ])('intersects plan items with an exact binding cohort %j', async (selector) => {
+    const selected = clause('active');
+    const unrelated = { ...selected, specId: 'SPEC-OTHER', planItemId: 'P-002' };
+    listClauses.mockImplementation(async (options) => [selected, unrelated].filter((row) =>
+      (!options.planItemIds || options.planItemIds.includes(row.planItemId)) &&
+      (!options.specIds || options.specIds.includes(row.specId)),
+    ));
+    const pool = [
+      ...Array.from({ length: 25 }, (_, index) => ({
+        id: index + 1, specId: unrelated.specId, workItemId: 'WI-selected', evidenceRef: 'test:selected',
+      })),
+      { id: 26, specId: selected.specId, workItemId: 'WI-selected', evidenceRef: 'test:selected' },
+      { id: 27, specId: selected.specId, workItemId: 'WI-other', evidenceRef: 'test:other' },
+    ];
+    listEvidence.mockImplementation(async (options) => pool.filter((row) =>
+      (!options.specIds || options.specIds.includes(row.specId)) &&
+      (!options.workItemIds || options.workItemIds.includes(row.workItemId)) &&
+      (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)) &&
+      (!options.bindingIds || options.bindingIds.includes(row.id)),
+    ).slice(0, options.limit) as never);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20, ...selector,
+    });
+
+    expect(result).toMatchObject({ ok: true, governing: false, count: 1 });
+    expect(result.rows[0].specId).toBe(selected.specId);
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ specIds: [selected.specId], ...selector }));
+  });
+
+  it('refuses disjoint plan-item and spec selectors without widening an empty evidence filter', async () => {
+    listClauses.mockResolvedValue([]);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], specIds: ['SPEC-OTHER'],
+    });
+
+    expect(result).toMatchObject({ ok: false, error: 'selection_empty', count: 0, selectedEvidenceCount: 0 });
+    expect(listEvidence).not.toHaveBeenCalled();
+    expect(listClauses).toHaveBeenCalledWith(expect.objectContaining({
+      planItemIds: ['P-001'], specIds: ['SPEC-OTHER'],
+    }));
+  });
+
+  it('retains the hit-limit refusal when the selected plan item itself has too much evidence', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockImplementation(async (options) => Array.from({ length: options.limit ?? 1000 },
+      (_, index) => ({ id: index + 1, specId: 'SPEC-001' })) as never);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20,
+    });
+
+    expect(result).toMatchObject({ ok: false, error: 'evidence_selection_hit_limit', count: 20, limit: 20 });
+    expect(result.rows).toBeUndefined();
+  });
+
   it('records exact binding ids in the replay recipe, including repeated evidence refs', async () => {
     const evidenceRef = 'packages/operator-core/lib/reconnect.test.ts#reconnect';
     // A repeated reference can name separate active bindings when their evidence kinds differ.

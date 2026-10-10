@@ -4,6 +4,7 @@ import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './g
 import { buildGoalOwnerReportDraft } from './goal-owner-report';
 
 import {
+  AGENT_OBLIGATION_PORTFOLIO_PROJECTION,
   defaultAgentObligationReaderDeps,
   PLAN_CONTEXT_MAX,
   projectAgentObligationBrief,
@@ -802,6 +803,25 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
     releasePortfolio();
     const result = await pending;
     expect(result.planSlugs).toContain('delegated-plan');
+  });
+});
+
+describe('default goalPortfolio dep reads only what the agenda consumes (EI-25306440159635835)', () => {
+  afterEach(() => {
+    vi.doUnmock('./goal-launch-settings');
+  });
+
+  it('skips the claim-floor count and rubric stewardship, the two sections that each blew the 900ms budget', async () => {
+    const readGoalPortfolioBrief = vi.fn(async () => null);
+    vi.doMock('./goal-launch-settings', () => ({ readGoalPortfolioBrief }));
+
+    await defaultAgentObligationReaderDeps().goalPortfolio('ws', 'goal-a');
+
+    expect(readGoalPortfolioBrief).toHaveBeenCalledTimes(1);
+    expect(readGoalPortfolioBrief).toHaveBeenCalledWith({
+      workspaceId: 'ws', goalId: 'goal-a', claimability: 'skip', rubricStewardship: 'skip',
+    });
+    expect(AGENT_OBLIGATION_PORTFOLIO_PROJECTION).toEqual({ claimability: 'skip', rubricStewardship: 'skip' });
   });
 });
 

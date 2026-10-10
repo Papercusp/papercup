@@ -724,9 +724,93 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     const sql = h.sql as import('postgres').Sql;
     await sql`UPDATE harness_shared.event_wake_deliveries SET next_attempt_at = now() - interval '1 hour' WHERE id = ${w.id}`;
     expect(await store.recoverStuckDeliveries({ olderThanMs: 5 * 60_000 })).toBeGreaterThanOrEqual(1);
+    // A verdict-less recovered row is visible as recovered, not as an ordinary
+    // untouched retry (WI-10008205).
+    const [recovered] = await sql<{ status: string; last_error: string | null }[]>`
+      SELECT status, last_error FROM harness_shared.event_wake_deliveries WHERE id = ${w.id}
+    `;
+    expect(recovered).toEqual({ status: 'pending', last_error: store.RECOVERED_STUCK_DELIVERING_ERROR });
     const reclaimed = (await store.claimDueDeliveries({ limit: 10 })).filter((x) => x.id === w.id);
     expect(reclaimed).toHaveLength(1);
     await store.markDeliveryDelivered(w.id, 'inbox');
+  });
+
+  it('stuck-delivering recovery keeps an existing last_error (psu-host acceptance marker)', async () => {
+    const fired = await store
+      .registerAwait({ subscriberId: 'su-10-accepted', eventKey: 'stuck:accepted:k' })
+      .then(() => store.fireAwaitsForKey({ eventKey: 'stuck:accepted:k' }));
+    await store.insertDeliveries({ awaits: fired });
+    const [w] = (await store.claimDueDeliveries({ limit: 10 })).filter((x) => x.subscriberId === 'su-10-accepted');
+    const sql = h.sql as import('postgres').Sql;
+    // The pump reads this prefix to avoid a duplicate wake; recovery must not hide it.
+    await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET next_attempt_at = now() - interval '1 hour', last_error = 'psu-host accepted: pending commit'
+       WHERE id = ${w.id}
+    `;
+    expect(await store.recoverStuckDeliveries({ olderThanMs: 5 * 60_000 })).toBeGreaterThanOrEqual(1);
+    const [row] = await sql<{ status: string; last_error: string | null }[]>`
+      SELECT status, last_error FROM harness_shared.event_wake_deliveries WHERE id = ${w.id}
+    `;
+    expect(row).toEqual({ status: 'pending', last_error: 'psu-host accepted: pending commit' });
+    await store.markDeliveryDropped(w.id, 'test cleanup');
+  });
+
+  it('a recovered stuck delivery outranks older parked retries, for a bounded number of attempts', async () => {
+    const prefix = 'su-recovered-rank';
+    const sql = h.sql as import('postgres').Sql;
+    const subs = { p1: `${prefix}-parked-1`, p2: `${prefix}-parked-2`, r: `${prefix}-recovered` };
+    for (const [key, subscriberId] of Object.entries(subs)) {
+      const a = await store.registerAwait({ subscriberId, eventKey: `recovered:rank:${key}` });
+      await store.insertDeliveries({ awaits: [a], summary: key });
+    }
+    const ours = (await store.claimDueDeliveries({ limit: 25 })).filter((d) => d.subscriberId.startsWith(`${prefix}-`));
+    expect(ours).toHaveLength(3);
+    const id = (subscriberId: string) => ours.find((d) => d.subscriberId === subscriberId)!.id;
+    await store.markDeliveryParked(id(subs.p1), 'subscriber is currently uninjectable', 0);
+    await store.markDeliveryParked(id(subs.p2), 'subscriber is currently uninjectable', 0);
+    // Both parked retries are due EARLIER than the recovered row, so ordering by
+    // due time alone (the pre-fix behaviour) would claim them both first.
+    await sql`UPDATE harness_shared.event_wake_deliveries SET created_at = now() - interval '2 hours', next_attempt_at = now() - interval '60 minutes' WHERE id = ${id(subs.p1)}`;
+    await sql`UPDATE harness_shared.event_wake_deliveries SET created_at = now() - interval '2 hours', next_attempt_at = now() - interval '50 minutes' WHERE id = ${id(subs.p2)}`;
+    // The recovered row: claimed (delivering), its host died, and no verdict was written.
+    await sql`UPDATE harness_shared.event_wake_deliveries SET created_at = now() - interval '2 hours', next_attempt_at = now() - interval '10 minutes' WHERE id = ${id(subs.r)}`;
+    expect(await store.recoverStuckDeliveries({ olderThanMs: 5 * 60_000 })).toBeGreaterThanOrEqual(1);
+
+    // Hold every other test's due row out of the window so only ours compete.
+    const foreign = await sql<{ id: number }[]>`
+      UPDATE harness_shared.event_wake_deliveries
+         SET next_attempt_at = next_attempt_at + interval '1 day'
+       WHERE status IN ('pending', 'parked') AND next_attempt_at <= now()
+         AND subscriber_id NOT LIKE ${`${prefix}-%`}
+      RETURNING id
+    `;
+    try {
+      // limit 2: slot 1 is the oldest-aged-retry reserve (parked-1); slot 2 must be
+      // the recovered row, not the older-due parked-2.
+      const claimed = await store.claimDueDeliveries({ limit: 2 });
+      expect(claimed.map((d) => d.subscriberId).sort()).toEqual([subs.p1, subs.r].sort());
+
+      // Bound: past RECOVERED_PRIORITY_MAX_ATTEMPTS the recovered row is an ordinary
+      // aged retry again, so the older-due parked rows win both slots.
+      await sql`UPDATE harness_shared.event_wake_deliveries SET status = 'parked' WHERE id IN (${id(subs.p1)}, ${id(subs.p2)})`;
+      await sql`
+        UPDATE harness_shared.event_wake_deliveries
+           SET status = 'pending', attempts = 3, last_error = ${store.RECOVERED_STUCK_DELIVERING_ERROR}
+         WHERE id = ${id(subs.r)}
+      `;
+      const bounded = await store.claimDueDeliveries({ limit: 2 });
+      expect(bounded.map((d) => d.subscriberId).sort()).toEqual([subs.p1, subs.p2].sort());
+    } finally {
+      if (foreign.length > 0) {
+        await sql`
+          UPDATE harness_shared.event_wake_deliveries
+             SET next_attempt_at = next_attempt_at - interval '1 day'
+           WHERE id IN ${sql(foreign.map((f) => f.id))}
+        `;
+      }
+      await sql`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${`${prefix}-%`}`;
+    }
   });
 
   it('timeouts: wake-behavior awaits fire as TIMEOUT; expire-behavior awaits lapse silently', async () => {

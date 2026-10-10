@@ -5,6 +5,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { AccountProductTutorial, ProductTutorialAssistance, ProductTutorialVoiceQuestion, createProductTutorialAnalytics, productTutorialDestination, validProductTutorialRecord, type ProductTutorialAccount, type ProductTutorialVoiceLauncher } from './product-tutorial';
 import { PRODUCT_TUTORIAL_LESSONS } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import { captureBrowserTelemetry } from '../browser-telemetry';
+import { OperatorWorkspaceLocationProvider } from '../seam';
 vi.mock('../browser-telemetry', () => ({ captureBrowserTelemetry: vi.fn() }));
 
 const account: ProductTutorialAccount = { tenantId: 'org', userId: 'user', sessionId: 'session', workspaceId: null };
@@ -13,6 +14,16 @@ const record = (patch: Record<string, unknown> = {}) => ({ scope: { tenantId: ac
 const response = (value: unknown, status = 200) => Response.json({ record: value }, { status });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 describe('account product guide entry', () => {
+  it('passes the hosted location to analytics instead of probing desktop consent', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response(record())));
+    render(<OperatorWorkspaceLocationProvider location="cloud">
+      <AccountProductTutorial account={account}><p>Destination</p></AccountProductTutorial>
+    </OperatorWorkspaceLocationProvider>);
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    await waitFor(() => expect(captureBrowserTelemetry).toHaveBeenCalled());
+    expect(vi.mocked(captureBrowserTelemetry).mock.calls.every(([, , location]) => location === 'cloud')).toBe(true);
+  });
+
   it('starts spoken questions only after explicit consent, offers separate mute controls and stops on lesson change', async () => {
     const session = { stop: vi.fn().mockResolvedValue(undefined), setMicrophoneMuted: vi.fn().mockResolvedValue(undefined), setOutputMuted: vi.fn() };
     const launcher = vi.fn<ProductTutorialVoiceLauncher>().mockResolvedValue(session);

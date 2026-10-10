@@ -1511,6 +1511,69 @@ export async function rearmFireStarvedLoop(sql: Sql, routineId: string, reason: 
   `;
 }
 
+/** P-007: host-recovery routes one loop may take inside HOST_RECOVERY_ROUTE_WINDOW_MS. */
+export const HOST_RECOVERY_ROUTE_MAX = 3;
+/** P-007: the route budget window; matches the executor's auth-recovery window (6h). */
+export const HOST_RECOVERY_ROUTE_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * P-007 (parked-agent-census-resumption-and-root-cause-2026-10-09) — keep a turn-stalled loop
+ * ARMED and make it due now, because its host reports a condition the next wake recovers (a
+ * dead provider login or a quota wall the executor recycles). Disarming that loop is what
+ * stranded 37 of 61 turns-stalled sessions on 2026-10-10.
+ *
+ * The budget is enforced by the write itself, not by a read before it: the row is updated only
+ * while `metadata.stalled_host_recovery` holds fewer than `max` routes inside the window, and
+ * the RETURNING row is the verdict. `false` means the budget is spent (or the loop is no longer
+ * armed), and the caller disarms instead. Two sweeps racing on one row cannot both overspend.
+ */
+export async function routeStalledLoopToHostRecovery(
+  sql: Sql,
+  routineId: string,
+  reason: string,
+  condition: string,
+  opts: { max?: number; windowMs?: number } = {},
+): Promise<{ routed: boolean }> {
+  const max = opts.max ?? HOST_RECOVERY_ROUTE_MAX;
+  const windowMs = opts.windowMs ?? HOST_RECOVERY_ROUTE_WINDOW_MS;
+  const rows = await sql<Array<{ id: string }>>`
+    WITH cur AS (
+      SELECT id,
+             (extract(epoch from now()) * 1000)::bigint AS now_ms,
+             (metadata->'stalled_host_recovery'->>'windowStartMs')::bigint AS window_start_ms,
+             COALESCE((metadata->'stalled_host_recovery'->>'count')::int, 0) AS route_count
+        FROM harness_shared.routines
+       WHERE id = ${routineId} AND active = TRUE
+    ), budget AS (
+      SELECT id, now_ms,
+             (window_start_ms IS NULL OR now_ms - window_start_ms >= ${windowMs}) AS window_expired,
+             window_start_ms, route_count
+        FROM cur
+    )
+    UPDATE harness_shared.routines AS r
+       SET next_fire_at = now(),
+           metadata = COALESCE(r.metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                         'loop_rearmed_reason', ${reason}::text,
+                         'loop_rearmed_at', now()::text,
+                         'loop_rearmed_from_next_fire_at', to_jsonb(r.next_fire_at::text),
+                         'stalled_host_recovery', jsonb_build_object(
+                           'windowStartMs', CASE WHEN b.window_expired THEN b.now_ms ELSE b.window_start_ms END,
+                           'count', CASE WHEN b.window_expired THEN 1 ELSE b.route_count + 1 END,
+                           'lastAtMs', b.now_ms,
+                           'lastCondition', ${condition}::text
+                         )
+                       ),
+           updated_at = now()
+      FROM budget b
+     WHERE r.id = b.id
+       AND r.active = TRUE
+       AND (b.window_expired OR b.route_count < ${max})
+    RETURNING r.id
+  `;
+  return { routed: rows.length > 0 };
+}
+
 /**
  * WI-37546 — UN-disarm a loop this system disarmed, when its owner turns out to still be
  * working. The third member of the family above: `autoPauseLoopRoutine` stops firing at an

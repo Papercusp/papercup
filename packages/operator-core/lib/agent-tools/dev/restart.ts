@@ -2552,6 +2552,25 @@ export default defineTool({
                 beforeMainPid: before.mainPid ?? null,
                 restartCommand: scheduledRestartCmd,
               });
+              if (!requestAuditPersisted) {
+                // The bg-host request row is the durable attribution record for
+                // the detached systemctl action. Without it, a restart could
+                // happen with no persisted requester/trigger evidence, so fail
+                // closed before releasing the child handoff or spawning it.
+                if (stagingHandoff?.acquired) stagingHandoff.abort();
+                return json({
+                  ok: false,
+                  target,
+                  drained: true,
+                  restarted: false,
+                  restartScheduled: false,
+                  audited: false,
+                  requestAuditPersisted: false,
+                  reason: 'bg_host_restart_request_audit_failed',
+                  note:
+                    'Restart REFUSED after the drain because the bg-host request audit row could not be persisted. No restart command was scheduled; check audit database availability and retry after it is writable.',
+                });
+              }
             } else {
               void writeRestartAudit(ownerId, restartAuditDetails);
             }

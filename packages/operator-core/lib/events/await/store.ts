@@ -2305,6 +2305,19 @@ export async function compactSupersededLoopDeliveries(): Promise<number> {
 }
 
 /**
+ * last_error stamped by recoverStuckDeliveries on a row whose claimed attempt
+ * recorded no verdict at all (the host died or the write failed mid-delivery).
+ */
+export const RECOVERED_STUCK_DELIVERING_ERROR = 'recovered:stuck-delivering';
+
+/**
+ * A recovered row outranks the aged-retry pool for this many attempts only. The
+ * stuck sweep never dead-letters, so a row that kills its host on every attempt
+ * would otherwise be re-prioritised forever and take a slot from every batch.
+ */
+const RECOVERED_PRIORITY_MAX_ATTEMPTS = 2;
+
+/**
  * Claim due deliveries for the pump: flip pending/parked → delivering and
  * return them joined with their await's wake handle. `FOR UPDATE SKIP LOCKED`
  * keeps two hosts from double-claiming one row.
@@ -2386,12 +2399,19 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
        -- retries stay ordered by due time; loop-source compaction above keeps
        -- repeated fires from becoming an unbounded fresh tier of their own
        -- (EI-21303383797798186).
+       -- A row recovered from a stuck 'delivering' claim never reached a channel,
+       -- so it ranks with first attempts rather than behind the parked pool
+       -- (mostly subscribers that cannot be injected right now), whose older
+       -- next_attempt_at would otherwise put it last (WI-10008205).
        ORDER BY CASE
                   WHEN r.aged_loop_retry AND r.loop_retry_rank <= ${loopRetryReserveSlots} THEN 0
                   WHEN r.aged_nonloop_retry AND r.nonloop_retry_rank <= ${retryReserveSlots} THEN 1
                   WHEN d.attempts = 0 AND d.last_error IS NULL THEN 2
-                  WHEN r.aged_retry THEN 3
-                  ELSE 4
+                  WHEN d.status = 'pending'
+                       AND d.last_error = ${RECOVERED_STUCK_DELIVERING_ERROR}
+                       AND d.attempts <= ${RECOVERED_PRIORITY_MAX_ATTEMPTS} THEN 3
+                  WHEN r.aged_retry THEN 4
+                  ELSE 5
                 END,
                 CASE WHEN r.aged_retry THEN r.aged_rank END ASC NULLS LAST,
                 d.attempts ASC,
@@ -2757,13 +2777,24 @@ export async function markDeliveryDeferred(id: number, deferMs: number): Promise
   `;
 }
 
-/** Sweep half 1: stuck 'delivering' rows (host crashed mid-attempt) → pending. */
+/**
+ * Sweep half 1: stuck 'delivering' rows (host crashed mid-attempt) → pending.
+ *
+ * A row whose claimed attempt recorded NO verdict (last_error NULL) is stamped
+ * RECOVERED_STUCK_DELIVERING_ERROR. Without it the row is indistinguishable from
+ * an ordinary untouched retry (attempts=1, last_error NULL), which is how 392
+ * deliveries stranded by the 2026-10-10 20:19-20:44Z pump failure stayed
+ * invisible while they queued behind the parked pool (WI-10008205). An existing
+ * last_error is kept verbatim: the pump reads `psu-host accepted:` /
+ * `psu-host pending-delivery-id:` prefixes to avoid a duplicate wake.
+ */
 export async function recoverStuckDeliveries(input: { olderThanMs: number }): Promise<number> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
-       SET status = 'pending'
+       SET status = 'pending',
+           last_error = COALESCE(last_error, ${RECOVERED_STUCK_DELIVERING_ERROR})
      WHERE workspace_id = ${ws} AND status = 'delivering'
        AND next_attempt_at < now() - make_interval(secs => ${Math.ceil(input.olderThanMs / 1000)})
     RETURNING id

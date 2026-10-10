@@ -90,6 +90,7 @@ type PortalRosterBrowserInput = {
   prompts?: boolean;
   overview?: boolean;
   hud?: boolean;
+  harnesses?: { hive: string; selected: string; neighbor: string; foreign: string };
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
   markdownPreflight?: { value: string; heading: string };
   plans?: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string };
@@ -106,7 +107,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -157,6 +158,19 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
       React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
         React.createElement(Fixture))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.harnesses ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { Toaster } from 'sonner';
+    import HarnessesWorkspace from ${JSON.stringify(join(operatorRoot, 'app/adv/harnesses/HarnessesWorkspace.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(React.Fragment, null, React.createElement(HarnessesWorkspace), React.createElement(Toaster)))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.docs ? `
@@ -266,8 +280,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans || input.docs || input.overview || input.hud
-    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.overview || input.hud) }) : undefined;
+  const boundary = input.inbox || input.plans || input.docs || input.overview || input.hud || input.harnesses
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.overview || input.hud || input.harnesses) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -304,7 +318,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     `Browser input changed during build: ${path}`);
   assert.ok([...originals.keys()].some(path => path.endsWith(input.overview
     ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.hud
-    ? '/apps/operator/app/adv/hud/HudView.tsx' : input.docs
+    ? '/apps/operator/app/adv/hud/HudView.tsx' : input.harnesses
+    ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.docs
     ? '/apps/operator/app/adv/harnesses/AdvDocsTab.tsx' : input.plans
     ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
@@ -333,10 +348,20 @@ export async function retainPortalBrowserFailure(page: Pick<Page, 'url' | 'conte
 /** Evaluate the real ADV module graph before allocating a private database. */
 export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
   assert.ok(input.docs, 'Docs preflight requires a Docs surface');
+  return verifyPrivateWorkspaceBrowserMount(input);
+}
+
+export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
+  assert.ok(input.harnesses, 'Harnesses preflight requires the actual Work surface');
+  return verifyPrivateWorkspaceBrowserMount(input);
+}
+
+async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
   const built = await buildPortalRosterBrowser(input);
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
   const server = createServer((request, response) => {
-    const pathname = new URL(request.url ?? '/', 'http://preflight.invalid').pathname;
+    const requestUrl = new URL(request.url ?? '/', 'http://preflight.invalid');
+    const pathname = requestUrl.pathname;
     if (pathname.startsWith('/vditor/')) {
       const asset = resolve(vditorAssets, decodeURIComponent(pathname.slice('/vditor/'.length)));
       if (!asset.startsWith(vditorAssets + sep) || !existsSync(asset) || !statSync(asset).isFile()) {
@@ -344,6 +369,14 @@ export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof bui
       }
       response.writeHead(200, { 'content-type': asset.endsWith('.js') ? 'text/javascript' : asset.endsWith('.css') ? 'text/css' : 'application/octet-stream' });
       response.end(readFileSync(asset));
+    } else if (input.harnesses && pathname === '/api/zero-harness/rest-query') {
+      const work = input.harnesses;
+      const rows = requestUrl.searchParams.get('name') === 'harnessProjects.lite' ? [
+        { slug: work.hive, path: '/preflight/hive', harness_kind: 'hive', hasState: true, hasSpec: false },
+        ...[work.selected, work.neighbor].map(slug => ({ slug, path: '/preflight/' + slug,
+          hive_slug: work.hive, hasState: true, hasSpec: false })),
+      ] : [];
+      response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows }));
     } else if (pathname === '/favicon.ico') {
       response.writeHead(204); response.end();
     } else if (pathname === '/docs-preflight.js') {
@@ -371,15 +404,37 @@ export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof bui
     page.on('response', response => { if (response.status() >= 400) failedRequests.push(`HTTP ${response.status()} ${response.url()}`); });
     // History-backed query state needs a real origin; about:blank cannot run
     // replaceState even when the component itself initialized correctly.
-    await page.goto(`http://127.0.0.1:${address.port}/`);
-    try { await page.getByRole('region', { name: 'ADV Docs workspace' }).waitFor({ timeout: 15_000 }); }
+    await page.goto(`http://127.0.0.1:${address.port}/${input.harnesses ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
+    try { await (input.harnesses ? page.getByTestId('pot-workspace-cards')
+      : page.getByRole('region', { name: 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
     if (input.markdownPreflight) {
       try { await page.getByRole('heading', { name: input.markdownPreflight.heading, exact: true }).waitFor({ timeout: 15_000 }); }
       catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
     }
-    assert.deepEqual(errors, [], 'actual Docs module initialization must be browser-safe');
-    assert.match(await page.locator('body').innerText(), /Select a /);
+    if (input.harnesses) {
+      const work = input.harnesses;
+      const selected = page.getByTestId('pot-workspace-cards').getByTestId(`hive-member-${work.selected}`);
+      await selected.waitFor(); await selected.focus(); await page.keyboard.press('Enter');
+      await page.getByTestId('pot-member-rail').getByTestId(`hive-member-${work.selected}`).waitFor();
+      await page.waitForFunction(slug => new URL(location.href).searchParams.get('harness') === slug, work.selected);
+      let params = new URL(page.url()).searchParams;
+      assert.equal(params.get('scope'), null, 'Nuqs clears the default expanded scope from the URL');
+      assert.equal(params.get('slug'), work.hive);
+      assert.equal(params.get('harness'), work.selected);
+      const neighbor = page.getByTestId('pot-member-rail').getByTestId(`hive-member-${work.neighbor}`);
+      await neighbor.focus(); await page.keyboard.press('Space');
+      await page.waitForFunction(slug => new URL(location.href).searchParams.get('harness') === slug, work.neighbor);
+      await page.reload();
+      await page.getByTestId('pot-member-rail').getByTestId(`hive-member-${work.neighbor}`).waitFor();
+      params = new URL(page.url()).searchParams;
+      assert.equal(params.get('harness'), work.neighbor);
+      assert.equal(params.get('slug'), work.hive);
+      assert.equal(params.get('q'), 'preflight-search');
+      assert.equal(params.get('ws'), 'preflight-workspace');
+    }
+    assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
+    if (!input.harnesses) assert.match(await page.locator('body').innerText(), /Select a /);
     return { sourceCount: built.originals.size, mounted: true };
   } finally {
     await browser.close();
@@ -462,7 +517,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '')
     + (input.inbox ? '\n' + ['app/_components/inbox/inbox-pane.css', 'app/admin/plans/plans.css']
       .map(path => readFileSync(resolve(import.meta.dirname, '../../../apps/operator', path), 'utf8')).join('\n')
-      + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '') + '\n' + css);
+      + '\nhtml,body,#root{height:100%;margin:0}#root{display:flex}' : '')
+    + (input.harnesses ? '\nhtml,body,#root{height:100%;margin:0}#root{display:flex;flex:1}' : '') + '\n' + css);
   writeFileSync(join(spa, 'index.html'), '<!doctype html><html><head><link rel="stylesheet" href="/portal-roster.css"></head>'
     + '<body><div id="root"></div><script src="/portal-roster.js"></script></body></html>');
   const sourceIdentity = { portal, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: portal, encoding: 'utf8' }).trim(),
@@ -486,11 +542,12 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.stack ?? error.message));
-    if (input.inbox || input.plans || input.hud) page.on('response', response => {
+    if (input.inbox || input.plans || input.hud || input.harnesses) page.on('response', response => {
       const url = new URL(response.url());
       const name = url.searchParams.get('name');
-      const queryName = input.hud ? 'advRoster.list' : input.plans ? 'plans.list' : 'plans.attention';
-      if (!url.pathname.endsWith('/rest-query') || !name?.startsWith(queryName)) return;
+      const queryNames = input.harnesses ? ['harnessProjects.lite', 'workItems.byHarness']
+        : [input.hud ? 'advRoster.list' : input.plans ? 'plans.list' : 'plans.attention'];
+      if (!url.pathname.endsWith('/rest-query') || !queryNames.some(query => name?.startsWith(query))) return;
       const observation = { at: new Date().toISOString(), url: response.url(), name, args: url.searchParams.get('args'),
         delta: url.searchParams.get('delta'), status: response.status() };
       const capture = response.json().then(body => {
@@ -498,13 +555,14 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       }, error => {
         syncReads.push({ ...observation, error: String(error) });
       }).then(() => {
-        writeFileSync(join(evidence, input.hud ? 'portal-hud-reads.json' : input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
+        writeFileSync(join(evidence, input.harnesses ? 'portal-work-reads.json' : input.hud ? 'portal-hud-reads.json' : input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
           JSON.stringify(syncReads, null, 2));
       });
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
     const url = new URL(input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
+      : input.harnesses ? '/?app=work&scope=all&q=retained-shell-search'
       : input.docs ? '/?app=docs&q=retained-shell-search'
       : input.plans ? '/?app=plans&q=retained-shell-search'
       : input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
@@ -515,6 +573,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       url.searchParams.set('docpath', input.docs.neighborDoc);
     }
     await page.goto(url.href);
+    if (input.harnesses) {
+      const receipt = await runPrivateHarnessesPage(page, context, input, syncReads, syncReadCaptures);
+      assert.deepEqual(pageErrors, [], 'actual Work controls must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.hud) {
       const search = page.getByTestId('hud-session-search');
       await search.waitFor();
@@ -702,6 +767,80 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     await context.close(); await browser.close();
     await Promise.allSettled([...syncReadCaptures]);
   }
+}
+
+async function runPrivateHarnessesPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput,
+  reads: Array<Record<string, unknown>>, pendingReads: Set<Promise<void>>) {
+  const work = input.harnesses!;
+  const all = page.getByTestId('pot-workspace-cards');
+  await all.waitFor();
+  const selectedRow = all.getByTestId(`hive-member-${work.selected}`);
+  await selectedRow.waitFor();
+  await all.getByTestId(`hive-member-${work.neighbor}`).waitFor();
+  assert.equal(await all.getByTestId(`hive-card-${work.foreign}`).count(), 0,
+    'actual workspace registry must exclude the foreign workspace hive');
+  await Promise.allSettled([...pendingReads]);
+  const registry = reads.find(value => value.status === 200 && String(value.name).startsWith('harnessProjects.lite'));
+  assert.ok(registry, 'Work must read the actual private registry endpoint');
+  const registryRows = (registry.body as { rows: Array<{ slug: string }> }).rows;
+  assert.ok(registryRows.some(row => row.slug === work.hive));
+  assert.ok(registryRows.some(row => row.slug === work.selected));
+  assert.equal(registryRows.some(row => row.slug === work.foreign), false);
+  const foreignResponse = await context.request.get(String(registry.url), {
+    headers: { 'x-papercusp-workspace': input.workspace + '-foreign' },
+  });
+  assert.equal(foreignResponse.status(), 200);
+  const foreignRows = (await foreignResponse.json()).rows as Array<{ slug: string }>;
+  assert.ok(foreignRows.some(row => row.slug === work.foreign), 'foreign exclusion needs an actual foreign-registry positive control');
+  assert.equal(foreignRows.some(row => row.slug === work.selected), false);
+  await selectedRow.focus();
+  await page.keyboard.press('Enter');
+  const selectedButton = page.getByTestId('pot-member-rail').getByTestId(`hive-member-${work.selected}`);
+  await selectedButton.waitFor();
+  await page.waitForFunction(slug => document.querySelector(`[data-testid="hive-member-${slug}"]`)?.getAttribute('aria-current') === 'true', work.selected);
+  const assertSelection = (slug: string) => {
+    const params = new URL(page.url()).searchParams;
+    assert.equal(params.get('slug'), work.hive);
+    assert.equal(params.get('harness'), slug);
+    assert.equal(params.get('scope') ?? 'expanded', 'expanded');
+    assert.equal(params.get('ws'), input.workspace);
+    assert.equal(params.get('q'), 'retained-shell-search');
+  };
+  assertSelection(work.selected);
+  const dockRead = (slug: string) => page.waitForResponse(response => {
+    const request = new URL(response.url());
+    if (response.status() !== 200 || !request.searchParams.get('name')?.startsWith('workItems.byHarness')) return false;
+    const args = JSON.parse(request.searchParams.get('args') ?? '{}');
+    return args.harnessSlug === slug;
+  });
+  // A rail highlight alone does not prove the dock resolved the intended member.
+  const selectedRead = dockRead(work.selected);
+  await page.reload();
+  await selectedRead;
+  await page.getByTestId('pot-member-rail').getByTestId(`hive-member-${work.selected}`).waitFor();
+  assertSelection(work.selected);
+  const neighborRead = dockRead(work.neighbor);
+  const neighborButton = page.getByTestId('pot-member-rail').getByTestId(`hive-member-${work.neighbor}`);
+  await neighborButton.focus();
+  await page.keyboard.press('Space');
+  await neighborRead;
+  await page.waitForFunction(slug => document.querySelector(`[data-testid="hive-member-${slug}"]`)?.getAttribute('aria-current') === 'true', work.neighbor);
+  assertSelection(work.neighbor);
+  const denied = await fetch(String(registry.url), { headers: { host: 'foreign-work.invalid',
+    cookie: `${input.cookieName}=${input.ownToken}` } });
+  verifyPrivateHudHostDenial(denied.status, await denied.text());
+  assertSelection(work.neighbor);
+  const reloadRead = dockRead(work.neighbor);
+  await page.reload();
+  await reloadRead;
+  await page.getByTestId('pot-member-rail').getByTestId(`hive-member-${work.neighbor}`).waitFor();
+  assertSelection(work.neighbor);
+  await Promise.allSettled([...pendingReads]);
+  return { workspace: input.workspace, authMethod: 'private-loopback-work-with-cookie', ...work,
+    keyboardDrill: true, keyboardMemberSelection: true, deepLinkReload: true, dockQueryRekeyed: true,
+    shellQueryPreserved: true, foreignExcluded: true, foreignRegistryControl: true,
+    denialStatus: denied.status, denialTransport: 'actual-private-work-external-host', selectionRetained: true,
+    scope: 'Actual mounted HarnessesWorkspace and private workspace registry/dock reads; no hosted tenant, full-shell, work-item action or shipment acceptance' };
 }
 
 /** Actual ADV panel, merged docs read and anchored manual verification. */

@@ -40,7 +40,7 @@ import {
 } from '../agent-tools/search/embedder';
 import { stampEmbedderMode } from '../search/embedder-mode-registry';
 import { rerankRows } from '../agent-tools/search/rerank';
-import { createMemoryWorkDeadline, MemoryTimeoutError } from './op-deadline';
+import { createMemoryWorkDeadline, MemoryTimeoutError, type MemoryWorkDeadline } from './op-deadline';
 import {
   CORPUS_BUDGET_CHARS,
   CORPUS_MAX_ITEMS,
@@ -184,6 +184,8 @@ export interface CorpusRecallInput {
   reportViewer?: ReportViewer;
   /** Parent prompt lifetime, shared with memory retrieval and preparation. */
   signal?: AbortSignal;
+  /** Caller lifetime also bounds search sub-budgets, before parent cancellation. */
+  deadline?: MemoryWorkDeadline;
   /** The retrieval query — the same effective text the mem0 leg searched with. */
   queryText: string;
   workspaceId: string;
@@ -544,7 +546,14 @@ async function rerankStage1(
  * returns an empty result and the caller's prompt is unaffected. Never throws.
  */
 export async function recallCorpusContext(input: CorpusRecallInput): Promise<CorpusRecallResult> {
-  const deadline = createMemoryWorkDeadline(corpusRecallTimeoutMs(), input.signal);
+  // An abort signal alone only tells the engine AFTER the caller's wall is
+  // exhausted. Size its source/embedding stages from that caller's remaining
+  // lifetime too, so stalled sources settle before they erase healthy siblings.
+  const timeoutMs = Math.min(corpusRecallTimeoutMs(), input.deadline?.remainingMs() ?? Infinity);
+  const signal = input.signal && input.deadline
+    ? AbortSignal.any([input.signal, input.deadline.signal])
+    : input.signal ?? input.deadline?.signal;
+  const deadline = createMemoryWorkDeadline(timeoutMs, signal);
   try {
     return await deadline.run(() => recallCorpusContextInner({ ...input, signal: deadline.signal }, () => deadline.remainingMs()), 'corpus recall');
   } catch (error) {

@@ -653,6 +653,7 @@ export default defineTool({
           sourceFingerprint: measured?.sourceFingerprint ?? binding.sourceFingerprint!,
           ...(measured ? { testFingerprint: measured.testFingerprint } : {}),
           ...(measured?.fixtureFingerprint !== undefined ? { fixtureFingerprint: measured.fixtureFingerprint } : {}),
+          ...(measured?.environmentFingerprint !== undefined ? { environmentFingerprint: measured.environmentFingerprint } : {}),
           ...(measurement
             ? {
                 details: {

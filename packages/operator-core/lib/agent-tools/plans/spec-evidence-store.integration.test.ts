@@ -864,6 +864,36 @@ describe('exact spec evidence bindings', () => {
       resetRuntimeVintageStore();
     }
   });
+  it.each(['manual', 'operational'] as const)(
+    'preserves the server-measured runtime for live %s proof without a test run', async (evidenceKind) => {
+      await specs.setSpecClause(clause({ mutationRequired: false }));
+      configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+      try {
+        await reportRuntimeVintage({ workspaceId: WORKSPACE, unit: 'bg-host',
+          treeSha: 'a'.repeat(40), pid: process.pid });
+        const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(WORKSPACE), ['bg-host']);
+        expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+        const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
+          workItemIds: ['WI-101'], runtimeUnits: ['bg-host'] };
+        const result = await bindTool.handler!({ harness: HARNESS, slug: 'reconnect-plan', binding: {
+          workItemId: 'WI-101', specId: 'SPEC-003-01', evidenceKind,
+          evidenceRef: `live-${evidenceKind}-probe`, measurement, details: { evidencePlane: 'live' },
+        } }, CTX);
+        expect(JSON.stringify(result)).toContain('"status":"created"');
+        const [stored] = await db.sql`SELECT test_run_id, environment_fingerprint
+          FROM harness_shared.spec_evidence_bindings WHERE evidence_ref = ${`live-${evidenceKind}-probe`}`;
+        expect(stored.test_run_id).toBeNull();
+        expect(stored.environment_fingerprint).toBe(fingerprint);
+        const [proof] = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS,
+          planSlugs: ['reconnect-plan'], evidenceRefs: [`live-${evidenceKind}-probe`] });
+        expect(proof.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+          dimensions: { environment: 'current', testRun: 'not-applicable' } });
+      } finally {
+        resetRuntimeVintageStore();
+      }
+    },
+  );
+
   it('keeps one shared proof reference for distinct spec clauses', async () => {
     await specs.setSpecClause(clause());
     await specs.setSpecClause(

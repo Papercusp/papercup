@@ -20,15 +20,17 @@ import {
   rehydrateLoopWakeText,
   applyInjectionDoor,
   defaultSpawnDetached,
-  decideQuotaWakeRecovery,
-  recentAuthRecoveryCount,
-  AUTH_RECOVERY_MAX_PER_WINDOW,
-  AUTH_RECOVERY_WINDOW_MS,
   quotaRecoveryPickupConfirmed,
   quotaRecoveryReceiptForDelivery,
   withClaudeResumeEffortClamp,
   type ExecuteWakeDeps,
 } from './wake-executor';
+import {
+  decideQuotaWakeRecovery,
+  recentAuthRecoveryCount,
+  AUTH_RECOVERY_MAX_PER_WINDOW,
+  AUTH_RECOVERY_WINDOW_MS,
+} from './host-recovery-eligibility';
 import { readClaudeLaunchSettings as realReadClaudeLaunchSettings } from '../../model-context-budget.mjs';
 import { CRASH_RESUME_ADVISORY_MARKER } from './crash-resume-advisory';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
@@ -65,7 +67,6 @@ beforeAll(() => {
 
 describe('bounded codex auth recovery (parked-agent-census P-004)', () => {
   const host: Parameters<typeof decideQuotaWakeRecovery>[0]['host'] = {
-    sock: '/tmp/auth.sock',
     ownerId: 'su-auth',
     bridgeTty: false,
     authBlocked: true,
@@ -118,7 +119,6 @@ describe('bounded codex auth recovery (parked-agent-census P-004)', () => {
 
 describe('bounded quota recovery contract (measured-agent-productivity P-004)', () => {
   const host: Parameters<typeof decideQuotaWakeRecovery>[0]['host'] = {
-    sock: '/tmp/quota.sock',
     ownerId: 'su-quota',
     bridgeTty: false,
     quotaBlocked: true,

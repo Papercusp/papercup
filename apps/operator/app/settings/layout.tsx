@@ -13,6 +13,7 @@ import { Select } from '../harness/Select';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
+import { useOperatorWorkspaceLocation } from '@papercusp/operator-ui';
 
 /**
  * Settings paths that exist only behind a flag. The nav below hides a gated
@@ -117,6 +118,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 const SETTINGS_LINKS = SETTINGS_GROUPS.flatMap((group) => group.links);
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
+  const workspaceLocation = useOperatorWorkspaceLocation();
   const pathname = usePathname() ?? '';
   const router = useRouter();
   const t = useLexicon();
@@ -136,6 +138,10 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   } | null>(null);
 
   useEffect(() => {
+    if (workspaceLocation === 'cloud') {
+      setWizardProgress(null);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
@@ -160,7 +166,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [workspaceLocation]);
 
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);

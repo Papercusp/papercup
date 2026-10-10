@@ -365,6 +365,34 @@ function materializedSubmodule(repo, link, full) {
   return subRepo;
 }
 
+// Resolve only the tested path's gitlinks, against their pinned commits. An
+// unrelated unresolved gitlink must not hide an initial dirty-input refusal.
+function committedInputBlob(repo, sha, path, trees) {
+  const key = `${repo}\0${sha}`;
+  if (!trees.has(key)) {
+    const entries = new Map();
+    const links = [];
+    for (const row of git(repo, ['ls-tree', '-r', '-z', sha]).split('\0')) {
+      if (!row) continue;
+      const tab = row.indexOf('\t');
+      const name = row.slice(tab + 1);
+      const fields = row.slice(0, tab).split(' ');
+      entries.set(name, fields);
+      if (fields[0] === '160000') links.push({ path: name, sha: fields[2] });
+    }
+    trees.set(key, { entries, links });
+  }
+  const { entries, links } = trees.get(key);
+  const link = links.find((entry) => path.startsWith(`${entry.path}/`));
+  if (link) return committedInputBlob(materializedSubmodule(repo, link, link.path),
+    link.sha, path.slice(link.path.length + 1), trees);
+  const [mode, type, blob] = entries.get(path) ?? [];
+  if (type !== 'blob' || !['100644', '100755'].includes(mode)) {
+    throw new PreviewError(`tested input is not a regular committed file: ${path}`, 2);
+  }
+  return blob;
+}
+
 /** Conservative allocated source bytes for the exact recursive verifier export.
  * Count committed blobs, including desktop and private gitlinks, before creating
  * any destination. Per-file block rounding covers small-file allocation; the
@@ -440,6 +468,23 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
   }
   if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
   const sha = resolveCommit(repo, ref);
+  // Refuse initial mismatches before creating a destination, cloning or
+  // archiving. Keep the post-copy comparison below as the race guard.
+  const inputTrees = new Map();
+  for (const path of paths) {
+    const live = join(repo, path);
+    if (!(await fs.lstat(live)).isFile()) {
+      throw new PreviewError(`tested input is not a regular file: ${path}`, 2);
+    }
+    const blob = committedInputBlob(repo, sha, path, inputTrees);
+    const bytes = await fs.readFile(live);
+    // Git's raw blob identity includes its object header; do not apply filters.
+    const digest = createHash(blob.length === 64 ? 'sha256' : 'sha1')
+      .update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    if (digest !== blob) {
+      throw new PreviewError(`dirty tested-input mismatch: ${path}`, 2);
+    }
+  }
   if (gitCheckout) {
     // Reuse the guarded local clone: detached exact ref, borrowed objects, local
     // submodule pins, no origins, and cleanup only of its own new destination.

@@ -1138,6 +1138,30 @@ const retainFeedArgsSchema = z
   .optional();
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
+  // D-077: explicit refresh, because grading includes file/source currentness
+  // outside PG notifications. One bounded read for the visible listing page;
+  // authority is the server workspace, never a browser principal/work-item.
+  'cupboard.identityOutcomeCosts': {
+    backingTables: [],
+    argsSchema: z.object({ releaseRefs: z.array(z.string().min(1).max(300)).max(100),
+      readKey: z.string().min(1).max(100).optional() }).strict(),
+    resolve: async (raw) => {
+      const refs = [...new Set((raw as { releaseRefs: string[] }).releaseRefs)];
+      if (refs.length === 0) return [];
+      const [{ getOrgPg }, { activeWorkspaceId }, { readIdentityOutcomeCost }, { parseIdentityReleaseSkuRef }] =
+        await Promise.all([import('@papercusp/db-org'), import('../workspace-registry'),
+          import('../cupboard/shadow-metering-reader'), import('../cupboard/identity-per-use-offer')]);
+      const sql = getOrgPg().sql, workspaceId = activeWorkspaceId();
+      const rows = [];
+      // Keep expensive current-grade reads sequential rather than flooding the
+      // shared database with one concurrent population per card.
+      for (const releaseRef of refs) rows.push(parseIdentityReleaseSkuRef(releaseRef)
+        ? await readIdentityOutcomeCost(sql, { workspaceId, releaseRef })
+        : { basis: 'local-funded-release-usage', releaseRef, currency: 'USD', status: 'unavailable',
+          costPerAcceptedOutcomeMicros: null, reason: 'invalid-scope' });
+      return rows;
+    },
+  },
   // External hosted D1 receipts, scoped by this desktop's server-held GitHub
   // bearer. No PG backing table or manufactured local ledger. Refresh/page
   // navigation explicitly re-reads; remote changes are not claimed as pushed.

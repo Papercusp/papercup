@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,6 +128,32 @@ describe('WI-10007604 — frozen host source identity', () => {
     const selected = select(REPO_ROOT);
     expect(selected.status, selected.stderr).toBe(0);
     expect(selected.stdout).toBe(spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim());
+  });
+  it('bakes a generation-alias checkout identity into the actual build-info resolver', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'host-source-alias-'));
+    try {
+      const root = join(dir, 'generation'), alias = join(dir, 'staging.current');
+      mkdirSync(join(root, 'apps/operator'), { recursive: true });
+      symlinkSync(root, alias, 'dir');
+      expect(spawnSync('git', ['init', '-q', '--initial-branch=main'], { cwd: root }).status).toBe(0);
+      const imported = spawnSync('git', ['fast-import', '--quiet'], { cwd: root, encoding: 'utf8',
+        input: 'blob\nmark :1\ndata 6\nfrozen\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 source.txt\n\ndone\n' });
+      expect(imported.status, imported.stderr).toBe(0);
+      const expected = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+      const rootBlock = source.slice(source.indexOf('REPO_ROOT="$(cd'), source.indexOf('# Node helpers run'));
+      const selected = spawnSync('bash', ['-c', 'set -euo pipefail; OPERATOR_DIR="$1/apps/operator"; COMMITTED_NODE=(node);\n' +
+        rootBlock + '\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', alias],
+      { encoding: 'utf8', env: { ...process.env, VERIFY_TAURI_SOURCE_RECEIPT: '' } });
+      expect(selected.status, selected.stderr).toBe(0);
+      expect(selected.stdout).toBe(expected);
+      const entry = join(dir, 'entry.ts'), outfile = join(dir, 'bundle.mjs');
+      writeFileSync(entry, `import { resolveBuildInfo } from ${JSON.stringify(join(REPO_ROOT, 'packages/operator-core/lib/build-info.ts'))};\nconsole.log(resolveBuildInfo().sha);\n`);
+      const compile = spawnSync(join(REPO_ROOT, 'node_modules/esbuild/bin/esbuild'), [entry, '--bundle', '--platform=node',
+        '--format=esm', '--outfile=' + outfile, '--define:__PAPERCUSP_BUNDLED_SIDECAR__=true',
+        '--define:__PAPERCUSP_BUNDLED_SOURCE_SHA__=' + JSON.stringify(selected.stdout)], { encoding: 'utf8' });
+      expect(compile.status, compile.stderr).toBe(0);
+      expect(spawnSync(process.execPath, [outfile], { encoding: 'utf8' }).stdout.trim()).toBe(expected);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

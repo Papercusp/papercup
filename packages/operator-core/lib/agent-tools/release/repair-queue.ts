@@ -15,7 +15,7 @@ import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from 
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
-import { resolveCheckpointRouting } from '../../harness/routines/hive-release-env';
+import { resolveCheckpointRouting, resolvePotSuiteCommand } from '../../harness/routines/hive-release-env';
 import type { GateVerdictTarget } from '../../release/gate-verdict-target';
 import { getTask } from '../../task-manager/store';
 import { newTaskId } from '../../task-manager/types';
@@ -868,11 +868,18 @@ export default defineTool({
   async handler(args, ctx) {
     const queueTarget = target(ctx);
     let scopeRoot = integrationRoot();
+    let toolingRoot = scopeRoot;
+    let testCommand: string[] | undefined;
+    let precheckClearEnv: string[] = [];
     if (queueTarget.installSlug !== operatorHomeHarnessSlug()) {
       const routing = await resolveCheckpointRouting(queueTarget, scopeRoot);
       if (routing.skip) return json({ ok: false, refused: true, reason: 'checkpoint_routing_skip',
         target: queueTarget, detail: routing.skip.reason });
       scopeRoot = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
+      toolingRoot = routing.root;
+      precheckClearEnv = routing.clearEnv;
+      const suite = await resolvePotSuiteCommand(queueTarget.installSlug, queueTarget.workspaceId);
+      testCommand = suite?.trim().split(/\s+/).filter(Boolean);
     }
     // WI-10005695: admit/converge report per-step timings (response `timings`) and log a step
     // that is still running after 30s, so a call whose client gives up is still localizable.
@@ -1577,6 +1584,7 @@ export default defineTool({
           ? await step('dependency-prediction', () =>
               predictDependencyGeneration({
                 integrationRoot: resolveCanonicalIntegrationRoot(root),
+                ...(toolingRoot !== root ? { toolingRoot } : {}),
                 ref: provedCommit,
                 paths: dependencyPaths,
               }),
@@ -1725,6 +1733,9 @@ export default defineTool({
             queueTarget: inspected.target,
             integrationRoot: precheckRoot,
             checkpointRoot: checkpointRootMirror(precheckRoot),
+            ...(toolingRoot !== precheckRoot ? { toolingRoot } : {}),
+            ...(testCommand?.length ? { testCommand } : {}),
+            ...(precheckClearEnv.length ? { clearEnv: precheckClearEnv } : {}),
             expiresAtMs: operation.expiresAtMs,
           };
           let launchFailure: string | null = null;

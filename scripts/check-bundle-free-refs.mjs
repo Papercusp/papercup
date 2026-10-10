@@ -22,11 +22,12 @@
  * `--since <file>` (the last-known-good bundle) are checked; `--all` checks every
  * repo-owned input and is how the allowlist below is calibrated.
  *
- * Exit: 0 clean · 1 free references found (bundle-host refuses to publish, so the
- * last-known-good bundle boots) · 2 misuse / unreadable metafile.
- * A file the parser cannot read is reported as `unparsed` and does NOT fail the
- * build: esbuild already accepted it, so that is an instrument gap, not evidence of
- * a defect, and refusing on it would trade a real-defect guard for false outages.
+ * Exit: 0 clean · 1 free references found or an input could not be read (bundle-host
+ * refuses to publish, so the last-known-good bundle boots) · 2 misuse / unreadable
+ * metafile. Parser syntax gaps remain `unparsed` warnings: esbuild already accepted
+ * those sources, so they are an instrument gap rather than a confirmed defect. An
+ * unreadable input is different: the guard cannot claim a clean analysis of a file
+ * it failed to open.
  */
 import { readFileSync, statSync } from 'node:fs';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
@@ -136,17 +137,18 @@ export function repoOwnedInputs(metafile, baseDir) {
 /**
  * @param {string[]} files
  * @param {{ known?: Set<string>, readFile?: (file: string) => string }} [options]
- * @returns {{ findings: Array<{ file: string, name: string, line: number, column: number }>, unparsed: Array<{ file: string, error: string }> }}
+ * @returns {{ findings: Array<{ file: string, name: string, line: number, column: number }>, unreadable: Array<{ file: string, error: string }>, unparsed: Array<{ file: string, error: string }> }}
  */
 export function checkInputs(files, { known, readFile = (f) => readFileSync(f, 'utf8') } = {}) {
   const findings = [];
+  const unreadable = [];
   const unparsed = [];
   for (const file of files) {
     let code;
     try {
       code = readFile(file);
     } catch (err) {
-      unparsed.push({ file, error: `unreadable: ${err?.code ?? err?.message ?? err}` });
+      unreadable.push({ file, error: `unreadable: ${err?.code ?? err?.message ?? err}` });
       continue;
     }
     const ext = extname(file);
@@ -158,7 +160,7 @@ export function checkInputs(files, { known, readFile = (f) => readFileSync(f, 'u
       unparsed.push({ file, error: String(err?.message ?? err).split('\n')[0] });
     }
   }
-  return { findings, unparsed };
+  return { findings, unreadable, unparsed };
 }
 
 function parseArgs(argv) {
@@ -232,19 +234,20 @@ export function main(argv = process.argv.slice(2), io = { log: console.log, erro
   }
   const t0 = Date.now();
   const known = knownGlobalNames(opts.allow);
-  const { findings, unparsed } = checkInputs(files, { known });
+  const { findings, unreadable, unparsed } = checkInputs(files, { known });
   const ms = Date.now() - t0;
-  const status = findings.length > 0 ? 'refused' : 'clean';
+  const status = findings.length > 0 || unreadable.length > 0 ? 'refused' : 'clean';
   if (opts.json) {
-    io.log(JSON.stringify({ status, selection, inputs: inputs.length, checked: files.length, ms, findings, unparsed }));
+    io.log(JSON.stringify({ status, selection, inputs: inputs.length, checked: files.length, ms, findings, unreadable, unparsed }));
   } else {
     for (const f of findings) {
       io.error(`🚨 free reference \`${f.name}\` at ${f.file}:${f.line}:${f.column} — no binding in scope and not a host global; the bundle would throw ReferenceError when this runs`);
     }
+    for (const u of unreadable) io.error(`🚨 could not read ${u.file}: ${u.error} — refusing to publish an input the guard could not analyze`);
     for (const u of unparsed) io.error(`⚠ could not analyse ${u.file}: ${u.error}`);
   }
-  io.log(`BUNDLE_FREE_REFS_RESULT status=${status} selection=${selection} inputs=${inputs.length} checked=${files.length} findings=${findings.length} unparsed=${unparsed.length} ms=${ms}`);
-  return findings.length > 0 ? 1 : 0;
+  io.log(`BUNDLE_FREE_REFS_RESULT status=${status} selection=${selection} inputs=${inputs.length} checked=${files.length} findings=${findings.length} unreadable=${unreadable.length} unparsed=${unparsed.length} ms=${ms}`);
+  return findings.length > 0 || unreadable.length > 0 ? 1 : 0;
 }
 
 // Basename pin, as in check-bundled-cli-entry-guards.mjs: bundle-host.sh runs this under

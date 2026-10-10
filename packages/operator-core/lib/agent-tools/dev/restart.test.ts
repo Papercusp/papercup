@@ -2659,6 +2659,43 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     });
   });
 
+  it('refuses to schedule a bg-host restart when the request audit cannot be persisted', async () => {
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(25)));
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG-AUDIT-FAILURE',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
+    auditUnsafeM.mockRejectedValueOnce(new Error('audit database unavailable'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    let b: ReturnType<typeof body>;
+    try {
+      b = body(await call({ confirm: true, target: 'bg-host' }));
+      expect(warn).toHaveBeenCalledWith('[dev:restart] audit write failed:', 'audit database unavailable');
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'bg-host',
+      drained: true,
+      restarted: false,
+      restartScheduled: false,
+      audited: false,
+      requestAuditPersisted: false,
+      reason: 'bg_host_restart_request_audit_failed',
+    });
+    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
   it('reports loadedNewCode:true when the restart built a fresh bundle (no stale marker in the unit tree)', async () => {
     mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
     mockImplementationTyped(guardM, runGuard(fenceOk(23)));

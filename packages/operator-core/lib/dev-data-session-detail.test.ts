@@ -216,7 +216,7 @@ describe('getSessionDetail related_chats', () => {
     expect(dbMocks.orgSql.mock.calls[0]?.slice(1)).toContain('claude-session-2');
   });
 
-  it('resolves transcript-only tool invocations through the transcript owner and time bounds', async () => {
+  it('resolves transcript-only tool invocations through historical session event sources and time bounds', async () => {
     dbMocks.orgSql.mockReset();
     dbMocks.orgSql
       .mockResolvedValueOnce([]) // no spawned_agents row
@@ -227,7 +227,7 @@ describe('getSessionDetail related_chats', () => {
           started_at: '2026-09-13T00:00:00.000Z',
           ended_at: '2026-09-13T00:30:00.000Z',
         },
-      ]) // transcript parts resolve the owner and this session's time bounds
+      ]) // historical session events resolve the owner and this session's time bounds
       .mockResolvedValueOnce([
         {
           id: '43',
@@ -273,6 +273,8 @@ describe('getSessionDetail related_chats', () => {
     expect(query).toContain('MIN(COALESCE(ts, ingested_at))');
     expect(query).toContain('MAX(COALESCE(ts, ingested_at))');
     expect(query).toContain('GROUP BY source_kind, owner');
+    expect(query).toContain('FROM harness_shared.session_turns');
+    expect(query).toContain('FROM harness_shared.agent_activity');
     expect(partsCall?.slice(1)).toEqual(['codex-session-from-transcript']);
 
     const invocationCall = dbMocks.orgSql.mock.calls[3];
@@ -290,11 +292,6 @@ describe('getSessionDetail related_chats', () => {
       '2026-09-13T00:00:00.000Z',
       '2026-09-13T00:30:00.000Z',
     ]);
-    expect(
-      dbMocks.orgSql.mock.calls.some(([statement]) =>
-        (statement as TemplateStringsArray).join(' ').includes('harness_shared.session_turns'),
-      ),
-    ).toBe(false);
   });
 
   it('keeps unknown ids unresolved when no transcript part exists', async () => {

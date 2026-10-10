@@ -21,6 +21,26 @@ export function pauseCompletionResumeContradiction(condition: string, trigger: s
   return 'completion of a pause task does not verify an explicit owner resume; repair the release condition and supply resume authority';
 }
 
+/** SPEC-BQL-P-004-CLEARER: a park whose trigger is the parked item's OWN terminal event can
+ * never release the park. `work-item:done:<id>` fires only once the item is already finished,
+ * and the catalogue's live resolver reports it reachable regardless (measured 2026-10-10:
+ * four live parks, each stamped 'reachable'). That is a reservation encoded as a park, so it
+ * is an unverified contract to repair, not a reachable one. */
+export function selfReleaseTriggerContradiction(trigger: string, parkId: string | null | undefined): string | null {
+  const id = parkId?.trim();
+  if (!id || trigger.trim() !== `work-item:done:${id}`) return null;
+  return `trigger ${trigger.trim()} is the parked item's own terminal event; it fires only after the item is finished, so it can never release this park. Declare the condition that permits resumption, or assign the item to its reserving owner instead of parking it`;
+}
+
+/** Every contract shape that can never verify its own release, in precedence order. */
+export function releaseContractContradiction(
+  condition: string,
+  trigger: string,
+  parkId?: string | null,
+): string | null {
+  return pauseCompletionResumeContradiction(condition, trigger) ?? selfReleaseTriggerContradiction(trigger, parkId);
+}
+
 /** Reject incomplete durable parks at the shared write boundary, including internal producers. */
 export function assertDurableParkReleaseContract(value: unknown): void {
   const contract = value && typeof value === 'object' && !Array.isArray(value)
@@ -40,10 +60,10 @@ export function assertDurableParkReleaseContract(value: unknown): void {
 /** Resolve, rather than trust, the release condition. Only a specific condition's
  * fired latch is satisfied; broad wakes and unmeasured keys remain unverified. */
 export async function buildDurableParkReleaseContract(
-  input: { condition: string; trigger: string; owner?: string },
+  input: { condition: string; trigger: string; owner?: string; parkId?: string | null },
   defaultOwner: string,
 ): Promise<DurableParkReleaseContract> {
-  const contradiction = pauseCompletionResumeContradiction(input.condition, input.trigger);
+  const contradiction = releaseContractContradiction(input.condition, input.trigger, input.parkId);
   if (contradiction) {
     return {
       condition: input.condition.trim(), owner: input.owner?.trim() || defaultOwner,

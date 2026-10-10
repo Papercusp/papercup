@@ -55,7 +55,7 @@ import { randomBytes } from 'node:crypto';
 import { lstat, open, link, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { OPERATOR_ENV_ROOT, resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { ALLOC_ADVISORY_KEY, scanMigrationDirs } from './lib/migration-allocation.mjs';
 import {
   annotateCandidatesWithDisk,
@@ -75,7 +75,6 @@ const CANONICAL_DIR = 'libs/papercusp/libs/db/sql';
 const SCAN_DIRS = [CANONICAL_DIR, 'papercusp-desktop/src-tauri/sidecar/db-sql'];
 const REPO_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), '..');
 const ARM_SQL_DIR = resolvePath(REPO_ROOT, CANONICAL_DIR);
-const OPERATOR_ENV_ROOT = resolvePath(REPO_ROOT, 'apps/operator');
 
 /** Refuse an implicit discovery/native fallback for an allocator write. */
 export function resolveReservationTarget(resolveUrl = resolveScriptPgUrl) {

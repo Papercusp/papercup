@@ -261,7 +261,9 @@ export default defineTool({
           ok: true,
           dryRun: true,
           outcome: plan.outcome,
-          wouldClear: plan.outcome === 'cleared',
+          // An owner-gated row only clears WITH ownerOverride; reporting wouldClear:true without it
+          // made a batch settler read "cleared" and then hit policy_gate_requires_owner_override.
+          wouldClear: plan.outcome === 'cleared' && (!ownerOverrideRequired || args.ownerOverride === true),
           observedParkFingerprint,
           expectedParkFingerprint: rc.expectedParkFingerprint ?? null,
           preservedLease: plan.preservedLease,

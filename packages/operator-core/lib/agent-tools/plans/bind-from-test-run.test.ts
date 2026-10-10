@@ -906,6 +906,9 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     await mkdir(path.join(sub, 'src'), { recursive: true });
     await writeFile(path.join(sub, 'src/s.ts'), 'export const s = 1;\n');
     await writeFile(path.join(sub, 'src/s.test.ts'), "import { s } from './s';\nvoid s;\n");
+    await writeFile(path.join(sub, 'src/main.rs'), 'mod native_console;\n');
+    await writeFile(path.join(sub, 'src/native_console.rs'),
+      '#[cfg(test)] mod tests { #[test] fn prepares_both_entrypoints() {} }\n');
     g(sub, 'init', '-q');
     g(sub, 'add', '-A');
     g(sub, 'commit', '-qm', 'sub');
@@ -990,6 +993,29 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     expect(await asCommittedTestPath(harness, cleanRow({ file_path: `${SUB}/src/missing.test.ts` }), localGitRunner)).toBeNull();
     const bound = await expandTestRunBinding(input({ sourcePaths: [`${SUB}/src/s.ts`] }), SCOPE, binder(viaGitlink));
     expect(bound).toMatchObject({ ok: true });
+  });
+
+  it('maps a Cargo submodule cwd stamped with the superproject commit through its pinned gitlink', async () => {
+    const recordedRoot = `${goneClone(superCommit)}/${SUB}`;
+    const target = 'src/main.rs';
+    expect(await asCommittedTestPath(harness, cleanRow({ root: recordedRoot, file_path: target }), localGitRunner))
+      .toEqual({ testPath: `${SUB}/${target}`, repoPrefix: '', commitSha: superCommit });
+    expect(await asCommittedTestPath(harness, cleanRow({ root: recordedRoot, file_path: 'src/missing.rs' }), localGitRunner))
+      .toBeNull();
+    const row = cleanRow({
+      root: recordedRoot,
+      framework: 'cargo',
+      file_path: `${target}::native_console::tests::prepares_both_entrypoints`,
+    });
+    const bound = await expandTestRunBinding(input({
+      canonicalTestPath: `${SUB}/src/native_console.rs`,
+      sourcePaths: [`${SUB}/src/native_console.rs`],
+    }), SCOPE, binder(row));
+    expect(bound).toMatchObject({
+      ok: true,
+      binding: { evidenceRef: `${SUB}/src/native_console.rs`,
+        details: { testRun: { asCommitted: { commitSha: superCommit, repoPrefix: '', measuredAtCommit: true } } } },
+    });
   });
 
   it('never maps a dirty, commit-less, foreign-commit, absent-file or plain-directory run', async () => {

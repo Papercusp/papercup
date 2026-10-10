@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialLessonIds, productTutorialTargetAvailability, type ProductTutorialLesson } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import type { AccountTutorialProgressRecord } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-progress';
 import { captureBrowserTelemetry } from '../browser-telemetry';
+import { useOperatorWorkspaceLocation } from '../seam';
 import { createVoiceOutputPlayback, type VoiceOutputPlaybackStatus } from '@papercusp/operator-core/lib/voice-output-playback';
 
 type GuideCapture = typeof captureBrowserTelemetry;
@@ -256,14 +257,19 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   const identity = `${account.tenantId}:${account.userId}:${account.sessionId}`;
   const currentLesson = record ? PRODUCT_TUTORIAL_LESSONS.find(lesson => lesson.id === record.currentLessonId) : null;
   const analytics = useRef<{ identity: string; observer: ReturnType<typeof createProductTutorialAnalytics> } | null>(null);
+  const workspaceLocation = useOperatorWorkspaceLocation();
   useEffect(() => {
-    if (!analytics.current || analytics.current.identity !== identity) analytics.current = { identity, observer: createProductTutorialAnalytics() };
+    const analyticsIdentity = `${identity}:${workspaceLocation}`;
+    if (!analytics.current || analytics.current.identity !== analyticsIdentity) analytics.current = {
+      identity: analyticsIdentity,
+      observer: createProductTutorialAnalytics((event, properties) => captureBrowserTelemetry(event, properties, workspaceLocation)),
+    };
     // Starting a retry clears the visible error before it has succeeded. Keep
     // the failed observation until the save/read has actually settled.
     if (!busy && !loading && record && validProductTutorialRecord(record, account) && sessionSignal === 'valid') {
       analytics.current.observer.update(record, Boolean(error));
     }
-  }, [identity, record, error, sessionSignal, busy, loading]);
+  }, [identity, record, error, sessionSignal, busy, loading, workspaceLocation]);
 
   useEffect(() => {
     mounted.current = true;

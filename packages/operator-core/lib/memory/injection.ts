@@ -771,6 +771,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
 
       const res = await deadline.run(() => recallCorpusContext({
         signal: deadline.signal,
+        deadline,
         queryText,
         workspaceId: input.workspaceId,
         harnessSlugs: input.harnessSlugs ?? [],

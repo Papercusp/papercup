@@ -74,6 +74,14 @@ const liveSpend = vi.hoisted(() => ({
   throws: false,
   calls: 0,
 }));
+// EI-25306440159635835: only the READ is replaced (it builds the workspace identity
+// graph); renderGoalRubricStewardshipBrief stays real. No other test here gives a
+// goal rubric duties, so nothing else reaches this spy.
+const rubricStewardshipRead = vi.hoisted(() => vi.fn(async () => null));
+vi.mock('./goal-rubric-stewardship', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./goal-rubric-stewardship')>()),
+  readGoalRubricStewardship: rubricStewardshipRead,
+}));
 vi.mock('./goals/spend-rollup', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./goals/spend-rollup')>()),
   computeGoalSpendRollup: async () => {
@@ -1557,6 +1565,34 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     } finally {
       vi.doUnmock('./work-items');
     }
+  });
+
+  it("rubricStewardship:'skip' omits the stewardship read even for a goal with rubric duties (EI-25306440159635835)", async () => {
+    // The stewardship read's identity graph was the slowest statement (455-500ms on
+    // 60d3a8) inside the obligation reader's 900ms budget, and that reader never reads it.
+    const dutyLaunch = { ...launch, goalBrief: { ...launch.goalBrief, body: 'Maintain rubric coverage on every worklist plan.' } };
+    const read = (rubricStewardship: 'read' | 'skip') => readGoalPortfolioBrief({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      sql: mockSql({ portfolio: { 'goal-1': portfolioRow } }),
+      now: NOW,
+      launch: dutyLaunch,
+      claimability: 'skip',
+      rubricStewardship,
+    });
+
+    // CONTROL: a goal with rubric duties reaches the stewardship read by default,
+    // so the skip assertion cannot pass merely because the duty phrase never matched.
+    rubricStewardshipRead.mockClear();
+    const withDuties = await read('read');
+    expect(rubricStewardshipRead).toHaveBeenCalledTimes(1);
+    expect(withDuties).toHaveProperty('rubricStewardship');
+
+    rubricStewardshipRead.mockClear();
+    const skipped = await read('skip');
+    expect(rubricStewardshipRead).not.toHaveBeenCalled();
+    expect(skipped).not.toHaveProperty('rubricStewardship');
+    expect(skipped?.worklist).toEqual(withDuties?.worklist);
   });
 
   it('staged read delivers the snapshot before the claim-floor count finishes (EI-25191349922959563)', async () => {

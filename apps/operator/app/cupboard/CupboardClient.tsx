@@ -25,9 +25,11 @@
  *   HarnessListing shape via the `listing*` helpers in cupboard/types.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
+import type { IdentityOutcomeCost } from '@papercusp/operator-core/lib/cupboard/shadow-metering-reader';
 import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate, AppWindow, Download, MonitorDown, Ruler, ListChecks, Workflow, Goal, Palette, Fingerprint } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
@@ -61,7 +63,7 @@ import { CUPBOARD_LISTING_KIND_TONE } from '../harness/theme';
 import { CupboardErrorState, cupboardHttpError } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
 import InstalledPacksSection from './InstalledPacksSection';
-import IdentityStatements from './IdentityStatements';
+import IdentityStatements, { formatUsageMicros } from './IdentityStatements';
 import { useLexicon } from '@/lib/useLexicon';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
@@ -236,8 +238,23 @@ export default function CupboardClient() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const outcomeReadInstance = useId();
+  const [outcomeReadRevision, setOutcomeReadRevision] = useState(0);
+  const outcomeReleaseRefs = useMemo(() => [...new Set(listings.filter(isIdentityBlueprintListing)
+    .map(listing => listing.sku_ref).filter((ref): ref is string => typeof ref === 'string' &&
+      ref.startsWith('identity-release:') && ref.length <= 300))].slice(0, 100), [listings]);
+  const outcomeQuery = useSyncQuery<IdentityOutcomeCost>({ queryName: 'cupboard.identityOutcomeCosts',
+    args: { releaseRefs: outcomeReleaseRefs, readKey: `${outcomeReadInstance}:${outcomeReadRevision}` },
+    enabled: outcomeReleaseRefs.length > 0 && !loading && !statementsView && !(toolsView && !hive),
+    staleTime: 0, pollIntervalMs: 0, persist: false });
+  const outcomeCosts = useMemo(() => new Map(!loading && !outcomeQuery.loading && !outcomeQuery.fetching && !outcomeQuery.error
+    ? (outcomeQuery.data ?? []).map(row => [row.releaseRef, row] as const) : []),
+  [loading, outcomeQuery.loading, outcomeQuery.fetching, outcomeQuery.error, outcomeQuery.data]);
 
   const fetchListings = useCallback(async (cursor?: string, append = false) => {
+    // A new query key makes cached previous evidence a pending placeholder,
+    // including same-page refresh (the shared `fetching` flag covers key changes).
+    setOutcomeReadRevision(revision => revision + 1);
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -636,6 +653,7 @@ export default function CupboardClient() {
         </div>}
 
         {!toolsView && <Tooltip label="Refresh"><button
+          aria-label="Refresh"
           onClick={() => void fetchListings()}
           disabled={loading || loadingMore}
           style={ghostButtonStyle}
@@ -751,6 +769,7 @@ export default function CupboardClient() {
                   <ListingCard
                     key={listing.id}
                     listing={listing}
+                    outcomeCost={outcomeCosts.get(listing.sku_ref ?? '')}
                     onAction={() => handleAction(listing)}
                     onDetail={() => router.push(`/cupboard/${listing.id}`)}
                     suppressViewHive
@@ -804,6 +823,7 @@ export default function CupboardClient() {
               <ListingCard
                 key={listing.id}
                 listing={listing}
+                outcomeCost={outcomeCosts.get(listing.sku_ref ?? '')}
                 hiveRef={listingHiveKey(listing)}
                 onHive={() => void setHive(listingHiveKey(listing))}
                 onAction={() => handleAction(listing)}
@@ -829,6 +849,7 @@ export default function CupboardClient() {
                     <ListingCard
                       key={listing.id}
                       listing={listing}
+                      outcomeCost={outcomeCosts.get(listing.sku_ref ?? '')}
                       onAction={() => handleAction(listing)}
                       onDetail={() => router.push(`/cupboard/${listing.id}`)}
                     />
@@ -873,6 +894,7 @@ export default function CupboardClient() {
               <ListingCard
                 key={listing.id}
                 listing={listing}
+                outcomeCost={outcomeCosts.get(listing.sku_ref ?? '')}
                 hiveRef={listingHiveKey(listing)}
                 onHive={() => void setHive(listingHiveKey(listing))}
                 onAction={() => handleAction(listing)}
@@ -921,6 +943,7 @@ export default function CupboardClient() {
 
 export function ListingCard({
   listing,
+  outcomeCost,
   onAction,
   onDetail,
   hiveRef,
@@ -928,6 +951,7 @@ export function ListingCard({
   suppressViewHive,
 }: {
   listing: HarnessListing;
+  outcomeCost?: IdentityOutcomeCost;
   onAction: () => void;
   onDetail: () => void;
   /** The Hive (project) this listing belongs to. When set with `onHive`, renders
@@ -945,6 +969,11 @@ export function ListingCard({
   const isPotTemplate = isHiveBlueprintListing(listing);
   // portable-identity-packages P-016: an identity blueprint is badged too.
   const isIdentity = isIdentityBlueprintListing(listing);
+  const verifiedOutcome = outcomeCost?.status === 'verified' && outcomeCost.releaseRef === listing.sku_ref &&
+    outcomeCost.basis === 'local-funded-release-usage' && outcomeCost.currency === 'USD' &&
+    /^(0|[1-9][0-9]*)$/.test(outcomeCost.costPerAcceptedOutcomeMicros) &&
+    Number.isSafeInteger(outcomeCost.acceptedOutcomes) && outcomeCost.acceptedOutcomes > 0
+    ? outcomeCost : null;
   const rawAction = listingActionFor(listing);
   const action = suppressViewHive && rawAction === 'view-hive' ? null : rawAction;
   const repoSlug = listingRepoSlug(listing);
@@ -1040,7 +1069,9 @@ export function ListingCard({
           aria-label="Identity outcome cost"
           style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, margin: 0 }}
         >
-          Cost per accepted outcome: unavailable
+          {verifiedOutcome
+            ? `Cost per accepted outcome: ${formatUsageMicros(verifiedOutcome.costPerAcceptedOutcomeMicros)} · ${verifiedOutcome.acceptedOutcomes} accepted · local funded usage`
+            : 'Cost per accepted outcome: unavailable'}
         </p>
       )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

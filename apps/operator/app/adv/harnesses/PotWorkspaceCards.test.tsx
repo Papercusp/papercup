@@ -142,6 +142,30 @@ describe('<PotWorkspaceCards /> list', () => {
     expect(onDrill).toHaveBeenCalledWith('alpha', 'alpha-web');
   });
 
+  it.each(['Enter', ' '])('activates the focused root and exact member with %j', (key) => {
+    const onDrill = vi.fn();
+    render(<PotWorkspaceCards groups={groups} onDrill={onDrill} />);
+    const root = screen.getByTestId('hive-card-alpha');
+    const member = screen.getByTestId('hive-member-alpha-web');
+    root.focus();
+    expect(fireEvent.keyDown(root, { key })).toBe(false);
+    member.focus();
+    expect(fireEvent.keyDown(member, { key })).toBe(false);
+    expect(onDrill.mock.calls).toEqual([['alpha', 'alpha'], ['alpha', 'alpha-web']]);
+  });
+
+  it('does not activate from another key, a modified chord or a descendant', () => {
+    const onDrill = vi.fn();
+    render(<PotWorkspaceCards groups={groups} onDrill={onDrill} />);
+    const row = screen.getByTestId('hive-member-alpha-web');
+    for (const event of [{ key: 'ArrowDown' }, { key: 'Enter', ctrlKey: true },
+      { key: 'Enter', metaKey: true }, { key: ' ', altKey: true }, { key: 'Enter', shiftKey: true }]) {
+      expect(fireEvent.keyDown(row, event)).toBe(true);
+    }
+    fireEvent.keyDown(row.querySelector('.pc-pot-name__slug')!, { key: 'Enter' });
+    expect(onDrill).not.toHaveBeenCalled();
+  });
+
   // WI-10006513: on the cloud portal's Work tab at 1024x650 the bare 0.9fr
   // Kind/Shared tracks fell to 58px — under the 62px "HARNESS" badge / 52px
   // "shared" pill + 20px cell padding — and every row cut its badge (cells

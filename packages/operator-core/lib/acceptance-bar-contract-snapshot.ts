@@ -1157,7 +1157,7 @@ export function projectAcceptanceBarContractSnapshot(
     const staleEvidence = activeEvidence.filter((row) => !currentEvidence.includes(row));
     const requiredTestLayers = normalized(criterion.requiredTestLayers);
     const hasStructuredTestsCheck = criterion.check?.kind === 'tests';
-    const sourceBarTestRequirements = hasStructuredTestsCheck
+    const sourceBarTestRequirements = criterion.check?.kind === 'tests'
       ? { status: 'required' as const, files: criterion.check.files }
       : { status: 'not-required' as const };
     // The declared evidence plane is a separate lifecycle obligation. Adequacy

@@ -500,6 +500,15 @@ export async function asCommittedTestPath(
   const submodules = await trackedSubmodulePaths(root, prefixes.slice(1), git);
   for (const repoPrefix of prefixes) {
     if (repoPrefix && !submodules.has(repoPrefix)) continue;
+    // Cargo runs from the crate checkout but the reporter can pin the enclosing
+    // superproject commit. Resolve that commit's gitlink before trying a commit
+    // belonging to the submodule itself; both retain the recorded path and SHA.
+    if (repoPrefix) {
+      const testPath = `${repoPrefix}/${inClone}`;
+      if (await blobAtCommit(root, commitSha, testPath, git)) {
+        return { testPath, repoPrefix: '', commitSha };
+      }
+    }
     const repo = repoPrefix ? resolve(root, repoPrefix) : resolve(root);
     try {
       // A prefix must name a repository ROOT (a submodule checkout), never a plain directory

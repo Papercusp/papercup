@@ -16,7 +16,11 @@ import { saveTextArtifact } from './text-artifacts';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
-import { buildDurableParkReleaseContract, pauseCompletionResumeContradiction } from './durable-park-release-contract';
+import {
+  buildDurableParkReleaseContract,
+  pauseCompletionResumeContradiction,
+  selfReleaseTriggerContradiction,
+} from './durable-park-release-contract';
 import { eventHasSpecificCondition } from './external-condition-reachability';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
@@ -306,6 +310,7 @@ const RELEASE_REACHABILITY = new Set<DurableParkReleaseReachability>([
 export function classifyDurableParkReleaseLiveness(
   payloadValue: unknown,
   parkReason: string | null,
+  parkId?: string | null,
 ): DurableParkReleaseLiveness {
   const payload = record(payloadValue);
   const rawContract = record(payload.claim_hold_release);
@@ -317,10 +322,24 @@ export function classifyDurableParkReleaseLiveness(
   const trigger = textOrNull(rawContract.trigger);
   const reachabilityText = textOrNull(rawContract.reachability);
   const contradiction = condition && trigger ? pauseCompletionResumeContradiction(condition, trigger) : null;
-  const reachability = contradiction ? 'blocked' : reachabilityText && RELEASE_REACHABILITY.has(reachabilityText as DurableParkReleaseReachability)
+  // SPEC-BQL-P-004-CLEARER: a self-release trigger (the park's own work-item:done) is stamped
+  // 'reachable' by every writer before this guard, so the stamp alone must not read as tracked.
+  const selfRelease = trigger ? selfReleaseTriggerContradiction(trigger, parkId) : null;
+  // A stored 'satisfied' is the PARKER's park-time stamp and is never refreshed. Builds
+  // before the specific-condition guard (and runtimes still serving one) stamped it from
+  // ANY fired latch, so a broad wake — coord:inbox-wake:<owner>, work-item:claimable,
+  // release:deployed, plan:acceptance:<slug> — reads as a met condition. Re-apply the
+  // same guard the event settler uses: a broad catalogue trigger cannot prove the
+  // condition, so the stamp is unverified rather than a "reconcile now" finding.
+  const broadSatisfied = !contradiction && !selfRelease && trigger && reachabilityText === 'satisfied' &&
+    !eventHasSpecificCondition(trigger, true)
+    ? `stored reachability "satisfied" came from broad trigger "${trigger}", which can wake a consumer but cannot establish the release condition; verify the condition itself and repair the trigger to a subject-bound key`
+    : null;
+  const unverifiable = contradiction ?? selfRelease ?? broadSatisfied;
+  const reachability = unverifiable ? 'blocked' : reachabilityText && RELEASE_REACHABILITY.has(reachabilityText as DurableParkReleaseReachability)
     ? (reachabilityText as DurableParkReleaseReachability)
     : null;
-  const evidence = contradiction ?? textOrNull(rawContract.evidence);
+  const evidence = unverifiable ?? textOrNull(rawContract.evidence);
   const findings: DurableParkReleaseLivenessFinding[] = [];
 
   if (!condition) {
@@ -758,7 +777,7 @@ export function buildDurableParkAuditReport(input: {
       axes.durableParks += 1;
       const age = classifyAuditAge(provenance.parked.at, input.nowMs);
       const unparkCondition = classifyUnparkCondition(provenance.parked.reason);
-      const releaseLiveness = classifyDurableParkReleaseLiveness(payload, provenance.parked.reason);
+      const releaseLiveness = classifyDurableParkReleaseLiveness(payload, provenance.parked.reason, row.id);
       parkAgeBuckets[age.bucket] += 1;
       unparkConditions[unparkCondition.status] += 1;
       releaseStatusCounts[releaseLiveness.status] += 1;
@@ -961,10 +980,12 @@ export async function runWorkItemDurableParkAudit(opts: {
         reportRows.push(row);
         continue;
       }
-      const key = JSON.stringify([condition, owner, trigger]);
+      // A self-release trigger depends on WHICH park carries it, so it joins the memo key.
+      const selfRelease = selfReleaseTriggerContradiction(trigger, row.id) ? row.id : null;
+      const key = JSON.stringify([condition, owner, trigger, selfRelease]);
       let current = currentContracts.get(key);
       if (!current) {
-        current = buildDurableParkReleaseContract({ condition, owner, trigger }, owner);
+        current = buildDurableParkReleaseContract({ condition, owner, trigger, parkId: row.id }, owner);
         currentContracts.set(key, current);
       }
       reportRows.push({ ...row, payload: { ...payload, claim_hold_release: await current } });

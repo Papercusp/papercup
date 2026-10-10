@@ -126,7 +126,33 @@ export interface CandidateRow {
    * verdict is reused.
    */
   launchSpecOmitted?: boolean;
+  /**
+   * WI-10008237: true when every launch record this owner has was closed more
+   * than {@link WEDGED_SWEEP_RETIRED_AFTER_MS} ago. Such a row is counted but
+   * never classified or carried, and its launch record is not shipped.
+   */
+  retired?: boolean;
 }
+
+/**
+ * WI-10008237 — how long after an owner's LAST launch record closed the sweep
+ * stops classifying it.
+ *
+ * The sweep already discards an ended session's finding (TERMINAL_STATES:
+ * "a wedged session that has already ended harms nobody"), but it discovered
+ * that only AFTER replaying the artifact. On 2026-10-10 that was 4,282 of
+ * 5,078 candidates (84%), with zero presence heartbeat in 6 h and zero activity
+ * in 24 h among them. Every bg-host restart empties the verdict cache, so the
+ * next aligned fire replayed all of them on the main thread (the sweep was 44%
+ * of a 20 s main-thread profile, 7+ minutes into one fire).
+ *
+ * Owner-wide, not per-row: a resume can reopen a PREDECESSOR row while the
+ * newest row stays closed, so an owner is retired only when NO row is open or
+ * recently closed. An owner with no launch record is never retired, so the
+ * no-launch-record finding is unchanged. 24 h, not the 1 h cadence, so a
+ * session that a reaper closed while it was still running stays swept.
+ */
+export const WEDGED_SWEEP_RETIRED_AFTER_MS = 24 * 60 * 60_000;
 
 export type CandidateVerdict = { wedged: false } | { wedged: true; reason: string };
 
@@ -153,18 +179,26 @@ export interface WedgedVerdictCache {
   /** Rows the last complete sweep reused rather than classified (observability). */
   lastReused: number;
   lastScanned: number;
+  /** Rows the last complete sweep skipped as retired (WI-10008237). */
+  lastRetired: number;
 }
 
 const sweepVerdictCache = pinModuleState<WedgedVerdictCache>(
   '@papercusp/operator-core.wedged-identity-verdict-cache',
-  () => ({ verdicts: new Map(), lastReused: 0, lastScanned: 0 }),
+  () => ({ verdicts: new Map(), lastReused: 0, lastScanned: 0, lastRetired: 0 }),
 );
 
-export function wedgedIdentityVerdictCacheStats(): { size: number; lastReused: number; lastScanned: number } {
+export function wedgedIdentityVerdictCacheStats(): {
+  size: number;
+  lastReused: number;
+  lastScanned: number;
+  lastRetired: number;
+} {
   return {
     size: sweepVerdictCache.verdicts.size,
     lastReused: sweepVerdictCache.lastReused,
     lastScanned: sweepVerdictCache.lastScanned,
+    lastRetired: sweepVerdictCache.lastRetired,
   };
 }
 
@@ -254,9 +288,13 @@ export const CANDIDATE_PAGE_ROWS = 25;
 async function* defaultLoadCandidates(knownVerdictKeys: readonly string[]): AsyncGenerator<CandidateRow[]> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
+  const retiredBefore = new Date(Date.now() - WEDGED_SWEEP_RETIRED_AFTER_MS);
   // WI-10005391: `n.known` short-circuits the CASE, so a row whose verdict the
   // sweep already holds is never detoasted — the launch record stays a TOAST
   // pointer through the LIMIT 1 subquery and is simply not returned.
+  // WI-10008237: `r.retired` short-circuits it the same way. An open row
+  // (NULL ended_at) sorts as 'infinity', so it keeps the owner unretired; an
+  // owner with no launch row aggregates to NULL and is never retired.
   const query = sql<Array<{
     owner_id: string;
     launch_spec: unknown;
@@ -264,19 +302,27 @@ async function* defaultLoadCandidates(knownVerdictKeys: readonly string[]): Asyn
     activation: unknown;
     verdict_key: string | null;
     launch_spec_omitted: boolean | null;
+    retired: boolean | null;
   }>>`
     SELECT b.owner_id,
            a.launch_spec,
            a.id AS adv_session_id,
            b.control_state->'activation' AS activation,
            a.verdict_key,
-           a.launch_spec_omitted
+           a.launch_spec_omitted,
+           r.retired
       FROM harness_shared.session_briefs b
+      CROSS JOIN LATERAL (
+        SELECT COALESCE(max(COALESCE(e.ended_at, 'infinity'::timestamptz)) < ${retiredBefore}, false) AS retired
+          FROM harness_shared.adv_sessions e
+         WHERE e.coord_owner_id = b.owner_id
+           AND e.workspace_id = b.workspace_id
+      ) AS r
       LEFT JOIN LATERAL (
         SELECT n.id,
                n.verdict_key,
                n.known AS launch_spec_omitted,
-               CASE WHEN n.known THEN NULL ELSE ${narrowedLaunchSpecToAppliedPairSql(sql)} END AS launch_spec
+               CASE WHEN n.known OR r.retired THEN NULL ELSE ${narrowedLaunchSpecToAppliedPairSql(sql)} END AS launch_spec
           FROM (
             SELECT k.id, k.launch_spec, k.applied_pair, k.verdict_key,
                    k.verdict_key = ANY(${[...knownVerdictKeys]}::text[]) AS known
@@ -302,6 +348,7 @@ async function* defaultLoadCandidates(knownVerdictKeys: readonly string[]): Asyn
       activation: r.activation,
       verdictKey: r.verdict_key,
       launchSpecOmitted: r.launch_spec_omitted === true,
+      retired: r.retired === true,
     }));
   }
 }
@@ -421,6 +468,7 @@ export async function runWedgedIdentitySweepOnce(
   // guarded, so a classification error still propagates as before.
   let scanned = 0;
   let reused = 0;
+  let retired = 0;
   let classified = 0;
   const confirmed: Array<{ ownerId: string; reason: string }> = [];
   // WI-10005391: an immutable snapshot of the carried verdicts. A row the loader
@@ -440,6 +488,12 @@ export async function runWedgedIdentitySweepOnce(
     if (page.done) break;
     scanned += page.value.length;
     for (const row of page.value) {
+      // WI-10008237: checked BEFORE the omitted-record branch — a retired row's
+      // launch record is withheld whether or not a verdict is carried for it.
+      if (row.retired) {
+        retired += 1;
+        continue;
+      }
       let verdict: CandidateVerdict;
       if (row.launchSpecOmitted) {
         const carried = row.verdictKey ? prior.get(row.verdictKey) : undefined;
@@ -478,6 +532,7 @@ export async function runWedgedIdentitySweepOnce(
   deps.verdictCache.verdicts = next;
   deps.verdictCache.lastReused = reused;
   deps.verdictCache.lastScanned = scanned;
+  deps.verdictCache.lastRetired = retired;
 
   if (confirmed.length === 0) return { verdict: 'clean', scanned, escalated: 0 };
 

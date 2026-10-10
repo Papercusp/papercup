@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "shipment-preparation-publication-lineage",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemRef": "WI-10007521",
+  "assembledAt": "2026-10-10T23:05:59Z",
+  "status": "pending; neither independent acceptance nor shipment established",
+  "scope": "Four exact files checked in this continuation; other plan source and test lineage remains to be inventoried for the final R7 artifact.",
+  "publicationSnapshot": {
+    "head": "9d2d9c91304f4f1c7239743528e80d66a22bcb71",
+    "method": "Read disk bytes and git show HEAD:path, SHA-256 both, and compare exact bytes. This is a point-in-time local commit check, not remote publication or runtime adoption.",
+    "files": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/evaluate-spec-test-adequacy.ts",
+        "diskSha256": "c9df0cfcafd0743b16b961b59dc7ac726fe82ead80a89908ad6b770f05f2b1f9",
+        "headBlobSha256": "c9df0cfcafd0743b16b961b59dc7ac726fe82ead80a89908ad6b770f05f2b1f9",
+        "headContainsExactBytes": true,
+        "workItemRef": "EI-25473272943131767"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/evaluate-spec-test-adequacy.test.ts",
+        "diskSha256": "566368f2493927b2fc80fd6d93ca94a34ef65720b16cb4811e1c11904269cfaa",
+        "headBlobSha256": "9c9b5d08081a4cae8955957076dfe873e6b31dba8b8c3fef5b5d63979ce0b0ee",
+        "headContainsExactBytes": false,
+        "workItemRef": "EI-25473272943131767"
+      },
+      {
+        "path": "packages/operator-core/test/consult-cascade-http-fixture.ts",
+        "diskSha256": "5511bfebf7d7dab8a46fe1bb7013545d2a6a93b857491b4f72d084e12848c670",
+        "headBlobSha256": "6d204453f3cbc4086f52b4304f18b2465cb88e00bf050596663a454cedca8162",
+        "headContainsExactBytes": false,
+        "workItemRef": "EI-25630978389981567"
+      },
+      {
+        "path": "docs/evidence/get-feedback-native-ack-decision-2026-10-10.json",
+        "diskSha256": "4ec1506d7ede210587fc23255d1ca969c7285d8429e6853b17bad3ed69299dbc",
+        "headBlobSha256": null,
+        "headContainsExactBytes": false,
+        "meaning": "Untracked at the measured commit; preserved on disk."
+      }
+    ]
+  },
+  "retainedVerification": {
+    "testLedgerRead": {
+      "tool": "testing:runs",
+      "args": { "testRunIds": [21009078, 21009091, 21007414], "harness": "papercusp", "limit": 3 },
+      "results": [
+        { "id": 21009078, "status": "fail", "worktreeDirty": true },
+        { "id": 21009091, "status": "pass", "worktreeDirty": true },
+        { "id": 21007414, "status": "pass", "worktreeDirty": true }
+      ],
+      "limit": "Saved local dirty runs; no clean or runtime acceptance claim and no replay for HEAD."
+    },
+    "selectorSourceCapture": {
+      "path": "/dev/shm/get-feedback-item-scope-after-20261010-2242.sources.json",
+      "sha256": "acb13431e8df70ec5b3bdbdd235da0de1e65fa7cca1cf24734b6fcfaf847f575",
+      "namedSourceAndTestHashesMatchDisk": true,
+      "scope": "The named selector source and test only; the complete executed dependency graph was not recertified."
+    }
+  },
+  "runtimeSnapshot": {
+    "query": {
+      "tool": "dev:pipeline_position",
+      "args": { "path": "packages/operator-core/lib/agent-tools/plans/evaluate-spec-test-adequacy.ts", "testClass": "operator-api" }
+    },
+    "staging": { "buildSha": "9d860ad90e", "buildShaSource": "health", "containsChange": false, "method": "blob" },
+    "sourceInspection": "The recorded staging commit's evaluator source lacks the newly introduced itemClauses/itemSpecIds scope resolution. No functional acceptance trial was run against it.",
+    "limit": "This source-development read establishes a runtime prerequisite only. It does not monitor or operate the live release gate."
+  },
+  "remainingShipmentChain": {
+    "independentAcceptance": { "status": "unverified", "receipt": null },
+    "shipTransition": { "status": "unverified", "receipt": null },
+    "greenCommitAndBuildDigest": { "status": "unverified", "value": null },
+    "changedLineagePaths": { "status": "partial", "inventoryRef": "publicationSnapshot.files" },
+    "deployedArtifact": { "status": "unverified", "value": null },
+    "liveRuntimeFingerprint": { "status": "unverified", "value": null },
+    "changedBehaviorTrace": { "status": "unverified", "value": null },
+    "artifactEqualityChecks": { "status": "unverified", "value": null }
+  },
+  "nativeAndQualityLimits": [
+    "Native reply invocation 35633476 is a recorded Bash/CLI call with authenticated session and matching post. Its exhausted cascade does not verify a pending acknowledgement followed by an actual next launch.",
+    "The historical actor artifact already correlates all three native MCP calls; do not redo or retract that proof.",
+    "Original four-thread quality cohort and four-thread shortfall stay immutable. The separate requester48ca eight-of-eleven review remains a separate population.",
+    "R6 current-build matrix, R7 independent acceptance and exact shipment remain open."
+  ],
+  "reuse": "Extends the existing docs/evidence manual-provenance surface. This preparation inventory supplies references for the required final R7 shipment artifact; it is not that final artifact."
+}

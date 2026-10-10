@@ -276,7 +276,12 @@ cleanup_staging_candidate() {
 }
 
 copy_staging_runtime_environment() {
-  local candidate_root="$1" source_root
+  local candidate_root="$1" source_sha="${2:-}" source_root env_file
+  if [[ ! "$source_sha" =~ ^[a-f0-9]{7,40}$ ]]; then
+    log "FATAL: staging runtime environment requires the prepared source commit"
+    return 1
+  fi
+  env_file="$candidate_root/apps/operator/.env.local"
   # The first generation has no current alias, and a previously published
   # generation can lack the ignored runtime file. Preserve staging overrides,
   # then recover the canonical environment instead of selecting a desktop DB
@@ -287,9 +292,19 @@ copy_staging_runtime_environment() {
         log "FATAL: could not copy the staging runtime environment into the candidate"
         return 1
       fi
-      return 0
+      break
     fi
   done
+  # Git-less generations cannot discover their build identity at boot. Pin
+  # the verified preparation ref after inherited settings so an older
+  # generation's environment cannot label this artifact.
+  if [[ ! -f "$env_file" ]]; then
+    (umask 077; : > "$env_file") || return 1
+  fi
+  if ! printf '\nPAPERCUSP_BUILD_SHA=%s\n' "$source_sha" >> "$env_file"; then
+    log "FATAL: could not pin the staging candidate build identity"
+    return 1
+  fi
 }
 
 prepare_staging_candidate() {
@@ -307,7 +322,7 @@ prepare_staging_candidate() {
     fi
     staging_sync_checkpoint "candidate phase $phase complete" || return "$?"
   done
-  copy_staging_runtime_environment "$STAGING_CANDIDATE_ROOT" || return 1
+  copy_staging_runtime_environment "$STAGING_CANDIDATE_ROOT" "$target_sha" || return 1
 }
 
 prebuild_staging_host_bundle() {

@@ -1373,12 +1373,19 @@ describe('testing:run (integration)', () => {
   it('runs a repo-resolving file from a phantom handler root through the canonical repo and surfaces the source', async () => {
     const phantom = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-handler-phantom-'));
     await rm(phantom, { recursive: true, force: true });
-    const out = await body(call({ files: [GREEN_TARGET] }, { projectDir: phantom }));
+    const priorIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = REPO_ROOT;
+    try {
+      const out = await body(call({ files: [GREEN_TARGET] }, { projectDir: phantom }));
 
-    expect(out.ok, JSON.stringify(out)).toBe(true);
-    expect(out.rootSource).toBe('canonical-repo');
-    expect(out.root).not.toBe(phantom);
-    expect(existsSync(join(out.root as string, GREEN_TARGET))).toBe(true);
+      expect(out.ok, JSON.stringify(out)).toBe(true);
+      expect(out.rootSource).toBe('canonical-repo');
+      expect(out.root).toBe(REPO_ROOT);
+      expect(existsSync(join(out.root as string, GREEN_TARGET))).toBe(true);
+    } finally {
+      if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorIntegrationRoot;
+    }
   }, 180_000);
 
   it('keeps the admin test-run ledger reporter alongside machine-readable JSON output', async () => {

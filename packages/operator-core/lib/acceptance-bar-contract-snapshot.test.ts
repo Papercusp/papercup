@@ -458,7 +458,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       barHash: criterion.barHash!,
       barSetHash,
       rubricSlug: rubric.rubricId,
-      rubricRevision: rubric.revision,
+      rubricRevision: rubric.revision!,
       evidencePlane: 'tree',
     };
     const base = input.evidence.rows[0]!;

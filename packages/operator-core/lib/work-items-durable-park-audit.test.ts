@@ -273,6 +273,76 @@ describe('durable park audit classification', () => {
       findings: ['condition-satisfied-still-parked'],
     });
   });
+
+  // SPEC-BQL-P-004-WAKE: a generic wake is never condition proof. Pre-guard parkers stamped
+  // 'satisfied' from any fired latch (measured 2026-10-10: 37 coord:inbox-wake parks), and the
+  // stamp is never refreshed, so the audit must not turn it into a "reconcile now" finding.
+  it.each([
+    'coord:inbox-wake:su-parker',
+    'work-item:claimable',
+    'release:deployed',
+    'release:green:papercusp',
+    'plan:acceptance:some-plan-2026-10-01',
+  ])('downgrades a stored satisfied stamp from broad trigger %s to unverified', (trigger) => {
+    const liveness = classifyDurableParkReleaseLiveness({ claim_hold_release: {
+      condition: 'the fleet leader routes this item back with new evidence',
+      owner: 'su-parker', trigger, reachability: 'satisfied',
+      evidence: 'event fired at 2026-10-08 17:32:01-04',
+    } }, 'parked pending leader route');
+    expect(liveness).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+    expect(liveness.findings).toContain('reachability-unverified');
+    expect(liveness.findings).not.toContain('condition-satisfied-still-parked');
+    expect(liveness.evidence).toContain('broad trigger');
+  });
+
+  it('keeps a stored satisfied stamp on a subject-bound trigger or a non-catalogue declared gate', () => {
+    for (const trigger of ['work-item:done:WI-1', 'my-declared-gate:abc']) {
+      expect(classifyDurableParkReleaseLiveness({ claim_hold_release: {
+        condition: 'dependency reaches a terminal state', owner: 'plan:queue-cleanup',
+        trigger, reachability: 'satisfied', evidence: 'fired',
+      } }, 'UNPARK when done')).toMatchObject({ status: 'satisfied-still-parked' });
+    }
+  });
+
+  // SPEC-BQL-P-004-CLEARER: a park released only by its OWN work-item:done can never release
+  // (measured 2026-10-10: four live parks, every one stamped 'reachable' by the catalogue).
+  const selfReleaseContract = (reachability: string) => ({ claim_hold_release: {
+    condition: 'the reserved owner completes this item', owner: 'su-owner',
+    trigger: 'work-item:done:EI-self', reachability, evidence: 'catalogue live resolver',
+  } });
+
+  it('flags a self-release trigger as unverified even when stamped reachable, only on the park that carries it', () => {
+    const self = classifyDurableParkReleaseLiveness(selfReleaseContract('reachable'), 'reserved for su-owner', 'EI-self');
+    expect(self).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+    expect(self.findings).toContain('reachability-unverified');
+    expect(self.evidence).toContain("parked item's own terminal event");
+    // The same key on a DIFFERENT park is an ordinary dependency; the legacy two-argument call is unchanged.
+    expect(classifyDurableParkReleaseLiveness(selfReleaseContract('reachable'), 'waits on EI-self', 'EI-other'))
+      .toMatchObject({ status: 'tracked', reachability: 'reachable' });
+    expect(classifyDurableParkReleaseLiveness(selfReleaseContract('reachable'), 'waits on EI-self'))
+      .toMatchObject({ status: 'tracked' });
+  });
+
+  it('the audit report flags a self-release park through its row id', () => {
+    const report = buildDurableParkAuditReport({
+      rows: ['EI-self', 'EI-other'].map((id) => ({
+        id, title: id, state: 'open', takenBy: null, takenAt: null, updatedAtMs: null, reviewRoutedAtMs: null,
+        payload: { _claimHold: true, claim_hold_by: 'su-parker', claim_hold_reason: 'reserved for su-owner',
+          claim_hold_at: '2026-10-01T00:00:00.000Z', ...selfReleaseContract('reachable') },
+      })),
+      runId: 'self-release', workspaceId: 'ws', harnessSlug: 'h', nowMs: Date.parse('2026-10-10T00:00:00.000Z'),
+    });
+    const byId = new Map(report.durableParks.map((park) => [park.id, park.releaseLiveness.status]));
+    expect(byId.get('EI-self')).toBe('unverified');
+    expect(byId.get('EI-other')).toBe('tracked');
+  });
+
+  it('the shared contract writer stamps a self-release trigger blocked before any event read', async () => {
+    const input = { condition: 'the reserved owner completes this item', trigger: 'work-item:done:EI-self' };
+    const stamped = await buildDurableParkReleaseContract({ ...input, parkId: 'EI-self' }, 'parker');
+    expect(stamped).toMatchObject({ trigger: 'work-item:done:EI-self', owner: 'parker', reachability: 'blocked' });
+    expect(stamped.evidence).toContain("parked item's own terminal event");
+  });
 });
 
 describe('durable park evidence matrix and reconciliation CAS', () => {

@@ -133,6 +133,7 @@ import {
   type PsuPtyHost,
   type PtyHostEvent,
 } from './psu-pty-discovery';
+import { decideQuotaWakeRecovery, recentAuthRecoveryCount } from './host-recovery-eligibility';
 import {
   decideColdWake,
   readColdLoopMarker,
@@ -2845,91 +2846,6 @@ type PsuInjectHostView = {
   caps?: string[] | null;
   launchedBy?: string | null;
 };
-
-export interface QuotaWakeRecoveryDecision {
-  eligible: boolean;
-  reason:
-    | 'eligible'
-    | 'wrong-owner'
-    | 'not-quota-blocked'
-    | 'not-headless'
-    | 'not-agent-launched'
-    | 'route-not-auto'
-    | 'host-capability-missing'
-    | 'auth-recovery-exhausted';
-  /** Which wall the recycle clears. 'auth' = the child's in-memory provider
-   * login is dead (P-004); 'quota' = the account is walled. */
-  cause: 'quota' | 'auth';
-  operationId: string;
-}
-
-/** P-004 bound: auth recoveries per owner inside AUTH_RECOVERY_WINDOW_MS. A
- * fresh child re-reads the shared auth file, so one recycle normally clears the
- * wall. If the shared login itself is dead, every new child fails the same way;
- * the bound stops a recycle-per-wake loop and leaves the failure visible. */
-export const AUTH_RECOVERY_MAX_PER_WINDOW = 2;
-export const AUTH_RECOVERY_WINDOW_MS = 6 * 60 * 60_000;
-
-/** Count this owner's auth recoveries the host recorded inside the window. */
-export function recentAuthRecoveryCount(
-  events: readonly PtyHostEvent[],
-  ownerId: string,
-  nowMs: number,
-  windowMs: number = AUTH_RECOVERY_WINDOW_MS,
-): number {
-  let count = 0;
-  for (const raw of events) {
-    const event = raw as Record<string, unknown>;
-    if (event.kind !== 'quota-recovery-started' || event.cause !== 'auth') continue;
-    if (event.recoveryOwnerId !== ownerId) continue;
-    const startedAtMs = event.startedAtMs;
-    if (typeof startedAtMs !== 'number' || !Number.isFinite(startedAtMs)) continue;
-    if (nowMs - startedAtMs <= windowMs) count += 1;
-  }
-  return count;
-}
-
-/** Pure, fail-closed eligibility gate for the one automatic lifecycle action in
- * this path. A quota recycle is useful only when gateway auto-routing can choose
- * a different credential. An auth recycle (P-004) is useful on any route: the
- * fresh child re-reads the shared login the old child holds a spent copy of.
- * Both are safe only for a headless agent-owned host carrying the
- * operation/dedup contract. */
-export function decideQuotaWakeRecovery(input: {
-  host: PsuInjectHostView;
-  subscriberId: string;
-  deliveryId: string;
-  accountMode?: string | null;
-  /** Auth recoveries already recorded for this owner inside the window. */
-  priorAuthRecoveries?: number;
-}): QuotaWakeRecoveryDecision {
-  const base = { operationId: input.deliveryId, cause: 'quota' } as const;
-  if (input.host.ownerId !== input.subscriberId) return { ...base, eligible: false, reason: 'wrong-owner' };
-  if (input.host.authBlocked === true) {
-    const auth = { ...base, cause: 'auth' } as const;
-    if (input.host.bridgeTty !== false) return { ...auth, eligible: false, reason: 'not-headless' };
-    if (!hostIsAgentLaunched(input.host as PsuPtyHost)) {
-      return { ...auth, eligible: false, reason: 'not-agent-launched' };
-    }
-    if (!hostSupports(input.host as PsuPtyHost, 'auth-recovery')) {
-      return { ...auth, eligible: false, reason: 'host-capability-missing' };
-    }
-    if ((input.priorAuthRecoveries ?? 0) >= AUTH_RECOVERY_MAX_PER_WINDOW) {
-      return { ...auth, eligible: false, reason: 'auth-recovery-exhausted' };
-    }
-    return { ...auth, eligible: true, reason: 'eligible' };
-  }
-  if (input.host.quotaBlocked !== true) return { ...base, eligible: false, reason: 'not-quota-blocked' };
-  if (input.host.bridgeTty !== false) return { ...base, eligible: false, reason: 'not-headless' };
-  if (!hostIsAgentLaunched(input.host as PsuPtyHost)) {
-    return { ...base, eligible: false, reason: 'not-agent-launched' };
-  }
-  if (input.accountMode !== 'auto') return { ...base, eligible: false, reason: 'route-not-auto' };
-  if (!hostSupports(input.host as PsuPtyHost, 'quota-recovery')) {
-    return { ...base, eligible: false, reason: 'host-capability-missing' };
-  }
-  return { ...base, eligible: true, reason: 'eligible' };
-}
 
 export interface QuotaRecoveryReceipt {
   status: 'ready' | 'dropped';

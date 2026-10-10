@@ -48,6 +48,7 @@ vi.mock('../../../role-launch-spec', async (original) => ({
 vi.mock('../../../role-codex-home', async (original) => ({
   ...(await original<typeof import('../../../role-codex-home')>()),
   ensureSuCodexHomeConfig: mocks.ensureHome,
+  ensureSuCodexHomeConfigAsync: mocks.ensureHome,
   writeRoleCodexHome: mocks.roleHome,
 }));
 vi.mock('../../../blueprint/operation-worker-binding', async (original) => ({

@@ -63,19 +63,29 @@ async function main() {
   // succeeds, then spends its ordinary deadline on a withheld response.
   const privateSidecar = e.PAPERCUSP_EMBED_SIDECAR_URL!;
   assert.match(privateSidecar, /^http:\/\/127\.0\.0\.1:\d+$/);
-  let healthyEmbed = true;
   let embedRequests = 0;
+  const healthyQuestion = 'Private healthy HTTP inference diagnostic';
+  const timeoutQuestion = 'Private timeout HTTP inference diagnostic';
+  const diagnosticEmbeds = new Map([[healthyQuestion, 0], [timeoutQuestion, 0]]);
   embedServer = createServer(async (request, response) => {
-    request.resume();
     if (request.url === '/embed') {
       embedRequests++;
-      if (healthyEmbed) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const query = body.kind === 'query' && body.texts?.length === 1 ? body.texts[0] : null;
+      if (diagnosticEmbeds.has(query)) diagnosticEmbeds.set(query, diagnosticEmbeds.get(query)! + 1);
+      // Host startup also embeds documents and unrelated queries. Attribute
+      // the two controls by the exact query payload and withhold ONLY the
+      // timeout control; aggregate host traffic is not an assertion oracle.
+      if (query !== timeoutQuestion) {
         response.setHeader('content-type', 'application/json');
-        response.end(JSON.stringify({ vectors: [Array.from({ length: 768 }, (_, i) => i === 0 ? 1 : 0)],
+        response.end(JSON.stringify({ vectors: body.texts.map(() => Array.from({ length: 768 }, (_, i) => i === 0 ? 1 : 0)),
           dims: 768, runtime: 'private-http-fixture', modelRev: 'private-http-fixture' }));
       }
       return;
     }
+    request.resume();
     try {
       const upstream = await fetch(privateSidecar + '/healthz', { signal: AbortSignal.timeout(2000) });
       response.writeHead(upstream.status, { 'content-type': 'application/json' });
@@ -138,8 +148,7 @@ async function main() {
   const { sql } = getOrgPg();
   const diagnosticRequests: Array<Record<string, unknown>> = [];
   for (const control of ['healthy', 'timeout'] as const) {
-    healthyEmbed = control === 'healthy';
-    const question = `Private ${control} HTTP inference diagnostic`;
+    const question = control === 'healthy' ? healthyQuestion : timeoutQuestion;
     const accepted = await call('consult:get_feedback', { request_key: `private-http-embed-${control}`,
       question, allow_dispatch: false });
     assert.equal(accepted.verdict, 'accepted');
@@ -166,12 +175,12 @@ async function main() {
     assert.ok(!JSON.stringify(recorded).includes(question), 'diagnostic telemetry leaked the request text');
     const read = await call('conversations:get', { id: accepted.conversation_id });
     writeFileSync(join(evidenceDir, `embedding-${control}.json`), JSON.stringify({ base, identity, accepted,
-      persisted, recorded, read, embedRequests }));
+      persisted, recorded, read, embedRequests, diagnosticEmbedRequests: diagnosticEmbeds.get(question) }));
     diagnosticRequests.push({ control, conversationId: accepted.conversation_id,
       correlationId: measurement.correlationId, embeddingOutcome: measurement.stages.embedding.outcome,
       embeddingErrorCode: measurement.stages.embedding.errorCode ?? null, telemetryMatches: true });
   }
-  assert.equal(embedRequests, 2, 'both controls must reach the same real HTTP client boundary');
+  assert.deepEqual([...diagnosticEmbeds.values()], [1, 1], 'each exact control must reach the real HTTP client boundary once');
   const lockKey = 741101;
   // Hold ONLY the background lease transition. The queued intent/post and
   // HTTP response must commit while this real production UPDATE waits.

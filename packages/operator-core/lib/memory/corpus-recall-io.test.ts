@@ -8,6 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryWorkDeadline } from './op-deadline';
 
 const runHybridSearch = vi.fn();
 const buildQueryEmbedder = vi.fn(async () => (async () => [0.1, 0.2]) as unknown);
@@ -208,6 +209,42 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
         expect.objectContaining({ source: 'plan',status: 'not-run' }),
       ]));
     } finally {
+      planSource.mockImplementation(() => ({ name: 'plan' }));
+      docSource.mockImplementation(() => ({ name: 'doc' }));
+      reportSource.mockImplementation(() => ({ name: 'report' }));
+    }
+  });
+
+  it('retains healthy sources when both plan rankers stall under a shorter native caller deadline', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    await warmCorpusEmbedder();
+    const stalled = vi.fn(async () => await new Promise<never>(() => {}));
+    planSource.mockImplementation(() => ({ name: 'plan', lexical: stalled, embedding: stalled }));
+    const row = hit({ source: 'doc', source_id: 'harness:papercusp:repair',
+      excerpt: 'http2 transport repair prerequisite: keep snapshot', score: 1,
+      meta: { section: 'Repair' } });
+    docSource.mockImplementation(() => ({ name: 'doc', lexical: async () => [{ key: 'doc:repair', row, score: 1 }] }));
+    reportSource.mockImplementation(() => ({ name: 'report', lexical: async () => [] }));
+    const deadline = createMemoryWorkDeadline(400);
+    try {
+      const result = await recallCorpusContext({ ...base, harnessSlugs: ['papercusp'],
+        excludeOwnerId: 'su-me', signal: deadline.signal, deadline });
+      expect(result.outcome).toBe('ok');
+      expect(result.block).toContain('keep snapshot');
+      expect(result.stages).toHaveLength(2);
+      for (const stage of result.stages!) {
+        expect(stage.lexical.sourceCalls).toEqual(expect.arrayContaining([
+          expect.objectContaining({ source: 'plan', status: 'timed-out', rows: null }),
+          expect.objectContaining({ source: 'doc', status: 'ran', rows: 1 }),
+        ]));
+        expect(stage.semantic.sourceCalls).toEqual(expect.arrayContaining([
+          expect.objectContaining({ source: 'plan', status: 'timed-out', rows: null }),
+        ]));
+      }
+      expect(deadline.signal.aborted).toBe(false);
+    } finally {
+      deadline.close();
       planSource.mockImplementation(() => ({ name: 'plan' }));
       docSource.mockImplementation(() => ({ name: 'doc' }));
       reportSource.mockImplementation(() => ({ name: 'report' }));

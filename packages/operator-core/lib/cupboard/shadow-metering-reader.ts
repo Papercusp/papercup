@@ -21,6 +21,11 @@
  * - `tool_invocations_identity_attribution`: tool calls, reported as counts (priced 0, D-009).
  */
 import type { Sql } from 'postgres';
+import type { WorkItem } from '../work-items';
+import { isSufficientEvidence } from '../work-item-completion-authority';
+import type { SpecAdequacyCompletionGateResult } from '../agent-tools/work_items/spec-test-adequacy-gate';
+import type { FundedIdentityTurn, IdentityWorkItemBinding } from './funded-turn-store';
+import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
 import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
 import {
   buildShadowStatements,
@@ -306,4 +311,126 @@ export async function readIdentityTurnBilledCost(sql: Sql, input: IdentityTurnUs
       billedInferenceMicros: BigInt(money[1]!).toString() });
   }
   return { ok: true, billedInferenceMicros, samples };
+}
+
+export type OutcomeWorkItem = Pick<WorkItem, 'id' | 'harness' | 'state' | 'kind' | 'payload' |
+  'terminalOwner' | 'terminalCompletionRef' | 'terminalCompletionEvidence' | 'completionAuthority'>;
+export type IdentityOutcomeCost = {
+  readonly basis: 'local-funded-release-usage';
+  readonly releaseRef: string;
+  readonly currency: 'USD';
+} & ({
+  readonly status: 'verified';
+  readonly costPerAcceptedOutcomeMicros: string;
+  readonly totalCostMicros: string;
+  readonly acceptedOutcomes: number;
+  readonly totalOutcomes: number;
+  readonly turns: number;
+  readonly evidenceRefs: readonly string[];
+} | {
+  readonly status: 'unavailable';
+  readonly costPerAcceptedOutcomeMicros: null;
+  readonly reason: string;
+});
+
+/** D-076: local funded spend includes failed outcomes; only current, graded
+ * successful completions enter the denominator. This is not global BYOC spend.
+ * No empty/partial/legacy population establishes a zero-dollar outcome. */
+export async function readIdentityOutcomeCost(sql: Sql, input: { workspaceId: string; releaseRef: string }, deps: {
+  readTurns?: (workspaceId: string, releaseRef: string) => Promise<FundedIdentityTurn[]>;
+  readWorkItem?: (ref: IdentityWorkItemBinding) => Promise<OutcomeWorkItem | null>;
+  readBilled?: typeof readIdentityTurnBilledCost;
+  grade?: (item: OutcomeWorkItem) => Promise<SpecAdequacyCompletionGateResult>;
+} = {}): Promise<IdentityOutcomeCost> {
+  const scope = { basis: 'local-funded-release-usage' as const, releaseRef: input.releaseRef, currency: 'USD' as const };
+  const unavailable = (reason: string): IdentityOutcomeCost =>
+    ({ ...scope, status: 'unavailable', costPerAcceptedOutcomeMicros: null, reason });
+  if (!input.workspaceId?.trim() || !input.releaseRef?.startsWith('identity-release:')) return unavailable('invalid-scope');
+  // Copy authority before the first await; a caller cannot retarget an in-flight read.
+  const workspaceId = input.workspaceId, releaseRef = input.releaseRef;
+  try {
+    const { FundedIdentityTurnStore, isIdentityWorkItemBinding } = await import('./funded-turn-store');
+    const turns = await (deps.readTurns ?? ((workspace, release) =>
+      new FundedIdentityTurnStore(sql).readReleasePopulation(workspace, release)))(workspaceId, releaseRef);
+    if (turns.length === 0) return unavailable('no-funded-usage');
+    if (turns.length > 500) return unavailable('population-limit');
+    const population = structuredClone(turns);
+    const seenTurns = new Set<string>(), seenEvents = new Set<string>(), evidence = new Set<string>();
+    const outcomes = new Map<string, { ref: IdentityWorkItemBinding; owners: Set<string> }>();
+    let totalCost = 0n;
+    for (const turn of population) {
+      const b = turn.binding, pending = turn.settlementOutbox;
+      if (b.workspaceId !== workspaceId || b.offer.skuRef !== releaseRef || seenTurns.has(turn.turnId))
+        return unavailable('population-binding-mismatch');
+      seenTurns.add(turn.turnId);
+      if (!isIdentityWorkItemBinding(b.workItem)) return unavailable('unlinked-outcome');
+      if (turn.state !== 'settled' || !pending || !turn.fundingReceipt || !turn.usageEventKeys?.length ||
+          turn.closedAtMs === null || b.nativeTurnId === null) return unavailable('unsettled-turn');
+      const billed = await (deps.readBilled ?? readIdentityTurnBilledCost)(sql, { ...b,
+        nativeTurnId: b.nativeTurnId, usageEventKeys: [...turn.usageEventKeys] });
+      if (!billed.ok) return unavailable(billed.code);
+      if (pending.billedInferenceMicros !== String(billed.billedInferenceMicros)) return unavailable('billed-cost-mismatch');
+      const decimal = (v: unknown): v is string => typeof v === 'string' && /^(0|[1-9][0-9]*)$/.test(v);
+      if (!decimal(pending.priorRemainderNumerator) || !decimal(pending.receipt.amountMicros))
+        return unavailable('settlement-evidence-mismatch');
+      const quote = quoteIdentityInferenceTurn({ offer: b.offer, billedInferenceMicros: billed.billedInferenceMicros,
+        inferenceCeilingMicros: b.inferenceCeilingMicros, priorRemainderNumerator: BigInt(pending.priorRemainderNumerator) });
+      const r = pending.receipt, f = turn.fundingReceipt;
+      if (!quote.ok || r.amountMicros !== String(quote.amountMicros) ||
+          pending.remainderNumerator !== String(quote.remainderNumerator) ||
+          r.channelId !== b.channelId || r.usageNonce !== turn.turnId || r.voucherDigest !== f.voucherDigest ||
+          r.meterQuantity !== String(quote.reservationQuantity) || !r.signature?.trim() || r.occurredAtMs !== turn.closedAtMs ||
+          f.usageNonce !== turn.turnId || f.channelId !== b.channelId || f.releaseRef !== releaseRef ||
+          f.payer !== b.payer || f.seller !== b.seller || f.priceVersion !== b.offer.priceVersion ||
+          f.splitManifestHash !== b.offer.splitManifestHash)
+        return unavailable('settlement-evidence-mismatch');
+      const expectedEvents = new Set(turn.usageEventKeys);
+      if (expectedEvents.size !== turn.usageEventKeys.length || billed.samples.length !== expectedEvents.size)
+        return unavailable('usage-population-mismatch');
+      for (const sample of billed.samples) {
+        if (!expectedEvents.delete(sample.usageEventKey) || seenEvents.has(sample.usageEventKey) ||
+            !sample.sampleId || !sample.activationEventId) return unavailable('usage-population-mismatch');
+        seenEvents.add(sample.usageEventKey);
+        evidence.add(`agent-usage-sample:${sample.sampleId}`);
+        evidence.add(`identity-activation:${sample.activationEventId}`);
+      }
+      evidence.add(`funded-identity-turn:${turn.turnId}`);
+      totalCost += billed.billedInferenceMicros + quote.amountMicros;
+      const key = JSON.stringify([b.workItem.harness, b.workItem.id]);
+      const outcome = outcomes.get(key) ?? { ref: { ...b.workItem }, owners: new Set<string>() };
+      outcome.owners.add(b.ownerId);
+      outcomes.set(key, outcome);
+    }
+    const readItem = deps.readWorkItem ?? (async (ref: IdentityWorkItemBinding) =>
+      (await import('../work-items')).getWorkItem(ref.id, ref.harness, {}, sql));
+    const grade = deps.grade ?? (async (item: OutcomeWorkItem) =>
+      (await import('../agent-tools/work_items/spec-test-adequacy-gate')).specTestAdequacyCompletionGate({ workItem: item,
+        attestation: { classRef: item.kind === 'bug' ? 'plan-class-bugfix' : 'plan-class-feature-ship' } }));
+    let acceptedOutcomes = 0;
+    for (const { ref, owners } of outcomes.values()) {
+      const item = await readItem(ref);
+      if (!item || item.id !== ref.id || item.harness !== ref.harness) return unavailable('outcome-binding-mismatch');
+      // Canonical successful states and legacy equivalents; dropped outcomes
+      // contribute their spend, never a fabricated successful denominator.
+      if (!['done', 'passed', 'resolved', 'dropped', 'deprecated', 'closed'].includes(item.state))
+        return unavailable('outcome-pending');
+      if (['dropped', 'deprecated', 'closed'].includes(item.state)) continue;
+      if (owners.size !== 1 || !item.terminalOwner || !owners.has(item.terminalOwner) ||
+          !item.terminalCompletionRef || !['committed', 'validated'].includes(item.completionAuthority ?? '') ||
+          !isSufficientEvidence(item.terminalCompletionEvidence)) return unavailable('completion-unverified');
+      const grading = await grade(item);
+      if (!grading.ok || !grading.applicable || grading.checked.length === 0 || grading.exempted?.length)
+        return unavailable('grading-unverified');
+      acceptedOutcomes += 1;
+      evidence.add(`work-item:${ref.harness}:${ref.id}:${item.terminalCompletionRef}`);
+      for (const clause of grading.checked) evidence.add(`graded-clause:${clause}`);
+    }
+    if (acceptedOutcomes === 0) return unavailable('no-accepted-outcomes');
+    const denominator = BigInt(acceptedOutcomes);
+    return { ...scope, status: 'verified', costPerAcceptedOutcomeMicros: String((totalCost + denominator - 1n) / denominator),
+      totalCostMicros: String(totalCost), acceptedOutcomes, totalOutcomes: outcomes.size, turns: population.length,
+      evidenceRefs: [...evidence].sort() };
+  } catch {
+    return unavailable('evidence-unavailable');
+  }
 }

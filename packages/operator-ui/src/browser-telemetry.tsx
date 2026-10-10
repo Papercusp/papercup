@@ -4,6 +4,7 @@
 // An unavailable host endpoint drops events; it never implies consent.
 import { useEffect, type ReactNode } from 'react';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { useOperatorWorkspaceLocation, type OperatorWorkspaceLocation } from './seam';
 
 interface TelemetryConfig {
   enabled: boolean;
@@ -39,7 +40,10 @@ async function consentedClient(cancelled: () => boolean = () => false) {
 }
 
 /** Recheck consent for every explicit event. No queue, opt-in or replay change. */
-export async function captureBrowserTelemetry(event: string, properties: Record<string, string | number | boolean>): Promise<void> {
+export async function captureBrowserTelemetry(event: string, properties: Record<string, string | number | boolean>, location: OperatorWorkspaceLocation = 'local'): Promise<void> {
+  // Hosted accounts have no desktop telemetry consent endpoint. Absence of
+  // that host capability cannot establish consent or justify a probe.
+  if (location === 'cloud') return;
   try {
     const client = await consentedClient();
     client?.capture(event, properties);
@@ -47,11 +51,13 @@ export async function captureBrowserTelemetry(event: string, properties: Record<
 }
 
 export function PostHogProvider({ children }: { children: ReactNode }) {
+  const workspaceLocation = useOperatorWorkspaceLocation();
   useEffect(() => {
+    if (workspaceLocation === 'cloud') return;
     if (state.client) return;
     let cancelled = false;
     void consentedClient(() => cancelled).catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [workspaceLocation]);
   return <>{children}</>;
 }

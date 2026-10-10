@@ -133,10 +133,11 @@ export function selectAppliedReceipt(
 export function appliedIdentityArtifact(
   raw: unknown,
   revision: KernelExecutionRevision | null | undefined,
+  replay: (value: unknown) => ResolvedAgentSpecification = replayAgentSpecification,
 ): ResolvedAgentSpecification | null {
   const receipt = selectAppliedReceipt(raw, revision);
   if (!revision || !receipt?.specificationArtifact) return null;
-  const artifact = replayAgentSpecification(receipt.specificationArtifact);
+  const artifact = replay(receipt.specificationArtifact);
   return artifact.specificationRevision === revision.specificationRevision ? artifact : null;
 }
 
@@ -189,12 +190,29 @@ export type IdentityArtifactResolution =
 export function resolveIdentityArtifact(
   record: Record<string, unknown>,
   applied: KernelExecutionRevision | null | undefined,
+  replay: (value: unknown) => ResolvedAgentSpecification = replayAgentSpecification,
 ): IdentityArtifactResolution {
+  // WI-10008237: when the applied receipt IS the record (no transition in
+  // flight — the common case), both replays below receive the SAME artifact
+  // object, and replay is a pure function of it. Replaying it once halves the
+  // canonical-hash work per resolution (the wedged sweep spent 44% of a bg-host
+  // main-thread window here). Only a successful replay is remembered; a throw
+  // propagates exactly as before. Sharing the result is already the contract:
+  // the fallback below assigns `artifact = current`.
+  const replayed = new Map<unknown, ResolvedAgentSpecification>();
+  const replayOnce = (value: unknown): ResolvedAgentSpecification => {
+    let spec = replayed.get(value);
+    if (!spec) {
+      spec = replay(value);
+      replayed.set(value, spec);
+    }
+    return spec;
+  };
   let artifact: ResolvedAgentSpecification | null;
   let current: ResolvedAgentSpecification | null;
   try {
-    artifact = appliedIdentityArtifact(record, applied);
-    current = record.specificationArtifact ? replayAgentSpecification(record.specificationArtifact) : null;
+    artifact = appliedIdentityArtifact(record, applied, replayOnce);
+    current = record.specificationArtifact ? replayOnce(record.specificationArtifact) : null;
     if (current && current.specificationRevision !== record.specificationRevision) {
       return { kind: 'stale-artifact', reason: 'record-revision-mismatch' };
     }

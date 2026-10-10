@@ -45,7 +45,7 @@ export function applyEnvLocal({ root, env }?: {
  * tests should drive {@link applyEnvLocal} (pure) rather than faking the delegation.
  *
  * @param {{ root?: string, env?: Record<string, string | undefined> }} [opts]
- * @returns {{ url: string, source: string, envLocal: ReturnType<typeof applyEnvLocal> }}
+ * @returns {{ url: string, source: string, via?: string, envLocal: ReturnType<typeof applyEnvLocal> }}
  */
 export function resolveScriptPgUrl({ root, env }?: {
     root?: string;
@@ -53,6 +53,7 @@ export function resolveScriptPgUrl({ root, env }?: {
 }): {
     url: string;
     source: string;
+    via?: string;
     envLocal: ReturnType<typeof applyEnvLocal>;
 };
 /**
@@ -93,3 +94,8 @@ export const PG_URL_ENV_VARS: string[];
  * database is NOT the one to talk to.
  */
 export const PG_ISOLATION_ENV_VARS: string[];
+/**
+ * The directory whose `.env.local` every operator unit sources (its `WorkingDirectory`).
+ * The default `root` for {@link applyEnvLocal} and {@link resolveScriptPgUrl}.
+ */
+export const OPERATOR_ENV_ROOT: string;

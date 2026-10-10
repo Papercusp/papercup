@@ -37,6 +37,7 @@ import { stripCommentsOnly } from '../../../scripts/lib/strip-comments-and-strin
 import {
   applyEnvLocal,
   describePgUrlResolution,
+  OPERATOR_ENV_ROOT,
   parseEnvFile,
   resolveScriptPgUrl,
   PG_ISOLATION_ENV_VARS,
@@ -150,6 +151,25 @@ describe('resolveScriptPgUrl', () => {
       expect(resolved.source).toBe('env');
       expect(resolved.via).toBe('DATABASE_URL');
       expect(resolved.envLocal.applied).toEqual(['DATABASE_URL']);
+    } finally {
+      vi.unstubAllEnvs();
+      _resetHarnessAdminUrlCacheForTests();
+    }
+  });
+
+  it('DEFAULTS to the operator env file, so a caller cannot reach the sidecar PG by omission', () => {
+    // EI-25622462074429450 / EI-25621586767076562: the default root used to be the repo
+    // root, whose .env.local no operator unit sources (every unit runs from apps/operator).
+    // Under a shell without a DB url (capability:bash strips it) every root-less caller —
+    // lint:migrations among them — fell through to the discovery file and judged a desktop
+    // sidecar PG: 21 reserved migrations reported unreserved.
+    const operatorEnvFile = join(REPO_ROOT, 'apps', 'operator', '.env.local');
+    expect(OPERATOR_ENV_ROOT).toBe(join(REPO_ROOT, 'apps', 'operator'));
+    expect(applyEnvLocal({ env: {} }).file).toBe(operatorEnvFile);
+    for (const name of [...PG_URL_ENV_VARS, ...PG_ISOLATION_ENV_VARS]) vi.stubEnv(name, undefined);
+    _resetHarnessAdminUrlCacheForTests();
+    try {
+      expect(resolveScriptPgUrl({ env: {} }).envLocal.file).toBe(operatorEnvFile);
     } finally {
       vi.unstubAllEnvs();
       _resetHarnessAdminUrlCacheForTests();

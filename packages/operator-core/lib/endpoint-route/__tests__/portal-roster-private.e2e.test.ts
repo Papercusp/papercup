@@ -4,10 +4,70 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
-import { buildPortalRosterBrowser, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy } from '../../../test/portal-roster-browser-fixture';
+import { buildPortalRosterBrowser, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateHarnessesBrowserMount, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy } from '../../../test/portal-roster-browser-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real private Portal Work opens the exact member by keyboard and retains scoped dock queries across reload', async context => {
+    preparePrivateRosterSocketRoot();
+    await verifyPrivateHudReadPolicy();
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    await verifyPrivateHarnessesBrowserMount({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor',
+      harnesses: { hive: 'preflight-hive', selected: 'preflight-selected', neighbor: 'preflight-neighbor', foreign: 'preflight-foreign' } });
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+        'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/harness-registry.ts',
+        'packages/operator-core/lib/harness/projects-lite.ts', 'apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx',
+        'apps/operator/app/adv/harnesses/PotWorkspaceCards.tsx', 'apps/operator/app/adv/harnesses/PotMemberRail.tsx',
+        'apps/operator/app/adv/harnesses/harness-axis.ts', 'apps/operator/app/adv/harnesses/WorkItemsPanel.tsx',
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+      execute: async (observe, evidenceDir) => {
+        await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1',
+          ROSTER_WORK_BROWSER_PROOF: '1' };
+        for (const key of ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION',
+          'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
+          'ROSTER_SETTINGS_BROWSER_PROOF', 'ROSTER_PROMPTS_BROWSER_PROOF', 'ROSTER_INBOX_BROWSER_PROOF',
+          'ROSTER_PLANS_BROWSER_PROOF', 'ROSTER_DOCS_BROWSER_PROOF', 'ROSTER_HUD_BROWSER_PROOF']) delete env[key];
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+          '--portal-source=' + portalSource],
+        { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
+          if (line.startsWith('ROSTER_STOP_HTTP_PHASE ')) console.info(line); });
+        let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+        try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+        finally { await rm(join(evidenceDir, 'node_modules')); }
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
+          exitWaitTimedOut: false, stdioDrainTimedOut: false, code: 0 });
+        expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
+        const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_BROWSER_RECEIPT '));
+        expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+        expect(JSON.parse(line!.slice('ROSTER_COORD_BROWSER_RECEIPT '.length))).toMatchObject({
+          workspace: expect.stringMatching(/^test-runtime-/), authMethod: 'private-loopback-work-with-cookie',
+          keyboardDrill: true, keyboardMemberSelection: true, deepLinkReload: true, dockQueryRekeyed: true,
+          shellQueryPreserved: true, foreignExcluded: true, foreignRegistryControl: true, denialStatus: 403,
+          denialTransport: 'actual-private-work-external-host', selectionRetained: true });
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ROSTER_WORK_BROWSER_PROOF_RUN ' + runId);
+  }, options.testTimeoutMs);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Work browser graph mounts through the maintained standalone boundary', async () => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    expect(await verifyPrivateHarnessesBrowserMount({ portalSourceRoot: portalSource,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor',
+      harnesses: { hive: 'preflight-hive', selected: 'preflight-selected', neighbor: 'preflight-neighbor', foreign: 'preflight-foreign' },
+    })).toMatchObject({ mounted: true, sourceCount: expect.any(Number) });
+  }, 180_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal HUD browser graph compiles through the maintained standalone boundary', async () => {

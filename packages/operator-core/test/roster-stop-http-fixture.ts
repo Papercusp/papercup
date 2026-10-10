@@ -173,6 +173,25 @@ async function coordCanary(health: unknown) {
   const verifyReceipt = (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean, summary = marker) =>
     verifyPrivateCoordReceipt(receipt, { ownerId: expectedOwner, summary, wake }, getMessageById);
   if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
+    let harnesses: { hive: string; selected: string; neighbor: string; foreign: string } | undefined;
+    if (process.env.ROSTER_WORK_BROWSER_PROOF === '1') {
+      const { mutateHarnessRegistry } = await import('../lib/harness-registry');
+      const stem = `private-work-${process.pid}`;
+      harnesses = { hive: stem + '-hive', selected: stem + '-selected', neighbor: stem + '-neighbor', foreign: stem + '-foreign' };
+      const seedRoot = mkdtempSync(join(tmpdir(), 'work-'));
+      const project = (slug: string, fields: { harness_kind?: string; hive_slug?: string } = {}) => {
+        const path = join(seedRoot, slug);
+        mkdirSync(join(path, '.papercusp'), { recursive: true });
+        return { slug, path, ...fields };
+      };
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+        project(harnesses!.hive, { harness_kind: 'hive' }),
+        project(harnesses!.selected, { hive_slug: harnesses!.hive }),
+        project(harnesses!.neighbor, { hive_slug: harnesses!.hive })] }), workspace);
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+        project(harnesses!.foreign, { harness_kind: 'hive' })] }), workspace + '-foreign');
+      writeFileSync(join(evidence, 'portal-work-seed.json'), JSON.stringify(harnesses, null, 2));
+    }
     let docs: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string } | undefined;
     if (process.env.ROSTER_DOCS_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
@@ -242,6 +261,7 @@ async function coordCanary(health: unknown) {
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
       ...(process.env.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
+      ...(harnesses ? { harnesses } : {}),
       ...(docs ? { docs } : {}),
       ...(plans ? { plans } : {}),
       ...(inbox ? { inbox } : {}),

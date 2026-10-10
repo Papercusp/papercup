@@ -19,7 +19,10 @@
  */
 import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
-import { readIdentityTurnBilledCost, readShadowStatement, shadowMonthBounds, type IdentityTurnUsageBinding } from './shadow-metering-reader';
+import { readIdentityOutcomeCost, readIdentityTurnBilledCost, readShadowStatement, shadowMonthBounds, type IdentityTurnUsageBinding,
+  type OutcomeWorkItem } from './shadow-metering-reader';
+import type { FundedIdentityTurn } from './funded-turn-store';
+import { identityPerUseOfferTerms, quoteIdentityInferenceTurn } from './identity-per-use-offer';
 
 /** A write verb or side-effecting function anywhere in the statement. */
 const WRITE_RE =
@@ -110,6 +113,112 @@ describe('exact turn billed-cost evidence', () => {
     const failing = (() => Promise.reject(new Error('unavailable'))) as unknown as Sql;
     expect(await readIdentityTurnBilledCost(failing, binding))
       .toMatchObject({ ok: false, code: 'identity-usage-unavailable' });
+  });
+});
+
+describe('current graded outcome cost from exact local funded usage', () => {
+  const offered = identityPerUseOfferTerms({ identity: { id: 'engineer', version: '1.2.0' }, markupBps: 2500 });
+  if (!offered.ok) throw new Error(offered.detail);
+  const offer = offered.terms;
+  const scope = { workspaceId: 'workspace', releaseRef: offer.skuRef };
+  const sql = recordingSql(() => []).sql;
+  const outcome = (): OutcomeWorkItem => ({ id: 'WI-1', harness: 'papercusp', kind: 'feature', payload: {}, state: 'done',
+    terminalOwner: 'owner', terminalCompletionRef: 'completion-1', completionAuthority: 'committed' as const,
+    terminalCompletionEvidence: { verifiedHow: 'integration', testsRun: 'vitest', testResult: 'passed' } });
+  function turn(n = 1, workItem = 'WI-1', billed = 999n): FundedIdentityTurn {
+    const quote = quoteIdentityInferenceTurn({ offer, billedInferenceMicros: billed, inferenceCeilingMicros: billed });
+    if (!quote.ok) throw new Error(quote.detail);
+    const id = String(n), key = id.padStart(64, '0');
+    const receipt = { channelId: 'channel', usageNonce: id, meterQuantity: String(quote.reservationQuantity),
+      amountMicros: String(quote.amountMicros), voucherDigest: 'digest', occurredAtMs: 3, signature: 'seller-signature' };
+    return { turnId: id, accountId: 'account', revision: 6, state: 'settled',
+      binding: { workspaceId: 'workspace', ownerId: 'owner', principalId: 'payer', nativeSessionId: 'session', nativeTurnId: id,
+        specificationRevision: 'spec', stateRevision: 'state', workItem: { id: workItem, harness: 'papercusp' },
+        payer: 'payer', seller: 'seller', offerId: 'offer', channelId: 'channel', offer,
+        inferenceCeilingMicros: billed, expiresAtMs: 100 },
+      usageEventKeys: [key], closedAtMs: 3,
+      fundingReceipt: { ...receipt, payer: 'payer', seller: 'seller', releaseRef: offer.skuRef,
+        priceVersion: offer.priceVersion, splitManifestHash: offer.splitManifestHash, offerId: 'offer', meterUnit: offer.meterUnit,
+        unitPriceMicros: String(offer.unitPriceMicros), reservedMicros: String(quote.reservedMarkupMicros), amountMicros: null,
+        cumulativeClaimMicros: String(quote.reservedMarkupMicros), expiresAtMs: 100, voucherDigest: 'digest',
+        voucherSignature: 'payer-signature', receiptSignature: null, state: 'reserved', reservedAtMs: 1, settledAtMs: null },
+      settlementOutbox: { billedInferenceMicros: String(billed), priorRemainderNumerator: '0',
+        remainderNumerator: String(quote.remainderNumerator), receipt,
+        samples: [{ usageEventKey: key, sampleId: id, activationEventId: id, billedInferenceMicros: String(billed) }] } };
+  }
+  const dependencies = (turns = [turn()]) => ({
+    readTurns: async () => turns,
+    readWorkItem: async (ref: { id: string }) => ({ ...outcome(), id: ref.id }),
+    readBilled: async (_sql: Sql, input: IdentityTurnUsageBinding) => ({ ok: true as const,
+      billedInferenceMicros: BigInt(turns.find(t => t.binding.nativeTurnId === input.nativeTurnId)!.settlementOutbox!.billedInferenceMicros),
+      samples: turns.find(t => t.binding.nativeTurnId === input.nativeTurnId)!.settlementOutbox!.samples }),
+    grade: async () => ({ ok: true as const, applicable: true as const, checked: ['accepted-clause@1'] }),
+  });
+  const read = (turns = [turn()], deps = {}) => readIdentityOutcomeCost(sql, scope, { ...dependencies(turns), ...deps });
+
+  it('counts work items once, includes settled markup, and retains exact cost and grading references', async () => {
+    const result = await read([turn(1), turn(2)]);
+    expect(result).toMatchObject({ status: 'verified', costPerAcceptedOutcomeMicros: '2496', totalCostMicros: '2496',
+      acceptedOutcomes: 1, totalOutcomes: 1, turns: 2, basis: 'local-funded-release-usage' });
+    if (result.status !== 'verified') throw new Error(result.reason);
+    expect(result.evidenceRefs).toContain('graded-clause:accepted-clause@1');
+    expect(result.evidenceRefs).toContain('funded-identity-turn:2');
+  });
+  it('includes unsuccessful spend in the numerator and rounds up the exact average', async () => {
+    expect(await read([turn(1, 'WI-1', 1n), turn(2, 'WI-2', 1n), turn(3, 'WI-3', 1n)], {
+      readWorkItem: async (ref: { id: string }) => ({ ...outcome(), id: ref.id, state: ref.id === 'WI-3' ? 'dropped' : 'done' }),
+    })).toMatchObject({ status: 'verified', totalCostMicros: '3', acceptedOutcomes: 2, totalOutcomes: 3,
+      costPerAcceptedOutcomeMicros: '2' });
+  });
+  it('refuses empty and overflowing populations, legacy attribution and every non-settled phase', async () => {
+    expect(await read([])).toMatchObject({ status: 'unavailable', reason: 'no-funded-usage' });
+    expect(await read(Array(501).fill(turn()))).toMatchObject({ reason: 'population-limit' });
+    const unlinked = turn(); delete (unlinked.binding as { workItem?: unknown }).workItem;
+    expect(await read([unlinked])).toMatchObject({ reason: 'unlinked-outcome' });
+    for (const state of ['prepared', 'funded', 'running', 'closed', 'settlement-pending'] as const)
+      expect(await read([{ ...turn(), state }])).toMatchObject({ reason: 'unsettled-turn' });
+  });
+  it('refuses wrong scope, duplicate turns and usage events shared across outcomes', async () => {
+    expect(await read([turn(), turn()])).toMatchObject({ reason: 'population-binding-mismatch' });
+    expect(await read([{ ...turn(), binding: { ...turn().binding, workspaceId: 'other' } }]))
+      .toMatchObject({ reason: 'population-binding-mismatch' });
+    const original = turn(2, 'WI-2');
+    const second = { ...original, usageEventKeys: turn().usageEventKeys,
+      settlementOutbox: { ...original.settlementOutbox!, samples: turn().settlementOutbox!.samples } };
+    expect(await read([turn(), second])).toMatchObject({ reason: 'usage-population-mismatch' });
+  });
+  it('refuses estimates, changed billed cost and changed immutable settlement evidence', async () => {
+    expect(await read([turn()], { readBilled: async () => ({ ok: false, code: 'identity-usage-not-bill-grade' }) }))
+      .toMatchObject({ reason: 'identity-usage-not-bill-grade' });
+    expect(await read([turn()], { readBilled: async () => ({ ok: true, billedInferenceMicros: 998n, samples: turn().settlementOutbox!.samples }) }))
+      .toMatchObject({ reason: 'billed-cost-mismatch' });
+    const original = turn(); const bad = { ...original, settlementOutbox: { ...original.settlementOutbox!,
+      receipt: { ...original.settlementOutbox!.receipt, amountMicros: '1' } } };
+    expect(await read([bad])).toMatchObject({ reason: 'settlement-evidence-mismatch' });
+  });
+  it('requires an exact current accepted completion by the funded owner with sufficient evidence', async () => {
+    for (const patch of [{ id: 'WI-other' }, { harness: 'other' }, { state: 'wip' }, { terminalOwner: 'other' },
+      { terminalCompletionRef: null }, { completionAuthority: 'proposed' }, { terminalCompletionEvidence: null }]) {
+      expect(await read([turn()], { readWorkItem: async () => ({ ...outcome(), ...patch }) }))
+        .toMatchObject({ status: 'unavailable', costPerAcceptedOutcomeMicros: null });
+    }
+    expect(await read([turn()], { readWorkItem: async () => ({ ...outcome(), state: 'dropped' }) }))
+      .toMatchObject({ reason: 'no-accepted-outcomes' });
+  });
+  it('requires nonempty applicable current grading and refuses manual exemptions or a failed audit', async () => {
+    for (const grade of [{ ok: true, applicable: false, checked: [] }, { ok: true, applicable: true, checked: [] },
+      { ok: true, applicable: true, checked: ['clause'], exempted: ['manual'] },
+      { ok: false, applicable: true, checked: ['clause'], retryable: true, reason: 'audit failed' }])
+      expect(await read([turn()], { grade: async () => grade })).toMatchObject({ reason: 'grading-unverified' });
+    expect(await read([turn()], { grade: async () => { throw new Error('database unavailable'); } }))
+      .toMatchObject({ reason: 'evidence-unavailable' });
+  });
+  it('pins caller scope across asynchronous population reads', async () => {
+    const input = { ...scope };
+    const deps = dependencies();
+    expect(await readIdentityOutcomeCost(sql, input, { ...deps, readTurns: async () => {
+      input.workspaceId = 'other'; input.releaseRef = 'identity-release:other@1.0.0'; return [turn()];
+    } })).toMatchObject({ status: 'verified', releaseRef: scope.releaseRef });
   });
 });
 

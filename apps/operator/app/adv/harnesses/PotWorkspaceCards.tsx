@@ -335,6 +335,12 @@ export default function PotWorkspaceCards({ groups, workspaceLabel, onDrill, onC
           'data-testid': row.isRoot ? `hive-card-${row.slug}` : `hive-member-${row.slug}`,
           className: row.isRoot ? 'pc-pot-row pc-pot-row--root' : 'pc-pot-row pc-pot-row--member',
           tabIndex: 0,
+          onKeyDown: (event) => {
+            if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+              || (event.key !== 'Enter' && event.key !== ' ')) return;
+            event.preventDefault();
+            onDrill(row.hiveRootSlug, row.slug);
+          },
         })}
         className="pc-pot-grid"
         style={{ flex: 1, minHeight: 0 }}

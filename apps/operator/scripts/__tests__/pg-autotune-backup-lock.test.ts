@@ -87,22 +87,31 @@ describe('pg-autotune host-backup exclusion', () => {
       },
       stdio: 'ignore',
     });
+    const closed = new Promise<number | null>((resolveExit) => apply.on('close', resolveExit));
+    let childClosed = false;
+    void closed.then(() => {
+      childClosed = true;
+    });
     try {
-      let held = false;
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (existsSync(entered)) {
-          held = spawnSync('flock', ['-n', lock, 'true']).status === 1;
-          break;
-        }
+      // Wait on an OBSERVED signal — the apply child reaching the fake npx — not a
+      // fixed wall-clock window. The old 100×20ms (2s) window expired before
+      // `node --import tsx` + the flock re-exec reached npx under gate load, so
+      // `held` stayed false without the lock ever being checked (WI-10008220:
+      // gate red at 33144c00 after exactly 2048ms). The deadline only bounds a
+      // child that never starts; it stays well inside the test timeout.
+      const deadline = Date.now() + 25_000;
+      while (!existsSync(entered) && !childClosed && Date.now() < deadline) {
         await delay(20);
       }
-      expect(held).toBe(true);
-      const exited = await new Promise<number | null>((resolveExit) => apply.on('close', resolveExit));
+      expect(existsSync(entered), 'the apply child never reached the guarded npx re-exec').toBe(true);
+      // The fake npx sleeps 2s after signalling, so the lock must be held now.
+      expect(spawnSync('flock', ['-n', lock, 'true']).status, 'producer lock not held while the apply child runs').toBe(1);
+      const exited = await closed;
       expect(exited).toBe(0);
       expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(0);
     } finally {
       if (apply.exitCode === null) apply.kill();
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 45_000);
 });

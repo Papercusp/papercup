@@ -115,6 +115,7 @@ describe('Cargo reporter CLI usage (EI-25299812440954833)', () => {
         });
         expect(result.error).toBeUndefined();
         expect(result.status, result.stderr).toBe(0);
+        expect(result.stderr).not.toContain('shared test-run reporter helpers unavailable');
         const args = JSON.parse(readFileSync(argvFile, 'utf8')) as string[];
         expect(args[0]).toBe(coverage ? 'llvm-cov' : 'test');
         expect(args.slice(args.indexOf('--') + 1)).toEqual([
@@ -1869,6 +1870,6 @@ describe('cargo rows record the MEASURED worktree, never the column default (WI-
     expect(before).toBeGreaterThan(-1);
     expect(spawnCall).toBeGreaterThan(before);
     expect(provenance).toBeGreaterThan(spawnCall);
-    expect(REPORTER_SOURCE).toMatch(/import\('\.\.\/libs\/test-config\/src\/admin-test-runs-reporter\.ts'\)/);
+    expect(REPORTER_SOURCE).toMatch(/tsImport\('\.\.\/libs\/test-config\/src\/admin-test-runs-reporter\.ts', import\.meta\.url\)/);
   });
 });

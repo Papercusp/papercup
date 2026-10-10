@@ -55,6 +55,9 @@ describe.skipIf(!preparation)('current official SWE-bench Pro pinned live contro
     expect(new Set(preparation!.taskIds).size).toBe(preparation!.taskIds.length);
     expect(sha(readFileSync(csv))).toBe(preparation!.datasetSha256);
     expect(sha(canonicalJson(preparation!.images))).toBe(preparation!.imageDigest);
+    const source = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: evalDir, encoding: 'utf8', timeout: 10_000 });
+    expect(source.status, source.stderr).toBe(0);
+    expect(source.stdout.trim()).toBe(preparation!.sourceCommit);
     const daemon = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], { encoding: 'utf8', timeout: 20_000 });
     expect(daemon.status, `${daemon.error?.message ?? ''} ${daemon.stderr}`).toBe(0);
     expect(daemon.stdout.trim()).not.toBe('');
@@ -95,6 +98,8 @@ describe.skipIf(!preparation)('current official SWE-bench Pro pinned live contro
     expect(measured).toMatchObject({ sourceCommit: frozen.version, datasetSha256: frozen.datasetSha256,
       imageDigest: frozen.imageDigest, images: frozen.images });
     expect(Object.keys(measured.taskOutputSha256)).toEqual([id]);
+    expect(measured.taskMeasurements[id].kind).toMatch(/^(parsed-tests|submission-import-failure)$/);
+    if (control === 'reference') expect(measured.taskMeasurements[id].kind).toBe('parsed-tests');
     const outputPath = join(out, 'grade-baseline/out', id, 'arm-baseline_output.json');
     expect(sha(readFileSync(outputPath))).toBe(measured.taskOutputSha256[id]);
     const map = JSON.parse(readFileSync(join(out, 'grade-baseline/out/eval_results.json'), 'utf8'));

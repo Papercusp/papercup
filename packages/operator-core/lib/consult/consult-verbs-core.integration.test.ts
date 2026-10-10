@@ -43,7 +43,7 @@ const RESPONDER = 'resp-1';
 describe('durable cascade acknowledgement and restart recovery', () => {
   async function queuedRow(id: string) {
     return await stateRow(id) as Record<string, unknown> & { expires_at: string; routing: {
-      cascadeDispatch?: { attempts?: number; lastError?: string; leaseToken?: string | null };
+      cascadeDispatch?: { attempts?: number; lastError?: string; leaseToken?: string | null; leaseUntil?: string | null };
       selection: { selected: Array<{ answeringOwnerId?: string }> };
     } };
   }
@@ -94,6 +94,69 @@ describe('durable cascade acknowledgement and restart recovery', () => {
   it('queues the refill without mistaking an accepted launch for a failed dispatch', async () => {
     const id = await queue('decline', true);
     expect((await queuedRow(id)).cascade_digest).toMatchObject([{ kind: 'decline' }]);
+  });
+
+  it.each(['decline', 'reply'] as const)('%s acknowledges while its continuation owns the lease and is still launching', async (kind) => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-next']) });
+    const { deps, posts } = makeDeps();
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let continuation: Promise<boolean> | undefined;
+    let launches = 0;
+    let currentAtCompletion = false;
+    deps.dispatch = makeDeferredConsultReachDispatcher({ workspaceId: WS, harnessSlug: 'papercusp', launchedBy: RESPONDER }, {
+      getSql: () => rootSql,
+      continueDispatch: (workspaceId, conversationId) => {
+        continuation = continueCascadeDispatchCore(workspaceId, conversationId, {
+          getSql: () => rootSql,
+          now: () => NOW,
+          dispatch: (isCurrent) => async (opts) => {
+            launches += 1;
+            entered();
+            await held;
+            currentAtCompletion = await isCurrent();
+            await opts.onAnsweringOwner?.('resp-next-fork');
+            return { woke: 1, answeringOwnerId: 'resp-next-fork' };
+          },
+        });
+        return continuation;
+      },
+    });
+    let acknowledged = false;
+    const response = (kind === 'decline'
+      ? consultDeclineCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'wrong subsystem' }, deps)
+      : consultReplyCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'new_fact', body: 'known fact' }, deps)
+    ).then((result) => { acknowledged = true; return result; });
+    try {
+      await started;
+      // Observe after the acknowledgement microtasks, while the real lease-owning
+      // continuation remains blocked. Always release it, including on regression.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(acknowledged).toBe(true);
+      const result = await response;
+      if ('error' in result) throw new Error(result.error);
+      expect(result.post_id).toBeTruthy();
+      expect(result.cascade).toMatchObject({ advanced_to: 'resp-next', woke: 0, pending: true });
+      const pending = (await queuedRow(id)).routing.cascadeDispatch;
+      expect(pending?.leaseToken).toEqual(expect.any(String));
+      expect(new Date(pending!.leaseUntil!).getTime()).toBeGreaterThan(NOW.getTime());
+      expect(posts).toHaveLength(1);
+      const persisted = await rootSql`SELECT post_id FROM harness_shared.consult_post_meta
+        WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+      expect(persisted).toHaveLength(1);
+      expect(String(persisted[0].post_id)).toBe(String(result.post_id));
+      expect(launches).toBe(1);
+    } finally {
+      release();
+      await response;
+      await continuation;
+    }
+    expect(currentAtCompletion).toBe(true);
+    expect((await queuedRow(id)).routing.cascadeDispatch).toBeUndefined();
+    expect((await queuedRow(id)).routing.selection.selected[1].answeringOwnerId).toBe('resp-next-fork');
+    expect(launches).toBe(1);
   });
 
   it('restarts from the saved copy, authorizes the answerer before launch, and does not launch twice', async () => {

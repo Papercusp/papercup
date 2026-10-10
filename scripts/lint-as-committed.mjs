@@ -112,6 +112,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
+import { applyEnvLocal } from './lib/pg-url.mjs';
 
 /** Child environment for commands executing against the isolated committed clone. */
 export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null) {
@@ -120,6 +121,11 @@ export function lintAsCommittedChildEnv(environment = process.env, repoRoot = nu
     npm_config_workspaces: undefined,
     PAPERCUSP_LINT_AS_COMMITTED_CLONE: '1',
   };
+  // The committed clone intentionally omits ignored operator configuration.
+  // Carry the original operator's database route into its reporters; otherwise
+  // a frozen resolver may discover a desktop PG and publish proof elsewhere.
+  // The shared resolver preserves explicit DSNs and dedicated-PG isolation.
+  if (repoRoot) applyEnvLocal({ root: join(repoRoot, 'apps', 'operator'), env: child });
   // Each immutable clone has a fresh tmp path. Keep resumable verdict storage
   // scoped to its source repository instead, separately from ordinary/gate
   // caches. The affected runner still checks command and dependency contents.

@@ -77,9 +77,14 @@ export function readInspectorProcessIdentity({ pid, port, expectedEntry, expecte
  */
 export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9229,
   attachExisting = false, expectedEntry, expectedArg, deadlineMs = 50000, procIdentity = false,
-  resumeStartup = false }) {
+  resumeStartup = false, requestTimeoutMs = 2000 }) {
   if (!Number.isInteger(pid) || pid < 0 || (!attachExisting && pid === 0))
     throw new TypeError('a positive target pid is required unless attaching by exact entry');
+  // The inspector answers CDP requests on the target's MAIN thread, so a busy target
+  // (the very host this script exists to diagnose) can need several seconds to answer
+  // Profiler.start. A fixed 2s budget refused bg-host at loop p95 ~300ms (WI-10008237).
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 500 || requestTimeoutMs > 60000)
+    throw new TypeError('requestTimeoutMs must be an integer between 500 and 60000');
   if (!Number.isInteger(durationMs) || durationMs <= 0 || !Number.isInteger(deadlineMs) || deadlineMs <= 5000)
     throw new TypeError('positive duration and a deadline above 5000ms are required');
   if (!Number.isInteger(startPort) || startPort < 1 || startPort > 65535)
@@ -118,7 +123,7 @@ export async function captureCpuProfile({ pid, durationMs = 30000, startPort = 9
   }
 
   const client = createCdpClient(inspector.wsUrl, {
-    requestTimeoutMs: 2000,
+    requestTimeoutMs,
     webSocketOptions: { handshakeTimeout: 2000, maxPayload: 64 * 1024 * 1024 },
   });
   let startupResumed = false;
@@ -214,16 +219,18 @@ async function main() {
     'expect-entry': { type: 'string' }, 'expect-arg': { type: 'string' },
     'proc-identity': { type: 'boolean' },
     'resume-startup': { type: 'boolean' },
+    'request-timeout-ms': { type: 'string' },
   } });
   const pid = Number(positionals[0]);
+  const requestTimeoutMs = values['request-timeout-ms'] === undefined ? 2000 : Number(values['request-timeout-ms']);
   const durationMs = Number(positionals[1] || 30000);
   const startPort = Number(positionals[2] || 9229);
   const { profile, captureMs, target } = await captureCpuProfile({ pid, durationMs, startPort,
     attachExisting: values['attach-existing'] ?? false,
     expectedEntry: values['expect-entry'], expectedArg: values['expect-arg'],
     procIdentity: values['proc-identity'] ?? false,
-    resumeStartup: values['resume-startup'] ?? false,
-    deadlineMs: values['attach-existing'] ? 50000 : durationMs + 20000 });
+    resumeStartup: values['resume-startup'] ?? false, requestTimeoutMs,
+    deadlineMs: values['attach-existing'] ? 50000 : durationMs + 20000 + requestTimeoutMs });
   if (values.save) {
     const saved = persistCpuProfile(values.save, JSON.stringify(profile));
     console.error(`${saved.created ? 'saved' : 'verified existing'} raw profile at ${values.save}`);

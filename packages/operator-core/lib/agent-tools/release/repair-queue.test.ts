@@ -119,6 +119,7 @@ vi.mock('../../harness/routines/release-actions', () => ({
 vi.mock('../../release/fixer-liveness', () => ({ releaseFixerSpawnAlive: mocks.alive }));
 vi.mock('../../release-deploy-launch', () => ({ integrationRoot: () => '/repo' }));
 vi.mock('../../harness/routines/hive-release-env', () => ({
+  resolvePotSuiteCommand: vi.fn(async () => 'npm test'),
   resolveCheckpointRouting: vi.fn(async () => ({ root: '/tooling',
     extraEnv: { PAPERCUSP_INTEGRATION_ROOT: '/drill' }, clearEnv: [] })),
 }));
@@ -337,6 +338,27 @@ describe('release:repair-queue abort-completion receipts', () => {
 });
 
 describe('selected harness repair queue', () => {
+  it('predicts a foreign lockfile using operator tooling and the target checkout', async () => {
+    mocks.admit.mockReturnValue(admissionOf(false, ['package-lock.json']));
+    mocks.hunkExact.mockReturnValue(hunkExactOf(['package-lock.json']));
+    const ctx = { role: 'su', harnessSlug: 'slack-asana-bug-drill', workspaceId: 'ws-drill' } as never;
+    await tool.handler({ op: 'admit', paths: ['package-lock.json'] } as never, ctx);
+    expect(mocks.predict).toHaveBeenCalledWith({
+      integrationRoot: '/drill', toolingRoot: '/tooling', ref: NEW_HEAD, paths: ['package-lock.json'],
+    });
+  });
+
+  it('passes foreign source and operator tooling separately into the managed admission runner', async () => {
+    mocks.admit.mockImplementation((input: { dryRun: boolean; paths: string[] }) => admissionOf(!input.dryRun, input.paths));
+    mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: undefined } });
+    const ctx = { role: 'su', harnessSlug: 'slack-asana-bug-drill', workspaceId: 'ws-drill' } as never;
+    const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, ctx));
+    expect(result).toMatchObject({ verdict: 'precheck-running', admitted: false });
+    expect(mocks.startPrecheckWorker).toHaveBeenCalledWith(expect.objectContaining({
+      integrationRoot: '/drill', toolingRoot: '/tooling', testCommand: ['npm', 'test'],
+      queueTarget: { workspaceId: 'ws-drill', installSlug: 'slack-asana-bug-drill' },
+    }));
+  });
   it('reads a foreign queue and previews its admission against that harness checkout', async () => {
     mocks.admit.mockReturnValue(admissionOf(false));
     const ctx = { role: 'su', harnessSlug: 'slack-asana-bug-drill', workspaceId: 'ws-drill' } as never;

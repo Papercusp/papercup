@@ -36,7 +36,7 @@ export function repoOwnedInputs(metafile: {
 /**
  * @param {string[]} files
  * @param {{ known?: Set<string>, readFile?: (file: string) => string }} [options]
- * @returns {{ findings: Array<{ file: string, name: string, line: number, column: number }>, unparsed: Array<{ file: string, error: string }> }}
+ * @returns {{ findings: Array<{ file: string, name: string, line: number, column: number }>, unreadable: Array<{ file: string, error: string }>, unparsed: Array<{ file: string, error: string }> }}
  */
 export function checkInputs(files: string[], { known, readFile }?: {
     known?: Set<string>;
@@ -47,6 +47,10 @@ export function checkInputs(files: string[], { known, readFile }?: {
         name: string;
         line: number;
         column: number;
+    }>;
+    unreadable: Array<{
+        file: string;
+        error: string;
     }>;
     unparsed: Array<{
         file: string;

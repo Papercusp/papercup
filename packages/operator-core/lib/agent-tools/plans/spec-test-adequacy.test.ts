@@ -301,7 +301,7 @@ describe('source BAR registered test files', () => {
       };
       row.details = {
         ...row.details,
-        adequacy: { ...row.details.adequacy, outcome: 'failed' },
+        adequacy: { ...(row.details.adequacy as Record<string, unknown>), outcome: 'failed' },
       };
     }
     return row;

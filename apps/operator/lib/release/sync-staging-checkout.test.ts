@@ -440,6 +440,8 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
 
 describe('staging runtime environment inheritance', () => {
   let root: string;
+  const sourceSha = 'a'.repeat(40);
+  const sourcePin = `\nPAPERCUSP_BUILD_SHA=${sourceSha}\n`;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'staging-env-')); });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
@@ -453,8 +455,8 @@ describe('staging runtime environment inheritance', () => {
     const candidate = join(root, 'candidate');
     mkdirSync(join(candidate, 'apps/operator'), { recursive: true });
     const r = runFn(['copy_staging_runtime_environment'],
-      'log() { printf "%s\\n" "$*"; }\ncopy_staging_runtime_environment "$CANDIDATE"', {
-        env: { STAGING_ROOT: current, LEGACY_STAGING_ROOT: legacy, INTEGRATION_ROOT: canonical, CANDIDATE: candidate },
+      'log() { printf "%s\\n" "$*"; }\ncopy_staging_runtime_environment "$CANDIDATE" "$SOURCE_SHA"', {
+        env: { STAGING_ROOT: current, LEGACY_STAGING_ROOT: legacy, INTEGRATION_ROOT: canonical, CANDIDATE: candidate, SOURCE_SHA: sourceSha },
       });
     expect(r.status).toBe(0);
     const copied = join(candidate, 'apps/operator/.env.local');
@@ -465,20 +467,46 @@ describe('staging runtime environment inheritance', () => {
 
   it('preserves the current staging environment over legacy and canonical settings', () => {
     expect(copyEnvironment(['DATABASE_URL=current\n', 'DATABASE_URL=legacy\n', 'DATABASE_URL=canonical\n']))
-      .toBe('DATABASE_URL=current\n');
+      .toBe(`DATABASE_URL=current\n${sourcePin}`);
   });
 
   it('retains the legacy environment during the first generation cutover', () => {
     expect(copyEnvironment([null, 'DATABASE_URL=legacy\n', 'DATABASE_URL=canonical\n']))
-      .toBe('DATABASE_URL=legacy\n');
+      .toBe(`DATABASE_URL=legacy\n${sourcePin}`);
   });
 
   it('recovers the canonical DB pin when published staging has no runtime file', () => {
-    expect(copyEnvironment([null, null, 'DATABASE_URL=canonical\n'])).toBe('DATABASE_URL=canonical\n');
+    expect(copyEnvironment([null, null, 'DATABASE_URL=canonical\n'])).toBe(`DATABASE_URL=canonical\n${sourcePin}`);
   });
 
   it('leaves explicitly inherited runtime configuration available when no file exists', () => {
-    expect(copyEnvironment([null, null, null])).toBeNull();
+    expect(copyEnvironment([null, null, null])).toBe(sourcePin);
+  });
+
+  it('replaces an inherited build label with the prepared candidate source', () => {
+    copyEnvironment([`DATABASE_URL=current\nPAPERCUSP_BUILD_SHA=${'b'.repeat(40)}\n`, null, null]);
+    const r = spawnSync('bash', ['-c', 'set -a; . "$ENV_FILE"; printf "%s" "$PAPERCUSP_BUILD_SHA"'], {
+      env: { ...process.env, ENV_FILE: join(root, 'candidate/apps/operator/.env.local') }, encoding: 'utf8',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(sourceSha);
+  });
+
+  it('refuses a missing or invalid source ref before copying runtime settings', () => {
+    const current = join(root, 'current');
+    const candidate = join(root, 'candidate');
+    mkdirSync(join(current, 'apps/operator'), { recursive: true });
+    mkdirSync(join(candidate, 'apps/operator'), { recursive: true });
+    writeFileSync(join(current, 'apps/operator/.env.local'), 'DATABASE_URL=current\n');
+    for (const invalid of ['', 'not-a-commit']) {
+      const r = runFn(['copy_staging_runtime_environment'],
+        'log() { printf "%s\\n" "$*"; }\ncopy_staging_runtime_environment "$CANDIDATE" "$SOURCE_SHA"', {
+          env: { STAGING_ROOT: current, LEGACY_STAGING_ROOT: current, INTEGRATION_ROOT: current,
+            CANDIDATE: candidate, SOURCE_SHA: invalid },
+        });
+      expect(r.status).toBe(1);
+      expect(existsSync(join(candidate, 'apps/operator/.env.local'))).toBe(false);
+    }
   });
 });
 
@@ -1531,17 +1559,20 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
 
 describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)', () => {
   function prepareWithOutput(output: string, status = 0) {
-    return runFn(['staging_sync_checkpoint', 'copy_staging_runtime_environment', 'prepare_staging_candidate'], [
+    const candidate = mkdtempSync(join(tmpdir(), 'staging-phase-candidate-'));
+    mkdirSync(join(candidate, 'apps/operator'), { recursive: true });
+    try { return runFn(['staging_sync_checkpoint', 'copy_staging_runtime_environment', 'prepare_staging_candidate'], [
       'INTEGRATION_ROOT=/unused-staging-test',
       'STAGING_ROOT=/absent-staging-test',
       'LEGACY_STAGING_ROOT=/absent-legacy-staging-test',
-      'create_staging_candidate() { STAGING_CANDIDATE_ROOT=/unused-candidate; }',
+      'create_staging_candidate() { STAGING_CANDIDATE_ROOT="$TEST_CANDIDATE"; }',
       'log() { printf "%s\\n" "$*"; }',
       'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; "$@"; }',
       'bash() { printf "%s\\n" "$SETUP_OUTPUT"; return "$SETUP_STATUS"; }',
       'systemd-notify() { printf "NOTIFY:%s\\n" "$*"; }',
       'prepare_staging_candidate 0123456789abcdef',
-    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify', SETUP_OUTPUT: output, SETUP_STATUS: String(status) } });
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify', SETUP_OUTPUT: output, SETUP_STATUS: String(status), TEST_CANDIDATE: candidate } });
+    } finally { rmSync(candidate, { recursive: true, force: true }); }
   }
 
   it('runs source, dependency and SPA preparation under separate finite command deadlines', () => {

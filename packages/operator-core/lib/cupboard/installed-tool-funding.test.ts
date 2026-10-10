@@ -133,6 +133,48 @@ describe('production identity funding supplier', () => {
     });
   });
 
+  it('pins an exact claimed work item and rechecks its owner before inference', async () => {
+    const f = identityFixture();
+    const ref = { id: 'WI-123', harness: 'papercusp' };
+    const binding = { ...f.binding, workItem: ref };
+    const item = { ...ref, assignee: binding.ownerId, state: 'wip' };
+    const readWorkItem = vi.fn(async () => item);
+    await f.run(async () => {
+      await productionFundedIdentityTurnHost(binding, { ...f.deps, readWorkItem });
+      expect(readWorkItem).toHaveBeenCalledExactlyOnceWith(ref);
+      const verify = f.createIdentityHost.mock.calls[0]![0].verifyCurrentAuthority!;
+      await expect(verify(binding)).resolves.toBeUndefined();
+      item.assignee = 'another-owner';
+      await expect(verify(binding)).rejects.toThrow('work-item-unclaimed-or-changed');
+      item.assignee = binding.ownerId;
+      item.state = 'done';
+      await expect(verify(binding)).rejects.toThrow('work-item-unclaimed-or-changed');
+      await expect(verify({ ...binding, workItem: { ...ref, id: 'WI-124' } }))
+        .rejects.toThrow('authority-expired-or-changed');
+    });
+  });
+
+  it.each([null, { id: 'WI-123', harness: 'other' }, { id: 'WI-124', harness: 'papercusp' },
+    { id: 'WI-123', harness: 'papercusp', assignee: null, state: 'wip' },
+    { id: 'WI-123', harness: 'papercusp', assignee: 'another-owner', state: 'wip' }])(
+    'refuses unavailable, wrong-harness or foreign outcome attribution %j', async candidate => {
+      const f = identityFixture(), ref = { id: 'WI-123', harness: 'papercusp' };
+      const readWorkItem = vi.fn(async () => candidate === null ? null :
+        { assignee: f.binding.ownerId, state: 'wip', ...candidate });
+      await expect(productionFundedIdentityTurnHost({ ...f.binding, workItem: ref }, { ...f.deps, readWorkItem }))
+        .rejects.toThrow('work-item-unclaimed-or-changed');
+      expect(f.createIdentityHost).not.toHaveBeenCalled();
+    });
+
+  it.each([{ id: '', harness: 'papercusp' }, { id: 'WI-123', harness: '../other' },
+    { id: 'WI-123', harness: 'papercusp', accepted: true }])('rejects malformed outcome binding %j before loading grants', async workItem => {
+    const f = identityFixture();
+    await expect(productionFundedIdentityTurnHost({ ...f.binding, workItem }, f.deps))
+      .rejects.toThrow('work-item-invalid');
+    expect(f.deps.readKey).not.toHaveBeenCalled();
+    expect(f.createIdentityHost).not.toHaveBeenCalled();
+  });
+
   it.each(['specificationRevision', 'stateRevision'] as const)('refuses a different APPLIED %s before creating a host', async field => {
     const f = identityFixture(); f.binding = { ...f.binding, [field]: 'other' };
     await f.run(async () => {

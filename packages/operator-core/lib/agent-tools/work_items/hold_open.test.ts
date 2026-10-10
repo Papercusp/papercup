@@ -284,7 +284,9 @@ describe('work_items:hold_open clear+reconcile — evidence-based durable-park s
     getWorkItem.mockResolvedValue(itemWith(gated));
     readDurableParkControlRow.mockResolvedValue(controlRow(gated));
     const preview = await call({ id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } });
-    expect(preview).toMatchObject({ ok: true, dryRun: true, ownerOverrideRequired: true });
+    expect(preview).toMatchObject({ ok: true, dryRun: true, ownerOverrideRequired: true, wouldClear: false });
+    const overridden = await call({ id: 'WI-9', clear: true, ownerOverride: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } });
+    expect(overridden).toMatchObject({ ok: true, dryRun: true, ownerOverrideRequired: true, wouldClear: true });
     const out = await call({
       id: 'WI-9', clear: true,
       reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE, expectedParkFingerprint: fpOf(gated) },

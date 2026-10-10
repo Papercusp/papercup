@@ -13,7 +13,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -332,6 +332,25 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] }))
       .rejects.toThrow('dirty tested-input mismatch');
     expect(existsSync(dest)).toBe(false);
+  });
+
+  it.each([false, true])('refuses dirty input before materialization (gitCheckout=%s)', async (gitCheckout) => {
+    const fixture = makeSuperproject(join(tmp, `verifier-early-dirty-${gitCheckout}`));
+    const dest = join(tmp, `verifier-early-dirty-export-${gitCheckout}`);
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    writeFileSync(join(fixture.repo, input), 'uncommitted acceptance change');
+    // An archive/clone would encounter this unrelated broken checkout first.
+    // The dirty-input diagnostic must win without creating the destination.
+    rmSync(join(fixture.repo, 'libs/papercusp/.git'), { recursive: true, force: true });
+    const mkdir = vi.spyOn(fsPromises, 'mkdir');
+    try {
+      await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit,
+        dest, inputs: [input], gitCheckout })).rejects.toThrow('dirty tested-input mismatch');
+      expect(mkdir.mock.calls.some(([path]) => path === dest)).toBe(false);
+      expect(existsSync(dest)).toBe(false);
+    } finally {
+      mkdir.mockRestore();
+    }
   });
 
   it('refuses missing, altered provenance and extra archive files', async () => {

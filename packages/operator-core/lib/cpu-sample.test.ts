@@ -214,6 +214,32 @@ it.skipIf(process.platform !== 'linux')('releases its waiting child when profile
   } finally { spy.mockRestore(); }
 }, 15000);
 
+it('rejects an out-of-range CDP request timeout before signalling any target', async () => {
+  for (const requestTimeoutMs of [0, 499, 60001, 1.5]) {
+    await expect(captureCpuProfile({ pid: 1, attachExisting: true, expectedEntry: '/x', startPort: 9229,
+      requestTimeoutMs })).rejects.toThrow('requestTimeoutMs must be an integer between 500 and 60000');
+  }
+});
+
+it.skipIf(process.platform !== 'linux')('passes the caller request timeout to the CDP client so a busy target can answer', async () => {
+  // WI-10008237: a fixed 2000ms budget refused Profiler.start on bg-host at loop p95 ~300ms.
+  const createClient = cdpInspector.createCdpClient;
+  const seen: unknown[] = [];
+  const spy = vi.spyOn(cdpInspector, 'createCdpClient').mockImplementation((...args) => {
+    seen.push(args[1]);
+    return createClient(...args);
+  });
+  try {
+    await withBusyTarget(async ({ pid, port, entry }) => {
+      const result = await captureCpuProfile({ pid, startPort: port, attachExisting: true, procIdentity: true,
+        resumeStartup: true, expectedEntry: entry, expectedArg: '--probe-target', durationMs: 250, deadlineMs: 7000,
+        requestTimeoutMs: 4500 });
+      expect(result.profile.samples.length).toBeGreaterThan(0);
+    }, true);
+  } finally { spy.mockRestore(); }
+  expect(seen).toEqual([expect.objectContaining({ requestTimeoutMs: 4500 })]);
+}, 15000);
+
 it.skipIf(process.platform !== 'linux')('refuses startup resume for a target launched without a startup wait', async () => {
   await withBusyTarget(async ({ pid, port, entry }) => {
     await expect(captureCpuProfile({ pid, startPort: port, attachExisting: true, procIdentity: true,

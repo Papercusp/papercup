@@ -124,6 +124,15 @@ describe('OPERATOR_HTTP_ROUTE_ALLOWLIST — awaitsRouteBudget', () => {
     expect(budgeted.map((entry) => entry.surface)).toEqual(expect.arrayContaining(['pot create', 'Cupboard install']));
   });
 
+  it.each(['link-start', 'link-complete'])('lets account %s use its provider watchdog', (operation) => {
+    const path = `/api/admin/deploy-accounts/${operation}`;
+    expect(decideOperatorHttpRoute('POST', path)).toMatchObject({ ok: true, awaitsRouteBudget: true });
+    const route = ALL_ROUTES.find((entry) => entry.method === 'POST' && `/api${entry.path}` === path);
+    expect(route?.timeoutSec).toBe(90);
+    expect(decideOperatorHttpRoute('POST', '/api/admin/deploy-accounts/link-status'))
+      .toMatchObject({ ok: true, awaitsRouteBudget: false });
+  });
+
   it.each(budgeted.map((entry) => [entry.method, entry.surface, entry] as const))(
     '%s %s resolves to an operator route with a finite timeoutSec',
     (_method, _surface, entry) => {
@@ -567,6 +576,32 @@ describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)',
     expect(sent).toContainEqual({ type: 'http.response', requestId: 'create', status: 200, headers: { 'content-type': 'application/json' } });
     expect(sent).toContainEqual({ type: 'http.end', requestId: 'create' });
     expect(sent).toContainEqual({ type: 'http.error', requestId: 'read', code: 'operator_timeout', status: 504 });
+  });
+
+  it.each(['link-start', 'link-complete'])('preserves the provider response for slow account %s', async (operation) => {
+    const { origin } = await operator((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end('{"ok":false,"error":"provider login failed"}');
+      }, 100);
+    });
+    const sent: Array<Record<string, unknown>> = [];
+    const channel = new OperatorHttpChannel({
+      principal: { userId: 'user-1', hostedSessionId: 'session-1' },
+      send: (payload) => sent.push(payload),
+      audit: () => {},
+      origin,
+      headerTimeoutMs: 20,
+    });
+    await channel.accept('http.request', {
+      requestId: operation, method: 'POST', path: `/api/admin/deploy-accounts/${operation}`,
+      body: Buffer.from('{}').toString('base64'),
+    });
+    expect(sent).toContainEqual({ type: 'http.response', requestId: operation, status: 400, headers: { 'content-type': 'application/json' } });
+    expect(decodeBody(sent)).toBe('{"ok":false,"error":"provider login failed"}');
+    expect(sent).toContainEqual({ type: 'http.end', requestId: operation });
+    expect(sent.some((frame) => frame.type === 'http.error')).toBe(false);
+    channel.close();
   });
 
   it('answers 502 when the loopback operator is down', async () => {

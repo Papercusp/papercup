@@ -283,20 +283,42 @@ async function main() {
         [3, 'PostToolUse', 'mid-turn']] as const) {
         const token = index === 2 ? 'amberquartz' : 'jadequartz';
         const began = Date.now();
-        const payload = await core.runInjection({ adapter, nativeEvent,
-          event: nativeEvent === 'UserPromptSubmit'
-            ? { prompt: `${token} diagnostic snapshot recovery evidence`, cwd: e.HOME }
-            : { tool_name: 'exec_command', tool_input: { cmd: `rg ${token} diagnostic snapshot recovery evidence` },
-              tool_response: 'Investigating diagnostic snapshot recovery evidence', cwd: e.HOME },
-          env: stalledEnv, fetchImpl });
+        // Preserve the blocked phase on failed acceptance too. The native
+        // wall still measures only runInjection; observer teardown is outside it.
+        const progress: unknown[] = [];
+        let sampling = true;
+        const sample = (async () => {
+          while (sampling) {
+            try {
+              const rows = await sql`SELECT pid, state, wait_event_type, wait_event,
+                left(query, 500) AS query, extract(epoch FROM (clock_timestamp() - query_start)) AS query_age_sec
+                FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()`;
+              progress.push({ elapsedMs: Date.now() - began, rows });
+            } catch (error: any) { progress.push({ elapsedMs: Date.now() - began, error: error.message }); }
+            await new Promise(done => setTimeout(done, 200));
+          }
+        })();
+        let payload: string | null;
+        let durationMs: number;
+        try {
+          payload = await core.runInjection({ adapter, nativeEvent,
+            event: nativeEvent === 'UserPromptSubmit'
+              ? { prompt: `${token} diagnostic snapshot recovery evidence`, cwd: e.HOME }
+              : { tool_name: 'exec_command', tool_input: { cmd: `rg ${token} diagnostic snapshot recovery evidence` },
+                tool_response: 'Investigating diagnostic snapshot recovery evidence', cwd: e.HOME },
+            env: stalledEnv, fetchImpl });
+          durationMs = Date.now() - began;
+        } finally { sampling = false; await sample; }
         writeFileSync(join(evidenceDir, `stalled-${surface}.json`),
-          JSON.stringify({ requests, payload, durationMs: Date.now() - began }));
+          JSON.stringify({ requests, payload, durationMs, progress }));
+        // Read and persist the exact receipt before any delivery assertion can
+        // fail. A later turn no longer has to reconstruct it from teardown rows.
+        stalledReceipts.push(await readCorpusReceipt(sql, workspace, stalledOwner, surface,
+          evidenceDir, `stalled-${surface}-receipt.json`, true));
         assert.ok(payload?.includes(knowledge[index].docSlug), `${surface} lost healthy procedure while plans stalled`);
         assert.ok(payload.includes(reports[index].reportId), `${surface} lost healthy report while plans stalled`);
         assert.ok(!payload.includes(knowledge[index].planSlug), 'locked plan must not masquerade as delivered');
         assert.equal(JSON.parse(payload).hookSpecificOutput.hookEventName, nativeEvent);
-        stalledReceipts.push(await readCorpusReceipt(sql, workspace, stalledOwner, surface,
-          evidenceDir, `stalled-${surface}-receipt.json`, true));
       }
     } finally {
       await lock`ROLLBACK`;

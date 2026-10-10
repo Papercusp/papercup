@@ -187,7 +187,9 @@ export async function connectOwnedSlackSource(
   const auth = await slackJson<{
     ok?: boolean;
     team_id?: string;
+    team?: string;
     user_id?: string;
+    user?: string;
     bot_id?: string;
     app_id?: string;
   }>(await fetchImpl(`${origin}/api/auth.test`, {
@@ -212,6 +214,10 @@ export async function connectOwnedSlackSource(
       installSlug: input.installSlug,
       teamId: auth.team_id,
       botUserId: auth.user_id,
+      // Display names for Settings → Integrations (simplify-integration-setup P-001);
+      // auth.test returns both, and neither is a secret.
+      ...(auth.team ? { teamName: auth.team } : {}),
+      ...(auth.user ? { botName: auth.user } : {}),
       ...(auth.bot_id ? { botId: auth.bot_id } : {}),
       ...(auth.app_id ? { appId: auth.app_id } : {}),
       channels: uniqueStrings(input.channels),

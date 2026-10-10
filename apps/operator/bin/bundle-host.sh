@@ -79,7 +79,9 @@ OPERATOR_DIR="$(cd "${BUNDLE_HOST_OPERATOR_DIR:-$SCRIPT_DIR/..}" && pwd)" || {
   exit 78
 }
 # <<< operator-dir resolution
-REPO_ROOT="$(cd "$OPERATOR_DIR/../.." && pwd)"
+# Git reports the physical checkout; staging invokes this through a generation
+# alias. Normalize before comparing roots so that alias still gets a source pin.
+REPO_ROOT="$(cd "$OPERATOR_DIR/../.." && pwd -P)"
 # Node helpers run from the CHECKOUT, never from a snapshot: they import through node_modules and
 # ../../../scripts, which do not resolve from a temp directory. That costs no protection — each
 # runs under the committed-source loader, which reads its whole module before executing, unlike
@@ -517,6 +519,8 @@ bundle_rc=0
   # host throws `ReferenceError: X is not defined` at runtime (bg-host git-sync, 2026-10-06). Check
   # every repo-owned input changed since the last-known-good $OUTFILE (still in place here — the
   # atomic mv is below) for value references that reach global scope unbound. Findings keep LKG.
+  # Metafile input keys are repo-root relative; keep --base-dir at REPO_ROOT. Unreadable inputs
+  # now refuse publication instead of being counted as an unparsed/clean result.
   if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundle-free-refs.mjs" \
     --metafile "$METAFILE" --base-dir "$REPO_ROOT" --since "$OUTFILE" \
     "${HOST_BANNER_DEFINES[@]}" --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \

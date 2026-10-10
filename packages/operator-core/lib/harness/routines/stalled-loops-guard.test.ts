@@ -6,6 +6,16 @@ import {
   type StalledLoopsSweepDeps,
 } from './stalled-loops-guard';
 import { turnsStalledFloorMs, type LoopStatus } from './loop';
+import type { StalledLoopHostReading } from '../../events/await/host-recovery-eligibility';
+
+// P-007: a turn-stalled owner's host is read before the disarm, and the DEFAULT reader hits the
+// real ~/.papercusp/psu-pty directory (and starts the discovery janitor). Keep every test in this
+// file hermetic — no live host unless a test injects `readStalledHost` itself.
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/await/psu-pty-discovery')>()),
+  findLiveHostAsync: vi.fn(async () => null),
+  readHostEventTailAsync: vi.fn(async () => []),
+}));
 
 // Bind the mocks to the REAL dep signatures (the convention session-ingest-lag-watchdog.test.ts
 // already uses). A bare `vi.fn(async () => true)` records a ZERO-arg call tuple, so reading
@@ -161,6 +171,8 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       disarmedUnaddressableHarness: [],
       vetoedByToolActivity: [],
       reArmedToolLiveParked: [],
+      routedToHostRecovery: [],
+      disarmedHostUnhealthy: [],
       revivedAfterDisarm: [],
       cadenceDrift: [],
       population: {
@@ -2337,5 +2349,314 @@ describe('workspace loop-population starvation (P-007 / WI-41230)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/**
+ * parked-agent-census-resumption-and-root-cause-2026-10-09 P-007 — REPAIR, not disarm.
+ *
+ * THE MEASUREMENT: on 2026-10-10, 37 of 61 turns-stalled disarms were sessions whose codex child
+ * held a dead provider login. The wake executor recycles exactly that child on the next wake
+ * (P-004), so the disarm threw the recovery away and left the session dark. The guard now reads
+ * the owner's psu host before disarming and keeps a loop armed only when the classifier says the
+ * next wake carries a recycle the executor will actually perform.
+ *
+ * Every case pins BOTH halves of the decision — what was written (route vs autoPause) and what
+ * was reported (result arrays + the disarm reason) — because the reason string is the only place
+ * a human learns that re-arming will not help.
+ */
+describe('sweepStalledLoops — host-aware disarm (parked-agent-census P-007)', () => {
+  type ReadHostFn = NonNullable<StalledLoopsSweepDeps['readStalledHost']>;
+  type RouteFn = NonNullable<StalledLoopsSweepDeps['routeToHostRecovery']>;
+
+  const recyclable = {
+    ownerId: 'su-walled',
+    bridgeTty: false,
+    launchedBy: 'su-leader',
+    caps: ['quota-recovery', 'auth-recovery'],
+  };
+  const hostFor =
+    (byOwner: Record<string, StalledLoopHostReading>): ReadHostFn =>
+    async (ownerId) =>
+      byOwner[ownerId] ?? { host: null, events: [] };
+  const authWalled = (ownerId: string): StalledLoopHostReading => ({
+    host: { ...recyclable, ownerId, authBlocked: true },
+    events: [],
+  });
+  const unbound = (ownerId: string): StalledLoopHostReading => ({
+    host: { ...recyclable, ownerId },
+    events: [{ kind: 'respawn-binding-unconfirmed' }] as unknown as StalledLoopHostReading['events'],
+  });
+  const stalled = (ownerId: string) => status({ ownerId, turnsStalled: true, fireCount: 9, lastTurnAt: null });
+
+  // The routed branch logs a HOST-RECOVERY line; fail-on-console requires it to be asserted.
+  const spyWarn = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
+  let warn: ReturnType<typeof spyWarn>;
+  beforeEach(() => {
+    warn = spyWarn();
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+  const routedWarning = (ownerId: string) =>
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`HOST-RECOVERY ${ownerId}`));
+
+  it('THE CASE: a dead-login host is ROUTED to recovery — kept armed and made due, never paused', async () => {
+    const sql = fakeSql([{ id: 'rt_walled', target_owner_id: 'su-walled' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-walled', stalled('su-walled')]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const routeToHostRecovery = vi.fn<RouteFn>(async () => ({ routed: true }));
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        probeReachability: reach(true),
+        readStalledHost: hostFor({ 'su-walled': authWalled('su-walled') }),
+        routeToHostRecovery,
+      },
+    );
+
+    expect(routeToHostRecovery).toHaveBeenCalledTimes(1);
+    expect(routeToHostRecovery).toHaveBeenCalledWith(sql, 'rt_walled', expect.stringContaining('P-007'), 'auth-blocked');
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(res.paused).toBe(0);
+    expect(res.routedToHostRecovery).toEqual([{ ownerId: 'su-walled', condition: 'auth-blocked' }]);
+    expect(res.disarmedHostUnhealthy).toEqual([]);
+    routedWarning('su-walled');
+
+    // Nothing was disarmed, so the REPAIRED notice carries it, under its own headline.
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const call = broadcast.mock.calls[0]?.[0];
+    expect(call?.summary).toContain('host is walled');
+    expect(call?.body).toContain('HOST-WALLED');
+    expect(call?.body).toContain('su-walled (auth-blocked)');
+  });
+
+  it('route budget SPENT → disarmed, and the reason says re-arming will not help', async () => {
+    const sql = fakeSql([{ id: 'rt_walled', target_owner_id: 'su-walled' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-walled', stalled('su-walled')]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const routeToHostRecovery = vi.fn<RouteFn>(async () => ({ routed: false }));
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        probeReachability: reach(false),
+        readStalledHost: hostFor({ 'su-walled': authWalled('su-walled') }),
+        routeToHostRecovery,
+      },
+    );
+
+    expect(routeToHostRecovery).toHaveBeenCalledTimes(1);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    const reason = autoPause.mock.calls[0]?.[2] ?? '';
+    expect(reason).toContain('WI-6639');
+    expect(reason).toContain('HOST UNHEALTHY (auth-blocked)');
+    expect(reason).toContain('route budget is spent');
+    expect(res.routedToHostRecovery).toEqual([]);
+    expect(res.disarmedHostUnhealthy).toEqual([
+      { ownerId: 'su-walled', condition: 'auth-blocked', remedy: expect.stringContaining('P-012') },
+    ]);
+    expect(broadcast.mock.calls[0]?.[0].body).toContain('OF THE DISARMED ABOVE, 1 had a psu host');
+  });
+
+  it('an UNBOUND successor is disarmed without spending a route, naming the relaunch remedy', async () => {
+    const sql = fakeSql([{ id: 'rt_unbound', target_owner_id: 'su-unbound' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-unbound', stalled('su-unbound')]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const routeToHostRecovery = vi.fn<RouteFn>(async () => ({ routed: true }));
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast: vi.fn<BroadcastFn>(async () => true),
+        probeReachability: reach(false),
+        readStalledHost: hostFor({ 'su-unbound': unbound('su-unbound') }),
+        routeToHostRecovery,
+      },
+    );
+
+    expect(routeToHostRecovery).not.toHaveBeenCalled();
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(autoPause.mock.calls[0]?.[2]).toContain('HOST UNHEALTHY (unbound-successor)');
+    expect(res.disarmedHostUnhealthy).toEqual([
+      { ownerId: 'su-unbound', condition: 'unbound-successor', remedy: expect.stringContaining('P-012') },
+    ]);
+  });
+
+  it('CONTROL — a HEALTHY host is disarmed exactly as before: ordinary reason, no route, no host finding', async () => {
+    const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-dead', stalled('su-dead')]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const routeToHostRecovery = vi.fn<RouteFn>(async () => ({ routed: true }));
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast: vi.fn<BroadcastFn>(async () => true),
+        probeReachability: reach(false),
+        readStalledHost: hostFor({ 'su-dead': { host: { ...recyclable, ownerId: 'su-dead' }, events: [] } }),
+        routeToHostRecovery,
+      },
+    );
+
+    expect(routeToHostRecovery).not.toHaveBeenCalled();
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(autoPause.mock.calls[0]?.[2]).not.toContain('HOST UNHEALTHY');
+    expect(res.disarmedHostUnhealthy).toEqual([]);
+    expect(res.routedToHostRecovery).toEqual([]);
+  });
+
+  it('a THROWING host read decides as no-host — the pre-P-007 disarm, never a held loop', async () => {
+    const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-dead', stalled('su-dead')]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const routeToHostRecovery = vi.fn<RouteFn>(async () => ({ routed: true }));
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast: vi.fn<BroadcastFn>(async () => true),
+        probeReachability: reach(false),
+        readStalledHost: async () => {
+          throw new Error('EIO on discovery dir');
+        },
+        routeToHostRecovery,
+      },
+    );
+    expect(routeToHostRecovery).not.toHaveBeenCalled();
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(res.paused).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('deciding as no-host'));
+  });
+
+  it('reads the host ONLY for owners that reached the disarm — a healthy sweep pays nothing', async () => {
+    const sql = fakeSql([
+      { id: 'rt_ok', target_owner_id: 'su-ok' },
+      { id: 'rt_dead', target_owner_id: 'su-dead' },
+    ]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          ['su-ok', status({ ownerId: 'su-ok', turnsStalled: false })],
+          ['su-dead', stalled('su-dead')],
+        ]),
+    );
+    const readStalledHost = vi.fn<ReadHostFn>(async () => ({ host: null, events: [] }));
+
+    await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause: vi.fn<AutoPauseFn>(async () => {}),
+        broadcast: vi.fn<BroadcastFn>(async () => true),
+        probeReachability: reach(false),
+        readStalledHost,
+        routeToHostRecovery: vi.fn<RouteFn>(async () => ({ routed: true })),
+      },
+    );
+
+    expect(readStalledHost.mock.calls.map((c) => c[0])).toEqual(['su-dead']);
+  });
+
+  it('a mixed sweep reports both in ONE disarm broadcast', async () => {
+    const sql = fakeSql([
+      { id: 'rt_walled', target_owner_id: 'su-walled' },
+      { id: 'rt_dead', target_owner_id: 'su-dead' },
+    ]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          ['su-walled', stalled('su-walled')],
+          ['su-dead', stalled('su-dead')],
+        ]),
+    );
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        probeReachability: reach(false),
+        readStalledHost: hostFor({ 'su-walled': authWalled('su-walled') }),
+        routeToHostRecovery: vi.fn<RouteFn>(async () => ({ routed: true })),
+      },
+    );
+
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(autoPause).toHaveBeenCalledWith(sql, 'rt_dead', expect.any(String));
+    expect(res.routedToHostRecovery).toEqual([{ ownerId: 'su-walled', condition: 'auth-blocked' }]);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const body = broadcast.mock.calls[0]?.[0].body ?? '';
+    expect(body).toContain('Owners: su-dead.');
+    expect(body).toContain('ALSO NOT disarmed: 1 loop(s) were HOST-WALLED (su-walled: auth-blocked)');
+    routedWarning('su-walled');
+  });
+
+  it('the OWNER PAGE carries the host remedy for a reachable session the wake cannot recover', async () => {
+    const sql = fakeSql([{ id: 'rt_unbound', target_owner_id: 'su-unbound' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-unbound', stalled('su-unbound')]]));
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      {
+        getStatuses,
+        autoPause: vi.fn<AutoPauseFn>(async () => {}),
+        broadcast: vi.fn<BroadcastFn>(async () => true),
+        probeReachability: reach(true),
+        notify,
+        readStalledHost: hostFor({ 'su-unbound': unbound('su-unbound') }),
+        routeToHostRecovery: vi.fn<RouteFn>(async () => ({ routed: true })),
+      },
+    );
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    const page = notify.mock.calls[0]?.[0];
+    expect(page?.body).toContain('will NOT be fixed by re-arming either');
+    expect(page?.body).toContain('su-unbound (unbound-successor)');
+    expect(page?.data).toMatchObject({ hostUnhealthy: 'su-unbound', hostUnhealthyCount: 1 });
+  });
+
+  it('dryRun reports the route without writing it', async () => {
+    const sql = fakeSql([{ id: 'rt_walled', target_owner_id: 'su-walled' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-walled', stalled('su-walled')]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+    const routeToHostRecovery = vi.fn<RouteFn>(async () => ({ routed: true }));
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws', dryRun: true },
+      {
+        getStatuses,
+        autoPause,
+        broadcast,
+        probeReachability: reach(false),
+        readStalledHost: hostFor({ 'su-walled': authWalled('su-walled') }),
+        routeToHostRecovery,
+      },
+    );
+
+    expect(routeToHostRecovery).not.toHaveBeenCalled();
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(res.routedToHostRecovery).toEqual([{ ownerId: 'su-walled', condition: 'auth-blocked' }]);
+    routedWarning('su-walled');
   });
 });

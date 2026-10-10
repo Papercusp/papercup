@@ -77,8 +77,11 @@ const CLAIM_HOLD_RELEASE_CONSTRAINT =
 async function buildClaimHoldReleaseContract(
   input: ClaimHoldReleaseInput,
   defaultOwner: string,
+  parkId: string,
 ): Promise<DurableParkReleaseContract> {
-  return buildDurableParkReleaseContract(input, defaultOwner);
+  // parkId lets the shared writer stamp a self-release trigger (the park's own
+  // work-item:done) as unverified instead of reachable.
+  return buildDurableParkReleaseContract({ ...input, parkId }, defaultOwner);
 }
 
 /**
@@ -515,7 +518,7 @@ export default defineTool({
         const claimHoldReleaseInput = it.claimHoldRelease ?? args.claimHoldRelease;
         const releaseContract =
           claimHold === true && claimHoldReleaseInput
-            ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId)
+            ? await buildClaimHoldReleaseContract(claimHoldReleaseInput, ident.ownerId, it.id)
             : undefined;
         // WI-4198: force is a CHECKED override, not a bypass. Before releasing,
         // identify the holder; a cross-holder force must pass the authority/liveness

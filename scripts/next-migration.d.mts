@@ -6,6 +6,7 @@
 export function resolveReservationTarget(resolveUrl?: typeof resolveScriptPgUrl): {
     url: string;
     source: string;
+    via?: string;
     envLocal: ReturnType<typeof import("./lib/pg-url.mjs").applyEnvLocal>;
 };
 /** Redacted configured endpoint plus the connected server identity; never includes credentials. */

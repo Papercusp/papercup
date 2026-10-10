@@ -13,20 +13,23 @@
  * and rendering RichGrid here would couple this to the whole account-row projection.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 
 // vi.mock is hoisted above every top-level const, so the spies have to be hoisted with it.
-const H = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn() }));
+const H = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn(), query: {} as Record<string, unknown> }));
 const toastError = H.toastError;
 vi.mock('sonner', () => ({
   toast: Object.assign(vi.fn(), { success: H.toastSuccess, error: H.toastError, message: vi.fn() }),
 }));
-vi.mock('nuqs', () => ({
-  useQueryState: (_k: string, parser?: { defaultValue?: unknown }) => [parser?.defaultValue ?? null, vi.fn()],
-  parseAsBoolean: { withDefault: (d: unknown) => ({ defaultValue: d }) },
-  parseAsString: { withDefault: (d: unknown) => ({ defaultValue: d }) },
-}));
+vi.mock('nuqs', async () => {
+  const { useState } = await import('react');
+  return {
+    useQueryState: (key: string, parser?: { defaultValue?: unknown }) => useState(H.query[key] ?? parser?.defaultValue ?? null),
+    parseAsBoolean: { withDefault: (d: unknown) => ({ defaultValue: d }) },
+    parseAsString: { withDefault: (d: unknown) => ({ defaultValue: d }) },
+  };
+});
 vi.mock('@papercusp/grid-core', () => ({ RichGrid: () => <div data-testid="grid" /> }));
 vi.mock('@/app/harness/Tooltip', () => ({ Tooltip: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock('@/app/harness/useConfirmDialog', () => ({
@@ -77,10 +80,59 @@ function stubFetch(opts: { defaultOverride?: unknown; overrideFails?: boolean; p
   return { post };
 }
 
+beforeEach(() => { H.query = {}; });
+
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
+});
+
+describe('Deploy accounts — browser login completion', () => {
+  function loginFetch(status: 'completed' | 'unknown') {
+    stubFetch();
+    const read = globalThis.fetch;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/link-start')) return {
+        status: 200,
+        json: async () => ({ ok: true, authorizeUrl: 'https://provider.example/login', linkId: 'private-link', userCode: 'ABCD-12345' }),
+      } as Response;
+      if (url.endsWith('/link-status')) return { status: 200, json: async () => ({ ok: true, status }) } as Response;
+      return read(input, init);
+    });
+    vi.stubGlobal('fetch', fetch);
+    return fetch;
+  }
+
+  it.each(['Claude', 'Codex'])('observes %s approval without a manual Complete link click', async (provider) => {
+    H.query = { add: true, id: 'pc-proof' };
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const fetch = loginFetch('completed');
+    render(<DeployAccountsPage />);
+    if (provider === 'Codex') fireEvent.click(screen.getByRole('tab', { name: 'Codex', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Get authorize link' }));
+    await screen.findByRole('link', { name: /open the/ });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(H.toastSuccess).toHaveBeenCalledWith(`${provider} account "pc-proof" linked via browser login`);
+    expect(screen.queryByText('Link an account')).toBeNull();
+    expect(fetch.mock.calls.some(([path]) => String(path).endsWith('/link-complete'))).toBe(false);
+  });
+
+  it('shows an expired link and makes a new login available after a workspace restart', async () => {
+    H.query = { add: true, id: 'pc-proof' };
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    loginFetch('unknown');
+    render(<DeployAccountsPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Get authorize link' }));
+    await screen.findByRole('link', { name: /open the/ });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(screen.getByText(/The login link expired or the workspace restarted/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Get authorize link' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /open the/ })).toBeNull();
+  });
 });
 
 describe('Deploy accounts — default-account banner (P-006)', () => {

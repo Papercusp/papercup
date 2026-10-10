@@ -195,27 +195,25 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     const inputStart = data.companionInputs.length;
     const observationStart = data.observations.length;
     const stateStart = data.states.length;
-    const boundaryTrace = () => ({
-      companionInputs: data.companionInputs.slice(inputStart),
-      observations: data.observations.slice(observationStart).map(value => {
-        const observation = value as {
-          scope?: { tenantId?: string; userId?: string; workspaceId?: string };
-          revision?: number;
-          configuration?: { connectionId?: string; valid?: boolean; costReviewed?: boolean };
-          workspace?: { id?: string; connectionId?: string; healthy?: boolean };
-        };
-        return { scope: observation.scope, revision: observation.revision,
-          costReviewed: observation.configuration?.costReviewed, configuration: observation.configuration,
-          workspace: observation.workspace };
-      }),
-      reducerStates: data.states.slice(stateStart).map(value => {
-        const state = value as TutorialState;
-        return { scope: state.scope, observationScope: state.observation?.scope,
-          revision: state.observation?.revision, costReviewed: state.observation?.configuration?.costReviewed,
-          currentStep: currentTutorialStep(state)?.id };
-      }),
-      headings: within(guide).queryAllByRole("heading").map(heading => heading.textContent),
-    });
+    const boundaryTrace = () => {
+      const input = data.companionInputs.slice(inputStart).at(-1);
+      const observation = data.observations.slice(observationStart).at(-1) as {
+        scope?: { tenantId?: string; userId?: string; workspaceId?: string };
+        revision?: number;
+        configuration?: { connectionId?: string; valid?: boolean; costReviewed?: boolean };
+        workspace?: { id?: string; connectionId?: string; healthy?: boolean };
+      } | undefined;
+      const state = data.states.slice(stateStart).at(-1) as TutorialState | undefined;
+      return {
+        input: input && { reviewed: input.configurationReviewed, valid: input.configurationValid, workspaceReady: input.workspaceReady },
+        emitted: observation && { scopeMatches: JSON.stringify(observation.scope) === JSON.stringify(scope), revision: observation.revision,
+          connectionId: observation.configuration?.connectionId, valid: observation.configuration?.valid,
+          costReviewed: observation.configuration?.costReviewed, workspaceHealthy: observation.workspace?.healthy },
+        applied: state && { revision: state.observation?.revision, costReviewed: state.observation?.configuration?.costReviewed,
+          currentStep: currentTutorialStep(state)?.id },
+        headings: within(guide).queryAllByRole("heading").map(heading => heading.textContent),
+      };
+    };
     const withBoundaryTrace = (error: Error) =>
       new Error(error.message + "\nBoundary trace: " + JSON.stringify(boundaryTrace()));
     fireEvent.click(review);
@@ -253,6 +251,31 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     await waitFor(() => expect(within(guide).queryByRole("heading", { name: "Wait for a healthy workspace" })).toBeTruthy(),
       { onTimeout: withBoundaryTrace });
     expect(screen.queryByRole("button", { name: "+ New session" })).toBeNull();
+    expect(data.mutate).not.toHaveBeenCalled();
+  });
+  it("keeps a prepared-workspace cost review when its connection row is absent from the control response", async () => {
+    data.rows = [{ ...workspace, health: { status: "healthy", checks: [] } }];
+    mount("/cloud-workspaces?tutorial=beginner&step=operate&host=customer&tab=cost");
+    const guide = await screen.findByRole("region", { name: "First agent guide" });
+    await within(guide).findByRole("heading", { name: "Review configuration and cost" });
+    fireEvent.click(within(guide).getByRole("button", { name: "Show me" }));
+    fireEvent.click(await screen.findByRole("button", { name: "I've reviewed the configuration and cost" }));
+
+    await waitFor(() => expect(data.observations.some(value => {
+      const observation = value as { configuration?: { connectionId?: string; valid?: boolean; costReviewed?: boolean } };
+      return observation.configuration?.connectionId === "gcp" && observation.configuration.valid === true &&
+        observation.configuration.costReviewed === true;
+    })).toBe(true));
+    await waitFor(() => {
+      const state = data.states.at(-1) as TutorialState | undefined;
+      expect(state && currentTutorialStep(state)?.id).toBe("workspace");
+    });
+    const state = data.states.at(-1) as TutorialState;
+    expect(state.observation).toMatchObject({
+      configuration: { connectionId: "gcp", valid: true, costReviewed: true },
+      workspace: { id: "customer", connectionId: "gcp", healthy: false },
+    });
+    await within(guide).findByRole("heading", { name: "Wait for a healthy workspace" });
     expect(data.mutate).not.toHaveBeenCalled();
   });
   it("explains and highlights the actual connection action without filling or submitting the form", async () => {
