@@ -74,6 +74,8 @@ export interface RunHarnessArgs {
   contract: HarnessContract;
   /** Parent of every run dir; the run lands at `<evidenceRoot>/<runId>`. */
   evidenceRoot: string;
+  /** Small original receipt files, relative to the run dir, retained on completion before pruning. */
+  retainedArtifacts?: readonly string[];
   runPhase: (ctx: PhaseContext) => Promise<PhaseOutcome>;
   /** Fast checks that run before any phase; a failure blocks every phase. */
   preflight?: (ctx: PhaseContext) => Promise<PhaseOutcome>;
@@ -168,7 +170,15 @@ export async function loadRunResult(runDir: string): Promise<HarnessRunResult> {
   return parsed;
 }
 
-export async function writeRunResult(result: HarnessRunResult): Promise<void> {
+function validateRetainedArtifacts(files: readonly string[]): void {
+  if (files.length > 32 || files.some(file => !file || file.includes('\\') || path.isAbsolute(file)
+    || file.split('/').some(part => !part || part === '.' || part === '..') || file === 'result.json')) {
+    throw new Error('invalid retained harness artifact path');
+  }
+}
+
+export async function writeRunResult(result: HarnessRunResult, retainedArtifacts: readonly string[] = []): Promise<void> {
+  validateRetainedArtifacts(retainedArtifacts);
   await mkdir(result.evidenceDir, { recursive: true });
   const file = path.join(result.evidenceDir, 'result.json');
   const bytes = Buffer.from(`${JSON.stringify(result, null, 2)}\n`);
@@ -176,7 +186,8 @@ export async function writeRunResult(result: HarnessRunResult): Promise<void> {
   await rename(`${file}.tmp`, file);
   // Late proof binding may happen after count retention removes the run. Both the
   // shell CLI and TypeScript runner finalize here, before either invokes pruning.
-  // Preserve only the small authentic completion receipt in the existing archive.
+  // Preserve declared original phase receipts as well as the completion result.
+  // Binding may happen after pruning, so binding-time retention alone is too late.
   if (result.verdict !== 'pass' || !result.endedAt) return;
   const root = await realpath(path.dirname(result.evidenceDir));
   if (path.basename(result.evidenceDir) !== result.runId) throw new Error('invalid retained harness run id');
@@ -184,26 +195,47 @@ export async function writeRunResult(result: HarnessRunResult): Promise<void> {
     const relative = path.relative(root, target);
     return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
   };
+  const runRoot = await realpath(result.evidenceDir);
+  // Read every required original before publishing the retained completion result.
+  const artifacts = await Promise.all([...new Set(retainedArtifacts)].map(async relativeFile => {
+    const source = path.join(runRoot, relativeFile);
+    const info = await lstat(source);
+    const resolved = await realpath(source);
+    const relativeSource = path.relative(runRoot, resolved);
+    if (!info.isFile() || info.size > 16 * 1024 * 1024 || !insideRoot(resolved)
+      || relativeSource === '..' || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
+      throw new Error('invalid retained harness artifact');
+    }
+    const artifactBytes = await readFile(source);
+    if (artifactBytes.length > 16 * 1024 * 1024) throw new Error('invalid retained harness artifact');
+    return { relativeFile, bytes: artifactBytes };
+  }));
+  artifacts.push({ relativeFile: 'result.json', bytes });
   const retainedRoot = path.join(root, 'retained');
   await mkdir(retainedRoot, { recursive: true });
   if (!insideRoot(await realpath(retainedRoot))) throw new Error('retained harness result outside evidence root');
   const parent = path.join(retainedRoot, result.runId);
   await mkdir(parent, { recursive: true });
   if (!insideRoot(await realpath(parent))) throw new Error('retained harness result outside evidence root');
-  const destination = path.join(parent, 'result.json');
-  const temporary = path.join(parent, `.result-${randomUUID()}.tmp`);
-  await writeFile(temporary, bytes, { flag: 'wx' });
-  try {
-    // Link a fully written file without replacing an earlier original receipt.
-    try { await link(temporary, destination); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const existing = await lstat(destination);
-      if (!existing.isFile() || !(await readFile(destination)).equals(bytes)) {
-        throw new Error('retained harness result changed');
+  for (const artifact of artifacts) {
+    const destination = path.join(parent, artifact.relativeFile);
+    await mkdir(path.dirname(destination), { recursive: true });
+    if (!insideRoot(await realpath(path.dirname(destination)))) throw new Error('retained harness artifact outside evidence root');
+    const temporary = path.join(path.dirname(destination), `.receipt-${randomUUID()}.tmp`);
+    await writeFile(temporary, artifact.bytes, { flag: 'wx' });
+    try {
+      // Link fully written bytes without replacing an earlier original receipt.
+      try { await link(temporary, destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const existing = await lstat(destination);
+        if (!existing.isFile() || !(await readFile(destination)).equals(artifact.bytes)) {
+          throw new Error(artifact.relativeFile === 'result.json'
+            ? 'retained harness result changed' : 'retained harness artifact changed');
+        }
       }
-    }
-  } finally { await rm(temporary, { force: true }); }
+    } finally { await rm(temporary, { force: true }); }
+  }
 }
 
 /** Point `<evidenceRoot>/latest` at the run dir (relative link, replaced atomically). */
@@ -841,6 +873,7 @@ function notRun(id: string, runDir: string, status: 'blocked' | 'skipped' | 'reu
 }
 
 export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult> {
+  validateRetainedArtifacts(args.retainedArtifacts ?? []);
   const { contract } = args;
   validateContract(contract);
   const now = args.now ?? (() => new Date());
@@ -883,7 +916,7 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   };
   const checkpoint = async () => {
     Object.assign(result, deriveVerdict(result));
-    await writeRunResult(result);
+    await writeRunResult(result, args.retainedArtifacts);
   };
 
   // The tier gate runs BEFORE preflight: an expensive run it refuses pays for nothing. It
