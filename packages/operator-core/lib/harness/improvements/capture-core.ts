@@ -1518,9 +1518,10 @@ async function reconcileToolFailurePromotionCollision(
   preserveCanonicalWatchdogKey = false,
 ): Promise<EngineerIssue | null> {
   const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
-  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {}) ?? {};
+  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
+  const incomingProbationPatch = incomingProbation ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
-  const keys = [priorPayload.watchdogKey, incomingProbation.watchdogKey, input.watchdogKey].filter(
+  const keys = [priorPayload.watchdogKey, incomingProbation?.watchdogKey, input.watchdogKey].filter(
     (key): key is string => typeof key === 'string' && key.length > 0,
   );
   const uniqueKeys = [...new Set(keys)];
@@ -1551,12 +1552,12 @@ async function reconcileToolFailurePromotionCollision(
       [
         ...(Array.isArray(canonicalProbation.reporters) ? canonicalProbation.reporters : []),
         ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
-        ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
+        ...(Array.isArray(incomingProbationPatch.reporters) ? incomingProbationPatch.reporters : []),
         ...(input.createdBy ? [input.createdBy] : []),
       ].filter(Boolean),
     ),
   ];
-  const kind = incomingProbation.intendedKind ?? priorProbation.intendedKind ?? storageKindOf(input.kind);
+  const kind = incomingProbationPatch.intendedKind ?? priorProbation.intendedKind ?? storageKindOf(input.kind);
   const reconciledAt = new Date().toISOString();
   const canonicalKey = preserveCanonicalWatchdogKey
     ? typeof canonicalPayload.watchdogKey === 'string' && canonicalPayload.watchdogKey
@@ -1571,7 +1572,7 @@ async function reconcileToolFailurePromotionCollision(
     toolFailureProbation: {
       ...canonicalProbation,
       ...priorProbation,
-      ...incomingProbation,
+      ...incomingProbationPatch,
       state: 'promoted',
       reporters,
       intendedKind: kind,
@@ -1584,7 +1585,7 @@ async function reconcileToolFailurePromotionCollision(
     // A creation-enrollment `unknown` stamp is the absent-key legacy case under a
     // recorded producer (P-005 D-011), so the promotion verdict replaces it too.
     ...(!canonicalPayload.implementationReadiness || implementationReadinessIsLegacyEquivalent(canonicalPayload)
-      ? { implementationReadiness: promotedProbationReadiness(input, incomingProbation) }
+      ? { implementationReadiness: promotedProbationReadiness(input, incomingProbationPatch) }
       : {}),
     ...promotionReproductionPatch(input),
     promotionReconciledFrom: prior.id,
@@ -1623,18 +1624,22 @@ async function promoteToolFailureProbation(
 ): Promise<EngineerIssue | null> {
   const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
-  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {}) ?? {};
-  if (!compatibleToolFailureClassIdentity(prior, incomingProbation)) return null;
+  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
+  // Keep an absent probation record distinct from an empty one while checking
+  // identity. Exact-key callers already proved the watchdog key; normalizing
+  // absence to {} here makes the strict report/class checks reject legacy rows.
+  if (incomingProbation && !compatibleToolFailureClassIdentity(prior, incomingProbation)) return null;
+  const incomingProbationPatch = incomingProbation ?? {};
   const reporters = [
     ...new Set(
       [
         ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
-        ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
+        ...(Array.isArray(incomingProbationPatch.reporters) ? incomingProbationPatch.reporters : []),
         ...(input.createdBy ? [input.createdBy] : []),
       ].filter(Boolean),
     ),
   ];
-  const kind = incomingProbation.intendedKind ?? storageKindOf(input.kind);
+  const kind = incomingProbationPatch.intendedKind ?? storageKindOf(input.kind);
 
   // Change the visible content first while the row is still safely parked. The
   // lane flip is last: if either write fails, a retry cannot expose a half-
@@ -1660,21 +1665,21 @@ async function promoteToolFailureProbation(
       // follows the promoted report; class-key routes preserve their existing
       // indexed identity and keep the newer evidence in the nested payload.
       ...(!preserveCanonicalWatchdogKey &&
-      typeof incomingProbation.watchdogKey === 'string' &&
-      incomingProbation.watchdogKey
-        ? { watchdogKey: incomingProbation.watchdogKey }
+      typeof incomingProbationPatch.watchdogKey === 'string' &&
+      incomingProbationPatch.watchdogKey
+        ? { watchdogKey: incomingProbationPatch.watchdogKey }
         : {}),
       ...(input.paths?.length ? { paths: input.paths } : {}),
       toolFailureProbation: {
         ...priorProbation,
-        ...incomingProbation,
+        ...incomingProbationPatch,
         state: 'promoted',
         reporters,
         intendedKind: kind,
         promotedAt,
         promotedBy: input.createdBy ?? 'system:improvement-watchdog',
       },
-      implementationReadiness: promotedProbationReadiness(input, incomingProbation),
+      implementationReadiness: promotedProbationReadiness(input, incomingProbationPatch),
       ...promotionReproductionPatch(input),
       ideaLifecycle: initializeIdeaLifecycle(),
     },
