@@ -2725,7 +2725,9 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
  * channel `'coalesced'` (no turn burned, WAKE_TURN_CHANNELS-excluded), never
  * touching another subscriber's rows (subscriber_id-scoped, like ackDelivery).
  * Deliveries created AFTER the cutoff are left alone — a message that arrived
- * mid-read must still wake normally next time. Returns rows settled.
+ * mid-read must still wake normally next time. Loop-source deliveries also
+ * survive: they share the inbox key but reading messages does not execute the
+ * scheduled iteration (EI-25610308076916440). Returns rows settled.
  */
 export async function settleCaughtUpInboxWakeDeliveries(input: {
   subscriberId: string;
@@ -2740,6 +2742,7 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
            last_error = 'caught up at turn-end cursor settle — already seen in a bulk coord:inbox read (EI-9389)'
      WHERE workspace_id = ${ws} AND subscriber_id = ${input.subscriberId}
        AND event_key = ${key}
+       AND COALESCE(source, '') NOT LIKE 'loop:%'
        AND status IN ('pending', 'parked')
        AND created_at <= ${input.cutoffTs}
     RETURNING id

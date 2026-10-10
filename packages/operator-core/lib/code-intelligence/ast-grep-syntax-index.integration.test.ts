@@ -27,6 +27,13 @@ beforeAll(async () => {
 afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 
 describe('P-005 maintained grammar indexing through the native surface', () => {
+  it('rejects an unadmitted grammar instead of returning a trustworthy empty', async () => {
+    const result = await astGrepSyntaxIndex({ language: 'cpp' as 'ts', rootPath: root, paths: ['a.cpp'] });
+    expect(result.error).toContain('unsupported');
+    expect(result.freshness.health).toBe('unknown');
+    expect(result.sites).toEqual([]);
+    expect(structuralTool.args.safeParse({ op: 'syntax_index', language: 'cpp', paths: ['a.cpp'] }).success).toBe(false);
+  });
   it.each(fixtures)('$language emits language-aware syntax and keeps relationships inferred', async fixture => {
     const args = { op: 'syntax_index' as const, language: fixture.language, paths: [fixture.file], rootPath: root };
     expect(structuralTool.args.safeParse(args).success).toBe(true);

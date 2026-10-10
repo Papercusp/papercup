@@ -1128,7 +1128,8 @@ export interface LoopStatus {
    *  it is the completion signal used by turnsStalled. Optional for legacy
    *  fixture compatibility; production status rows always populate it. */
   lastLoopTurnAt?: string | null;
-  /** Latest completed loop-origin turn after the most recent suppressed-redundant wake
+  /** Latest completed loop-origin turn after the most recent wake settled through
+   *  suppressed-redundant, coalesced, or inbox delivery
    *  was dispatched, regardless of the current arm. `lastLoopTurnAt` is intentionally
    *  arm-scoped for turnsStalled; recovery proof for an older wake must survive re-arm. */
   lastSuppressedWakeLoopTurnAt?: string | null;
@@ -2165,8 +2166,9 @@ export async function getLoopStatuses(
            -- above, but suppressed-wake recovery needs proof tied to the dispatched wake.
            -- Re-arming after a genuine loop-origin turn otherwise hides that completion and
            -- leaves the old suppressed delivery looking unrecovered forever. Keep this
-           -- second clock scoped to the latest suppressed wake's dispatch time instead.
-           CASE WHEN lw.channel = 'suppressed-redundant' AND lw.created_at IS NOT NULL
+           -- second clock scoped to the latest non-turn delivery's dispatch time instead.
+           -- Inbox fallback and cursor coalescing also need this recovery proof.
+           CASE WHEN lw.channel IN ('suppressed-redundant', 'coalesced', 'inbox') AND lw.created_at IS NOT NULL
                 THEN (SELECT max((
                   SELECT max(a2.ts)
                     FROM harness_shared.session_turns a2

@@ -547,6 +547,15 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     const fired1b = await store.fireAwaitsForKey({ eventKey: key });
     await store.insertDeliveries({ awaits: fired1b, summary: 'seen-pending' });
 
+    // A loop uses the same standing key but reading the inbox does not execute
+    // its iteration. Both pending and host-parked loop work must survive cleanup.
+    for (const summary of ['loop-pending', 'loop-parked']) {
+      const loopAwaits = await store.fireAwaitsForKey({ eventKey: key });
+      await store.insertDeliveries({ awaits: loopAwaits, summary, source: 'loop:fixture-routine', payload: { routineId: 'fixture-routine' } });
+    }
+    const loopRows = await store.listRecentDeliveries('su-settle', 10);
+    await store.markDeliveryParked(loopRows.find(d => d.summary === 'loop-parked')!.id, 'host accepted', 60_000);
+
     // A peer's own standing wake, fired at the same moment — must NEVER be touched by
     // MY settle call (subscriber_id-scoped, like ackDelivery).
     const peerKey = `${store.INBOX_WAKE_KEY_PREFIX}su-settle-peer`;
@@ -569,6 +578,8 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(mine.find((d) => d.summary === 'seen-pending')).toMatchObject({ status: 'delivered', channel: 'coalesced' });
     expect(mine.find((d) => d.summary === 'seen-parked')).toMatchObject({ status: 'delivered', channel: 'coalesced' });
     expect(mine.find((d) => d.summary === 'post-cutoff')).toMatchObject({ status: 'pending' });
+    expect(mine.find((d) => d.summary === 'loop-pending')).toMatchObject({ status: 'pending' });
+    expect(mine.find((d) => d.summary === 'loop-parked')).toMatchObject({ status: 'parked' });
 
     const peer = await store.listRecentDeliveries('su-settle-peer', 10);
     expect(peer.find((d) => d.summary === 'peer-untouched')).toMatchObject({ status: 'pending' });

@@ -610,7 +610,7 @@ describe('loop surface round-trip (real PG)', () => {
     expect(status!.lastFailedFireLoopTurnCompletedAt).toBe(loopAssistant.toISOString());
   });
 
-  it('EI-25552514553135466: reports suppressed-wake loop completion after a later re-arm', async () => {
+  it.each(['suppressed-redundant', 'coalesced', 'inbox'])('reports %s loop completion after a later re-arm', async (channel) => {
     await sql`TRUNCATE harness_shared.session_turns CASCADE`;
     await sql`TRUNCATE harness_shared.session_turn_journal`;
     await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
@@ -656,7 +656,7 @@ describe('loop surface round-trip (real PG)', () => {
         (workspace_id, await_id, subscriber_id, event_key, source, status, channel, created_at, delivered_at)
       VALUES
         (${WS}, ${awaitRow[0]!.id}, ${OWNER}, 'loop-recovery-test', ${'loop:' + routineId},
-         'delivered', 'suppressed-redundant', ${wakeCreated.toISOString()}::timestamptz,
+         'delivered', ${channel}, ${wakeCreated.toISOString()}::timestamptz,
          ${deliveredAt.toISOString()}::timestamptz)
     `;
     await sql`
