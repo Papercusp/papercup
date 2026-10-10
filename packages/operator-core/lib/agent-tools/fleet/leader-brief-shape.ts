@@ -333,6 +333,59 @@ function compactFleetMetrics(value: unknown): unknown {
   return parsed.success ? parsed.data : undefined;
 }
 
+/**
+ * A large fleet's complete indexes cannot fit the monitor budget. Use this
+ * preview ONLY after the result door saved the emitted body: the queue numbers
+ * retain their full comparison contract, and omitted identities, actions and
+ * secondary metrics are recovered from the SAME snapshot's cursor.
+ */
+export function compactLeaderBriefForResultDoor(data: unknown): Dict | null {
+  const source = asDict(data);
+  if (!source) return null;
+  const metrics = fleetMetricsResultSchema.safeParse(source.fleetMetrics);
+  if (!metrics.success) return null;
+
+  const summarySource = asDict(source.summary);
+  const summary = pick(summarySource, ['fleet', 'members'], 120) ?? {};
+  const headcount = pick(summarySource?.headcount,
+    ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict'], 120);
+  if (headcount) {
+    const basis = asDict(summarySource?.headcount)?.basis;
+    if (basis) headcount.basis = compactHeadcountBasis(basis);
+    summary.headcount = headcount;
+  }
+  const claimable = asDict(summarySource?.claimable_now);
+  if (claimable) {
+    // The canonical snapshot carries the stock spec and scheduler-floor
+    // contract. Keep null and its reason; never turn an unread oracle into 0.
+    summary.claimable_now = {
+      value: claimable.value,
+      population: { recovery: '_projection.cursor', source: 'summary.claimable_now.population' },
+      ...(claimable.unknown ? { unknown: pick(claimable.unknown, ['code', 'detail'], 120) } : {}),
+    };
+  }
+  const fleetMetrics = metrics.data.ok
+    ? { ok: true, snapshot: pick(metrics.data.snapshot, [
+        'schemaVersion', 'generatedAt', 'scope', 'quality', 'flow', 'remaining',
+        'authority', 'issueUnits', 'intakeStages', 'admissionParity',
+      ]) }
+    : metrics.data;
+  return {
+    ok: source.ok === true,
+    ...(source.degraded === true ? { degraded: true } : {}),
+    ...(source.notLeader ? { notLeader: pick(source.notLeader, ['registeredLeader', 'leaderState'], 120) } : {}),
+    summary,
+    fleetMetrics,
+    ...(source.blockedAt ? { blockedAt: compactBlockedAt(source.blockedAt, 80, false) } : {}),
+    leaderBriefProjection: {
+      tier: 'trimmed', emergency: true, detailOmitted: true,
+      recovery: '_projection.cursor',
+      // No claim that complete exceptional-action indexes fit inline.
+      completeIndexesInCursor: true,
+    },
+  };
+}
+
 /** P-006: keep the ranked dependency answer as one measured|unknown unit. The
  * graph reader already bounds rows, but each row can still carry long titles,
  * many coverage-twin work items, and several holder identities. */

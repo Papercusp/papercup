@@ -45,7 +45,7 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { join, dirname, delimiter, basename, relative } from "node:path";
+import { join, dirname, delimiter, basename, relative, isAbsolute } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from "@papercusp/operator-core/lib/agent-kickoff/prompt-transport.mjs";
 
@@ -211,6 +211,8 @@ import {
 import {
   CODEX_GATEWAY_PROVIDER_ID,
   codexGatewayConfigToml,
+  SCOPED_INFERENCE_GATEWAY_ENV,
+  snapshotScopedInferenceGateway,
 } from "@papercusp/orchestrator/codex-gateway-config";
 import {
   prepareOmpGatewayModelsConfig,
@@ -7317,7 +7319,7 @@ export function stripCodexGatewayConfig(configText) {
  *
  * @param {string} configText  the existing config.toml text ('' when absent)
  * @param {string | null} [account]  the account id to PIN to, or null for the unpinned/default route
- * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean }} [opts]
+ * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean, gateway?: {baseURL:string, token:string} }} [opts]
  * @returns {string}
  */
 export function codexGatewayConfigPatch(
@@ -7328,6 +7330,7 @@ export function codexGatewayConfigPatch(
     ownerId = null,
     priority = null,
     keepProviderTableWhenUnrouted = false,
+    gateway,
   } = {},
 ) {
   const stripped = stripCodexGatewayConfig(configText).trimEnd();
@@ -7335,6 +7338,7 @@ export function codexGatewayConfigPatch(
     gatewayOn,
     ownerId,
     priority,
+    gateway,
   });
   if (!patch.root.length && !patch.tables.length) {
     // WI-38706: "no gateway route for THIS launch" must not mean "delete the
@@ -7527,7 +7531,7 @@ function applyCodexContextWindow(codexHome, model = null, compactionLimit = null
 }
 
 /** @param {string} codexHome
- * @param {{mode?: string, id?: string | null, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean}} [options] */
+ * @param {{mode?: string, id?: string | null, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean, gateway?: {baseURL:string, token:string}}} [options] */
 export function applyCodexGatewayRoute(
   codexHome,
   {
@@ -7536,6 +7540,7 @@ export function applyCodexGatewayRoute(
     ownerId = null,
     priority = null,
     keepProviderTableWhenUnrouted = false,
+    gateway,
   } = {},
 ) {
   const configPath = join(codexHome, "config.toml");
@@ -7549,9 +7554,29 @@ export function applyCodexGatewayRoute(
       ownerId,
       priority,
       keepProviderTableWhenUnrouted,
+      gateway,
     }),
     { mode: 0o600 },
   );
+}
+
+/** Apply the private route after bootstrap/carry materialization and BEFORE
+ * native execution. Unsupported backends or invalid envelopes fail closed.
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function applyScopedNativeGateway(env) {
+  const encoded = env[SCOPED_INFERENCE_GATEWAY_ENV];
+  if (encoded === undefined) return;
+  let gateway;
+  try { gateway = snapshotScopedInferenceGateway(JSON.parse(encoded)); }
+  catch { throw new Error("Invalid scoped inference gateway envelope"); }
+  if (env.PAPERCUSP_AGENT !== "codex" || !env.CODEX_HOME || !isAbsolute(env.CODEX_HOME))
+    throw new Error("Scoped inference gateway requires an isolated Codex home");
+  const mode = env.PAPERCUSP_ACCOUNT_ROUTING_MODE ?? "default";
+  if (!["default", "auto", "pin"].includes(mode) || (mode === "pin" && !env.PAPERCUSP_ACCOUNT_ID))
+    throw new Error("Scoped inference gateway account binding is invalid");
+  applyCodexGatewayRoute(env.CODEX_HOME, { mode, id: env.PAPERCUSP_ACCOUNT_ID ?? null,
+    ownerId: env.PAPERCUSP_SID ?? null, priority: env.PAPERCUSP_AGENT_ROLE ?? "su", gateway });
 }
 
 /**
@@ -11580,6 +11605,7 @@ export async function reportSessionPortLaunchFailure(
 export function sanitizeInheritedEnv(env) {
   const out = stripRecoveryMarkers(env);
   delete out.PAPERCUSP_ORIGINAL_CODEX_ROUTING;
+  delete out[SCOPED_INFERENCE_GATEWAY_ENV];
   for (const key of Object.keys(out)) {
     if (
       key === "INIT_CWD" ||
@@ -12186,6 +12212,10 @@ export function runWrapper(options) {
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
+  // Consume the host's per-process envelope after the independence sanitizer.
+  // The native child retains it for managed carry; unrelated launches strip it.
+  const scopedGateway = envelopeEnv?.[SCOPED_INFERENCE_GATEWAY_ENV] ?? process.env[SCOPED_INFERENCE_GATEWAY_ENV];
+  if (scopedGateway !== undefined) env[SCOPED_INFERENCE_GATEWAY_ENV] = scopedGateway;
   const backend = resolveBackendLaunch(wrapperBin, { env });
   if (!backend)
     throw new Error(`psu: no native executable found for ${wrapperBin}; install the backend and retry.`);
@@ -12202,6 +12232,7 @@ export function runWrapper(options) {
   // outside the managed-host fallback: falling back cannot repair an unusable
   // SQLite path, and would replace this OS error with Codex's corruption hint.
   try {
+    applyScopedNativeGateway(env);
     prepareCodexSqliteHome({ env, cwd, args });
   } catch (error) {
     void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
@@ -12524,6 +12555,7 @@ export function runWrapper(options) {
               accountId: env.PAPERCUSP_ACCOUNT_ID || null,
               priority: env.PAPERCUSP_AGENT_ROLE || "su",
               headless: env.PAPERCUSP_PSU_HEADLESS === "1",
+              env,
             },
           ),
         // stale-prompt-render-in-live-sessions-2026-08-02 P-002: a respawn must
@@ -15702,7 +15734,7 @@ export async function ensureCodexHomeViaOperator(
     // The canonical writer refreshes config.toml and may remove the launch's
     // gateway selector. Reapply the explicit route after every carry refresh.
     // Default/unspecified launches keep their existing provider semantics.
-    if (routeMode === "auto" || routeMode === "pin") {
+    if (routeMode === "auto" || routeMode === "pin" || env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined) {
       if (routeMode === "pin" && !accountId)
         throw new Error("Codex carry cannot restore a pin without an account id");
       applyCodexGatewayRoute(codexHome, {
@@ -15710,6 +15742,9 @@ export async function ensureCodexHomeViaOperator(
         id: accountId,
         ownerId: owner,
         priority,
+        ...(env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined
+          ? { gateway: snapshotScopedInferenceGateway(JSON.parse(env[SCOPED_INFERENCE_GATEWAY_ENV])) }
+          : {}),
       });
     }
     if (r.repaired) {

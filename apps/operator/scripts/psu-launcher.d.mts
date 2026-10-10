@@ -2006,14 +2006,18 @@ export function stripCodexGatewayConfig(configText: any): string;
  *
  * @param {string} configText  the existing config.toml text ('' when absent)
  * @param {string | null} [account]  the account id to PIN to, or null for the unpinned/default route
- * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean }} [opts]
+ * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean, gateway?: {baseURL:string, token:string} }} [opts]
  * @returns {string}
  */
-export function codexGatewayConfigPatch(configText: string, account?: string | null, { gatewayOn, ownerId, priority, keepProviderTableWhenUnrouted, }?: {
+export function codexGatewayConfigPatch(configText: string, account?: string | null, { gatewayOn, ownerId, priority, keepProviderTableWhenUnrouted, gateway, }?: {
     gatewayOn?: boolean;
     ownerId?: string | null;
     priority?: string | null;
     keepProviderTableWhenUnrouted?: boolean;
+    gateway?: {
+        baseURL: string;
+        token: string;
+    };
 }): string;
 /** The provider id a codex rollout is BOUND to (`session_meta.model_provider`
  *  on its first line), or null. Read at resume so the route patch below cannot
@@ -2081,14 +2085,23 @@ export function codexContextWindowConfigPatch(configText: string, model: string 
     compactionLimit?: number | null;
 }): string;
 /** @param {string} codexHome
- * @param {{mode?: string, id?: string | null, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean}} [options] */
-export function applyCodexGatewayRoute(codexHome: string, { mode, id, ownerId, priority, keepProviderTableWhenUnrouted, }?: {
+ * @param {{mode?: string, id?: string | null, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean, gateway?: {baseURL:string, token:string}}} [options] */
+export function applyCodexGatewayRoute(codexHome: string, { mode, id, ownerId, priority, keepProviderTableWhenUnrouted, gateway, }?: {
     mode?: string;
     id?: string | null;
     ownerId?: string | null;
     priority?: string | null;
     keepProviderTableWhenUnrouted?: boolean;
+    gateway?: {
+        baseURL: string;
+        token: string;
+    };
 }): void;
+/** Apply the private route after bootstrap/carry materialization and BEFORE
+ * native execution. Unsupported backends or invalid envelopes fail closed.
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function applyScopedNativeGateway(env: NodeJS.ProcessEnv): void;
 /**
  * Resolve which fields the flags PRE-SELECT vs which still need an
  * interactive prompt. Pure — exported for tests. Throws on a bad --agent.
