@@ -93,7 +93,7 @@ async function refusedAssignment(name: string, problemStatement: string) {
     await expect.poll(async () => {
       const [terminal] = await h.sql`SELECT ended_at FROM harness_shared.task_ledger WHERE task_id=${rows[0].task_id}`;
       return terminal?.ended_at;
-    }, { timeout: 10000, interval: 50 }).not.toBeNull();
+    }, { timeout: 10000, interval: 50 }).toBeInstanceOf(Date);
     expect(rows[0].session_ended_at).not.toBeNull();
     const files = await h.sql`SELECT file_path, byte_offset FROM harness_shared.interactive_usage_files WHERE workspace_id=${workspaceId}`;
     expect(files.length).toBeGreaterThan(0);
