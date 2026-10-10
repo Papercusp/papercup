@@ -889,6 +889,63 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     expect(out._shapeNote?.dropped).toContain("completion");
   });
 
+  it("tries all five compact identities before the trimmed three-row stub rung", () => {
+    const ids = ["EI-CANDIDATE-1", "EI-CANDIDATE-2", "EI-CANDIDATE-3", "EI-CANDIDATE-4", "EI-CANDIDATE-5"];
+    const completion = {
+      summary: "S".repeat(7_000),
+      testsRun: "T".repeat(7_000),
+      testResult: "R".repeat(7_000),
+      workOutcome: "O".repeat(7_000),
+      verifiedHow: "V".repeat(7_000),
+    };
+    const rows = ids.map((id, index) =>
+      row({
+        id,
+        availability: "available",
+        workItem: {
+          id,
+          kind: "bug",
+          state: "open",
+          title: `candidate ${index + 1}`,
+        },
+        completion,
+        checkpoint: "C".repeat(8_000),
+      }),
+    );
+    const out = shapeWorkItemsGet(
+      {
+        ...envelope(rows),
+        read: {
+          schemaVersion: "work-items-get-read-v1",
+          mode: "complete",
+          requested: ids.length,
+          available: ids.length,
+          absent: 0,
+          unavailable: 0,
+        },
+      },
+      "trimmed",
+    ) as Envelope;
+
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+    expect(out.results.map((result) => result.id)).toEqual(ids);
+    expect(out.results.every((result) => result._stub !== true)).toBe(true);
+    expect(out.results.map((result) => (result.workItem as Record<string, unknown>).title)).toEqual([
+      "candidate 1",
+      "candidate 2",
+      "candidate 3",
+      "candidate 4",
+      "candidate 5",
+    ]);
+    expect(out.results.map((result) => (result.workItem as Record<string, unknown>).state)).toEqual([
+      "open",
+      "open",
+      "open",
+      "open",
+      "open",
+    ]);
+  });
+
   it("reports available detail reduced to two id-only stubs while keeping each reread ID", () => {
     const bulkyHolder = {
       goalRef: "WI-2",

@@ -1275,8 +1275,17 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     compactIdentity: true,
   };
   const firstNoBriefAttempt = attempts.findIndex((attempt) => !attempt.withOperationalBrief);
+  const firstIdentityLossAttempt = attempts.findIndex(
+    (attempt) => ladder[attempt.rung].fullRows < rows.length,
+  );
+  const compactIdentityInsertAt =
+    briefRequested && firstNoBriefAttempt >= 0
+      ? firstNoBriefAttempt
+      : rows.length <= 5 && firstIdentityLossAttempt >= 0
+        ? firstIdentityLossAttempt
+        : attempts.length - 1;
   attempts.splice(
-    briefRequested && firstNoBriefAttempt >= 0 ? firstNoBriefAttempt : attempts.length - 1,
+    compactIdentityInsertAt,
     0,
     compactIdentityAttempt,
   );
