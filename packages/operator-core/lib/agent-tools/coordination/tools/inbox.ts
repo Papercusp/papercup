@@ -1308,7 +1308,7 @@ export default defineTool({
     // those surfaces already told the caller was outstanding. Fail-SAFE, not fail-open:
     // a lookup failure filters to NOTHING (never silently falls back to the unfiltered
     // inbox, which would look like "unanswered_only had no effect" and hide the failure).
-    let unansweredMsgIds: Set<string> | undefined;
+    let unansweredMsgIds: ReadonlySet<string> | undefined;
     let unansweredLookupFailed = false;
     if (unansweredOnly) {
       try {
