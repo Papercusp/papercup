@@ -476,6 +476,77 @@
       "sourceQualification": "Stable working source at HEADdc0efd7349 with both test files uncommitted; terminal0 and no source drift. Clean committed repair verification remains open.",
       "guard": "Existing process-group lifetime extended with bounded TERM/KILL/wait before DB removal; command and profile teardown reuse it. Real stubborn-grandchild tests cover ordinary child exit and supervisor cancellation. Explicit candidate migration inventory mismatch is refused before PG allocation."
     },
+    "failedFreshStartup2140": {
+      "nonce": "20261010T2140-7a",
+      "supervisorCommit": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+      "productCommit": "c63f8acc72d4e7e633fa043d8012b5ce272d1f3a",
+      "migrationInventorySha256": "cba8e7e31729f414b1835825af0d88b61f757fc2746cd10e83f8cd3d97f2836a",
+      "log": "/dev/shm/tutorial-final-operator-inner-20261010T2140.log",
+      "outcome": "Failed at isolated_operator_source_mismatch before config-ready receipt or browser launch. Actual health payload was not logged; cause remains under investigation.",
+      "followUp": "EI-25630010199607757",
+      "cleanup": "Child group stopped at1227ms before private-state removal3214ms; complete3442ms. Exact wrapper, supervisor, profile and request-host PIDs independently absent; private runtime and PG directories removed. Terminal exit1.",
+      "limitations": "No hosted product acceptance or shipment verdict. Cleanup repair is separately done with committed verification."
+    },
+    "freshDiagnosticReadiness2148": {
+      "nonce": "20261010T2148-7a",
+      "log": "/dev/shm/tutorial-final-operator-inner-20261010T2148.log",
+      "logSha256": "3b786b951dcd1a77bcf92a61479d59a97da3a6e32a74c170e4775848151bf1f9",
+      "observed": "Exactly one config-ready receipt matches file, nonce, productSHAc63f8acc72, privateport34307 and publicorigin4572. Independent HTTP200 health at21:48:27Z matches c63f8acc72. Source fixture586 and retained6GHer artifact custody verified.",
+      "cleanup": "Deliberate SIGTERM for context boundary; child-group-stopped883ms precedes private-state removal1902ms/complete2158ms. Exact owned PIDs and private runtime/PG directories absent; terminal1. The saved config now references a removed runtime and must not be reused.",
+      "limitations": "No browser or native review launched. Prior2140 source-identity rejection remains unexplained and tracked under EI-25630010199607757. Readiness is a prerequisite, not product acceptance or shipment."
+    },
+    "freshHostedPreferenceAcceptance2205": {
+      "nonce": "20261010T2200-7a",
+      "operatorPort": 45373,
+      "publicOrigin": "https://localhost:4582",
+      "readiness": "Exactly one nonce/file/product-sha/port-matched readiness receipt, followed by independent HTTP200 health for c63f8acc72 before either browser run. Candidate and supervisor SQL inventories equal cba8e7e31729f414b1835825af0d88b61f757fc2746cd10e83f8cd3d97f2836a. No source guard override.",
+      "testRunId": 21007421,
+      "log": "/dev/shm/tutorial-final-served-30e94898-c63f8-20261010T2205-automated.log",
+      "logSha256": "a76bf42faa2a649aaa47aad579948e02cf387ca392841f513c6579f5f98d54b4",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "testCases": [
+        "served account-first product guide > a real hosted non-Cloud preference task saves and survives reload with narrow enlarged text, reduced motion and keyboard activation",
+        "served account-first product guide > a real hosted non-Cloud preference task saves and survives reload using only Tab and arrow traversal at 200 percent text"
+      ],
+      "ledgerQualification": "Shared LOCAL ledger21007421: clean Portal30e9489887f8f8a9f7b9898be4989283fa63a464, independent verifier root2102, harnesspapercusp/workspacepapercusp-workspace; collectionFailedfalse and exact two passedCaseTitles. Fresh command terminal0 and drained.",
+      "observations": "Both genuine hosted TEST accounts saved theme through PUT200, persisted it after reload, retained account lesson progress and reopened contextual Help. Both asserted savedPromptRequests=[] and no saved-prompt API failure. Tab/arrow variant measured viewport390, rootfont32 and reducedmotiontrue; preferences payload exactly one theme write.",
+      "taskEvidence": [
+        { "path": "/dev/shm/tutorial-final-automated-20261010T2205-results/portal-product-tutorial-se-96d52-ion-and-keyboard-activation/served-preference-task.json", "sha256": "07fc467b0c734edf42357ae575d3d9b1bbc1317534b7dcc6a3977a0eb3cf676e" },
+        { "path": "/dev/shm/tutorial-final-automated-20261010T2205-results/portal-product-tutorial-se-083f1-aversal-at-200-percent-text/served-preference-task.json", "sha256": "0c20b75371d290522d264ce0b057cbb6e26ec0e3e0a2ee4a0aaa30843e3122a6" }
+      ],
+      "scope": "Two real hosted non-Cloud preference journeys only. Other hosted desktop API403/mail-calendar503 responses remain an owned follow-up EI-25631710033555454. No full-product/provider/novice/full-affected or production shipment verdict."
+    },
+    "freshAttendedNativeReview2205": {
+      "testRunId": 21007430,
+      "outcome": "SKIP: zero passed, zero failed, one skipped. Attended observations were attached before the maintained terminal skip; automation used its own two fresh accounts in21007421.",
+      "metadata": "/dev/shm/tutorial-final-attended-20261010T2205.json",
+      "metadataSha256": "f473a098eb3e09a490d9414a6f9c16a154e057160d7fd474319d40858b1776d2",
+      "log": "/dev/shm/tutorial-final-served-30e94898-c63f8-20261010T2205.log",
+      "logSha256": "eaf73ca9140766c4f14bd064bd4ed6d5e834dac65b0e5c4084a58a04ff4cecf0",
+      "controlTrace": "/dev/shm/tutorial-final-native-control-trace-20261010T2205.jsonl",
+      "controlTraceSha256": "d2ac91ef6fb07abba62fb499c52a5c014e8a8c99f59ecf0aa4a62096a6ef22b8",
+      "speechLog": "/dev/shm/tutorial-final-attended-20261010T2205-speech.log",
+      "speechLogSha256": "ee15a77f55ec91be8b50dfc071979a42c1dfb9cb36ceafb9dd369dd592cf7fee",
+      "nativeObservations": "Actual window focus verified. Account reached10Tabs, OpenSettings13Tabs, Settingspicker11Tabs; all17options measured, Personalization16Down, Dark3Tabs. Enter selectedDark and native AT-SPI PRESSED remainedtrue after Ctrl+R. Hosted Saved prompts disclosure visible; no saved-prompt request/failure recorded. Help reached67Tabs, Resume2ShiftTabs; Enter returned focus to account heading. Orca SPEECH OUTPUT includes account heading, Personalization and theme toggle labels. This records emitted speech, not human-heard provider audio.",
+      "screenshots": [
+        { "path": "/dev/shm/tutorial-final-attended-reloaded-20261010T2205.png", "sha256": "ae084768cf591c51df20525d608b51a56865ee38aa753da3fc0253fc7f512ffe" },
+        { "path": "/dev/shm/tutorial-final-attended-guide-resumed-20261010T2205.png", "sha256": "ab15a26b39322e1e0a03e85de95938196154bacde0cb6ba60656815c5c8c33d1" }
+      ],
+      "sourceQualification": "Same6GHer retained artifact and exactc63 guide; independent586-file receipt verified before and after both runs. Shared ledger21007430 marks clean30e94898/root2102/harnesspapercusp/workspacepapercusp-workspace SKIP.",
+      "scope": "One attended native preference/control review only; terminalSKIP is not an automated PASS. Prior failed20997335/20993954/native2018 observations remain preserved."
+    },
+    "freshRuntime2200Teardown": {
+      "signal": "SIGTERM to verified owned supervisor825122/startTicks45844218 after both browser lanes finished",
+      "log": "/dev/shm/tutorial-final-operator-inner-20261010T2200.log",
+      "logSha256": "148a0ebc1d728c7a9d60630aab8e9c42d20a499d71ebbfdcd01aef50e96b2a0e",
+      "childGroupStoppedMs": 4549,
+      "privateStateRemovalMs": 4689,
+      "completeMs": 5172,
+      "verified": "Cleanup completed with runtimeRemoved=true and pgDataRemoved=true. Exact runtimejz6ehU and PGELcl0Z directories independently absent; recorded wrapper/supervisor/profile/request-host/Orca/openbox PIDs absent. Fresh operator66471 terminal1 and both served lanes62823/35532 terminal0 drained; native probes50924/39233/53580 terminal0 drained. No live handle carried forward.",
+      "configQualification": "Saved2200 env now points at removed private state and must not be reused as a readiness claim. Retained source/release/verifier artifacts remain."
+    },
     "cleanupRepairCommittedProof": {
       "commit": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
       "root": "/dev/shm/pcv/papercusp-lint-as-committed-714072d2b2-EREfJv",
