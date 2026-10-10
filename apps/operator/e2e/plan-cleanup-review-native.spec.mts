@@ -3,10 +3,12 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 
-// Read-only acceptance against existing review packets. The maintained native
-// rig supplies an owned bridge and frozen source; no cleanup action is invoked.
+// The maintained native rig supplies an owned bridge and frozen source. A
+// throwaway isolated database gets review fixtures; existing workspaces remain
+// read-only and no cleanup action is invoked.
 test('native cleanup review selector opens an older packet with its actual findings', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the maintained owned native rig');
   test.setTimeout(180_000);
@@ -47,6 +49,43 @@ test('native cleanup review selector opens an older packet with its actual findi
   }
 
   try {
+    if (process.env.VERIFY_TAURI_ISOLATED_DB === '1') {
+      expect(workspace).toMatch(/^verify-tauri-isolated-/);
+      const sourceRoot = process.env.OPERATOR_SOURCE_ROOT!;
+      expect(sourceRoot).toBeTruthy();
+      const admin = process.env.HARNESS_ADMIN_DATABASE_URL!;
+      expect(admin).toBeTruthy();
+      const database = new URL(admin);
+      expect(['localhost', '127.0.0.1']).toContain(database.hostname);
+      expect(database.port).not.toBe('5432');
+      // Reuse the real run store, including its single-flight and settlement
+      // rules. Bind DATABASE_URL explicitly so inherited shared DB settings
+      // cannot redirect fixture writes out of this disposable rig.
+      const seeded = await run(process.execPath, [
+        '--import', resolve(sourceRoot, 'scripts/lib/committed-source-loader.mjs'),
+        '--input-type=module', '-e', `
+          const { createRun, settleRunPhase } = await import('./packages/operator-core/lib/attention/bulk-run-store.ts');
+          const { seedFindings } = await import('./packages/operator-core/lib/plan-cleanup/run-store.ts');
+          const workspaceId = process.env.PLAN_CLEANUP_FIXTURE_WORKSPACE;
+          const runs = [];
+          for (const suffix of ['older', 'newer']) {
+            const planSlug = 'native-cleanup-fixture-' + suffix;
+            const run = await createRun({ items: [], runKind: 'plan-cleanup', seedRefs: [planSlug],
+              requestedBy: 'test:isolated-native-review', harnessSlug: 'papercusp', workspaceId });
+            await seedFindings({ runId: run.runId, workspaceId, findings: [{
+              findingId: 'stale-now:papercusp/' + planSlug, kind: 'stale-now', planSlug,
+              harnessSlug: 'papercusp', target: '## Now', from: 'previous review', to: 'current review',
+              confidence: 'recommended', evidence: [],
+            }] });
+            await settleRunPhase({ runId: run.runId, workspaceId, scanCompleted: true });
+            runs.push(run.runId);
+          }
+          console.log(JSON.stringify({ workspaceId, runs }));
+          process.exit(0);
+        `,
+      ], { cwd: sourceRoot, env: { ...process.env, DATABASE_URL: admin, PLAN_CLEANUP_FIXTURE_WORKSPACE: workspace }, timeout: 30_000 });
+      await info.attach('isolated-review-fixtures', { body: seeded.stdout, contentType: 'application/json' });
+    }
     const initial = await snapshot();
     expect(initial.reviewInventory.error).toBeFalsy();
     expect(initial.reviewInventory.runs.length, 'Older-review selection requires at least two existing review packets').toBeGreaterThan(1);
