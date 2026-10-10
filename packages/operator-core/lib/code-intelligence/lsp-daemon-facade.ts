@@ -59,6 +59,7 @@ import {
   type SymbolSite,
 } from './contracts.ts';
 import {
+  LSP_LANGUAGES,
   languageForFile,
   lspClientInventory,
   lspDiagnostics,
@@ -353,10 +354,8 @@ export async function lspHealth(): Promise<LspHealthReport> {
     enabled,
     overall,
     servers,
-    provisioned: {
-      typescript: resolveServerBin('typescript') !== null,
-      rust: resolveServerBin('rust') !== null,
-    },
+    provisioned: Object.fromEntries(LSP_LANGUAGES.map(language =>
+      [language, resolveServerBin(language) !== null])) as Record<LspLanguage, boolean>,
   };
 }
 

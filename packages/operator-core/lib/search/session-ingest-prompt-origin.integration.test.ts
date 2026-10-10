@@ -15,11 +15,13 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
   const sourceHash = createHash('sha256').update(readFileSync(source)).digest('hex');
   const probe = String.raw`
     import assert from 'node:assert/strict';
-    import { readFileSync } from 'node:fs';
+    import { readFileSync, existsSync } from 'node:fs';
     import { createHash } from 'node:crypto';
     import { getOrgPg } from '@papercusp/db-org';
     import { activeWorkspaceId } from './packages/operator-core/lib/workspace-registry.ts';
-    import { insertTurns, promptOriginHash, parseClaudeLine, parseCodexLine, parseOmpLine, backfillTurnProvenanceOnce, recorrelatePromptOriginStampsOnce } from './packages/operator-core/lib/search/session-ingest.ts';
+    import { insertTurns, promptOriginHash, parseClaudeLine, parseCodexLine, parseOmpLine, backfillTurnProvenanceOnce, recorrelatePromptOriginStampsOnce, ingestFileNow } from './packages/operator-core/lib/search/session-ingest.ts';
+    import { mkdir, writeFile, appendFile } from 'node:fs/promises';
+    import { join } from 'node:path';
     import { MACHINE_SURFACE_CATALOGUE_VERSION } from './packages/operator-core/lib/turn-provenance/machine-surface-catalogue.ts';
     const workspace = activeWorkspaceId();
     assert.ok(workspace.startsWith('test-runtime-'));
@@ -29,6 +31,10 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
     assert.equal(sourceHash, process.env.TEST_PROMPT_ORIGIN_SOURCE_HASH);
     console.log('PROMPT_ORIGIN_RUNTIME ' + JSON.stringify({ home: process.env.HOME, sourceHash }));
     const sql = getOrgPg().sql;
+    const migration = 'libs/papercusp/libs/db/sql/1439-session-ingest-short-user-turn-cutover.sql';
+    // Exercise the reserved draft before arming; the normal migrated runtime
+    // already has this idempotent additive column after the change ships.
+    await sql.unsafe(readFileSync(existsSync(migration) ? migration : migration + '.DRAFT', 'utf8'));
     const now = new Date(), cases = [];
     function candidate(label, sourceKind = 'codex', overrides = {}) {
       const text = overrides.text ?? 'measure the unchanged frozen cohort\r\n' + 'original prompt bytes '.repeat(500);
@@ -61,6 +67,8 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       // Fixture rows stand in for already authenticated hook receipts; the
       // model-facing hook writer is never called or impersonated by this test.
       for (const kind of ['claude', 'codex', 'omp']) await stamp(candidate(kind, kind));
+      for (const kind of ['claude', 'codex', 'omp']) await stamp(candidate('short-' + kind, kind, { text: 'A' }));
+      candidate('short-unstamped', 'codex', { text: 'B' });
       await stamp(candidate('codex-history', 'codex', { history: true }));
       await stamp(candidate('wrong-source'), { source_kind: 'claude' });
       await stamp(candidate('wrong-session'), { session_id: 'other-session' });
@@ -88,7 +96,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       assert.equal(rows.length, cases.length);
       for (const c of cases) {
         const stored = rows.find(row => row.session_id === c.row.session_id);
-        const expected = ['claude', 'codex', 'omp', 'codex-history', 'late-ingest'].includes(c.label) ? 'owner-typed'
+        const expected = ['claude', 'codex', 'omp', 'short-claude', 'short-codex', 'short-omp', 'codex-history', 'late-ingest'].includes(c.label) ? 'owner-typed'
           : c.label === 'injected' ? 'agent-injected'
           : ['new-machine-rule', 'torn-wake'].includes(c.label) ? 'machine-surface' : 'unenrolled-origin';
         assert.equal(stored.turn_origin_verdict, expected, c.label);
@@ -145,7 +153,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       assert.equal(repaired.updated, changedIds.size);
       for (const c of cases) {
         const stored = after.find(row => row.session_id === c.row.session_id);
-        const positive = ['claude', 'codex', 'omp', 'codex-history', 'late-ingest', 'late-stamp'].includes(c.label);
+        const positive = ['claude', 'codex', 'omp', 'short-claude', 'short-codex', 'short-omp', 'codex-history', 'late-ingest', 'late-stamp'].includes(c.label);
         const expected = positive ? 'owner-typed' : c.label === 'injected' ? 'agent-injected'
           : ['new-machine-rule', 'torn-wake'].includes(c.label) ? 'machine-surface'
           : c.label === 'assistant' ? 'not-user-turn' : 'unenrolled-origin';
@@ -159,6 +167,33 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       // one after that finds the table clean.
       assert.equal((await backfillTurnProvenanceOnce(sql, 100)).updated, 0);
       assert.equal((await backfillTurnProvenanceOnce(sql, 100)).more, false);
+      // Existing accepted indexes stay fixed; only the new tail retains micro decisions.
+      const nativeId = '77777777-1111-2222-3333-444444444444';
+      const nativeDir = join(process.env.HOME, '.codex', 'sessions', '2026', '10', '08');
+      await mkdir(nativeDir, { recursive: true });
+      const nativePath = join(nativeDir, 'rollout-' + nativeId + '.jsonl');
+      const message = text => JSON.stringify({ type: 'response_item', timestamp: now.toISOString(),
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } }) + '\n';
+      const prefix = message('original request é') + message('A');
+      await writeFile(nativePath, prefix + message('B'));
+      await insertTurns(sql, [{ workspace_id: 'default', source_kind: 'codex', session_id: nativeId,
+        turn_idx: 0, ts: now.toISOString(), owner: 'synthetic-owner', harness_slug: null, cwd: null,
+        speaker: 'user', text: 'original request é', prompt_hash: promptOriginHash('original request é') }]);
+      await sql\`INSERT INTO harness_shared.session_ingest_state
+        (source_kind, file_path, byte_offset, turn_count, session_id)
+        VALUES ('codex', \${nativePath}, \${Buffer.byteLength(prefix)}, 1, \${nativeId})\`;
+      assert.equal((await ingestFileNow(nativePath)).inserted, 1);
+      await appendFile(nativePath, message('no'));
+      assert.equal((await ingestFileNow(nativePath)).inserted, 1);
+      assert.equal((await ingestFileNow(nativePath)).inserted, 0);
+      const saved = await sql\`SELECT short_user_turns_offset, turn_count FROM harness_shared.session_ingest_state
+        WHERE source_kind='codex' AND file_path=\${nativePath}\`;
+      assert.equal(Number(saved[0].short_user_turns_offset), Buffer.byteLength(prefix));
+      assert.equal(saved[0].turn_count, 3);
+      const tail = await sql\`SELECT turn_idx, text, turn_origin_verdict FROM harness_shared.session_turns
+        WHERE workspace_id='default' AND source_kind='codex' AND session_id=\${nativeId} ORDER BY turn_idx\`;
+      assert.deepEqual(tail.map(t => [t.turn_idx, t.text, t.turn_origin_verdict]),
+        [[0, 'original request é', 'unenrolled-origin'], [1, 'B', 'unenrolled-origin'], [2, 'no', 'unenrolled-origin']]);
       assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
     } finally { await sql.end(); }
   `.replaceAll('\\`', '`').replaceAll('\\${', '${');

@@ -2,57 +2,15 @@ import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
+import policy from './gnome-terminal-policy.json' with { type: 'json' };
 
 // Reuse GNOME's own profile registry. Never change the user's default profile:
 // changing its scrollback setting also truncates every live window using it.
-export const GNOME_SESSION_PROFILE_UUID = '42e5b17a-5f06-4cec-b4b2-b21dedc90c82';
-export const GNOME_SESSION_SCROLLBACK_LINES = 10000;
-export const GNOME_PROFILE_PREPARATION = String.raw`
-import fcntl,json,os,sys
-from gi.repository import Gio
-uuid=sys.argv[1];limit=int(sys.argv[2]);root='/org/gnome/terminal/legacy/profiles:/:'
-runtime=os.environ.get('XDG_RUNTIME_DIR') or os.path.join(os.path.expanduser('~'),'.cache')
-os.makedirs(runtime,mode=0o700,exist_ok=True)
-with open(os.path.join(runtime,'papercusp-gnome-profile.lock'),'a') as lock:
- fcntl.flock(lock,fcntl.LOCK_EX)
- # Initialize the backend after acquiring the lock, so queued creators do not
- # make decisions from a settings snapshot taken before another creator ran.
- registry=Gio.Settings.new('org.gnome.Terminal.ProfilesList')
- source_uuid=registry.get_string('default')
- source=Gio.Settings.new_with_path('org.gnome.Terminal.Legacy.Profile',root+source_uuid+'/')
- if not source.get_boolean('scrollback-unlimited'):
-  print(json.dumps({'profileUuid':None,'created':False}));sys.exit(0)
- ids=list(registry.get_strv('list'))
- target=Gio.Settings.new_with_path('org.gnome.Terminal.Legacy.Profile',root+uuid+'/')
- created=uuid not in ids
- if created:
-  # Reject an orphan profile record belonging to somebody else before writing.
-  has_record=any(target.get_user_value(k) is not None for k in target.props.settings_schema.list_keys())
-  own_orphan=(has_record and target.get_string('visible-name')=='Papercusp sessions'
-              and not target.get_boolean('scrollback-unlimited')
-              and target.get_int('scrollback-lines')==limit)
-  if has_record and not own_orphan:
-   raise RuntimeError('reserved Papercusp GNOME profile has an unregistered existing record')
-  if not own_orphan:
-   target.delay()
-   for key in source.props.settings_schema.list_keys():
-    if not target.set_value(key,source.get_value(key)):raise RuntimeError('cannot copy GNOME profile key '+key)
-   target.set_string('visible-name','Papercusp sessions')
-   target.set_boolean('scrollback-unlimited',False)
-   target.set_int('scrollback-lines',limit)
-   target.apply();Gio.Settings.sync()
-  # Re-read after copying so an unrelated profile added meanwhile is preserved.
-  ids=list(registry.get_strv('list'))
-  if uuid not in ids:
-   if not registry.set_strv('list',ids+[uuid]):raise RuntimeError('cannot register Papercusp GNOME profile')
-  Gio.Settings.sync()
- if target.get_boolean('scrollback-unlimited'):
-  # An explicitly customized existing profile is a user choice; do not trim it.
-  print(json.dumps({'profileUuid':None,'created':False,'customized':True}));sys.exit(0)
- print(json.dumps({'profileUuid':uuid,'created':created,'scrollbackLines':target.get_int('scrollback-lines'),
-                   'sourceProfileUuid':source_uuid,'sourceUnlimited':source.get_boolean('scrollback-unlimited'),
-                   'defaultProfileUuid':registry.get_string('default')}))
-`;
+// One bundled policy also compiled into the native desktop launcher.
+export const GNOME_SESSION_PROFILE_UUID = policy.profileUuid;
+export const GNOME_SESSION_SCROLLBACK_LINES = policy.scrollbackLines;
+export const GNOME_PROFILE_PREPARATION = policy.preparation.join('\n');
+
 
 /** Prepare only new GNOME windows; explicit profile choices are honored. */
 export async function prepareGnomeTerminal(terminal, env = process.env, run = null) {
@@ -75,16 +33,41 @@ export async function prepareGnomeTerminal(terminal, env = process.env, run = nu
   }
   if (terminal.args.some((arg) => arg === '--profile' || arg.startsWith('--profile='))) return prepared;
   const execute = run ?? promisify(execFile);
-  const { stdout } = await execute('/usr/bin/python3', ['-c', GNOME_PROFILE_PREPARATION,
-    GNOME_SESSION_PROFILE_UUID, String(GNOME_SESSION_SCROLLBACK_LINES)], {
-    env, timeout: 8000, maxBuffer: 16384,
-  });
+  let stdout, failure;
+  for (const python of policy.pythonCandidates) {
+    try {
+      ({ stdout } = await execute(python, ['-c', GNOME_PROFILE_PREPARATION,
+        GNOME_SESSION_PROFILE_UUID, String(GNOME_SESSION_SCROLLBACK_LINES)], {
+        env, timeout: 8000, maxBuffer: 16384,
+      }));
+      break;
+    } catch (error) {
+      failure = error;
+      // Missing interpreters/GI fail before settings writes. Try the system
+      // interpreter when a virtualenv or package manager shadows its GI build.
+      if (error.code !== 'ENOENT' && !/No module named ['"]?gi['"]?/.test(String(error.stderr))) break;
+    }
+  }
+  if (stdout === undefined) {
+    const error = failure;
+    const detail = String(error.stderr || error.message || error).trim().slice(-1000);
+    throw new Error('GNOME terminal safeguards require Python 3, PyGObject and GNOME Terminal settings. '
+      + 'Install python3-gi and gnome-terminal (or your distribution equivalents), ensure python3 is on PATH, and retry. ' + detail,
+    { cause: error });
+  }
   let result;
   try { result = JSON.parse(stdout.trim()); }
   catch { throw new Error('GNOME profile preparation returned no valid receipt'); }
-  if (result.profileUuid === null) return prepared;
-  if (result.profileUuid !== GNOME_SESSION_PROFILE_UUID || result.scrollbackLines < 1
-    || result.defaultProfileUuid !== result.sourceProfileUuid || result.sourceUnlimited !== true) {
+  if (!result || typeof result !== 'object') throw new Error('GNOME profile preparation returned no valid receipt');
+  const preserved = typeof result.sourceProfileUuid === 'string' && result.sourceProfileUuid.length > 0
+    && result.defaultProfileUuid === result.sourceProfileUuid;
+  if (result.profileUuid === null && result.customized === true) return prepared;
+  if (result.profileUuid === null && result.sourceUnlimited === false
+    && Number.isInteger(result.scrollbackLines) && result.scrollbackLines >= 0
+    && result.scrollbackLines <= GNOME_SESSION_SCROLLBACK_LINES
+    && preserved) return prepared;
+  if (result.profileUuid !== GNOME_SESSION_PROFILE_UUID || !Number.isInteger(result.scrollbackLines) || result.scrollbackLines < 1
+    || !preserved) {
     throw new Error('GNOME profile preparation could not verify preserved default and bounded new profile');
   }
   return { ...prepared, args: ['--profile=' + result.profileUuid, ...prepared.args] };

@@ -3469,20 +3469,24 @@ describe('executeWake — the liveness ladder', () => {
     {
       argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=auto'],
       expected: { requireGatewayProvider: true, codexGatewayAccountId: null },
+      expectedEnv: { PAPERCUSP_CODEX_GATEWAY: '1' },
     },
     {
       argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=acct-codex-pin'],
       expected: { requireGatewayProvider: false, codexGatewayAccountId: 'acct-codex-pin' },
+      expectedEnv: { PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_ACCOUNT_ID: 'acct-codex-pin' },
     },
     {
       argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=default'],
       expected: { requireGatewayProvider: false, codexGatewayAccountId: null },
+      expectedEnv: {},
     },
     {
       argv: null,
       expected: { requireGatewayProvider: false, codexGatewayAccountId: null },
+      expectedEnv: {},
     },
-  ])('codex wake repair carries the persisted route (argv $argv)', async ({ argv, expected }) => {
+  ])('codex wake repair and child env carry the persisted route (argv $argv)', async ({ argv, expected, expectedEnv }) => {
     const advSessionId = 1002;
     const home = codexHomeForAdvSession(advSessionId);
     const nativeId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
@@ -3512,6 +3516,15 @@ describe('executeWake — the liveness ladder', () => {
       );
       expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
       expect(repair).toHaveBeenCalledTimes(1);
+      const [, , spawnOptions] = spawnDetached.mock.calls[0] as unknown as [
+        string,
+        string[],
+        { env: Record<string, string> },
+      ];
+      expect(spawnOptions.env.PAPERCUSP_SID).toBe('su-codex-route');
+      expect(spawnOptions.env.PAPERCUSP_CODEX_GATEWAY).toBe(expectedEnv.PAPERCUSP_CODEX_GATEWAY);
+      expect(spawnOptions.env.PAPERCUSP_ACCOUNT_ID).toBe(expectedEnv.PAPERCUSP_ACCOUNT_ID);
+      expect(spawnOptions.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
       expect(repair).toHaveBeenCalledWith(
         expect.objectContaining({ advSessionId, owner: 'su-codex-route', codexHome: home, ...expected }),
       );

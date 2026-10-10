@@ -474,6 +474,7 @@ export async function archiveSession(
   const ws = WS_DEFAULT;
   const fileRows: ArchiveFileRow[] = [];
   const manifest: ArchiveManifestEntry[] = [];
+  const previousStamp = await store.readStamp(ref.sourceKind, ref.sessionId);
   let bytesRaw = 0;
   let bytesStored = 0;
   const readSnapshot = deps.readFile ?? readFile;
@@ -506,7 +507,8 @@ export async function archiveSession(
       mtime: new Date(f.mtimeMs),
     });
     const shortUserOffset = f.rel.endsWith('.jsonl')
-      ? await store.readTurnParsingOffset?.(ref.sourceKind, f.abs) : null;
+      ? (await store.readTurnParsingOffset?.(ref.sourceKind, f.abs)) ??
+        previousStamp?.manifest.find((entry) => entry.relpath === f.rel)?.short_user_turns_offset : null;
     manifest.push({
       relpath: f.rel, sha256: sha, bytes_raw: raw.length,
       ...(shortUserOffset == null ? {} : { short_user_turns_offset: shortUserOffset }),

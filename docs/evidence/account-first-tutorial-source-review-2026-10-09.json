@@ -18,6 +18,28 @@
   ],
   "reviews": [
     {
+      "specId": "AUTO-BAR-R-11-P-016",
+      "specRevision": 2,
+      "observedAt": "2026-10-10T15:56:37Z",
+      "operatorCommitAtRead": "efdcd30aeff97d2775d71f26aa44b73ac000c90d",
+      "portalCommitAtRead": "ad1c224bed6345a6bb94baaeb97b6c4c56e3a0fe",
+      "procedure": "Read the exact full-product R11 revision2 falsifier and existing P010 reuse assessment below. Compare ce6b3cf879..efdcd30aef for Personalization and settings-slots; inspect the PortalSettingsAdditions theme declaration and unchanged applyPortalTheme/switchTheme preference writer. Verify the current canonical Settings layout, Personalization, native theme writer, settings slot and product guide equal retained efdcd committed blobs. No hosted or historical test replay.",
+      "findings": [
+        "AccountProductTutorial still mounts the versioned full-product curriculum through the existing account-first Portal entry. Cloud remains one module; the existing product catalogue, contextual Help, account preferences, billing controls and scoped progress/domain receipts remain the implementation surfaces described below.",
+        "The theme repair adds the theme case and inert fallback argument to the existing OperatorSettingsSlot seam. Personalization retains its native control as NativeThemeSettings and mounts it only when the host supplies no theme slot. PortalSettingsAdditions supplies its existing PortalAppearanceSettings through that case; no parallel settings page, theme store, service, table or config key is introduced.",
+        "Portal light/system/dark still uses its existing switchTheme/applyPortalTheme and persisted /api/preferences flow. The repair removes a competing native writer without replacing that persistence boundary. The measured keyboard correction selects the existing responsive Settings page picker rather than adding navigation.",
+        "The committed Portal shell suite passed108 tests; the retained core focused suite passed21 tests. Working browser preflights passed2 tests. These are scoped recurrence guards, not hosted persistence, whole-product or production shipment evidence. The two original hosted failures remain retained and a distinct candidate is still required."
+      ],
+      "sourceFiles": [
+        { "root": "papercusp", "path": "apps/operator/app/settings/layout.tsx", "sha256": "46452ead3cd622e9db03cab864ab1292c6e448c293167358d072d8934560cf29" },
+        { "root": "papercusp", "path": "apps/operator/app/settings/personalization/page.tsx", "sha256": "57a711a1918c5ac75b103ee1110a0379dfd3c9fb1ab4a1455236e0d4fef63509" },
+        { "root": "papercusp", "path": "apps/operator/lib/theme.ts", "sha256": "70a631c641a05aca5470a799da2325b57c2e7a84758dd1b509551cbb1f701776" },
+        { "root": "papercusp", "path": "packages/operator-ui/src/settings-slots.tsx", "sha256": "3aac0738311424fbef541dda2a8c8828eaf1d280f041b8ea7b2c16022739fd92" },
+        { "root": "papercusp", "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "6ef334883debb8355a81cfedba8308cd386977682e3661c971012a570ddd4453" }
+      ],
+      "result": "Full-product R11 reuse review: the measured changes extend existing product/control surfaces. Wider acceptance and shipment obligations remain open."
+    },
+    {
       "specId": "GUIDE-INTERACTION-SPEC",
       "specRevision": 1,
       "priorBindingId": 32850,

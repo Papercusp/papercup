@@ -94,9 +94,15 @@ describe('native gateway account bootstrap', () => {
     const home = mkdtempSync(join(tmpdir(), 'codex-native-tui-account-'));
     const controlHome = mkdtempSync(join(tmpdir(), 'codex-native-tui-control-'));
     const version = execFileSync(codex!, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
-    const requests: string[] = [];
+    const ownerId = 'su-codex-wake-owner';
+    const requests: Array<{ path: string; owner?: string; priority?: string; account?: string }> = [];
     const server = createServer((req, res) => {
-      requests.push(req.url ?? '');
+      requests.push({
+        path: req.url ?? '',
+        owner: req.headers['x-papercusp-owner']?.toString(),
+        priority: req.headers['x-papercusp-priority']?.toString(),
+        account: req.headers['x-papercusp-account']?.toString(),
+      });
       if (req.url?.includes('/models')) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{"models":[]}');
@@ -116,7 +122,7 @@ describe('native gateway account bootstrap', () => {
     } });
     writeFileSync(join(home, 'auth.json'), auth);
     writeFileSync(join(controlHome, 'auth.json'), auth);
-    const gateway = codexGatewayConfigToml(null, { gatewayOn: true });
+    const gateway = codexGatewayConfigToml(null, { gatewayOn: true, ownerId, priority: 'su' });
     const root = [`chatgpt_base_url = "${url}"`, 'model = "gpt-6.1-sol"'];
     const features = codexManagedFeaturesToml({ headless: true });
     const tables = gateway.tables.map(line => line.startsWith('base_url =') ? `base_url = "${url}/v1"`
@@ -126,16 +132,17 @@ describe('native gateway account bootstrap', () => {
       const routed = await readNativeTui(home, 20_000);
       expect(routed.exitedBeforeBudget, routed.output).toBe(false);
       expect(isCodexWorkspaceDiscoveryTimeout(routed.output)).toBe(false);
-      expect(requests.some(path => path.includes('/v1/models'))).toBe(true);
-      expect(requests.some(path => path.includes('/api/codex/accounts/check'))).toBe(false);
+      expect(requests.some(request => request.path.includes('/v1/models')
+        && request.owner === ownerId && request.priority === 'su' && request.account === undefined)).toBe(true);
+      expect(requests.some(request => request.path.includes('/api/codex/accounts/check'))).toBe(false);
       requests.length = 0;
       writeFileSync(join(controlHome, 'config.toml'), [...root, ...features].join('\n'));
       const direct = await readNativeTui(controlHome, 22_000);
       const trace = JSON.stringify({ codex, version, requests, output: direct.output.slice(-3000) });
       expect(direct, trace).toMatchObject({ exitedBeforeBudget: true, exitCode: 1 });
       expect(isCodexWorkspaceDiscoveryTimeout(direct.output)).toBe(true);
-      expect(requests.some(path => path.includes('/api/codex/accounts/check'))).toBe(true);
-      expect(requests.some(path => path.includes('/v1/responses'))).toBe(false);
+      expect(requests.some(request => request.path.includes('/api/codex/accounts/check'))).toBe(true);
+      expect(requests.some(request => request.path.includes('/v1/responses'))).toBe(false);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

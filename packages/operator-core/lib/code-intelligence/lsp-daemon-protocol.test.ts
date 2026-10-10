@@ -45,7 +45,7 @@ describe('LSP daemon dispatch identity', () => {
   it('leaves unsupported and incomplete requests to the facade\'s existing loud refusal', () => {
     const root = fixture();
     expect(resolve({ op: 'health', args: { rootPath: root } })).toBeNull();
-    expect(resolve({ op: 'diagnostics', args: { rootPath: root, file: join(root, 'x.py') } })).toBeNull();
+    expect(resolve({ op: 'diagnostics', args: { rootPath: root, file: join(root, 'x.cpp') } })).toBeNull();
     expect(resolve({ op: 'references', args: { rootPath: root } })).toBeNull();
     expect(resolve({ op: 'references', args: { rootPath: root, file: join(root, 'x.rs') } })).toBeNull();
   });

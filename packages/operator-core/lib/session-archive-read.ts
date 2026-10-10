@@ -103,18 +103,29 @@ export async function readArchivedSessionTurns(
       try {
         const raw = await decompressArchiveBlobBounded(row, SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES);
         if (sha256Hex(raw) !== row.sha256) throw new Error('archive sha256 mismatch');
+        const shortUserOffset = stamp.manifest.find((entry) => entry.relpath === row.relpath)?.short_user_turns_offset;
+        if (shortUserOffset != null && (!Number.isSafeInteger(shortUserOffset) || shortUserOffset < 0 || shortUserOffset > raw.length ||
+          (shortUserOffset > 0 && raw[shortUserOffset - 1] !== 0x0a))) {
+          throw new Error('invalid short-user-turn parsing boundary');
+        }
+        let byteOffset = 0;
         for (const line of raw.toString('utf8').split('\n')) {
+          const lineOffset = byteOffset;
+          byteOffset += Buffer.byteLength(line, 'utf8') + 1;
           if (!line.trim()) continue;
+          const lineOptions = { ...options, retainShortUserTurns: shortUserOffset != null && lineOffset >= shortUserOffset };
           let parsed: ReturnType<(typeof PARSERS)['claude']> = null;
           try {
-            parsed = PARSERS[kind](line, options);
+            parsed = PARSERS[kind](line, lineOptions);
           } catch {
             continue; // one malformed line never kills the read
           }
           if (!parsed) continue;
           const currentTurnIndex = turnIndex++;
           if (wantedTurnIndices && !wantedTurnIndices.has(currentTurnIndex)) continue;
-          const text = cleanTurnText(parsed.text, options);
+          const text = cleanTurnText(parsed.text, {
+            ...lineOptions, retainShortUserTurns: parsed.speaker === 'user' && lineOptions.retainShortUserTurns,
+          });
           if (!text) continue;
           turns.push({
             source_kind: kind,

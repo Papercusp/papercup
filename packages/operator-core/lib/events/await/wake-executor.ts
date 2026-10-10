@@ -637,6 +637,15 @@ export function codexWakeGatewayInputs(
   return { requireGatewayProvider: false, codexGatewayAccountId: null };
 }
 
+/** Rebuild the Codex-specific child route after a wake; its home config and process env are separate. */
+export function codexWakeGatewayEnv(route: WakeAccountRoute | null): Record<string, string> {
+  if (route?.mode === 'auto') return { PAPERCUSP_CODEX_GATEWAY: '1' };
+  if (route?.mode === 'pin' && route.accountId) {
+    return { PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_ACCOUNT_ID: route.accountId };
+  }
+  return {};
+}
+
 export type EnsureCodexHomeForWakeResult = {
   ok: boolean;
   repaired?: boolean;
@@ -4793,6 +4802,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
 
     const env: Record<string, string> = {
       ...(accountRoute?.env ?? {}),
+      ...(resumeAgent === 'codex' ? codexWakeGatewayEnv(codexAccountRoute) : {}),
       PAPERCUSP_SID: d.subscriberId,
       // Scope the resumed agent's user-level MCP to the bee's workspace. omp's
       // ~/.omp/agent/mcp.json sends x-papercusp-workspace via

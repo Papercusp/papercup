@@ -20,9 +20,9 @@
 import { promises as fs } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseBundleManifest } from './cupboard/bundle-manifest-io';
 // eslint-disable-next-line import/no-relative-packages
@@ -315,5 +315,241 @@ describe('a vendored package that ships no tsconfig.json (the pot-app-seam shape
     for (const [rel, src] of expected) {
       await expect(fs.access(src), `expected "${rel}" -> missing source ${src}`).resolves.toBeUndefined();
     }
+  });
+});
+
+describe('protected-main mirror publishing', () => {
+  it('pushes a content-addressed branch, opens one PR, and leaves main unchanged', async () => {
+    const root = join(tmp, 'protected-main-publish');
+    const bare = join(root, 'templates.git');
+    const seed = join(root, 'seed');
+    const mirror = join(root, 'clone');
+    await fs.mkdir(root, { recursive: true });
+
+    const runGit = (...args: string[]) => {
+      const result = spawnSync('git', args, { encoding: 'utf8' });
+      if (result.status !== 0) {
+        throw new Error(
+          'git ' + args.join(' ') + ' failed: ' + (result.stderr || result.stdout),
+        );
+      }
+      return result.stdout.trim();
+    };
+
+    runGit('init', '--bare', '--initial-branch=main', bare);
+    await fs.mkdir(seed, { recursive: true });
+    runGit('init', '--initial-branch=main', seed);
+    await fs.writeFile(join(seed, 'README.md'), 'protected mirror fixture\n');
+    runGit('-C', seed, 'config', 'user.name', 'Mirror Sync Test');
+    runGit('-C', seed, 'config', 'user.email', 'mirror-sync-test@example.invalid');
+    runGit('-C', seed, 'add', 'README.md');
+    runGit('-C', seed, 'commit', '-m', 'initial mirror');
+    runGit('-C', seed, 'remote', 'add', 'origin', bare);
+    runGit('-C', seed, 'push', 'origin', 'main');
+    runGit('clone', bare, mirror);
+    runGit('-C', mirror, 'remote', 'set-url', 'origin', 'https://github.com/Papercusp/templates.git');
+    runGit(
+      '-C',
+      mirror,
+      'config',
+      'url.' + pathToFileURL(bare).href + '.insteadOf',
+      'https://github.com/Papercusp/templates.git',
+    );
+    runGit('-C', mirror, 'config', 'user.name', 'Mirror Sync Test');
+    runGit('-C', mirror, 'config', 'user.email', 'mirror-sync-test@example.invalid');
+    const mainBefore = runGit('--git-dir', bare, 'rev-parse', 'refs/heads/main');
+
+    const fakeBin = join(root, 'bin');
+    const ghState = join(root, 'gh-pr.json');
+    const ghLog = join(root, 'gh.log');
+    await fs.mkdir(fakeBin, { recursive: true });
+    const ghShim = [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs");',
+      'const args = process.argv.slice(2);',
+      'fs.appendFileSync(process.env.PC_TEST_GH_LOG, JSON.stringify(args) + "\\n");',
+      'if (args[0] === "auth" && args[1] === "status") process.exit(0);',
+      'if (args[0] === "pr" && args[1] === "list") {',
+      '  const pr = fs.existsSync(process.env.PC_TEST_GH_STATE)',
+      '    ? JSON.parse(fs.readFileSync(process.env.PC_TEST_GH_STATE, "utf8"))',
+      '    : null;',
+      '  process.stdout.write(JSON.stringify(pr ? [pr] : []));',
+      '  process.exit(0);',
+      '}',
+      'if (args[0] === "pr" && args[1] === "create") {',
+      '  const pr = { number: 42, url: "https://github.com/Papercusp/templates/pull/42", state: "OPEN" };',
+      '  fs.writeFileSync(process.env.PC_TEST_GH_STATE, JSON.stringify(pr));',
+      '  process.stdout.write(pr.url + "\\n");',
+      '  process.exit(0);',
+      '}',
+      'if (args[0] === "pr" && args[1] === "reopen") {',
+      '  const pr = JSON.parse(fs.readFileSync(process.env.PC_TEST_GH_STATE, "utf8"));',
+      '  pr.state = "OPEN";',
+      '  fs.writeFileSync(process.env.PC_TEST_GH_STATE, JSON.stringify(pr));',
+      '  process.exit(0);',
+      '}',
+      'process.stderr.write("unexpected gh command: " + args.join(" ") + "\\n");',
+      'process.exit(2);',
+      '',
+    ].join('\n');
+    const ghPath = join(fakeBin, 'gh');
+    await fs.writeFile(ghPath, ghShim);
+    await fs.chmod(ghPath, 0o755);
+    const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+    expect(realGit).not.toBe('');
+    const gitShim = [
+      '#!/usr/bin/env node',
+      'const { spawnSync } = require("node:child_process");',
+      'const args = process.argv.slice(2);',
+      'if (args.slice(-3).join(" ") === "remote get-url origin") { process.stdout.write("https://github.com/Papercusp/templates.git\\n"); process.exit(0); }',
+      'const result = spawnSync(process.env.PC_TEST_REAL_GIT, args, { stdio: "inherit" });',
+      'process.exit(result.status == null ? 2 : result.status);',
+      '',
+    ].join('\n');
+    const gitShimPath = join(fakeBin, 'git');
+    await fs.writeFile(gitShimPath, gitShim);
+    await fs.chmod(gitShimPath, 0o755);
+    const env = {
+      ...process.env,
+      PATH: fakeBin + delimiter + (process.env.PATH ?? ''),
+      PC_TEST_GH_STATE: ghState,
+      PC_TEST_GH_LOG: ghLog,
+      PC_TEST_REAL_GIT: realGit,
+    };
+    const runSync = () =>
+      spawnSync('node', [SCRIPT, '--mirror', mirror, '--push'], {
+        encoding: 'utf8',
+        env,
+        timeout: 120_000,
+        killSignal: 'SIGKILL',
+      });
+
+    const first = runSync();
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stdout).toContain('https://github.com/Papercusp/templates/pull/42');
+    expect(runGit('--git-dir', bare, 'rev-parse', 'refs/heads/main')).toBe(mainBefore);
+    const syncBranch = runGit(
+      '--git-dir',
+      bare,
+      'for-each-ref',
+      '--format=%(refname:short)',
+      'refs/heads/templates-sync-*',
+    );
+    expect(syncBranch).toMatch(/^templates-sync-[a-f0-9]{12}$/);
+    expect(runGit('-C', mirror, 'rev-parse', 'HEAD')).toBe(
+      runGit('-C', mirror, 'rev-parse', 'origin/main'),
+    );
+    expect(runGit('-C', mirror, 'status', '--porcelain')).toBe('');
+
+    const second = runSync();
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toContain('sync branch already contains the canonical tree');
+    expect(runGit('--git-dir', bare, 'rev-parse', 'refs/heads/main')).toBe(mainBefore);
+    const ghCalls = (await fs.readFile(ghLog, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[]);
+    expect(ghCalls.filter((args) => args[0] === 'pr' && args[1] === 'create')).toHaveLength(1);
+  });
+
+  it('restores the clean mirror checkout and does not push when commit fails', async () => {
+    const root = join(tmp, 'protected-main-commit-failure');
+    const bare = join(root, 'templates.git');
+    const seed = join(root, 'seed');
+    const mirror = join(root, 'clone');
+    await fs.mkdir(root, { recursive: true });
+
+    const runGit = (...args: string[]) => {
+      const result = spawnSync('git', args, { encoding: 'utf8' });
+      if (result.status !== 0) {
+        throw new Error(
+          'git ' + args.join(' ') + ' failed: ' + (result.stderr || result.stdout),
+        );
+      }
+      return result.stdout.trim();
+    };
+
+    runGit('init', '--bare', '--initial-branch=main', bare);
+    await fs.mkdir(seed, { recursive: true });
+    runGit('init', '--initial-branch=main', seed);
+    await fs.writeFile(join(seed, 'README.md'), 'protected mirror fixture\n');
+    runGit('-C', seed, 'config', 'user.name', 'Mirror Sync Test');
+    runGit('-C', seed, 'config', 'user.email', 'mirror-sync-test@example.invalid');
+    runGit('-C', seed, 'add', 'README.md');
+    runGit('-C', seed, 'commit', '-m', 'initial mirror');
+    runGit('-C', seed, 'remote', 'add', 'origin', bare);
+    runGit('-C', seed, 'push', 'origin', 'main');
+    runGit('clone', bare, mirror);
+    runGit('-C', mirror, 'remote', 'set-url', 'origin', 'https://github.com/Papercusp/templates.git');
+    runGit(
+      '-C',
+      mirror,
+      'config',
+      'url.' + pathToFileURL(bare).href + '.insteadOf',
+      'https://github.com/Papercusp/templates.git',
+    );
+    runGit('-C', mirror, 'config', 'user.name', 'Mirror Sync Test');
+    runGit('-C', mirror, 'config', 'user.email', 'mirror-sync-test@example.invalid');
+    const mainBefore = runGit('--git-dir', bare, 'rev-parse', 'refs/heads/main');
+
+    const fakeBin = join(root, 'bin');
+    await fs.mkdir(fakeBin, { recursive: true });
+    const ghShim = [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2);',
+      'if (args[0] === "auth" && args[1] === "status") process.exit(0);',
+      'if (args[0] === "pr" && args[1] === "list") { process.stdout.write("[]"); process.exit(0); }',
+      'process.stderr.write("unexpected gh command: " + args.join(" ") + "\\n");',
+      'process.exit(2);',
+      '',
+    ].join('\n');
+    const ghPath = join(fakeBin, 'gh');
+    await fs.writeFile(ghPath, ghShim);
+    await fs.chmod(ghPath, 0o755);
+
+    const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+    expect(realGit).not.toBe('');
+    const gitShim = [
+      '#!/usr/bin/env node',
+      'const { spawnSync } = require("node:child_process");',
+      'const args = process.argv.slice(2);',
+      'if (args.slice(-3).join(" ") === "remote get-url origin") { process.stdout.write("https://github.com/Papercusp/templates.git\\n"); process.exit(0); }',
+      'if (args.includes("commit")) { process.stderr.write("injected commit failure\\n"); process.exit(2); }',
+      'const result = spawnSync(process.env.PC_TEST_REAL_GIT, args, { stdio: "inherit" });',
+      'process.exit(result.status == null ? 2 : result.status);',
+      '',
+    ].join('\n');
+    const gitShimPath = join(fakeBin, 'git');
+    await fs.writeFile(gitShimPath, gitShim);
+    await fs.chmod(gitShimPath, 0o755);
+
+    const env = {
+      ...process.env,
+      PATH: fakeBin + delimiter + (process.env.PATH ?? ''),
+      PC_TEST_REAL_GIT: realGit,
+    };
+    const result = spawnSync('node', [SCRIPT, '--mirror', mirror, '--push'], {
+      encoding: 'utf8',
+      env,
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+    });
+
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('injected commit failure');
+    expect(runGit('--git-dir', bare, 'rev-parse', 'refs/heads/main')).toBe(mainBefore);
+    expect(
+      runGit(
+        '--git-dir',
+        bare,
+        'for-each-ref',
+        '--format=%(refname:short)',
+        'refs/heads/templates-sync-*',
+      ),
+    ).toBe('');
+    expect(runGit('-C', mirror, 'rev-parse', 'HEAD')).toBe(
+      runGit('-C', mirror, 'rev-parse', 'origin/main'),
+    );
+    expect(runGit('-C', mirror, 'status', '--porcelain')).toBe('');
   });
 });
