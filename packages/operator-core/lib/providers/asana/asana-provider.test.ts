@@ -167,8 +167,8 @@ function restCallsIn(source: string): Array<{ method: string; path: string }> {
 /**
  * Asana's granular OAuth scope per endpoint, transcribed from https://developers.asana.com/docs/oauth-scopes
  * (fetched 2026-10-10). Only the endpoints this plugin calls are listed. An endpoint that table does
- * not list at all maps to 'none-documented'. A call missing from this map returns null, so adding an
- * Asana call without deciding its scope fails the test below.
+ * not list at all maps to 'none-documented': Asana answers it only for a Full-permissions token. A call
+ * missing from this map returns null, so adding an Asana call without deciding its scope fails the test below.
  */
 const ASANA_ENDPOINT_SCOPES: Record<string, string> = {
   'GET /events': 'none-documented',
@@ -187,11 +187,23 @@ const ASANA_ENDPOINT_SCOPES: Record<string, string> = {
 };
 const asanaScopeFor = (method: string, path: string): string | null => ASANA_ENDPOINT_SCOPES[`${method} ${path}`] ?? null;
 
-/** The calls whose scope is unmapped, or mapped but not in `scopes`. */
+/**
+ * Asana's Full-permissions grant (developers.asana.com/docs/oauth, "Full permissions: Opting out of
+ * scopes"): the authorize URL sends scope=default, and the token reaches every endpoint.
+ */
+const FULL_PERMISSIONS = 'default';
+
+/**
+ * The calls a token granted `scopes` cannot reach. An unmapped call always counts, so a new Asana call
+ * forces a scope decision. Full permissions reaches every mapped call. A granular grant reaches a call
+ * only when it holds that call's documented scope, so a 'none-documented' call fails with
+ * "403 Full permissions are required to use this endpoint" (WI-10008209).
+ */
 function unscopedCalls(calls: Array<{ method: string; path: string }>, scopes: string[]): string[] {
+  const full = scopes.includes(FULL_PERMISSIONS);
   return calls
     .map((c) => ({ call: `${c.method} ${c.path}`, scope: asanaScopeFor(c.method, c.path) }))
-    .filter(({ scope }) => scope === null || (scope !== 'none-documented' && !scopes.includes(scope)))
+    .filter(({ scope }) => scope === null || (!full && (scope === 'none-documented' || !scopes.includes(scope))))
     .map(({ call }) => call);
 }
 
@@ -216,23 +228,22 @@ describe('the Asana package declares an Asana ticket provider', () => {
       },
       configSchema: { required: ['projectGids'] },
     });
-    expect(descriptor.oauth.scopes).toEqual(expect.arrayContaining(['tasks:read', 'tasks:write', 'stories:read', 'stories:write', 'projects:read']));
   });
 
-  // WI-10008135: a granular-scope token gets 403 from any endpoint whose scope the connect flow never
-  // requested. The bug drill could not create its Asana project (no projects:write), and
-  // push.subscribe/unsubscribe call /webhooks while the descriptor requested no webhooks:* scope.
-  it('requests an OAuth scope for every Asana endpoint the plugin calls (WI-10008135)', async () => {
+  // A token gets 403 from any endpoint its grant does not cover. WI-10008135: the bug drill could not
+  // create its Asana project (no projects:write). WI-10008209: even with every granular scope, the
+  // sync's first call (GET /events) and the sections read have no granular scope at all, so every
+  // sync failed with "Full permissions are required to use this endpoint".
+  it('requests OAuth access that reaches every Asana endpoint the plugin calls (WI-10008135, WI-10008209)', async () => {
     const descriptor = await adapter.describe();
     const calls = restCallsIn(readFileSync(resolve(REPO_ROOT, 'libs/papercusp/plugins/asana/index.cjs'), 'utf8'));
     // Positive control: if the extractor stopped seeing the plugin's calls this test would pass vacuously.
     expect(calls.length).toBeGreaterThanOrEqual(12);
+    expect(calls).toEqual(expect.arrayContaining([{ method: 'GET', path: '/events' }]));
     expect(unscopedCalls(calls, descriptor.oauth.scopes)).toEqual([]);
-    // The webhook GET in reconcile goes through a variable path the extractor cannot see, and the
-    // drill's agents create Asana projects outside this plugin, so pin those scopes by name.
-    expect(descriptor.oauth.scopes).toEqual(
-      expect.arrayContaining(['projects:write', 'webhooks:read', 'webhooks:write', 'webhooks:delete']),
-    );
+    // Full permissions must be the ONLY scope: while the app has it on, Asana refuses an authorize URL
+    // that also names granular scopes ("Forbidden scopes despite full permissions").
+    expect(descriptor.oauth.scopes).toEqual([FULL_PERMISSIONS]);
   });
 
   it('the endpoint-scope guard flags unmapped calls and maps template paths (calibrates the test above)', () => {
@@ -247,11 +258,18 @@ describe('the Asana package declares an Asana ticket provider', () => {
     ]);
     expect(asanaScopeFor('POST', '/projects')).toBe('projects:write');
     expect(asanaScopeFor('GET', '/goals/{}/stories')).toBeNull();
-    // The pre-WI-10008135 scope list: the guard must flag both the missing projects:write and the
-    // unmapped endpoint, while a 'none-documented' endpoint passes.
+    const events = { method: 'GET', path: '/events' };
+    const sections = { method: 'GET', path: '/projects/{}/sections' };
+    // The pre-WI-10008135 scope list: the guard must flag the missing projects:write, the unmapped
+    // endpoint, and the 'none-documented' /events that only Full permissions reaches.
     const preFix = ['tasks:read', 'tasks:write', 'stories:read', 'stories:write', 'projects:read', 'users:read'];
-    expect(unscopedCalls([...calls, { method: 'GET', path: '/events' }], preFix)).toEqual(['POST /projects', 'GET /goals/{}/stories']);
+    expect(unscopedCalls([...calls, events], preFix)).toEqual(['POST /projects', 'GET /goals/{}/stories', 'GET /events']);
     expect(unscopedCalls([{ method: 'POST', path: '/webhooks' }], preFix)).toEqual(['POST /webhooks']);
+    // The WI-10008135 list held every granular scope the plugin uses and still could not sync (WI-10008209).
+    const granularFix = [...preFix, 'projects:write', 'workspaces:read', 'webhooks:read', 'webhooks:write', 'webhooks:delete'];
+    expect(unscopedCalls([{ method: 'POST', path: '/projects' }, events, sections], granularFix)).toEqual(['GET /events', 'GET /projects/{}/sections']);
+    // Full permissions reaches every mapped call; an unmapped call still needs a scope decision.
+    expect(unscopedCalls([...calls, events, sections], [FULL_PERMISSIONS])).toEqual(['GET /goals/{}/stories']);
   });
 
   it('agrees with the ticket vocabulary on every transition between two columns', () => {

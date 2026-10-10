@@ -1433,33 +1433,55 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
       `) as AdvSessionRow[]);
   const advSession = advSessionRows[0] ?? null;
 
-  // A native CLI transcript can outlive its adv_sessions row. Resolve its
-  // owner and per-session time bounds before reading tool_invocations, which
-  // are keyed by coord_owner_id for interactive sessions rather than by the
-  // native session id. Keep every leading PK column bound: the writer sets
-  // workspace_id='default', and session_turn_parts is intentionally not
-  // indexed by session_id alone.
-  type TranscriptRow = {
+  // A native session can outlive its adv_sessions row. Resolve its owner and
+  // time bounds from the same historical event sources used by sessions:list
+  // before reading tool_invocations, which are keyed by coord_owner_id for
+  // interactive sessions rather than by the native session id.
+  type OwnerSessionEvidence = {
     owner: string | null;
     started_at: string | null;
     ended_at: string | null;
   };
-  const transcriptRows =
+  const ownerSessionRows =
     !agent && !advSession
       ? ((await sql`
-          SELECT owner,
-                 MIN(COALESCE(ts, ingested_at))::text AS started_at,
-                 MAX(COALESCE(ts, ingested_at))::text AS ended_at
-          FROM harness_shared.session_turn_parts
-          WHERE workspace_id = 'default'
-            AND source_kind IN ('claude', 'omp', 'codex')
-            AND session_id = ${spawnId}
-          GROUP BY source_kind, owner
-          ORDER BY MAX(ingested_at) DESC
+          WITH session_evidence AS (
+            SELECT owner,
+                   MIN(COALESCE(ts, ingested_at))::text AS started_at,
+                   MAX(COALESCE(ts, ingested_at))::text AS ended_at,
+                   MAX(COALESCE(ts, ingested_at)) AS last_event_at
+              FROM harness_shared.session_turn_parts
+             WHERE workspace_id = 'default'
+               AND source_kind IN ('claude', 'omp', 'codex')
+               AND session_id = ${spawnId}
+             GROUP BY source_kind, owner
+            UNION ALL
+            SELECT owner,
+                   MIN(COALESCE(ts, ingested_at))::text AS started_at,
+                   MAX(COALESCE(ts, ingested_at))::text AS ended_at,
+                   MAX(COALESCE(ts, ingested_at)) AS last_event_at
+              FROM harness_shared.session_turns
+             WHERE owner IS NOT NULL
+               AND session_id = ${spawnId}
+             GROUP BY source_kind, owner
+            UNION ALL
+            SELECT owner_id AS owner,
+                   MIN(created_at)::text AS started_at,
+                   MAX(created_at)::text AS ended_at,
+                   MAX(created_at) AS last_event_at
+              FROM harness_shared.agent_activity
+             WHERE owner_id IS NOT NULL
+               AND session_id = ${spawnId}
+             GROUP BY agent, owner_id
+          )
+          SELECT owner, started_at, ended_at
+            FROM session_evidence
+           WHERE owner IS NOT NULL
+           ORDER BY last_event_at DESC NULLS LAST
           LIMIT 1
-        `) as TranscriptRow[])
+        `) as OwnerSessionEvidence[])
       : [];
-  const transcriptOnly = transcriptRows[0] ?? null;
+  const ownerSessionEvidence = ownerSessionRows[0] ?? null;
   const resolvedSpawnId = agent?.spawn_id ?? spawnId;
 
   // 2. Tool invocations for this native session or spawn (timeline).
@@ -1472,10 +1494,10 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     error_message: string | null;
     args_json: unknown;
   };
-  const hasOwnerScopedSession = advSession !== null || transcriptOnly?.owner != null;
-  const invocationOwner = advSession?.coord_owner_id ?? transcriptOnly?.owner ?? null;
-  const invocationStartedAt = advSession?.started_at ?? transcriptOnly?.started_at ?? null;
-  const invocationEndedAt = advSession?.ended_at ?? transcriptOnly?.ended_at ?? null;
+  const hasOwnerScopedSession = advSession !== null || ownerSessionEvidence?.owner != null;
+  const invocationOwner = advSession?.coord_owner_id ?? ownerSessionEvidence?.owner ?? null;
+  const invocationStartedAt = advSession?.started_at ?? ownerSessionEvidence?.started_at ?? null;
+  const invocationEndedAt = advSession?.ended_at ?? ownerSessionEvidence?.ended_at ?? null;
   const invocations = (await (hasOwnerScopedSession
     ? invocationEndedAt
       ? sql`
@@ -1568,15 +1590,21 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     }
   }
 
-  if (!agent && !advSession && invocations.length === 0 && children.length === 0 && !transcriptOnly) {
+  if (
+    !agent &&
+    !advSession &&
+    invocations.length === 0 &&
+    children.length === 0 &&
+    !ownerSessionEvidence
+  ) {
     return null;
   }
 
   return {
     spawn_id: resolvedSpawnId,
-    session_id: agent?.session_id ?? advSession?.session_id ?? (transcriptOnly ? spawnId : null),
+    session_id: agent?.session_id ?? advSession?.session_id ?? (ownerSessionEvidence ? spawnId : null),
     omp_thread_id: advSession?.omp_thread_id ?? null,
-    coord_owner_id: advSession?.coord_owner_id ?? transcriptOnly?.owner ?? null,
+    coord_owner_id: advSession?.coord_owner_id ?? ownerSessionEvidence?.owner ?? null,
     agent,
     invocations,
     children,

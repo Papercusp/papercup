@@ -1561,7 +1561,7 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       });
     }
-    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection, codexCompactionLimitFromLaunchArgv }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }, { sessionAllowsAmbientContext }] =
+    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection, codexCompactionLimitFromLaunchArgv }, { ensureSuCodexHomeConfigAsync }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }, { sessionAllowsAmbientContext }] =
       await Promise.all([
         import('../../../adv-sessions'),
         import('../../../su-persona-render'),
@@ -1728,7 +1728,7 @@ const ensureCodexHome = defineTool({
     const gatewayInputs = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow?.launchArgv, owner));
     const repairGatewayAuto = gatewayInputs.requireGatewayProvider === true || body.requireGatewayProvider === true;
     const denyAmbientContext = !(await sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId }));
-    const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfig({
+    const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfigAsync({
       sessionKey: advSessionId,
       mcpUrl,
       sid: owner,
@@ -1805,7 +1805,7 @@ const ensureCodexHome = defineTool({
         contextSize: record.contextSize, personaTier: record.personaTier,
         model: repairModel, stack: [], modes: [],
       });
-      const recovered = ensureConfig(connection.mcpUrl, pinned.promptText);
+      const recovered = await ensureConfig(connection.mcpUrl, pinned.promptText);
       // Model selection is independent of instruction activation. Preserve the
       // pinned identity while recording the model this resume actually chose.
       if (modelChanged && !(await recordSuLaunchSpec(advSessionId, owner, repairRecord))) {
@@ -1817,7 +1817,7 @@ const ensureCodexHome = defineTool({
         preservedSpecificationRevision: pinned.specificationRevision,
       }), { status: 200, headers: JSON_HEADERS });
     }
-    const r = ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText);
+    const r = await ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText);
     if (r.promptRepaired || modelChanged) {
       const artifact = rebuilt.artifact;
       const updatedRecord = r.promptRepaired ? {

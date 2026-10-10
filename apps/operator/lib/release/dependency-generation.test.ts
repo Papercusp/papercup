@@ -343,6 +343,41 @@ function commitAllFixture(integration: string, message: string): string {
 }
 
 describe('dependency source checkout boundaries', () => {
+  it('excludes generated Next standalone outputs from full and selected captures', () => {
+    const integration = makeIntegration();
+    const sourceCommit = commitFixture(integration, 'seed source inputs');
+    const generated = join(integration, 'apps/web/.next/standalone');
+    for (const rel of ['node_modules/copied', 'apps/web/node_modules/copied']) {
+      mkdirSync(join(generated, rel), { recursive: true });
+      writeFileSync(join(generated, rel, 'index.js'), 'generated-v1\n');
+    }
+    writeFileSync(join(generated, 'package-lock.json'), '{"name":"generated","lockfileVersion":3,"packages":{}}\n');
+    writeFileSync(join(generated, 'apps/web/package.json'), '{"name":"generated-web"}\n');
+    const walk = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_input_manifest "$INTEGRATION"',
+      'printf "LIVE_INPUT="; dependency_generation_input_fingerprint "$INTEGRATION"',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+      'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a apps/web/.next/standalone/apps/web)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    expect(walk.status, walk.stderr).toBe(0);
+    expect(walk.stdout).not.toContain('.next');
+    expect(walk.stdout.match(/packages\/a\/node_modules/g)).toHaveLength(2);
+    const exact = fingerprintRef(integration, sourceCommit);
+    expect(exact.status, exact.stderr).toBe(0);
+    expect(walk.stdout).toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
+    const result = publish(integration, {
+      NEXT_OUTPUT: join(generated, 'node_modules/copied/index.js'),
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK: 'printf "generated-v2\\n" > "$NEXT_OUTPUT"',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(publishedPath(result.stdout), 'tree/apps/web/.next'))).toBe(false);
+    expect(readFileSync(join(generated, 'node_modules/copied/index.js'), 'utf8')).toBe('generated-v2\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('excludes unrelated nested checkouts while retaining tracked submodule inputs and trees', () => {
     const integration = makeIntegration();
     commitFixture(integration, 'seed source repository');

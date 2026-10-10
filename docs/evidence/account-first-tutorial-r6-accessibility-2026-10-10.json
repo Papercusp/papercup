@@ -476,6 +476,18 @@
       "sourceQualification": "Stable working source at HEADdc0efd7349 with both test files uncommitted; terminal0 and no source drift. Clean committed repair verification remains open.",
       "guard": "Existing process-group lifetime extended with bounded TERM/KILL/wait before DB removal; command and profile teardown reuse it. Real stubborn-grandchild tests cover ordinary child exit and supervisor cancellation. Explicit candidate migration inventory mismatch is refused before PG allocation."
     },
+    "cleanupRepairCommittedProof": {
+      "commit": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-714072d2b2-EREfJv",
+      "log": "/dev/shm/tutorial-runtime-cleanup-clean-714072d2-20261010T2132.log",
+      "logSha256": "9ccec0e200cd0c51f191e719e2777675b900b6ae8045128b504878388a74ed5a",
+      "testRunIds": [21003513, 21003514],
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "sourceQualification": "Both complete conventional suites passed from the clean retained committed root; tested paths clean before and after, source bytes equal canonical and committed blobs, terminal exit zero.",
+      "scope": "Supervisor cleanup and migration inventory guards only. Fresh hosted startup and product acceptance require separate evidence."
+    },
     "limitations": "Committed component/observer/shell proofs and successful retained build do not establish new hosted/native/provider/novice/full-affected/full-product or production shipment acceptance. Attended review must end SKIP; ordinary automated acceptance uses a distinct fresh account and run. Prior failed20997335, failed20993954 and native2018 evidence is preserved."
   },
   "limitations": [

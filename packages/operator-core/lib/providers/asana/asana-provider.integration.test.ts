@@ -551,8 +551,8 @@ describe('Asana registers as a provider through the plugin host (P-005)', () => 
     expect(provider.descriptor.egressHosts).toEqual(['app.asana.com']);
     const oauth = provider.descriptor.oauth!;
     expect(oauth).toMatchObject({ authorizeUrl: 'https://app.asana.com/-/oauth_authorize', tokenUrl: 'https://app.asana.com/-/oauth_token' });
-    // The registered app's granular scopes: read tasks/stories/projects, write tasks and stories.
-    expect(oauth.scopes).toEqual(expect.arrayContaining(['tasks:read', 'tasks:write', 'stories:read', 'stories:write', 'projects:read']));
+    // Full permissions (scope=default): the sync's GET /events has no granular scope (WI-10008209).
+    expect(oauth.scopes).toEqual(['default']);
     expect(oauth.identity).toMatchObject({ url: `${API}/users/me?opt_fields=name`, idField: 'data.gid', displayNameField: 'data.name' });
     // The host's capability dispatch finds Asana for both ticket writes.
     expect(registry.forDatatype('ticket', recordWriteBackCapability('ticket')).map((p) => p.descriptor.id)).toEqual([KIND]);

@@ -63,6 +63,9 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     Object.assign(process.env, env);
     fixture = await setupBaselineCoordFixture({ dsn: db.adminDsn });
     const harness = process.env.PAPERCUSP_ATTACHED_TEST_HARNESS ?? 'papercusp';
+    const { insertHiveIfAbsent } = await import('./hive-store');
+    await insertHiveIfAbsent({ workspaceId: 'papercusp-workspace', homeSlug: harness,
+      pubkeyBase64: randomBytes(32).toString('base64'), keychainId: `attached-fixture-${randomUUID()}` }, db.adminSql);
     const { saveHarnessRegistry } = await import('./harness-registry');
     await saveHarnessRegistry({ projects: [{ slug: harness, path: resolve(import.meta.dirname, '../../..'),
       harness_kind: 'hive', self_repo: true }] }, 'papercusp-workspace');

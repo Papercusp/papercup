@@ -91,7 +91,7 @@ import {
 } from '../../../agent-launch-core';
 import { renderModeInstructionsFact } from '../../../agent-tools/mode/set';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
-import { assertSuCodexHomeNotOwnedByLiveSession, writeSuCodexHome } from '../../../role-codex-home';
+import { writeSuCodexHomeAsync } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
 // split collision guard — is there a LIVE psu-pty host process for a sid that
 // previously owned the CODEX_HOME directory we're about to rebuild?
@@ -3020,12 +3020,7 @@ export const bootstrapSu = defineTool({
         // D-006: the superuser bearer is baked into the home's config.toml
         // (codex 0.135's bearer_token_env_var doesn't deliver for HTTP MCP).
         // Read it server-side — it never transits the bootstrap HTTP response.
-        await assertSuCodexHomeNotOwnedByLiveSession(
-          sessionKey,
-          sid,
-          async (priorSid) => (await findLiveHostAsync(priorSid)) != null,
-        );
-        const ch = writeSuCodexHome({
+        const ch = await writeSuCodexHomeAsync({
           ...(ambientContextAllowed ? {} : { denyAmbientContext: true as const }),
           sessionKey,
           mcpUrl: spec.mcpUrl,
@@ -3046,6 +3041,7 @@ export const bootstrapSu = defineTool({
           // "Do you trust this directory?" boot prompt (an su launch is trusted).
           trustDir: cwd,
           instructionRuntime,
+          isOwnerLive: async (priorSid) => (await findLiveHostAsync(priorSid)) != null,
         });
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics

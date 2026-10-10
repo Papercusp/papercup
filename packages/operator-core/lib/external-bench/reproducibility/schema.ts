@@ -70,7 +70,12 @@ export const currentBenchmarkProtocolSchema = z.object({
     // Freeze the most expensive supported cache-write tier before Claude sends.
     cacheWriteUsdPerMillion: z.number().finite().nonnegative().optional(),
   }).strict()).min(1) }).strict(),
-  grader: z.object({ family: pin, version: pin, imageDigest: pin }).strict(),
+  grader: z.object({ family: pin, version: pin, imageDigest: pin,
+    // Current Docker grading binds the official source commit, canonical CSV,
+    // and a task -> immutable image URI manifest. Historical pins remain readable.
+    datasetSha256: digest.optional(),
+    images: z.record(pin, z.string().regex(/^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/)).optional(),
+  }).strict(),
   context: z.object({
     corpusHash: digest, memoryHash: digest, corpusRef: pin, memoryRef: pin,
     isolation: z.literal('fresh-per-assignment'), forbiddenSources: z.array(pin).min(1),

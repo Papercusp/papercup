@@ -60,7 +60,7 @@ import {
   parseFirstWorkspaceOrganizations,
 } from '../auth/hosted/first-workspace-dependencies';
 
-export const HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE = 'hosted-control-plane';
+export { HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE, isHostedControlPlaneDistributionProfile } from '../remote-auth-policy';
 
 export const HOSTED_WORKOS_WEBHOOK_ALLOWLIST_ENTRY = {
   method: 'POST',
@@ -278,10 +278,6 @@ export function readHostedRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
       ? { provisioningDbosAppVersion: env.PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION.trim() }
       : {}),
   };
-}
-
-export function isHostedControlPlaneDistributionProfile(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PAPERCUSP_DISTRIBUTION_PROFILE === HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE;
 }
 
 function routeKey(route: { method: string; path: string }): string {

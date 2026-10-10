@@ -91,6 +91,13 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
   /** Base deps: every rung that would touch the OS is injected deterministic;
    *  the psu-socket rung stays REAL (real findLiveHost against the isolated dir). */
   function baseDeps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
+    const deps = baseDepsRaw(over);
+    // Hermetic owner election (WI-10008189): stamp fixture rows with their id + owner and
+    // model "no successor", so a not-alive handle never reaches the real PG election read.
+    return { ...deps, ...tb.ownerElectionDeps(deps) };
+  }
+
+  function baseDepsRaw(over: Partial<ExecuteWakeDeps>): ExecuteWakeDeps {
     return {
       findPsuHost: tb.findPsuHostDep(), // REAL discovery, isolated dir
       // injectPsuHost left as default → the REAL injectIntoHost transport

@@ -668,7 +668,7 @@ export async function defaultEnsureCodexHomeForWake(
       { readSuLaunchSpecByOwner },
       { parseSuLaunchSpecRecord },
       { buildLaunchSpec },
-      { ensureSuCodexHomeConfig },
+      { ensureSuCodexHomeConfigAsync },
       { readSuperuserToken },
       { parseLaunchCompactionLimitArgv },
       { sessionAllowsAmbientContext },
@@ -710,7 +710,7 @@ export async function defaultEnsureCodexHomeForWake(
     });
     return {
       ok: true,
-      ...ensureSuCodexHomeConfig({
+      ...(await ensureSuCodexHomeConfigAsync({
         sessionKey: input.advSessionId,
         mcpUrl: spec.mcpUrl,
         sid: input.owner,
@@ -725,7 +725,7 @@ export async function defaultEnsureCodexHomeForWake(
         trustDir: null,
         projectDir: sessionRow?.cwd,
         ...(denyAmbientContext ? { denyAmbientContext: true } : {}),
-      }),
+      })),
     };
   } catch (err) {
     // A repair failure must not turn a recoverable rollout into a dropped wake;

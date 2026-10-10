@@ -181,7 +181,7 @@ dependency_generation_input_manifest() {
       printf '%s\t%s\n' "$rel" "$digest"
     done < <(
       find . \
-        \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name node_modules \
+        \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name .next -o -name node_modules \
           -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
           -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
           -o -path './papercusp-desktop/src-tauri/sidecar' \
@@ -384,6 +384,8 @@ dependency_generation_configure_workspace_dirs() {
 # build-desktop-sidecar.sh's sidecar.tmp.$$ (WI-10005953). Such a sibling carries
 # its own node_modules and package-lock.json, so a concurrent build used to add a
 # transient tree mid-snapshot and tear the gate's generation (exit 75).
+# Next's .next/standalone dependency copies are emitted build output too;
+# their writers do not hold the source-install reader/writer lock.
 dependency_generation_enumerate_node_modules() {
   local root="$1" dir
   # WI-10006855: emitted desktop payloads copy dependencies from source trees;
@@ -392,6 +394,7 @@ dependency_generation_enumerate_node_modules() {
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
     [ -d "$root/node_modules" ] && printf '%s\n' "$root/node_modules"
     for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
+      case "$dir" in .next|.next/*|*/.next|*/.next/*) continue ;; esac
       if [ -d "$root/$dir/node_modules" ] \
         && ! dependency_generation_is_foreign_checkout "$root" "$root/$dir/node_modules"; then
         printf '%s\n' "$root/$dir/node_modules"
@@ -402,7 +405,7 @@ dependency_generation_enumerate_node_modules() {
   # -mindepth 1: the name patterns below must never prune the starting root
   # itself, whatever its basename (a caller may pass a generated scratch root).
   find "$root" -mindepth 1 \
-    \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git \
+    \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name .next \
       -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
       -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
       -o -path "$root/papercusp-desktop/src-tauri/sidecar" \
