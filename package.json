@@ -10,6 +10,7 @@
   },
   "workspaces": [
     "apps/*",
+    "!apps/*-checkpoint",
     "packages/*",
     "libs/agent-chat",
     "libs/generic/card-stack",

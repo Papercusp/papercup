@@ -2124,6 +2124,44 @@ export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit,
      *  no screen history and cannot inherit the old child's wall. */
     reset(): void;
 };
+/** Match codex's auth-failure copy in a screen window. Non-codex agents never
+ *  match: claude's and omp's auth flows are different products. */
+export function codexAuthFailureMatch(text: any, agent?: string): {
+    matched: boolean;
+    pattern: null;
+    excerpt: null;
+} | {
+    matched: boolean;
+    pattern: string;
+    excerpt: string;
+};
+/** P-004: auth-failure detector, the quota detector's twin. Feed it the same
+ *  raw pty bytes. `isBlocked()` reports whether codex's auth-failure copy is in
+ *  the recent screen. A resumed or forked child repaints its old transcript,
+ *  including old errors, so with `deferUntilSubmit` the detector arms only at
+ *  the first standalone submit keystroke. A recycle must call `reset()`: the
+ *  fresh child has its own login state. Pure (no timers, no I/O). */
+export function makeAuthBlockDetector({ capBytes, agent, now, deferUntilSubmit, }?: {
+    capBytes?: number | undefined;
+    agent?: string | undefined;
+    now?: (() => number) | undefined;
+    deferUntilSubmit?: boolean | undefined;
+}): {
+    /** Returns 'detected' | 'cleared' on a level change, else null. */
+    observe(chunk: any): "detected" | "cleared" | null;
+    observeInput(input: any): void;
+    isBlocked: () => boolean;
+    snapshot: () => {
+        authBlocked: boolean;
+        authBlockedSinceMs: number | null;
+    };
+    lastMatch: () => {
+        matched: boolean;
+        pattern: null;
+        excerpt: null;
+    };
+    reset(): void;
+};
 /**
  * Control-socket wire protocol (v1). A connector writes ONE UTF-8 payload then
  * half-closes. If it parses as a `{ v:1, mode, data }` envelope we act on the
