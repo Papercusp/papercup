@@ -9,6 +9,7 @@
  * covers the seam's own logic without PG.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { GradeRoutedIdeaDiagnostics } from './routed-ledger';
 
 const h = vi.hoisted(() => ({
   /** Rows the UPDATE … RETURNING yields. */
@@ -45,9 +46,7 @@ vi.mock('../experiment/producer-lifecycle-store', async (original) => ({
   recordProducerObservation: vi.fn(async () => {}),
 }));
 
-const { gradeRoutedIdea, hiveFromPatternRefs, propagatePlanOutcome, propagateWorkItemOutcome, workItemTerminalEntries } = await import(
-  './routed-ledger'
-);
+const { gradeRoutedIdea, hiveFromPatternRefs, propagatePlanOutcome, propagateWorkItemOutcome, workItemTerminalEntries } = await import('./routed-ledger');
 const sse = await import('../sync-sse');
 const invalidate = vi.mocked(sse.notifySyncInvalidate);
 
@@ -76,6 +75,31 @@ describe('gradeRoutedIdea (C-2 seam logic)', () => {
     const res = await gradeRoutedIdea({ ideaId: 'i1', grade: 4, feedback: 'sharp', gradedBy: 'Queen' });
     expect(res).toEqual({ applied: true });
     await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith('learning.scout'));
+  });
+
+  it('emits write, update, and producer-observation phase diagnostics for a committed grade', async () => {
+    h.updateRows = [{ idea_id: 'i1' }];
+    const snapshots: Array<{ phases: GradeRoutedIdeaDiagnostics['phases'] }> = [];
+
+    const res = await gradeRoutedIdea(
+      { ideaId: 'i1', grade: 4, gradedBy: 'su-reviewer' },
+      { onDiagnostics: (diagnostics) => snapshots.push({ phases: { ...diagnostics.phases } }) },
+    );
+
+    expect(res).toEqual({ applied: true });
+    expect(snapshots.find((snapshot) => snapshot.phases.gradeUpdate?.status === 'in-progress')?.phases.gradeUpdate?.startedAt)
+      .toEqual(expect.any(String));
+    expect(snapshots.find((snapshot) => snapshot.phases.producerObservation?.status === 'in-progress')?.phases.producerObservation?.startedAt)
+      .toEqual(expect.any(String));
+    expect(snapshots.at(-1)?.phases).toMatchObject({
+      writeTransaction: { status: 'ok' },
+      gradeUpdate: { status: 'ok' },
+      producerObservation: { status: 'ok' },
+    });
+    expect(snapshots.at(-1)?.phases.producerObservation?.elapsedMs).toEqual(expect.any(Number));
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith('learning.scout'));
+    await flush();
+    await flush();
   });
 
   it('guarded UPDATE matching nothing + row exists → owner-grade-sovereign, NO invalidate', async () => {

@@ -21,6 +21,7 @@ import {
   reconcileAgentReviewGrade,
   resubmitAgentReview,
   type AgentReviewDeps,
+  type AgentReviewReconcileDiagnostics,
   type AgentReviewLedgerGrade,
   type SubmitterLivenessVerdict,
 } from './agent-review';
@@ -206,6 +207,41 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
       }).state).not.toBe('qualifying');
       expect(h.deliverRevision).toHaveBeenCalledWith(expect.objectContaining({ to: 'su-author' }));
     }
+  });
+
+  it('emits per-phase reconciliation diagnostics while preserving the revision transition', async () => {
+    const h = harness(issue({
+      assignee: 'su-reviewer',
+      payload: { agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 1 } },
+    }));
+    h.state.ledger = {
+      ideaId: 'WI-7', workItemId: 'WI-7', grade: 2, feedback: 'Add evidence for the claim', gradedBy: 'su-reviewer',
+    };
+    const snapshots: Array<{ phases: AgentReviewReconcileDiagnostics['phases'] }> = [];
+
+    const outcome = await reconcileAgentReviewGrade(
+      { ideaId: 'WI-7', gradedBy: 'su-reviewer' },
+      h.deps,
+      { onDiagnostics: (diagnostics) => snapshots.push({ phases: { ...diagnostics.phases } }) },
+    );
+
+    expect(outcome).toMatchObject({ status: 'revision-requested', changed: true, returnedToSubmitter: true });
+    expect(outcome?.diagnostics).toMatchObject({
+      schemaVersion: 'agent-review-grade-reconcile-v1',
+      phases: {
+        readLedgerGrade: { status: 'ok' },
+        getWorkItem: { status: 'ok' },
+        resolveSubmitterLiveness: { status: 'ok' },
+        mergeWorkItemPayload: { status: 'ok' },
+        ensureComment: { status: 'ok' },
+        transferClaim: { status: 'ok' },
+        deliverRevision: { status: 'ok' },
+      },
+    });
+    expect(snapshots.some((snapshot) => snapshot.phases.transferClaim?.status === 'in-progress')).toBe(true);
+    expect(snapshots.find((snapshot) => snapshot.phases.transferClaim?.status === 'in-progress')?.phases.transferClaim?.startedAt)
+      .toEqual(expect.any(String));
+    expect(outcome?.diagnostics?.phases.transferClaim?.elapsedMs).toEqual(expect.any(Number));
   });
 
   it('accepts the same favorable review after the current target failure is verified', async () => {

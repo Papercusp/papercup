@@ -493,6 +493,15 @@ export interface GradeRoutedIdeaResult {
   reason?: 'owner-grade-sovereign' | 'not-found';
 }
 
+export type GradeRoutedIdeaPhase = 'writeTransaction' | 'gradeUpdate' | 'producerObservation' | 'notFoundLookup';
+
+export interface GradeRoutedIdeaDiagnostics {
+  schemaVersion: 'scout-grade-routed-idea-v1';
+  unit: 'ms';
+  elapsedMs: number;
+  phases: Partial<Record<GradeRoutedIdeaPhase, { startedAt: string; elapsedMs: number; status: 'in-progress' | 'ok' | 'error' }>>;
+}
+
 /**
  * Record a grader's verdict on one routed idea (scout-idea-grading C-2): an
  * idempotent UPDATE of the four grade columns on the ledger row. Regrading is
@@ -506,18 +515,43 @@ export interface GradeRoutedIdeaResult {
  * the ledger rows carry the active one (EI-346) — a workspace clause here would
  * silently no-op every grade from the tool surface. Admin client by design.
  */
-export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<GradeRoutedIdeaResult> {
+export async function gradeRoutedIdea(
+  input: GradeRoutedIdeaInput,
+  options: { onDiagnostics?: (diagnostics: GradeRoutedIdeaDiagnostics) => void } = {},
+): Promise<GradeRoutedIdeaResult> {
   if (!Number.isInteger(input.grade) || input.grade < 1 || input.grade > 5) {
     throw new Error(`gradeRoutedIdea: grade must be an integer 1–5, got ${String(input.grade)}`);
   }
   const { sql } = getOrgPg();
+  const diagnostics: GradeRoutedIdeaDiagnostics | null = options.onDiagnostics
+    ? { schemaVersion: 'scout-grade-routed-idea-v1', unit: 'ms', elapsedMs: 0, phases: {} }
+    : null;
+  const overallStartedAt = diagnostics ? performance.now() : 0;
+  const measure = async <T>(phase: GradeRoutedIdeaPhase, action: () => Promise<T>): Promise<T> => {
+    if (!diagnostics) return action();
+    const startedAt = performance.now();
+    const startedAtIso = new Date().toISOString();
+    let status: 'ok' | 'error' = 'error';
+    diagnostics.phases[phase] = { startedAt: startedAtIso, elapsedMs: 0, status: 'in-progress' };
+    diagnostics.elapsedMs = Math.max(0, performance.now() - overallStartedAt);
+    try { options.onDiagnostics?.({ ...diagnostics, phases: { ...diagnostics.phases } }); } catch { /* Never affect grading. */ }
+    try {
+      const result = await action();
+      status = 'ok';
+      return result;
+    } finally {
+      diagnostics.phases[phase] = { startedAt: startedAtIso, elapsedMs: Math.max(0, performance.now() - startedAt), status };
+      diagnostics.elapsedMs = Math.max(0, performance.now() - overallStartedAt);
+      try { options.onDiagnostics?.({ ...diagnostics, phases: { ...diagnostics.phases } }); } catch { /* Never affect grading. */ }
+    }
+  };
   // D-004 in one statement. `graded_by IS DISTINCT FROM 'owner'` (not `<>`) so
   // ungraded rows (NULL graded_by) pass the guard for both graders. The
   // self-join FROM reads the PRE-update grade in the same statement (FB-15:
   // 'regrade' detection for the owner-interaction capture below) — same
   // unnarrowed idea_id predicate as before, so apply semantics are unchanged.
-  const updated = await withProducerLifecycleWrite(sql, async (sql) => {
-  const rows = await sql<
+  const updated = await measure('writeTransaction', () => withProducerLifecycleWrite(sql, async (sql) => {
+  const rows = await measure('gradeUpdate', () => sql<
     {
       idea_id: string;
       workspace_id: string;
@@ -540,15 +574,15 @@ export async function gradeRoutedIdea(input: GradeRoutedIdeaInput): Promise<Grad
      WHERE t.idea_id = prev.idea_id
        AND (${input.gradedBy} = 'owner' OR t.graded_by IS DISTINCT FROM 'owner')
      RETURNING t.idea_id, t.workspace_id, t.lens, t.rail, t.routed_ref, t.title,
-               prev.prev_grade, prev.prev_graded_by`;
-  for (const row of rows) await recordProducerObservation(sql, {
+               prev.prev_grade, prev.prev_graded_by`);
+  for (const row of rows) await measure('producerObservation', () => recordProducerObservation(sql, {
     producer: 'scout', workspaceId: row.workspace_id, sourceId: row.idea_id,
-  });
+  }));
   return rows;
-  });
+  }));
   if (updated.length === 0) {
-    const exists = await sql<{ idea_id: string }[]>`
-      SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`;
+    const exists = await measure('notFoundLookup', () => sql<{ idea_id: string }[]>`
+      SELECT idea_id FROM harness_shared.scout_routed_ideas WHERE idea_id = ${input.ideaId}`);
     return exists.length === 0
       ? { applied: false, reason: 'not-found' }
       : { applied: false, reason: 'owner-grade-sovereign' };

@@ -844,6 +844,8 @@ export interface AgentReviewReconcileOutcome {
   round: number;
   changed: boolean;
   woken?: number;
+  /** Per-operation wall-clock measurements for the grade→review reconciliation seam. */
+  diagnostics?: AgentReviewReconcileDiagnostics;
   /**
    * WI-41687: whether the row ended up held by its original submitter. False means the
    * transfer could not be made (typically a reaped submitter session) and the reviewer's
@@ -854,13 +856,62 @@ export interface AgentReviewReconcileOutcome {
   returnedToSubmitter?: boolean;
 }
 
+export type AgentReviewReconcilePhase =
+  | 'readLedgerGrade'
+  | 'getWorkItem'
+  | 'resolveSubmitterLiveness'
+  | 'mergeWorkItemPayload'
+  | 'ensureComment'
+  | 'transferClaim'
+  | 'releaseClaim'
+  | 'verifyReproduction'
+  | 'deliverRevision';
+
+export interface AgentReviewReconcileDiagnostics {
+  schemaVersion: 'agent-review-grade-reconcile-v1';
+  unit: 'ms';
+  elapsedMs: number;
+  phases: Partial<Record<AgentReviewReconcilePhase, { startedAt: string; elapsedMs: number; status: 'in-progress' | 'ok' | 'error' }>>;
+}
+
 export async function reconcileAgentReviewGrade(
   input: { ideaId: string; gradedBy: string },
   deps: AgentReviewDeps = defaultDeps,
+  options: { onDiagnostics?: (diagnostics: AgentReviewReconcileDiagnostics) => void } = {},
 ): Promise<AgentReviewReconcileOutcome | null> {
-  const ledger = await deps.readLedgerGrade(input.ideaId);
+  const diagnostics: AgentReviewReconcileDiagnostics | null = options.onDiagnostics
+    ? { schemaVersion: 'agent-review-grade-reconcile-v1', unit: 'ms', elapsedMs: 0, phases: {} }
+    : null;
+  const overallStartedAt = diagnostics ? performance.now() : 0;
+  const measure = async <T>(
+    phase: AgentReviewReconcilePhase,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    if (!diagnostics) return action();
+    const startedAt = performance.now();
+    const startedAtIso = new Date().toISOString();
+    let status: 'ok' | 'error' = 'error';
+    diagnostics.phases[phase] = { startedAt: startedAtIso, elapsedMs: 0, status: 'in-progress' };
+    try { options.onDiagnostics?.({ ...diagnostics, phases: { ...diagnostics.phases } }); } catch { /* Never affect reconciliation. */ }
+    try {
+      const result = await action();
+      status = 'ok';
+      return result;
+    } finally {
+      diagnostics.phases[phase] = { startedAt: startedAtIso, elapsedMs: Math.max(0, performance.now() - startedAt), status };
+      diagnostics.elapsedMs = Math.max(0, performance.now() - overallStartedAt);
+      try { options.onDiagnostics?.({ ...diagnostics, phases: { ...diagnostics.phases } }); } catch { /* Never affect reconciliation. */ }
+    }
+  };
+  const withDiagnostics = <T extends AgentReviewReconcileOutcome>(outcome: T): T => {
+    if (!diagnostics) return outcome;
+    diagnostics.elapsedMs = Math.max(0, performance.now() - overallStartedAt);
+    try { options.onDiagnostics?.({ ...diagnostics, phases: { ...diagnostics.phases } }); } catch { /* Never affect reconciliation. */ }
+    return { ...outcome, diagnostics: { ...diagnostics, phases: { ...diagnostics.phases } } };
+  };
+  const ledger = await measure('readLedgerGrade', () => deps.readLedgerGrade(input.ideaId));
   if (!ledger) return null;
-  const workItem = await deps.getWorkItem(ledger.workItemId);
+  const workItem = await measure('getWorkItem', () => deps.getWorkItem(ledger.workItemId));
   if (!workItem) return null;
   const current = readAgentReviewState(workItem.payload);
   if (!current || current.ledgerIdeaId !== input.ideaId) return null;
@@ -894,12 +945,12 @@ export async function reconcileAgentReviewGrade(
     // before any transition write; an in-band unknown keeps the prior transfer
     // behavior, and the explicit orphan-resubmit path owns adoption.
     const submitterLiveness = changed && current.submittedBy !== LEGACY_AGENT_REVIEW_SUBMITTER
-      ? await deps.resolveSubmitterLiveness(current.submittedBy, {
+      ? await measure('resolveSubmitterLiveness', () => deps.resolveSubmitterLiveness(current.submittedBy, {
           claimsHeld: workItem.assignee === current.submittedBy,
-        })
+        }))
       : null;
     const submitterEnded = submitterLiveness?.sessionState === 'ended';
-    const merged = await deps.mergeWorkItemPayload(
+    const merged = await measure('mergeWorkItemPayload', () => deps.mergeWorkItemPayload(
       workItem.id,
       {
         agentReview: next,
@@ -916,32 +967,32 @@ export async function reconcileAgentReviewGrade(
         ...(workItem.harness ? { harness: workItem.harness } : {}),
         unset: ['needsHuman', 'needsOwnerAction'],
       },
-    );
+    ));
     if (!merged) throw new Error(`agent review could not persist revision state on '${workItem.id}'`);
-    const commentAdded = await ensureComment(
+    const commentAdded = await measure('ensureComment', () => ensureComment(
       workItem,
       agentReviewRoundComment(revisionComment(current.round, grade, feedback, gradedBy), workItem, next, grade, gradedBy),
       gradedBy,
       deps,
-    );
+    ));
     if (current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER) {
       if (changed && workItem.assignee) {
-        const released = await deps.releaseWorkItem(workItem.id, {
+        const released = await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
           ...(workItem.harness ? { harness: workItem.harness } : {}),
           expectedAssignee: workItem.assignee,
-        });
+        }));
         if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
       }
-      return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed };
+      return withDiagnostics({ workItemId: workItem.id, status: 'revision-requested', round: current.round, changed });
     }
     let returnedToSubmitter = true;
     if (changed) {
       const transferred = submitterEnded
         ? null
-        : await deps.claimWorkItem(workItem.id, current.submittedBy, {
+        : await measure('transferClaim', () => deps.claimWorkItem(workItem.id, current.submittedBy, {
             ...(workItem.harness ? { harness: workItem.harness } : {}),
             ...(workItem.assignee ? { fromHolder: workItem.assignee } : {}),
-          });
+          }));
       if (!transferred) {
         // WI-41687: the submitter frequently no longer EXISTS by review time — a session
         // that filed a report hours earlier is routinely reaped, and a reaped owner cannot
@@ -963,25 +1014,25 @@ export async function reconcileAgentReviewGrade(
         // rather than hiding it behind a thrown error.
         returnedToSubmitter = false;
         if (workItem.assignee) {
-          await deps.releaseWorkItem(workItem.id, {
+          await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
             ...(workItem.harness ? { harness: workItem.harness } : {}),
             expectedAssignee: workItem.assignee,
-          });
+          }));
         }
       }
     }
     let woken: number | undefined;
     if ((changed || commentAdded) && !submitterEnded) {
-      woken = (await deps.deliverRevision({
+      woken = (await measure('deliverRevision', () => deps.deliverRevision({
         to: current.submittedBy,
         workItemId: workItem.id,
         round: current.round,
         grade,
         feedback,
         gradedBy,
-      })).woken;
+      }))).woken;
     }
-    return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed, returnedToSubmitter, ...(woken === undefined ? {} : { woken }) };
+    return withDiagnostics({ workItemId: workItem.id, status: 'revision-requested', round: current.round, changed, returnedToSubmitter, ...(woken === undefined ? {} : { woken }) });
   }
 
   const reproduction = workItem.kind === 'bug' ? readBugReproductionReceipt(approvalReproduction(workItem.payload)) : null;
@@ -995,7 +1046,7 @@ export async function reconcileAgentReviewGrade(
           receipt, await currentIntakeTargetBuild(`harness:${item.harness ?? ''}`), defaultReproductionLedgerDeps(),
         );
       });
-      const result = await verify(reproduction, workItem);
+      const result = await measure('verifyReproduction', () => verify(reproduction, workItem));
       if (!isAcceptedReproductionStatus(result.status)) reproductionRefusal = result.detail;
     }
   }
@@ -1009,7 +1060,7 @@ export async function reconcileAgentReviewGrade(
     } } : {}),
   };
   const changed = current.status !== next.status;
-  const merged = await deps.mergeWorkItemPayload(
+  const merged = await measure('mergeWorkItemPayload', () => deps.mergeWorkItemPayload(
     workItem.id,
     {
       agentReview: next,
@@ -1032,24 +1083,24 @@ export async function reconcileAgentReviewGrade(
       ...(workItem.harness ? { harness: workItem.harness } : {}),
       unset: ['needsHuman', 'needsOwnerAction'],
     },
-  );
+  ));
   if (!merged) throw new Error(`agent review could not persist approval state on '${workItem.id}'`);
-  await ensureComment(workItem,
+  await measure('ensureComment', () => ensureComment(workItem,
     agentReviewRoundComment(reproductionRefusal
       ? `Agent review round ${current.round}: independent grade ${grade}/5 by ${gradedBy}; fixing remains gated. ${reproductionRefusal}`
       : approvalComment(current.round, grade, gradedBy), workItem, next, grade, gradedBy),
-    gradedBy, deps);
+    gradedBy, deps));
   if (workItem.assignee) {
-    const released = await deps.releaseWorkItem(workItem.id, {
+    const released = await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
       ...(workItem.harness ? { harness: workItem.harness } : {}),
       expectedAssignee: workItem.assignee,
-    });
+    }));
     if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
   }
   if (reproductionRefusal && changed && current.submittedBy !== LEGACY_AGENT_REVIEW_SUBMITTER) {
-    await deps.deliverRevision({ to: current.submittedBy, workItemId: workItem.id, round: current.round, grade, feedback: reproductionRefusal, gradedBy });
+    await measure('deliverRevision', () => deps.deliverRevision({ to: current.submittedBy, workItemId: workItem.id, round: current.round, grade, feedback: reproductionRefusal, gradedBy }));
   }
-  return { workItemId: workItem.id, status: next.status, round: current.round, changed };
+  return withDiagnostics({ workItemId: workItem.id, status: next.status, round: current.round, changed });
 }
 
 export type ClaimAgentReviewReason =

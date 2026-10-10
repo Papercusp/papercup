@@ -11,6 +11,7 @@ import gradeIdeaTool, {
   REVISION_WAKE_MAX_GRADE,
   GRADE_IDEA_FEEDBACK_MAX_CHARS,
   type GradeIdeaDeps,
+  type GradeIdeaDiagnostics,
   type GradedIdeaSummary,
   type WorkItemExistenceProbeResult,
 } from '../grade-idea';
@@ -160,6 +161,29 @@ describe('runGradeIdea', () => {
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 2 }, undefined, deps);
     expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({ ideaId: 'idea-1', grade: 2, gradedBy: 'owner' });
     expect(out.gradedBy).toBe('owner');
+  });
+
+  it('emits phase entry and settle diagnostics for the grade path without changing its result', async () => {
+    const deps = fakeDeps();
+    const snapshots: Array<{ phases: GradeIdeaDiagnostics['phases'] }> = [];
+
+    const out = await runGradeIdea(
+      { ideaId: 'idea-1', grade: 4 },
+      { role: 'operator', ownerId: 'su-reviewer' },
+      deps,
+      { onDiagnostics: (diagnostics) => snapshots.push({ phases: { ...diagnostics.phases } }) },
+    );
+
+    expect(out).toMatchObject({ applied: true, ideaId: 'idea-1', gradedBy: 'su-reviewer' });
+    const gradeStart = snapshots.find((snapshot) => snapshot.phases.gradeRoutedIdea?.status === 'in-progress');
+    expect(gradeStart?.phases.gradeRoutedIdea?.startedAt).toEqual(expect.any(String));
+    expect(snapshots.at(-1)?.phases).toMatchObject({
+      readCreatedBy: { status: 'ok' },
+      preflightAgentReviewGrade: { status: 'ok' },
+      gradeRoutedIdea: { status: 'ok' },
+      readIdeaSummary: { status: 'ok' },
+    });
+    expect(snapshots.at(-1)?.phases.gradeRoutedIdea?.elapsedMs).toEqual(expect.any(Number));
   });
 
   it('writes the resolved su caller ownerId for an identified agent grade', async () => {

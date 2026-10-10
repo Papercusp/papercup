@@ -32,12 +32,18 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { getOrgPg } from '@papercusp/db-org';
 
-import { gradeRoutedIdea, type GradeRoutedIdeaInput, type GradeRoutedIdeaResult } from '../../scout/routed-ledger';
+import {
+  gradeRoutedIdea,
+  type GradeRoutedIdeaDiagnostics,
+  type GradeRoutedIdeaInput,
+  type GradeRoutedIdeaResult,
+} from '../../scout/routed-ledger';
 import { getWorkItem, type WorkItem } from '../../work-items';
 import {
   preflightAgentReviewGrade,
   reconcileAgentReviewGrade,
   type AgentReviewGradePreflight,
+  type AgentReviewReconcileDiagnostics,
   type AgentReviewReconcileOutcome,
 } from '../../harness/improvements/agent-review';
 import { hardText, LIMITS } from '../limits';
@@ -143,6 +149,28 @@ export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> 
   ledgerIdeaId?: string;
   /** Ready-to-use retry args for a refused bare-key review collision. */
   gradeWith?: { ideaId: string };
+}
+
+export type GradeIdeaMeasuredPhase =
+  | 'ledgerCollisionGuard'
+  | 'resolveIdeaKey'
+  | 'bareKeyCollisionGuard'
+  | 'resolveBareReviewKey'
+  | 'resolutionMissProbe'
+  | 'readCreatedBy'
+  | 'preflightAgentReviewGrade'
+  | 'gradeRoutedIdea'
+  | 'readIdeaSummary'
+  | 'reconcileAgentReviewGrade'
+  | 'sendRevisionNotice';
+
+export interface GradeIdeaDiagnostics {
+  schemaVersion: 'blender-grade-idea-phases-v1';
+  unit: 'ms';
+  elapsedMs: number;
+  phases: Partial<Record<GradeIdeaMeasuredPhase, { startedAt: string; elapsedMs: number; status: 'in-progress' | 'ok' | 'error' }>>;
+  routedLedgerGrade?: GradeRoutedIdeaDiagnostics;
+  agentReviewReconcile?: AgentReviewReconcileDiagnostics;
 }
 
 export const gradeIdeaArgs = z
@@ -619,19 +647,58 @@ export async function runGradeIdea(
   args: GradeIdeaArgs,
   ctx: { role?: string; ownerId?: string | null } | undefined,
   deps: GradeIdeaDeps = defaultDeps,
+  options: { onDiagnostics?: (diagnostics: GradeIdeaDiagnostics) => void } = {},
 ): Promise<GradeIdeaOutcome> {
   // Internal callers can bypass the tool dispatcher, so enforce the same hard cap
   // here before any ledger mutation or revision delivery.
   args = gradeIdeaArgs.parse(args);
   const gradedBy = deriveGradedBy(ctx);
   const feedback = args.feedback;
+  const diagnostics: GradeIdeaDiagnostics | null = options.onDiagnostics
+    ? { schemaVersion: 'blender-grade-idea-phases-v1', unit: 'ms', elapsedMs: 0, phases: {} }
+    : null;
+  const overallStartedAt = diagnostics ? performance.now() : 0;
+  const emitDiagnostics = () => {
+    if (!diagnostics || !options.onDiagnostics) return;
+    diagnostics.elapsedMs = Math.max(0, performance.now() - overallStartedAt);
+    try {
+      options.onDiagnostics({
+        ...diagnostics,
+        phases: { ...diagnostics.phases },
+        ...(diagnostics.routedLedgerGrade
+          ? { routedLedgerGrade: { ...diagnostics.routedLedgerGrade, phases: { ...diagnostics.routedLedgerGrade.phases } } }
+          : {}),
+        ...(diagnostics.agentReviewReconcile
+          ? { agentReviewReconcile: { ...diagnostics.agentReviewReconcile, phases: { ...diagnostics.agentReviewReconcile.phases } } }
+          : {}),
+      });
+    } catch {
+      /* Diagnostic delivery must never change the grade or its error. */
+    }
+  };
+  const measure = async <T>(phase: GradeIdeaMeasuredPhase, action: () => Promise<T>): Promise<T> => {
+    if (!diagnostics) return action();
+    const startedAt = performance.now();
+    const startedAtIso = new Date().toISOString();
+    let status: 'ok' | 'error' = 'error';
+    diagnostics.phases[phase] = { startedAt: startedAtIso, elapsedMs: 0, status: 'in-progress' };
+    emitDiagnostics();
+    try {
+      const result = await action();
+      status = 'ok';
+      return result;
+    } finally {
+      diagnostics.phases[phase] = { startedAt: startedAtIso, elapsedMs: Math.max(0, performance.now() - startedAt), status };
+      emitDiagnostics();
+    }
+  };
 
   // A pending review owns the canonical ledger id in its work-item payload. If a
   // bare work-item key is already routed as a different historical idea, do not
   // let exact-id-first resolution grade that older row by accident.
   const candidateId = args.ideaId != null ? candidateWorkItemId(args) : null;
   if (args.ideaId != null && candidateId === args.ideaId) {
-    const collision = await deps.findAgentReviewLedgerCollision(args.ideaId);
+    const collision = await measure('ledgerCollisionGuard', () => deps.findAgentReviewLedgerCollision(args.ideaId as string));
     if (collision) {
       return {
         applied: false,
@@ -650,10 +717,9 @@ export async function runGradeIdea(
   // idea_id — resolveIdeaIdFromKey handles both (direct idea_id OR routed_ref
   // match), so a natural `{ ideaId: 'EI-15375' }` lands instead of silently
   // no-op'ing. An unresolvable key returns null → the LOUD not-found below.
-  let ideaId =
-    args.ideaId != null
-      ? await deps.resolveIdeaIdFromKey(args.ideaId)
-      : await deps.resolveIdeaIdFromRef(args.routedRef as string);
+  let ideaId = args.ideaId != null
+    ? await measure('resolveIdeaKey', () => deps.resolveIdeaIdFromKey(args.ideaId as string))
+    : await measure('resolveIdeaKey', () => deps.resolveIdeaIdFromRef(args.routedRef as string));
   // EI-24742538368325488: an `agent-review:<id>` key that matched no ledger row is
   // the common case (enrollment only prefixes the PK when the bare id was already
   // occupied), so retry with the bare work-item id — through the SAME collision
@@ -661,7 +727,7 @@ export async function runGradeIdea(
   // row genuinely keyed `agent-review:<id>` is never re-pointed.
   const bareReviewId = ideaId == null && args.ideaId != null ? bareIdBehindAgentReviewKey(args.ideaId) : null;
   if (bareReviewId != null) {
-    const collision = await deps.findAgentReviewLedgerCollision(bareReviewId);
+    const collision = await measure('bareKeyCollisionGuard', () => deps.findAgentReviewLedgerCollision(bareReviewId));
     if (collision) {
       return {
         applied: false,
@@ -673,10 +739,10 @@ export async function runGradeIdea(
         gradeWith: { ideaId: collision.ledgerIdeaId },
       };
     }
-    ideaId = await deps.resolveIdeaIdFromKey(bareReviewId);
+    ideaId = await measure('resolveBareReviewKey', () => deps.resolveIdeaIdFromKey(bareReviewId));
   }
   if (ideaId == null) {
-    const miss = await diagnoseResolutionMiss(args, deps);
+    const miss = await measure('resolutionMissProbe', () => diagnoseResolutionMiss(args, deps));
     return { applied: false, ...miss, gradedBy, ideaId: null, idea: null };
   }
 
@@ -690,7 +756,7 @@ export async function runGradeIdea(
   // self-grade, so it falls through unchanged (the pre-D-012 behavior).
   const callerOwnerId = ctx?.ownerId ?? null;
   if (callerOwnerId) {
-    const createdBy = await deps.readCreatedBy(ideaId);
+    const createdBy = await measure('readCreatedBy', () => deps.readCreatedBy(ideaId));
     if (createdBy && createdBy === callerOwnerId) {
       return { applied: false, reason: 'no-self-grade', gradedBy, ideaId, idea: null };
     }
@@ -700,11 +766,11 @@ export async function runGradeIdea(
   // merely a learning signal. Refuse low grades without actionable feedback and
   // grades against a non-pending round BEFORE the ledger write. General Scout and
   // su-ideate rows return applicable:false and retain their existing semantics.
-  const agentReviewPreflight = await deps.preflightAgentReviewGrade({
+  const agentReviewPreflight = await measure('preflightAgentReviewGrade', () => deps.preflightAgentReviewGrade({
     ideaId,
     grade: args.grade,
     ...(feedback !== undefined ? { feedback } : {}),
-  });
+  }));
   if (agentReviewPreflight.refusal) {
     return {
       applied: false,
@@ -715,11 +781,20 @@ export async function runGradeIdea(
     };
   }
 
-  const result = await deps.gradeRoutedIdea({
-    ideaId,
-    grade: args.grade,
-    ...(feedback !== undefined ? { feedback } : {}),
-    gradedBy,
+  const result = await measure('gradeRoutedIdea', () => {
+    const gradeInput = {
+      ideaId,
+      grade: args.grade,
+      ...(feedback !== undefined ? { feedback } : {}),
+      gradedBy,
+    };
+    if (!diagnostics) return deps.gradeRoutedIdea(gradeInput);
+    return deps.gradeRoutedIdea(gradeInput, {
+      onDiagnostics: (gradeDiagnostics) => {
+        diagnostics.routedLedgerGrade = gradeDiagnostics;
+        emitDiagnostics();
+      },
+    });
   });
 
   // Post-write read-back (PK-keyed, total). On applied=true it shows exactly
@@ -727,7 +802,7 @@ export async function runGradeIdea(
   // grade the caller lost to. Best-effort: a summary miss never fails a write.
   let idea: GradedIdeaSummary | null = null;
   try {
-    idea = await deps.readIdeaSummary(ideaId);
+    idea = await measure('readIdeaSummary', () => deps.readIdeaSummary(ideaId));
   } catch {
     if (result.applied) {
       idea = {
@@ -758,7 +833,16 @@ export async function runGradeIdea(
   // converge instead of returning a false success.
   let agentReview: AgentReviewReconcileOutcome | undefined;
   if (agentReviewPreflight.applicable && result.reason !== 'not-found') {
-    const reconciled = await deps.reconcileAgentReviewGrade({ ideaId, gradedBy });
+    const reconciled = await measure('reconcileAgentReviewGrade', () => {
+      const input = { ideaId, gradedBy };
+      if (!diagnostics) return deps.reconcileAgentReviewGrade(input);
+      return deps.reconcileAgentReviewGrade(input, undefined, {
+        onDiagnostics: (reconcileDiagnostics) => {
+          diagnostics.agentReviewReconcile = reconcileDiagnostics;
+          emitDiagnostics();
+        },
+      });
+    });
     if (!reconciled) throw new Error(`agent-review-reconcile-missing:${ideaId}`);
     agentReview = reconciled;
   }
@@ -788,7 +872,7 @@ export async function runGradeIdea(
         workspaceId: idea.workspaceId,
       });
       try {
-        const { woken } = await deps.sendRevisionNotice(notice);
+        const { woken } = await measure('sendRevisionNotice', () => deps.sendRevisionNotice(notice));
         revisionWake = { sent: true, woken, fallback: mode === 'wake' && woken === 0 };
       } catch (e) {
         console.warn(`[grade-idea] revision notice failed: ${e instanceof Error ? e.message : e}`);
@@ -899,6 +983,10 @@ export default defineTool({
     // (C-3 attribution). Both are DERIVED from ctx here, never caller-supplied.
     const ownerId = resolveCallerOwnerId(ctx as ResolveIdentityCtx | undefined);
     const role = (ctx as { role?: string } | undefined)?.role;
-    return toToolResult(await runGradeIdea(args, { role, ownerId }));
+    return toToolResult(await runGradeIdea(args, { role, ownerId }, defaultDeps, {
+      onDiagnostics: (diagnostics) => {
+        try { ctx.metadata?.({ blenderGradeIdea: diagnostics }); } catch { /* Never affect grading. */ }
+      },
+    }));
   },
 });
