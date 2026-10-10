@@ -71,6 +71,8 @@ export async function synchronizeAcceptanceBarSubjectRevision(
   args: {
     workspaceId: string; harnessSlug: string; planSlug: string;
     previousBody: string; nextBody: string; previousVersion: number; nextVersion: number;
+    /** Validate the exact neutral pin advance without persisting it. */
+    dryRun?: boolean;
   },
 ): Promise<boolean> {
   // Re-audit can catch up across several neutral plan writes. Source equality
@@ -134,6 +136,7 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     preserveExistingBars: true,
   });
   if (!rebuilt.ok || rebuilt.barSetHash !== subject.acceptance_bar_set_hash) return false;
+  if (args.dryRun) return true;
   const rows = await sql`
     UPDATE harness_shared.harness_plans
        SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}',

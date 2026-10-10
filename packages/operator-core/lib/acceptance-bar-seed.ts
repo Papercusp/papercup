@@ -953,6 +953,8 @@ export interface TransactionalAcceptanceBarSeedInput {
   now: Date;
   /** Validate and describe the same canonical write without mutating any rows. */
   dryRun?: boolean;
+  /** Preview-only neutral pin advance validated by the canonical synchronizer. */
+  preserveExistingBars?: boolean;
   /** Activation-door policy; see {@link AcceptanceBarSeedBuildInput.requireContractCompleteness}. */
   requireContractCompleteness?: boolean;
   /**
@@ -1055,6 +1057,9 @@ export async function seedAcceptanceBarsInTransaction(
   const existingTemplate = existing
     ? rubricTemplateDataAuthoringSchema.safeParse(existing.template_data)
     : null;
+  const seedTemplateData = input.dryRun && input.preserveExistingBars && existingTemplate?.success && existingTemplate.data.barContract
+    ? { ...existingTemplate.data, barContract: { ...existingTemplate.data.barContract, subjectPlanRevision: input.planVersion } }
+    : existing?.template_data;
   const seedInstant =
     existingTemplate?.success &&
     existingTemplate.data.barContract?.subjectPlanRevision === input.planVersion &&
@@ -1076,7 +1081,8 @@ export async function seedAcceptanceBarsInTransaction(
     planStatus: input.planStatus,
     rubricSlug,
     rubricRevision: provisionalRevision,
-    ...(existing ? { existingTemplateData: existing.template_data } : {}),
+    ...(existing ? { existingTemplateData: seedTemplateData } : {}),
+    preserveExistingBars: input.dryRun && input.preserveExistingBars,
     requireContractCompleteness: input.requireContractCompleteness,
   });
   if (!built.ok) return built;
@@ -1165,7 +1171,8 @@ export async function seedAcceptanceBarsInTransaction(
       planStatus: input.planStatus,
       rubricSlug,
       rubricRevision,
-      existingTemplateData: existing!.template_data,
+      existingTemplateData: seedTemplateData,
+      preserveExistingBars: input.dryRun && input.preserveExistingBars,
       requireContractCompleteness: input.requireContractCompleteness,
     });
     if (!built.ok) return built;

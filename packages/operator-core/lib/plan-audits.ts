@@ -2304,6 +2304,10 @@ export type RecordCurrentActivationAuditResult =
       repairFiling?: ActivationAuditRepairFiling;
     };
 
+export type PreviewCurrentActivationAuditResult =
+  | (Omit<Extract<RecordCurrentActivationAuditResult, { ok: true }>, 'audit' | 'repairReconciliation'> & { preview: true })
+  | Extract<RecordCurrentActivationAuditResult, { ok: false }>;
+
 export interface AuditEntryValidationProblem {
   itemId: string;
   code:
@@ -2492,11 +2496,26 @@ export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudi
 export async function recordCurrentActivationAudit(
   input: RecordCurrentActivationAuditInput,
 ): Promise<RecordCurrentActivationAuditResult> {
+  return executeCurrentActivationAudit(input, false) as Promise<RecordCurrentActivationAuditResult>;
+}
+
+/** Preview the same locked snapshot, successor selection and seed as the writer.
+ * No audit, repair, rubric, pin, clause or event is persisted. */
+export async function previewCurrentActivationAudit(
+  input: RecordCurrentActivationAuditInput,
+): Promise<PreviewCurrentActivationAuditResult> {
+  return executeCurrentActivationAudit(input, true) as Promise<PreviewCurrentActivationAuditResult>;
+}
+
+async function executeCurrentActivationAudit(
+  input: RecordCurrentActivationAuditInput,
+  dryRun: boolean,
+): Promise<RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult> {
   if (
     input.activation.unresolvedBlockers.length > 0 ||
     input.activation.mappings.some((mapping) => mapping.disposition === 'open')
   ) {
-    const repairFiling = await ensureActivationAuditRepairFiling({
+    const repairFiling = dryRun ? undefined : await ensureActivationAuditRepairFiling({
       workspaceId: input.workspaceId,
       harnessSlug: input.harnessSlug,
       planSlug: input.planSlug,
@@ -2507,14 +2526,14 @@ export async function recordCurrentActivationAudit(
       error: 'activation_blocked',
       message:
         'Activation audit has unresolved blockers or open requirement mappings. Repair/map them before activation; no audit was recorded.',
-      repairWorkItem: repairFiling.id,
+      repairWorkItem: repairFiling?.id,
       repairFiling,
     };
   }
 
   const lockKey = planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug);
   const { sql } = getOrgPg();
-  let recorded: RecordCurrentActivationAuditResult;
+  let recorded: RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult;
   try {
     recorded = (await sql.begin(async (tx) => {
     const executor = tx as unknown as AuditSql;
@@ -2594,6 +2613,7 @@ export async function recordCurrentActivationAudit(
       contentHash: revision.content_hash,
     };
     let barSeed: TransactionalAcceptanceBarSeedSuccess | null = null;
+    let preserveExistingBars = false;
     let barSeedPendingAmendment:
       | NonNullable<Extract<RecordCurrentActivationAuditResult, { ok: true }>['barSeedPendingAmendment']>
       | undefined;
@@ -2724,11 +2744,13 @@ export async function recordCurrentActivationAudit(
               // This reuses the Requirements/map fingerprint and canonical BAR/hash
               // validation. Only the derived subject pin moves; METHOD, rubric version,
               // and existing evidence identities remain intact.
-              await synchronizeAcceptanceBarSubjectRevision(tx, {
+              const synchronized = await synchronizeAcceptanceBarSubjectRevision(tx, {
                 workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug,
                 previousBody: previous.content_snapshot, nextBody: current.content,
                 previousVersion: Number(previous.subject_version), nextVersion: Number(current.version),
+                dryRun,
               });
+              preserveExistingBars = dryRun && synchronized;
             }
             // If rubrics:amend already pinned this plan revision, let the seed
             // reconcile work-item edges instead of recording a false pending
@@ -2755,6 +2777,8 @@ export async function recordCurrentActivationAudit(
           // cheapest door to demand METHOD/check/layers — the plan is still a draft, so
           // the repair is a text edit, not a co-signed barHash-changing amendment.
           requireContractCompleteness: true,
+          dryRun,
+          preserveExistingBars,
         });
         // Catch-up may already have updated the derived pin in this transaction.
         if (!seeded.ok) {
@@ -2784,6 +2808,11 @@ export async function recordCurrentActivationAudit(
         }
       }
     }
+    if (dryRun) return {
+      ok: true as const, preview: true as const, auditedPlanRevision, barSeed,
+      ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
+      ...(barSeedPendingRepair ? { barSeedPendingRepair } : {}),
+    };
     const audit = await insertPlanAudit(
       {
         auditKind: 'activation',
@@ -2809,12 +2838,13 @@ export async function recordCurrentActivationAudit(
       ...(barSeedPendingAmendment ? { barSeedPendingAmendment } : {}),
       ...(barSeedPendingRepair ? { barSeedPendingRepair } : {}),
     };
-    })) as RecordCurrentActivationAuditResult;
+    })) as RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult;
   } catch (error) {
     if (error instanceof AcceptanceBarSeedAbort) return error.result;
     throw error;
   }
   if (!recorded.ok) return recorded;
+  if ('preview' in recorded) return recorded;
 
   // POST-COMMIT on purpose, and only on the clean path. This audit landing IS
   // the event that clears the activation-repair condition, and it is the only

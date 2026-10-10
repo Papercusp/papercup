@@ -189,6 +189,29 @@ describe('selectNarrowedLaunchSpecBody (real PostgreSQL, WI-10004801)', () => {
     expect(await readGateSelectedLaunchSpec(db.adminSql, 'su-no-record', WORKSPACE, [A])).toBeUndefined();
     expect(await readGateSelectedLaunchSpec(db.adminSql, 'su-no-record', WORKSPACE)).toBeUndefined();
   });
+
+  for (const successorEnded of [false, true]) {
+    it(`gate keeps the latest registration after a predecessor resume bump (successor ended: ${successorEnded})`, async () => {
+      const owner = `${OWNER}-resume-${successorEnded}`;
+      const predecessor = { ...receipt(A, 'predecessor') };
+      const successor = { ...receipt(B, 'successor') };
+      const [old] = await db.adminSql<Array<{ id: number }>>`
+        INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec)
+        VALUES (${WORKSPACE}, 'console', ${owner}, ${JSON.stringify(predecessor)}::text::jsonb)
+        RETURNING id`;
+      await db.adminSql`
+        INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec, ended_at)
+        VALUES (${WORKSPACE}, 'console', ${owner}, ${JSON.stringify(successor)}::text::jsonb,
+                ${successorEnded ? new Date() : null})`;
+      // Resume timestamps and a predecessor's live state do not create a new
+      // registration, including after its actual successor has ended.
+      await db.adminSql`
+        UPDATE harness_shared.adv_sessions SET started_at = now() + interval '1 hour', ended_at = NULL
+        WHERE id = ${old.id}`;
+      expect(await readGateSelectedLaunchSpec(db.adminSql, owner, WORKSPACE)).toEqual(successor);
+      expect(await readGateSelectedLaunchSpec(db.adminSql, owner, WORKSPACE, [B])).toEqual(successor);
+    });
+  }
 });
 
 function gateOwner(name: string): string {

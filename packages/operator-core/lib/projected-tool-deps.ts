@@ -480,7 +480,7 @@ export async function readControlAnchorKernelState(
             FROM harness_shared.adv_sessions s
            WHERE s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
              AND (${callerAdvSessionId}::bigint IS NULL OR s.id = ${callerAdvSessionId})
-           ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
+           ORDER BY s.id DESC
            LIMIT 1
         ) a ON true
        LIMIT 1

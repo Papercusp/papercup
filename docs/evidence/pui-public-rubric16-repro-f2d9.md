@@ -1,5 +1,20 @@
 # Reproducible public PUI rubric review, revision 16
 
+Historical custody note (2026-10-10): the input checksum used by this review is
+`1737bde672cbdcc87fe01be3d45596cf95f829c9cdfc0903fff1a961d4e1838e`. The
+currently retained JSON has a different checksum,
+`5041674afe02a088ef7eb562d8219d39d6409aa9c129e2252194d61277952b7f`, and is
+available unchanged from git commit `55230955c6e0083703b8bf3de664f2f5342a69c3`
+at `docs/evidence/pui-public-rubric16-repro-f2d9.json`. A byte-identical copy was
+saved and read back through `artifacts:load` with `slug:"papercusp"` and
+`rel_path:"evidence/pui-public-rubric16-plan147/raw-5041674afe02a088ef7eb562d8219d39d6409aa9c129e2252194d61277952b7f.json"`.
+The original reviewed bytes have not been recovered. The historical commands
+below deliberately retain their original checksum guard and therefore refuse
+the different retained edition. This document does not attest that edition.
+Use [the independently reviewed plan-150 snapshot](pui-public-rubric16-repro-plan150.md)
+for current rubric evidence; neither edition supplies installed-product proof
+or final-candidate approval.
+
 Subject: `acceptance-pui-first-party-public-release-2026-09-07@16`, criteria hash `9dd8a68c940e70de35f5fa8e9ca3bb318ffbd299cc8fb0b609d76d6a35527b09`. Source generation: `f2d92cbc8ad685b843e70c83718ac7a8d1a45371`. The frozen plan is revision 147, content hash `c7ea8a7d4c71104b7e86bf2ee8c56c8c1278a278f17838d58cead5323964b53d`.
 
 Input: [pui-public-rubric16-repro-f2d9.json](pui-public-rubric16-repro-f2d9.json), SHA-256 `1737bde672cbdcc87fe01be3d45596cf95f829c9cdfc0903fff1a961d4e1838e`. It contains the complete current 15 criteria, all 45 decision bodies, explicit decision exclusions, and the compiler, its runtime helper, and test-source digests. Revision 15 and reviewer post `thread-post:1169462` remain historical evidence; neither is a revision-16 attestation.

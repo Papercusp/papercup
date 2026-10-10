@@ -317,23 +317,22 @@ describe('control-anchor kernel resolver (D-030)', () => {
       ctx: ctx(advSessionId === undefined ? {} : { advSessionId }),
     });
 
-    // The first row models owner-only ORDER BY choosing the re-armed predecessor,
-    // whose receipt does not match the current applied revision.
-    db.rows.push([predecessor, current]);
+    // Owner-only SQL elects the latest immutable registration despite the
+    // predecessor's resume timestamp. An explicitly bound old caller still
+    // judges its own receipt and must fail closed below.
+    db.rows.push([current, predecessor]);
     const ownerOnlyState = await readControlAnchorKernelState(toolsFindPreflight());
-    expect(ownerOnlyState?.identityLaunchRecordVersion).toEqual({ sessionId: '31595', rowVersion: '901' });
+    expect(ownerOnlyState?.identityLaunchRecordVersion).toEqual({ sessionId: '32433', rowVersion: '902' });
     const [ownerOnlyTemplate] = db.sql.mock.calls[0] as unknown[];
     expect((ownerOnlyTemplate as readonly string[]).join(' ')).toContain(
-      'ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC',
+      'ORDER BY s.id DESC',
     );
 
-    db.rows.push([predecessor, current]);
+    db.rows.push([current, predecessor]);
     await expect(controlAnchorKernelResolver(toolsFindPreflight())).resolves.toMatchObject({
-      decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      decision: 'allow',
       serverAudit: {
-        identityLaunchRecordSelection: {
-          advSessionId: '31595', rowVersion: '901', selection: 'owner-workspace-fallback',
-        },
+        identityLaunchRecord: { advSessionId: '32433', xmin: '902' },
       },
     });
 

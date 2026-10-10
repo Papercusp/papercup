@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PACKAGE_CACHE_MUTEX_NAME,
   PRESSURE_PACKAGE_CACHE_MAX_BYTES,
@@ -8,6 +8,7 @@ import {
   type PackageCacheTarget,
 } from './package-cache-retention';
 import { type DiskSnapshot } from './disk-space-alarm';
+import * as diskSpaceAlarm from './disk-space-alarm';
 
 const GIB = 1024 ** 3;
 const diskSnapshot = (freeBytes: number): DiskSnapshot => ({
@@ -61,6 +62,13 @@ describe('resolvePackageCacheTargets', () => {
 });
 
 describe('runPackageCacheRetention', () => {
+  beforeEach(() => {
+    // Cache fixtures use synthetic paths. Ordinary retention now probes their
+    // filesystem too, so model that boundary instead of reading the real host.
+    vi.spyOn(diskSpaceAlarm, 'sampleDiskSnapshots').mockResolvedValue([diskSnapshot(3 * GIB)]);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
   it('detects pressure on each cache filesystem for the ordinary janitor without a pressurePath', async () => {
     const sampleDisk = vi.fn(async (paths: string[]) => [
       { ...diskSnapshot(paths[0] === '/cache/npm' ? GIB : 3 * GIB), path: paths[0]! },
@@ -81,6 +89,7 @@ describe('runPackageCacheRetention', () => {
   });
 
   it('retains the ordinary high-water policy when automatic pressure measurement fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const out = await runPackageCacheRetention({
       dryRun: true,
       targets: [targets[0]!],
@@ -88,6 +97,7 @@ describe('runPackageCacheRetention', () => {
       measure: async () => measurement(3 * GIB),
     });
     expect(out[0]).toMatchObject({ status: 'below-threshold', maxBytes: 8 * GIB });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('statfs unavailable'));
   });
 
   it('previews a sub-high-water cache only on the critically pressured filesystem', async () => {

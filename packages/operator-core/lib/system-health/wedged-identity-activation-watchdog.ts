@@ -79,11 +79,11 @@ import { activeWorkspaceId } from '../workspace-registry';
 /**
  * The kernel's launch-record selection, verbatim. MUST stay byte-identical to
  * the ORDER BY in projected-tool-deps.ts — see DESIGN DECISION 2 and the pin
- * test. Prefers a still-open row, then the most recently started, then the
- * highest id.
+ * test. Selects the newest immutable registration. A resume bumps started_at
+ * and can reopen a predecessor; neither may displace its successor's identity.
  */
 export const LAUNCH_RECORD_SELECTION_ORDER =
-  '(s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC';
+  's.id DESC';
 
 /**
  * Hourly. A wedge is permanent once it starts — nothing self-heals it — so a
