@@ -112,6 +112,18 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
     expect(`${result.status} ${result.stderr ?? ''}`).toBe('0 ');
   });
 
+  it('keeps the systemd cap above all per-root deep-scan budgets', () => {
+    const script = readFileSync(PROBE, 'utf8');
+    const unit = readFileSync(join(SCRIPTS, 'systemd', 'papercup-fedplane-key-permission.service'), 'utf8');
+    const roots = /^KEYPERM_DEEP_ROOTS=".*:-([^"]+)"/m.exec(script)?.[1] ?? '';
+    const timeoutSeconds = Number(/^KEYPERM_DEEP_TIMEOUT_S=".*:-(\d+)"/m.exec(script)?.[1] ?? 0);
+    const timeoutStartSeconds = Number(/^TimeoutStartSec=(\d+)$/m.exec(unit)?.[1] ?? 0);
+    const defaultRootCount = roots.trim().split(/\s+/).filter(Boolean).length;
+
+    expect(defaultRootCount).toBeGreaterThan(0);
+    expect(timeoutStartSeconds).toBeGreaterThanOrEqual(defaultRootCount * timeoutSeconds + 900);
+  });
+
   it('prunes configured vendored directories from the tier-1 .ssh sweep', () => {
     const fx = withControl(fixture());
     const vendoredSsh = join(fx.root, 'vendor', '.ssh');
@@ -467,6 +479,28 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       });
       expect(out).toContain('INDETERMINATE');
       expect(out).toMatch(/TIMED OUT|timed out/);
+    });
+
+    it('treats a grep error in the deep sweep as INDETERMINATE rather than clean', () => {
+      const fx = withControl(fixture());
+      const bin = join(fx.root, 'bin');
+      mkdirSync(bin);
+      const grepShim = join(bin, 'grep');
+      writeFileSync(
+        grepShim,
+        '#!/usr/bin/env bash\nfor arg in "$@"; do if [ "$arg" = "-laIE" ]; then exit 2; fi; done\nexec /usr/bin/grep "$@"\n',
+      );
+      chmodSync(grepShim, 0o755);
+
+      const out = runProbe(fx, {
+        KEYPERM_DEEP: '1',
+        KEYPERM_DEEP_ROOTS: fx.root,
+        PATH: bin + ':' + (process.env.PATH ?? ''),
+      });
+
+      expect(out).toContain('scan command failed');
+      expect(out).toContain('INDETERMINATE');
+      expect(out).not.toContain('no exposed private keys found');
     });
   });
 });
