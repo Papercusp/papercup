@@ -178,9 +178,41 @@
     "ledgerQualification": "Raw execution_details contains the exact retained root and both passedCaseTitles. The summary root and runGroupId remain null; no historical row is relabeled.",
     "scope": "Two selected mounted browser fixture cases with controlled profile/sync responses. This supplements the earlier hosted preference proof; it does not establish whole-app hosted Tab traversal, screen-reader/native input, wider full-product tasks, provider/human-heard voice, novice, full-affected or production acceptance. Original hosted20987419/binding34637 and8Rok artifact are unchanged."
   },
+  "qualifiedHostedTabTask": {
+    "testRunId": 20988435,
+    "bindingId": 34754,
+    "bindingCurrentness": "current on serving3170 at2026-10-10T18:27Z",
+    "outcome": "pass",
+    "passed": 1,
+    "skipped": 0,
+    "retries": 0,
+    "worktreeDirty": false,
+    "portalFixtureCommit": "96d6c35dba8ea6813de7951bf8e4640bf0ee669b",
+    "operatorCommit": "efdcd30aeff97d2775d71f26aa44b73ac000c90d",
+    "fixtureRoot": "/dev/shm/pcv/tutorial-hosted-tab-verifier-96d6-20261010T1824",
+    "independentSourceReceipt": "/dev/shm/tutorial-hosted-tab-verifier-96d6-20261010T1824.receipt.json",
+    "sourceFilesVerified": 586,
+    "buildId": "8Rok3v9QCvSEnGHPZfMb2",
+    "artifactEntriesComparedAfter": 3693,
+    "artifactEntriesChanged": 0,
+    "log": "/dev/shm/tutorial-hosted-tab-served-96d6-20261010T1824.log",
+    "logSha256": "efe4d9279f6f9faf4517898e610f973c915ffcb753517dff2328b8080b2a4c88",
+    "taskEvidence": "/dev/shm/tutorial-hosted-tab-results-96d6-20261010T1824/portal-product-tutorial-se-083f1-aversal-at-200-percent-text/served-preference-task.json",
+    "taskEvidenceSha256": "e5b092aeb994b07dc9d0b79c2cd2fe0aa1b167fcd1a15beef6b22642df3a9160",
+    "verifiedBehavior": [
+      "Only Tab, ArrowDown and Enter reach and activate product controls; no locator focus or pointer activation",
+      "Real theme PUT200, saved readback and persisted reload at390px width,32px root text and reduced motion",
+      "Contextual account Help and leave/resume preserve account lesson and reviewedLessonIds",
+      "Seven traversed targets recorded with bounded key-press counts and independent focus assertions"
+    ],
+    "sourceCustody": "Seven Portal serving files and four consumed guide imports equal retained serving source; full586fixture receipt verified before/after and3693artifact entries match prior custody receipt.",
+    "runtimeCleanup": "Browser terminal0 and Portal PostgreSQL shutdown. Direct SIGTERM to exact owned supervisor observed cleanup complete1507ms with runtimeRemoved/pgDataRemoved true, then actual paths/process absent. Old group SIGINT departure remains owned investigation.",
+    "startupQualification": "Retained operator startup reproduced reserved-slot refusals: private PG capacity100/reserved3,97-98client connections and52perorgpool. Private launcher budget repair committed9c646da512b18cf6cc5ce3a013a6ef54cd3b29bd with full4 integration tests passing as committed. Fixed actual hosted startup still requires verification in EI-25612926047410142.",
+    "scope": "One real hosted non-Cloud task with pure keyboard traversal. Screen-reader/native input, wider full-product tasks, provider/human-heard voice, novice, full affected suite and final production shipment remain unproved."
+  },
   "limitations": [
     "The earlier integration and browser fields cover mounted fixtures/jsdom; the qualified hosted field covers one actual preference task.",
-    "Supported-runtime screen-reader announcements, whole-app hosted Tab traversal and wider full-product accessibility task coverage remain unproved; mounted Settings Tab traversal has scoped proof20987694.",
+    "Supported-runtime screen-reader announcements and wider full-product accessibility task coverage remain unproved; mounted Settings Tab proof20987694 and hosted pure Tab/arrow proof20988435 have their stated narrow scopes.",
     "No human-heard/provider/native-input/novice/full-affected/exact-production shipment claim."
   ]
 }

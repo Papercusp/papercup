@@ -2219,9 +2219,48 @@ export function shouldRetryCarryOnFreshEpoch({
       reason === 'carry-mcp-unavailable' ||
       // WI-10005106: a Codex child stuck at its `Starting` footer is a per-child
       // state; a fresh child usually boots in seconds.
-      reason === 'codex-startup-still-starting') return true;
+      reason === 'codex-startup-still-starting' ||
+      // P-005 (D-003): the exact child never exposed its native id within its
+      // spawn-anchored window (healthy p99 5.6s). That is a per-child startup
+      // wedge (the update menu was the measured one), not a deterministic
+      // contract failure: a fresh child mints its own id.
+      reason === 'successor-native-id-missing') return true;
   return reason === 'turn-start-unverified' &&
     (proofReason === 'native-turn-marker-timeout' || proofReason === 'native-turn-prompt-timeout');
+}
+
+/** P-005 / D-003: how long a Codex child may run before its native id must be
+ *  discoverable through the exact-child writer-lock oracle. The window is
+ *  anchored to the child's SPAWN, not to each caller's deadline: pre-fix every
+ *  wake turn waited a fresh 600s carry budget on a child that could never bind,
+ *  so one wedged child held the inject mutex for 45 min while its sender retried
+ *  the same delivery as `pending-delivery-id` every 2s. Measured basis (103
+ *  confirmed carry bindings since 2026-10-07): the lock appears p50 1.1s, p90
+ *  2.8s, p99 5.6s after respawn, so 120s is ~20x the p99. Only id DISCOVERY is
+ *  bounded by this; the operator re-anchor report (p99 545s) keeps its budget. */
+export const UNBOUND_CHILD_WINDOW_MS = 120_000;
+
+/** @param {Record<string, string | undefined>} [env] */
+export function unboundChildWindowMs(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS, UNBOUND_CHILD_WINDOW_MS);
+}
+
+/** P-005(c): is the CURRENT child provably unable to bind? True only when this
+ *  child owes a binding, has outlived its spawn-anchored window, and a fresh
+ *  probe of the exact-child oracle still finds no native id. The probe makes it
+ *  self-healing: a child whose id appears later (an owner dismissed a menu)
+ *  stops being refused on the next delivery. Pure; exported for tests.
+ * @param {{bindingOwed?: boolean, childStartedAtMs?: number, nowMs?: number,
+ *   windowMs?: number, probedNativeId?: string | null}} [opts] */
+export function isUnbindableChild({
+  bindingOwed = false,
+  childStartedAtMs = 0,
+  nowMs = Date.now(),
+  windowMs = UNBOUND_CHILD_WINDOW_MS,
+  probedNativeId = null,
+} = {}) {
+  if (!bindingOwed || !(childStartedAtMs > 0)) return false;
+  return nowMs - childStartedAtMs >= windowMs && !probedNativeId;
 }
 
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
@@ -2419,7 +2458,10 @@ export function shouldRetryLaunchKickoffOnFreshChild({
 } = {}) {
   if (managedKickoff || isResume || retryCount >= maxRetries) return false;
   if (String(agent ?? '').trim().toLowerCase() !== 'codex') return false;
-  return reason === 'codex-startup-still-starting';
+  // P-005 (D-003): a host-code-adopted carry and a fresh Codex launch bind
+  // through this kickoff. An unbound child here is the same per-child wedge as
+  // on the carry path, so it gets the same fresh child.
+  return reason === 'codex-startup-still-starting' || reason === 'successor-native-id-missing';
 }
 
 /** EI-24818010361425604: how many times one launch kickoff may follow its owner
@@ -8826,13 +8868,19 @@ export const SESSION_COMPACTED_EMIT_ENTRY = join(HOST_SCRIPT_DIR, 'emit-session-
  * @param {{nativeId?: string | null, readNativeId?: () => string | null,
  * report?: (id: string, options: {onConfirmed: (id?: string) => void}) => any,
  * isCurrent?: () => boolean, timeoutMs?: number, pollMs?: number,
- * alreadyConfirmed?: boolean}} options
+ * alreadyConfirmed?: boolean, discoveryTimeoutMs?: number}} options
+ * `discoveryTimeoutMs` (P-005 / D-003) bounds only the search for a missing
+ * native id. Once the id is known, the operator report keeps `timeoutMs`: a late
+ * id found at the edge of the window must still be able to confirm.
  */
 export async function waitForRespawnBinding({
   nativeId = null, readNativeId = () => null, report = () => false,
   isCurrent = () => true, timeoutMs = 2_000, pollMs = 50, alreadyConfirmed = false,
+  discoveryTimeoutMs = Infinity,
 }) {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  const discoveryDeadline = startedAt + Math.max(0, discoveryTimeoutMs);
   let confirmed = alreadyConfirmed && Boolean(nativeId);
   let reporting = false;
   while (isCurrent()) {
@@ -8849,7 +8897,7 @@ export async function waitForRespawnBinding({
         .then((ok) => { if (ok === true) onConfirmed(); }, () => {});
     }
     if (confirmed) return { ok: true, nativeId, reason: 'successor-reanchor-confirmed' };
-    const left = deadline - Date.now();
+    const left = (nativeId ? deadline : Math.min(deadline, discoveryDeadline)) - Date.now();
     if (left <= 0) return {
       ok: false, nativeId,
       reason: nativeId ? 'successor-reanchor-unconfirmed' : 'successor-native-id-missing',
@@ -11024,8 +11072,13 @@ export function hostThroughPty(o) {
   let carryBindingNativeId = null;
   let confirmedCarryChild = null;
   let confirmedCarryNativeId = null;
+  // P-005 / D-003: the id-discovery window is anchored to the target child's
+  // spawn, so every caller (carry, kickoff, wake turn, re-arm) shares one bound.
+  const unboundWindowMs = unboundChildWindowMs(env);
+  let stuckSnapshotChild = null;
   const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false) => {
     const target = child;
+    const targetStartedAtMs = childStartedAtMs;
     if (carryBindingChild !== target) carryBindingNativeId = nativeId;
     else if (nativeId) carryBindingNativeId = nativeId;
     carryBindingChild = target;
@@ -11036,12 +11089,21 @@ export function hostThroughPty(o) {
       isCurrent: () => child === target && !hostCleanedUp && !shuttingDown,
       alreadyConfirmed: alreadyConfirmed || (confirmedCarryChild === target && confirmedCarryNativeId === nativeId),
       timeoutMs: Math.max(0, deadline - Date.now()),
+      discoveryTimeoutMs: targetStartedAtMs > 0
+        ? Math.max(0, targetStartedAtMs + unboundWindowMs - Date.now())
+        : Infinity,
     });
     appendHostEvent(ownerId, result.ok ? 'respawn-binding-confirmed' : 'respawn-binding-unconfirmed', {
       nativeId: result.nativeId, reason: result.reason,
+      ...(!result.ok && result.reason === 'successor-native-id-missing' && targetStartedAtMs > 0
+        ? { childAgeMs: Date.now() - targetStartedAtMs, windowMs: unboundWindowMs }
+        : {}),
     });
-    if (!result.ok && result.reason === 'successor-native-id-missing' &&
+    if (!result.ok && result.reason === 'successor-native-id-missing' && stuckSnapshotChild !== target &&
         env.PAPERCUSP_AGENT === 'codex' && child === target && !hostCleanedUp && !shuttingDown) {
+      // One snapshot per child: the evidence does not change between attempts,
+      // and a wedged child used to write one per failed wake (105 in a row).
+      stuckSnapshotChild = target;
       // WI-10007305: binding can time out before injectTurnAtPrompt reaches its
       // Starting drop. Preserve this exact child's evidence before a replacement
       // truncates its native log; identity remains a separate, fail-closed gate.
@@ -11069,6 +11131,24 @@ export function hostThroughPty(o) {
     carryBindingChild === child && confirmedCarryChild !== child
       ? prepareCarryBinding(carryBindingNativeId, deadline)
       : Promise.resolve({ ok: true });
+  // P-005(c): every bounded fresh-child retry is spent and the current child
+  // still has no native id. Admitting a turn here only ACKs it into a pipeline
+  // that cannot write, which the sender re-polls as `pending-delivery-id`
+  // forever. Re-probe the exact-child oracle on every call (self-healing).
+  let unbindableRefusalChild = null;
+  const currentChildUnbindable = () => {
+    if (!resolveRespawnNativeId || carryBindingChild !== child || confirmedCarryChild === child) return false;
+    if (carryBindingNativeId) return false;
+    let probedNativeId = null;
+    try { probedNativeId = resolveRespawnNativeId(child.pid) ?? null; } catch { probedNativeId = null; }
+    return isUnbindableChild({
+      bindingOwed: true,
+      childStartedAtMs,
+      nowMs: Date.now(),
+      windowMs: unboundWindowMs,
+      probedNativeId,
+    });
+  };
   if (launchKickoff) {
     const requireRoleMcp = headlessRoleKickoffRequiresMcp({
       agent: env.PAPERCUSP_AGENT,

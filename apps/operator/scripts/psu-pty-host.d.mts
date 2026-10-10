@@ -864,6 +864,22 @@ export function shouldRetryCarryOnFreshEpoch({ drillId, reason, proofReason, ret
     retryCount?: number | undefined;
     maxRetries?: number | undefined;
 }): boolean;
+/** @param {Record<string, string | undefined>} [env] */
+export function unboundChildWindowMs(env?: Record<string, string | undefined>): any;
+/** P-005(c): is the CURRENT child provably unable to bind? True only when this
+ *  child owes a binding, has outlived its spawn-anchored window, and a fresh
+ *  probe of the exact-child oracle still finds no native id. The probe makes it
+ *  self-healing: a child whose id appears later (an owner dismissed a menu)
+ *  stops being refused on the next delivery. Pure; exported for tests.
+ * @param {{bindingOwed?: boolean, childStartedAtMs?: number, nowMs?: number,
+ *   windowMs?: number, probedNativeId?: string | null}} [opts] */
+export function isUnbindableChild({ bindingOwed, childStartedAtMs, nowMs, windowMs, probedNativeId, }?: {
+    bindingOwed?: boolean;
+    childStartedAtMs?: number;
+    nowMs?: number;
+    windowMs?: number;
+    probedNativeId?: string | null;
+}): boolean;
 /** WI-10004943: the per-host retry budget for a launch kickoff's fresh-child
  *  replacement. A missing, empty, or malformed value keeps the default; an explicit
  *  integer >= 0 wins, so `0` is the kill switch. Pure; exported for tests.
@@ -4239,9 +4255,12 @@ export function submitVerifyQuietMs(env?: EnvironmentMap): any;
  * @param {{nativeId?: string | null, readNativeId?: () => string | null,
  * report?: (id: string, options: {onConfirmed: (id?: string) => void}) => any,
  * isCurrent?: () => boolean, timeoutMs?: number, pollMs?: number,
- * alreadyConfirmed?: boolean}} options
+ * alreadyConfirmed?: boolean, discoveryTimeoutMs?: number}} options
+ * `discoveryTimeoutMs` (P-005 / D-003) bounds only the search for a missing
+ * native id. Once the id is known, the operator report keeps `timeoutMs`: a late
+ * id found at the edge of the window must still be able to confirm.
  */
-export function waitForRespawnBinding({ nativeId, readNativeId, report, isCurrent, timeoutMs, pollMs, alreadyConfirmed, }: {
+export function waitForRespawnBinding({ nativeId, readNativeId, report, isCurrent, timeoutMs, pollMs, alreadyConfirmed, discoveryTimeoutMs, }: {
     nativeId?: string | null;
     readNativeId?: () => string | null;
     report?: (id: string, options: {
@@ -4251,6 +4270,7 @@ export function waitForRespawnBinding({ nativeId, readNativeId, report, isCurren
     timeoutMs?: number;
     pollMs?: number;
     alreadyConfirmed?: boolean;
+    discoveryTimeoutMs?: number;
 }): Promise<{
     ok: boolean;
     nativeId: string | null;
@@ -4609,6 +4629,16 @@ export const TURN_ROW_CLASSIFIERS: Readonly<{
  * matches the 64 MiB cap of the marker proof scan, so any transcript whose
  * marker the proof could find is one this probe can also read from the start. */
 export const NATIVE_KICKOFF_SCAN_BYTES: number;
+/** P-005 / D-003: how long a Codex child may run before its native id must be
+ *  discoverable through the exact-child writer-lock oracle. The window is
+ *  anchored to the child's SPAWN, not to each caller's deadline: pre-fix every
+ *  wake turn waited a fresh 600s carry budget on a child that could never bind,
+ *  so one wedged child held the inject mutex for 45 min while its sender retried
+ *  the same delivery as `pending-delivery-id` every 2s. Measured basis (103
+ *  confirmed carry bindings since 2026-10-07): the lock appears p50 1.1s, p90
+ *  2.8s, p99 5.6s after respawn, so 120s is ~20x the p99. Only id DISCOVERY is
+ *  bounded by this; the operator re-anchor report (p99 545s) keeps its budget. */
+export const UNBOUND_CHILD_WINDOW_MS: 120000;
 /** EI-24818010361425604: how many times one launch kickoff may follow its owner
  *  into the successor of a same-host respawn. One: a successor that is itself
  *  replaced before its kickoff lands is a respawn loop, not a delivery problem. */

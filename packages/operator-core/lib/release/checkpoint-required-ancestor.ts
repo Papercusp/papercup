@@ -4,6 +4,7 @@ import {
   currentCheckpointCandidate,
 } from '../release-checkpoint-launch';
 import { integrationRoot } from '../release-deploy-launch';
+import { gateVerdictTargetFromEnv, type GateVerdictTarget } from './gate-verdict-target';
 import {
   decideFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueue,
@@ -237,6 +238,20 @@ export function resolveRunnableCandidate(
  * Keeping this read beside the required-ancestor guard prevents the manual launcher from
  * inventing a second queue policy.
  */
+/**
+ * WI-10008171: key the frozen-queue read by the install this checkpoint GATES, not by the
+ * operator's home harness. A runner launched for another install (e.g. calendar) carries
+ * its target in the gate-verdict env; reading the home queue instead made that runner
+ * adopt papercusp's repairHead, a commit absent from its own integration root. Only a
+ * caller with no gate target (an operator-side launcher for its home install) falls back.
+ */
+export function frozenRepairQueueReadTarget(
+  home: () => GateVerdictTarget,
+  env: NodeJS.ProcessEnv = process.env,
+): GateVerdictTarget {
+  return gateVerdictTargetFromEnv(env) ?? home();
+}
+
 async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
   const [
     { activeWorkspaceId },
@@ -247,10 +262,12 @@ async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
     import('../harness/operator-home-harness'),
     import('../harness/routines/release-actions'),
   ]);
-  const repairQueue = await readFrozenCandidateRepairQueue({
-    workspaceId: activeWorkspaceId(),
-    installSlug: operatorHomeHarnessSlug(),
-  });
+  const repairQueue = await readFrozenCandidateRepairQueue(
+    frozenRepairQueueReadTarget(() => ({
+      workspaceId: activeWorkspaceId(),
+      installSlug: operatorHomeHarnessSlug(),
+    })),
+  );
 
   let fixerAlive: boolean | null = null;
   if (repairQueue?.phase === 'awaiting-fixer' && repairQueue.fixerSpawnId) {
