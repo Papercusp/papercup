@@ -1,4 +1,8 @@
-import { it, expect } from 'vitest';
+import { it, expect, vi } from 'vitest';
+import { createHash, randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer, type Server } from 'node:http';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -6,6 +10,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
+
+const homeAllocation = vi.hoisted(() => ({ key: '', path: '' }));
+vi.mock('@papercusp/orchestrator/session-launch-dirs', async (original) => {
+  const actual = await original<typeof import('@papercusp/orchestrator/session-launch-dirs')>();
+  return { ...actual, codexHomeForSessionKey: (key: string | number) =>
+    key === homeAllocation.key ? homeAllocation.path : actual.codexHomeForSessionKey(key) };
+});
 
 const listen = (s: Server) => new Promise<number>((resolve, reject) => {
   s.once('error', reject); s.listen(0, '127.0.0.1', () => resolve((s.address() as any).port));
@@ -57,6 +68,117 @@ it('enforces the scoped boundary through the actual launcher and final managed P
     rmSync(cwd, { recursive: true, force: true });
   }
 }, 30_000);
+
+it('delivers restored frozen context to installed Codex through the real managed launcher and file-read handler', async () => {
+  const cwd = mkdtempSync('/tmp/psu-native-frozen-context-');
+  const codexHome = join(cwd, 'codex-home');
+  const frozenMarker = `FROZEN_CONTEXT_${randomUUID()}`;
+  const roleMarker = `FROZEN_ROLE_${randomUUID()}`;
+  const ambientMarker = `AMBIENT_OUTSIDE_${randomUUID()}`;
+  const owner = `test-scoped-frozen-${randomUUID()}`;
+  homeAllocation.key = owner; homeAllocation.path = codexHome;
+  const providerCalls: Record<string, unknown>[] = [], reads: unknown[] = [], errors: unknown[] = [];
+  const hosts: McpServer[] = [];
+  let child: ReturnType<typeof spawn> | undefined;
+  const { writeSuCodexHome } = await import('../../../packages/operator-core/lib/role-codex-home');
+  const { restoreBenchmarkContext } = await import('../../../packages/operator-core/lib/external-bench/reproducibility/context');
+  const { currentProtocolFixture } = await import('../../../packages/operator-core/lib/external-bench/reproducibility/_protocol-test-fixture');
+  const { codexCliResponsesBody, codexCliResponsesCompletionSse } = await import('../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge');
+  const sourceRead = (await import('../../../packages/operator-core/lib/agent-tools/capability/read')).default;
+  const snapshotRoot = join(cwd, 'protocol'); mkdirSync(snapshotRoot);
+  const snapshot = JSON.stringify({ entries: [{ key: 'permitted:fixture', text: frozenMarker }] });
+  for (const name of ['corpus.json', 'memory.json']) writeFileSync(join(snapshotRoot, name), snapshot);
+  const config = currentProtocolFixture(owner);
+  config.context = { ...config.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
+    corpusHash: createHash('sha256').update(snapshot).digest('hex'), memoryHash: createHash('sha256').update(snapshot).digest('hex') };
+  const restored = restoreBenchmarkContext({ snapshotRoot, checkout: cwd, context: config.context,
+    binding: { workspaceId: 'native-frozen-private', runId: owner, preregHash: 'a'.repeat(64), assignmentId: 'fixture-task', harnessSlug: 'fixture' } });
+  // This server scripts the native protocol only. It is never a provider bill,
+  // task-quality measurement, maintained work-item workflow or pilot result.
+  const server = createServer(async (req, res) => {
+    try {
+      if (req.url?.startsWith('/mcp')) {
+        const host = new McpServer({ name: 'frozen-source-fixture', version: '1' }); hosts.push(host);
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+        host.registerTool('capability_read', { inputSchema: { file_path: z.string(), byte_offset: z.number(), byte_limit: z.number() },
+          annotations: { readOnlyHint: true } }, async args => {
+          reads.push(args);
+          return await sourceRead.handler(args as never, { projectDir: cwd } as never) as {
+            content: Array<{ type: 'text'; text: string }>;
+          };
+        });
+        await host.connect(transport); await transport.handleRequest(req, res); return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const request = JSON.parse(Buffer.concat(chunks).toString()); providerCalls.push(request);
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (providerCalls.length === 1) {
+        const namespace = (request.tools as Array<Record<string, unknown>>).find(entry =>
+          entry.type === 'namespace' && (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.name === 'capability_read'));
+        if (!namespace) throw new Error('Installed native runtime did not advertise the frozen file-read tool');
+        const item = { id: 'fc_frozen', type: 'function_call', call_id: 'frozen-read', namespace: namespace.name,
+          name: 'capability_read', arguments: JSON.stringify({ file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) }), status: 'completed' };
+        const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
+        const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+        res.end(event('response.output_item.added', { output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } }) +
+          event('response.output_item.done', { output_index: 0, item }) + event('response.completed', { response: body }));
+      } else {
+        res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol', text: 'FROZEN_NATIVE_RECEIPT', inputTokens: 0, outputTokens: 0 })));
+      }
+    } catch (error) { errors.push(String(error)); if (!res.headersSent) res.writeHead(500); res.end(); }
+  });
+  try {
+    const port = await listen(server);
+    const baseURL = `http://127.0.0.1:${port}`;
+    const home = writeSuCodexHome({ sessionKey: owner, sid: owner, mcpUrl: `${baseURL}/mcp`, token: 'offline-fixture',
+      model: 'gpt-6-sol:medium', promptText: `${roleMarker}\n${restored.contextText}`, headless: true, trustDir: cwd, denyAmbientContext: true });
+    expect(home.codexHome).toBe(codexHome);
+    // The child must read the exact delivered AGENTS file and restored bytes.
+    // Keep fixture-only provider and tool choices in CLI overrides, so a
+    // replacement of the managed prompt cannot make this assertion pass.
+    const overrides = { model_provider: 'frozen_fixture',
+      'model_providers.frozen_fixture.name': 'Offline native fixture',
+      'model_providers.frozen_fixture.base_url': `${baseURL}/v1`,
+      'model_providers.frozen_fixture.wire_api': 'responses',
+      'model_providers.frozen_fixture.requires_openai_auth': false,
+      'model_providers.frozen_fixture.supports_websockets': false,
+      'model_providers.frozen_fixture.request_max_retries': 0,
+      'model_providers.frozen_fixture.stream_max_retries': 0,
+      'features.apps': false, 'features.shell_tool': false, 'features.codex_hooks': false, web_search: 'disabled' };
+    const args = ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
+      ...Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]), 'Read the frozen assignment context.'];
+    const env = hermeticEnv({ PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome, PAPERCUSP_SID: owner,
+      PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_PTY: '1', PAPERCUSP_MCP_PROXY: '0',
+      PAPERCUSP_OPERATOR_URL: baseURL,
+      PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL, token: 'a'.repeat(64) }) });
+    const launcher = fileURLToPath(new URL('../scripts/psu-launcher.mjs', import.meta.url));
+    const fixture = join(cwd, 'launcher-fixture.mjs');
+    writeFileSync(fixture, `import { runWrapper } from ${JSON.stringify(launcher)};\nrunWrapper({wrapperBin:'codex',args:${JSON.stringify(args)},cwd:${JSON.stringify(cwd)},preserveCwd:true,envelopeEnv:process.env,reportSessionEndedImpl:async()=>{},onSpawn:()=>{}});\n`);
+    writeFileSync(join(snapshotRoot, 'ambient.txt'), ambientMarker);
+    child = spawn(process.execPath, [fixture], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout!.on('data', b => { output += b; }); child.stderr!.on('data', b => { output += b; });
+    const code = await new Promise<number | null>((resolve, reject) => {
+      const timer = setTimeout(() => { child!.kill('SIGKILL'); reject(new Error(`Frozen native fixture exceeded 40 seconds: ${output.slice(-2000)}`)); }, 40_000);
+      child!.once('error', e => { clearTimeout(timer); reject(e); });
+      child!.once('close', c => { clearTimeout(timer); resolve(c); });
+    });
+    expect(code, output).toBe(0); expect(errors).toEqual([]);
+    expect(providerCalls).toHaveLength(2); expect(reads).toHaveLength(1);
+    expect(reads[0]).toEqual({ file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) });
+    expect(JSON.stringify(providerCalls[0])).toContain(roleMarker);
+    expect(JSON.stringify(providerCalls[0])).toContain(frozenMarker);
+    expect(JSON.stringify(providerCalls)).not.toContain(ambientMarker);
+    expect(JSON.stringify(providerCalls[1])).toContain('frozen-read');
+    expect(output).toContain('FROZEN_NATIVE_RECEIPT');
+  } finally {
+    if (child && child.exitCode === null) child.kill('SIGKILL');
+    await Promise.all(hosts.map(host => host.close()));
+    if (server.listening) await stop(server);
+    rmSync(cwd, { recursive: true, force: true }); homeAllocation.key = ''; homeAllocation.path = '';
+  }
+}, 60_000);
 
 it('starts the installed Codex runtime through the actual launcher without inference', async () => {
   const cwd = mkdtempSync('/tmp/psu-native-codex-');
