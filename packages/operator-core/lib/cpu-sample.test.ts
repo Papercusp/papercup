@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
 import { captureCpuProfile, readInspectorProcessIdentity } from '../../../scripts/cpu-sample.mjs';
 
@@ -108,8 +109,12 @@ it.skipIf(process.platform !== 'linux')('profiles a synchronously busy target wi
       expectedEntry: entry, expectedArg: '--probe-target', durationMs: 250, deadlineMs: 7000 });
     expect(result.target).toMatchObject({ pid, entry, identity: 'proc' });
     const samples = new Set(result.profile.samples);
-    expect(result.profile.nodes.some((node: { id: number; callFrame: { functionName: string } }) =>
-      samples.has(node.id) && node.callFrame.functionName === 'busyStartup')).toBe(true);
+    // Optimized startup code can appear under an anonymous/inlined frame.
+    // Bind measured samples to the exact target source, not a function label.
+    const frames = result.profile.nodes.filter((node: { id: number }) => samples.has(node.id));
+    expect(frames.map((node: { callFrame: unknown }) => node.callFrame)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: pathToFileURL(entry).href }),
+    ]));
   });
 }, 15000);
 

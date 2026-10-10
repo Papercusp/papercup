@@ -24,6 +24,7 @@ import { listProcesses, parseArgv } from './proc-guard.mjs';
 // Startup may not yet service Runtime.evaluate. On Linux, bind the loopback
 // listener to its owning process and exact OS argv instead; never trust a port
 // or matching filename alone. The start tick also detects PID reuse.
+/** @param {{ pid: number, port: number, expectedEntry: string, expectedArg?: string }} options */
 export function readInspectorProcessIdentity({ pid, port, expectedEntry, expectedArg }) {
   const inodes = new Set();
   const loopback = new Set(['0100007F', '00000000',
