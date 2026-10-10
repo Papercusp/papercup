@@ -1033,10 +1033,15 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
 
   it('forwards a known launcher into the pty host environment without inventing one', async () => {
     spawnMock.mockImplementation(() => fakeChild(7780));
+    // Two production boot windows require at least 14.4 seconds, exceeding
+    // this test's 10-second budget. This fixture checks environment provenance;
+    // the separate boot-receipt suite exercises the actual polling windows.
+    const bootProbes = { readLog: () => '', sleep: async () => {}, windowMs: 0 };
     await spawnHeadless({
       envelope,
       label: 'launched',
       launchedBy: '  su-launching-agent  ',
+      bootProbes,
       ...noSystemdRun,
     });
     let [, , options] = spawnMock.mock.calls[0] as [
@@ -1048,7 +1053,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
 
     spawnMock.mockReset();
     spawnMock.mockImplementation(() => fakeChild(7781));
-    await spawnHeadless({ envelope, label: 'unmarked', ...noSystemdRun });
+    await spawnHeadless({ envelope, label: 'unmarked', bootProbes, ...noSystemdRun });
     [, , options] = spawnMock.mock.calls[0] as [
       string,
       string[],
