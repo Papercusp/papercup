@@ -69,12 +69,13 @@ export async function gradeBenchRun(
   const grade = deps.grade ?? runGradeBySuite;
   const suite = row.suite ?? 'swe-bench-pro';
   let frozenGrader: CurrentBenchmarkProtocol['grader'] | undefined;
+  let frozenTaskIds: string[] | undefined;
   if (row.config && 'current' in row.config) {
     try {
       const protocol = currentBenchmarkProtocolSchema.parse(row.config.protocol);
-      const current = row.config.current as { workspaceId?: string; protocolRunId?: string; preregHash?: string } | null;
+      const current = row.config.current as { workspaceId?: string; protocolRunId?: string; preregHash?: string; seed?: number } | null;
       if (!current || current.workspaceId !== ws || current.protocolRunId !== protocol.runId ||
-          typeof current.preregHash !== 'string' || !protocol.arms.some(arm => arm.id === row.arm) ||
+          typeof current.preregHash !== 'string' || !protocol.seeds.includes(current.seed!) || !protocol.arms.some(arm => arm.id === row.arm) ||
           suite !== 'swe-bench-pro' || protocol.grader.family !== 'swe-bench-pro' ||
           !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(protocol.grader.version) || !protocol.grader.datasetSha256 ||
           !protocol.grader.images || protocol.taskIds.some(id => !protocol.grader.images![id]) ||
@@ -84,6 +85,7 @@ export async function gradeBenchRun(
       await (deps.verifyCurrentPreregistration ?? requireCommittedPreregistration)(protocol.runId,
         { preregHash: current.preregHash, config: protocol }, { ...scope, repoRoot: deps.currentRepoRoot });
       frozenGrader = protocol.grader;
+      frozenTaskIds = protocol.taskIds;
     } catch (error) {
       return { error: `current_grader_protocol: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -94,6 +96,9 @@ export async function gradeBenchRun(
   const done = (async () => {
     try {
       const gradeMap = await grade({ dir, arm: row.arm, sampleJsonl, suite, ...(frozenGrader ? { frozenGrader } : {}) });
+      if (frozenTaskIds && Object.entries(gradeMap).some(([id, resolved]) => !frozenTaskIds.includes(id) || typeof resolved !== 'boolean')) {
+        throw new Error('Official grader returned a verdict outside the frozen task roster.');
+      }
       await applyGradeMap(runId, gradeMap, scope);
       await setBenchRunStatus(runId, 'done', {}, scope);
     } catch (e) {
