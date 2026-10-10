@@ -9,7 +9,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: holder.sql }),
 }));
 
-const { probeFreshLaunchSessions, verifyFreshLaunchStarted } = await import('./agent-launch-core');
+vi.mock('./events/await/psu-pty-discovery', () => ({
+  findLiveHost: () => null,
+  findLiveHostAsync: async () => null,
+  injectIntoHost: vi.fn(),
+}));
+
+const { probeFreshLaunchSessions, verifyFreshLaunchStarted, resolveResumeTarget } = await import('./agent-launch-core');
 let sql: postgres.Sql;
 let dbName: string;
 let adminUri: string;
@@ -32,7 +38,13 @@ beforeAll(async () => {
     CREATE SCHEMA harness_shared;
     CREATE TABLE harness_shared.adv_sessions (
       id integer PRIMARY KEY, session_id text, coord_owner_id text,
-      workspace_id text, first_seen_at timestamptz, launch_spec jsonb, launch_argv jsonb
+      workspace_id text, first_seen_at timestamptz, launch_spec jsonb, launch_argv jsonb,
+      plan_slug text, agent text, role text, feature text, mode text, terminal_bin text,
+      pid integer, window_id text, omp_thread_id text, label text, cwd text,
+      started_at timestamptz, ended_at timestamptz, exit_code integer, ended_by text
+    );
+    CREATE TABLE harness_shared.session_turns (
+      session_id text, owner text, ingested_at timestamptz
     );
     CREATE TABLE harness_shared.tool_invocations (
       workspace_id text, coord_owner_id text, status text, call_origin text,
@@ -62,6 +74,45 @@ afterAll(async () => {
       await admin.end({ timeout: 5 });
     }
   }
+});
+
+describe('resume target registration election (real PG)', () => {
+  it.each([null, '2026-10-10T02:14:14Z'])('keeps the latest registration after a predecessor timestamp refresh (endedAt=%s)', async (endedAt) => {
+    const owner = `su-resume-${randomBytes(5).toString('hex')}`;
+    const currentId = endedAt ? 102 : 100;
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, coord_owner_id, session_id, agent, started_at, ended_at)
+      VALUES (${currentId - 1}, ${owner}, ${owner + '-old'}, 'codex', '2026-10-10T02:04:00Z', '2026-10-09T23:00:00Z'),
+             (${currentId}, ${owner}, ${owner + '-current'}, 'codex', '2026-10-10T00:30:00Z', ${endedAt})
+    `;
+    const exact = await resolveResumeTarget({ sessionId: owner + '-current' });
+    const byOwner = await resolveResumeTarget({ agentId: owner });
+    expect.soft(exact).toMatchObject({ ok: true, advSessionId: currentId, sessionId: owner + '-current' });
+    expect.soft(byOwner).toMatchObject({ ok: true, advSessionId: currentId, sessionId: owner + '-current',
+      endedAt: endedAt ? new Date(endedAt).toISOString() : null });
+    if (exact.ok && byOwner.ok) expect.soft(byOwner.binding).toEqual(exact.binding);
+  });
+
+  it('bridges a historical native pin to the latest owner registration without replacing the pin', async () => {
+    const owner = 'su-resume-bridged';
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, coord_owner_id, session_id, agent, started_at)
+      VALUES (103, ${owner}, 'bridged-old', 'codex', '2026-10-10T02:04:00Z'),
+             (104, ${owner}, 'bridged-current', 'codex', '2026-10-10T00:30:00Z')
+    `;
+    await sql`INSERT INTO harness_shared.session_turns (session_id, owner, ingested_at)
+      VALUES ('bridged-earlier-pin', ${owner}, now())`;
+    await expect(resolveResumeTarget({ sessionId: 'bridged-earlier-pin' })).resolves.toMatchObject({
+      ok: true, advSessionId: 104, sessionId: 'bridged-earlier-pin',
+      binding: { coordOwnerId: owner, sessionId: 'bridged-current' },
+    });
+    // A pin still selects its actual recorded incarnation rather than the owner's newer row.
+    await expect(resolveResumeTarget({ sessionId: 'bridged-old' })).resolves.toMatchObject({
+      ok: true, advSessionId: 103, sessionId: 'bridged-old',
+    });
+  });
 });
 
 describe('fresh-launch tool-call attribution (real PG)', () => {

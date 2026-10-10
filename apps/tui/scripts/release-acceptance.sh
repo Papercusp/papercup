@@ -110,4 +110,21 @@ landed="$(git -C "$checkout" rev-parse HEAD)"
 [ "$landed" = "$sha" ] || fail "checkout $checkout is at $landed, not the candidate source $sha"
 
 export PUI_ACCEPTANCE_ISOLATED="$checkout"
-run_in "$checkout" "$@"
+# A bounded slot count does not bound its retained physical dependency copies.
+# Retire these after every completed attempt, including a refused verdict. Source,
+# archives and receipts stay intact; the next preparation restores dependencies.
+# Keep fd 9 locked until the retirement helper has verified no child still uses
+# the slot. A refused cleanup is visible and cannot turn into a successful run.
+retire_completed_slot() {
+  local run_status=$? cleanup_status=0
+  trap - EXIT
+  "$ROOT/node_modules/.bin/tsx" "$ROOT/packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts" \
+    "$checkout" "$sha" --all-dependencies --execute >&2 || cleanup_status=$?
+  if [ "$cleanup_status" -ne 0 ]; then
+    echo "release-acceptance: ERROR: completed-slot dependency retirement refused (run=$run_status cleanup=$cleanup_status); source and evidence retained" >&2
+    [ "$run_status" -ne 0 ] || run_status=2
+  fi
+  exit "$run_status"
+}
+trap retire_completed_slot EXIT
+"$checkout/node_modules/.bin/tsx" "$checkout/packages/operator-core/lib/pui-e2e/release-acceptance-cli.mts" "$@"

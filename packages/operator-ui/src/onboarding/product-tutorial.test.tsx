@@ -341,6 +341,54 @@ describe('account product guide entry', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue to Papercusp' }));
     await screen.findByText('Home');
   });
+  it.each([
+    [401, 'Sign in again to load your guide.'],
+    [403, 'Your account could not access the guide. Try again or continue to Papercusp.'],
+    [503, 'Papercusp’s guide service is unavailable. Try again or continue to Papercusp.'],
+    [429, 'Papercusp’s guide service is unavailable. Try again or continue to Papercusp.'],
+    [404, 'Papercusp could not load your guide. Try again or continue to Papercusp.'],
+  ] as const)('offers recovery for HTTP %s without blaming every failure on the session', async (status, message) => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ error: 'private backend details' }, { status }))
+      .mockResolvedValueOnce(response(record()));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+    expect(screen.queryByText('private backend details')).toBeNull();
+    const signIn = screen.queryByRole('link', { name: 'Sign in' });
+    if (status === 401) expect(signIn?.getAttribute('href')).toBe('/api/hosted/auth/sign-in?intent=sign-in');
+    else expect(signIn).toBeNull();
+    expect(screen.getByRole('button', { name: 'Continue to Papercusp' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull();
+  });
+  it('replaces the sign-in suggestion when a retry returns a service failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response(null, 401)).mockResolvedValueOnce(response(null, 503)));
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    await screen.findByRole('link', { name: 'Sign in' });
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('guide service is unavailable');
+    expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull();
+  });
+  it('suggests checking the connection for a rejected guide request', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')));
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    expect((await screen.findByRole('alert')).textContent).toContain('Check your connection');
+    expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull();
+  });
+  it.each([
+    () => response(record({ scope: { tenantId: 'foreign', userId: 'user' } })),
+    () => new Response('not JSON', { status: 200 }),
+  ])('reports unreadable guide progress while preserving the account boundary', async failedResponse => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(failedResponse()));
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    expect((await screen.findByRole('alert')).textContent).toContain('Your saved guide could not be read');
+    expect(screen.queryByRole('heading', { name: 'Welcome to Papercusp' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to Papercusp' }));
+    await screen.findByText('Home');
+  });
   it('lets an unenrolled returning account explicitly start the tutorial', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(response(null))
       .mockResolvedValueOnce(response(record({ revision: 1 })));

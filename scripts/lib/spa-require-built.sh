@@ -31,9 +31,10 @@
 # always-on gate would refuse nearly every run. The caller names the paths it
 # is verifying; everyone else gets one informational line (spa_require_built_note).
 
-# The import surface papercup-vite-rebuild.sh watches. An edit outside these
-# roots never triggers a rebuild on its own.
-SRB_REBUILD_ROOTS=(apps/operator-vite/src apps/operator/app packages/operator-core/lib libs/generic)
+# Shared with scripts/papercup-vite-rebuild.sh: keep the timer trigger and
+# verification warning on the same import surface. Vite's @ alias resolves
+# apps/operator, including runtime libraries such as lib/theme.ts.
+SRB_REBUILD_ROOTS=(apps/operator-vite/src apps/operator/app apps/operator/lib packages/operator-core/lib libs/generic)
 
 _srb_log() {
   if declare -F log >/dev/null 2>&1; then log "$*"; else printf '[spa-require-built] %s\n' "$*" >&2; fi

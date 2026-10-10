@@ -14,12 +14,13 @@ import { substrateSignalRates, type CoordEvent, type FleetRunSummary } from '@pa
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { OrgSql } from './db';
 import { preregister, computePreregHash } from './prereg';
-import { emitRollout, emitFromAttempt } from './emit';
+import { emitRollout, emitFromAttempt, rolloutIdFor } from './emit';
 import { listRunResults, listSuites, getRollout, getPrereg, getRunReports } from './store';
 import { emitFleetRun, fleetRunIdFor, listFleetRuns, getCoordTrace } from './fleet';
 import { exportRunBundle } from './export';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
+import { currentProtocolFixture } from './_protocol-test-fixture';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -181,7 +182,79 @@ describe('emitRollout', () => {
   });
 });
 
+describe('current frozen rollout emission', () => {
+  async function frozenInput(name: string, model = 'configured-alias') {
+    const protocol = currentProtocolFixture(`current-emit-${name}`);
+    protocol.arms.forEach(arm => { arm.model = model; });
+    protocol.priceSchedule.rates[0].model = model;
+    const { preregHash } = await preregister({ runId: protocol.runId, config: protocol,
+      suites: ['swe-bench-pro'], sql, workspaceId: WS, repoRoot });
+    const base = input({ preregHash });
+    const attempt: EmitRolloutInput = { ...base, runId: protocol.runId, taskId: 't1', seed: 1,
+      generation: { ...base.generation, modelId: model, tokensOut: 500_000, tokensCacheRead: 200_000, tokensTotal: 1_700_000 },
+      grading: { ...base.grading, family: protocol.grader.family, version: protocol.grader.version } };
+    return { protocol, attempt };
+  }
+
+  it.each(['configured-alias', 'claude-opus-4-8[1m]'])('persists frozen prices and agrees with regenerated report for %s', async model => {
+    const { protocol, attempt } = await frozenInput(model === 'configured-alias' ? 'alias' : 'known', model);
+    await emitRollout(attempt, { sql, workspaceId: WS });
+    const [row] = await listRunResults({ runId: protocol.runId, sql, workspaceId: WS });
+    expect(row.priceTableVersion).toBe(protocol.priceSchedule.version);
+    expect(row.costUsd).toBeCloseTo(2.1);
+    const [report] = await getRunReports(protocol.runId, { sql, workspaceId: WS });
+    expect(report.priceTableVersion).toBe(row.priceTableVersion);
+    expect(report.arms.find(arm => arm.arm === attempt.arm)?.cost.costUsd).toBeCloseTo(row.costUsd);
+  });
+
+  it('refuses a caller override that differs from frozen prices without writing either row', async () => {
+    const { protocol, attempt } = await frozenInput('override', 'claude-opus-4-8[1m]');
+    await expect(emitRollout(attempt, { sql, workspaceId: WS,
+      priceTable: { version: 'mutable-override', prices: { 'claude-opus-4-8[1m]': {
+        inputPerMtok: 0, outputPerMtok: 0, cacheReadPerMtok: 0, cacheWritePerMtok: 0 } } } }))
+      .rejects.toThrow(/frozen.*price/);
+    expect(await listRunResults({ runId: protocol.runId, sql, workspaceId: WS })).toEqual([]);
+    expect(await getRollout(rolloutIdFor(attempt.runId, attempt.suite, attempt.taskId, attempt.arm, attempt.seed), { sql, workspaceId: WS })).toBeNull();
+  });
+
+  it('requires a frozen cache-write rate before persisting cache-write usage', async () => {
+    const { protocol, attempt } = await frozenInput('write-missing');
+    attempt.generation.tokensCacheWrite = 10;
+    await expect(emitRollout(attempt, { sql, workspaceId: WS })).rejects.toThrow(/frozen cache-write/);
+    expect(await listRunResults({ runId: protocol.runId, sql, workspaceId: WS })).toEqual([]);
+  });
+
+  it.each(['run', 'suite', 'task', 'arm', 'seed', 'model', 'grader'])('refuses frozen %s identity drift in the emission transaction', async field => {
+    const { protocol, attempt } = await frozenInput(`drift-${field}`, 'claude-opus-4-8[1m]');
+    if (field === 'run') attempt.runId = 'other-run';
+    if (field === 'suite') attempt.suite = 'swe-bench-verified';
+    if (field === 'task') attempt.taskId = 'other-task';
+    if (field === 'arm') attempt.arm = 'other-arm';
+    if (field === 'seed') attempt.seed = 99;
+    if (field === 'model') attempt.generation.modelId = 'claude-opus-4-8';
+    if (field === 'grader') attempt.grading.version = 'mutable-grader';
+    await expect(emitRollout(attempt, { sql, workspaceId: WS })).rejects.toThrow(/frozen/);
+    expect(await listRunResults({ runId: protocol.runId, sql, workspaceId: WS })).toEqual([]);
+    expect(await listRunResults({ runId: attempt.runId, sql, workspaceId: WS })).toEqual([]);
+  });
+});
+
 describe('emitFromAttempt — infra failure nulls resolved (METR discipline)', () => {
+  it('preserves attempt identity and missing-cost evidence in the canonical stored row', async () => {
+    const preregHash = computePreregHash(baseConfig);
+    const armMeta = { costUsdMeasurementMissing: true, currentExecution: { evidenceRefs: ['source:closed-turn'] } };
+    await emitFromAttempt({ runId: RUN, preregHash, arm: 'papercusp', seed: 9,
+      task: { benchmark: 'swe-bench-pro', instanceId: 'metadata-task', problemStatement: 'fixture', graderMeta: {} },
+      attempt: { arm: 'papercusp', blueprintId: 'fixture', instanceId: 'metadata-task', seed: '9', diff: '',
+        tokensIn: 100, tokensOut: 20, costUsd: 0, turns: 1, wallClockMs: 10, trajectoryRef: 'source:closed-turn',
+        stopReason: 'done', armMeta },
+      grade: { instanceId: 'metadata-task', prefix: '9', resolved: true, rawGraderOutput: null,
+        graderFamily: 'swe-bench-pro', graderVersion: 'sweap-2026-06' },
+      modelId: 'claude-opus-4-8[1m]', harnessVersion: 'fixture' }, { sql, workspaceId: WS });
+    const row = (await listRunResults({ runId: RUN, sql, workspaceId: WS })).find(row => row.taskId === 'metadata-task')!;
+    expect(row.armMeta).toEqual(armMeta);
+  });
+
   it('a generation error → resolved null, generationStatus error, graderStatus error', async () => {
     const preregHash = computePreregHash(baseConfig);
     const task: BenchTask = {

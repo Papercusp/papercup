@@ -82,6 +82,8 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     testRunExecution: passingExecution(),
     details: {
       adequacy: {
+        // Current evaluator evidence must name the exact clause it is proving.
+        targeted: 'SPEC-003-01',
         fixtureFree: true,
         testCases: ['acknowledged events are not replayed'],
         falsifiable: true,

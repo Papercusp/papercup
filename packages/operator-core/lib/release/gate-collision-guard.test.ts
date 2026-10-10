@@ -589,6 +589,33 @@ describe('staging-sync restart collision guard', () => {
       detail: { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: null },
     });
   });
+
+  it.each([
+    { code: 'EACCES', message: 'flock could not open the lock', stderr: 'Permission denied' },
+    { code: 64, message: 'flock invocation failed', stderr: 'Invalid argument' },
+    { code: null, message: 'flock timed out', signal: 'SIGTERM' },
+  ])('retains the failed probe diagnostic without claiming a held lock: $message', async (failure) => {
+    const verdict = await checkStagingSyncCollision('staging', async () => {
+      throw Object.assign(new Error(failure.message), failure);
+    });
+    expect(verdict).toMatchObject({
+      blocked: true,
+      kind: 'probe-failed',
+      detail: { lockHeld: null, probeError: failure },
+    });
+    expect(verdict.note).toContain('Nothing was restarted');
+  });
+
+  it('bounds child output and retains non-Error probe failures', async () => {
+    const verbose = await checkStagingSyncCollision('staging', async () => {
+      throw Object.assign(new Error('m'.repeat(800)), { stderr: 's'.repeat(800), signal: 'x'.repeat(100) });
+    });
+    expect(verbose.detail.probeError).toEqual({ code: null, message: 'm'.repeat(500),
+      stderr: 's'.repeat(500), signal: 'x'.repeat(64) });
+    const primitive = await checkStagingSyncCollision('staging', async () => { throw null; });
+    expect(primitive).toMatchObject({ blocked: true, kind: 'probe-failed',
+      detail: { lockHeld: null, probeError: { code: null, message: 'null' } } });
+  });
 });
 
 describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
@@ -811,5 +838,71 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
       owner: 'system:dev-restart:git-sync-barrier:42:uuid',
       lockId: 'barrier-1',
     });
+  });
+
+  it('EI-25556999491855818: signals a held barrier release only after its transaction confirms deletion', async () => {
+    let confirmRelease!: (receipt: { released: number; exclusiveResources: string[] }) => void;
+    const release = vi.fn(() => new Promise<{ released: number; exclusiveResources: string[] }>((resolve) => {
+      confirmRelease = resolve;
+    }));
+    const emitReleased = vi.fn();
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ release, emitReleased }));
+    if (!result.acquired) throw new Error('expected barrier');
+    expect(emitReleased).not.toHaveBeenCalled();
+
+    const pending = result.release();
+    expect(emitReleased).not.toHaveBeenCalled();
+    confirmRelease({ released: 1, exclusiveResources: ['git-sync'] });
+    await pending;
+
+    expect(emitReleased).toHaveBeenCalledExactlyOnceWith('git-sync', 'workspace-domain');
+    release.mockResolvedValueOnce({ released: 0, exclusiveResources: [] });
+    await result.release();
+    expect(emitReleased).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    undefined,
+    { released: 0, exclusiveResources: [] },
+    { released: 1, exclusiveResources: ['another-resource'] },
+  ])('does not signal a release without a matching deletion receipt (%j)', async (receipt) => {
+    const emitReleased = vi.fn();
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({
+      release: vi.fn(async () => receipt),
+      emitReleased,
+    }));
+    if (!result.acquired) throw new Error('expected barrier');
+    await result.release();
+    expect(emitReleased).not.toHaveBeenCalled();
+  });
+
+  it('does not signal a failed release', async () => {
+    const emitReleased = vi.fn();
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({
+      release: vi.fn(async () => { throw new Error('pg down'); }),
+      emitReleased,
+    }));
+    if (!result.acquired) throw new Error('expected barrier');
+    await expect(result.release()).rejects.toThrow('pg down');
+    expect(emitReleased).not.toHaveBeenCalled();
+  });
+
+  it('signals actual queued-exclusive cleanup once after a transient release failure while preserving the refusal', async () => {
+    const contention = Object.assign(new Error('workspace lock timed out'), {
+      name: 'WorkspaceContendedError',
+      pgCode: '57014',
+    });
+    const release = vi.fn()
+      .mockRejectedValueOnce(contention)
+      .mockResolvedValueOnce({ released: 1, exclusiveResources: ['git-sync'] });
+    const emitReleased = vi.fn();
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({
+      acquire: async () => ({ ok: false, reason: 'drain_timeout', holders: [], lock_id: 'queued-exclusive' }),
+      release,
+      emitReleased,
+    }), { maxDrainSec: 20 });
+    expect(result).toMatchObject({ acquired: false, reason: 'drain_timeout' });
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(emitReleased).toHaveBeenCalledExactlyOnceWith('git-sync', 'workspace-domain');
   });
 });

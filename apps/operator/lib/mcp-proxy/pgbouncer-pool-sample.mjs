@@ -39,6 +39,7 @@
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { performance } from 'node:perf_hooks';
 import { dirname, join } from 'node:path';
 
 const ADMIN_HOST = process.env.PAPERCUSP_PGBOUNCER_ADMIN_HOST || '127.0.0.1';
@@ -87,12 +88,33 @@ let lastSampleAt = 0;
  * `execFileImpl`/`now` are injectable for tests.
  */
 export async function samplePgBouncerPools(reason, { execFileImpl = execFile, now = Date.now } = {}) {
-  const t = now();
-  if (t - lastSampleAt < MIN_SAMPLE_INTERVAL_MS) {
+  const requestedAtMs = now();
+  if (requestedAtMs - lastSampleAt < MIN_SAMPLE_INTERVAL_MS) {
     return { ok: false, skipped: 'debounced' };
   }
-  lastSampleAt = t;
+  lastSampleAt = requestedAtMs;
   const args = buildShowPoolsArgs();
+  const startedAtMs = now();
+  const startedAt = new Date(startedAtMs).toISOString();
+  const startedMonotonicMs = performance.now();
+
+  const writeSampleLog = (err, stdout, stderr) => {
+    const completedAtMs = now();
+    const completedAt = new Date(completedAtMs).toISOString();
+    const durationMs = Math.max(0, Math.round(performance.now() - startedMonotonicMs));
+    const line =
+      `[pgbouncer-sample ${completedAt}] reason=${reason} startedAt=${startedAt} ` +
+      `completedAt=${completedAt} durationMs=${durationMs}\n` +
+      (err ? `ERROR: ${err.message}\n${stderr || ''}` : String(stdout ?? '')) +
+      '\n';
+    try {
+      mkdirSync(dirname(SAMPLE_LOG_FILE), { recursive: true });
+      appendFileSync(SAMPLE_LOG_FILE, line);
+    } catch {
+      /* best-effort — never let logging failure surface to the caller */
+    }
+  };
+
   return new Promise((resolve) => {
     let settled = false;
     try {
@@ -106,16 +128,7 @@ export async function samplePgBouncerPools(reason, { execFileImpl = execFile, no
         (err, stdout, stderr) => {
           if (settled) return; // execFile guarantees one callback, but stay defensive under test doubles
           settled = true;
-          const line =
-            `[pgbouncer-sample ${new Date().toISOString()}] reason=${reason}\n` +
-            (err ? `ERROR: ${err.message}\n${stderr || ''}` : String(stdout ?? '')) +
-            '\n';
-          try {
-            mkdirSync(dirname(SAMPLE_LOG_FILE), { recursive: true });
-            appendFileSync(SAMPLE_LOG_FILE, line);
-          } catch {
-            /* best-effort — never let logging failure surface to the caller */
-          }
+          writeSampleLog(err, stdout, stderr);
           resolve({ ok: !err, output: String(stdout ?? ''), error: err ? err.message : null });
         },
       );
@@ -124,6 +137,7 @@ export async function samplePgBouncerPools(reason, { execFileImpl = execFile, no
       // throws out of this function.
       if (!settled) {
         settled = true;
+        writeSampleLog(e, '', '');
         resolve({ ok: false, output: '', error: e?.message ?? String(e) });
       }
     }

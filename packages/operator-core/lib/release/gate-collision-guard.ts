@@ -828,7 +828,11 @@ export interface StagingSyncCollisionVerdict {
   blocked: boolean;
   kind: StagingSyncCollisionKind;
   note: string;
-  detail: { lockPath: string; lockHeld: boolean | null };
+  detail: {
+    lockPath: string;
+    lockHeld: boolean | null;
+    probeError?: { code: string | number | null; message: string; stderr?: string; signal?: string };
+  };
 }
 
 async function defaultStagingSyncLockProbe(): Promise<boolean> {
@@ -856,7 +860,7 @@ export async function checkStagingSyncCollision(
   target: string,
   probe: () => Promise<boolean> = defaultStagingSyncLockProbe,
 ): Promise<StagingSyncCollisionVerdict> {
-  const detail = { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: null as boolean | null };
+  const detail: StagingSyncCollisionVerdict['detail'] = { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: null };
   if (target !== 'staging') {
     return {
       blocked: false,
@@ -883,7 +887,18 @@ export async function checkStagingSyncCollision(
           note: `papercup-staging-sync is not in its exclusive checkout/build phase (${detail.lockPath}).`,
           detail,
         };
-  } catch {
+  } catch (error) {
+    // Keep the underlying measurement failure distinct from a held lock. Both
+    // preview and confirmed restart responses already carry this detail object.
+    const failure = error !== null && typeof error === 'object'
+      ? error as { code?: unknown; message?: unknown; stderr?: unknown; signal?: unknown }
+      : {};
+    detail.probeError = {
+      code: typeof failure.code === 'string' || typeof failure.code === 'number' ? failure.code : null,
+      message: (typeof failure.message === 'string' ? failure.message : String(error)).slice(0, 500),
+      ...(typeof failure.stderr === 'string' && failure.stderr ? { stderr: failure.stderr.slice(0, 500) } : {}),
+      ...(typeof failure.signal === 'string' && failure.signal ? { signal: failure.signal.slice(0, 64) } : {}),
+    };
     return {
       blocked: true,
       kind: 'probe-failed',
@@ -937,7 +952,12 @@ export interface GitSyncRestartBarrierDeps {
     /** 0 = today's bare try-acquire. >0 = drain shared holders for up to N sec. */
     maxWaitSec: number;
   }) => Promise<BarrierAcquireRaw>;
-  release: (params: { coordinationDomain: string; owner: string; lockId: string }) => Promise<void>;
+  release: (params: {
+    coordinationDomain: string;
+    owner: string;
+    lockId: string;
+  }) => Promise<{ released: number; exclusiveResources: string[] } | void>;
+  emitReleased?: (resource: string, workspaceId: string) => void;
 }
 
 /**
@@ -995,10 +1015,11 @@ export type GitSyncRestartBarrierOutcome =
     };
 
 async function defaultGitSyncRestartBarrierDeps(): Promise<GitSyncRestartBarrierDeps> {
-  const [{ inWorkspaceTxn }, lockStore, { resourceLockDomain }] = await Promise.all([
+  const [{ inWorkspaceTxn }, lockStore, { resourceLockDomain }, { emitResourceReleasedEvent }] = await Promise.all([
     import('../agent-tools/locks/in-workspace-txn'),
     import('../agent-tools/locks/su-lock-store'),
     import('../agent-tools/locks/coordination-domain'),
+    import('../harness/git-sync/git-sync-events'),
   ]);
   return {
     resolveDomain: resourceLockDomain,
@@ -1032,10 +1053,11 @@ async function defaultGitSyncRestartBarrierDeps(): Promise<GitSyncRestartBarrier
       };
     },
     release: async ({ coordinationDomain, owner, lockId }) => {
-      await inWorkspaceTxn(coordinationDomain, owner, (tx) =>
+      return inWorkspaceTxn(coordinationDomain, owner, (tx) =>
         lockStore.tryReleaseResource(tx, { coordinationDomain, owner, lockId }),
       );
     },
+    emitReleased: emitResourceReleasedEvent,
   };
 }
 
@@ -1048,6 +1070,17 @@ export async function acquireGitSyncRestartBarrier(
   const resource = GIT_SYNC_RESTART_BARRIER_RESOURCE;
   const coordinationDomain = d.resolveDomain(resource);
   const owner = d.newOwner();
+  const releaseBarrier = async (lockId: string): Promise<void> => {
+    const receipt = await d.release({ coordinationDomain, owner, lockId });
+    // EI-25556999491855818: this internal release bypasses the public locks
+    // wrapper. Publish the existing exact resource event after the transaction
+    // confirms a release, including removal of a timed-out queued exclusive.
+    // A release signal does not assert that a restart happened or no peer holds
+    // the resource; the awakened caller still has to acquire its own barrier.
+    if (receipt && receipt.released > 0 && receipt.exclusiveResources.includes(resource)) {
+      d.emitReleased?.(resource, coordinationDomain);
+    }
+  };
   const maxWaitSec = Math.max(0, opts?.maxDrainSec ?? 0);
   const result = await d.acquire({
     coordinationDomain,
@@ -1076,9 +1109,7 @@ export async function acquireGitSyncRestartBarrier(
       // same bounded contention retry used by acquisition. Non-contention
       // failures still fall through to the TTL backstop and never mask the
       // original acquire refusal.
-      await acquireWithContentionRetry(() =>
-        d.release({ coordinationDomain, owner, lockId: result.lock_id! }),
-      )
+      await acquireWithContentionRetry(() => releaseBarrier(result.lock_id!))
         .catch(() => {});
     }
     return { acquired: false, resource, reason: result.reason, holders: result.holders };
@@ -1090,6 +1121,6 @@ export async function acquireGitSyncRestartBarrier(
     owner,
     coordinationDomain,
     expiresAt: result.expires_ts.toISOString(),
-    release: () => d.release({ coordinationDomain, owner, lockId: result.lock_id }),
+    release: () => releaseBarrier(result.lock_id),
   };
 }

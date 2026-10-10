@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
@@ -59,6 +59,69 @@ describe('PUI acceptance dependency retirement', () => {
       expect(await readFile(join(checkout, 'node_modules/package.txt'), 'utf8')).toBe('rebuildable');
     }
   });
+  it('discovers completed-slot copies while preserving archives, source and receipts', async () => {
+    await mkdir(join(checkout, 'packages/example/node_modules'), { recursive: true });
+    await writeFile(join(checkout, 'packages/example/node_modules/package.txt'), 'rebuildable');
+    await writeFile(join(checkout, 'candidate.tar.gz'), 'archive evidence');
+    const result = await retireAcceptanceDependencies({ checkout, expectedSha: sha, execute: true, scan: idle });
+    expect(result.removed).toEqual([
+      join(checkout, 'node_modules'), join(checkout, 'apps/operator/node_modules'), join(checkout, 'packages/example/node_modules'),
+    ]);
+    expect(await readFile(join(checkout, 'source.txt'), 'utf8')).toBe('source evidence');
+    expect(await readFile(join(checkout, '.papercusp-artifacts/receipt.json'), 'utf8')).toBe('retained');
+    expect(await readFile(join(checkout, 'candidate.tar.gz'), 'utf8')).toBe('archive evidence');
+    expect((await retireAcceptanceDependencies({ checkout, expectedSha: sha, execute: true, scan: idle })).removed).toEqual([]);
+  });
+  it('automatic discovery refuses symlinked scopes without removing any copies', async () => {
+    await mkdir(join(cache, 'outside'));
+    await symlink(join(cache, 'outside'), join(checkout, 'packages'));
+    await expect(retireAcceptanceDependencies({ checkout, expectedSha: sha, execute: true, scan: idle })).rejects.toThrow('scope is not a physical directory');
+    expect(await readFile(join(checkout, 'node_modules/package.txt'), 'utf8')).toBe('rebuildable');
+  });
+  it.each([
+    { status: 0, cleanupRefused: false }, { status: 1, cleanupRefused: false },
+    { status: 2, cleanupRefused: false }, { status: 0, cleanupRefused: true },
+  ])('runs the actual wrapper lifecycle: $status, cleanup refused=$cleanupRefused', async ({ status, cleanupRefused }) => {
+    const repo = resolve(__dirname, '../../../..');
+    const fixture = join(cache, 'runner');
+    const wrapper = join(fixture, 'apps/tui/scripts/release-acceptance.sh');
+    await mkdir(join(fixture, 'apps/tui/scripts'), { recursive: true });
+    await writeFile(wrapper, await readFile(join(repo, 'apps/tui/scripts/release-acceptance.sh')));
+    await mkdir(join(fixture, 'scripts'));
+    // The fixture slot is already pinned; isolate just the real wrapper lifecycle.
+    await writeFile(join(fixture, 'scripts/npm-install-safe.mjs'), 'process.exit(0);');
+    const shim = join(fixture, 'node_modules/.bin/tsx');
+    await mkdir(join(fixture, 'node_modules/.bin'), { recursive: true });
+    await writeFile(shim, `#!/usr/bin/env node\n${cleanupRefused ? 'process.exit(2);' : ''}\nconst {spawnSync} = require('node:child_process');\nconst r=spawnSync(${JSON.stringify(join(repo, 'node_modules/.bin/tsx'))}, [${JSON.stringify(join(repo, 'packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts'))}, ...process.argv.slice(3)], {stdio:'inherit'});\nprocess.exit(r.status ?? 2);\n`);
+    await chmod(shim, 0o755);
+    const runner = join(checkout, 'node_modules/.bin/tsx');
+    await mkdir(join(checkout, 'node_modules/.bin'));
+    await writeFile(runner, `#!/bin/sh\nprintf 'completed' > '${join(checkout, '.papercusp-artifacts/run.json')}'\nexit ${status}\n`);
+    await chmod(runner, 0o755);
+    const archiveSource = join(cache, 'archive-source');
+    await mkdir(join(archiveSource, 'pui'), { recursive: true });
+    await writeFile(join(archiveSource, 'pui/PROVENANCE.json'), JSON.stringify({ source: { commit: sha } }));
+    const archive = join(cache, 'candidate.tar.gz');
+    execFileSync('tar', ['-czf', archive, '-C', archiveSource, 'pui']);
+    const child = spawn('bash', [wrapper, '--archive', archive], {
+      cwd: repo, env: { ...process.env, PUI_ACCEPTANCE_ISOLATED: '', PUI_ACCEPTANCE_ALLOW_LIVE_TREE: '', PUI_ACCEPTANCE_CHECKOUT_ROOT: cache },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const [code] = await once(child, 'close');
+    expect(code, stderr).toBe(cleanupRefused ? 2 : status);
+    if (cleanupRefused) {
+      expect(stderr).toContain('dependency retirement refused');
+      expect(await readFile(join(checkout, 'node_modules/package.txt'), 'utf8')).toBe('rebuildable');
+    } else {
+      await expect(readFile(join(checkout, 'node_modules/package.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(join(checkout, 'apps/operator/node_modules/package.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    expect(await readFile(join(checkout, '.papercusp-artifacts/run.json'), 'utf8')).toBe('completed');
+    expect(await readFile(join(checkout, 'source.txt'), 'utf8')).toBe('source evidence');
+    expect(await readFile(archive)).not.toHaveLength(0);
+  }, 30_000);
   it('the existing wrapper refuses retirement while a slot lock is held', async () => {
     const child = spawn('flock', [join(cache, 'slot-1.lock'), 'sh', '-c', 'echo READY; cat'], { stdio: ['pipe', 'pipe', 'pipe'] });
     try {

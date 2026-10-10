@@ -27,6 +27,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const HELPER = resolve(__dirname, '../../../scripts/lib/spa-require-built.sh');
+const REBUILD = resolve(__dirname, '../../../scripts/papercup-vite-rebuild.sh');
 
 const BASE = Math.floor(Date.now() / 1000) - 3600;
 const STAMP_AT = BASE + 100;
@@ -155,6 +156,19 @@ describe('WI-10004972 — spa_require_built_gate', () => {
     expect(gate('other/c.ts').status).toBe(1);
   });
 
+  it('recognizes imported operator library source and still refuses an unbuilt theme edit', () => {
+    put('apps/operator/lib/theme.ts', BASE);
+    const built = gate('apps/operator/lib/theme.ts');
+    expect(built.status).toBe(0);
+    expect(built.out).not.toContain('outside the SPA rebuild roots');
+
+    put('apps/operator/lib/theme.ts', BASE + 200);
+    const stale = gate('apps/operator/lib/theme.ts');
+    expect(stale.status).toBe(1);
+    expect(stale.out).toContain('reason=timeout path=apps/operator/lib/theme.ts');
+    expect(stale.out).not.toContain('outside the SPA rebuild roots');
+  });
+
   it('waits for a rebuild and passes once the stamp moves past the edit', () => {
     put('apps/operator-vite/src/a.ts', BASE + 200);
     const r = gate(
@@ -257,6 +271,98 @@ describe('WI-10004972 — spa_require_built_note (the hint every run gets)', () 
     const r = run('spa_require_built_note', [dist, repo]);
     expect(r.status).toBe(0);
     expect(r.out).toContain('SPA build stamp: none');
+  });
+
+  it('counts unbuilt library source while pruning library test and dist files', () => {
+    put('apps/operator/lib/theme.ts', BASE + 200);
+    put('apps/operator/lib/theme.test.ts', BASE + 200);
+    put('apps/operator/lib/dist/theme.ts', BASE + 200);
+    const r = run('spa_require_built_note', [dist, repo]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('1 frontend source file(s) are newer and NOT in this bundle');
+  });
+});
+
+describe('EI-25443239493326581 — maintained SPA rebuild trigger', () => {
+  function rebuild(buildExit = 0) {
+    const script = join(repo, 'scripts/papercup-vite-rebuild.sh');
+    mkdirSync(join(repo, 'scripts/lib'), { recursive: true });
+    writeFileSync(script, readFileSync(REBUILD));
+    writeFileSync(join(repo, 'scripts/lib/spa-require-built.sh'), readFileSync(HELPER));
+    const bin = join(root, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'npm'), [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      '[[ "${PAPERCUSP_RETAIN_DIST_CHUNKS:-}" == 1 ]]',
+      'printf "%s\\n" "$*" >> "$SPA_FIXTURE_CALLS"',
+      '[[ "$SPA_FIXTURE_BUILD_EXIT" == 0 ]] || exit "$SPA_FIXTURE_BUILD_EXIT"',
+      'touch "$PWD/dist/.vite-build-source-read-at"',
+    ].join('\n') + '\n', { mode: 0o755 });
+    const r = spawnSync('bash', [script], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        SPA_FIXTURE_CALLS: join(root, 'npm-calls'),
+        SPA_FIXTURE_BUILD_EXIT: String(buildExit),
+      },
+    });
+    return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  }
+
+  const calls = () => existsSync(join(root, 'npm-calls'))
+    ? readFileSync(join(root, 'npm-calls'), 'utf8')
+    : '';
+
+  it('builds for a theme-only library edit, retains chunks and skips the next unchanged tick', () => {
+    put('apps/operator/lib/theme.ts', BASE + 200);
+    const first = rebuild();
+    expect(first.status).toBe(0);
+    expect(first.out).toContain('change detected (apps/operator/lib/theme.ts)');
+    expect(first.out).toContain('build done (chunk-retain on)');
+    expect(calls()).toBe('run build\n');
+    expect(gate('apps/operator/lib/theme.ts').status).toBe(0);
+
+    const second = rebuild();
+    expect(second.status).toBe(0);
+    expect(second.out).toContain('no frontend source changes since last build');
+    expect(calls()).toBe('run build\n');
+  });
+
+  it('ignores newer library tests, specs, dependencies, dist files and out-of-root edits', () => {
+    put('apps/operator/lib/theme.ts', BASE);
+    for (const rel of ['theme.test.ts', 'theme.spec.ts', 'node_modules/a.ts', 'dist/a.ts']) {
+      put(`apps/operator/lib/${rel}`, BASE + 200);
+    }
+    put('other/c.ts', BASE + 200);
+    const r = rebuild();
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('no frontend source changes since last build');
+    expect(calls()).toBe('');
+  });
+
+  it('does not rebuild for library source already older than the build stamp', () => {
+    put('apps/operator/lib/theme.ts', BASE);
+    expect(rebuild().status).toBe(0);
+    expect(calls()).toBe('');
+  });
+
+  it('leaves an edited theme unbuilt when the build fails', () => {
+    put('apps/operator/lib/theme.ts', BASE + 200);
+    const r = rebuild(7);
+    expect(r.status).toBe(7);
+    expect(r.out).not.toContain('build done');
+    expect(gate('apps/operator/lib/theme.ts').status).toBe(1);
+  });
+
+  it('refuses a fixture without source roots instead of silently skipping', () => {
+    rmSync(join(repo, 'apps/operator-vite/src'), { recursive: true });
+    const r = rebuild();
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('SPA source roots are missing');
+    expect(calls()).toBe('');
   });
 });
 

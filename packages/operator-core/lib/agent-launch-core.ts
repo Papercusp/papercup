@@ -346,13 +346,16 @@ export async function resolveResumeTarget(ref: {
   }
   const { sql } = getOrgPg();
   // Exact-pin by native session id wins; otherwise start with the newest row for
-  // the requested agent id. A carry-respawn can rotate the coord owner while
+  // the requested agent id by immutable registration id, not mutable started_at.
+  // A predecessor's start timestamp can be refreshed during reconciliation;
+  // that must never promote it above its successor, even after the successor ends.
+  // A carry-respawn can rotate the coord owner while
   // retaining the transcript's native session id, so agent-id lookup must follow
   // that candidate session through the latest session_turns.owner and prefer the
   // current adv_sessions row. Without that bridge, a stale historical owner is
   // handed to the reviver even though its live successor is already running.
   // An agentId may be a PREFIX (the short `su-b0fbf` handle agents actually say
-  // out loud) — match by prefix, newest first. adv_sessions is deliberately NOT
+  // out loud) — match by prefix, newest registration first. adv_sessions is deliberately NOT
   // workspace-scoped here: coord_owner_id and session_id are globally unique
   // (see advSessionsByCoordOwner's note), so a workspace predicate could only
   // drop valid rows.
@@ -377,7 +380,7 @@ export async function resolveResumeTarget(ref: {
                             ELSE s.session_id END AS candidate_session_id
                   FROM harness_shared.adv_sessions s
                  WHERE s.coord_owner_id LIKE ${agentId + '%'}
-                 ORDER BY s.started_at DESC
+                 ORDER BY s.id DESC
                  LIMIT 1`
       }
     ),
@@ -405,7 +408,7 @@ export async function resolveResumeTarget(ref: {
        sessionId
          ? sql`(session_id = ${sessionId}) DESC,`
          : sql`(coord_owner_id = (SELECT owner FROM indexed_owner)) DESC,`
-     } started_at DESC
+     } id DESC
      LIMIT 1
   `;
   if (!rows.length) {

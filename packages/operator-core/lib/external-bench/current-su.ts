@@ -711,6 +711,12 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
       }
       return { ...result, armMeta: { currentExecution: record } };
     },
+    async collectCost(input) {
+      // TEMPORARY MITIGATION (WI-10007971): the legacy harness sum does not
+      // prove complete native/retry/recovery usage. Retain its known subtotal
+      // while full source-bound native accounting is implemented in this lane.
+      return { ...await lifecycle.collectCost(input), costUsdMeasurementMissing: true };
+    },
     async teardown(input) { registeredTasks.delete(input.handle.slug); await lifecycle.teardown(input); },
   };
   return liveBenchHarnessDriver(ops, { ...opts, workspaceId, maxTransientRetries: 0 });

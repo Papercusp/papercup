@@ -55,6 +55,7 @@ describe('pgbouncer pool sampler — buildShowPoolsArgs (EI-19384024494946006)',
 describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)', () => {
   it('invokes psql with the built args, PGPASSWORD in env, and a timeout — then logs the output', async () => {
     const calls: unknown[] = [];
+    const timestamps = [1_000_000, 1_000_100, 1_000_750];
     const execFileImpl = (
       cmd: string,
       args: string[],
@@ -65,7 +66,10 @@ describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)
       cb(null, 'pool output here', '');
     };
 
-    const result = await samplePgBouncerPools('test-reason', { execFileImpl });
+    const result = await samplePgBouncerPools('test-reason', {
+      execFileImpl,
+      now: () => timestamps.shift() ?? 1_750,
+    });
 
     expect(result.ok).toBe(true);
     expect(result.output).toBe('pool output here');
@@ -79,6 +83,9 @@ describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)
 
     const logged = readFileSync(SAMPLE_LOG_FILE, 'utf8');
     expect(logged).toContain('reason=test-reason');
+    expect(logged).toContain('startedAt=1970-01-01T00:16:40.100Z');
+    expect(logged).toContain('completedAt=1970-01-01T00:16:40.750Z');
+    expect(logged).toMatch(/durationMs=\d+/);
     expect(logged).toContain('pool output here');
   });
 

@@ -645,28 +645,92 @@
       "state": "independent grading audit failed: historical test-source inspection lacks a full commit SHA in its stored evidence",
       "readbackVerified": true,
       "gradingAuditId": "EI-25554059343086462",
-      "failedCriteria": ["instrument-split", "re-runnable-evidence"],
+      "failedCriteria": [
+        "instrument-split",
+        "re-runnable-evidence"
+      ],
       "unresolvedCriterion": "degenerate-distribution",
       "requiredCorrection": "Pin detector paths and inspected contents to full historical commit identities through capability:git-evidence; replace the failed meta-attestation through the canonical scorecard path and obtain independent settlement. Do not substitute current HEAD or infer settlement from the observation row's done state."
     },
     "adoption": {
-      "state": "refused-no-write",
+      "state": "preview-refused-no-write",
       "sourceAuditPreview": "passed; ten inherited mappings/baseAudit15",
-      "code": "bar_contract_method_missing",
+      "code": "bar_contract_check_layer_mismatch",
       "ownedBlocker": "WI-10008022",
-      "runtime": "staging-operator@81c209358c",
-      "evidencePath": "/dev/shm/p020-reviewrepair-activation-applied.json",
+      "runtime": "staging-operator@1c8cf11a32",
+      "evidencePath": "/dev/shm/p020-r9-plane-repair-preview.json",
       "sourceRepair": {
         "workItem": "WI-10008022",
         "state": "canonical fix verified; actual P020 adoption remains pending containing staging runtime",
         "rootCause": "The seed rederived an unstarted full canonical criterion from plaintext Requirements, and the preview exempted subjects with an existing rubric pin even when adopting a fresh successor.",
         "verification": {
-          "unit": {"passed": 251, "files": 5, "log": "/dev/shm/p020-reviewed-adoption-unit-final.log"},
-          "integration": {"passed": 16, "files": 1, "log": "/dev/shm/p020-reviewed-adoption-integration-final.log"},
-          "typecheck": {"errors": 0, "log": "/dev/shm/p020-reviewed-adoption-typecheck-final.log"},
-          "controls": ["eight unchanged historical hashes without invented Intent", "14 complete criteria preserved", "outcome/title/plane source drift refused", "missing canonical METHOD refused", "preview/write refusal parity", "no table state changes during preview", "retired history unchanged", "neutral revision preview", "repeat-audit idempotence"]
+          "unit": {
+            "passed": 251,
+            "files": 5,
+            "log": "/dev/shm/p020-reviewed-adoption-unit-final.log"
+          },
+          "integration": {
+            "passed": 16,
+            "files": 1,
+            "log": "/dev/shm/p020-reviewed-adoption-integration-final.log"
+          },
+          "typecheck": {
+            "errors": 0,
+            "log": "/dev/shm/p020-reviewed-adoption-typecheck-final.log"
+          },
+          "controls": [
+            "eight unchanged historical hashes without invented Intent",
+            "14 complete criteria preserved",
+            "outcome/title/plane source drift refused",
+            "missing canonical METHOD refused",
+            "preview/write refusal parity",
+            "no table state changes during preview",
+            "retired history unchanged",
+            "neutral revision preview",
+            "repeat-audit idempotence"
+          ]
         }
+      },
+      "sourceMismatchRepair": {
+        "workItem": "EI-25556340557135475",
+        "planVersion": 77,
+        "planContentHash": "90a719e0d63912e7ae3e918e58eeaf2f83dfc9561c3e7956b5d622e29123a637",
+        "changedRow": "R-9 evidence plane tree -> live",
+        "reason": "align reviewed successor3 manual native TUI METHOD; Requirements unchanged",
+        "receipt": "/dev/shm/p020-r9-plane-repair-edit.json"
+      },
+      "contractLayerGaps": {
+        "workItem": "EI-25556616484428615",
+        "R-6": "requires integration+unit but binds only unit policy suite",
+        "R-10": "requires integration+unit but binds unit/e2e suites, no integration",
+        "candidate": "/dev/shm/p020-layer-repair-amend-preview-args.json",
+        "state": "owner resolution pending: R6 successor hash preservation or legitimate detector correction; no amendment applied",
+        "reuseProposal": {
+          "R-6": "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts",
+          "R-10": "libs/generic/tooldef/src/code-orchestration/persistent-kernel-process.integration.test.ts"
+        },
+        "hashMeaning": "check is hash material; correction changes R6/R10 successor hashes. Retired16 remains immutable; no override or fabricated Intent."
       }
+    },
+    "pinnedSourceCorrection": {
+      "sourceEvidencePath": "docs/evidence/managed-capability-p020-detector-source-pins-2026-10-10.json",
+      "sourceCommitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "submoduleCommits": {
+        "libs/papercusp": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+        "libs/generic/tooldef": "2f9b505e7cdc1db089fcd4fb51fab4fe211c04f4"
+      },
+      "resolvedDetectorPaths": 27,
+      "metaCard": "EI-25556052128462192",
+      "readback": "/dev/shm/p020-meta-pinned-correction-criteria-readback.json",
+      "state": "superseded after source adoption found check-layer gaps; original source pins remain valid"
+    },
+    "latestMetaCorrection": {
+      "id": "EI-25556620243974974",
+      "supersedes": "EI-25556052128462192",
+      "prefer-structured-check": "fail",
+      "remediation": "EI-25556616484428615",
+      "state": "independent audit pending; contract not ready",
+      "evidence": "/dev/shm/p020-meta-detector-gap-correction-args.json"
     }
   }
 }

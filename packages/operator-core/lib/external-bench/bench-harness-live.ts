@@ -97,6 +97,8 @@ export interface BenchRunCost {
   costUsd: number;
   /** COUNT(DISTINCT run_id) — every agent run that touched the harness (coordination overhead included). */
   turns: number;
+  /** Known subtotal only; unknown usage must not support an efficiency claim. */
+  costUsdMeasurementMissing?: boolean;
 }
 
 /**
@@ -279,7 +281,18 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
     // COST: always sum what was spent (even on a failure — real spend before a failure must be counted).
     let cost: BenchRunCost = { tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 };
     if (handle) {
-      cost = await ops.collectCost({ handle, workspaceId: ws }).catch(() => cost);
+      try {
+        const measured = await ops.collectCost({ handle, workspaceId: ws });
+        const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
+        const validUsd = Number.isFinite(measured.costUsd) && measured.costUsd >= 0;
+        const invalid = !validUsd || !count(measured.tokensIn) || !count(measured.tokensOut) || !count(measured.turns);
+        cost = { tokensIn: count(measured.tokensIn) ? measured.tokensIn : 0,
+          tokensOut: count(measured.tokensOut) ? measured.tokensOut : 0,
+          turns: count(measured.turns) ? measured.turns : 0, costUsd: validUsd ? measured.costUsd : 0,
+          ...(invalid || measured.costUsdMeasurementMissing ? { costUsdMeasurementMissing: true } : {}) };
+      } catch {
+        cost = { ...cost, costUsdMeasurementMissing: true };
+      }
     }
 
     // TEARDOWN: best-effort — a teardown hiccup must not mask the run's outcome (mirrors hive-eval's
@@ -315,6 +328,8 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
           tokensOut: summedCost.tokensOut + result.cost.tokensOut,
           costUsd: summedCost.costUsd + result.cost.costUsd,
           turns: summedCost.turns + result.cost.turns,
+          ...(summedCost.costUsdMeasurementMissing || result.cost.costUsdMeasurementMissing
+            ? { costUsdMeasurementMissing: true } : {}),
         };
       }
 
@@ -328,7 +343,9 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
         wallClockMs: ops.now() - startedAtMs,
         trajectoryRef: handle ? trajectoryRefFor(handle) : '',
         stopReason,
-        ...(result.armMeta ? { armMeta: result.armMeta } : {}),
+        ...(result.armMeta || summedCost.costUsdMeasurementMissing ? { armMeta: {
+          ...result.armMeta, ...(summedCost.costUsdMeasurementMissing ? { costUsdMeasurementMissing: true } : {}),
+        } } : {}),
         // `generationError` carries the failure detail for every NON-scored terminal (error / timeout /
         // infra-failed / transient) — these are all excluded from accuracy, and the detail explains why
         // (a 429/contention spawn, a wall-clock ceiling, a crash). A SCORED terminal (done / escalate /

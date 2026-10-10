@@ -210,7 +210,7 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   );
 
   // Cost/accuracy Pareto: accuracy = pass@1, cost = mean $ per task-attempt.
-  const rawPoints = arms.filter((a) => a.passAt1 != null && a.attempts > 0).map((a) => ({
+  const rawPoints = arms.filter((a) => a.passAt1 != null && a.attempts > 0 && !a.cost.missingMeasurements).map((a) => ({
     arm: a.arm,
     accuracy: a.passAt1!,
     cost: a.attempts === 0 ? 0 : a.cost.costUsd / a.attempts,
@@ -225,11 +225,11 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   const byArm = new Map(arms.map((a) => [a.arm, a]));
   const treatment = byArm.get(treatmentArm);
   const deltas: ArmDelta[] = [];
-  if (treatment && treatment.passAt1 != null && treatment.attempts > 0) {
+  if (treatment && treatment.passAt1 != null && treatment.attempts > 0 && !treatment.cost.missingMeasurements) {
     const tPoint = rawPoints.find((p) => p.arm === treatmentArm)!;
     for (const a of arms) {
       if (a.arm === treatmentArm) continue;
-      if (a.passAt1 == null || a.attempts === 0) continue;
+      if (a.passAt1 == null || a.attempts === 0 || a.cost.missingMeasurements) continue;
       const bPoint = rawPoints.find((p) => p.arm === a.arm)!;
       deltas.push({
         suite,

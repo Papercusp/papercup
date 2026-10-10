@@ -226,6 +226,8 @@ export interface CostAccount {
   tokensPerRun: number;
   /** $ per resolved task — the "more resolved per dollar" headline denominator. */
   costPerResolved: number | null;
+  /** Rows with incomplete usage. costUsd remains their known normalized subtotal. */
+  missingMeasurements?: number;
 }
 
 /** A pass@k point at one k, with the tasks it was estimated over. */

@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { InvalidInputError } from '@papercusp/tooldef';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { GUARD_RAIL_TAG } from '@papercusp/verification-harness';
 import {
   assertFact,
   resolveFactScopeRef,
@@ -124,7 +125,20 @@ const FACT_RECHECK_SCHEMA = z
         command: z.string().min(1).max(FACT_RECHECK_FIELD_MAX_CHARS),
         expectExitCode: z.number().int().min(0).max(255),
         stdoutIncludes: z.string().min(1).max(FACT_RECHECK_FIELD_MAX_CHARS).optional(),
-        scope: z.array(z.string()).min(1).max(FACT_RECHECK_EXEC_MAX_SCOPE_TAGS),
+        scope: z
+          .array(
+            z
+              .string()
+              .regex(
+                GUARD_RAIL_TAG,
+                'Expected a compact scope tag: lowercase letters, digits, :, ., _, or -; max 64 characters. Put file paths in command/evidence, not scope.',
+              )
+              .describe(
+                'Compact guard-rail scope tag (lowercase letters, digits, :, ., _, or -; max 64 characters). File paths belong in command/evidence, not scope.',
+              ),
+          )
+          .min(1)
+          .max(FACT_RECHECK_EXEC_MAX_SCOPE_TAGS),
       })
       .strict()
       .optional()

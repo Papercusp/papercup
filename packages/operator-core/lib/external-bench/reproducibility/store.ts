@@ -6,7 +6,7 @@
  */
 import { buildSuiteReport, type AggregateOpts, type SuiteReport, type TaskRunResult, type TestOutcome } from '@papercusp/bench-metrics';
 import type { PreregRecord, RolloutRecord } from './schema';
-import { currentBenchmarkProtocolSchema } from './schema';
+import { currentProtocolFromConfig, currentProtocolPriceTable } from './schema';
 import { resolveDb, type DbScope } from './db';
 
 /** bigint/numeric columns arrive as strings from postgres.js — coerce to number. */
@@ -139,9 +139,7 @@ export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | nu
   // Current protocols freeze structured execution controls per arm. Validate
   // the complete contract even if the task roster is missing; old string
   // rosters retain their original report semantics.
-  const currentProtocol = prereg && ('aggregateBudgetUsd' in prereg.config ||
-    Array.isArray(prereg.config.arms) && prereg.config.arms.some(value => value !== null && typeof value === 'object'))
-    ? currentBenchmarkProtocolSchema.parse(prereg.config) : null;
+  const currentProtocol = prereg ? currentProtocolFromConfig(prereg.config) : null;
   if (currentProtocol && currentProtocol.runId !== prereg!.runId) {
     throw new Error('benchmark report: current protocol differs from frozen run identity');
   }
@@ -171,24 +169,12 @@ export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | nu
     assignment = { assignedTaskIds, assignedArms, assignedSeeds, runId: prereg.runId, suite: prereg.suites[0] };
     if (currentProtocol) {
       const models = new Map(currentProtocol.arms.map(value => [value.id, value.model]));
-      const rates = new Map(currentProtocol.priceSchedule.rates.map(value => [value.model, value]));
       for (const row of rows) {
         if (row.preregHash !== prereg.preregHash || row.modelId !== models.get(row.arm)) {
           throw new Error('benchmark report: result model or preregistration differs from frozen current protocol');
         }
-        if ((row.tokensCacheWrite ?? 0) > 0 && rates.get(row.modelId)?.cacheWriteUsdPerMillion === undefined) {
-          throw new Error('benchmark report: no frozen cache-write price for current usage');
-        }
       }
-      assignment.priceTable = {
-        version: currentProtocol.priceSchedule.version,
-        prices: Object.fromEntries(currentProtocol.priceSchedule.rates.map(rate => [rate.model, {
-          inputPerMtok: rate.inputUsdPerMillion, outputPerMtok: rate.outputUsdPerMillion,
-          cacheReadPerMtok: rate.cachedInputUsdPerMillion,
-          // No write usage is admitted above unless its rate was frozen.
-          cacheWritePerMtok: rate.cacheWriteUsdPerMillion ?? 0,
-        }])),
-      };
+      assignment.priceTable = currentProtocolPriceTable(currentProtocol, rows);
     }
     if (!bySuite.has(prereg.suites[0])) bySuite.set(prereg.suites[0], []);
   }

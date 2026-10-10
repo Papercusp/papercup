@@ -233,6 +233,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadRequiresSignIn, setLoadRequiresSignIn] = useState(false);
   const [reload, setReload] = useState(0);
   const [continueUnavailable, setContinueUnavailable] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -270,15 +271,25 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     operation.current?.abort(); operation.current = abort;
     pending.current = null;
     requestedFocus.current = null;
-    setLoading(true); setRecord(null); setError(null); setContinueUnavailable(false); setBusy(false);
+    setLoading(true); setRecord(null); setError(null); setLoadRequiresSignIn(false); setContinueUnavailable(false); setBusy(false);
+    let loadFailure = 'Your guide could not be loaded. Check your connection and try again.';
+    let requiresSignIn = false;
     fetch(endpoint, { credentials: 'same-origin', cache: 'no-store', signal: abort.signal })
       .then(async response => {
-        if (!response.ok) throw new Error('unavailable');
+        if (!response.ok) {
+          requiresSignIn = response.status === 401;
+          loadFailure = requiresSignIn ? 'Sign in again to load your guide.'
+            : response.status === 403 ? 'Your account could not access the guide. Try again or continue to Papercusp.'
+              : response.status >= 500 || response.status === 429 ? 'Papercusp’s guide service is unavailable. Try again or continue to Papercusp.'
+                : 'Papercusp could not load your guide. Try again or continue to Papercusp.';
+          throw new Error('unavailable');
+        }
+        loadFailure = 'Your saved guide could not be read. Try again or continue to Papercusp.';
         const body: unknown = await response.json();
         const value = (body as { record?: unknown })?.record;
         if (value !== null && !validProductTutorialRecord(value, account)) throw new Error('scope_changed');
         if (!abort.signal.aborted) setRecord(value as AccountTutorialProgressRecord | null);
-      }).catch(() => { if (!abort.signal.aborted) setError('Your guide could not be loaded. Check your session and try again.'); })
+      }).catch(() => { if (!abort.signal.aborted) { setError(loadFailure); setLoadRequiresSignIn(requiresSignIn); } })
       .finally(() => { if (!abort.signal.aborted) setLoading(false); });
     return () => { mounted.current = false; operation.current?.abort(); abort.abort(); };
   }, [identity, reload]);
@@ -325,6 +336,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   if (sessionSignal !== 'valid') return <main className="welcome-state"><h1>Check your session</h1><p role="alert">Your session could not be verified. Guide changes are paused.</p><a href="/api/hosted/auth/sign-in?intent=sign-in">Sign in</a>{' · '}<a href="/docs">Public Docs</a></main>;
   if (loading) return <main className="welcome-state" aria-busy="true"><p role="status">Loading your product guide…</p></main>;
   if (error && !record && !continueUnavailable) return <main className="welcome-state"><h1>Product guide unavailable</h1><p role="alert">{error}</p>
+    {loadRequiresSignIn && <><a href="/api/hosted/auth/sign-in?intent=sign-in">Sign in</a>{' '}</>}
     <button onClick={() => setReload(value => value + 1)}>Try again</button>{' '}<button onClick={() => setContinueUnavailable(true)}>Continue to Papercusp</button>{' '}<a href="/docs">Public Docs</a></main>;
   if (!record || record.disposition !== 'active') {
     // The destination owns placement: a modal host must place these controls

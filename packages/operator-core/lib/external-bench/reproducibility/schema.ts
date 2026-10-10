@@ -22,6 +22,7 @@ import type {
   GraderModality,
   GraderStatus,
   TestOutcome,
+  PriceTable,
 } from '@papercusp/bench-metrics';
 import { z } from 'zod';
 import { canonicalJson } from './canonical-json';
@@ -99,6 +100,34 @@ export const currentBenchmarkProtocolSchema = z.object({
   if (protocol.confirmation.plannedPairedTasks > protocol.confirmation.taskIds.length) issue(['confirmation', 'plannedPairedTasks'], 'The confirmation roster must reserve the planned paired tasks.');
 });
 export type CurrentBenchmarkProtocol = z.infer<typeof currentBenchmarkProtocolSchema>;
+
+/** Historical string-arm configs retain their semantics; current controls must validate in full. */
+export function currentProtocolFromConfig(config: Record<string, unknown>): CurrentBenchmarkProtocol | null {
+  return 'aggregateBudgetUsd' in config ||
+    Array.isArray(config.arms) && config.arms.some(value => value !== null && typeof value === 'object')
+    ? currentBenchmarkProtocolSchema.parse(config) : null;
+}
+
+/** Shared frozen price projection for persistence and regenerated reports. */
+export function currentProtocolPriceTable(protocol: CurrentBenchmarkProtocol,
+  usage: Array<{ modelId: string; tokensCacheWrite?: number | null }> = []): PriceTable {
+  const rates = new Map(protocol.priceSchedule.rates.map(rate => [rate.model, rate]));
+  for (const row of usage) {
+    const rate = rates.get(row.modelId);
+    if (!rate) throw new Error('benchmark: no frozen price for current model');
+    if ((row.tokensCacheWrite ?? 0) > 0 && rate.cacheWriteUsdPerMillion === undefined) {
+      throw new Error('benchmark: no frozen cache-write price for current usage');
+    }
+  }
+  return {
+    version: protocol.priceSchedule.version,
+    prices: Object.fromEntries(protocol.priceSchedule.rates.map(rate => [rate.model, {
+      inputPerMtok: rate.inputUsdPerMillion, outputPerMtok: rate.outputUsdPerMillion,
+      cacheReadPerMtok: rate.cachedInputUsdPerMillion,
+      cacheWritePerMtok: rate.cacheWriteUsdPerMillion ?? 0,
+    }])),
+  };
+}
 
 /** Refuse drift between the frozen protocol and the request that will actually launch. */
 export function requireCurrentBenchmarkAssignment(config: unknown, execution: {

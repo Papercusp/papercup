@@ -47,6 +47,19 @@ function attempt(taskId: string, arm: ArmId, resolved: boolean, tokensIn: number
 }
 
 describe('frozen report population', () => {
+  it.each(['papercusp', 'baseline-b-native'])('keeps primary outcome but excludes %s with missing usage from efficiency claims', missingArm => {
+    const rows = ['papercusp', 'baseline-b-native'].map(arm => mk({ arm: arm as ArmId, seed: 0,
+      resolved: true, graderStatus: 'passed', tokensIn: 100, tokensTotal: 100,
+      ...(arm === missingArm ? { armMeta: { costUsdMeasurementMissing: true } } : {}) }));
+    const report = buildSuiteReport(rows);
+    expect(report.arms.every(arm => arm.passAt1 === 1)).toBe(true);
+    const missing = report.arms.find(arm => arm.arm === missingArm)!;
+    expect(missing.cost).toMatchObject({ missingMeasurements: 1, costPerResolved: null });
+    expect(missing.cost.costUsd).toBeGreaterThan(0); // known subtotal survives
+    expect(report.frontier.map(point => point.arm)).not.toContain(missingArm);
+    expect(report.deltas).toEqual([]);
+  });
+
   it('includes a wholly absent assigned arm without assigning it a free-cost frontier point', () => {
     const report = buildSuiteReport([mk({ seed: 0, resolved: true, graderStatus: 'passed' })], {
       assignedTaskIds: ['t1', 't2'], assignedSeeds: [0, 1, 2], assignedArms: ['papercusp', 'baseline-b-native'],
