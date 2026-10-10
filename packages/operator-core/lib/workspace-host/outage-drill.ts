@@ -541,17 +541,25 @@ export const GATE_RELEASED_MARKER = 'j5-gate-released';
  * AGAIN: Claude Code re-reads a file it saw `cat` read, and opening a FIFO for reading blocks until a writer
  * opens it. Measured 2026-10-02 on host-19ff2a97befd83b51d2306fd (drill run #4): with the writer gone, a
  * Claude Code thread sat in the kernel's `wait_for_partner` for 5 minutes and the task never got its tool
- * result; one extra open-for-write released it at once. So once the secret is taken, the pipe is renamed
- * aside and a regular empty file takes its path (a later re-open reads that and never blocks), and a reader
- * already waiting on the pipe itself is served end-of-file through the renamed path.
+ * result; one extra open-for-write released it at once. So once the secret is taken, a regular empty file
+ * takes the gate's path (a later re-open reads that and never blocks), and a reader already waiting on the
+ * pipe itself is served end-of-file through a second name for it.
+ *
+ * The swap is ATOMIC: the pipe is hard-linked to `.served` and the empty file is then renamed over the gate
+ * path, so the path goes from pipe to empty file without ever being absent. Moving the pipe aside FIRST and
+ * creating the file after left a gap in which a re-open got ENOENT (`reopen=1`, measured 2026-10-10 on the
+ * green-checkpoint gate at f07043ba, WI-10006055). A filesystem without hard links falls back to that
+ * move-aside order, with the empty file already staged so the gap is a single rename.
  */
 export function gateReleaseCommand(gatePath: string, secret: string): string {
   const gate = shellQuote(gatePath);
   const served = shellQuote(`${gatePath}.served`);
+  const next = shellQuote(`${gatePath}.next`);
   return [
     `printf %s ${shellQuote(secret)} > ${gate} && echo ${GATE_RELEASED_MARKER}`,
-    `mv -f ${gate} ${served}`,
-    `: > ${gate}`,
+    `: > ${next}`,
+    `{ ln -f ${gate} ${served} 2>/dev/null || mv -f ${gate} ${served}; }`,
+    `mv -f ${next} ${gate}`,
     `timeout 2 sh -c ${shellQuote(`: > ${served}`)}`,
     `rm -f ${served}`,
   ].join('; ');
