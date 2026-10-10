@@ -1989,6 +1989,38 @@ exec /bin/cp "$@"
     ).toBe(false);
   });
 
+  it.each(['0', '1'])('ignores nested model-cache creation and removal but refuses dependency rewrites (portable=%s)', (portable) => {
+    const integration = makeIntegration();
+    const packageDir = join(integration, 'node_modules/@huggingface/transformers');
+    const dependency = join(packageDir, 'index.js');
+    const cache = join(packageDir, '.cache');
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(dependency, 'dependency-v1\n');
+    const env = { DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT: portable, DG_MODEL_PACKAGE: packageDir };
+    const first = publish(integration, {
+      ...env,
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
+        'mkdir -p "$DG_MODEL_PACKAGE/.cache/model/onnx"; printf "downloaded-model\\n" > "$DG_MODEL_PACKAGE/.cache/model/onnx/model.onnx_data"',
+    });
+    expect(first.status, first.stderr).toBe(0);
+    expect(existsSync(join(publishedPath(first.stdout), 'tree/node_modules/@huggingface/transformers/.cache'))).toBe(false);
+
+    // Removing the pruned child changes its package directory's size/mtime.
+    rmSync(cache, { recursive: true, force: true });
+    const second = publish(integration, env);
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toContain('reused=true');
+    expect(publishedPath(second.stdout)).toBe(publishedPath(first.stdout));
+
+    writeFileSync(dependency, 'dependency-v2\n');
+    const torn = publish(integration, {
+      ...env,
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK: 'printf "dependency-v3\\n" > "$DG_MODEL_PACKAGE/index.js"',
+    });
+    expect(torn.status, torn.stderr).toBe(75);
+    expect(torn.stderr).toContain('refusing a torn snapshot');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('ignores crash-left deployment swap siblings in both input and dependency manifests (WI-2144371)', () => {
     const integration = makeIntegration();
     const first = publish(integration);

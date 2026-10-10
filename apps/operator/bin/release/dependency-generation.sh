@@ -421,6 +421,9 @@ dependency_generation_enumerate_node_modules() {
 # Metadata identity deliberately avoids reading ~13 GiB of file contents. The
 # aggregate is sampled before and after publication, so a concurrent install or
 # test mutation cannot authorize a mixed generation.
+# Directory size/mtime reflect creation of pruned runtime caches, not dependency
+# contents. Keep their path, permissions, ownership and inode; file metadata
+# remains unchanged so real dependency rewrites still refuse publication.
 dependency_generation_tree_fingerprint() {
   local root="$1" local_path stat_record link_target
   [ -d "$root" ] || return 1
@@ -429,23 +432,27 @@ dependency_generation_tree_fingerprint() {
     if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
       && find . -xdev -mindepth 1 -maxdepth 1 -printf '' >/dev/null 2>&1; then
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -path './.cache' -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
+        \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' \
-        -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \) \
+        \( -type d -printf '%P\0%y\0%m\0%u\0%g\0directory\0directory\0%i\0%l\0' \
+          -o -printf '%P\0%y\0%m\0%u\0%g\0%s\0%T@\0%i\0%l\0' \) \) \
         | dependency_generation_sha256
     else
       # BSD/macOS find has no -printf. Keep the same identity classes with a
       # portable stat record per path. It is slower, but correctness-preserving.
       LC_ALL=C find . -xdev -mindepth 1 \
-        \( -type d \( -path './.cache' -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
+        \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) -prune \) -o \
         \( ! -path './.papercusp-isolated-snapshot' \
         ! -path './.papercusp-dependency-generation' \
         ! -path './.package-lock.json' -print0 \) \
         | while IFS= read -r -d '' path; do
             local_path="${path#./}"
-            if stat_record="$(stat -c '%F|%a|%U|%G|%s|%Y|%i' "$path" 2>/dev/null)"; then
+            if [ -d "$path" ] && [ ! -L "$path" ]; then
+              stat_record="$(stat -c '%F|%a|%U|%G|directory|directory|%i' "$path" 2>/dev/null \
+                || stat -f '%HT|%Lp|%Su|%Sg|directory|directory|%i' "$path")" || exit 1
+            elif stat_record="$(stat -c '%F|%a|%U|%G|%s|%Y|%i' "$path" 2>/dev/null)"; then
               :
             else
               stat_record="$(stat -f '%HT|%Lp|%Su|%Sg|%z|%m|%i' "$path")" || exit 1
@@ -2369,7 +2376,7 @@ dependency_generation_source_records() {
     LC_ALL=C find . -xdev -mindepth 1 \
       \( \( -path ./.cache -o -path ./.package-lock.json \
         -o -path ./.papercusp-isolated-snapshot \
-        -o \( -type d \( -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
+        -o \( -type d \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
         -prune \) -o \
       \( \( -name '*[[:cntrl:]]*' -o -lname '*[[:cntrl:]]*' \) -printf '\001\n' \) -o \
       -printf '%P\t%y\t%m\t%U\t%G\t%s\t%T@\t%i\t%C@\t%l\n'
@@ -2646,7 +2653,8 @@ dependency_generation_prune_ephemeral() {
   # is internal metadata, not a runtime dependency, and older hardlink-based
   # release trees can share its inode with the integration tree. Astro, Vitest,
   # and Storybook likewise mutate .astro/.vite/.vite-temp or the conventional
-  # node_modules/.cache root while a dependency generation is being copied.
+  # .cache directories while a dependency generation is being copied. Packages
+  # such as Hugging Face transformers download models inside their own .cache.
   # None belong in an immutable generation: retaining or fingerprinting them can
   # false-fail rc75 on unrelated churn.
   #
@@ -2667,7 +2675,7 @@ dependency_generation_prune_ephemeral() {
   rm -f -- "$root/.package-lock.json" "$root/.papercusp-isolated-snapshot"
   rm -rf -- "$root/.cache"
   find "$root" -type d \
-    \( -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
+    \( -name .cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \
     -exec rm -rf -- {} +
 }
 
