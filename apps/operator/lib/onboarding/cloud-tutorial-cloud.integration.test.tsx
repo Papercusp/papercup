@@ -1,16 +1,20 @@
 // @vitest-environment jsdom
-import { StrictMode } from "react";
+import { createElement, StrictMode, useCallback } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { NuqsAdapter } from "../../../operator-vite/src/lib/nuqs-tanstack-router-adapter";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
-import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, currentTutorialStep, type TutorialState } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { hostedBrowserApiMarker } from "../hosted-browser-api";
 import CloudWorkspacesPage from "@/app/cloud-workspaces/page";
 import type { CloudWorkspacesControlRow } from "@/app/cloud-workspaces/page";
 
-const data = vi.hoisted(() => ({ rows: [] as CloudWorkspacesControlRow[], loading: false, error: null as Error | null, mutate: vi.fn(), invalidate: vi.fn() }));
+const data = vi.hoisted(() => ({
+  rows: [] as CloudWorkspacesControlRow[], loading: false, error: null as Error | null, mutate: vi.fn(), invalidate: vi.fn(),
+  companionInputs: [] as Array<{ configurationValid: boolean; configurationReviewed: boolean; boundWorkspaceId: string | null; workspaceId: string | null; workspaceReady: boolean }>,
+  observations: [] as unknown[], states: [] as unknown[],
+}));
 // Substitute only the authenticated network boundary. The Cloud forms, Radix
 // dialog, guide, highlighting, URL state and router are actual application code.
 vi.mock("@papercusp/sync", async importOriginal => ({
@@ -18,6 +22,39 @@ vi.mock("@papercusp/sync", async importOriginal => ({
   useSyncQuery: () => ({ data: data.rows, loading: data.loading, fetching: false, error: data.error, invalidate: data.invalidate }),
   useSyncMutate: () => data.mutate, planChunks: vi.fn(),
 }));
+vi.mock("@/lib/onboarding/use-cloud-tutorial-progress", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/lib/onboarding/use-cloud-tutorial-progress")>();
+  return {
+    ...actual,
+    useCloudTutorialProgress: (...args: Parameters<typeof actual.useCloudTutorialProgress>) => {
+      const result = actual.useCloudTutorialProgress(...args);
+      if (result.state) data.states.push(result.state);
+      const dispatch = useCallback((event: Parameters<typeof result.dispatch>[0]) => {
+        if (event.type === "observe") data.observations.push(event.observation);
+        return result.dispatch(event);
+      }, [result.dispatch]);
+      return { ...result, dispatch };
+    },
+  };
+});
+vi.mock("@/lib/onboarding/cloud-tutorial-companion", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/lib/onboarding/cloud-tutorial-companion")>();
+  return {
+    ...actual,
+    CloudTutorialCompanion: (props: Parameters<typeof actual.CloudTutorialCompanion>[0]) => {
+      const row = props.workspace;
+      data.companionInputs.push({
+        configurationValid: props.configurationValid,
+        configurationReviewed: props.configurationReviewed,
+        boundWorkspaceId: props.boundWorkspaceId,
+        workspaceId: row?.id ?? null,
+        workspaceReady: Boolean(row && row.observedState === "running" && row.desiredState === "running" &&
+          row.health?.status === "healthy" && props.boundWorkspaceId === row.id),
+      });
+      return createElement(actual.CloudTutorialCompanion, props);
+    },
+  };
+});
 const scope = { tenantId: "tenant", userId: "user", workspaceId: "customer" };
 const connection: CloudWorkspacesControlRow = { kind: "connection", id: "gcp", target: "gcp", label: "My GCP", status: "connected", credentialRef: "env:CREDENTIAL", scopes: [], regions: [], sizes: [], images: [], networks: [] };
 const workspace: CloudWorkspacesControlRow = { kind: "workspace", id: "customer", name: "My workspace", connectionId: "gcp", target: "gcp", scopeLabel: "project", region: "us-central1", size: "small", image: "ubuntu", diskGiB: 100, network: "private", desiredState: "running", observedState: "running", recoverability: { kind: "none", label: "No backup" }, capabilities: { stop: true, repair: true, snapshot: true, destroy: true } };
@@ -26,8 +63,8 @@ function resetNuqsUpdateQueue() {
   // mounting an independent router in this integration-test fixture.
   render(<NuqsTestingAdapter />).unmount();
 }
-function mount(initial = "/cloud-workspaces") {
-  resetNuqsUpdateQueue();
+function mount(initial = "/cloud-workspaces", options: { resetQueue?: boolean } = {}) {
+  if (options.resetQueue !== false) resetNuqsUpdateQueue();
   const root = createRootRoute({
     component: () => <NuqsAdapter><main><Outlet /></main></NuqsAdapter>,
     errorComponent: ({ error }) => <pre data-testid="cloud-route-error">{error.stack ?? error.message}</pre>,
@@ -40,6 +77,7 @@ function mount(initial = "/cloud-workspaces") {
 }
 beforeEach(() => {
   data.rows = []; data.loading = false; data.error = null; data.mutate.mockReset().mockResolvedValue({ ok: true }); data.invalidate.mockReset().mockResolvedValue(undefined);
+  data.companionInputs = []; data.observations = []; data.states = [];
   window.__PAPERCUSP_HOSTED_BROWSER__ = hostedBrowserApiMarker("control");
   delete window.__PAPERCUSP_HOSTED_BROWSER_API__;
   vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })));
@@ -146,15 +184,36 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     fireEvent.click(provision);
     expect(data.mutate).not.toHaveBeenCalled();
   });
-  it("recognizes an existing healthy workspace, records real cost review and waits for the host-specific connector", async () => {
+  it.each([false, true])("recognizes an existing healthy workspace with Nuqs queue reset=%s, records real cost review and waits for the host-specific connector", async resetQueue => {
     data.rows = [connection, { ...workspace, health: { status: "healthy", checks: [] } }];
-    mount("/cloud-workspaces?step=operate&host=customer");
+    mount("/cloud-workspaces?step=operate&host=customer", { resetQueue });
     const guide = await screen.findByRole("region", { name: "First agent guide" });
     await within(guide).findByRole("heading", { name: "Review configuration and cost" });
     fireEvent.click(within(guide).getByRole("button", { name: "Show me" }));
     const review = await screen.findByRole("button", { name: "I've reviewed the configuration and cost" });
     expect(document.querySelector('[data-tutorial-target="cloud-configuration"]')).not.toBeNull();
+    const inputStart = data.companionInputs.length;
+    const observationStart = data.observations.length;
     fireEvent.click(review);
+    await waitFor(() => expect(data.companionInputs.slice(inputStart).some(input => input.configurationReviewed)).toBe(true));
+    const reviewedInput = data.companionInputs.slice(inputStart).filter(input => input.configurationReviewed).at(-1);
+    expect(reviewedInput).toMatchObject({ configurationValid: true, configurationReviewed: true,
+      boundWorkspaceId: null, workspaceId: "customer", workspaceReady: false });
+    await waitFor(() => expect(data.observations.slice(observationStart).some(value => {
+      const observation = value as { configuration?: { valid?: boolean; costReviewed?: boolean }; workspace?: { id?: string; healthy?: boolean } };
+      return observation.configuration?.valid === true && observation.configuration.costReviewed === true &&
+        observation.workspace?.id === "customer" && observation.workspace?.healthy === false;
+    })).toBe(true));
+    await waitFor(() => {
+      const state = data.states.at(-1) as TutorialState | undefined;
+      expect(state && currentTutorialStep(state)?.id).toBe("workspace");
+    });
+    const appliedState = data.states.at(-1) as TutorialState;
+    expect(appliedState.observation).toMatchObject({
+      scope: { workspaceId: "customer" },
+      configuration: { connectionId: "gcp", valid: true, costReviewed: true },
+      workspace: { id: "customer", connectionId: "gcp", healthy: false },
+    });
     await within(guide).findByRole("heading", { name: "Wait for a healthy workspace" });
     expect(screen.queryByRole("button", { name: "+ New session" })).toBeNull();
     expect(data.mutate).not.toHaveBeenCalled();
