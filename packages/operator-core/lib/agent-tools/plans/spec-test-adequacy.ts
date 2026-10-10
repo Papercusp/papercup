@@ -23,6 +23,7 @@ import type {
   SpecTestAdequacyCurrentFingerprint,
   SpecTestAdequacyRerunRecipe,
 } from '../../harness/improvements/observation-types';
+import type { SourceBarTestRequirements } from './source-bar-test-requirements';
 import {
   isRecordedCaseTitle,
   isRecordedTestLayer,
@@ -1268,6 +1269,131 @@ function isSuccessfulRepairedEvidence(row: SpecEvidenceForAdequacy): boolean {
   return isSuccessfulExecutableEvidence(row) && REPAIRED_OUTCOMES.has(details.outcome?.toLowerCase() ?? '');
 }
 
+function testFilePathMatches(required: string, measured: string): boolean {
+  const normalize = (value: string) => value.trim().replaceAll('\\', '/').replace(/\/{2,}/g, '/').replace(/^\.\//, '');
+  const expected = normalize(required);
+  const actual = normalize(measured);
+  return expected === actual || actual.endsWith(`/${expected}`) || expected.endsWith(`/${actual}`);
+}
+
+function distinctTestRunRows(rows: SpecEvidenceForAdequacy[]): SpecEvidenceForAdequacy[] {
+  const seenRuns = new Set<number>();
+  const seenRefs = new Set<string>();
+  return rows.filter((row) => {
+    if (row.testRunId !== null) {
+      if (seenRuns.has(row.testRunId)) return false;
+      seenRuns.add(row.testRunId);
+      return true;
+    }
+    const key = `${row.evidenceKind}\0${row.evidenceRef}`;
+    if (seenRefs.has(key)) return false;
+    seenRefs.add(key);
+    return true;
+  });
+}
+
+function sourceBarTestSuiteRating(
+  clause: SpecClauseRevision,
+  evidence: SpecEvidenceForAdequacy[],
+  requirements: SourceBarTestRequirements | undefined,
+): AdequacyRatingEntry | null {
+  const resolved = requirements ?? (clause.sourceBar
+    ? { status: 'unavailable' as const, reason: 'the pinned source BAR requirements were not resolved by the caller' }
+    : { status: 'not-required' as const });
+  if (resolved.status === 'not-required') return null;
+  if (resolved.status === 'unavailable') {
+    return {
+      rating: 'unknown',
+      evidence: `Source BAR registered test files are unknown for ${clauseIdentity(clause)}: ${resolved.reason}.`,
+      suggestion: 'Resolve the exact pinned source rubric revision and BAR identity before grading this clause.',
+    };
+  }
+
+  const requiredFiles = [...new Set(resolved.files.map((file) => file.trim()).filter(Boolean))].sort();
+  if (requiredFiles.length === 0) {
+    return {
+      rating: 'unknown',
+      evidence: `The pinned source BAR test-file list is empty for ${clauseIdentity(clause)}.`,
+      suggestion: 'Repair the source BAR check.files list before grading this clause.',
+    };
+  }
+
+  const rowsByFile = new Map<string, SpecEvidenceForAdequacy[]>();
+  const ambiguousFiles = new Set<string>();
+  for (const row of evidence) {
+    if (row.evidenceKind !== 'test') continue;
+    const measuredPath = row.testRunProvenance?.filePath ?? row.testRunExecution?.filePath;
+    if (typeof measuredPath !== 'string' || measuredPath.trim().length === 0) continue;
+    const matches = requiredFiles.filter((file) => testFilePathMatches(file, measuredPath));
+    if (matches.length > 1) {
+      for (const file of matches) ambiguousFiles.add(file);
+      continue;
+    }
+    if (matches.length !== 1) continue;
+    const rows = rowsByFile.get(matches[0]!) ?? [];
+    rows.push(row);
+    rowsByFile.set(matches[0]!, rows);
+  }
+
+  const failed: Array<{ file: string; rows: SpecEvidenceForAdequacy[] }> = [];
+  const missing: string[] = [];
+  const uncertain: string[] = [];
+  const citedRows: SpecEvidenceForAdequacy[] = [];
+  for (const file of requiredFiles) {
+    const rows = distinctTestRunRows(rowsByFile.get(file) ?? []);
+    const currentRows = rows.filter((row) => row.currentness.overall === 'current');
+    const failedRows = currentRows.filter(
+      (row) => row.testRunId !== null && measuredExecutionVerdict(row) === 'fail',
+    );
+    if (failedRows.length > 0) {
+      failed.push({ file, rows: failedRows });
+      citedRows.push(...failedRows);
+      continue;
+    }
+    const passingRows = currentRows.filter(isSuccessfulExecutableEvidence);
+    if (passingRows.length > 0 && !ambiguousFiles.has(file)) {
+      citedRows.push(...passingRows);
+      continue;
+    }
+    if (rows.length === 0) missing.push(file);
+    else uncertain.push(file);
+    citedRows.push(...rows);
+  }
+
+  if (failed.length > 0) {
+    return {
+      rating: 'fail',
+      evidence: evidenceWithBindings(
+        `Current source BAR suite run(s) fail for ${clauseIdentity(clause)}: ${failed.map(({ file }) => file).join(', ')}.`,
+        distinctTestRunRows(citedRows),
+      ),
+      suggestion: 'Re-run each failing registered source BAR file against the current source and bind its measured passing result.',
+    };
+  }
+  if (missing.length > 0 || uncertain.length > 0 || ambiguousFiles.size > 0) {
+    const unresolved = [...new Set([
+      ...missing,
+      ...uncertain,
+      ...[...ambiguousFiles].map((file) => `${file} (ambiguous measured path)`),
+    ])].sort();
+    return {
+      rating: 'unknown',
+      evidence: evidenceWithBindings(
+        `Current passing bindings are not established for every registered source BAR file for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
+        distinctTestRunRows(citedRows),
+      ),
+      suggestion: 'Bind a current, ledger-backed passing test result for every registered source BAR file; missing, stale, and ambiguous paths remain unknown.',
+    };
+  }
+  return {
+    rating: 'pass',
+    evidence: evidenceWithBindings(
+      `Every registered source BAR test file has a current passing binding for ${clauseIdentity(clause)}: ${requiredFiles.join(', ')}.`,
+      distinctTestRunRows(citedRows),
+    ),
+  };
+}
+
 function booleanRating(
   evidence: SpecEvidenceForAdequacy[],
   pick: (details: AdequacyDetails) => boolean | undefined,
@@ -1920,6 +2046,8 @@ export function evaluateSpecTestAdequacy(input: {
   clause: SpecClauseRevision;
   evidence: SpecEvidenceForAdequacy[];
   classRef: PlanClassRubricRef;
+  /** Exact files from the clause's immutable source BAR check, when one is pinned. */
+  sourceBarTestRequirements?: SourceBarTestRequirements;
   /** Resolved harness scope to persist for operator-scope reruns. */
   harness?: string;
   /** The caller-attested current fingerprints used by listSpecEvidence. */
@@ -2004,7 +2132,11 @@ export function evaluateSpecTestAdequacy(input: {
         : {
             rating: 'pass',
             evidence: evidenceWithBindings(
-              `${evidence.length} immutable binding(s) have durable rerunnable lineage for ${clauseIdentity(clause)}.`,
+              `${new Set(evidence.map((row) => row.testRunId !== null
+                ? `test-run:${row.testRunId}`
+                : row.coverageEvidenceRef !== null
+                  ? `coverage:${row.coverageEvidenceRef}`
+                  : `${row.evidenceKind}:${row.evidenceRef}`)).size} distinct immutable proof record(s) have durable rerunnable lineage for ${clauseIdentity(clause)}.`,
               evidence,
             ),
           };
@@ -2476,7 +2608,13 @@ export function evaluateSpecTestAdequacy(input: {
         rating: 'pass',
         evidence: `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
       };
-  const parts = [layerRating, scenarioRating, evidenceKindRating, planeRating]
+  const parts = [
+    layerRating,
+    sourceBarTestSuiteRating(clause, evidence, input.sourceBarTestRequirements),
+    scenarioRating,
+    evidenceKindRating,
+    planeRating,
+  ]
     .filter((part): part is AdequacyRatingEntry => part !== null);
   const combinedRating: AdequacyRating = parts.some((part) => part.rating === 'fail')
     ? 'fail'

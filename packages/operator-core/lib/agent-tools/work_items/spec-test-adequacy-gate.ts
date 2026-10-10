@@ -28,6 +28,10 @@ import {
   type SpecTestAdequacyResult,
   type SpecEvidenceForAdequacy,
 } from '../plans/spec-test-adequacy';
+import {
+  resolveSourceBarTestRequirements,
+  type SourceBarRubricCache,
+} from '../plans/source-bar-test-requirements';
 
 export interface SpecAdequacyCompletionAttestation {
   classRef: PlanClassRubricRef;
@@ -528,6 +532,7 @@ export async function specTestAdequacyCompletionGate(
      * injectable — a unit test that could not stub it would open a real database.
      */
     listPlanStatuses?: ResolveBehaviorContractDeps['listPlanStatuses'];
+    resolveSourceBarTestRequirements?: typeof resolveSourceBarTestRequirements;
   } = {},
 ): Promise<SpecAdequacyCompletionGateResult> {
   const listClauses = deps.listClauses ?? listSpecClauses;
@@ -535,6 +540,8 @@ export async function specTestAdequacyCompletionGate(
   const listEvidence = deps.listEvidence ?? listSpecEvidence;
   const listCards = deps.listCards ?? listScorecards;
   const listPlanStatuses = deps.listPlanStatuses;
+  const resolvePinnedSourceBarTestRequirements = deps.resolveSourceBarTestRequirements ?? resolveSourceBarTestRequirements;
+  const sourceBarRubricCache: SourceBarRubricCache = new Map();
 
   // D-012/D-013: applicability is BEHAVIOR-owned, not plan-owned. Resolve the item's
   // whole contract across plan namespaces FIRST. Before P-016 this function opened with
@@ -738,12 +745,17 @@ export async function specTestAdequacyCompletionGate(
   const failedGradingAuditTargetIds = new Set<string>();
   const failedGradingAudits: FailedGradingAudit[] = [];
   for (const clause of relevant) {
+    const sourceBarTestRequirements = await resolvePinnedSourceBarTestRequirements(
+      clause.sourceBar,
+      sourceBarRubricCache,
+    );
     const result = evaluateSpecTestAdequacy({
       clause,
       evidence,
       classRef: input.attestation.classRef,
       harness: harnessSlug,
       workItemKind: input.workItem.kind,
+      sourceBarTestRequirements,
     });
     const label = `${clause.specId}@${clause.revision}`;
     const evaluatorUnknownFailure = evaluatorUnknownFailureReason(label, result);

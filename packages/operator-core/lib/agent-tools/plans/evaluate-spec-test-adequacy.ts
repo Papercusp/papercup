@@ -20,6 +20,7 @@ import {
   PLAN_CLASS_RUBRIC_REFS,
   type PlanClassRubricRef,
 } from './spec-test-adequacy';
+import { resolveSourceBarTestRequirements, type SourceBarRubricCache } from './source-bar-test-requirements';
 import { getBuildInfo, type BuildInfo } from '../../build-info';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 import { getWorkItem } from '../../work-items';
@@ -374,11 +375,13 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
         },
       }))
     : evidence;
+  const sourceBarTestRequirements = await resolveSourceBarTestRequirements(clause.sourceBar);
   const evaluated = evaluateSpecTestAdequacy({
     clause,
     evidence: historicalEvidence,
     classRef: args.classRef,
     harness: args.harness,
+    sourceBarTestRequirements,
     current,
     rerunSelection: {
       workItemIds: args.workItemIds,
@@ -683,12 +686,18 @@ export default defineTool({
       };
     }
     const now = args.now ? new Date(args.now) : new Date();
-    const rows = eligible.map((clause) =>
-      evaluateSpecTestAdequacy({
+    const sourceBarRubricCache: SourceBarRubricCache = new Map();
+    const rows = await Promise.all(eligible.map(async (clause) => {
+      const sourceBarTestRequirements = await resolveSourceBarTestRequirements(
+        clause.sourceBar,
+        sourceBarRubricCache,
+      );
+      return evaluateSpecTestAdequacy({
         clause,
         evidence: evaluationEvidence,
         classRef,
         harness: harnessSlug,
+        sourceBarTestRequirements,
         current: (() => {
           const merged = new Map<string, EvidenceCurrentInput>();
           for (const input of current ?? []) merged.set(evidenceCurrentInputKey(input), input);
@@ -714,8 +723,8 @@ export default defineTool({
           planItemIds: args.planItemIds,
         },
         now,
-      }),
-    );
+      });
+    }));
     // acceptance-machinery-seam-fixes-2026-09-16 P-001 (R-1): a read whose EVIDENCE COHORT is
     // pinned (workItemIds / evidenceRefs / bindingIds) is a DIAGNOSTIC, not the ship verdict — the ship gate
     // (acceptance-bar-contract-snapshot) grades every binding of a clause unscoped, so a pinned
