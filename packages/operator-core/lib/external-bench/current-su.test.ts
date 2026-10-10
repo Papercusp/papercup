@@ -383,6 +383,17 @@ describe('frozen benchmark native provider admission', () => {
         resources: { ...f.input.resources, totalTokensPerArm: 110 } }, f.governor)).toThrow(/output ceiling/);
     } finally { f.revoke(); }
   });
+  it('refuses a request beyond the tighter output ceiling before authentication or reservation', async () => {
+    const f = budgetFixture();
+    const controller = currentBenchGatewayController({ ...f.input, outputTokenLimit: 10 }, f.governor);
+    const body = JSON.stringify({ ...JSON.parse(f.attempt.body), max_output_tokens: 11 });
+    f.authority.outputTokens = 11;
+    try {
+      expect(await controller.gateway.carryTrial.authorizeAttempt({ ...f.attempt, body, bodySha256: f.digest(body) })).toBeNull();
+      expect(f.input.authenticateProvider).not.toHaveBeenCalled();
+      expect(f.reserve).not.toHaveBeenCalled();
+    } finally { controller.revoke(); f.revoke(); }
+  });
   it('binds every provider attempt to the existing exact lifetime ledger and assignment cap', async () => {
     const f = budgetFixture();
     try {

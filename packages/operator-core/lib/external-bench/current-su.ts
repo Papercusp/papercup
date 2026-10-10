@@ -629,6 +629,9 @@ export function currentBenchGatewayController(input: {
   workspaceId: string; loopId: string; token: string; preregHash: string;
   protocol: CurrentBenchmarkProtocol; armId: string; taskId: string; seed: number;
   resources: LearningReservationResourceBudget;
+  /** Per-request native output ceiling, independent of aggregate resources.
+   * The host may tighten this limit but cannot widen the frozen allowance. */
+  outputTokenLimit?: number;
   authenticateProvider: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>;
 }, governor?: GovernorGlueDeps): ReturnType<typeof createNativeGymGatewayController> & {
   readonly accountingBinding: CurrentBenchAccountingBinding;
@@ -656,8 +659,15 @@ export function currentBenchGatewayController(input: {
     throw new Error('Benchmark gateway resource policy differs from the frozen protocol.');
   }
   const rate = protocol.priceSchedule.rates.find(rate => rate.model === arm.model)!;
+  const outputTokenLimit = input.outputTokenLimit === undefined
+    ? Math.min(resources.outputTokens, arm.generationBudget.maxTokens ?? resources.outputTokens)
+    : input.outputTokenLimit;
+  if (!Number.isSafeInteger(outputTokenLimit) || outputTokenLimit <= 0 || outputTokenLimit > resources.outputTokens ||
+      arm.generationBudget.maxTokens !== undefined && outputTokenLimit > arm.generationBudget.maxTokens) {
+    throw new Error('Benchmark per-request output ceiling exceeds its frozen allowance or is invalid.');
+  }
   const controller = createNativeGymGatewayController({ workspaceId, loopId, token, manifestSha256: preregHash, armId: assignmentId,
-    outputTokenLimit: Math.min(resources.outputTokens, arm.generationBudget.maxTokens ?? resources.outputTokens),
+    outputTokenLimit,
     exact: { binding: preregHash, budgetUsd: protocol.aggregateBudgetUsd, resourceBudget: resources },
     async authorizeProviderAttempt(attempt) {
       // Copy before authentication so an async callback cannot retarget the
@@ -670,7 +680,7 @@ export function currentBenchGatewayController(input: {
         if ((arm.agent === 'codex') !== (request.transport !== 'anthropic-http') ||
             !['auto', 'default'].includes(arm.account) && request.accountId !== arm.account ||
             body.model !== arm.model || effort !== arm.effort ||
-            !Number.isSafeInteger(output) || output <= 0 ||
+            !Number.isSafeInteger(output) || output <= 0 || output > outputTokenLimit ||
             arm.generationBudget.maxTokens !== undefined && output > arm.generationBudget.maxTokens) return null;
         const authenticated = await authenticateProvider(request);
         if (!authenticated) return null;

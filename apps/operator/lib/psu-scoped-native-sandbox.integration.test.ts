@@ -319,7 +319,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       });
       revokeProvider = () => { auth.revoke(); reader.revoke(); };
       const controller = currentBenchGatewayController({ workspaceId, loopId, token: 'a'.repeat(64), preregHash,
-        protocol: config, resources, armId: 'papercusp', taskId: 't1', seed: 1,
+        protocol: config, resources, outputTokenLimit: outputLimit, armId: 'papercusp', taskId: 't1', seed: 1,
         authenticateProvider: async attempt => {
           const result = await auth.authenticateProvider(attempt);
           admissionStages.push({ stage: 'provider-authentication', accepted: result !== null });
@@ -332,6 +332,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
           return result;
         }, log: () => {} });
       expect(resources.outputTokens).toBeGreaterThan(outputLimit);
+      expect(controller.gateway.carryTrial.outputTokenLimit).toBe(outputLimit);
       expect(resources.inputTokens).toBe(inputTokens * maxRequests);
       expect(resources.usdPerArm).toBe(config.arms[0].generationBudget.maxUsd);
       const hosted = await controller.startNativeGateway(message => { gatewayErrors.push(message); }, options =>
@@ -366,7 +367,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
             expect(new Headers(init?.headers).get('authorization')).toBe('Bearer PRIVATE_OFFLINE_PROVIDER_CREDENTIAL');
             return fetch(`${baseURL}/v1/responses`, init);
           } }));
-      metered = hosted; nativeGateway = { ...hosted.nativeGateway, outputTokenLimit: outputLimit };
+      metered = hosted; nativeGateway = hosted.nativeGateway;
     }
     const home = writeSuCodexHome({ sessionKey: owner, sid: owner, mcpUrl: `${baseURL}/mcp`, token: 'offline-fixture',
       model: 'gpt-6-sol:medium', promptText: `${roleMarker}\n${restored.contextText}`, headless: true, trustDir: cwd, denyAmbientContext: true });
