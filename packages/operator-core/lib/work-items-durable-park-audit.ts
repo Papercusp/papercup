@@ -1052,13 +1052,16 @@ export async function runWorkItemDurableParkAudit(opts: {
   }
 }
 
-const DURABLE_PARK_CLEAR_REASONS = new Set<DurableParkClearReason>([
+/** The closed reason-code set; agent tools derive their input enum from this tuple. */
+export const DURABLE_PARK_CLEAR_REASON_CODES = [
   'condition-satisfied',
   'duplicate-terminal',
   'review-completed',
   'typed-blocker-resolved',
   'operator-directed',
-]);
+] as const satisfies readonly DurableParkClearReason[];
+
+const DURABLE_PARK_CLEAR_REASONS = new Set<DurableParkClearReason>(DURABLE_PARK_CLEAR_REASON_CODES);
 
 type ReconcileDbRow = {
   id: string;
@@ -1066,6 +1069,60 @@ type ReconcileDbRow = {
   taken_by: string | null;
   payload: unknown;
 };
+
+/** One row's park control state, in the exact shape `planDurableParkClear` fingerprints. */
+export interface DurableParkControlRow {
+  id: string;
+  state: string;
+  takenBy: string | null;
+  payload: unknown;
+}
+
+/**
+ * Read one row's control state with the SAME predicate and columns the reconciler's
+ * transaction uses, so a fingerprint computed from it is the fingerprint the CAS will
+ * compare (plan D-009: the agent door's read-then-CAS flow must not fingerprint a
+ * differently-normalized projection of the row).
+ */
+export async function readDurableParkControlRow(opts: {
+  workspaceId: string;
+  harnessSlug: string;
+  id: string;
+  sql?: OrgSql;
+}): Promise<DurableParkControlRow | null> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<ReconcileDbRow[]>`
+    SELECT feature_id AS id, status AS state, taken_by, payload
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId}
+       AND harness_slug = ${opts.harnessSlug}
+       AND feature_id = ${opts.id}`;
+  const row = rows[0];
+  return row ? { id: row.id, state: row.state, takenBy: row.taken_by, payload: row.payload } : null;
+}
+
+/**
+ * Deterministic runId for a single-decision reconcile issued through an agent tool
+ * (plan D-009). Identical input yields the identical runId, so a retry replays the
+ * recorded result instead of re-applying; any change of actor, fingerprint, reason or
+ * evidence yields a NEW runId, so a second attempt against a moved park is evaluated
+ * fresh (and reports `already-cleared` / `stale-fingerprint`) rather than tripping the
+ * reconciler's "runId already used with different input" refusal.
+ */
+export function durableParkSingleReconcileRunId(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  actor: string;
+  decision: DurableParkReconcileDecision;
+}): string {
+  const digest = reconcileInputSha256({
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    actor: input.actor,
+    decisions: [input.decision],
+  });
+  return `${WORK_ITEM_DURABLE_PARK_AUDIT}:reconcile:tool:${input.decision.id}:${digest.slice(0, 32)}`;
+}
 
 function reconcileArtifactPath(runId: string): string {
   const safe = runId.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'run';
