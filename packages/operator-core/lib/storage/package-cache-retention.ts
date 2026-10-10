@@ -83,7 +83,7 @@ interface PackageCacheRetentionOptions {
   maxBytes?: number;
   targets?: readonly PackageCacheTarget[];
   repoRoot?: string;
-  /** Lower the cache floor only when this exact filesystem is at its write reserve. */
+  /** Restrict pressure recovery to this filesystem. Omit to probe each cache's own filesystem. */
   pressurePath?: string;
   /** Bound the shared cache-writer lease wait; defaults to the maintenance budget. */
   mutexTimeoutMs?: number;
@@ -259,10 +259,13 @@ export async function runPackageCacheRetention(
   const sampleDisk = options.sampleDisk ?? sampleDiskSnapshots;
   const sharesFilesystem = options.sameFilesystem ?? sameFilesystem;
   async function threshold(target: PackageCacheTarget): Promise<number | null> {
-    if (!options.pressurePath) return maxBytes;
+    // The ordinary telemetry janitor has no pressurePath. It must still notice
+    // a critically full cache filesystem, rather than wait for an 8 GiB cache
+    // on a disk that has already exhausted its write reserve.
+    const pressurePath = options.pressurePath ?? target.path;
     try {
-      if (!(await sharesFilesystem(options.pressurePath, target.path))) return null;
-      const snapshot = (await sampleDisk([options.pressurePath]))[0];
+      if (options.pressurePath && !(await sharesFilesystem(pressurePath, target.path))) return null;
+      const snapshot = (await sampleDisk([pressurePath]))[0];
       if (snapshot && Number.isFinite(snapshot.totalBytes) && snapshot.totalBytes > 0 &&
           Number.isFinite(snapshot.freeBytes) && snapshot.freeBytes >= 0 &&
           snapshot.freeBytes <= criticalWriteHeadroomBytes(snapshot.totalBytes, diskPolicyFromEnv())) {
@@ -270,7 +273,9 @@ export async function runPackageCacheRetention(
       }
     } catch (error) {
       console.warn(`[package-cache-retention] pressure eligibility unmeasured: ${String(error)}`);
-      return null;
+      // A targeted recovery cannot prove eligibility. An ordinary janitor
+      // keeps its existing high-water policy, never an unmeasured lower floor.
+      return options.pressurePath ? null : maxBytes;
     }
     // Unknown pressure never authorizes a more aggressive cleanup.
     return maxBytes;

@@ -61,6 +61,35 @@ describe('resolvePackageCacheTargets', () => {
 });
 
 describe('runPackageCacheRetention', () => {
+  it('detects pressure on each cache filesystem for the ordinary janitor without a pressurePath', async () => {
+    const sampleDisk = vi.fn(async (paths: string[]) => [
+      { ...diskSnapshot(paths[0] === '/cache/npm' ? GIB : 3 * GIB), path: paths[0]! },
+    ]);
+    const runCommand = vi.fn();
+    const out = await runPackageCacheRetention({
+      dryRun: true,
+      targets: targets.slice(0, 2),
+      sampleDisk,
+      measure: async () => measurement(3 * GIB),
+      runCommand,
+    });
+    expect(out.map((row) => row.status)).toEqual(['would-prune', 'below-threshold']);
+    expect(out[0]?.maxBytes).toBe(PRESSURE_PACKAGE_CACHE_MAX_BYTES);
+    expect(out[1]?.maxBytes).toBe(8 * GIB);
+    expect(sampleDisk.mock.calls.map(([paths]) => paths)).toEqual([['/cache/npm'], ['/cache/bun']]);
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('retains the ordinary high-water policy when automatic pressure measurement fails', async () => {
+    const out = await runPackageCacheRetention({
+      dryRun: true,
+      targets: [targets[0]!],
+      sampleDisk: async () => { throw new Error('statfs unavailable'); },
+      measure: async () => measurement(3 * GIB),
+    });
+    expect(out[0]).toMatchObject({ status: 'below-threshold', maxBytes: 8 * GIB });
+  });
+
   it('previews a sub-high-water cache only on the critically pressured filesystem', async () => {
     const withMutex = vi.fn();
     const runCommand = vi.fn();

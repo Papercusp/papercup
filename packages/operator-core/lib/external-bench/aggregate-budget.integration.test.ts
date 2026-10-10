@@ -2,13 +2,16 @@
  * Real PostgreSQL proves serialization and recovery; no inference is sent. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { registerLearningLoop, reserveLearningSpend, settleLearningSpend,
   listLearningSpendReservations, cycleReservationRunRef,
   type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { OrgSql } from './reproducibility/db';
-import { currentBenchAssignmentId, currentBenchGatewayController } from './current-su';
+import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator } from './current-su';
+import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
@@ -27,6 +30,7 @@ beforeAll(async () => {
   }
   await sql.unsafe('ALTER TABLE harness_shared.learning_governor_loops ADD COLUMN pot_slug text');
   await sql.unsafe('ALTER TABLE harness_shared.learning_spend_events ADD COLUMN pot_slug text');
+  await sql.unsafe('CREATE TABLE harness_shared.operator_account_pool (workspace_id text PRIMARY KEY, payload jsonb NOT NULL)');
 }, 120_000);
 afterAll(async () => { await db?.cleanup(); });
 
@@ -141,6 +145,93 @@ describe('strict benchmark aggregate reservation bounds', () => {
 });
 
 describe('native provider authority uses real exact benchmark reservations', () => {
+  // Native-contract contents are explicitly synthetic. Physical private SQL,
+  // credential/contract bytes and the governor ledger use the production seams.
+  async function authenticatedFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'bench-native-auth-pg-'));
+    const key = join(root, 'key'), contract = join(root, 'provider-contract');
+    writeFileSync(key, 'PRIVATE_REGISTERED_PROVIDER_KEY', { mode: 0o600 });
+    const protocol = currentProtocolFixture(`auth-${randomUUID()}`, 60_000);
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const contractBody = JSON.stringify({ model: protocol.arms[0].model, inputTokens: 1000 });
+    writeFileSync(contract, contractBody, { mode: 0o600 });
+    protocol.priceSchedule.rates[0].inputTokenCeiling = 1000;
+    protocol.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = digest(contractBody);
+    protocol.maxInFlightUsd = 0.00102;
+    const resources = caps({ inputTokens: 3000, maxOpenUsd: protocol.maxInFlightUsd,
+      armIds: protocol.arms.map(arm => currentBenchAssignmentId(protocol.runId, arm.id, 't1', 1)), wallClockMsPerArm: 60_000 });
+    const preregHash = digest(protocol.runId), loopId = `benchmark:${protocol.runId}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 60,
+      enabled: true, meta: { reservationBinding: preregHash, reservationResourceBudget: resources } });
+    const accountId = `private-${randomUUID()}`;
+    const account = { id: accountId, provider: 'codex' as const, credentialRef: `token:${key}` };
+    await sql`INSERT INTO harness_shared.operator_account_pool VALUES (${WS}, ${sql.json({ accounts: [account] })})
+      ON CONFLICT(workspace_id) DO UPDATE SET payload = EXCLUDED.payload`;
+    const auth = currentBenchProviderAuthenticator({ workspaceId: WS, preregHash, protocol, armId: 'papercusp', taskId: 't1', seed: 1,
+      async readNativeInputCeiling() {
+        const bytes = readFileSync(contract, 'utf8'), parsed = JSON.parse(bytes), sourceSha256 = digest(bytes);
+        return { ...parsed, sourceSha256, validUntilMonotonicMs: processMonotonicClock.now() + 10_000,
+          validateAuthorization() { if (digest(readFileSync(contract, 'utf8')) !== sourceSha256) throw new Error('Native contract changed'); } };
+      } }, {
+      async readAccount(workspaceId, id) {
+        const [row] = await sql<{ payload: { accounts: Array<typeof account> } }[]>`
+          SELECT payload FROM harness_shared.operator_account_pool WHERE workspace_id = ${workspaceId}`;
+        return row?.payload.accounts.find(value => value.id === id) ?? null;
+      }, credentialResolver: (_provider, ref) => makeBearerCredentialResolver(ref),
+    });
+    const controller = currentBenchGatewayController({ workspaceId: WS, loopId, preregHash, token: randomUUID(), protocol,
+      armId: 'papercusp', taskId: 't1', seed: 1, resources, authenticateProvider: auth.authenticateProvider },
+      { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    const request = (): GatewayCarryTrialAttempt => {
+      const body = JSON.stringify({ model: protocol.arms[0].model, reasoning: { effort: 'high' }, max_output_tokens: 10 });
+      return { attemptId: randomUUID(), manifestSha256: preregHash, armId: resources.armIds[0], transport: 'bearer-http',
+        accountId, credentialHeader: 'authorization', credentialSha256: digest('Bearer PRIVATE_REGISTERED_PROVIDER_KEY'),
+        target: 'https://api.openai.com/v1/responses', body, bodySha256: digest(body), clockId: processMonotonicClock.id,
+        signal: new AbortController().signal };
+    };
+    return { ...controller, request, loopId, contract, key, accountId, cleanup() {
+      controller.revoke(); auth.revoke(); rmSync(root, { recursive: true, force: true });
+    } };
+  }
+
+  it('serializes credential-authenticated complete input exposure and preserves unknown headers', async () => {
+    const f = await authenticatedFixture();
+    try {
+      const attempts = [f.request(), f.request()];
+      const receipts = await Promise.all(attempts.map(attempt => f.gateway.carryTrial.authorizeAttempt(attempt)));
+      expect(receipts.filter(Boolean)).toHaveLength(1);
+      const index = receipts.findIndex(Boolean), receipt = receipts[index]!;
+      const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ status: 'open', reservedUsd: 0.00102,
+        resources: { inputTokens: 1000, outputTokens: 10 } });
+      expect(rows[0].note).not.toContain('PRIVATE_REGISTERED_PROVIDER_KEY');
+      receipt.validateAuthorization!();
+      const { body: _body, signal: _signal, ...identity } = attempts[index];
+      await receipt.observeAttemptResult!({ ...identity, reservationRef: receipt.reservationRef,
+        outcome: 'response-headers', responseStatus: 200, costUsdMeasurementMissing: true });
+      expect((await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId }))[0].status).toBe('open');
+      expect(await f.gateway.carryTrial.authorizeAttempt(f.request())).toBeNull();
+    } finally { f.cleanup(); }
+  });
+
+  it('rechecks physical contract before send and releases only a proven pre-send refusal', async () => {
+    const f = await authenticatedFixture();
+    try {
+      const attempt = f.request(), receipt = (await f.gateway.carryTrial.authorizeAttempt(attempt))!;
+      expect(receipt).not.toBeNull();
+      writeFileSync(f.contract, JSON.stringify({ model: 'retargeted', inputTokens: 1 }), { mode: 0o600 });
+      expect(() => receipt.validateAuthorization!()).toThrow();
+      const { body: _body, signal: _signal, ...identity } = attempt;
+      await receipt.observeAttemptResult!({ ...identity, reservationRef: receipt.reservationRef,
+        outcome: 'send-refused', responseStatus: null, costUsd: 0, costUsdMeasurementMissing: false });
+      expect((await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId }))[0])
+        .toMatchObject({ status: 'cancelled', usedUsd: 0 });
+      expect(await f.gateway.carryTrial.authorizeAttempt(f.request())).toBeNull();
+      expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId })).toHaveLength(1);
+    } finally { f.cleanup(); }
+  });
+
   async function nativeFixture() {
     const protocol = currentProtocolFixture(`private-${randomUUID()}`, 60_000);
     const digest = (value: string) => createHash('sha256').update(value).digest('hex');
