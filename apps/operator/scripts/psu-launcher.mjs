@@ -11281,7 +11281,17 @@ export function adoptedCarryRespawnFromHandoff(handoff) {
   const nativeId = typeof handoff.nativeId === "string" && handoff.nativeId.trim()
     ? handoff.nativeId.trim()
     : null;
-  return { nativeId };
+  const drillId = typeof handoff.drillId === "string" ? handoff.drillId.trim() : "";
+  const sessionClass = typeof handoff.sessionClass === "string" ? handoff.sessionClass.trim() : "";
+  const launchContextPath = typeof handoff.launchContextPath === "string"
+    ? handoff.launchContextPath
+    : "";
+  return {
+    nativeId,
+    ...(drillId ? { drillId } : {}),
+    ...(sessionClass ? { sessionClass } : {}),
+    ...(launchContextPath ? { launchContextPath } : {}),
+  };
 }
 
 export async function announceAdoptedCarryRespawn(

@@ -43,6 +43,7 @@ import {
   CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER,
   killPtyProcessTree,
   handoffPathFor,
+  sharedDrillLedgerPath,
   MAX_CONTROL_PAYLOAD_BYTES,
   PSU_PTY_DIR,
   IDENTITY_ACTIVATION_REFUSED_REASON,
@@ -3565,6 +3566,161 @@ describe('P-020 carry-respawn drill correlation', () => {
     },
     25_000,
   );
+});
+
+describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () => {
+  it('records adopted drill respawn and delivery in both lifecycle ledgers', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-adopted-carry-drill-'));
+    const codexHome = join(root, 'codex-home');
+    const nativeId = 'acba1234-1234-4234-8234-123456789abc';
+    const drillId = `d-adopt-${process.pid}-${Math.floor(performance.now())}`;
+    const sessionClass = 'codex-su';
+    const launchContextPath = '/safe/adopted-carry-context.md';
+    const nativeFile = join(codexHome, 'sessions', '2026', '10', '10', `rollout-${nativeId}.jsonl`);
+    const ownerId = `su-adopted-carry-drill-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const ledgerPath = sharedDrillLedgerPath(PSU_PTY_DIR);
+    const marker = '⟦turn-origin:carry-drill nonce:0123456789abcdef⟧';
+    const kickoff = `${marker}\nADOPTED_DRILL_CARRY`;
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let input='',echoed=false,submitted=false;process.stdout.write('62% context left\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);input+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}if(!submitted&&input.includes(process.env.TURN_MARKER)&&input.includes('\\r')){submitted=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:process.env.TURN_MARKER}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'adopted-drill-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));process.stdout.write('KICKOFF_SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: codexHome,
+          NATIVE_FILE: nativeFile,
+          TURN_MARKER: marker,
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff,
+        adoptedCarryRespawn: { nativeId, drillId, sessionClass, launchContextPath },
+        nativePersistenceTimeoutMs: 1500,
+        onRespawn: async () => true,
+        signalSource: new EventEmitter(),
+        onExit: () => undefined,
+      });
+      await vi.waitFor(() => {
+        const rows = existsSync(eventLog)
+          ? readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+          : [];
+        expect(rows.some(row => row.kind === 'carry-drill-carry-delivered' && row.drillId === drillId)).toBe(true);
+      }, { timeout: 5000 });
+      expect(captured()).toContain('KICKOFF_SUBMITTED');
+      const ownerRows = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const sharedRows = existsSync(ledgerPath)
+        ? readFileSync(ledgerPath, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [];
+      for (const rows of [ownerRows, sharedRows]) {
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-respawned', drillId, sessionClass, nativeId, launchContextPath,
+        }));
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-carry-delivered', drillId, sessionClass, nativeId, launchContextPath,
+          adopted: true,
+        }));
+      }
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('records an unverified adopted drill carry as dropped in both lifecycle ledgers', async () => {
+    const ownerId = `su-adopted-carry-drop-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const ledgerPath = sharedDrillLedgerPath(PSU_PTY_DIR);
+    const drillId = `d-drop-${process.pid}-${Math.floor(performance.now())}`;
+    const sessionClass = 'codex-su';
+    const launchContextPath = '/safe/unverified-carry-context.md';
+    const nativeId = 'bcba1234-1234-4234-8234-123456789abc';
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);let input='';",
+      "process.stdout.write('62% context left\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdin.on('data',d=>{if(d.includes('\\x04')||d.includes('QUIT'))process.exit(0);input+=d;if(input.includes('UNVERIFIED_ADOPTED_CARRY'))process.stdout.write('COMPOSER_ECHO:'+input+'\\n');});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff: 'UNVERIFIED_ADOPTED_CARRY',
+        adoptedCarryRespawn: { nativeId, drillId, sessionClass, launchContextPath },
+        nativePersistenceTimeoutMs: 100,
+        onRespawn: async () => true,
+        signalSource: new EventEmitter(),
+        onExit: () => undefined,
+      });
+      await vi.waitFor(() => {
+        const rows = existsSync(eventLog)
+          ? readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+          : [];
+        expect(rows.some(row => row.kind === 'carry-drill-carry-dropped' && row.drillId === drillId)).toBe(true);
+      }, { timeout: 5000 });
+      const ownerRows = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const sharedRows = existsSync(ledgerPath)
+        ? readFileSync(ledgerPath, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [];
+      for (const rows of [ownerRows, sharedRows]) {
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-respawned', drillId, sessionClass, nativeId, launchContextPath,
+        }));
+        expect(rows).toContainEqual(expect.objectContaining({
+          kind: 'carry-drill-carry-dropped', drillId, sessionClass, nativeId, launchContextPath,
+          reason: 'missing-leading-turn-origin',
+        }));
+      }
+      expect(captured()).toContain('COMPOSER_ECHO:UNVERIFIED_ADOPTED_CARRY');
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
+    }
+  }, 15_000);
 });
 
 describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {

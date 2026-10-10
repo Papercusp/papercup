@@ -3157,6 +3157,9 @@ export function handoffFirstTurnText(handoff: any): string | null;
  * yet. The successor pty host resolves that late id from exact kickoff proof.
  */
 export function adoptedCarryRespawnFromHandoff(handoff: any): {
+    launchContextPath?: any;
+    sessionClass?: any;
+    drillId?: any;
     nativeId: any;
 } | null;
 export function announceAdoptedCarryRespawn(ownerId: any, advSessionId: any, nativeId: any, { reportImpl, emitImpl, }?: {

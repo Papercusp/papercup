@@ -9117,7 +9117,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
  * @param {{renderedHash?: string}} [o.sessionPort] { renderedHash } for the managed seed
  * @param {(proof:any)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
- * @param {{nativeId?:string|null}|null} [o.adoptedCarryRespawn] host-code adoption of a carry;
+ * @param {{nativeId?:string|null,drillId?:string|null,sessionClass?:string|null,launchContextPath?:string|null}|null} [o.adoptedCarryRespawn] host-code adoption of a carry;
  *   its kickoff must prove the late native id and re-anchor before it announces completion
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
  * @param {((file:string, args:string[], options:object, realSpawn:(file:string, args:string[], options:object)=>any)=>any)|null} [o.spawnPty]
@@ -9225,6 +9225,29 @@ export function hostThroughPty(o) {
     // lost. Receives the real spawn as its 4th argument. null = pty.spawn.
     spawnPty = null,
   } = o;
+  let adoptedCarryDrillTerminalRecorded = false;
+  const recordAdoptedCarryDrillEvent = (kind, extra = {}) => {
+    const drillId = typeof adoptedCarryRespawn?.drillId === 'string'
+      ? adoptedCarryRespawn.drillId.trim()
+      : '';
+    if (!drillId) return false;
+    const row = {
+      drillId,
+      sessionClass: adoptedCarryRespawn.sessionClass ?? null,
+      nativeId: adoptedCarryRespawn.nativeId ?? null,
+      launchContextPath: adoptedCarryRespawn.launchContextPath ?? null,
+      ...extra,
+    };
+    appendHostEvent(ownerId, kind, row);
+    appendSharedDrillLedgerEvent(ownerId, kind, row);
+    return true;
+  };
+  const recordAdoptedCarryDrillTerminal = (kind, extra = {}) => {
+    if (adoptedCarryDrillTerminalRecorded) return false;
+    const recorded = recordAdoptedCarryDrillEvent(kind, extra);
+    if (recorded) adoptedCarryDrillTerminalRecorded = true;
+    return recorded;
+  };
   if (kickoff && kickoffFile) throw new Error('plain kickoff and managed kickoff file are mutually exclusive');
   const managedKickoff = kickoffFile
     ? (() => {
@@ -9426,6 +9449,7 @@ export function hostThroughPty(o) {
       kickoffFilePresent: Boolean(kickoffFile),
       childPid: Number.isInteger(child.pid) ? child.pid : null,
     });
+    recordAdoptedCarryDrillEvent('carry-drill-respawned');
   }
   let stopStartupTrace = startCodexStartupProcessTrace({
     agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
@@ -9614,6 +9638,13 @@ export function hostThroughPty(o) {
   // win a race against injectTurnAtPrompt(). Fresh launches seed their first
   // turn as a CLI positional argument and do not pass through this gate.
   const launchKickoff = managedKickoff?.text ?? kickoff;
+  if (adoptedCarryRespawn && !launchKickoff) {
+    recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+      reason: 'missing-first-turn-text',
+      attempts: 0,
+      outputSeen: childStartupOutput.length > 0,
+    });
+  }
   const claudeResumeCompactionEnabled =
     Boolean(launchKickoff) && String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'claude';
   const claudeResumeCompaction = makeClaudeResumeCompactionRecoveryStateMachine({
@@ -11048,6 +11079,12 @@ export function hostThroughPty(o) {
       }
       if (!managedKickoff) {
         if (!r.delivered) {
+          recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+            reason: r.reason ?? 'kickoff-not-submitted',
+            attempts: r.attempts,
+            budgetMs: kickoffBudgetMs,
+            outputSeen: childStartupOutput.length > 0,
+          });
           // An opted-in detached caller must receive a terminal negative receipt
           // even when the PTY submission never started. Otherwise the parent
           // waits out its proof window and cannot distinguish "not submitted"
@@ -11115,6 +11152,13 @@ export function hostThroughPty(o) {
           reason: proof.persisted ? null : proof.reason,
         });
         if (!proof.persisted) {
+          recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+            reason: proof.reason ?? 'turn-start-unverified',
+            attempts: r.attempts,
+            budgetMs: kickoffBudgetMs,
+            outputSeen: childStartupOutput.length > 0,
+            nativeRef: proof.nativeRef ?? null,
+          });
           const proofUnavailable =
             proof.reason === 'missing-leading-turn-origin' ||
             proof.reason === 'unsupported-backend';
@@ -11162,6 +11206,14 @@ export function hostThroughPty(o) {
             nativeId: adoptedNativeId,
             outputSeen: childStartupOutput.length > 0,
             turnStartVerified: true,
+            nativeRef: proof.nativeRef ?? null,
+            adopted: true,
+          });
+          recordAdoptedCarryDrillTerminal('carry-drill-carry-delivered', {
+            nativeId: adoptedNativeId,
+            attempts: r.attempts,
+            budgetMs: kickoffBudgetMs,
+            outputSeen: childStartupOutput.length > 0,
             nativeRef: proof.nativeRef ?? null,
             adopted: true,
           });

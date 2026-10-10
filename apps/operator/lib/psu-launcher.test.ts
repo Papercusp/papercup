@@ -15060,6 +15060,21 @@ describe("adoptedCarryRespawnFromHandoff (WI-10004791 late Codex id)", () => {
     expect(adoptedCarryRespawnFromHandoff({ mode: "recycle", nativeId: "native-123" })).toBeNull();
   });
 
+  it("preserves drill correlation metadata across host-code adoption", () => {
+    expect(adoptedCarryRespawnFromHandoff({
+      mode: "carry-respawn",
+      nativeId: "native-123",
+      drillId: "drill-456",
+      sessionClass: "claude-su",
+      launchContextPath: "/tmp/carry context.md",
+    })).toEqual({
+      nativeId: "native-123",
+      drillId: "drill-456",
+      sessionClass: "claude-su",
+      launchContextPath: "/tmp/carry context.md",
+    });
+  });
+
   it("routes adoption through pty-host first-turn proof before launcher-side re-anchor", () => {
     const src = readFileSync(fileURLToPath(new URL("../scripts/psu-launcher.mjs", import.meta.url)), "utf8");
     const handoffStart = src.indexOf("const hostHandoff =");

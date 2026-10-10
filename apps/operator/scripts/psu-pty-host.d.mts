@@ -4381,7 +4381,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
  * @param {{renderedHash?: string}} [o.sessionPort] { renderedHash } for the managed seed
  * @param {(proof:any)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
- * @param {{nativeId?:string|null}|null} [o.adoptedCarryRespawn] host-code adoption of a carry;
+ * @param {{nativeId?:string|null,drillId?:string|null,sessionClass?:string|null,launchContextPath?:string|null}|null} [o.adoptedCarryRespawn] host-code adoption of a carry;
  *   its kickoff must prove the late native id and re-anchor before it announces completion
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
  * @param {((file:string, args:string[], options:object, realSpawn:(file:string, args:string[], options:object)=>any)=>any)|null} [o.spawnPty]
@@ -4429,6 +4429,9 @@ export function hostThroughPty(o: {
     onKickoffPersisted?: ((proof: any) => Promise<void>) | undefined;
     adoptedCarryRespawn?: {
         nativeId?: string | null;
+        drillId?: string | null;
+        sessionClass?: string | null;
+        launchContextPath?: string | null;
     } | null | undefined;
     signalSource?: object | undefined;
     spawnPty?: ((file: string, args: string[], options: object, realSpawn: (file: string, args: string[], options: object) => any) => any) | null | undefined;
