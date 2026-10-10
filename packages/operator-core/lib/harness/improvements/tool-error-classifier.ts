@@ -140,7 +140,7 @@ export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
  *  the retry helper so a transient reset that slips past the retry stops being
  *  mis-filed as a structural tool bug (EI-11010). */
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
-  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable';
+  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable|could not access status of transaction [0-9]+';
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.
@@ -250,7 +250,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'transient',
     errorCodes: ['sidecar_required_unavailable'],
     messagePattern: INFRA_TRANSIENT_MESSAGE_PATTERN,
-    why: 'shared-infra exhaustion (PG max_connections / DB unavailable / embedding sidecar unavailable) — load, not a per-tool bug',
+    why: 'shared-infra exhaustion (PG max_connections / DB unavailable / disk-full transaction-status failure / embedding sidecar unavailable) — not a per-tool bug',
   },
 ];
 

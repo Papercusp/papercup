@@ -127,6 +127,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'operator shutdown-window response — transient lifecycle state, not a structural coord:glance bug (EI-20257122293248893)',
   },
   {
+    n: 6, errorCode: 'handler_error', status: 'error',
+    message: 'could not access status of transaction 0',
+    expectedClass: 'transient',
+    note: 'six activity:report failures in EI-25561866963703669 carry PostgreSQL SQLSTATE 53100 (disk_full); shared filesystem exhaustion, not a per-tool defect',
+  },
+  {
     n: 1, errorCode: 'sidecar_required_unavailable', status: 'degraded',
     message: 'sidecar_required_unavailable: semantic search sidecar at http://127.0.0.1:3384 aborted; lexical-only fallback returned',
     expectedClass: 'transient',
