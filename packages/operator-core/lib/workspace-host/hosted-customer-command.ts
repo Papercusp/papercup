@@ -8,7 +8,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { posix } from 'node:path';
 import type { AgentSpawnPlan, AgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
-import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import { hostedCustomerCommandSpawnTransform } from './hosted-agent-identity';
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '../task-manager/enroll-sync';
 import { onTaskKillRequested } from '../task-manager/kill-notify';
@@ -31,7 +30,8 @@ export interface HostedCustomerCommandResult {
 }
 
 export interface HostedCustomerCommandDependencies {
-  readonly resolvePrincipal: HostedPrincipalResolver;
+  readonly resolvePrincipal: (headers: Headers) => Promise<
+    { readonly ok: true; readonly principal: HostedPrincipal } | { readonly ok: false }>;
   /** Authenticated session material, copied once; never tool-call arguments. */
   readonly sessionHeaders: Headers;
   /** The workspace this execution host serves, from trusted host configuration. */
@@ -76,7 +76,7 @@ export async function awaitHostedCustomerOperation<T>(start: () => Promise<T>, s
 }
 
 async function authorize(
-  resolve: HostedPrincipalResolver, headers: Headers, workspaceId: string,
+  resolve: HostedCustomerCommandDependencies['resolvePrincipal'], headers: Headers, workspaceId: string,
   signal: AbortSignal, expected?: HostedCustomerSessionBinding,
 ): Promise<HostedCustomerSessionBinding> {
   try {
