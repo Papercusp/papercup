@@ -368,9 +368,10 @@ const openAiCountTarget = 'https://api.openai.com/v1/responses/input_tokens';
  * https://developers.openai.com/api/docs/guides/token-counting */
 export function currentBenchOpenAiInputContract(model: string, inputTokens: number): string {
   if (!model.trim() || !Number.isSafeInteger(inputTokens) || inputTokens <= 0) throw new Error('Invalid native input contract.');
-  return createHash('sha256').update(canonicalJson({ version: 1, model, inputTokens,
+  return createHash('sha256').update(canonicalJson({ version: 2, model, inputTokens,
     target: openAiCountTarget, fields: openAiCountFields, generationFields: openAiGenerationFields,
-    input: 'self-contained-text-and-local-tools', tier: 'default' })).digest('hex');
+    input: 'self-contained-text-and-local-tools', localToolFormats: ['function', 'custom', 'namespace'],
+    inlineToolType: 'additional_tools', tier: 'default' })).digest('hex');
 }
 
 /** Refuse mutable server/remote context and separately billed provider tools.
@@ -385,8 +386,15 @@ function selfContainedOpenAiInput(body: Record<string, unknown>): boolean {
   }
   const object = (value: unknown): value is Record<string, unknown> =>
     value !== null && typeof value === 'object' && !Array.isArray(value);
-  if (body.tools !== undefined && (!Array.isArray(body.tools) ||
-      body.tools.some(tool => !object(tool) || !['function', 'custom'].includes(String(tool.type))))) return false;
+  const named = (tool: Record<string, unknown>) => typeof tool.name === 'string' && tool.name.trim().length > 0;
+  const localTool = (tool: unknown) => object(tool) && named(tool) && ['function', 'custom'].includes(String(tool.type));
+  // Native Responses-lite puts these definitions in developer input items.
+  // Count those exact bytes, including code-executor guidance and schemas;
+  // hosted tools remain excluded even inside a namespace.
+  const localTools = (value: unknown) => Array.isArray(value) && value.length > 0 && value.every(tool =>
+    localTool(tool) || object(tool) && tool.type === 'namespace' && named(tool) &&
+      Array.isArray(tool.tools) && tool.tools.length > 0 && tool.tools.every(localTool));
+  if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.length > 0 && !localTools(body.tools))) return false;
   const content = (value: unknown) => typeof value === 'string' || Array.isArray(value) && value.every(part =>
     object(part) && ['input_text', 'output_text'].includes(String(part.type)) && typeof part.text === 'string');
   if (typeof body.input === 'string') return true;
@@ -395,6 +403,7 @@ function selfContainedOpenAiInput(body: Record<string, unknown>): boolean {
     if (!object(item)) return false;
     switch (item.type ?? 'message') {
       case 'message': return ['system', 'developer', 'user', 'assistant'].includes(String(item.role)) && content(item.content);
+      case 'additional_tools': return item.role === 'developer' && localTools(item.tools);
       case 'function_call': return typeof item.name === 'string' && typeof item.arguments === 'string' && typeof item.call_id === 'string';
       case 'custom_tool_call': return typeof item.name === 'string' && typeof item.input === 'string' && typeof item.call_id === 'string';
       case 'function_call_output': case 'custom_tool_call_output': return typeof item.call_id === 'string' && content(item.output);

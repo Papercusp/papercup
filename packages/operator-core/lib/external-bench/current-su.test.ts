@@ -536,6 +536,47 @@ describe('provider-counted complete native input', () => {
       proof!.validateAuthorization(); f.reader.revoke(); expect(() => proof!.validateAuthorization()).toThrow(/revoked/);
     } finally { f.reader.revoke(); f.revoke(); }
   });
+  it.each(['inline', 'top-level', 'after-user'] as const)('counts complete native local tool namespaces (%s)', async form => {
+    const f = fixture();
+    try {
+      const body = JSON.parse(f.attempt.body);
+      const tools = [{ type: 'namespace', name: 'functions', description: 'Native executor', tools: [
+        { type: 'custom', name: 'exec', description: 'Exact native guidance', format: { type: 'text' } },
+        { type: 'function', name: 'wait', parameters: { type: 'object', properties: {} } },
+      ] }];
+      if (form !== 'top-level') {
+        delete body.tools;
+        const entry = { id: 'tools-native', type: 'additional_tools', role: 'developer', tools };
+        if (form === 'after-user') body.input.push(entry); else body.input.unshift(entry);
+      } else body.tools = tools;
+      f.attempt.body = JSON.stringify(body); f.attempt.bodySha256 = f.digest(f.attempt.body);
+      const proof = await f.reader.read(f.attempt, f.credential);
+      expect(proof?.evidence?.bodySha256).toBe(f.attempt.bodySha256);
+      const counted = JSON.parse(f.fetch.mock.calls[0]![1]!.body as string);
+      expect(counted.input).toEqual(body.input);
+      expect(counted.tools).toEqual(body.tools);
+    } finally { f.reader.revoke(); f.revoke(); }
+  });
+  it.each(['hosted', 'nested-namespace', 'missing-name', 'missing-tools', 'user-role', 'empty'] as const)(
+    'refuses invalid native inline tools (%s) before counting', async changed => {
+      const f = fixture();
+      try {
+        const body = JSON.parse(f.attempt.body);
+        const namespace: Record<string, unknown> = { type: 'namespace', name: 'functions', tools: [
+          { type: 'custom', name: 'exec' },
+        ] };
+        if (changed === 'hosted') namespace.tools = [{ type: 'web_search' }];
+        if (changed === 'nested-namespace') namespace.tools = [{ type: 'namespace', name: 'nested', tools: [] }];
+        if (changed === 'missing-name') delete namespace.name;
+        if (changed === 'missing-tools') delete namespace.tools;
+        if (changed === 'empty') namespace.tools = [];
+        const entry = { type: 'additional_tools', role: changed === 'user-role' ? 'user' : 'developer', tools: [namespace] };
+        body.input.unshift(entry);
+        f.attempt.body = JSON.stringify(body); f.attempt.bodySha256 = f.digest(f.attempt.body);
+        expect(await f.reader.read(f.attempt, f.credential)).toBeNull();
+        expect(f.fetch).not.toHaveBeenCalled();
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
   it.each(['previous', 'conversation', 'remote-image', 'remote-file', 'reference', 'hosted-tool', 'unknown-field',
     'paid-tier', 'background', 'credential', 'target', 'body', 'aborted'] as const)('refuses %s before the counting request', async changed => {
     const f = fixture();

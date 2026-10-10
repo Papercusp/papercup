@@ -135,18 +135,31 @@ it('delivers restored frozen context to installed Codex through the real managed
       const request = JSON.parse(Buffer.concat(chunks).toString()); providerCalls.push(request);
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if (providerCalls.length === 1) {
-        const tools = (request.tools ?? []) as Array<Record<string, unknown>>;
+        // Responses-lite carries the real definitions in an input item. A
+        // code-mode model advertises its executor rather than direct MCP calls.
+        const tools = [...(request.tools ?? []), ...(request.input ?? []).flatMap(
+          (item: Record<string, unknown>) => Array.isArray(item.tools) ? item.tools : [],
+        )] as Array<Record<string, unknown>>;
         const namespace = tools.find(entry =>
           entry.type === 'namespace' && (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.name === 'capability_read'));
         const direct = tools.find(tool => tool.type === 'function' && typeof tool.name === 'string' &&
           tool.name.endsWith('__capability_read'));
-        if (!namespace && !direct) throw new Error('Installed native runtime did not advertise the frozen file-read tool');
-        const item = { id: 'fc_frozen', type: 'function_call', call_id: 'frozen-read',
+        const executor = tools.find(entry => entry.type === 'namespace' &&
+          (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.type === 'custom' && tool.name === 'exec'));
+        if (!namespace && !direct && !executor) throw new Error('Installed native runtime did not advertise a frozen-read execution path');
+        const readArgs = { file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) };
+        const item = executor ? { id: 'fc_frozen', type: 'custom_tool_call', call_id: 'frozen-read',
+          namespace: executor.name, name: 'exec', status: 'completed', input:
+            `const frozen = ALL_TOOLS.find(tool => tool.name.endsWith('__capability_read'));\n` +
+            `if (!frozen) throw new Error('Frozen read is absent from the actual native executor registry');\n` +
+            `text(await tools[frozen.name](${JSON.stringify(readArgs)}));`,
+        } : { id: 'fc_frozen', type: 'function_call', call_id: 'frozen-read',
           ...(namespace ? { namespace: namespace.name } : {}),
-          name: direct?.name ?? 'capability_read', arguments: JSON.stringify({ file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) }), status: 'completed' };
+          name: direct?.name ?? 'capability_read', arguments: JSON.stringify(readArgs), status: 'completed' };
         const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
         const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
-        res.end(event('response.output_item.added', { output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } }) +
+        res.end(event('response.output_item.added', { output_index: 0, item: { ...item,
+          ...(executor ? { input: '' } : { arguments: '' }), status: 'in_progress' } }) +
           event('response.output_item.done', { output_index: 0, item }) + event('response.completed', { response: body }));
       } else {
         res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol', text: 'FROZEN_NATIVE_RECEIPT', inputTokens: 0, outputTokens: 0 })));
@@ -197,12 +210,13 @@ it('delivers restored frozen context to installed Codex through the real managed
     const inputShapes = (value: unknown, path = 'input'): unknown[] => {
       if (typeof value === 'string') {
         const index = value.indexOf('capability_read');
-        return [{ path, length: value.length, ...(index < 0 ? {} :
+        return [{ path, length: value.length, ...(/\.(type|name|role)$/.test(path) ? { value } : {}), ...(index < 0 ? {} :
           { toolExcerpt: value.slice(Math.max(0, index - 300), index + 500) }) }];
       }
       if (Array.isArray(value)) return value.flatMap((entry, i) => inputShapes(entry, `${path}[${i}]`));
       if (value && typeof value === 'object') return [{ path, keys: Object.keys(value) },
-        ...Object.entries(value).flatMap(([key, entry]) => inputShapes(entry, `${path}.${key}`))];
+        ...Object.entries(value).filter(([key]) => !['parameters', 'format'].includes(key))
+          .flatMap(([key, entry]) => inputShapes(entry, `${path}.${key}`))];
       return [];
     };
     const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, requestPaths, mcpMethods,
@@ -217,6 +231,7 @@ it('delivers restored frozen context to installed Codex through the real managed
     expect(JSON.stringify(providerCalls[0])).toContain(frozenMarker);
     expect(JSON.stringify(providerCalls)).not.toContain(ambientMarker);
     expect(JSON.stringify(providerCalls[1])).toContain('frozen-read');
+    expect(JSON.stringify(providerCalls[1])).toContain(Buffer.from(snapshot).toString('base64'));
     expect(output).toContain('FROZEN_NATIVE_RECEIPT');
   } finally {
     if (child && child.exitCode === null) child.kill('SIGKILL');
