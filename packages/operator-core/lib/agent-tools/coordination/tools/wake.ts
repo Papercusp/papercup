@@ -194,7 +194,7 @@ export default defineTool({
       queued,
       woken,
       pickupConfirmed: false,
-      ...(fan.pickup.length > 0 ? { pickup: fan.pickup } : {}),
+      ...(fan.pickup?.length ? { pickup: fan.pickup } : {}),
       ...(fan.staged > 0 ? { staged: fan.staged } : {}),
       ...(recipient_dead ? { recipient_dead } : {}),
       ...(recipient_dormant_scheduled ? { recipient_dormant_scheduled } : {}),
@@ -205,7 +205,7 @@ export default defineTool({
           ? {
               warning:
                 `coord:wake queued ${queued} durable wake delivery for ${to}, but pickup is NOT confirmed — ` +
-                (fan.pickup[0]
+                (fan.pickup?.[0]
                   ? `events:await "${fan.pickup[0].event}" (fires only if no turn starts within ${fan.pickup[0].windowSec}s) or `
                   : '') +
                 'verify a fresh work-item checkpoint or activity timestamp before treating the target as running.',

@@ -814,6 +814,12 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(meter.length).toBeGreaterThan(0);
     const delivered = meter.find((m) => m.subscriberId === 'su-6' && m.status === 'delivered');
     expect(delivered).toMatchObject({ channel: 'plan-run-resume', count: 1 });
+    // P-006 / D-005: the meter splits by turn proof; a fresh turn-capable delivery is awaiting.
+    expect(delivered).toHaveProperty('turnProof', 'awaiting');
+    // ...and the per-delivery read (events:status's seam) carries the same proof + deadline.
+    const [row] = await store.listRecentDeliveries('su-6', 1);
+    expect(row).toMatchObject({ status: 'delivered', turnProof: 'awaiting', turnStartedAt: null });
+    expect(row!.pickupDeadlineAt).not.toBeNull();
   });
 
   it('is single-workspace by construction: no caller can scope a row to a different namespace (WI-3575, formerly the live WI-40 regression)', async () => {
