@@ -35,6 +35,7 @@ describe('preregistered product reports', () => {
     const protocol = currentProtocolFixture('assigned-run');
     expect(() => buildRunReports([], prereg({ ...protocol, runId: 'other-run' }))).toThrow(/frozen|protocol/);
     expect(() => buildRunReports([], prereg({ ...protocol, priceSchedule: undefined }))).toThrow();
+    expect(() => buildRunReports([], prereg({ ...protocol, taskIds: undefined }))).toThrow();
     expect(() => buildRunReports([], prereg({ ...protocol, arms: protocol.arms.map(arm => ({ ...arm, model: '' })) }))).toThrow();
   });
 

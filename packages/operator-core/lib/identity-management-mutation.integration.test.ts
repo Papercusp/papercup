@@ -162,6 +162,7 @@ vi.mock('./agent-orders-notify', async (importOriginal) => ({
 
 import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import { mutateIdentityStack as mutateCurrentIdentityStack } from './identity-management';
+import { buildControlAnchorState, refreshControlAnchorAfterMutation } from './agent-tools/coordination/control-anchor';
 
 // Reuse the standard copy-out probe without mutating the shared identity writer.
 const mutateIdentityStack: typeof mutateCurrentIdentityStack = process.env.PAPERCUSP_MUTATION_PROBE_SOURCE
@@ -321,6 +322,59 @@ const mutate = (owner: string, action: 'switch' | 'rollback', identityId?: strin
   });
 
 describe('mutateIdentityStack against real Postgres (R-4 integration layer)', () => {
+  async function superseded(owner: string, ended: boolean, stack: readonly string[]) {
+    const old = await seedSession(owner, ENGINEER);
+    const original = await launchSpec(owner);
+    const id = nextSessionId++;
+    const successor = { ...original, ...artifactFor(stack) };
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions (id, workspace_id, mode, coord_owner_id, session_id, launch_spec, started_at, ended_at)
+      VALUES (${id}, ${WS}, 'console', ${owner}, ${`native-${owner}-successor`},
+              ${JSON.stringify(successor)}::text::jsonb, now() - interval '1 hour', ${ended ? new Date() : null})`;
+    await db.sql`UPDATE harness_shared.adv_sessions SET started_at = now() + interval '1 hour' WHERE id = ${old.id}`;
+    return { oldId: old.id, id, original, successor };
+  }
+
+  it.each([false, true])('mutates the current registration after predecessor activity (successor ended=%s)', async (ended) => {
+    const owner = `su-identity-registration-${ended}`;
+    const seeded = await superseded(owner, ended, WRITER);
+    await mutate(owner, 'switch', 'other-domain');
+    const rows = await db.sql<Array<{ id: number; launch_spec: typeof seeded.original }>>`
+      SELECT id, launch_spec FROM harness_shared.adv_sessions WHERE coord_owner_id = ${owner} ORDER BY id`;
+    expect(rows[0].launch_spec).toEqual(seeded.original);
+    expect(rows[1].launch_spec.stack).toEqual(['domain:other-domain']);
+    expect(rows[1].launch_spec.identityHistory?.[0]?.stack).toEqual(WRITER);
+    const events = await db.sql<Array<{ adv_session_id: number; native_session_id: string }>>`
+      SELECT adv_session_id, native_session_id FROM harness_shared.session_identity_activation_events
+      WHERE owner_id = ${owner}`;
+    expect(events).toHaveLength(1);
+    expect(Number(events[0].adv_session_id)).toBe(seeded.id);
+    expect(events[0].native_session_id).toBe(`native-${owner}-successor`);
+  });
+
+  it.each([false, true])('builds control from the current registration stack (successor ended=%s)', async (ended) => {
+    const owner = `su-control-stack-registration-${ended}`;
+    await superseded(owner, ended, WRITER);
+    const state = await buildControlAnchorState(owner, WS, { sql: db.sql });
+    expect(state.stack).toEqual(WRITER);
+  });
+
+  it.each([false, true])('carries a control activation receipt only on the current registration (successor ended=%s)', async (ended) => {
+    const owner = `su-control-receipt-registration-${ended}`;
+    const seeded = await superseded(owner, ended, ENGINEER);
+    const anchor = await refreshControlAnchorAfterMutation({ ownerId: owner, workspaceId: WS,
+      actorId: owner, origin: 'agent', source: 'mode:set', sql: db.sql });
+    expect(anchor?.state.activation?.status).toBe('desired');
+    const rows = await db.sql<Array<{ id: number; launch_spec: typeof seeded.original }>>`
+      SELECT id, launch_spec FROM harness_shared.adv_sessions WHERE coord_owner_id = ${owner} ORDER BY id`;
+    expect(rows[0].launch_spec).toEqual(seeded.original);
+    expect(rows[1].launch_spec.identityHistory?.[0]).toMatchObject(anchor!.state.activation!.desired);
+    const events = await db.sql<Array<{ adv_session_id: number }>>`
+      SELECT adv_session_id FROM harness_shared.session_identity_activation_events WHERE owner_id = ${owner}`;
+    expect(events).toHaveLength(1);
+    expect(Number(events[0].adv_session_id)).toBe(seeded.id);
+  });
+
   it('does not inject raw identity text when turn-provenance tagging throws', async () => {
     const owner = 'su-identity-nudge-tag-error';
     await seedSession(owner, ENGINEER);

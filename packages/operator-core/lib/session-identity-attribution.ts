@@ -116,7 +116,7 @@ export async function recordCurrentSessionIdentityActivation(input: {
           FROM harness_shared.adv_sessions a
          WHERE a.workspace_id = b.workspace_id
            AND a.coord_owner_id = b.owner_id
-         ORDER BY (a.ended_at IS NULL) DESC, a.started_at DESC, a.id DESC
+         ORDER BY a.id DESC
          LIMIT 1
       ) av ON true
      WHERE b.owner_id = ${input.ownerId}

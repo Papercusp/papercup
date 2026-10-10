@@ -145,7 +145,7 @@ export async function readIdentitySurface(input: {
             ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
          WHERE a.workspace_id = ${input.workspaceId}
            AND a.coord_owner_id = ${ownerId}
-         ORDER BY (a.ended_at IS NULL AND a.ended_by IS NULL) DESC, a.started_at DESC, a.id DESC
+         ORDER BY a.id DESC
          LIMIT 1
       `
     : [];
@@ -513,7 +513,7 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
       LEFT JOIN harness_shared.session_briefs b
         ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
      WHERE a.workspace_id = ${input.workspaceId} AND a.coord_owner_id = ${input.ownerId}
-     ORDER BY (a.ended_at IS NULL AND a.ended_by IS NULL) DESC, a.started_at DESC, a.id DESC
+     ORDER BY a.id DESC
      LIMIT 1
   `;
   const row = rows[0];

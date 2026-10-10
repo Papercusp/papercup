@@ -136,17 +136,17 @@ export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | nu
     bySuite.set(row.suite, group);
   }
   let assignment: AggregateOpts = {};
+  // Current protocols freeze structured execution controls per arm. Validate
+  // the complete contract even if the task roster is missing; old string
+  // rosters retain their original report semantics.
+  const currentProtocol = prereg && ('aggregateBudgetUsd' in prereg.config ||
+    Array.isArray(prereg.config.arms) && prereg.config.arms.some(value => value !== null && typeof value === 'object'))
+    ? currentBenchmarkProtocolSchema.parse(prereg.config) : null;
+  if (currentProtocol && currentProtocol.runId !== prereg!.runId) {
+    throw new Error('benchmark report: current protocol differs from frozen run identity');
+  }
   if (prereg?.config.taskIds !== undefined) {
     const { taskIds, seeds, arms, arm } = prereg.config;
-    // Current protocols freeze structured execution controls per arm. Validate
-    // that complete contract before projecting its ids; old string rosters
-    // retain their original report semantics.
-    const currentProtocol = 'aggregateBudgetUsd' in prereg.config ||
-      Array.isArray(arms) && arms.some(value => value !== null && typeof value === 'object')
-      ? currentBenchmarkProtocolSchema.parse(prereg.config) : null;
-    if (currentProtocol && currentProtocol.runId !== prereg.runId) {
-      throw new Error('benchmark report: current protocol differs from frozen run identity');
-    }
     const stringRoster = (value: unknown, label: string): string[] => {
       if (!Array.isArray(value) || value.length === 0 ||
           value.some(v => typeof v !== 'string' || !v.trim()) || new Set(value).size !== value.length) {

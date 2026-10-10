@@ -1281,7 +1281,7 @@ export async function buildControlAnchorState(
            WHERE workspace_id = ${workspaceId}
              AND coord_owner_id = ${ownerId}
              AND launch_spec->>'v' = '1'
-           ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, started_at DESC, id DESC
+           ORDER BY id DESC
            LIMIT 1
         `.then((rows) => {
           const raw = rows[0]?.stack_refs;
@@ -1486,7 +1486,7 @@ async function carryControlActivationIdentityReceipt(input: {
     SELECT a.id, to_jsonb(a)->'launch_spec' AS launch_spec
       FROM harness_shared.adv_sessions a
      WHERE a.workspace_id = ${input.workspaceId} AND a.coord_owner_id = ${input.ownerId}
-     ORDER BY (a.ended_at IS NULL AND a.ended_by IS NULL) DESC, a.started_at DESC, a.id DESC
+     ORDER BY a.id DESC
      LIMIT 1
   `;
   const row = rows[0];
