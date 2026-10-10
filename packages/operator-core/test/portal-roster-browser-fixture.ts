@@ -21,6 +21,7 @@ type PortalRosterBrowserInput = {
   shortcuts?: boolean;
   settings?: boolean;
   prompts?: boolean;
+  docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
   plans?: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string };
   inbox?: { selectedMessageId: string; neighborMessageId: string; selectedTitle: string; neighborTitle: string };
   history?: { selectedSessionId: number; neighborSessionId: number; selectedRolloutId: string; neighborRolloutId: string;
@@ -35,7 +36,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'inbox' | 'plans'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'inbox' | 'plans' | 'docs'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -47,7 +48,17 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.plans ? `
+  const entry = input.docs ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(AdvHarnessPanelPage, { panel: 'docs' })) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.plans ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -141,7 +152,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans ? await portalBrowserSurfaceBuild(portal) : undefined;
+  const boundary = input.inbox || input.plans || input.docs
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -152,6 +164,9 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
     loader: { '.css': 'empty', '.module.css': 'local-css' },
     ...(boundary ? { define: boundary.define } : {}),
+    // Browser packages may export CSS only under development/production (e.g.
+    // Excalidraw). Use the real production export instead of a fixture alias.
+    conditions: ['browser', 'production'],
     bundle: true, format: 'iife', platform: 'browser', target: 'es2022', write: false,
     outfile: join(portal, 'private-roster-browser.js'),
     logLevel: 'silent',
@@ -173,7 +188,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const css = result.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.plans
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.docs
+    ? '/apps/operator/app/adv/harnesses/AdvDocsTab.tsx' : input.plans
     ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
     ? '/apps/operator/app/quick-panel/PromptsTab.tsx' : input.settings
@@ -196,6 +212,41 @@ export async function retainPortalBrowserFailure(page: Pick<Page, 'url' | 'conte
     buttons: results[2].status === 'fulfilled' ? results[2].value : null,
     diagnosticErrors: results.flatMap((result, index) => result.status === 'rejected' ? [{ index, message: String(result.reason) }] : []) };
   writeFileSync(join(evidence, 'portal-browser-failure.json'), JSON.stringify(snapshot, null, 2));
+}
+
+/** Evaluate the real ADV module graph before allocating a private database. */
+export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
+  assert.ok(input.docs, 'Docs preflight requires a Docs surface');
+  const built = await buildPortalRosterBrowser(input);
+  const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
+  const server = createServer((request, response) => {
+    if (request.url === '/docs-preflight.js') {
+      response.writeHead(200, { 'content-type': 'text/javascript' }); response.end(built.bundle);
+    } else if (new URL(request.url ?? '/', 'http://preflight.invalid').pathname === '/') {
+      response.writeHead(200, { 'content-type': 'text/html' });
+      response.end('<div id="root"></div><script src="/docs-preflight.js"></script>');
+    } else { response.writeHead(404); response.end(); }
+  });
+  const errors: string[] = [];
+  try {
+    await new Promise<void>((done, reject) => {
+      server.once('error', reject); server.listen(0, '127.0.0.1', done);
+    });
+    const address = server.address(); assert.ok(address && typeof address === 'object');
+    const page = await browser.newPage();
+    page.on('pageerror', error => errors.push(error.stack ?? error.message));
+    // History-backed query state needs a real origin; about:blank cannot run
+    // replaceState even when the component itself initialized correctly.
+    await page.goto(`http://127.0.0.1:${address.port}/`);
+    try { await page.getByRole('region', { name: 'ADV Docs workspace' }).waitFor({ timeout: 15_000 }); }
+    catch (error) { throw new Error(errors.join('\n') || String(error)); }
+    assert.deepEqual(errors, [], 'actual Docs module initialization must be browser-safe');
+    assert.match(await page.locator('body').innerText(), /Select a /);
+    return { sourceCount: built.originals.size, mounted: true };
+  } finally {
+    await browser.close();
+    await new Promise<void>(done => server.close(() => done()));
+  }
 }
 
 export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
@@ -235,7 +286,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     await context.addCookies([cookie(input.ownToken)]);
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
-    page.on('pageerror', error => pageErrors.push(error.message));
+    page.on('pageerror', error => pageErrors.push(error.stack ?? error.message));
     if (input.inbox || input.plans) page.on('response', response => {
       const url = new URL(response.url());
       const name = url.searchParams.get('name');
@@ -254,11 +305,23 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.plans ? '/?app=plans&q=retained-shell-search'
+    const url = new URL(input.docs ? '/?app=docs&q=retained-shell-search'
+      : input.plans ? '/?app=plans&q=retained-shell-search'
       : input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
       : input.prompts ? '/?app=overview&panel=quick&q=retained-shell-search'
       : input.settings || input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
+    if (input.docs) {
+      url.searchParams.set('slug', input.docs.harness);
+      url.searchParams.set('docpath', input.docs.neighborDoc);
+    }
     await page.goto(url.href);
+    if (input.docs) {
+      const receipt = await runPrivateDocsPage(page, context, input);
+      assert.deepEqual(pageErrors, [], 'real Docs panel must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.plans) {
       const receipt = await runPrivatePlansPage(page, context, input);
       assert.deepEqual(pageErrors, [], 'real Plans controls must complete without browser errors');
@@ -315,10 +378,11 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     await page.getByTestId('agents-bulk-message').click();
     await page.getByTestId('agents-bulk-msg').fill(marker);
 
+    const actionPage = page;
     const send = async (button: string) => {
-      const response = page.waitForResponse(response => new URL(response.url()).pathname === '/api/admin/coord/send'
+      const response = actionPage.waitForResponse(response => new URL(response.url()).pathname === '/api/admin/coord/send'
         && response.request().method() === 'POST');
-      await page.getByTestId(button).click();
+      await actionPage.getByTestId(button).click();
       const observed = await response;
       const receipt = { status: observed.status(), body: await observed.json() };
       receipts.push(receipt); return receipt;
@@ -374,6 +438,94 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     await context.close(); await browser.close();
     await Promise.allSettled([...syncReadCaptures]);
   }
+}
+
+/** Actual ADV panel, merged docs read and anchored manual verification. */
+async function runPrivateDocsPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput) {
+  const docs = input.docs!;
+  const endpoint = `/api/harness/${encodeURIComponent(docs.harness)}/docs`;
+  const article = page.locator('.pc-adv-docs__article');
+  const writes: Array<{ status: number; target: string; body: any }> = [];
+  const states: unknown[] = [];
+  const assertState = async (verifiedSha: string | null) => {
+    const rows = await getOrgPg().sql<{ doc_id: string; status: string; last_verified_sha: string | null }[]>`
+      SELECT doc_id, status, last_verified_sha FROM harness_shared.harness_docs
+      WHERE workspace_id = ${input.workspace} AND harness_slug = ${docs.harness}
+        AND doc_id IN (${docs.selectedDoc}, ${docs.neighborDoc})`;
+    states.push({ verifiedSha, rows });
+    writeFileSync(join(input.evidence, 'portal-docs-states.json'), JSON.stringify(states, null, 2));
+    assert.equal(rows.length, 2);
+    assert.equal(rows.find(row => row.doc_id === docs.selectedDoc)!.last_verified_sha, verifiedSha);
+    assert.equal(rows.find(row => row.doc_id === docs.selectedDoc)!.status, verifiedSha ? 'fresh' : 'review');
+    assert.equal(rows.find(row => row.doc_id === docs.neighborDoc)!.last_verified_sha, null);
+    assert.equal(rows.find(row => row.doc_id === docs.neighborDoc)!.status, 'review');
+  };
+  await page.getByRole('region', { name: 'ADV Docs workspace' }).waitFor();
+  await article.getByRole('heading', { name: docs.neighborHeading, exact: true }).waitFor();
+  const selectedName = docs.selectedDoc.split('/').pop()!.replace(/\.(md|mdx)$/, '');
+  const select = page.getByRole('button', { name: selectedName, exact: true });
+  await select.focus(); await page.keyboard.press('Enter');
+  await page.waitForURL(url => url.searchParams.get('docpath') === docs.selectedDoc);
+  await article.getByRole('heading', { name: docs.selectedHeading, exact: true }).waitFor();
+  assert.equal(await select.getAttribute('aria-current'), 'page');
+  const selectedUrl = page.url();
+  assert.equal(new URL(selectedUrl).searchParams.get('q'), 'retained-shell-search');
+  await page.reload();
+  await article.getByRole('heading', { name: docs.selectedHeading, exact: true }).waitFor();
+  assert.equal(page.url(), selectedUrl);
+  await assertState(null);
+  const verify = page.getByRole('button', { name: 'Re-verify', exact: true });
+  const submit = async (status: number) => {
+    const pending = page.waitForResponse(response => new URL(response.url()).pathname === endpoint + '/verify'
+      && response.request().method() === 'POST');
+    await verify.focus(); await page.keyboard.press('Enter');
+    const response = await pending;
+    const target = response.request().postDataJSON().docId;
+    const receipt = { status: response.status(), target, body: await response.json() };
+    writes.push(receipt);
+    writeFileSync(join(input.evidence, 'portal-docs-writes.json'), JSON.stringify(writes, null, 2));
+    assert.equal(receipt.status, status, JSON.stringify(receipt.body));
+    assert.equal(target, docs.selectedDoc);
+    return receipt;
+  };
+  // Forward the actual Origin-gate response; never synthesize a denial body.
+  await context.route('**' + endpoint + '/verify', async route => {
+    const denied = await route.fetch({ headers: { ...route.request().headers(), origin: 'https://foreign-docs.invalid' } });
+    assert.equal(denied.status(), 403);
+    await route.fulfill({ response: denied });
+  });
+  await submit(403);
+  await article.getByRole('alert').filter({ hasText: `Could not re-verify ${docs.selectedDoc}: HTTP 403` }).waitFor();
+  await article.getByRole('heading', { name: docs.selectedHeading, exact: true }).waitFor();
+  await verify.waitFor(); assert.equal(await verify.isEnabled(), true);
+  assert.equal(page.url(), selectedUrl);
+  await assertState(null);
+  await context.unroute('**' + endpoint + '/verify');
+  const accepted = await submit(200);
+  assert.equal(accepted.body.ok, true);
+  assert.match(accepted.body.verifiedSha, /^[a-f0-9]{40}$/);
+  await verify.waitFor({ state: 'detached' });
+  assert.equal(await article.getByRole('alert').count(), 0);
+  await assertState(accepted.body.verifiedSha);
+  await page.reload();
+  await article.getByRole('heading', { name: docs.selectedHeading, exact: true }).waitFor();
+  assert.equal(page.url(), selectedUrl);
+  assert.equal(await verify.count(), 0);
+  const merged = await page.request.get(input.base + endpoint + '?path=' + encodeURIComponent(docs.selectedDoc) + '&recompute=1');
+  assert.equal(merged.status(), 200);
+  const body = await merged.json();
+  assert.equal(body.activePath, docs.selectedDoc);
+  assert.equal(body.activeEntry.source, 'manual');
+  assert.equal(body.activeEntry.status, 'fresh');
+  assert.equal(body.activeEntry.lastVerifiedSha, accepted.body.verifiedSha);
+  writeFileSync(join(input.evidence, 'portal-docs-merged.json'), JSON.stringify(body, null, 2));
+  writeFileSync(join(input.evidence, 'portal-docs-dom.html'), await page.content());
+  return { workspace: input.workspace, authMethod: 'private-loopback-docs-with-cookie', harness: docs.harness,
+    selectedDoc: docs.selectedDoc, neighborDoc: docs.neighborDoc, keyboardSelection: true, deepLinkReload: true,
+    shellQueryPreserved: true, denialStatus: 403, articleRetained: true, deniedWriteIsolated: true,
+    retryPersisted: true, neighborIsolated: true, verifiedSha: accepted.body.verifiedSha, writes,
+    denialTransport: 'real-upstream-response-forwarded',
+    scope: 'Actual maintained ADV Docs panel and private merged-read/manual-verify API/PG effects; canonical repo read only, no whole Portal, hosted authorization, provider, warm-remount or shipment acceptance' };
 }
 
 /** Actual workspace prompts outline and its production sync/write clients. */

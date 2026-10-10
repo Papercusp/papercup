@@ -90,6 +90,8 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
   const ambientMarker = `AMBIENT_OUTSIDE_${randomUUID()}`;
   const owner = `test-scoped-frozen-${randomUUID()}`;
   const providerCalls: Record<string, unknown>[] = [], reads: unknown[] = [], errors: unknown[] = [];
+  let workflowIndex = 0, discoveryCount = 0;
+  const workflowRequestIndexes: number[] = [];
   const workflowCalls: Array<{ name: string; args: unknown; result: unknown }> = [];
   const checkpointMarker = `NATIVE_CHECKPOINT_${randomUUID()}`;
   const completionMarker = `NATIVE_COMPLETION_${randomUUID()}`;
@@ -227,24 +229,33 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       const request = JSON.parse(Buffer.concat(chunks).toString()); providerCalls.push(request);
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      if (providerCalls.length <= workflow.length + 1) {
+      if (workflowIndex <= workflow.length) {
         // Responses-lite carries the real definitions in an input item. A
         // code-mode model advertises its executor rather than direct MCP calls.
         const tools = [...(request.tools ?? []), ...(request.input ?? []).flatMap(
           (item: Record<string, unknown>) => Array.isArray(item.tools) ? item.tools : [],
         )] as Array<Record<string, unknown>>;
-        const step = providerCalls.length === 1 ? { name: 'capability_read', args: {
+        const step = workflowIndex === 0 ? { name: 'capability_read', args: {
           file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot),
-        } } : workflow[providerCalls.length - 2];
+        } } : workflow[workflowIndex - 1];
         const namespace = tools.find(entry =>
           entry.type === 'namespace' && (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.name === step.name));
         const direct = tools.find(tool => tool.type === 'function' && typeof tool.name === 'string' &&
           tool.name.endsWith(`__${step.name}`));
         const executor = tools.find(entry => entry.type === 'namespace' &&
           (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.type === 'custom' && tool.name === 'exec'));
-        if (!namespace && !direct && !executor) throw new Error(`Installed native runtime did not advertise ${step.name}`);
-        const callId = providerCalls.length === 1 ? 'frozen-read' : `workflow-${providerCalls.length - 1}`;
-        const item = executor ? { id: `fc_${callId}`, type: 'custom_tool_call', call_id: callId,
+        const needsDiscovery = !namespace && !direct && !executor;
+        if (needsDiscovery) {
+          const discovery = tools.find(tool => tool.type === 'tool_search' && tool.execution === 'client');
+          const schema = discovery?.parameters as { properties?: Record<string, unknown>; required?: string[] } | undefined;
+          if (!schema?.properties?.query || !schema.properties.limit || schema.required?.some(key => key !== 'query') ||
+              discoveryCount >= workflow.length + 1) throw new Error(`Installed native runtime cannot discover ${step.name}`);
+        } else { workflowRequestIndexes.push(providerCalls.length - 1); workflowIndex++; }
+        const callId = needsDiscovery ? `local-discovery-${++discoveryCount}` :
+          workflowIndex === 1 ? 'frozen-read' : `workflow-${workflowIndex - 1}`;
+        const item = needsDiscovery ? { id: `ts_${callId}`, type: 'tool_search_call', execution: 'client', call_id: callId,
+          status: 'completed', arguments: { query: 'capability_read work_items_get work_items_checkpoint work_items_complete', limit: 8 } } :
+          executor ? { id: `fc_${callId}`, type: 'custom_tool_call', call_id: callId,
           namespace: executor.name, name: 'exec', status: 'completed', input:
             `const selected = ALL_TOOLS.find(tool => tool.name.endsWith(${JSON.stringify(`__${step.name}`)}));\n` +
             `if (!selected) throw new Error('Workflow tool is absent from the actual native executor registry');\n` +
@@ -255,7 +266,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
         const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
         const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
         res.end(event('response.output_item.added', { output_index: 0, item: { ...item,
-          ...(executor ? { input: '' } : { arguments: '' }), status: 'in_progress' } }) +
+          ...(executor ? { input: '' } : { arguments: needsDiscovery ? {} : '' }), status: 'in_progress' } }) +
           event('response.output_item.done', { output_index: 0, item }) + event('response.completed', { response: body }));
       } else {
         res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6-sol', text: 'FROZEN_NATIVE_RECEIPT', inputTokens: 0, outputTokens: 0 })));
@@ -396,7 +407,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       return [];
     };
     const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, gatewayErrors, admissionEvidence, admissionStages,
-      firstNativeAdmissionRequest,
+      firstNativeAdmissionRequest, discoveryCount, workflowRequestIndexes,
       countedInputCount: countedInputs.length, reservations: await readReservations?.(), requestPaths, mcpMethods, workflowCalls,
       dependencyPreflight, executablePath: env.PATH, discoveryRoot: env.PAPERCUSP_PSU_PTY_DIR,
       inputShapes: inputShapes(providerCalls[0]?.input),
@@ -404,18 +415,19 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       toolShapes: (providerCalls[0]?.tools as Array<Record<string, unknown>> | undefined)?.map(tool =>
         ({ type: tool.type, name: tool.name, keys: Object.keys(tool) })) });
     expect(code, diagnostics).toBe(0); expect(errors, diagnostics).toEqual([]);
-    expect(providerCalls, diagnostics).toHaveLength(workflow.length + 2); expect(reads).toHaveLength(1);
+    expect(providerCalls, diagnostics).toHaveLength(workflow.length + 2 + discoveryCount); expect(reads).toHaveLength(1);
     expect(reads[0]).toEqual({ file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) });
     expect(JSON.stringify(providerCalls[0])).toContain(roleMarker);
     expect(JSON.stringify(providerCalls[0])).toContain(frozenMarker);
     expect(JSON.stringify(providerCalls)).not.toContain(ambientMarker);
-    expect(JSON.stringify(providerCalls[1])).toContain('frozen-read');
-    expect(JSON.stringify(providerCalls[1])).toContain(Buffer.from(snapshot).toString('base64'));
+    const afterRead = providerCalls[workflowRequestIndexes[1]];
+    expect(JSON.stringify(afterRead)).toContain('frozen-read');
+    expect(JSON.stringify(afterRead)).toContain(Buffer.from(snapshot).toString('base64'));
     expect(workflowCalls.map(call => call.name)).toEqual(workflow.map(step => step.name));
     expect(workflowCalls.map(call => (call.result as { ok: boolean }).ok), diagnostics).toEqual([true, true, true, false, true]);
     expect(JSON.stringify(workflowCalls[2].result), diagnostics).toContain(checkpointMarker);
-    expect(JSON.stringify(providerCalls[4]), diagnostics).toContain(checkpointMarker);
-    expect(JSON.stringify(providerCalls[5]), diagnostics).toContain('capability_denied');
+    expect(JSON.stringify(providerCalls[workflowRequestIndexes[4]]), diagnostics).toContain(checkpointMarker);
+    expect(JSON.stringify(providerCalls[workflowRequestIndexes[5]]), diagnostics).toContain('capability_denied');
     const rows = await db.adminSql`SELECT feature_id, status, terminal_owner, terminal_completion_ref,
         payload -> '_completionEvidence' AS completion_evidence
       FROM harness_shared.work_items WHERE workspace_id = 'native-frozen-private' ORDER BY feature_id`;
@@ -443,7 +455,10 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       expect(admissionEvidence.every(row => row.target === 'https://api.openai.com/v1/responses')).toBe(true);
       expect(providerCalls.every(request => request.max_output_tokens === 4096)).toBe(true);
       expect(countedInputs.map(request => request.input)).toEqual(providerCalls.map(request => request.input));
-      expect(JSON.stringify(countedInputs[0])).toContain('additional_tools');
+      expect(countedInputs.map(request => request.tools)).toEqual(providerCalls.map(request => request.tools));
+      if (discoveryCount > 0) {
+        expect(countedInputs.some(request => JSON.stringify(request.input).includes('tool_search_output'))).toBe(true);
+      } else expect(JSON.stringify(countedInputs[0])).toContain('additional_tools');
       expect(positions.census?.status).toBe('complete');
       if (positions.census?.status !== 'complete') throw new Error('Missing final native reservation census');
       expect(positions.census.reservations).toHaveLength(providerCalls.length);

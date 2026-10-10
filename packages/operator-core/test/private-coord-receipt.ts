@@ -1,5 +1,6 @@
 /** Correlate one action to its real persisted result, never a global fixture marker. */
 import assert from 'node:assert/strict';
+import type { CoordEnvelope } from '@papercusp/coordination/core';
 
 /** Both maintained Codex routes identify the same seeded native transcript. */
 export function verifyPrivateHistoryStreams(
@@ -37,7 +38,7 @@ export function verifyPrivateStopReceipt(
 export async function verifyPrivateCoordReceipt(
   receipt: { status: number; body: any },
   expected: { ownerId: string; summary: string; wake: boolean },
-  getStored: (id: string) => Promise<{ to: string[]; summary: string; wake?: boolean } | null>,
+  getStored: (id: string) => Promise<Pick<CoordEnvelope, 'to' | 'summary' | 'wake'> | null>,
 ) {
   assert.equal(receipt.status, 200, JSON.stringify(receipt.body));
   assert.equal(receipt.body.results?.length, 1);

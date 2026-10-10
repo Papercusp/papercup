@@ -8,6 +8,10 @@ import { CloudTutorialGuide, CloudTutorialHelpEntry } from "./cloud-tutorial-gui
 import { AccountProductTutorial, type ProductTutorialAccount } from "@papercusp/operator-ui/onboarding";
 import { PRODUCT_TUTORIAL_LESSONS } from "@papercusp/operator-core/lib/onboarding/product-tutorial-lesson";
 
+// Match the maintained product-guide composition suites: telemetry is an
+// observation sink, not part of the progress transport under this test.
+vi.mock("../../../../packages/operator-ui/src/browser-telemetry", () => ({ captureBrowserTelemetry: vi.fn() }));
+
 const scope = { tenantId: "tenant", userId: "user", workspaceId: "customer" };
 let systemReducedMotion = false;
 vi.mock("motion/react", async importOriginal => ({
@@ -81,7 +85,8 @@ describe("Full-product guide accessibility composition", () => {
       }
       expect(writes.every(patch => Array.isArray(patch.reviewedLessonIds) && patch.reviewedLessonIds.length === 0)).toBe(true);
       expect(writes.every(patch => patch.expectedScope && ["active", "paused"].includes(String(patch.disposition)))).toBe(true);
-      expect(fetcher.mock.calls.every(([url]) => String(url) === "/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3")).toBe(true);
+      expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual(
+        Array(fetcher.mock.calls.length).fill("/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3"));
     });
   }
 });

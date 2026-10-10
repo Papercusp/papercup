@@ -161,6 +161,30 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   });
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'builds the real ADV Docs panel with production conditional stylesheet exports before private PG', async () => {
+    const { buildPortalRosterBrowser } = await import('../test/portal-roster-browser-fixture');
+    const result = await buildPortalRosterBrowser({ portalSourceRoot: process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', docs: {
+        harness: 'preflight-docs', selectedDoc: 'selected.md', neighborDoc: 'neighbor.md',
+        selectedHeading: 'selected', neighborHeading: 'neighbor' } });
+    const paths = [...result.originals.keys()];
+    expect(paths.some(path => path.endsWith('/AdvHarnessPanelPage.tsx'))).toBe(true);
+    expect(paths.some(path => path.endsWith('/AdvDocsTab.tsx'))).toBe(true);
+    expect(paths.some(path => path.endsWith('/operator-surface-build.mjs'))).toBe(true);
+    expect(paths.some(path => path.endsWith('/@excalidraw/excalidraw/dist/prod/index.css'))).toBe(true);
+    expect(result.bundle.length).toBeGreaterThan(0);
+  }, 120_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'mounts the real standalone ADV Docs panel in a browser before private PG', async () => {
+    const { verifyPrivateDocsBrowserMount } = await import('../test/portal-roster-browser-fixture');
+    await expect(verifyPrivateDocsBrowserMount({ portalSourceRoot: process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', docs: {
+        harness: 'preflight-docs', selectedDoc: 'selected.md', neighborDoc: 'neighbor.md',
+        selectedHeading: 'selected', neighborHeading: 'neighbor' } })).resolves.toMatchObject({ mounted: true });
+  }, 120_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'builds the real Inbox browser graph through the maintained Portal client boundary before private PG', async () => {
     const { buildPortalRosterBrowser } = await import('../test/portal-roster-browser-fixture');
     const result = await buildPortalRosterBrowser({ portalSourceRoot: process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!,

@@ -165,6 +165,27 @@ async function coordCanary(health: unknown) {
   const verifyReceipt = (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean, summary = marker) =>
     verifyPrivateCoordReceipt(receipt, { ownerId: expectedOwner, summary, wake }, getMessageById);
   if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
+    let docs: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string } | undefined;
+    if (process.env.ROSTER_DOCS_BROWSER_PROOF === '1') {
+      const { mutateHarnessRegistry } = await import('../lib/harness-registry');
+      const { anchorManualDoc } = await import('../lib/harness/docs/manual-anchor');
+      const harness = `private-docs-${process.pid}`;
+      // The actual committed repository supplies docs and HEAD read-only. Only
+      // this disposable PG/registry owns the manual tracking records.
+      await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects, { slug: harness, path: root }] }), workspace);
+      docs = { harness, selectedDoc: 'reports/cloud-cross-feature-e2e-2026-10-08.md',
+        neighborDoc: 'reports/desktop-design-drift-2026-09-08.md',
+        selectedHeading: 'Cloud end-to-end campaign — 2026-10-08',
+        neighborHeading: 'Desktop GUI design drift: findings, repair and prevention plan' };
+      for (const docId of [docs.selectedDoc, docs.neighborDoc]) {
+        const anchored = await anchorManualDoc({ harnessSlug: harness, docId, workspaceId: workspace,
+          documents: ['packages/operator-core/lib/harness/docs/manual-anchor.ts'], verify: false });
+        assert.equal(anchored.ok, true);
+        assert.ok(anchored.ok && anchored.anchored && anchored.record.status === 'review');
+      }
+      writeFileSync(join(evidence, 'portal-docs-seed.json'), JSON.stringify({ ...docs, workspace,
+        readonlyRepo: root, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() }, null, 2));
+    }
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     if (process.env.ROSTER_PLANS_BROWSER_PROOF === '1') {
       const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
@@ -211,6 +232,7 @@ async function coordCanary(health: unknown) {
       ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
+      ...(docs ? { docs } : {}),
       ...(plans ? { plans } : {}),
       ...(inbox ? { inbox } : {}),
       ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {

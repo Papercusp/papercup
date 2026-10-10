@@ -362,6 +362,8 @@ const openAiCountFields = ['model', 'input', 'instructions', 'parallel_tool_call
 const openAiGenerationFields = ['max_output_tokens', 'stream', 'store', 'include', 'metadata',
   'prompt_cache_key', 'prompt_cache_retention', 'prompt_cache_options', 'safety_identifier', 'user', 'service_tier', 'background'] as const;
 const openAiCountTarget = 'https://api.openai.com/v1/responses/input_tokens';
+const nativeMetadataAliases = { turn_id: 'turn_id', thread_id: 'thread_id', session_id: 'session_id',
+  root_turn_id: 'root_turn_id', 'x-codex-installation-id': 'installation_id', 'x-codex-window-id': 'window_id' } as const;
 
 /** Freeze the maintained admission contract with the input cap. Its source is
  * the exact provider counting API plus the self-contained request restriction,
@@ -370,25 +372,36 @@ const openAiCountTarget = 'https://api.openai.com/v1/responses/input_tokens';
  * https://developers.openai.com/api/docs/guides/token-counting */
 export function currentBenchOpenAiInputContract(model: string, inputTokens: number): string {
   if (!model.trim() || !Number.isSafeInteger(inputTokens) || inputTokens <= 0) throw new Error('Invalid native input contract.');
-  return createHash('sha256').update(canonicalJson({ version: 3, model, inputTokens,
+  return createHash('sha256').update(canonicalJson({ version: 4, model, inputTokens,
     target: openAiCountTarget, fields: openAiCountFields, generationFields: openAiGenerationFields,
     input: 'self-contained-text-and-local-tools', localToolFormats: ['function', 'custom', 'namespace'],
     inlineToolType: 'additional_tools', promptCacheOptions: { ttl: '30m', modes: ['implicit', 'explicit'] },
+    nativeMetadataAliases, discovery: { execution: 'client', items: ['tool_search_call', 'tool_search_output'] },
     tier: 'default' })).digest('hex');
 }
 
 /** Refuse mutable server/remote context and separately billed provider tools.
  * Counting and sending must refer to the same complete, immutable input. */
 function selfContainedOpenAiInput(body: Record<string, unknown>): boolean {
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
   if (Object.keys(body).some(key => ![...openAiCountFields, ...openAiGenerationFields,
     'previous_response_id', 'conversation', 'client_metadata'].includes(key as never)) ||
     body.previous_response_id != null || body.conversation != null ||
     body.service_tier != null && body.service_tier !== 'default' || body.background === true) return false;
   if (body.client_metadata !== undefined) {
-    if (readGatewayNativeCorrelation(body).status !== 'observed' || Object.keys(body.client_metadata as object).some(key => key !== 'x-codex-turn-metadata')) return false;
+    if (!object(body.client_metadata) || readGatewayNativeCorrelation(body).status !== 'observed') return false;
+    const metadata = body.client_metadata;
+    const inner = JSON.parse(metadata['x-codex-turn-metadata'] as string) as Record<string, unknown>;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const window = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?::[0-9]{1,10})?$/i;
+    for (const [key, value] of Object.entries(metadata)) {
+      if (key === 'x-codex-turn-metadata') continue;
+      if (!Object.hasOwn(nativeMetadataAliases, key) || typeof value !== 'string' ||
+          !(key === 'x-codex-window-id' ? window : uuid).test(value) ||
+          value !== inner[nativeMetadataAliases[key as keyof typeof nativeMetadataAliases]]) return false;
+    }
   }
-  const object = (value: unknown): value is Record<string, unknown> =>
-    value !== null && typeof value === 'object' && !Array.isArray(value);
   // Cache lifetime/mode affects cost, not counted input. The gateway's
   // maintained modern-model rewrite adds this field before admission.
   // Refuse prewarming, comparison requests and unknown options; reserve the
@@ -404,7 +417,19 @@ function selfContainedOpenAiInput(body: Record<string, unknown>): boolean {
   const localTools = (value: unknown) => Array.isArray(value) && value.length > 0 && value.every(tool =>
     localTool(tool) || object(tool) && tool.type === 'namespace' && named(tool) &&
       Array.isArray(tool.tools) && tool.tools.length > 0 && tool.tools.every(localTool));
-  if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.length > 0 && !localTools(body.tools))) return false;
+  // Client search only discovers locally executed definitions. Count the
+  // declaration, calls and returned schemas in full; server search and hosted
+  // returned tools introduce context/cost outside this immutable request.
+  // https://developers.openai.com/api/docs/guides/tools-tool-search
+  const clientSearch = (tool: unknown) => object(tool) && tool.type === 'tool_search' && tool.execution === 'client' &&
+    object(tool.parameters) && tool.parameters.type === 'object' &&
+    (tool.description === undefined || typeof tool.description === 'string') &&
+    Object.keys(tool).every(key => ['type', 'execution', 'description', 'parameters'].includes(key));
+  if (body.tools !== undefined && (!Array.isArray(body.tools) ||
+      !body.tools.every(tool => localTools([tool]) || clientSearch(tool)))) return false;
+  const clientSearchItem = (item: Record<string, unknown>) => item.execution === 'client' &&
+    typeof item.call_id === 'string' && item.call_id.trim().length > 0 && item.call_id.length <= 64 &&
+    item.status === 'completed';
   const content = (value: unknown) => typeof value === 'string' || Array.isArray(value) && value.every(part =>
     object(part) && ['input_text', 'output_text'].includes(String(part.type)) && typeof part.text === 'string');
   if (typeof body.input === 'string') return true;
@@ -414,6 +439,9 @@ function selfContainedOpenAiInput(body: Record<string, unknown>): boolean {
     switch (item.type ?? 'message') {
       case 'message': return ['system', 'developer', 'user', 'assistant'].includes(String(item.role)) && content(item.content);
       case 'additional_tools': return item.role === 'developer' && localTools(item.tools);
+      case 'tool_search_call': return clientSearchItem(item) && object(item.arguments);
+      case 'tool_search_output': return clientSearchItem(item) && Array.isArray(item.tools) &&
+        (item.tools.length === 0 || localTools(item.tools));
       case 'function_call': return typeof item.name === 'string' && typeof item.arguments === 'string' && typeof item.call_id === 'string';
       case 'custom_tool_call': return typeof item.name === 'string' && typeof item.input === 'string' && typeof item.call_id === 'string';
       case 'function_call_output': case 'custom_tool_call_output': return typeof item.call_id === 'string' && content(item.output);
