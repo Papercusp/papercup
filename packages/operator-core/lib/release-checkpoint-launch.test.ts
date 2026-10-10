@@ -211,6 +211,28 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).toContain('> /tmp/cp.log');
   });
 
+  // WI-10008187 / WI-10006055: a detached `systemd-run --user` unit does NOT inherit the
+  // launcher's env. Without the DSN forwarded, the gate logs `database: <unset> (source=none)`
+  // and resolves the discovery file (another install's sidecar DB), where it cannot see its own
+  // frozen repair queue. This pins the forward so a refactor of the argv builder cannot drop it.
+  it('forwards the launcher DB target (DSN) into the detached unit, and never an empty one', () => {
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://gate@127.0.0.1:5432/papercusp');
+    vi.stubEnv('HARNESS_DATABASE_URL', '   ');
+    vi.stubEnv('DATABASE_URL', undefined);
+    try {
+      const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
+      expect(argv).toContain('--setenv=HARNESS_ADMIN_DATABASE_URL=postgresql://gate@127.0.0.1:5432/papercusp');
+      expect(argv.some((arg) => arg.startsWith('--setenv=HARNESS_DATABASE_URL='))).toBe(false);
+      expect(argv.some((arg) => arg.startsWith('--setenv=DATABASE_URL='))).toBe(false);
+      // The forward must precede the inner `bash -c` command: systemd-run options after the
+      // command are treated as the command's own arguments, not as unit environment.
+      const dsnIndex = argv.indexOf('--setenv=HARNESS_ADMIN_DATABASE_URL=postgresql://gate@127.0.0.1:5432/papercusp');
+      expect(dsnIndex).toBeLessThan(argv.indexOf('bash'));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('keeps the tooling root separate from the routed subject root and forwards the env overlay safely', () => {
     const argv = buildCheckpointSystemdArgv(
       '/papercusp-tooling',
