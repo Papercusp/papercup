@@ -290,6 +290,9 @@ interface SendMsg {
    *  Flattened to text for `env.body` (every existing reader keeps working) with
    *  the STRUCTURE stamped alongside it. */
   body?: string | MessageSection[];
+  /** coord:conditions lifecycle keys are scoped to the authenticated sender. */
+  conditionKey?: string;
+  resolvesCondition?: string;
   /** ENVELOPE (D-064). Is the SENDER blocked until this is dealt with? */
   blocking?: boolean;
   /** ENVELOPE (D-011). A goal REF, never prose — the receiver queries its LIVE state. */
