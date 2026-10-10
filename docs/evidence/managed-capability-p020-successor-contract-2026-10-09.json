@@ -22,7 +22,7 @@
       "r-8"
     ]
   },
-  "status": "authored-active-revision3-review-pending-not-graded",
+  "status": "revision3-reviewed-and-meta-recorded-adoption-blocked",
   "canonicalReceipt": {
     "rubricRef": "acceptance-managed-capability-continuation-2026-10-09",
     "revision": 3,
@@ -638,6 +638,20 @@
       "R13": "14 named family-specific suites plus required actual per-boundary installed-client positive/refusal controls and manual provenance for uncovered surfaces",
       "R14": "explicit manual deployed-plane acceptance-record integrity with exact fingerprint, grading eligibility, ledger and owner report readback/URL controls"
     },
-    "scope": "Contract authoring only. No implementation acceptance, model retry, grading, adoption, cutover, native disabling or implementation fan-out."
+    "scope": "Contract authoring, same-thread outside-lineage review and meta-attestation recorded only. No implementation acceptance, model retry, implementation grading, BAR adoption, cutover, native disabling or implementation fan-out.",
+    "approvalPost": "thread-post:1169763",
+    "metaAttestation": {
+      "id": "EI-25553684653416119",
+      "state": "recorded; independent grading-audit settlement not yet verified",
+      "readbackVerified": true
+    },
+    "adoption": {
+      "state": "refused-no-write",
+      "sourceAuditPreview": "passed; ten inherited mappings/baseAudit15",
+      "code": "bar_contract_method_missing",
+      "ownedBlocker": "WI-10008022",
+      "runtime": "staging-operator@81c209358c",
+      "evidencePath": "/dev/shm/p020-reviewrepair-activation-applied.json"
+    }
   }
 }
