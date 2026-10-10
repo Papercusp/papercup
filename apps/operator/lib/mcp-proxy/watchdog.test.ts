@@ -478,6 +478,34 @@ describe('mcp-proxy watchdog — classifyDataPlaneResult (data plane, WI-6739)',
     ).toBe('config');
   });
 
+  it('a fail-closed native-session verifier result is dead and reaches the pool sampler', () => {
+    expect(
+      classifyDataPlaneResult({
+        status: 200,
+        json: {
+          result: {
+            isError: true,
+            content: [{ type: 'text', text: 'request_rejected: superuser_native_session_verifier_unavailable' }],
+          },
+        },
+      }),
+    ).toBe('dead');
+  });
+
+  it('a tool-level credential error remains config, not a service fault', () => {
+    expect(
+      classifyDataPlaneResult({
+        status: 200,
+        json: {
+          result: {
+            isError: true,
+            content: [{ type: 'text', text: 'request_rejected: this MCP session is UNAUTHENTICATED' }],
+          },
+        },
+      }),
+    ).toBe('config');
+  });
+
   it('OUR probe args / a renamed probe tool is config, never dead', () => {
     // The failure mode this guards: someone renames the probe tool, every poll starts
     // erroring, and a watchdog that called that "dead" would page about a healthy operator.

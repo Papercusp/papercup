@@ -16,6 +16,7 @@ import {
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
   executeOperationalRun,
+  verifyOperationalCheckDefinitionAtCommit,
   recoverArchivedMutationFailures,
   verifyOriginalOperationalEvidence,
   type ArchivedMutationRun,
@@ -52,6 +53,7 @@ describe('native operational execution witnesses', () => {
     const deps = {
       snapshot: vi.fn(() => ({ commit: 'b'.repeat(40), porcelain: '' })),
       readRuntime: vi.fn(async () => fingerprint),
+      verifyDefinition: vi.fn(async () => true),
       persist: vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) =>
         ({ written: 1, ids: [123] })),
     };
@@ -145,6 +147,40 @@ describe('native operational execution witnesses', () => {
     expect(f.definition.run).not.toHaveBeenCalled();
     f.deps.persist.mockResolvedValue({ written: 0, ids: [] });
     expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ ok: false, error: 'ledger_write_failed' });
+  });
+
+  it('refuses a future output artifact before executing or publishing a clean ledger row', async () => {
+    const f = fixture();
+    f.deps.verifyDefinition.mockResolvedValue(false);
+    expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({
+      ok: false, error: 'operational_check_definition_unavailable',
+      filePath: 'scripts/check.ts', commit: 'b'.repeat(40),
+    });
+    expect(f.deps.verifyDefinition).toHaveBeenCalledWith(expect.any(String), 'scripts/check.ts', 'b'.repeat(40));
+    expect(f.definition.run).not.toHaveBeenCalled();
+    expect(f.deps.readRuntime).not.toHaveBeenCalled();
+    expect(f.deps.persist).not.toHaveBeenCalled();
+  });
+
+  it('checks the exact historical definition rather than accepting a later working-tree artifact', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'native-operational-definition-'));
+    try {
+      git(repo, ['init', '-q']);
+      git(repo, ['config', 'user.name', 'Test']);
+      git(repo, ['config', 'user.email', 'test@example.invalid']);
+      mkdirSync(join(repo, 'scripts'));
+      writeFileSync(join(repo, 'scripts/check.ts'), 'export const expected = 47;\n');
+      git(repo, ['add', 'scripts/check.ts']);
+      git(repo, ['commit', '-qm', 'committed check definition']);
+      const commit = git(repo, ['rev-parse', 'HEAD']);
+      writeFileSync(join(repo, 'scripts/output.json'), '{"passed":true}\n');
+      await expect(verifyOperationalCheckDefinitionAtCommit(repo, 'scripts/check.ts', commit)).resolves.toBe(true);
+      await expect(verifyOperationalCheckDefinitionAtCommit(repo, 'scripts/output.json', commit)).resolves.toBe(false);
+      await expect(verifyOperationalCheckDefinitionAtCommit(repo, 'scripts', commit)).resolves.toBe(false);
+      await expect(verifyOperationalCheckDefinitionAtCommit(repo, 'scripts/check.ts', null)).resolves.toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 

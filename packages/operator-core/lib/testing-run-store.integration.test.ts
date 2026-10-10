@@ -97,6 +97,7 @@ describe('native operational execution provenance (real PG and kernel)', () => {
       },
     }, { workspaceId, harnessSlug: 'operational-harness', projectDir: process.cwd() }, {
       snapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }),
+      verifyDefinition: async () => true,
       readRuntime: async (units, workspace) => measureRuntimeVintageEnvironment(await listRuntimeVintage(workspace), units),
       persist: params => persistHarnessTestRunsWithIds({ ...params,
         sql: db.adminSql as unknown as NonNullable<Parameters<typeof persistHarnessTestRunsWithIds>[0]['sql']> }),
@@ -113,5 +114,30 @@ describe('native operational execution provenance (real PG and kernel)', () => {
     expect(Boolean(stableRecordedRuntimeEnvironment(execution?.runtimeEnvironmentBefore,
       execution?.runtimeEnvironmentAfter))).toBe(!drift);
     expect(execution).not.toHaveProperty('testLayer');
+  });
+
+  it('does not publish native evidence when its cited definition is absent at the source commit', async () => {
+    let executed = false;
+    const result = await executeOperationalRun({
+      filePath: 'docs/evidence/future-output.json', name: 'uncommitted output is not a definition',
+      command: ['native', 'future-output'], framework: 'operational',
+      runtimeUnits: ['native-check-runtime'],
+      run: async () => {
+        executed = true;
+        return { exitCode: 0, summary: 'Should not run.',
+          assertions: [{ id: 'unexpected', passed: true, evidence: 'Unexpected' }] };
+      },
+    }, { workspaceId, harnessSlug: 'operational-harness', projectDir: process.cwd() }, {
+      snapshot: () => ({ commit: 'a'.repeat(40), porcelain: '' }),
+      verifyDefinition: async () => false,
+      readRuntime: async () => 'b'.repeat(64),
+      persist: params => persistHarnessTestRunsWithIds({ ...params,
+        sql: db.adminSql as unknown as NonNullable<Parameters<typeof persistHarnessTestRunsWithIds>[0]['sql']> }),
+    });
+    expect(result).toMatchObject({ ok: false, error: 'operational_check_definition_unavailable' });
+    expect(executed).toBe(false);
+    const rows = await db.adminSql`SELECT id FROM harness_shared.test_runs
+      WHERE workspace_id = ${workspaceId} AND file_path = 'docs/evidence/future-output.json'`;
+    expect(rows).toHaveLength(0);
   });
 });

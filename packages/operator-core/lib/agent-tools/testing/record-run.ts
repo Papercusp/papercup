@@ -449,6 +449,20 @@ function derivedVerdict(artifact: OperationalEvidenceArtifact): 'pass' | 'fail' 
   return artifact.exitCode === 0 && artifact.assertions.every((assertion) => assertion.passed) ? 'pass' : 'fail';
 }
 
+export async function verifyOperationalCheckDefinitionAtCommit(
+  root: string,
+  filePath: string,
+  commit: string | null,
+): Promise<boolean> {
+  if (!commit || !/^[a-f0-9]{40}$/.test(commit)) return false;
+  try {
+    const type = await gitOutput(root, ['cat-file', '-t', `${commit}:${filePath}`]);
+    return type.toString('utf8').trim() === 'blob';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Native operational producers execute here rather than importing fingerprints
  * from an artifact. Reuse the recorder's assertion contract and canonical ledger;
@@ -458,6 +472,7 @@ function derivedVerdict(artifact: OperationalEvidenceArtifact): 'pass' | 'fail' 
  */
 export async function executeOperationalRun(
   definition: {
+    /** Committed check definition or expected-data fixture, never a future output artifact. */
     filePath: string;
     name: string;
     command: string[];
@@ -470,6 +485,7 @@ export async function executeOperationalRun(
     snapshot: (root: string) => WorktreeGitSnapshot | Promise<WorktreeGitSnapshot>;
     readRuntime: (units: string[], workspaceId: string) => Promise<string | null>;
     persist: RecordOperationalRunDeps['persist'];
+    verifyDefinition?: typeof verifyOperationalCheckDefinitionAtCommit;
   } = {
     snapshot: captureWorktreeSnapshotAsync,
     readRuntime: async (units, workspaceId) =>
@@ -505,6 +521,16 @@ export async function executeOperationalRun(
     finally { if (timer) clearTimeout(timer); }
   };
   const before = await deps.snapshot(root);
+  // A clean tree does not prove that the cited check exists in that tree. An
+  // output artifact created after execution cannot be inspected at this source
+  // commit, even when every assertion and runtime witness is otherwise valid.
+  const definitionAvailable = await (deps.verifyDefinition ?? verifyOperationalCheckDefinitionAtCommit)(
+    root, path.split(sep).join('/'), before.commit,
+  ).catch(() => false);
+  if (!definitionAvailable) {
+    return { ok: false, error: 'operational_check_definition_unavailable' as const,
+      filePath: path.split(sep).join('/'), commit: before.commit };
+  }
   const runtimeEnvironmentBefore = await observe();
   const startedAt = new Date();
   let result: Pick<OperationalEvidenceArtifact, 'exitCode' | 'summary' | 'assertions'>;

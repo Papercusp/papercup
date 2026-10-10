@@ -634,21 +634,23 @@ export function classifyProbeResult({ networkError, status, json } = {}) {
  * tool and require it to come back.
  *
  * The classification is deliberately conservative so this can never cry wolf:
- *   'ok'     — a JSON-RPC result came back. The query ran.
- *   'config' — a JSON-RPC error that is NOT connection-shaped (bad args, renamed tool).
- *              OUR fault, never the service's — logged, never alarmed.
- *   'dead'   — no response / timeout / non-200 (a 408 is literally what clients saw), or a
- *              JSON-RPC error naming a connection failure (the tool ran and could not reach PG).
+ *   'ok'     — a non-error MCP tool result came back. The query ran.
+ *   'config' — a JSON-RPC or MCP tool error that is NOT connection-shaped (bad args, renamed
+ *              tool, or our invalid credential). OUR fault, never the service's — logged only.
+ *   'dead'   — no response / timeout / non-200 (a 408 is literally what clients saw), a
+ *              connection-shaped error, or the fail-closed native-session verifier DB error.
  */
 export function classifyDataPlaneResult({ networkError, status, json } = {}) {
   if (networkError) return 'dead'; // timeout — a pool waiting on a dead endpoint never answers
   if (status !== 200) return 'dead'; // 408/5xx — the exact client-visible symptom on 2026-08-01
   if (!json || typeof json !== 'object') return 'dead';
-  const err = json.error;
-  if (err) {
-    const text = `${err.code ?? ''} ${err.message ?? ''}`.toLowerCase();
+  const classifyErrorText = (raw) => {
+    const text = String(raw ?? '').toLowerCase();
+    // This exact fail-closed verifier reason is a transient DB-backed auth check failure,
+    // not a bad watchdog credential. It must reach the existing onset sampler.
+    if (text.includes('superuser_native_session_verifier_unavailable')) return 'dead';
     if (text.includes('auth') || text.includes('bearer') || text.includes('unauthenticated')) return 'config';
-    // A tool that RAN but could not reach the database is the signal, not a config fault.
+    // A tool that ran but could not reach the database is the signal, not a config fault.
     const connectionShaped =
       text.includes('econnrefused') ||
       text.includes('etimedout') ||
@@ -658,8 +660,22 @@ export function classifyDataPlaneResult({ networkError, status, json } = {}) {
       text.includes('pool') ||
       text.includes('timeout');
     return connectionShaped ? 'dead' : 'config';
+  };
+
+  const err = json.error;
+  if (err) {
+    return classifyErrorText(`${err.code ?? ''} ${err.message ?? ''}`);
   }
-  return json.result ? 'ok' : 'config';
+  const result = json.result;
+  if (result && typeof result === 'object' && result.isError === true) {
+    // MCP tools/call reports handler failures inside a successful JSON-RPC envelope.
+    // Treating every truthy result as healthy hid failed DB probes and skipped the onset sample.
+    const message = Array.isArray(result.content)
+      ? result.content.map((item) => (typeof item?.text === 'string' ? item.text : '')).join(' ')
+      : '';
+    return classifyErrorText(message);
+  }
+  return result ? 'ok' : 'config';
 }
 
 /**

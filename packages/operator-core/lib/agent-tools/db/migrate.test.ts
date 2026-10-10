@@ -531,6 +531,19 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(secondCommit).toBeGreaterThan(ledger);
   });
 
+  it('WI-10007383: mirrors bounded historical projection chunks in guarded psql', async () => {
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const sql = fs.readFileSync(new URL('../../../../../libs/papercusp/libs/db/sql/1422-adv-sessions-launch-harness-projection.sql', import.meta.url), 'utf8');
+    h.readFileSync.mockReturnValue(sql);
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out).toMatchObject({ ok: true, applied: true });
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script.match(/LIMIT 64/g)).toHaveLength(1024);
+    expect(script.match(/^COMMIT;$/gm)).toHaveLength(1026);
+    expect(script.match(/INSERT INTO harness_shared\.schema_migrations/g)).toHaveLength(1);
+    expect(script.indexOf('projection_backfill_done')).toBeLessThan(script.indexOf('INSERT INTO harness_shared.schema_migrations'));
+  });
+
   it('EI-217072: places the completed pre-destructive snapshot admission guard before guarded DDL', async () => {
     const guardedFile = '/repo/libs/papercusp/libs/db/sql/1016-pre-snapshot-guarded.sql';
     const out = parse(
