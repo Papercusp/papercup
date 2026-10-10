@@ -19,7 +19,7 @@ vi.mock('@papercusp/scheduled-registry', () => ({ managedSetInterval: vi.fn() })
 
 import { SUPERUSER_FALLBACK_CLIENT_ID } from '../agent-tools/coordination/identity';
 import { directedImplementerConfinement } from './session-confinement';
-import { checkSessionConfinement, hasSessionConfinementResolver } from './session-confinement-port';
+import { checkSessionConfinement, hasSessionConfinementResolver, sessionAllowsAmbientContext } from './session-confinement-port';
 import {
   __markSessionConfinementsPrimedForTest,
   __setSessionConfinementCacheForTest,
@@ -64,6 +64,37 @@ describe('session-confinement store — installation', () => {
 });
 
 describe('exact native launch ceilings', () => {
+  it('snapshots the exact assignment, refuses retargeting, and rejects malformed stored scope', async () => {
+    const boundary = { id: 'F-own', harness: 'bench', checkout: '/private/assignment' };
+    const confined = { denyTools: [], denyOutside: ['work_items:get'], denyWorkItemsOutside: boundary, reason: 'assignment', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement: confined })).toMatchObject({ ok: true });
+    boundary.id = 'F-other';
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyWorkItemsOutside).toEqual({ id: 'F-own', harness: 'bench', checkout: '/private/assignment' });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement: confined })).rejects.toThrow(/cannot be replaced/);
+    const malformed = { ...confined, denyWorkItemsOutside: { id: 'F-own', harness: '../other', checkout: '/private/assignment' } };
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: malformed })).toMatchObject({ ok: false });
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: malformed }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER)).rejects.toThrow(/malformed/);
+  });
+  it('persists frozen context policy, keeps it after expiry, and refuses to remove it', async () => {
+    const frozen = { denyTools: [], denyOutside: ['coord:whoami'], denyAmbientContext: true as const,
+      reason: 'frozen benchmark', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: frozen })).toMatchObject({ ok: true });
+    expect(await sessionAllowsAmbientContext({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private' })).toBe(false);
+    const payload = pgState.payload as { sessions: Record<string, StoredSessionConfinement> };
+    payload.sessions[IMPLEMENTER_OWNER] = { ...payload.sessions[IMPLEMENTER_OWNER], expiresAt: new Date(0).toISOString() };
+    expect(await sessionAllowsAmbientContext({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private' })).toBe(false);
+    const { denyAmbientContext: _denied, ...widened } = frozen;
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: widened })).rejects.toThrow(/cannot be replaced/);
+  });
+  it('fails closed on a malformed stored ambient policy and refuses invalid writes', async () => {
+    const malformed = { denyTools: [], denyOutside: ['coord:whoami'], denyAmbientContext: false,
+      reason: 'frozen benchmark', imposedBy: 'host' };
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: malformed as never }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER, 'private')).rejects.toThrow(/malformed/);
+    expect(await sessionAllowsAmbientContext({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private' })).toBe(false);
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: malformed as never })).toMatchObject({ ok: false });
+  });
   const confinement = { denyTools: [], denyOutside: ['coord:whoami', 'work_items:get'],
     reason: 'metered native gateway', imposedBy: 'benchmark-host' };
   it.each(['double-encoded JSONB', 'invalid population'])('rejects %s as unreadable authority', async kind => {

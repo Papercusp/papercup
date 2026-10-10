@@ -61,7 +61,16 @@ function commitProtocol(filePath: string, body: string): void {
   expect(execFileSync('git', ['symbolic-ref', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()).toBe('refs/heads/main');
   execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
 }
+function prepareContext(config: ReturnType<typeof currentProtocolFixture>) {
+  const initialSnapshot = JSON.stringify({ entries: [{ key: 'permitted:private-fixture', text: 'Shared frozen private context.' }] });
+  for (const kind of ['corpus', 'memory']) writeFileSync(join(repoRoot, `${kind}.json`), initialSnapshot);
+  config.context = { ...config.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
+    corpusHash: createHash('sha256').update(initialSnapshot).digest('hex'),
+    memoryHash: createHash('sha256').update(initialSnapshot).digest('hex') };
+  handle.worktreePath = mkdtempSync(join(tmpdir(), 'current-bench-checkout-')); roots.push(handle.worktreePath);
+}
 async function execution(committed = true) {
+  prepareContext(config);
   const frozen = await preregister({ ...scope(), runId: 'PRIVATE', suites: [], config, repoRoot });
   if (committed) commitProtocol(frozen.filePath, readFileSync(frozen.absFilePath, 'utf8'));
   const opts: CurrentSuBenchOptions = {
@@ -259,6 +268,8 @@ describe('production native accounting with private PG and full source bytes', (
   });
   it('composes the issued host HTTP route, authenticated provider, SQL admission and native source census', async () => {
     const f = await costFixture(), protocol = currentProtocolFixture('PRIVATE', 60_000);
+    prepareContext(protocol);
+    f.opts.preregistration.repoRoot = repoRoot;
     protocol.maxInFlightUsd = 0.00012;
     protocol.priceSchedule.rates[0].inputTokenCeiling = 100;
     protocol.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract('configured-alias', 100);
@@ -310,7 +321,8 @@ describe('production native accounting with private PG and full source bytes', (
         client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ thread_id: f.solver.nativeSessionId, turn_id: f.solver.nativeTurnId }) } }),
     });
     try {
-      await ports.launch(currentBenchLaunchRequest(f.opts, handle, 'private task'));
+      const context = await ports.restoreContext(handle, 't1');
+      await ports.launch(currentBenchLaunchRequest(f.opts, handle, 'private task', context));
       expect(native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
       const accepted = await send(), acceptedBody = await accepted.text();
       const authority = await authenticate.mock.results.at(-1)?.value;
@@ -600,6 +612,32 @@ afterAll(async () => { for (const gateway of gateways) await gateway.stop();
   await sql?.end({ timeout: 5 }); for (const root of roots) rmSync(root, { recursive: true, force: true }); });
 
 describe('production current benchmark protocol and private completion bindings', () => {
+  it('refuses direct native launch before physical restoration, then accepts the exact restored assignment', async () => {
+    const f = await execution();
+    await expect(f.ports.launch(currentBenchLaunchRequest(f.opts, handle, 'private task'))).rejects.toThrow(/physically restored/);
+    expect(native.launch).not.toHaveBeenCalled();
+    const context = await f.ports.restoreContext(handle, 't1');
+    expect(await f.ports.verifyContext(handle, 't1')).toEqual(context);
+    await f.ports.launch(currentBenchLaunchRequest(f.opts, handle, 'private task', context));
+    expect(native.launch).toHaveBeenCalledOnce();
+    expect(native.launch.mock.calls[0][0].brief).toContain('Shared frozen private context.');
+    expect(native.launch.mock.calls[0][1][Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({ denyAmbientContext: true,
+      denyWorkItemsOutside: { id: handle.featureId, harness: handle.slug, checkout: handle.worktreePath },
+      denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'] });
+  });
+  it.each(['corpus.json', 'memory.json', 'receipt.json'])('refuses changed restored %s at the production launch port', async file => {
+    const f = await execution(), context = await f.ports.restoreContext(handle, 't1');
+    writeFileSync(join(handle.worktreePath, '.papercusp/benchmark-context', file), '{}');
+    await expect(f.ports.launch(currentBenchLaunchRequest(f.opts, handle, 'private task', context))).rejects.toThrow(/snapshot bytes|receipt differs/);
+    expect(native.launch).not.toHaveBeenCalled();
+  });
+  it('refuses a different checkout or brief even when its snapshot receipt was valid', async () => {
+    const f = await execution(), context = await f.ports.restoreContext(handle, 't1');
+    const args = currentBenchLaunchRequest(f.opts, handle, 'private task', context);
+    await expect(f.ports.launch({ ...args, cwd: repoRoot })).rejects.toThrow(/physically restored/);
+    await expect(f.ports.launch({ ...args, brief: 'caller supplied context' })).rejects.toThrow(/physically restored/);
+    expect(native.launch).not.toHaveBeenCalled();
+  });
   it('rejects private work-item completion without native identity while retaining committed protocol, receipt and cleanup', async () => {
     const f = await execution();
     const result = await f.run();

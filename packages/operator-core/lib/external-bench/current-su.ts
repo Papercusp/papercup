@@ -27,6 +27,8 @@ import { priceRun } from '@papercusp/bench-metrics';
 import { currentProtocolPriceTable } from './reproducibility/schema';
 import { readGatewayNativeCorrelation } from '../inference-gateway/request-stage-telemetry';
 import { concurrencyTimelineFromIntervals } from './hive-backlog-utilities';
+import { restoreBenchmarkContext, readRestoredBenchmarkContext, type BenchmarkContextInput, type BenchmarkContextReceipt } from './reproducibility/context';
+import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 
 interface NativeCostParticipant {
   taskId: string; ownerId: string; codexHome: string; terminal: boolean;
@@ -916,6 +918,8 @@ export interface CurrentSuBenchPorts extends Pick<CurrentSuBenchObservations, 'a
   collectCost?: BenchHarnessOps['collectCost'];
   readIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentity | null>;
   verifyPreregistration(): Promise<{ preregHash: string; gitCommitSha: string; receiptRef: string }>;
+  restoreContext(handle: BenchHarnessHandle, taskId: string): Promise<BenchmarkContextReceipt>;
+  verifyContext(handle: BenchHarnessHandle, taskId: string): Promise<BenchmarkContextReceipt>;
   readCompletion(handle: BenchHarnessHandle): Promise<'done' | 'failed' | null>;
   launch(args: LaunchArgs): Promise<unknown>;
   getTask(taskId: string): Promise<CurrentBenchTask | null>;
@@ -930,12 +934,12 @@ export function currentBenchRunLabel(runId: string): string {
 }
 const attemptLabel = (runId: string, handle: BenchHarnessHandle) => `${currentBenchRunLabel(runId)}${hash(handle.slug).slice(0, 24)}:`;
 
-export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: BenchHarnessHandle, problem: string): LaunchArgs {
+export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: BenchHarnessHandle, problem: string, context?: BenchmarkContextReceipt): LaunchArgs {
   resolveBenchWorkspace(opts.workspaceId);
   if (!opts.model.trim() || !opts.account.trim()) throw new Error('Current benchmark model/account must be explicit.');
   return {
     harness: handle.slug, cwd: handle.worktreePath, feature: handle.featureId, workItem: handle.featureId,
-    brief: `Resolve the assigned benchmark task in this repository. Preserve your work in the checkout and complete the assigned work-item when finished.\n\n${problem}`,
+    brief: `Resolve the assigned benchmark task in this repository. Preserve your work in the checkout. Use work_items:get or work_items:checkpoint with id=${handle.featureId} and harness=${handle.slug}. When finished, use work_items:complete with that exact id/harness, state="done", assumptions="none", and completion:{summary,testsRun,testResult,verifiedHow,filesChanged}. Name checkout-relative files.\n\n${problem}${context?.contextText ?? ''}`,
     independent: true, headless: true, count: 1, mcpTarget: 'spawn-host',
     label: `${attemptLabel(opts.runId, handle)}solver`,
     idempotencyKey: `current-bench:${hash(`${opts.runId}:${handle.slug}`)}`,
@@ -1018,6 +1022,19 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
         if (protocol.preregHash !== opts.preregistration.preregHash || !protocol.gitCommitSha?.trim() || !protocol.receiptRef?.trim()) {
           throw new Error('Benchmark pre-registration receipt is missing or does not match the frozen protocol.');
         }
+        const requireContext = (context: BenchmarkContextReceipt) => {
+          if (!context || context.schemaVersion !== 1 || context.workspaceId !== workspaceId || context.runId !== opts.runId ||
+              context.preregHash !== protocol.preregHash || context.harnessSlug !== handle.slug ||
+              context.assignmentId !== currentBenchAssignmentId(opts.runId, opts.armId, task.instanceId, opts.seed) ||
+              context.corpusHash !== frozen.context.corpusHash || context.memoryHash !== frozen.context.memoryHash ||
+              typeof context.contextText !== 'string' || !context.contextText.length ||
+              hash(context.contextText) !== context.contextTextSha256 || !/^sha256:[a-f0-9]{64}$/.test(context.receiptRef))
+            throw new Error('Benchmark initial context receipt does not match the frozen assignment.');
+          return context;
+        };
+        const initialContext = requireContext(await ports.restoreContext(handle, task.instanceId));
+        const { contextText: _text, ...contextEvidence } = initialContext;
+        record.initialContext = { status: 'restored', ...contextEvidence };
         if (opts.signal?.aborted) return { disposition: 'timeout', detail: 'Benchmark cancelled before admission.', armMeta: { currentExecution: record } };
         const admission = await ports.admit(handle, budget, task.instanceId);
         record.admission = admission;
@@ -1027,9 +1044,12 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
         const startedAt = lifecycle.now();
         const deadline = startedAt + (budget.maxWallClockMs != null ? Math.min(timeoutMs, budget.maxWallClockMs) : timeoutMs);
         if (!(deadline > startedAt)) return { disposition: 'budget-exhausted', armMeta: { currentExecution: record } };
+        const rereadContext = requireContext(await ports.verifyContext(handle, task.instanceId));
+        if (canonicalJson(rereadContext) !== canonicalJson(initialContext)) throw new Error('Benchmark initial context changed before native generation.');
+        record.initialContext = { status: 'verified-before-generation', ...contextEvidence };
         // A transport failure can happen after spawning: cleanup uses the durable label.
         started = true;
-        const receipt = payload(await ports.launch(currentBenchLaunchRequest(opts, handle, task.problemStatement)));
+        const receipt = payload(await ports.launch(currentBenchLaunchRequest(opts, handle, task.problemStatement, rereadContext)));
         record.launchReceipt = receipt;
         const tasks = receipt.tasks as Array<{ taskId?: string }> | undefined;
         if (receipt.agentStarted !== true || tasks?.length !== 1 || !tasks[0]?.taskId) throw new Error('Native benchmark launch has no verified single-agent start.');
@@ -1139,6 +1159,7 @@ export function liveCurrentSuBenchPorts(
       throw new Error('Current benchmark native launch controls differ from its host-owned gateway.');
     }
   };
+  const restored = new Map<string, BenchmarkContextInput & { workItemId: string }>();
   return {
     releaseGateway: async () => { await host?.stop(); },
     admit: async (handle, budget, taskId) => {
@@ -1158,17 +1179,40 @@ export function liveCurrentSuBenchPorts(
     verifyPreregistration: async () => (await import('./reproducibility/prereg')).requireCommittedPreregistration(
       opts.runId, opts.preregistration, { ...db, workspaceId, repoRoot: opts.preregistration.repoRoot },
     ),
+    restoreContext: async (handle, taskId) => {
+      const host = requireBinding();
+      if (taskId !== host.taskId) throw new Error('Benchmark context restore differs from its host assignment.');
+      const protocol = currentBenchmarkProtocolSchema.parse(opts.preregistration.config);
+      const input = { context: protocol.context, checkout: handle.worktreePath, workItemId: handle.featureId, snapshotRoot: opts.preregistration.repoRoot ?? REPO_ROOT,
+        binding: { workspaceId, runId: opts.runId, preregHash: opts.preregistration.preregHash,
+          assignmentId: accounting!.assignmentId, harnessSlug: handle.slug } };
+      const receipt = restoreBenchmarkContext(input);
+      restored.set(handle.slug, input);
+      return receipt;
+    },
+    verifyContext: async (handle, taskId) => {
+      const host = requireBinding(), input = restored.get(handle.slug);
+      if (taskId !== host.taskId || !input || input.checkout !== handle.worktreePath)
+        throw new Error('Benchmark initial context has not been restored for this checkout.');
+      return readRestoredBenchmarkContext(input);
+    },
     readCompletion: handle => readCurrentBenchCompletion(handle, { ...db, workspaceId }),
     launch: async args => {
       requireHost(args);
+      const input = typeof args.harness === 'string' ? restored.get(args.harness) : undefined;
+      if (!input || args.cwd !== input.checkout || args.workItem !== input.workItemId || args.feature !== input.workItemId || typeof args.brief !== 'string' ||
+          !args.brief.endsWith(readRestoredBenchmarkContext(input).contextText))
+        throw new Error('Benchmark native launch requires its physically restored frozen context.');
       const module = await import('../agent-tools/capability/launch-agent');
       requireHost(args);
       // Server-side operations run outside the native OS boundary. Only local
-      // progress/identity reads are admitted here; the native sandbox supplies
+      // assignment progress/completion and identity are admitted here; the native sandbox supplies
       // coding tools. Discovery, remote brains, arbitrary server execution and
       // lifecycle fan-out cannot cause unmetered inference for this assignment.
       const confinement = Object.freeze({ denyTools: Object.freeze([] as string[]),
-        denyOutside: Object.freeze(['coord:whoami', 'work_items:get', 'work_items:checkpoint']),
+        denyOutside: Object.freeze(['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']),
+        denyAmbientContext: true as const,
+        denyWorkItemsOutside: Object.freeze({ id: input.workItemId, harness: input.binding.harnessSlug, checkout: input.checkout }),
         imposedBy: `benchmark-host ${accounting!.assignmentId}`,
         reason: 'All benchmark inference must cross the assignment\'s private metered gateway; native sandboxed tools perform local coding.' });
       return module.default.handler(args, { ...ctx, [module.INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway,

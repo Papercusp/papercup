@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
@@ -18,6 +18,7 @@ import {
 } from './current-su';
 import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import type { BenchHarnessOps } from './bench-harness-live';
+import type { BenchmarkContextReceipt } from './reproducibility/context';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -869,18 +870,52 @@ function fixture(opts = options) {
     collectCost: vi.fn(async () => ({ costUsd: 0.25, tokensIn: 20, tokensOut: 10, turns: 1 })),
     teardown: vi.fn(async () => {}),
   };
+  const frozen = opts.preregistration.config as unknown as ReturnType<typeof currentProtocolFixture>;
+  const contextText = '\n\nSynthetic permitted frozen context.';
+  const context: BenchmarkContextReceipt = { schemaVersion: 1, workspaceId: opts.workspaceId,
+    runId: opts.runId, preregHash: opts.preregistration.preregHash,
+    assignmentId: currentBenchAssignmentId(opts.runId, opts.armId, 't1', opts.seed), harnessSlug: handle.slug,
+    worktreePath: handle.worktreePath, corpusHash: frozen.context.corpusHash, memoryHash: frozen.context.memoryHash,
+    corpusPath: `${handle.worktreePath}/corpus.json`, memoryPath: `${handle.worktreePath}/memory.json`,
+    receiptPath: `${handle.worktreePath}/receipt.json`, receiptRef: `sha256:${'e'.repeat(64)}`,
+    contextText, contextTextSha256: createHash('sha256').update(contextText).digest('hex') };
   const ports: CurrentSuBenchPorts = {
     verifyPreregistration: vi.fn(async () => ({ preregHash: 'frozen-protocol', gitCommitSha: 'a'.repeat(40), receiptRef: 'prereg:committed' })),
     admit: vi.fn(async () => ({ admitted: true, receiptRef: 'budget:reservation-1' })),
+    restoreContext: vi.fn(async () => context), verifyContext: vi.fn(async () => context),
     launch: vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: row.taskId, ownerId: 'su-native' }] })),
     getTask: vi.fn(async () => row), listTasks: vi.fn(async () => [row]),
     killTask: vi.fn(async (id: string) => ({ ok: true as const, taskId: id, action: 'kill' })),
     sleep: vi.fn(async ms => { clock += ms; }),
     readCompletion: vi.fn(async () => null), readIdentity: vi.fn(async () => identity),
   };
-  return { row, ports, lifecycle, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
+  return { row, ports, lifecycle, context, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
 describe('current native benchmark execution', () => {
+  it('restores after committed protocol verification and re-reads after admission before launching the complete frozen context', async () => {
+    const f = fixture(), result = await f.run();
+    const order = (mock: unknown) => vi.mocked(mock as typeof f.ports.verifyPreregistration).mock.invocationCallOrder[0];
+    expect(order(f.ports.verifyPreregistration)).toBeLessThan(order(f.ports.restoreContext));
+    expect(order(f.ports.restoreContext)).toBeLessThan(order(f.ports.admit));
+    expect(order(f.ports.admit)).toBeLessThan(order(f.ports.verifyContext));
+    expect(order(f.ports.verifyContext)).toBeLessThan(order(f.ports.launch));
+    expect(vi.mocked(f.ports.launch).mock.calls[0][0].brief).toContain(f.context.contextText);
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
+      initialContext: { status: 'verified-before-generation', corpusHash: f.context.corpusHash,
+        memoryHash: f.context.memoryHash, assignmentId: f.context.assignmentId, receiptRef: f.context.receiptRef } });
+    expect((result.telemetry.armMeta?.currentExecution as Record<string, unknown>).initialContext).not.toHaveProperty('contextText');
+  });
+  it.each(['workspaceId', 'runId', 'preregHash', 'assignmentId', 'harnessSlug', 'corpusHash', 'memoryHash', 'contextText', 'receiptRef'] as const)
+  ('rejects a drifted %s restoration receipt before budget admission or generation', async field => {
+    const f = fixture(); vi.mocked(f.ports.restoreContext).mockResolvedValue({ ...f.context, [field]: 'foreign-context' });
+    expect((await f.run()).telemetry.generationError).toMatch(/initial context receipt/);
+    expect(f.ports.admit).not.toHaveBeenCalled(); expect(f.ports.launch).not.toHaveBeenCalled();
+  });
+  it('refuses context contamination between admission and launch without starting a native task', async () => {
+    const f = fixture(); vi.mocked(f.ports.verifyContext).mockRejectedValue(new Error('snapshot bytes differ'));
+    expect((await f.run()).telemetry.generationError).toMatch(/snapshot bytes differ/);
+    expect(f.ports.admit).toHaveBeenCalledOnce(); expect(f.ports.launch).not.toHaveBeenCalled();
+  });
   it.each([false, true])('releases the host gateway after cost collection even when lifecycle teardown fails=%s', async fails => {
     const f = fixture(), events: string[] = [];
     vi.mocked(f.lifecycle.collectCost).mockImplementation(async () => {
@@ -1174,6 +1209,13 @@ describe('current benchmark restart and live binding', () => {
     const f = fixture();
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
     const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
+    const snapshotRoot = mkdtempSync(join(tmpdir(), 'bench-launch-context-'));
+    const checkout = join(snapshotRoot, 'assignment'); mkdirSync(checkout);
+    const snapshot = JSON.stringify({ entries: [{ key: 'permitted:fixture', text: 'Frozen initial context.' }] });
+    for (const name of ['corpus', 'memory']) writeFileSync(join(snapshotRoot, `${name}.json`), snapshot);
+    protocol.context = { ...protocol.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
+      corpusHash: createHash('sha256').update(snapshot).digest('hex'), memoryHash: createHash('sha256').update(snapshot).digest('hex') };
+    const restoredHandle = { ...handle, worktreePath: checkout };
     const controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId: 'private-host-loop',
       token: 'b'.repeat(64), preregHash, protocol, armId: 'papercusp', taskId: 't1', seed: 1,
       resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
@@ -1182,22 +1224,29 @@ describe('current benchmark restart and live binding', () => {
       authenticateProvider: async () => null });
     const stop = vi.fn(async () => {});
     const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32101, stop } as never));
-    const opts = { ...options, preregistration: { preregHash, config: protocol } };
+    const opts = { ...options, preregistration: { preregHash, config: protocol, repoRoot: snapshotRoot } };
     const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted }, opts);
-    const args = currentBenchLaunchRequest(opts, handle, 'issue');
+    const context = await ports.restoreContext(restoredHandle, 't1');
+    const args = currentBenchLaunchRequest(opts, restoredHandle, 'issue', context);
     try { await ports.launch(args);
     const forwarded = native.launch.mock.calls.at(-1)![1];
     expect(forwarded.authenticatedPrincipal).toBe((ctx as unknown as { authenticatedPrincipal: unknown }).authenticatedPrincipal);
     expect(forwarded.workspaceId).toBe(ctx.workspaceId);
     expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
     expect(forwarded[Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({
-      denyTools: [], denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint'],
+      denyTools: [], denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
+      denyWorkItemsOutside: { id: restoredHandle.featureId, harness: restoredHandle.slug, checkout },
       imposedBy: expect.stringContaining('benchmark-host') });
     expect(Object.getOwnPropertySymbols(ctx)).not.toContain(Symbol.for('benchmark-test-private-route'));
+    expect(args.brief).toContain(`id=${restoredHandle.featureId} and harness=${restoredHandle.slug}`);
+    const calls = native.launch.mock.calls.length;
+    await expect(ports.launch({ ...args, workItem: 'WI-neighbor' })).rejects.toThrow(/physically restored/);
+    await expect(ports.launch({ ...args, feature: 'F-neighbor' })).rejects.toThrow(/physically restored/);
+    expect(native.launch.mock.calls).toHaveLength(calls);
     await ports.killTask('task-own');
     expect(native.kill).toHaveBeenCalledWith('task-own', { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });
     expect(ctx.workspaceId).toBe('bench-private');
-    } finally { await hosted.stop(); }
+    } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
     expect(stop).toHaveBeenCalledOnce();
     await expect(ports.launch(args)).rejects.toThrow(/host-owned gateway/);
     await hosted.stop(); expect(stop).toHaveBeenCalledOnce();

@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { directedImplementerConfinement } from './session-confinement';
 import {
   checkSessionConfinement,
   hasSessionConfinementResolver,
   setSessionConfinementResolver,
+  sessionAllowsAmbientContext,
 } from './session-confinement-port';
 
 const CONFINEMENT = directedImplementerConfinement({
@@ -24,6 +28,57 @@ const SUPERUSER_CTX = {
 const PLAIN_CTX = { isSuperuser: false } as unknown as UnifiedToolContext;
 
 afterEach(() => setSessionConfinementResolver(undefined));
+
+describe('ambient context uses the same authoritative session policy', () => {
+  it('uses caller arguments only as the target, with the scope resolved from host state', async () => {
+    setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['work_items:get'],
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' }, imposedBy: 'host', reason: 'assignment' }));
+    expect(await checkSessionConfinement({ toolName: 'work_items:get', ctx: SUPERUSER_CTX,
+      args: { id: 'F-own', harness: 'bench' } })).toBeNull();
+    expect(await checkSessionConfinement({ toolName: 'work_items:get', ctx: SUPERUSER_CTX,
+      args: { id: 'F-other', harness: 'bench', confinement: { denyWorkItemsOutside: { id: 'F-other', harness: 'bench' } } } }))
+      .toMatchObject({ decision: 'deny' });
+  });
+  it('permits checkout proof and missing local files but refuses symlink proof outside it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'confined-proof-'));
+    const outside = mkdtempSync(join(tmpdir(), 'neighbor-proof-'));
+    writeFileSync(join(root, 'local.ts'), 'local'); writeFileSync(join(outside, 'secret.ts'), 'neighbor');
+    symlinkSync(outside, join(root, 'escape'));
+    setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['work_items:complete'],
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: root }, imposedBy: 'host', reason: 'assignment' }));
+    const check = (filesChanged: string[]) => checkSessionConfinement({ toolName: 'work_items:complete', ctx: SUPERUSER_CTX,
+      args: { id: 'F-own', harness: 'bench', state: 'done', assumptions: 'none', completion: { summary: 'implemented', filesChanged } } });
+    try {
+      expect(await check(['local.ts', 'missing.ts'])).toBeNull();
+      expect(await check(['escape/secret.ts'])).toMatchObject({ decision: 'deny' });
+      expect(await check(['escape/missing.ts'])).toMatchObject({ decision: 'deny' });
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+  it('suppresses pinned native context without a host resolver while preserving unbound conversations', async () => {
+    setSessionConfinementResolver(undefined);
+    expect(await sessionAllowsAmbientContext({ ownerId: 'su-frozen', workspaceId: 'private' })).toBe(false);
+    expect(await sessionAllowsAmbientContext({ workspaceId: 'private' })).toBe(true);
+  });
+  it('suppresses frozen-only context and identifies the exact workspace/session', async () => {
+    const resolver = vi.fn(() => ({ ...CONFINEMENT, denyAmbientContext: true as const }));
+    setSessionConfinementResolver(resolver);
+    expect(await sessionAllowsAmbientContext({ ownerId: 'su-frozen', workspaceId: 'private' })).toBe(false);
+    expect(resolver).toHaveBeenCalledWith(expect.objectContaining({ uiClientId: 'su-frozen', workspaceId: 'private' }));
+  });
+  it('suppresses context if readiness or the authoritative read fails', async () => {
+    setSessionConfinementResolver(() => { throw new Error('read unavailable'); });
+    expect(await sessionAllowsAmbientContext({ ownerId: 'su-frozen', workspaceId: 'private' })).toBe(false);
+    setSessionConfinementResolver(() => null, { ensureReady: async () => { throw new Error('not ready'); } });
+    expect(await sessionAllowsAmbientContext({ ownerId: 'su-frozen', workspaceId: 'private' })).toBe(false);
+  });
+  it('reads policy again rather than trusting an earlier unconfined result', async () => {
+    const resolver = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ ...CONFINEMENT, denyAmbientContext: true });
+    setSessionConfinementResolver(resolver);
+    const input = { ownerId: 'su-frozen', workspaceId: 'private' };
+    expect(await sessionAllowsAmbientContext(input)).toBe(true);
+    expect(await sessionAllowsAmbientContext(input)).toBe(false);
+  });
+});
 
 describe('session-confinement port — inertness when nothing is declared', () => {
   it('is null with no resolver installed', async () => {

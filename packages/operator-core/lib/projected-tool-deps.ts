@@ -1846,7 +1846,7 @@ async function checkCapabilityEnvelopeImpl(input: {
   // This gate is a self-imposed narrowing declared by the LAUNCHER, not a privilege ceiling,
   // so privilege is irrelevant to it. It is inert (null) for any session with no declared
   // confinement, i.e. every session until a paired fleet launches one.
-  const confined = await checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx });
+  const confined = await checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx, args: input.args });
   if (confined) return confined;
 
   // WI-2140596: AUDIT mode's read-only-toward-subject clause, mechanically. Same seat and

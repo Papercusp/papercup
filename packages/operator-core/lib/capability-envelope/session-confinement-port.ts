@@ -30,6 +30,8 @@
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { CapabilityEnvelopeVerdict } from '@papercusp/tooldef';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { realpath } from 'node:fs/promises';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
 import { evaluateSessionConfinement, type SessionToolConfinement } from './session-confinement';
 
@@ -70,6 +72,25 @@ export function hasSessionConfinementResolver(): boolean {
   return state.resolver !== undefined;
 }
 
+/** Read the same host policy as dispatch before producing OR serving context.
+ * The lookup context identifies the hook's session; it executes no tool and
+ * grants no authority. Missing/unreadable policy suppresses optional context.
+ * Unbound human conversations retain their ordinary behavior. A pinned native
+ * session needs a readable host policy, including during bootstrap. */
+export async function sessionAllowsAmbientContext(input: {
+  ownerId?: string | null; workspaceId: string;
+}): Promise<boolean> {
+  if (!input.ownerId) return true;
+  const resolver = state.resolver;
+  if (!resolver) return false;
+  try {
+    await state.ensureReady?.();
+    const confinement = await resolver({ uiClientId: input.ownerId,
+      workspaceId: input.workspaceId, isSuperuser: true } as UnifiedToolContext);
+    return confinement?.denyAmbientContext === undefined;
+  } catch { return false; }
+}
+
 /**
  * The gate, in the shape the dispatcher's capability-envelope port already returns.
  *
@@ -83,6 +104,7 @@ export function hasSessionConfinementResolver(): boolean {
 export async function checkSessionConfinement(input: {
   toolName: string;
   ctx: UnifiedToolContext;
+  args?: unknown;
 }): Promise<CapabilityEnvelopeVerdict | null> {
   const resolver = state.resolver;
   if (!resolver) return null;
@@ -110,8 +132,33 @@ export async function checkSessionConfinement(input: {
   }
   if (!confinement) return null;
 
-  const decision = evaluateSessionConfinement({ toolName: input.toolName, confinement });
-  if (decision.allowed) return null;
+  const decision = evaluateSessionConfinement({ toolName: input.toolName, args: input.args, confinement });
+  if (decision.allowed) {
+    if (input.toolName.trim() === 'work_items:complete' && confinement.denyWorkItemsOutside) {
+      try {
+        const root = await realpath(confinement.denyWorkItemsOutside.checkout);
+        const row = input.args as { completion: { filesChanged?: string[]; filesDeleted?: string[] } };
+        for (const path of [...row.completion.filesChanged ?? [], ...row.completion.filesDeleted ?? []]) {
+          let target = resolve(root, path);
+          // Deleted/new files may not exist. Resolve their nearest existing
+          // parent to catch symlinks without rejecting ordinary evidence.
+          while (true) {
+            try { target = await realpath(target); break; }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || dirname(target) === target) throw error;
+              target = dirname(target);
+            }
+          }
+          const rel = relative(root, target);
+          if (rel === '..' || rel.startsWith('../') || isAbsolute(rel)) throw new Error('proof path escapes checkout');
+        }
+      } catch {
+        return { decision: 'deny', posture: 'rejected', applied: true,
+          reason: 'Completion proof paths must remain inside the launch-declared assignment checkout.' };
+      }
+    }
+    return null;
+  }
 
   return {
     decision: 'deny',

@@ -1,5 +1,7 @@
 /** Real PostgreSQL and shared dispatch regression for launch-declared ceilings. */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -98,6 +100,28 @@ afterAll(async () => {
 });
 
 describe('durable launch confinement at the dispatch boundary', () => {
+  it('enforces assigned read/checkpoint/complete arguments at the real dispatch seat and nested invoke', async () => {
+    const own = { id: 'F-own', harness: 'bench-assignment' };
+    const checkout = mkdtempSync(join(tmpdir(), 'assignment-dispatch-'));
+    writeFileSync(join(checkout, 'task.ts'), 'assignment source');
+    const verbs = ['work_items:get', 'work_items:checkpoint', 'work_items:complete'];
+    await declare(OWNER, { ...ceiling([...verbs, 'tools:invoke']), denyWorkItemsOutside: { ...own, checkout } });
+    const requests = [{ ...own, resume: true }, { ...own, checkpoint: { did: 'implemented', next: 'test' } },
+      { ...own, state: 'done', assumptions: 'none', completion: { summary: 'implemented', testsRun: ['npm test'],
+        testResult: 'pass', verifiedHow: 'tests', filesChanged: ['task.ts'] } }];
+    try { for (let i = 0; i < verbs.length; i++) {
+      expect(await dispatch(verbs[i], requests[i])).toMatchObject({ ok: true });
+      const calls = target.mock.calls.length;
+      expect(await dispatch(verbs[i], { ...requests[i], id: 'F-neighbor' })).toMatchObject({ ok: false });
+      expect(await dispatch(verbs[i], { ...requests[i], harness: 'bench-neighbor' })).toMatchObject({ ok: false });
+      expect(await dispatch('tools:invoke', { name: verbs[i], args: { ...requests[i], id: 'F-neighbor' } })).toMatchObject({ ok: false });
+      expect(target).toHaveBeenCalledTimes(calls);
+      expect(await dispatch('tools:invoke', { name: verbs[i], args: requests[i] })).toMatchObject({ ok: true });
+    }
+    expect(target).toHaveBeenCalledTimes(6);
+    expect((await readSessionConfinement(OWNER, WORKSPACE))?.denyWorkItemsOutside).toEqual({ ...own, checkout });
+    } finally { rmSync(checkout, { recursive: true, force: true }); }
+  });
   it('round-trips an object through the real transactional JSONB writer', async () => {
     expect(await declare()).toEqual({ ok: true });
     const [row] = await sql`SELECT jsonb_typeof(payload) AS type, payload

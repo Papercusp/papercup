@@ -44,7 +44,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isTransportOnlyIdentity, resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
-import type { SessionToolConfinement } from './session-confinement';
+import { validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
 import { setSessionConfinementResolver } from './session-confinement-port';
 
 /** One stored confinement, with the expiry that keeps the table from accumulating dead rows. */
@@ -106,7 +106,10 @@ export async function readSessionConfinement(ownerId: string | null | undefined,
   if (!row?.confinement || !Array.isArray(row.confinement.denyTools) ||
       row.confinement.denyTools.some(name => typeof name !== 'string') ||
       row.confinement.denyOutside !== undefined && (!Array.isArray(row.confinement.denyOutside) ||
-        row.confinement.denyOutside.some(name => typeof name !== 'string')))
+        row.confinement.denyOutside.some(name => typeof name !== 'string')) ||
+      row.confinement.denyAmbientContext !== undefined && row.confinement.denyAmbientContext !== true ||
+      row.confinement.denyWorkItemsOutside !== undefined &&
+        (row.confinement.denyOutside === undefined || !validWorkItemBoundary(row.confinement.denyWorkItemsOutside)))
     throw new Error('Stored session confinement is malformed');
   state.cache[ownerId] = row;
   return effectiveConfinement(row);
@@ -211,10 +214,14 @@ export async function declareSessionConfinement(args: {
   }
 
   const confinement = { ...args.confinement, denyTools: [...args.confinement.denyTools],
-    ...(args.confinement.denyOutside === undefined ? {} : { denyOutside: [...args.confinement.denyOutside] }) };
+    ...(args.confinement.denyOutside === undefined ? {} : { denyOutside: [...args.confinement.denyOutside] }),
+    ...(args.confinement.denyWorkItemsOutside === undefined ? {} : { denyWorkItemsOutside: { ...args.confinement.denyWorkItemsOutside } }) };
   if (!confinement.reason?.trim() || !confinement.imposedBy?.trim() ||
       confinement.denyTools.some(name => typeof name !== 'string' || !name.trim()) ||
-      confinement.denyOutside?.some(name => typeof name !== 'string' || !/^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$/.test(name)))
+      confinement.denyOutside?.some(name => typeof name !== 'string' || !/^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$/.test(name)) ||
+      confinement.denyAmbientContext !== undefined && confinement.denyAmbientContext !== true ||
+      confinement.denyWorkItemsOutside !== undefined &&
+        (confinement.denyOutside === undefined || !validWorkItemBoundary(confinement.denyWorkItemsOutside)))
     return { ok: false, reason: 'confinement requires valid canonical ceiling names and attribution' };
 
   const ttlSec = args.ttlSec && args.ttlSec > 0 ? args.ttlSec : DEFAULT_TTL_SEC;
