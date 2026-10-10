@@ -32,6 +32,36 @@ async function listen(server: http.Server): Promise<number> {
   return (server.address() as { port: number }).port;
 }
 
+it.each(['json', 'sse', 'sse-without-final-newline'] as const)(
+  'finalizes Responses provider evidence before downstream completion (%s)', async framing => {
+    resetGovernorRegistry();
+    const completed = { id: 'resp-tail-proof', model: 'gpt-6-sol', status: 'completed', output: [],
+      usage: { input_tokens: 10, output_tokens: 2, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } };
+    upstream = http.createServer((req, res) => {
+      req.resume(); req.once('end', () => {
+        res.writeHead(200, { 'content-type': framing === 'json' ? 'application/json' : 'text/event-stream' });
+        res.end(framing === 'json' ? JSON.stringify(completed)
+          : `data: ${JSON.stringify({ type: 'response.completed', response: completed })}${framing === 'sse' ? '\n\n' : ''}`);
+      });
+    });
+    const upstreamPort = await listen(upstream);
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      codexPool: createFailoverPool([{ accountId: 'tail-account', token: async () => 'PRIVATE_TAIL_TOKEN' }]),
+      openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`, requestAbsorbMs: 0, selfHeal: { enabled: false } });
+    const port = await gateway.listen(0);
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-tail-proof' },
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TAIL_PROMPT', stream: framing !== 'json',
+        reasoning: { effort: 'high' } }) });
+    expect(response.status).toBe(200); await response.text();
+    const { timeline } = await recentTimeline(port);
+    expect(timeline).toMatchObject({ outcome: 'ok', finalStatus: 200, attempts: 1,
+      providerIdentity: { responseId: completed.id, model: completed.model, accountId: 'tail-account', effort: null },
+      cache: { providerRequestId: completed.id, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 } });
+    expect(JSON.stringify(timeline)).not.toContain('PRIVATE_TAIL');
+  },
+);
+
 it('publishes one reconciled, privacy-safe stage timeline through /stats and the existing owner report', async () => {
   resetGovernorRegistry();
   upstream = http.createServer((req, res) => {

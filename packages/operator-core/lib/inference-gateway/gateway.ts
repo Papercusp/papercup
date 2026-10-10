@@ -4585,7 +4585,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Responses API twin of `observeCacheUsage`. Streaming usage arrives on a late
    *  `response.completed` SSE event as `response.usage`; non-streaming responses expose `usage`
    *  at the top level. Parse incrementally so a long agent stream never needs to be buffered. */
-  function observeOpenAiCacheUsage(stream: Readable, accountId: string, didFailover: boolean, stageSpan?: GatewayRequestSpan): void {
+  function observeOpenAiCacheUsage(stream: Readable, accountId: string, didFailover: boolean, stageSpan?: GatewayRequestSpan): () => void {
     let carry = '';
     let done = false;
     const detach = () => {
@@ -4657,11 +4657,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (carry.length > 1_048_576) carry = carry.slice(-65_536);
     };
     const onEnd = () => {
-      if (!done && carry) finish(carry);
-      else finish();
+      if (!done && carry) inspect(carry);
+      finish();
     };
     stream.on('data', onData);
     stream.on('end', onEnd);
+    // PassThrough.end() schedules its readable end callback. The adapter can
+    // finish the downstream response first, freezing the request timeline.
+    // Give both adapters the same idempotent, bounded tail flush so provider
+    // evidence is recorded before that response finishes, including JSON and
+    // SSE whose final data line has no newline.
+    return onEnd;
   }
   const cacheSummary = (t: CacheTally): GatewayCacheCounts => ({
     read: t.coverage.readKnown === t.coverage.requests ? t.read : null,
@@ -8653,10 +8659,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let attemptsSeen = 0;
     let lastAccountId = cli.accountId;
     let cacheProbe: PassThrough | null = null;
+    let finishCacheObservation: (() => void) | null = null;
     let acceptedRelay: ReturnType<typeof acceptedCodexResponse> | null = null;
     let pendingAcceptedHead: { status: number; headers: Record<string, string> } | null = null;
     const endCacheProbe = () => {
       if (!cacheProbe) return;
+      finishCacheObservation?.();
+      finishCacheObservation = null;
       cacheProbe.end();
       cacheProbe = null;
     };
@@ -9076,7 +9085,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // its own 'data' listener once it has the usage record.
               cacheProbe.on('data', () => undefined);
               cacheProbe.on('error', () => undefined);
-              observeOpenAiCacheUsage(
+              finishCacheObservation = observeOpenAiCacheUsage(
                 cacheProbe,
                 metadata.accountId,
                 attemptsSeen > 1 || metadata.pinYieldedFrom !== null,
@@ -9794,10 +9803,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // the same Node stream it piped downstream; the kernel hands chunks to
     // `downstream.write`, so they are tee'd into this PassThrough instead.
     let cacheProbe: PassThrough | null = null;
+    let finishCacheObservation: (() => void) | null = null;
     let acceptedRelay: ReturnType<typeof acceptedCodexResponse> | null = null;
     let pendingAcceptedHead: { status: number; headers: Record<string, string> } | null = null;
     const endCacheProbe = () => {
       if (!cacheProbe) return;
+      finishCacheObservation?.();
+      finishCacheObservation = null;
       cacheProbe.end();
       cacheProbe = null;
     };
@@ -10154,7 +10166,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // the rest of a long agent stream in memory.
               cacheProbe.on('data', () => undefined);
               cacheProbe.on('error', () => undefined);
-              observeOpenAiCacheUsage(cacheProbe, metadata.accountId, attemptsSeen > 1 || pinYieldedFrom !== null, stageSpan);
+              finishCacheObservation = observeOpenAiCacheUsage(cacheProbe, metadata.accountId, attemptsSeen > 1 || pinYieldedFrom !== null, stageSpan);
             },
             write: async (chunk) => {
               cacheProbe?.write(chunk);

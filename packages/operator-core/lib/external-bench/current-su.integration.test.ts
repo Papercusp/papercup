@@ -1,21 +1,32 @@
 /** Private PG + immutable git protocol integration; no inference or product writes. */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync, renameSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
+import http from 'node:http';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config/pg';
-import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions } from './current-su';
+import { currentBenchObservationReader, currentBenchIdentityFromObservation, liveCurrentBenchObservationReaderPorts,
+  currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
+  type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
 import type { BenchHarnessOps } from './bench-harness-live';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { readProcessIdentity } from '../process-identity';
+import { createInferenceGateway } from '../inference-gateway/gateway';
+import { createFailoverPool } from '../inference-gateway/account-failover';
+import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
+const hostHome = vi.hoisted(() => ({ path: '' }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch } }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
+// Only the private home allocator is substituted. SQL bindings, filesystem
+// bytes, process pins, request observation and HTTP reads use production IO.
+vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: () => hostHome.path }));
 
 const workspaceId = 'bench-current-private';
 const handle = { slug: 'xbench-current-private', featureId: 'xbench-private-task', worktreePath: '/private/task' };
@@ -78,12 +89,158 @@ beforeAll(async () => {
       git_committed boolean NOT NULL DEFAULT false, git_commit_sha text, created_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE (workspace_id, run_id));
     CREATE TABLE harness_shared.benchmark_run_result (run_id text, workspace_id text, created_at timestamptz NOT NULL DEFAULT now());
-    CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text);`);
+    CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text);
+    CREATE TABLE harness_shared.task_ledger (task_id text, workspace_id text, session_id text, detail jsonb);
+    CREATE TABLE harness_shared.adv_sessions (id bigserial, workspace_id text, coord_owner_id text, session_id text,
+      agent text, started_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE harness_shared.runtime_vintage (workspace_id text, unit text, host text, tree_sha text,
+      build_time timestamptz, bundle_version text, pid int, extra jsonb, reported_at timestamptz);`);
 }, 90_000);
 beforeEach(async () => {
   vi.clearAllMocks();
-  await sql`TRUNCATE harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items`;
+  await sql`TRUNCATE harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
+    harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage`;
   repoRoot = mkdtempSync(join(tmpdir(), 'current-bench-protocol-')); roots.push(repoRoot);
+});
+
+let hostGateway: ReturnType<typeof createInferenceGateway> | undefined;
+let hostProvider: http.Server | undefined;
+afterEach(async () => {
+  await hostGateway?.close(); hostGateway = undefined;
+  if (hostProvider) await new Promise<void>(resolve => hostProvider!.close(() => resolve()));
+  hostProvider = undefined; resetGovernorRegistry();
+});
+
+async function hostFixture() {
+  resetGovernorRegistry();
+  const ownerId = `su-private-${randomUUID()}`, nativeSessionId = randomUUID(), turnId = randomUUID();
+  const taskId = `host-task-${randomUUID()}`, taskAt = new Date(Date.now() - 5000).toISOString();
+  hostHome.path = join(repoRoot, 'native-home');
+  const dir = join(hostHome.path, 'sessions', '2026', '10', '10'); mkdirSync(dir, { recursive: true });
+  const file = join(dir, `rollout-2026-10-10T00-00-00-${nativeSessionId}.jsonl`);
+  writeFileSync(file, [
+    { type: 'session_meta', payload: { id: nativeSessionId, cli_version: '0.162.0' } },
+    { type: 'turn_context', payload: { turn_id: turnId, model: 'gpt-6-sol', effort: 'high' } },
+  ].map(row => JSON.stringify(row)).join('\n') + '\n');
+  await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
+    VALUES (${workspaceId}, ${ownerId}, ${nativeSessionId}, 'codex')`;
+  await sql`INSERT INTO harness_shared.task_ledger VALUES (${taskId}, ${workspaceId}, ${nativeSessionId},
+    ${sql.json({ coordOwnerId: ownerId })})`;
+  const storedBinding = await sql`
+    SELECT t.session_id, t.detail, jsonb_typeof(t.detail) AS detail_type, a.coord_owner_id
+    FROM harness_shared.task_ledger t JOIN harness_shared.adv_sessions a
+      ON a.workspace_id = t.workspace_id AND a.session_id = t.session_id
+    WHERE t.task_id = ${taskId} AND t.workspace_id = ${workspaceId}`;
+  expect(storedBinding, 'host stage: SQL stores object-valued task attribution').toMatchObject([
+    { session_id: nativeSessionId, detail: { coordOwnerId: ownerId }, detail_type: 'object', coord_owner_id: ownerId },
+  ]);
+  hostProvider = http.createServer((req, res) => {
+    req.resume(); req.once('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: 'resp-private-host', model: 'gpt-6-sol', status: 'completed', output: [],
+        usage: { input_tokens: 10, output_tokens: 2, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } }));
+    });
+  });
+  await new Promise<void>(resolve => hostProvider!.listen(0, '127.0.0.1', resolve));
+  const upstreamPort = (hostProvider.address() as { port: number }).port;
+  hostGateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    codexPool: createFailoverPool([{ accountId: 'private-account', token: async () => 'PRIVATE_LOOPBACK_TOKEN' }]),
+    openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`, requestAbsorbMs: 0, selfHeal: { enabled: false } });
+  const port = await hostGateway.listen(0), gatewayBaseUrl = `http://127.0.0.1:${port}`;
+  const processPin = readProcessIdentity(process.pid);
+  expect(processPin).toBeTruthy();
+  for (const unit of ['host-worker', 'host-gateway']) {
+    await sql`INSERT INTO harness_shared.runtime_vintage VALUES
+      ('host-runtime-private', ${unit}, ${hostname()}, ${'a'.repeat(40)}, null, null, ${process.pid},
+       ${sql.json({ kernelProcessIdentity: processPin, ...(unit === 'host-gateway' ? { port } : {}) })},
+       ${new Date(Date.now() - 10_000).toISOString()}::timestamptz)`;
+  }
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, { method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': ownerId },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_FIXTURE_INPUT', instructions: 'PRIVATE_FIXTURE_SYSTEM',
+      tools: [{ type: 'function', name: 'private_tool', parameters: { type: 'object' } }], reasoning: { effort: 'high' },
+      client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ thread_id: nativeSessionId, turn_id: turnId }) } }) });
+  expect(response.status).toBe(200); await response.text();
+  const task: CurrentBenchTask = { taskId, workspaceId, sessionId: nativeSessionId, startedAt: taskAt,
+    state: 'exited', exitCode: 0, detail: { coordOwnerId: ownerId } };
+  const options = { ...scope(), runtimeWorkspaceId: 'host-runtime-private',
+    workerUnit: 'host-worker', gatewayUnit: 'host-gateway', gatewayBaseUrl };
+  const io = liveCurrentBenchObservationReaderPorts(options);
+  // Assert each real IO precondition before the composite reader can collapse
+  // a failure to null. Every negative test starts from this verified fixture.
+  const binding = await io.readBinding(task);
+  expect(binding, 'host stage: exact SQL binding').toEqual({ ownerId, nativeSessionId, codexHome: hostHome.path });
+  const runtimes = await io.readRuntimes();
+  const units = ['host-worker', 'host-gateway'];
+  const environment = io.measureRuntimes(runtimes, units);
+  const runtimeRevision = io.measureRuntimes(runtimes, ['host-worker']);
+  expect(environment, 'host stage: live runtime environment').toMatch(/^[a-f0-9]{64}$/);
+  expect(runtimeRevision, 'host stage: live worker identity').toMatch(/^[a-f0-9]{64}$/);
+  expect(await io.readTranscript(nativeSessionId, hostHome.path), 'host stage: stable native transcript')
+    .toBe(readFileSync(file, 'utf8'));
+  const report = await io.readGateway(ownerId);
+  expect(report, 'host stage: local gateway report').toMatchObject({ owner: ownerId,
+    process: { pid: process.pid, identity: processPin }, stageTelemetry: { ownerId } });
+  const recent = report!.stageTelemetry.recent;
+  expect(recent, 'host stage: finalized request census').toHaveLength(1);
+  const timeline = recent[0];
+  expect(timeline, 'host stage: exact native correlation and provider identity').toMatchObject({
+    nativeCorrelation: { status: 'observed', threadId: nativeSessionId, turnId },
+    providerIdentity: { model: 'gpt-6-sol', responseId: 'resp-private-host', accountId: 'private-account' },
+    forwardedEffort: 'high', outcome: 'ok', finalStatus: 200,
+  });
+  expect(timeline.startedAt, 'host stage: request after pinned lifetimes').toBeGreaterThanOrEqual(
+    Math.max(Date.parse(taskAt), Date.parse(runtimes.find(row => row.unit === 'host-worker')!.reportedAt), report!.process.startedAt));
+  expect(io.measureRuntimes(await io.readRuntimes(), units), 'host stage: unchanged runtime environment').toBe(environment);
+  expect(currentBenchIdentityFromObservation(task, {
+    worker: { taskId, workspaceId, ownerId, nativeSessionId, runtimeRevision: runtimeRevision!,
+      sourceRevision: 'a'.repeat(40), evidenceRef: 'runtime-vintage:private-physical-fixture' },
+    nativeTranscript: readFileSync(file, 'utf8'), gateway: { processRef: `gateway:${processPin}`, timeline },
+  }), 'host stage: native/provider identity agreement').not.toBeNull();
+  const read = currentBenchObservationReader(options);
+  return { task, read, file, ownerId, nativeSessionId };
+}
+
+describe('host-backed benchmark observation with private physical IO', () => {
+  it('joins actual private SQL, transcript bytes, process pins and gateway provider evidence', async () => {
+    const f = await hostFixture(), observation = await f.read(f.task);
+    expect(observation).not.toBeNull();
+    expect(currentBenchIdentityFromObservation(f.task, observation!)).toMatchObject({
+      sourceRevision: 'a'.repeat(40), model: 'gpt-6-sol', clientVersion: 'codex/0.162.0',
+      accountId: 'private-account', nativeSessionId: f.nativeSessionId, providerResponseId: 'resp-private-host' });
+    const identity = currentBenchIdentityFromObservation(f.task, observation!);
+    expect(JSON.stringify(identity)).not.toMatch(/PRIVATE_|private_tool/);
+  });
+  it('rejects an ambiguous native binding and a foreign task workspace', async () => {
+    const f = await hostFixture();
+    expect(await f.read({ ...f.task, workspaceId: 'other-private' })).toBeNull();
+    await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
+      VALUES (${workspaceId}, ${f.ownerId}, ${f.nativeSessionId}, 'codex')`;
+    expect(await f.read(f.task)).toBeNull();
+  });
+  it('rejects stale kernel pins instead of restamping from a live process', async () => {
+    const f = await hostFixture();
+    await sql`UPDATE harness_shared.runtime_vintage SET extra = '{"kernelProcessIdentity":"foreign-process"}'::jsonb
+      WHERE unit = 'host-worker'`;
+    expect(await f.read(f.task)).toBeNull();
+  });
+  it('rejects string-valued JSONB attribution and restores an object-valued binding', async () => {
+    const f = await hostFixture();
+    // postgres serializes a string again when its bind type is JSONB. This
+    // reproduces the original fixture defect without accepting it as identity.
+    await sql`UPDATE harness_shared.task_ledger SET detail = ${JSON.stringify({ coordOwnerId: f.ownerId })}::jsonb`;
+    const [stored] = await sql`SELECT jsonb_typeof(detail) AS type FROM harness_shared.task_ledger`;
+    expect(stored.type).toBe('string');
+    expect(await f.read(f.task)).toBeNull();
+    await sql`UPDATE harness_shared.task_ledger SET detail = ${sql.json({ coordOwnerId: f.ownerId })}`;
+    expect(await f.read(f.task)).not.toBeNull();
+  });
+  it('rejects a symlinked native transcript even when its bytes and UUID match', async () => {
+    const f = await hostFixture();
+    expect(await f.read(f.task)).not.toBeNull();
+    renameSync(f.file, f.file + '.target'); symlinkSync(f.file + '.target', f.file);
+    expect(await f.read(f.task)).toBeNull();
+  });
 });
 afterAll(async () => { await sql?.end({ timeout: 5 }); for (const root of roots) rmSync(root, { recursive: true, force: true }); });
 
