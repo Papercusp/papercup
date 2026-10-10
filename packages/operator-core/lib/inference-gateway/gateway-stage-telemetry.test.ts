@@ -671,6 +671,42 @@ const fixtureReservation = (attempt: GatewayCarryTrialAttempt) => ({
   clockId: attempt.clockId, validUntilMonotonicMs: processMonotonicClock.now() + 5_000,
 });
 
+it.each(['codex', 'anthropic'].flatMap(protocol => ['complete', 'malformed-tail', 'missing-completion'].map(mode => ({ protocol, mode }))))(
+  'carry trial observes source-bound provider body closure ($protocol/$mode)', async ({ protocol, mode }) => {
+    const headers: GatewayCarryTrialAttemptResult[] = [];
+    const closed = vi.fn(async (_result: unknown) => {});
+    const provider = { id: 'response-ledger-fixture', model: protocol === 'codex' ? 'gpt-6-sol' : 'claude-opus-4', status: 'completed',
+      usage: { input_tokens: 100, output_tokens: 9, input_tokens_details: { cached_tokens: 20, cache_write_tokens: 0 } } };
+    const frames = protocol === 'codex' ? [{ type: 'response.completed', response: provider }] : [
+      { type: 'message_start', message: { id: provider.id, type: 'message', model: provider.model, stop_reason: null,
+        usage: { input_tokens: 80, output_tokens: 1, cache_read_input_tokens: 20, cache_creation_input_tokens: 0 } } },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 9 } }, { type: 'message_stop' } ];
+    const body = mode === 'missing-completion' ? 'data: [DONE]\n\n' :
+      frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('') +
+      (mode === 'malformed-tail' ? 'data: {broken}\n\n' : '');
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      ...(protocol === 'codex' ? { codexPool: createFailoverPool([{ accountId: 'ledger-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]) }
+        : { pool: createFailoverPool([{ accountId: 'ledger-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]) }),
+      carryTrial: (protocol === 'codex' ? trialBinding : anthropicTrialBinding)(async attempt => ({ ...fixtureReservation(attempt),
+        observeAttemptResult: async result => { headers.push(result); }, observeAttemptCompletion: closed })),
+      fetchImpl: (async () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })) as typeof fetch,
+      requestAbsorbMs: 0, selfHeal: { enabled: false } });
+    const port = await gateway.listen(0);
+    const response = protocol === 'anthropic' ? await sendAnthropicTrial(port) : await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK', stream: true }) });
+    await response.text().catch(() => '');
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(closed.mock.calls[0]![0]).toMatchObject({ ...headers[0],
+      outcome: mode === 'complete' ? 'response-completed' : 'response-incomplete',
+      responseSha256: createHash('sha256').update(body).digest('hex'), responseBytes: Buffer.byteLength(body),
+      costUsdMeasurementMissing: true });
+    if (mode === 'complete') expect(closed.mock.calls[0]![0]).toMatchObject({ providerCompletion: {
+      responseId: provider.id, model: provider.model, usage: { inputTokens: 100, inputTokenBasis: 'inclusive',
+        outputTokens: 9, cacheReadTokens: 20, cacheCreationTokens: 0 } } });
+    expect(JSON.stringify(closed.mock.calls)).not.toMatch(/PRIVATE_|costUsd"/);
+  });
+
 it('host-frozen native output ceiling reaches the selected bearer provider and cannot be widened', async () => {
   const observed: GatewayCarryTrialAttempt[] = [], sent: Record<string, unknown>[] = [];
   const binding = { ...trialBinding(async attempt => {

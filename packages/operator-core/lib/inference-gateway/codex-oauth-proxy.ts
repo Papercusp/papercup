@@ -553,7 +553,8 @@ export interface CodexProviderCompletionEvidence {
  * accepts only a provider response.completed object, never a request model or
  * the cli-exec bridge's synthetic response. One frame is bounded independently
  * of the stream length, so long agent turns need no whole-stream buffer. */
-export function createCodexProviderCompletionDecoder(contentType: string) {
+export function createCodexProviderCompletionDecoder(contentType: string,
+  protocol: 'openai-responses' | 'anthropic-messages' = 'openai-responses') {
   const declaredType = contentType.trim().toLowerCase();
   let responseKind: 'sse' | 'json' | 'unknown' = declaredType.includes('text/event-stream')
     ? 'sse' : declaredType.includes('application/json') ? 'json' : 'unknown';
@@ -563,6 +564,7 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
   const decoder = new StringDecoder('utf8');
   let carry = '';
   let completed: CodexProviderCompletionEvidence | null = null;
+  let anthropicMessage: Record<string, unknown> | null = null;
   const frameLimit = () => responseKind === 'sse' ? 1_048_576 : 8_388_608;
   const detectHeaderlessFormat = () => {
     if (responseKind !== 'unknown') return;
@@ -596,10 +598,18 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
     const details = usage?.input_tokens_details && typeof usage.input_tokens_details === 'object' &&
       !Array.isArray(usage.input_tokens_details)
       ? usage.input_tokens_details as Record<string, unknown> : null;
-    const input = count(usage?.input_tokens);
+    const uncachedInput = count(usage?.input_tokens);
     const output = count(usage?.output_tokens);
-    const cacheRead = count(details?.cached_tokens);
-    const cacheWrite = count(details?.cache_write_tokens);
+    const cacheRead = count(protocol === 'anthropic-messages' ? usage?.cache_read_input_tokens : details?.cached_tokens);
+    const cacheWrite = count(protocol === 'anthropic-messages' ? usage?.cache_creation_input_tokens : details?.cache_write_tokens);
+    const input = protocol === 'anthropic-messages'
+      ? uncachedInput !== null && cacheRead !== null && cacheWrite !== null && count(uncachedInput + cacheRead + cacheWrite) !== null
+        ? uncachedInput + cacheRead + cacheWrite : null
+      : uncachedInput;
+    if (protocol === 'anthropic-messages' && (response.type !== 'message' ||
+        typeof response.stop_reason !== 'string' || !response.stop_reason)) {
+      throw new Error('accepted Anthropic response has no completed message');
+    }
     if (typeof response.id !== 'string' || !response.id ||
         typeof response.model !== 'string' || !response.model || input === null || output === null ||
         (cacheRead !== null && cacheRead > input) ||
@@ -617,7 +627,26 @@ export function createCodexProviderCompletionDecoder(contentType: string) {
     let event: unknown;
     try { event = JSON.parse(data); } catch { throw new Error('accepted Codex response has malformed SSE JSON'); }
     if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
-    const typed = event as { type?: unknown; response?: unknown };
+    const typed = event as { type?: unknown; response?: unknown; message?: unknown; usage?: unknown; delta?: unknown };
+    if (protocol === 'anthropic-messages') {
+      if (typed.type === 'error') throw new Error('accepted Anthropic response contains an error');
+      if (typed.type === 'message_start') {
+        if (anthropicMessage || !typed.message || typeof typed.message !== 'object' || Array.isArray(typed.message)) {
+          throw new Error('accepted Anthropic response has invalid message start');
+        }
+        anthropicMessage = { ...typed.message as Record<string, unknown> };
+      } else if (typed.type === 'message_delta') {
+        if (!anthropicMessage || !typed.usage || typeof typed.usage !== 'object' || Array.isArray(typed.usage) ||
+            !typed.delta || typeof typed.delta !== 'object' || Array.isArray(typed.delta)) {
+          throw new Error('accepted Anthropic response has invalid message delta');
+        }
+        anthropicMessage.usage = { ...anthropicMessage.usage as Record<string, unknown>, ...typed.usage as Record<string, unknown> };
+        anthropicMessage.stop_reason = (typed.delta as Record<string, unknown>).stop_reason;
+      } else if (typed.type === 'message_stop') {
+        return readResponse(anthropicMessage);
+      }
+      return null;
+    }
     return typed.type === 'response.completed' ? readResponse(typed.response) : null;
   };
   const push = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {

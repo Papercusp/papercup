@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { registerLearningLoop, reserveLearningSpend, settleLearningSpend,
   listLearningSpendReservations, getLearningSpendPositions, cycleReservationRunRef,
+  recordLearningSpendAttemptResult,
   type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { OrgSql } from './reproducibility/db';
 import { currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator } from './current-su';
@@ -335,6 +336,66 @@ describe('native provider authority uses real exact benchmark reservations', () 
     };
     return { controller, request, result, loopId, authority };
   }
+
+  it('retains exact provider body evidence across connection restart without settling unknown dollars', async () => {
+    const f = await nativeFixture(), a = f.controller(), sent = f.request();
+    try {
+      const receipt = await a.gateway.carryTrial.authorizeAttempt(sent);
+      const { body: _body, signal: _signal, ...identity } = sent;
+      const headers: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: receipt!.reservationRef,
+        outcome: 'response-headers', responseStatus: 200, costUsdMeasurementMissing: true };
+      await receipt!.observeAttemptResult!(headers);
+      const before = await getLearningSpendPositions(sql, { workspaceId: WS, loopId: f.loopId, includeReservations: true });
+      const complete: GatewayCarryTrialAttemptResult = { ...headers, outcome: 'response-completed', responseStatus: 200, costUsdMeasurementMissing: true,
+        responseSha256: createHash('sha256').update('source-bound response').digest('hex'), responseBytes: 120,
+        providerCompletion: { responseId: 'provider-fixture', model: 'gpt-6-sol', providerEffort: 'high',
+          usage: { inputTokens: 8, inputTokenBasis: 'inclusive', outputTokens: 3, cacheReadTokens: 2, cacheCreationTokens: 0 } } };
+      await receipt!.observeAttemptCompletion!(complete);
+      const postgres = (await import('postgres')).default;
+      const fresh = postgres(db.url, { max: 1, prepare: false });
+      try {
+        const after = await getLearningSpendPositions(fresh, { workspaceId: WS, loopId: f.loopId, includeReservations: true });
+        expect(after.census?.status).toBe('complete');
+        if (before.census?.status !== 'complete' || after.census?.status !== 'complete') throw new Error('missing census');
+        expect(after.census.populationSha256).not.toBe(before.census.populationSha256);
+        expect(after.census.reservations).toHaveLength(1);
+        const row = after.census.reservations[0]!;
+        expect(row.status).toBe('open'); expect(row.settledAt).toBeNull();
+        expect(after.positions.unsettledUsd).toBe(3);
+        expect(JSON.parse(row.note!).nativeGatewayAttemptResult).toEqual(complete);
+        expect(row.note).not.toMatch(/PRIVATE_SECRET|configured-alias|costUsd"/);
+        expect(await recordLearningSpendAttemptResult(fresh, { workspaceId: WS, reservationId: row.id, result: complete })).toEqual({ ok: true });
+        const identical = await getLearningSpendPositions(fresh, { workspaceId: WS, loopId: f.loopId, includeReservations: true });
+        expect(identical.census?.status === 'complete' && identical.census.populationSha256).toBe(after.census.populationSha256);
+        expect(await recordLearningSpendAttemptResult(fresh, { workspaceId: WS, reservationId: row.id,
+          result: { ...complete, credentialSha256: 'f'.repeat(64) } })).toMatchObject({ ok: false, reason: 'identity-mismatch' });
+        expect(await recordLearningSpendAttemptResult(fresh, { workspaceId: WS, reservationId: row.id, result: headers }))
+          .toMatchObject({ ok: false, reason: 'transition-refused' });
+      } finally { await fresh.end(); }
+    } finally { a.revoke(); }
+  });
+
+  it('refuses unattested body closure and strips extra caller properties from the durable result', async () => {
+    const f = await nativeFixture(), a = f.controller(), sent = f.request();
+    try {
+      const receipt = await a.gateway.carryTrial.authorizeAttempt(sent);
+      const { body: _body, signal: _signal, ...identity } = sent;
+      const terminal: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: receipt!.reservationRef,
+        outcome: 'response-incomplete', responseStatus: 200, costUsdMeasurementMissing: true,
+        responseSha256: 'a'.repeat(64), responseBytes: 9 };
+      expect(await recordLearningSpendAttemptResult(sql, { workspaceId: WS, reservationId: receipt!.reservationRef, result: terminal }))
+        .toMatchObject({ ok: false, reason: 'transition-refused' });
+      const headers: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: receipt!.reservationRef,
+        outcome: 'response-headers', responseStatus: 200, costUsdMeasurementMissing: true };
+      await receipt!.observeAttemptResult!(headers);
+      const malicious = { ...terminal, body: 'PRIVATE_BODY', credential: 'PRIVATE_CREDENTIAL', costUsd: 0 };
+      expect(await recordLearningSpendAttemptResult(sql, { workspaceId: WS, reservationId: receipt!.reservationRef, result: malicious })).toEqual({ ok: true });
+      const [row] = await listLearningSpendReservations(sql, { workspaceId: WS, loopId: f.loopId });
+      expect(JSON.parse(row!.note!).nativeGatewayAttemptResult).toEqual(terminal);
+      expect(row!.note).not.toMatch(/PRIVATE_BODY|PRIVATE_CREDENTIAL|costUsd"/);
+      expect(row!.status).toBe('open');
+    } finally { a.revoke(); }
+  });
 
   it('issues only one concurrent native send when aggregate exposure is full', async () => {
     const f = await nativeFixture(), a = f.controller(), b = f.controller('baseline');

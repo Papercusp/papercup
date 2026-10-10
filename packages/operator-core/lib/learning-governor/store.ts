@@ -41,6 +41,7 @@ import {
   type SpendReservationStatus,
 } from './spend';
 import type { LearningSpend } from '../experiment/types';
+import type { GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => String(v);
@@ -781,6 +782,83 @@ export type SettleLearningSpendResult =
  * record that the attempt happened and cost nothing, which is exactly the
  * cancelled/failed case the old `costUsd > 0` guards dropped on the floor.
  */
+export interface RecordLearningSpendAttemptResultInput {
+  workspaceId: string;
+  reservationId: string;
+  result: GatewayCarryTrialAttemptResult;
+}
+
+/** Preserve actual provider attempt evidence in its existing reservation.
+ * This does not release headroom or convert measured tokens into a bill. */
+export async function recordLearningSpendAttemptResult(sql: Sql, q: RecordLearningSpendAttemptResultInput): Promise<{
+  ok: boolean; reason?: 'invalid-result' | 'not-found' | 'identity-mismatch' | 'transition-refused' | 'transaction-required';
+}> {
+  const value = q.result;
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  const sha = (s: unknown): s is string => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s);
+  const text = (s: unknown): s is string => typeof s === 'string' && !!s.trim() && s.length <= 4096;
+  const identity = { attemptId: value.attemptId, manifestSha256: value.manifestSha256, armId: value.armId,
+    transport: value.transport, accountId: value.accountId, credentialHeader: value.credentialHeader,
+    credentialSha256: value.credentialSha256, target: value.target, bodySha256: value.bodySha256, clockId: value.clockId };
+  if (!text(q.workspaceId) || !text(q.reservationId) || value.reservationRef !== q.reservationId ||
+      ![identity.attemptId, identity.armId, identity.accountId, identity.target, identity.clockId].every(text) ||
+      ![identity.manifestSha256, identity.credentialSha256, identity.bodySha256].every(sha) ||
+      !['oauth-http', 'bearer-http', 'anthropic-http'].includes(identity.transport) ||
+      !['authorization', 'x-api-key'].includes(identity.credentialHeader)) return { ok: false, reason: 'invalid-result' };
+  let result: Record<string, unknown> = { ...identity, reservationRef: q.reservationId, outcome: value.outcome,
+    responseStatus: value.responseStatus, costUsdMeasurementMissing: value.costUsdMeasurementMissing };
+  if (value.outcome === 'send-refused') {
+    if (value.responseStatus !== null || value.costUsd !== 0 || value.costUsdMeasurementMissing !== false) return { ok: false, reason: 'invalid-result' };
+    result.costUsd = 0;
+  } else if (value.outcome === 'fetch-failed') {
+    if (value.responseStatus !== null || value.costUsdMeasurementMissing !== true) return { ok: false, reason: 'invalid-result' };
+  } else {
+    if (!count(value.responseStatus) || value.responseStatus < 100 || value.responseStatus > 599 ||
+        value.costUsdMeasurementMissing !== true) return { ok: false, reason: 'invalid-result' };
+    if (value.outcome === 'response-completed' || value.outcome === 'response-incomplete') {
+      if (!sha(value.responseSha256) || !count(value.responseBytes)) return { ok: false, reason: 'invalid-result' };
+      result.responseSha256 = value.responseSha256; result.responseBytes = value.responseBytes;
+      if (value.outcome === 'response-completed') {
+        const p = value.providerCompletion, u = p?.usage;
+        if (value.responseStatus < 200 || value.responseStatus >= 300 || !text(p?.responseId) || !text(p?.model) ||
+            p.providerEffort !== null && !text(p.providerEffort) || !u || u.inputTokenBasis !== 'inclusive' ||
+            !count(u.inputTokens) || !count(u.outputTokens) ||
+            u.cacheReadTokens !== null && !count(u.cacheReadTokens) || u.cacheCreationTokens !== null && !count(u.cacheCreationTokens) ||
+            (u.cacheReadTokens ?? 0) + (u.cacheCreationTokens ?? 0) > u.inputTokens) return { ok: false, reason: 'invalid-result' };
+        result.providerCompletion = { responseId: p.responseId, model: p.model, providerEffort: p.providerEffort,
+          usage: { inputTokens: u.inputTokens, inputTokenBasis: u.inputTokenBasis, outputTokens: u.outputTokens,
+            cacheReadTokens: u.cacheReadTokens, cacheCreationTokens: u.cacheCreationTokens } };
+      }
+    } else if (value.outcome !== 'response-headers') return { ok: false, reason: 'invalid-result' };
+  }
+  // Snapshot and whitelist before awaiting the row lock. Extra caller properties
+  // (body, credentials, output text, guessed dollars) never enter the ledger.
+  const snapshot = JSON.parse(JSON.stringify(result)) as Record<string, unknown>;
+  const workspaceId = q.workspaceId, reservationId = q.reservationId;
+  if (typeof sql.begin !== 'function') return { ok: false, reason: 'transaction-required' };
+  return sql.begin(async tx => {
+    const rows = await tx`SELECT * FROM harness_shared.learning_spend_reservations
+      WHERE workspace_id = ${workspaceId} AND id = ${reservationId} FOR UPDATE` as Row[];
+    if (!rows[0]) return { ok: false, reason: 'not-found' as const };
+    let note: Record<string, unknown>;
+    try { note = JSON.parse(String(rows[0].note)); } catch { return { ok: false, reason: 'identity-mismatch' as const }; }
+    const attempt = note?.nativeGatewayAttempt as Record<string, unknown> | undefined;
+    if (!attempt || Object.entries(identity).some(([key, expected]) => attempt[key] !== expected)) return { ok: false, reason: 'identity-mismatch' as const };
+    const prior = note.nativeGatewayAttemptResult as Record<string, unknown> | undefined;
+    if (prior && JSON.stringify(prior) === JSON.stringify(snapshot)) return { ok: true };
+    if (prior && (prior.outcome !== 'response-headers' ||
+        !['response-completed', 'response-incomplete'].includes(String(snapshot.outcome)) ||
+        prior.responseStatus !== snapshot.responseStatus) ||
+        !prior && ['response-completed', 'response-incomplete'].includes(String(snapshot.outcome))) {
+      return { ok: false, reason: 'transition-refused' as const };
+    }
+    await tx`UPDATE harness_shared.learning_spend_reservations
+      SET note = ${JSON.stringify({ ...note, nativeGatewayAttemptResult: snapshot })}
+      WHERE workspace_id = ${workspaceId} AND id = ${reservationId}`;
+    return { ok: true };
+  });
+}
+
 export async function settleLearningSpend(
   sql: Sql,
   q: SettleLearningSpendInput,

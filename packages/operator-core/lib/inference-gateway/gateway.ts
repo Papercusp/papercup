@@ -1208,7 +1208,11 @@ export interface GatewayCarryTrialAttempt {
 export type GatewayCarryTrialAttemptResult = Readonly<Omit<GatewayCarryTrialAttempt, 'body' | 'signal'> & {
   reservationRef: string;
 } & ({ outcome: 'send-refused'; responseStatus: null; costUsd: 0; costUsdMeasurementMissing: false } |
-  { outcome: 'fetch-failed' | 'response-headers'; responseStatus: number | null; costUsdMeasurementMissing: true })>;
+  { outcome: 'fetch-failed' | 'response-headers'; responseStatus: number | null; costUsdMeasurementMissing: true } |
+  { outcome: 'response-completed'; responseStatus: number; costUsdMeasurementMissing: true;
+    responseSha256: string; responseBytes: number; providerCompletion: CodexProviderCompletionEvidence } |
+  { outcome: 'response-incomplete'; responseStatus: number; costUsdMeasurementMissing: true;
+    responseSha256: string; responseBytes: number })>;
 
 export interface GatewayCarryTrialBinding {
   readonly manifestSha256: string;
@@ -1236,6 +1240,9 @@ export interface GatewayCarryTrialBinding {
      * attempt before its response headers reach the retry kernel. Observer
      * failure refuses the route; it never refunds or settles unknown usage. */
     readonly observeAttemptResult?: (result: GatewayCarryTrialAttemptResult) => Promise<void>;
+    /** Source-bound body closure, separate from the immediate header result.
+     * Provider token usage alone never authorizes monetary settlement. */
+    readonly observeAttemptCompletion?: (result: GatewayCarryTrialAttemptResult) => Promise<void>;
   } | null>;
 }
 
@@ -2440,7 +2447,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         receipt.clockId !== processMonotonicClock.id ||
         !Number.isFinite(receipt.validUntilMonotonicMs) ||
         processMonotonicClock.now() >= receipt.validUntilMonotonicMs ||
-        (receipt.observeAttemptResult !== undefined && typeof receipt.observeAttemptResult !== 'function')) throw trialRefusal();
+        (receipt.observeAttemptResult !== undefined && typeof receipt.observeAttemptResult !== 'function') ||
+        (receipt.observeAttemptCompletion !== undefined && typeof receipt.observeAttemptCompletion !== 'function')) throw trialRefusal();
       checked = true;
       // The asynchronous issuer result is not evidence that authority remains
       // live at the write. Reuse the caller guard's synchronous-check contract;
@@ -2495,7 +2503,54 @@ export function createInferenceGateway(deps: GatewayDeps) {
         await response.body?.cancel().catch(() => {});
         throw error;
       }
-      return response;
+      if (!receipt?.observeAttemptCompletion) return response;
+      const observer = receipt.observeAttemptCompletion;
+      const { body: _body, signal: _signal, ...identity } = attempt;
+      const hash = createHash('sha256');
+      let bytes = 0, terminal = false, malformed = false;
+      let decoder: ReturnType<typeof createCodexProviderCompletionDecoder> | undefined;
+      try {
+        if (response.ok) decoder = createCodexProviderCompletionDecoder(response.headers.get('content-type') ?? '',
+          transport === 'anthropic-http' ? 'anthropic-messages' : 'openai-responses');
+      } catch { malformed = true; }
+      const close = async (eof: boolean) => {
+        if (terminal) return;
+        terminal = true;
+        let providerCompletion: CodexProviderCompletionEvidence | undefined;
+        if (eof && !malformed && decoder) {
+          try { providerCompletion = decoder.finish(); } catch { malformed = true; }
+        }
+        const proof = { ...identity, reservationRef: receipt.reservationRef, responseStatus: response.status,
+          responseSha256: hash.digest('hex'), responseBytes: bytes, costUsdMeasurementMissing: true as const };
+        try {
+          await observer(Object.freeze(providerCompletion
+            ? { ...proof, outcome: 'response-completed', providerCompletion }
+            : { ...proof, outcome: 'response-incomplete' }));
+        } catch { throw trialRefusal(); }
+      };
+      if (!response.body) { await close(true); return response; }
+      const reader = response.body.getReader();
+      // Observe the actual consumed provider body, without teeing a second
+      // unbounded stream or retaining private response text. A valid completion
+      // followed by a malformed tail is still an incomplete source.
+      const observedBody = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const chunk = await reader.read();
+            if (chunk.done) { await close(true); controller.close(); return; }
+            hash.update(chunk.value); bytes += chunk.value.byteLength;
+            if (!Number.isSafeInteger(bytes)) malformed = true;
+            if (decoder && !malformed) { try { decoder.push(chunk.value); } catch { malformed = true; } }
+            controller.enqueue(chunk.value);
+          } catch {
+            await reader.cancel().catch(() => {});
+            await close(false).catch(() => {});
+            controller.error(trialRefusal());
+          }
+        },
+        async cancel() { await reader.cancel().catch(() => {}); await close(false); },
+      });
+      return new Response(observedBody, { status: response.status, statusText: response.statusText, headers: response.headers });
     };
   }
   const processStartedAt = Date.now();

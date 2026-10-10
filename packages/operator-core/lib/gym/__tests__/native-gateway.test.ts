@@ -59,8 +59,9 @@ function controllerFixture() {
   const originalReserve = reserve.getMockImplementation()!;
   reserve.mockImplementation(async (sql, input) => { const result = await originalReserve(sql, input);
     admitted = result.reservation; return result; });
+  const recordAttemptResult = vi.fn(async () => ({ ok: true as const }));
   const governor: GovernorGlueDeps = { enabled: async () => true, getSql: async () => ({} as Sql), reserve,
-    settle, log: () => {} };
+    settle, recordAttemptResult, log: () => {} };
   const input = { workspaceId: 'private-workspace', loopId: 'gym:private', potSlug: 'private-pot', token,
     manifestSha256: digest('native manifest'), armId: 'native-cycle',
     cycle: { runId: randomUUID(), budgetUsd: 1,
@@ -69,7 +70,7 @@ function controllerFixture() {
   const controller = createNativeGymGatewayController(input, governor);
   const body = JSON.stringify({ model: 'approved-model', max_tokens: 41, messages: [] });
   const request = { ...attempt(controller.gateway), body, bodySha256: digest(body) };
-  return { ...controller, input, governor, reserve, settle, authority, request };
+  return { ...controller, input, governor, reserve, settle, recordAttemptResult, authority, request };
 }
 
 function attemptResult(request: GatewayCarryTrialAttempt, reservationRef: string,
@@ -80,6 +81,32 @@ function attemptResult(request: GatewayCarryTrialAttempt, reservationRef: string
 }
 
 describe('native Gym governor-backed provider controller', () => {
+  it('durably preserves header and provider completion evidence without treating token usage as a bill', async () => {
+    const f = controllerFixture();
+    const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+    const headers = attemptResult(f.request, receipt!.reservationRef, 'response-headers');
+    await receipt!.observeAttemptResult!(headers);
+    expect(f.recordAttemptResult).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      workspaceId: f.input.workspaceId, reservationId: receipt!.reservationRef, result: headers }));
+    const completion = { ...headers, outcome: 'response-completed', responseStatus: 200, costUsdMeasurementMissing: true,
+      responseSha256: digest('provider source'), responseBytes: 123,
+      providerCompletion: { responseId: 'provider-response', model: 'approved-model', providerEffort: null,
+        usage: { inputTokens: 30, inputTokenBasis: 'inclusive', outputTokens: 9, cacheReadTokens: 0, cacheCreationTokens: 0 } } } as const;
+    await receipt!.observeAttemptCompletion!(completion);
+    expect(f.recordAttemptResult).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ result: completion }));
+    expect(f.settle).not.toHaveBeenCalled();
+    f.revoke();
+  });
+
+  it('refuses the route when durable per-attempt evidence cannot be saved', async () => {
+    const f = controllerFixture();
+    f.recordAttemptResult.mockResolvedValue({ ok: false } as never);
+    const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+    await expect(receipt!.observeAttemptResult!(attemptResult(f.request, receipt!.reservationRef, 'response-headers')))
+      .rejects.toThrow();
+    expect(f.settle).not.toHaveBeenCalled();
+    f.revoke();
+  });
   it.each(['evaluation', 'proposer'] as const)('reserves the authenticated exact attempt before issuing authority (%s)', async attemptKind => {
     const f = controllerFixture(); f.authority.attemptKind = attemptKind;
     const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);

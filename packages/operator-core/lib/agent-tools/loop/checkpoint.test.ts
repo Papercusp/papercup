@@ -551,6 +551,30 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
     });
   });
 
+  it('EI-25552514553135466: preserves suppressed-wake recovery proof across a later re-arm', () => {
+    const suppressed = {
+      lastWakeStatus: 'delivered',
+      lastWakeChannel: 'suppressed-redundant',
+      lastWakeAt: '2026-10-10T01:36:10.215Z',
+      lastWakeCreatedAt: '2026-10-10T01:35:12.101Z',
+      lastFiredAt: '2026-10-10T01:35:04.575Z',
+      // The loop turn completed after dispatch/fire, then the owner re-armed at 02:03Z.
+      // The arm-scoped clock is therefore empty even though the old delivery recovered.
+      lastLoopTurnAt: null,
+      lastSuppressedWakeLoopTurnAt: '2026-10-10T01:47:00.000Z',
+    };
+
+    expect(classifyLoopNextWake(loop(suppressed))).toEqual({ guaranteed: true, reason: null });
+    expect(classifyLoopNextWake(loop({
+      ...suppressed,
+      lastSuppressedWakeLoopTurnAt: '2026-10-10T01:35:12.101Z',
+    }))).toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+    expect(classifyLoopNextWake(loop({
+      ...suppressed,
+      lastSuppressedWakeLoopTurnAt: null,
+    }))).toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+  });
+
   it('does not treat an await-blocking withheld fire as an uncompleted suppressed wake', () => {
     const priorSuppressedWake = {
       lastWakeStatus: 'delivered',

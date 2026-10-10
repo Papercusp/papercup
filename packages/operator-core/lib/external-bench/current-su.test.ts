@@ -135,7 +135,8 @@ function budgetFixture() {
   const input = { workspaceId: 'bench-private', loopId: 'benchmark-run-1', token: randomUUID(), preregHash: digest('frozen'),
     protocol, resources, armId: 'papercusp', taskId: 't1', seed: 1,
     authenticateProvider: vi.fn(async () => authority) };
-  const governor = { enabled: async () => true, getSql: async () => ({} as Sql), reserve, settle, log: () => {} };
+  const governor = { enabled: async () => true, getSql: async () => ({} as Sql), reserve, settle,
+    recordAttemptResult: vi.fn(async () => ({ ok: true })), log: () => {} };
   const controller = currentBenchGatewayController(input, governor);
   const body = JSON.stringify({ model: 'configured-alias', reasoning: { effort: 'high' }, max_output_tokens: 10 });
   const attempt: GatewayCarryTrialAttempt = { attemptId: randomUUID(), manifestSha256: input.preregHash,

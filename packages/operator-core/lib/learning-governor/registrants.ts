@@ -37,6 +37,7 @@ import {
   reserveLearningSpend,
   cycleReservationRunRef,
   settleLearningSpend,
+  recordLearningSpendAttemptResult,
   type RecordLearningSpendInput,
   type RegisterLearningLoopInput,
   type ReserveLearningSpendInput,
@@ -58,6 +59,7 @@ export interface GovernorGlueDeps {
   reserve?: (sql: Sql, input: ReserveLearningSpendInput) => Promise<ReserveLearningSpendResult>;
   /** P-005: close one spend attempt (default: settleLearningSpend). */
   settle?: (sql: Sql, input: SettleLearningSpendInput) => Promise<SettleLearningSpendResult>;
+  recordAttemptResult?: typeof recordLearningSpendAttemptResult;
   check?: (sql: Sql, q: { workspaceId: string; loopId: string; floorUsd?: number }) => Promise<GovernorVerdict>;
   /** P-004: resolve the pot a scout install learns for (default: resolveLearningPotSlug). */
   resolvePot?: (q: { workspaceId: string; harnessSlug: string }) => Promise<string | null>;
@@ -76,6 +78,7 @@ const defaultDeps: Required<GovernorGlueDeps> = {
   recordSpend: recordLearningSpend,
   reserve: reserveLearningSpend,
   settle: settleLearningSpend,
+  recordAttemptResult: recordLearningSpendAttemptResult,
   check: governorCheck,
   // Lazy import for the same reason as getSql: the flag-off unit path must not
   // load (or pay for) the registry resolver.

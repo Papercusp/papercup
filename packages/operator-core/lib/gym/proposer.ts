@@ -18,6 +18,7 @@ import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult, GatewayC
 import type { GatewayServiceOptions, RunningGatewayService } from '../inference-gateway/launch';
 import { runGovernedSpendAttempt, type GovernorGlueDeps, type SpendAttemptReport } from '../learning-governor/registrants';
 import type { CycleSpendReservationScope, LearningReservationResourceBudget, ReserveLearningSpendInput } from '../learning-governor/store';
+import { recordLearningSpendAttemptResult } from '../learning-governor/store';
 import { processMonotonicClock } from '../process-monotonic-clock';
 
 export interface WorstTrace {
@@ -263,10 +264,25 @@ export function createNativeGymGatewayController(input: {
                       pending.delete(incomplete); incomplete(); await completion; throw invalid();
                     }
                     observed = true;
+                    try {
+                      const sql = deps?.getSql ? await deps.getSql() : (await import('@papercusp/db-org')).getOrgPg().sql;
+                      const saved = await (deps?.recordAttemptResult ?? recordLearningSpendAttemptResult)(sql,
+                        { workspaceId, reservationId: grant.reservationId, result });
+                      if (!saved.ok) throw invalid();
+                    } catch { pending.delete(incomplete); incomplete(); await completion; throw invalid(); }
                     const zero = result.outcome === 'send-refused' && result.responseStatus === null &&
                       result.costUsd === 0 && result.costUsdMeasurementMissing === false;
                     finish!({ costUsd: 0, value: null, ...(zero ? { cancelled: true } : { costUsdMeasurementMissing: true }) });
                     await completion;
+                  },
+                  async observeAttemptCompletion(result: GatewayCarryTrialAttemptResult) {
+                    if (!observed || result.reservationRef !== grant.reservationId ||
+                        !['response-completed', 'response-incomplete'].includes(result.outcome) ||
+                        Object.entries(identity).some(([key, expected]) => result[key as keyof GatewayCarryTrialAttemptResult] !== expected)) throw invalid();
+                    const sql = deps?.getSql ? await deps.getSql() : (await import('@papercusp/db-org')).getOrgPg().sql;
+                    const saved = await (deps?.recordAttemptResult ?? recordLearningSpendAttemptResult)(sql,
+                      { workspaceId, reservationId: grant.reservationId, result });
+                    if (!saved.ok) throw invalid();
                   } }));
               });
             } }, deps);
