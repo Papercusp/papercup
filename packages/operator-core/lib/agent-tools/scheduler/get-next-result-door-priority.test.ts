@@ -129,6 +129,36 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     expect(kept.indexOf(AFFECTS_WARNING)).toBeLessThan(kept.indexOf('plan-local checkpoint prose'));
   });
 
+  // bug-queue-legitimacy D-006: a bug the intake floor admitted only as reproduction
+  // validation is labelled from the row itself, ahead of the echo the door may truncate.
+  it('labels a reproduction-validation claim validation-only ahead of the bulky work-item echo', () => {
+    const item = bulkyWorkItem();
+    const assembled = assembleSchedulerClaimResult({
+      workItem: {
+        ...item,
+        kind: 'bug',
+        payload: {
+          ...item.payload,
+          agentReview: { status: 'revision-requested', revisionKind: 'reproduction', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 3 },
+        },
+      },
+      claimedUnder: { specId: 'nonp2p-bug-drain-luna-max-0811', revision: 1 },
+    });
+    expect(Object.keys(assembled).slice(0, 3)).toEqual(['ok', 'claimReceipt', 'reproductionValidation']);
+    expect(assembled.reproductionValidation).toMatchObject({ lane: 'reproduction-validation', validationOnly: true, reviewRound: 3 });
+
+    const kept = (doorify(assembled).content[0] as { text: string }).text;
+    expect((JSON.parse(kept) as { reproductionValidation?: unknown }).reproductionValidation)
+      .toMatchObject({ validationOnly: true });
+
+    // An ordinary claim — or a content revision — carries no such label.
+    expect(assembleSchedulerClaimResult({ workItem: bulkyWorkItem(), claimedUnder: null })).not.toHaveProperty('reproductionValidation');
+    expect(assembleSchedulerClaimResult({
+      workItem: { ...item, kind: 'bug', payload: { agentReview: { status: 'revision-requested', revisionKind: 'content' } } },
+      claimedUnder: null,
+    })).not.toHaveProperty('reproductionValidation');
+  });
+
   it('preserves the governing decision even in the legacy tail placement', () => {
     const preFixOrder = {
       ok: true,

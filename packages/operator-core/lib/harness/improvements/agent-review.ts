@@ -78,6 +78,7 @@ import {
   type VerificationConflictRole,
 } from './agent-review-policy';
 import {
+  parseBugReproductionReceipt,
   readBornVerifiedReproduction,
   readBugReproductionReceipt,
   isAcceptedReproductionStatus,
@@ -85,6 +86,7 @@ import {
   type BugReproductionReceipt,
   type ReproductionVerification,
 } from '../../attention/bug-reproduction';
+import { INTAKE_EXECUTION_SCHEMA_VERSION, type IntakeReproductionRecord } from '../../attention/intake-promotion';
 // The canonical "this session can still act" set, IMPORTED rather than re-derived.
 // Deliberately not a delegation to `rebindIdentity` itself: that migrates ~16 ownerId-keyed
 // surfaces (loop, presence, fleet membership, claims, facts, watermarks) from one sid to
@@ -552,11 +554,33 @@ export function approvalAcceptance(
 }
 
 function approvalReproduction(payload: unknown): unknown {
+  const intake = record(record(payload).intakeReproduction);
+  // D-006: a validator's receipt is recorded BECAUSE the earlier one was refused on the
+  // current build, so it must outrank a born-verified filing receipt. Preferring the filing
+  // receipt here would re-verify the stale receipt every round and refuse forever.
+  if (intake.origin === 'validation' && intake.receipt) return intake.receipt;
   const bornVerified = readBornVerifiedReproduction(payload);
   if (bornVerified) return bornVerified;
-  if (!payload || typeof payload !== 'object') return undefined;
-  const intake = (payload as Record<string, unknown>).intakeReproduction;
-  return intake && typeof intake === 'object' ? (intake as Record<string, unknown>).receipt : undefined;
+  return intake.receipt;
+}
+
+/**
+ * Parse a receipt a validator supplies on resubmit (D-006). `encounter` is a FILING-time
+ * kind (D-024) and is refused here: validation means reproducing on the current build.
+ */
+function parseValidationReceipt(raw: unknown):
+  | { ok: true; receipt: BugReproductionReceipt }
+  | { ok: false; reason: string } {
+  const parsed = parseBugReproductionReceipt(raw);
+  if (!parsed.ok) return { ok: false, reason: `validation-receipt-invalid: ${parsed.error}` };
+  if (parsed.receipt.kind === 'encounter') {
+    return {
+      ok: false,
+      reason:
+        'validation-receipt-invalid: encounter is a filing-time receipt; validation needs failing-test, scripted-repro or current-build-observation',
+    };
+  }
+  return { ok: true, receipt: parsed.receipt };
 }
 
 export interface EnterAgentReviewInput {
@@ -630,22 +654,307 @@ export async function enterAgentReview(
   return { entered: !existing || existing.status !== 'pending', state: next };
 }
 
+/**
+ * Who a revision-requested row really belongs to. Shared by the resubmit path and the
+ * adoption door (bug-queue-legitimacy D-008) so the authority proof is computed once.
+ */
+interface RevisionAuthority {
+  legacySubmitter: string | null;
+  signedSubmitter: string | null;
+  effectiveSubmitter: string;
+  isProvenanceRepair: boolean;
+  submitterHolds: boolean;
+}
+
+async function resolveRevisionAuthority(
+  workItem: WorkItem,
+  current: AgentReviewState,
+  deps: AgentReviewDeps,
+): Promise<RevisionAuthority> {
+  const legacySubmitter = readLegacySyntheticSubmitter(workItem, current);
+  const signedSubmitter = current.status === 'revision-requested' && !legacySubmitter && current.submittedBy.startsWith('system:')
+    ? await (deps.resolveVerifiedSubmitterAlias ?? resolveVerifiedSubmitterAlias)(current.submittedBy)
+    : null;
+  const effectiveSubmitter = legacySubmitter ?? signedSubmitter ?? current.submittedBy;
+  return {
+    legacySubmitter,
+    signedSubmitter,
+    effectiveSubmitter,
+    isProvenanceRepair: legacySubmitter !== null || signedSubmitter !== null,
+    submitterHolds: workItem.assignee === effectiveSubmitter ||
+      (signedSubmitter !== null && workItem.assignee === current.submittedBy),
+  };
+}
+
+export type OrphanAdoptionRefusal =
+  | 'not-submitter'
+  | 'not-submitter:authority-unknown'
+  | 'not-submitter:liveness-unknown'
+  | 'orphan-revision-held-by-other';
+
+/**
+ * The ORPHAN proof (WI-41689): may `caller` take a revision-requested row whose effective
+ * submitter is someone else? Callers check `status === 'revision-requested'` and that the
+ * caller is not the effective submitter first. Age, grade and a synthetic identity grant
+ * nothing here; only a measured, non-blocking liveness verdict for a KNOWN submitter does.
+ */
+async function orphanAdoptionProof(
+  workItem: WorkItem,
+  current: AgentReviewState,
+  authority: RevisionAuthority,
+  caller: string,
+  deps: AgentReviewDeps,
+): Promise<{ ok: true; sessionState: SessionState } | { ok: false; reason: OrphanAdoptionRefusal }> {
+  // A synthetic submitter whose real reporter cannot be recovered has no liveness to
+  // measure: its authority is UNKNOWN, never presumed dead.
+  if (authority.legacySubmitter === null && current.submittedBy.startsWith('system:') && authority.signedSubmitter === null) {
+    return { ok: false, reason: 'not-submitter:authority-unknown' };
+  }
+  const verdict = await deps.resolveSubmitterLiveness(authority.effectiveSubmitter, {
+    claimsHeld: authority.submitterHolds,
+  });
+  // FAIL CLOSED on an unmeasured verdict. `null` means the oracle had no signal, not
+  // that the submitter is absent, and collapsing the two would quietly turn this into
+  // "adopt whenever we cannot see the submitter" — a different, much weaker rule
+  // wearing this one's clothes. A DISTINCT reason keeps that diagnosable instead of
+  // indistinguishable from a live-submitter refusal.
+  if (!verdict) return { ok: false, reason: 'not-submitter:liveness-unknown' };
+  if ((REBIND_BLOCKING_SESSION_STATES as readonly SessionState[]).includes(verdict.sessionState)) {
+    return { ok: false, reason: 'not-submitter' };
+  }
+  // The submitter is gone, but the ROW may still be someone else's: adopting it out from
+  // under a third agent would trade this bug for a claim-steal. Unheld, held by the gone
+  // submitter, or held by the caller are all adoptable; anything else is not ours to take.
+  if (workItem.assignee != null && !authority.submitterHolds && workItem.assignee !== caller) {
+    return { ok: false, reason: 'orphan-revision-held-by-other' };
+  }
+  return { ok: true, sessionState: verdict.sessionState };
+}
+
+export type AdoptAgentReviewReason =
+  | OrphanAdoptionRefusal
+  | 'not-found'
+  | 'not-open'
+  | 'not-agent-review'
+  | `not-revision-requested:${string}`
+  | 'reproduction-validation-route'
+  | 'legacy-revision-claimable'
+  | 'claim-refused'
+  | 'state-changed';
+
+/** What the adopter now holds: report revision, never implementation (D-008 ruling 5). */
+export interface RevisionAdoptionBrief {
+  lane: 'revision-adoption';
+  round: number;
+  previousSubmitter: string;
+  next: string[];
+}
+
+export interface AdoptAgentReviewResult {
+  adopted: boolean;
+  workItem: WorkItem | null;
+  state?: AgentReviewState;
+  reason?: AdoptAgentReviewReason;
+  /** The caller already was the effective submitter: claimed, nothing rebound. */
+  alreadySubmitter?: boolean;
+  brief?: RevisionAdoptionBrief;
+}
+
+function revisionAdoptionBrief(id: string, round: number, previousSubmitter: string): RevisionAdoptionBrief {
+  return {
+    lane: 'revision-adoption',
+    round,
+    previousSubmitter,
+    next: [
+      `Read round ${round}'s review feedback: work_items:get { id: '${id}' } (the review round comment).`,
+      'Revise the report so it addresses that feedback (title, body, evidence) — this is report revision, not implementation; readiness stays not-ready.',
+      `Resubmit for the next independent review: improvements:agent-review { mode:'resubmit', id: '${id}' }.`,
+      'If revising shows the report is invalid or a duplicate, close it with that evidence instead of resubmitting.',
+    ],
+  };
+}
+
+/**
+ * REVISION ADOPTION (bug-queue-legitimacy D-008). A content revision whose submitter is
+ * provably gone is otherwise unclaimable forever: the intake-stage floor keeps
+ * revision-requested rows off every ordinary claim door, and only resubmit could move
+ * one. This claims ONE such row for `adopter` under exactly resubmit's orphan proof,
+ * then rebinds the revision to the adopter, who revises and resubmits as its submitter.
+ *
+ * Order matters: the CAS claim lands first (a concurrent adopter loses there), the review
+ * snapshot is re-verified after it (release + 'state-changed' on drift), and only then is
+ * the payload rebound — so a refused caller never leaves a rebound row behind.
+ */
+export async function adoptAgentReviewRevision(
+  input: { id: string; adopter: string; harnessSlug: string },
+  deps: AgentReviewDeps = defaultDeps,
+): Promise<AdoptAgentReviewResult> {
+  const workItem = await deps.getWorkItem(input.id, input.harnessSlug);
+  if (!workItem || workItem.harness !== input.harnessSlug) {
+    return { adopted: false, workItem: null, reason: 'not-found' };
+  }
+  if (workItem.state !== 'open') return { adopted: false, workItem: null, reason: 'not-open' };
+  const current = readAgentReviewState(workItem.payload);
+  if (!current) return { adopted: false, workItem: null, reason: 'not-agent-review' };
+  if (current.status !== 'revision-requested') {
+    return { adopted: false, workItem: null, state: current, reason: `not-revision-requested:${current.status}` };
+  }
+  // Reproduction-only revisions are validation work the ordinary claim doors already
+  // admit (D-006); legacy-seeded revisions are released to normal implementation.
+  if (current.revisionKind === 'reproduction') {
+    return { adopted: false, workItem: null, state: current, reason: 'reproduction-validation-route' };
+  }
+  if (current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER) {
+    return { adopted: false, workItem: null, state: current, reason: 'legacy-revision-claimable' };
+  }
+  const authority = await resolveRevisionAuthority(workItem, current, deps);
+  const alreadySubmitter = authority.effectiveSubmitter === input.adopter;
+  let sessionState: SessionState | null = null;
+  if (!alreadySubmitter) {
+    const proof = await orphanAdoptionProof(workItem, current, authority, input.adopter, deps);
+    if (!proof.ok) return { adopted: false, workItem: null, state: current, reason: proof.reason };
+    sessionState = proof.sessionState;
+  }
+  if (workItem.assignee !== input.adopter) {
+    // Replace a holder only when the proof above established it is the gone submitter;
+    // an unheld row needs no expected holder. Anything else fails the CAS.
+    const goneHolder = !alreadySubmitter && workItem.assignee != null && authority.submitterHolds
+      ? workItem.assignee
+      : null;
+    const claimed = await deps.claimWorkItem(workItem.id, input.adopter, {
+      harness: input.harnessSlug,
+      ...(goneHolder ? { expectedAssignee: goneHolder } : {}),
+    });
+    if (!claimed) return { adopted: false, workItem: null, state: current, reason: 'claim-refused' };
+  }
+  const after = await deps.getWorkItem(workItem.id, input.harnessSlug);
+  const afterReview = after ? readAgentReviewState(after.payload) : null;
+  if (
+    !after || after.assignee !== input.adopter || !afterReview ||
+    afterReview.status !== 'revision-requested' ||
+    afterReview.round !== current.round ||
+    afterReview.submittedBy !== current.submittedBy
+  ) {
+    if (after?.assignee === input.adopter && workItem.assignee !== input.adopter) {
+      await deps.releaseWorkItem(workItem.id, { harness: input.harnessSlug, expectedAssignee: input.adopter });
+    }
+    return { adopted: false, workItem: null, state: afterReview ?? current, reason: 'state-changed' };
+  }
+  if (alreadySubmitter) {
+    return {
+      adopted: true,
+      alreadySubmitter: true,
+      workItem: after,
+      state: afterReview,
+      brief: revisionAdoptionBrief(workItem.id, current.round, current.submittedBy),
+    };
+  }
+  const next: AgentReviewState = { ...afterReview, submittedBy: input.adopter };
+  const merged = await deps.mergeWorkItemPayload(
+    workItem.id,
+    {
+      agentReview: next,
+      agentReviewAdoption: {
+        from: current.submittedBy,
+        effectiveSubmitter: authority.effectiveSubmitter,
+        sessionState,
+        round: current.round,
+        adoptedBy: input.adopter,
+        at: new Date().toISOString(),
+      },
+    },
+    { harness: input.harnessSlug },
+  );
+  if (!merged) throw new Error(`adoptAgentReviewRevision: work item '${workItem.id}' disappeared`);
+  await ensureComment(
+    after,
+    `Revision round ${current.round} adopted by ${input.adopter}: the original submitter ${authority.effectiveSubmitter} is ${sessionState} (orphan proof, D-008). The adopter revises this report and resubmits it for independent review.`,
+    input.adopter,
+    deps,
+  );
+  return {
+    adopted: true,
+    workItem: merged,
+    state: next,
+    brief: revisionAdoptionBrief(workItem.id, current.round, authority.effectiveSubmitter),
+  };
+}
+
+export interface AdoptNextAgentReviewResult extends AdoptAgentReviewResult {
+  /** Candidates examined, and why each one that was not adopted was refused. */
+  scanned: number;
+  refusals: Partial<Record<AdoptAgentReviewReason, number>>;
+}
+
+/**
+ * Queue-order discovery for {@link adoptAgentReviewRevision}: oldest adoptable content
+ * revision first, in one concrete harness, bounded to 25 candidates per call. Submitter
+ * liveness is an oracle verdict, not a SQL fact, so it is measured per candidate here
+ * rather than approximated in the query (an age proxy is exactly what D-008 forbids).
+ */
+export async function adoptNextAgentReviewRevision(
+  input: { adopter: string; harnessSlug: string; workspaceId?: string },
+  deps: AgentReviewDeps = defaultDeps,
+): Promise<AdoptNextAgentReviewResult> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ feature_id: string }[]>`
+    SELECT feature_id
+      FROM harness_shared.work_items wi
+     WHERE workspace_id = ${ws}
+       AND harness_slug = ${input.harnessSlug}
+       AND status = 'open'
+       AND item_kind IN ('bug', 'change', 'task', 'feature')
+       AND ${depsBlockedExclusionSql(sql)}
+       AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested'
+       AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
+       AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
+       AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${input.adopter}
+     ORDER BY created_ts ASC
+     LIMIT 25`;
+  const refusals: Partial<Record<AdoptAgentReviewReason, number>> = {};
+  let scanned = 0;
+  for (const row of rows) {
+    scanned += 1;
+    const result = await adoptAgentReviewRevision(
+      { id: row.feature_id, adopter: input.adopter, harnessSlug: input.harnessSlug },
+      deps,
+    );
+    if (result.adopted) return { ...result, scanned, refusals };
+    if (result.reason) refusals[result.reason] = (refusals[result.reason] ?? 0) + 1;
+  }
+  return { adopted: false, workItem: null, scanned, refusals };
+}
+
 export async function resubmitAgentReview(
-  input: { id: string; submittedBy: string },
+  input: {
+    id: string;
+    submittedBy: string;
+    /**
+     * D-006 (P-002 Left#1): the current-build reproduction receipt a validator obtained
+     * `{ kind, ref, buildSha }`. Accepted ONLY on a bug whose revision was requested for its
+     * reproduction receipt; recorded on the row in the same write that resubmits it, and
+     * verified against the current build by the next review round — never by this call.
+     */
+    reproduction?: unknown;
+  },
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<{ resubmitted: boolean; state?: AgentReviewState; reason?: string }> {
   const workItem = await deps.getWorkItem(input.id);
   if (!workItem) return { resubmitted: false, reason: 'not-found' };
   const current = readAgentReviewState(workItem.payload);
   if (!current) return { resubmitted: false, reason: 'not-agent-review' };
-  const legacySubmitter = readLegacySyntheticSubmitter(workItem, current);
-  const signedSubmitter = current.status === 'revision-requested' && !legacySubmitter && current.submittedBy.startsWith('system:')
-    ? await (deps.resolveVerifiedSubmitterAlias ?? resolveVerifiedSubmitterAlias)(current.submittedBy)
-    : null;
-  const effectiveSubmitter = legacySubmitter ?? signedSubmitter ?? current.submittedBy;
-  const isProvenanceRepair = legacySubmitter !== null || signedSubmitter !== null;
-  const submitterHolds = workItem.assignee === effectiveSubmitter ||
-    (signedSubmitter !== null && workItem.assignee === current.submittedBy);
+  let suppliedReceipt: BugReproductionReceipt | null = null;
+  if (input.reproduction !== undefined) {
+    if (workItem.kind !== 'bug' || current.status !== 'revision-requested' || current.revisionKind !== 'reproduction') {
+      return { resubmitted: false, state: current, reason: 'reproduction-not-applicable' };
+    }
+    const parsed = parseValidationReceipt(input.reproduction);
+    if (!parsed.ok) return { resubmitted: false, state: current, reason: parsed.reason };
+    suppliedReceipt = parsed.receipt;
+  }
+  const authority = await resolveRevisionAuthority(workItem, current, deps);
+  const { effectiveSubmitter, isProvenanceRepair, submitterHolds } = authority;
   const isLegacyRebind = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER;
   if (isLegacyRebind && workItem.assignee !== input.submittedBy) {
     return { resubmitted: false, state: current, reason: 'legacy-revision-not-claimant' };
@@ -662,7 +971,7 @@ export async function resubmitAgentReview(
     current.revisionKind === 'reproduction' &&
     effectiveSubmitter !== input.submittedBy &&
     workItem.assignee === input.submittedBy;
-  if (isValidationRebind && !readBugReproductionReceipt(approvalReproduction(workItem.payload))) {
+  if (isValidationRebind && !suppliedReceipt && !readBugReproductionReceipt(approvalReproduction(workItem.payload))) {
     return { resubmitted: false, state: current, reason: 'validation-receipt-missing' };
   }
   // ORPHAN REBIND (WI-41689). A 'revision-requested' row can only leave that state through
@@ -673,7 +982,8 @@ export async function resubmitAgentReview(
   // unclaimable, and invisible as a blocker.
   //
   // So: when the original submitter is PROVABLY gone, another agent may adopt the row.
-  // "Provably" is doing real work in that sentence — see the two guards below.
+  // "Provably" is doing real work in that sentence — see orphanAdoptionProof, which the
+  // adoption door (adoptAgentReviewRevision, D-008) shares so the two cannot drift.
   let isOrphanRebind = false;
   if (!isLegacyRebind && !isValidationRebind && effectiveSubmitter !== input.submittedBy) {
     // A row that is not resubmittable anyway refuses on identity exactly as before,
@@ -681,33 +991,8 @@ export async function resubmitAgentReview(
     if (current.status !== 'revision-requested') {
       return { resubmitted: false, state: current, reason: 'not-submitter' };
     }
-    if (legacySubmitter === null && current.submittedBy.startsWith('system:') && signedSubmitter === null) {
-      return { resubmitted: false, state: current, reason: 'not-submitter:authority-unknown' };
-    }
-    const verdict = await deps.resolveSubmitterLiveness(effectiveSubmitter, {
-      claimsHeld: submitterHolds,
-    });
-    // FAIL CLOSED on an unmeasured verdict. `null` means the oracle had no signal, not
-    // that the submitter is absent, and collapsing the two would quietly turn this into
-    // "resubmit whenever we cannot see the submitter" — a different, much weaker rule
-    // wearing this one's clothes. A DISTINCT reason keeps that diagnosable instead of
-    // indistinguishable from a live-submitter refusal.
-    if (!verdict) {
-      return { resubmitted: false, state: current, reason: 'not-submitter:liveness-unknown' };
-    }
-    if ((REBIND_BLOCKING_SESSION_STATES as readonly SessionState[]).includes(verdict.sessionState)) {
-      return { resubmitted: false, state: current, reason: 'not-submitter' };
-    }
-    // The submitter is gone, but the ROW may still be someone else's: adopting it out from
-    // under a third agent would trade this bug for a claim-steal. Unheld, held by the gone
-    // submitter, or held by the caller are all adoptable; anything else is not ours to take.
-    if (
-      workItem.assignee != null &&
-      !submitterHolds &&
-      workItem.assignee !== input.submittedBy
-    ) {
-      return { resubmitted: false, state: current, reason: 'orphan-revision-held-by-other' };
-    }
+    const proof = await orphanAdoptionProof(workItem, current, authority, input.submittedBy, deps);
+    if (!proof.ok) return { resubmitted: false, state: current, reason: proof.reason };
     isOrphanRebind = true;
   }
   // A provenance-checked legacy service row can be repaired by its real reporter without
@@ -739,6 +1024,19 @@ export async function resubmitAgentReview(
     workItem.id,
     {
       agentReview: next,
+      // Recorded only after every identity/holder fence above passed, in the same write
+      // as the resubmit, so a refused caller never leaves a receipt behind.
+      ...(suppliedReceipt
+        ? {
+            intakeReproduction: {
+              schemaVersion: INTAKE_EXECUTION_SCHEMA_VERSION,
+              receipt: suppliedReceipt,
+              origin: 'validation',
+              decidedBy: input.submittedBy,
+              recordedAt: new Date().toISOString(),
+            } satisfies IntakeReproductionRecord,
+          }
+        : {}),
       implementationReadiness: reviewImplementationReadiness(workItem.payload, {
         status: 'unknown',
         reason: 'agent-review-resubmitted',

@@ -274,9 +274,15 @@ export function intakeTargetKind(decision: BulkIntakeDecision, source: IntakeWor
 export interface IntakeReproductionRecord {
   schemaVersion: typeof INTAKE_EXECUTION_SCHEMA_VERSION;
   receipt: BugReproductionReceipt;
-  /** `review`: supplied on the decision; `filing`: the source's born-verified encounter (D-024). */
-  origin: 'review' | 'filing';
+  /**
+   * `review`: supplied on the decision; `filing`: the source's born-verified encounter (D-024);
+   * `validation`: supplied by the claimant of reproduction-validation work on resubmit
+   * (bug-queue-legitimacy D-006) — it outranks a filing receipt the review already refused.
+   */
+  origin: 'review' | 'filing' | 'validation';
   decidedBy: string;
+  /** When a `validation` receipt was recorded; absent on intake-written records. */
+  recordedAt?: string;
 }
 
 export function readIntakeReproduction(payload: unknown): IntakeReproductionRecord | null {

@@ -32,6 +32,7 @@ import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
 // which the `../../work-items` re-export cannot serve inside that module's import cycle.
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
 import { familyOf, releaseWorkItem } from '../../work-items';
+import { reproductionValidationBrief } from '../../harness/improvements/agent-review-policy';
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
@@ -1087,6 +1088,11 @@ export function assembleSchedulerClaimResult(legs: {
     ...(typeof claimSpecRecord?.specId === 'string' ? { specId: claimSpecRecord.specId } : {}),
     ...(typeof claimSpecRecord?.revision === 'number' ? { revision: claimSpecRecord.revision } : {}),
   };
+  // bug-queue-legitimacy D-006: a bug the intake floor admitted ONLY as reproduction
+  // validation is labelled here, derived from the claimed row itself so no caller can
+  // forget to pass it. It joins the prefix block: a claimant that loses the response
+  // tail must still know this claim is not a licence to start a fix.
+  const reproductionValidation = reproductionValidationBrief(legs.workItem);
 
   return {
     ok: true,
@@ -1094,6 +1100,7 @@ export function assembleSchedulerClaimResult(legs: {
     // prefix-preserving, while the claim has already committed before this
     // response is rendered.
     claimReceipt,
+    ...(reproductionValidation ? { reproductionValidation } : {}),
     ...(legs.retractionWarning ? { retractionWarning: legs.retractionWarning } : {}),
     // Keep this before workItem: result-door truncation is prefix-preserving, and
     // governing decisions are safety-critical while the work-item echo is bulky.

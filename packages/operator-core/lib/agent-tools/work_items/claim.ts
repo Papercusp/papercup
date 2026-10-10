@@ -33,7 +33,10 @@ import {
   type UnresolvedDepBlocker,
 } from '../../work-items';
 import { notAgentWorkClaimHint } from '../../work-nature/not-agent-work-hint';
-import { verificationTaskConflict } from '../../harness/improvements/agent-review-policy';
+import {
+  reproductionValidationBrief,
+  verificationTaskConflict,
+} from '../../harness/improvements/agent-review-policy';
 import { mintForceTakeoverAdmission } from '../../issues-engineer';
 import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -903,10 +906,14 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       : null;
     const planContradictionWarn = planItemContradictionWarning(planContradiction, workItem.id ?? it.id);
     const planItemLandedWarn = planItemLandedWarning(planItemLanded, workItem.id ?? it.id);
+    // bug-queue-legitimacy D-006: the same validation-only label scheduler:get_next
+    // emits, derived from the claimed row, ahead of the bulky workItem echo.
+    const reproductionValidation = reproductionValidationBrief(workItem);
     return hint
       ? {
           ok: true,
           id: it.id,
+          ...(reproductionValidation ? { reproductionValidation } : {}),
           workItem,
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
@@ -962,6 +969,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       : {
           ok: true,
           id: it.id,
+          ...(reproductionValidation ? { reproductionValidation } : {}),
           workItem,
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),

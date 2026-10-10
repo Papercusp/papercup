@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkItem } from '../../work-items';
-import { agentReviewIsReproductionValidation, intakeStageAdmitsClaim, readAgentReviewState } from './agent-review-policy';
+import {
+  agentReviewIsReproductionValidation,
+  intakeStageAdmitsClaim,
+  readAgentReviewState,
+  reproductionValidationBrief,
+} from './agent-review-policy';
 import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
 import {
   acceptanceSourceRevision,
@@ -292,6 +297,92 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
       await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator' }, h.deps))
         .resolves.toMatchObject({ resubmitted: false, reason: 'not-submitter' });
       expect(h.resolveSubmitterLiveness).toHaveBeenCalled();
+    });
+
+    // P-002 Left#1: the claimant must be able to RECORD the receipt it obtained — without
+    // this, a bare validation row could only ever refuse 'validation-receipt-missing'.
+    const fresh = { kind: 'failing-test', ref: 'test_runs:42', buildSha: '1234567' };
+    const intakeOf = (item: WorkItem) => (item.payload as { intakeReproduction?: Record<string, unknown> }).intakeReproduction;
+
+    it('records a validator-supplied receipt in the resubmit write, so a bare row becomes resubmittable', async () => {
+      const h = harness(validationRow());
+      await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator', reproduction: fresh }, h.deps))
+        .resolves.toMatchObject({ resubmitted: true, state: { status: 'pending', submittedBy: 'su-validator', round: 2 } });
+      expect(intakeOf(h.state.issue)).toEqual({
+        schemaVersion: 'intake-execution-v1',
+        receipt: fresh,
+        origin: 'validation',
+        decidedBy: 'su-validator',
+        recordedAt: expect.any(String),
+      });
+      expect(h.state.issue.assignee).toBeNull();
+    });
+
+    it('verifies the validation receipt, not a stale born-verified filing receipt, at the next review', async () => {
+      const h = harness(validationRow({
+        reproduction: {
+          schemaVersion: 'bug-reproduction-v1',
+          receipt: { kind: 'encounter', ref: 'tool_invocations:9', buildSha: '0000000' },
+          filedBy: 'su-author',
+          verification: { status: 'verified', detail: 'filed on an older build', checkedAt: new Date().toISOString() },
+        },
+      }));
+      await resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator', reproduction: fresh }, h.deps);
+      h.state.issue = { ...h.state.issue, assignee: 'su-reviewer' };
+      h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: 'su-reviewer' };
+      const checked: string[] = [];
+      h.deps.verifyReproduction = async (r) => {
+        checked.push(r.buildSha);
+        return r.buildSha === fresh.buildSha
+          ? { status: 'verified', detail: 'current target failed', checkedAt: new Date().toISOString() }
+          : { status: 'refuted', detail: 'not the current build', checkedAt: new Date().toISOString() };
+      };
+      await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps))
+        .resolves.toMatchObject({ status: 'approved' });
+      expect(checked).toEqual([fresh.buildSha]);
+    });
+
+    it('refuses an encounter or malformed receipt and writes nothing', async () => {
+      for (const reproduction of [
+        { kind: 'encounter', ref: 'tool_invocations:9', buildSha: '1234567' },
+        { kind: 'failing-test', ref: 'test_runs:42', buildSha: 'not-a-sha' },
+      ]) {
+        const h = harness(validationRow());
+        const result = await resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator', reproduction }, h.deps);
+        expect(result.resubmitted).toBe(false);
+        expect(result.reason).toMatch(/^validation-receipt-invalid: /);
+        expect(intakeOf(h.state.issue)).toBeUndefined();
+        expect(h.state.issue.assignee).toBe('su-validator');
+      }
+    });
+
+    it('refuses a receipt on a row that is not reproduction validation', async () => {
+      const h = harness(validationRow({
+        agentReview: { status: 'revision-requested', revisionKind: 'content', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 1 },
+      }));
+      await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator', reproduction: fresh }, h.deps))
+        .resolves.toMatchObject({ resubmitted: false, reason: 'reproduction-not-applicable' });
+      expect(intakeOf(h.state.issue)).toBeUndefined();
+    });
+
+    it('never leaves a refused caller\'s receipt behind on the row', async () => {
+      const h = harness(validationRow());
+      h.state.submitterLiveness = { sessionState: 'ended' };
+      await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-stranger', reproduction: fresh }, h.deps))
+        .resolves.toMatchObject({ resubmitted: false, reason: 'orphan-revision-held-by-other' });
+      expect(intakeOf(h.state.issue)).toBeUndefined();
+      expect(h.state.issue.assignee).toBe('su-validator');
+    });
+
+    it('labels exactly the reproduction-validation bugs for claim doors', () => {
+      const brief = reproductionValidationBrief(validationRow());
+      expect(brief).toMatchObject({ lane: 'reproduction-validation', validationOnly: true, reviewRound: 1 });
+      expect(brief?.next.join('\n')).toContain("improvements:agent-review { mode:'resubmit', id, reproduction:");
+      expect(reproductionValidationBrief(validationRow({
+        agentReview: { status: 'revision-requested', revisionKind: 'content', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 1 },
+      }))).toBeNull();
+      expect(reproductionValidationBrief({ ...validationRow(), kind: 'change' })).toBeNull();
+      expect(reproductionValidationBrief(null)).toBeNull();
     });
   });
 
