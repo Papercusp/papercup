@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { buildBundleFromPg, type PgReportReaders } from './report-builder-pg';
+import { currentProtocolFixture } from '../reproducibility/_protocol-test-fixture';
 
 const defaults = vi.hoisted(() => ({ listRunResults: vi.fn(), getRollout: vi.fn(), getBenchRunDetail: vi.fn(), getPrereg: vi.fn() }));
 vi.mock('../reproducibility/store', async importOriginal => ({
@@ -36,7 +37,7 @@ function fakeReaders(over: Partial<PgReportReaders> = {}): PgReportReaders {
 }
 
 describe('buildBundleFromPg', () => {
-  const prereg = { runId: 'r1', preregHash: 'frozen', suites: ['swe-bench-pro'], createdAt: '2026-10-09',
+  const prereg = { runId: 'r1', preregHash: 'frozen', suites: ['swe-bench-pro'], createdAt: '2026-10-09', filePath: 'frozen.json', gitCommitted: true,
     config: { taskIds: ['t1', 't2', 't3'], seeds: [0, 1], arms: ['hive', 'su-independent', 'absent'] } };
   it('reads the frozen population from preregistration including wholly absent arms and tasks', async () => {
     const b = await buildBundleFromPg('r1', { readers: fakeReaders({ getPrereg: async () => prereg }) });
@@ -58,6 +59,22 @@ describe('buildBundleFromPg', () => {
       throw new Error('prereg unavailable');
     } }) })).rejects.toThrow('prereg unavailable');
   });
+  it('uses maintained structured controls and refuses frozen identity or protocol drift', async () => {
+    const protocol = currentProtocolFixture('r1');
+    const frozen = { ...prereg, config: { ...protocol } };
+    const row = { ...(await fakeReaders().listRunResults({ runId: 'r1' }))[0], arm: 'papercusp',
+      taskId: 't1', seed: 1, modelId: 'configured-alias', preregHash: 'frozen' };
+    const readers = fakeReaders({ listRunResults: async () => [row], getPrereg: async () => frozen,
+      getRollout: async () => ({ rolloutId: 'roll-1', taskId: 't1', arm: 'papercusp', seed: 1,
+        modelId: 'configured-alias', harnessVersion: 'fixture-current' }) });
+    const bundle = await buildBundleFromPg('r1', { readers });
+    expect(bundle?.run.arms).toEqual(['papercusp', 'baseline']);
+    expect(bundle?.run.models).toEqual({ papercusp: 'configured-alias', baseline: 'configured-alias' });
+    await expect(buildBundleFromPg('r1', { readers: { ...readers, listRunResults: async () => [{ ...row, preregHash: 'foreign' }] } }))
+      .rejects.toThrow('preregistration');
+    await expect(buildBundleFromPg('r1', { readers: { ...readers, getPrereg: async () => ({ ...frozen, config: { ...protocol, priceSchedule: undefined } }) } }))
+      .rejects.toThrow();
+  });
   it('retains source cost uncertainty and native timing metadata through the store adapter', async () => {
     const readers = fakeReaders(), rows = await readers.listRunResults({ runId: 'r1' });
     const armMeta = { costUsdMeasurementMissing: true, nativeCostAccounting: { billedCostUsd: null,
@@ -71,6 +88,7 @@ describe('buildBundleFromPg', () => {
   it('binds the requested workspace on each default store read', async () => {
     const fixtures = fakeReaders();
     defaults.listRunResults.mockResolvedValue(await fixtures.listRunResults({ runId: 'r1' }));
+    defaults.getPrereg.mockResolvedValue(null);
     defaults.getRollout.mockImplementation(fixtures.getRollout);
     defaults.getBenchRunDetail.mockImplementation(fixtures.getBenchRunDetail!);
     const report = await buildBundleFromPg('r1', { workspace: 'bench-private' });
@@ -78,6 +96,7 @@ describe('buildBundleFromPg', () => {
     expect(defaults.listRunResults).toHaveBeenCalledWith({ runId: 'r1', workspaceId: 'bench-private' });
     expect(defaults.getRollout).toHaveBeenCalledWith('roll-1', { workspaceId: 'bench-private' });
     expect(defaults.getRollout).toHaveBeenCalledWith('roll-2', { workspaceId: 'bench-private' });
+    expect(defaults.getPrereg).toHaveBeenCalledWith({ runId: 'r1' }, { workspaceId: 'bench-private' });
     expect(defaults.getBenchRunDetail).toHaveBeenCalledWith('r1', { workspaceId: 'bench-private' });
   });
 

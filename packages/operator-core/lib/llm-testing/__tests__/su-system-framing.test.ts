@@ -69,7 +69,7 @@ describe('Reports owner-deliverable persona rule', () => {
     expect(rendered.text).toContain(rule);
     expect(rendered.text).toContain('You are running under Codex CLI');
     expect(rendered.text).toContain('absolute HTTP(S) URL only when a verified');
-    expect(rendered.text).toContain('Never\ngive a bare report id');
+    expect(rendered.text.replace(/\s+/g, ' ')).toContain('Never give a bare report id');
     // The derived practice file must not mask a missing authored rule.
     const withoutRule = await render(source.replace(rule, ''));
     expect(withoutRule.text).not.toContain('**Publish finished owner-facing prose.**');

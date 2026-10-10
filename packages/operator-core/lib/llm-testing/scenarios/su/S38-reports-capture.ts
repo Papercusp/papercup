@@ -128,7 +128,7 @@ export const SU_S38_REPORTS_CAPTURE: Scenario = {
       claim: 'The finished owner-facing review must be published in full with private visibility and read back before delivery is claimed.' }];
     const reportPath = typeof published?.output?.path === 'string' ? published.output.path : undefined;
     const finalText = run.turns.at(-1)?.assistantText ?? '';
-    if (!readBack || !reportPath || !hasMarkdownLinkToPath(finalText, reportPath)) {
+    if (readBack && (!reportPath || !hasMarkdownLinkToPath(finalText, reportPath))) {
       violations.push({ assertKind: 'custom:final-report-citation-uses-returned-route', severity: 'error',
         claim: 'After a successful read-back, the final response must link the report with a descriptive Markdown link to the returned same-origin path.' });
     }

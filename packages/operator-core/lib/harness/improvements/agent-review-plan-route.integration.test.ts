@@ -7,7 +7,7 @@
  * Pin the complete real-PG lifecycle: enrolled review authority → plan route →
  * deterministic fallback authority → reviewer claim → grade → approval.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 
@@ -83,6 +83,15 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
     else process.env.PAPERCUSP_WORKSPACE_ID = priorWorkspacePin;
     await db?.cleanup();
     if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+  });
+
+  afterEach(async () => {
+    // The timing census below reads this workspace's complete review population.
+    // Each P-002 case owns its two private fixture ids; remove them before another
+    // case measures history instead of silently contributing an undated round.
+    await db.adminSql`DELETE FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS}
+        AND feature_id IN ('EI-BQL-P002-TRIAGE-unheld', 'EI-BQL-P002-TRIAGE-su-peer')`;
   });
 
   it.each([null, 'su-peer'])('P-002 recovers triage provenance without accepting a bug or stealing holder %s', async (holder) => {

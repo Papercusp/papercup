@@ -110,7 +110,7 @@ export function currentProtocolFromConfig(config: Record<string, unknown>): Curr
 
 /** Shared frozen price projection for persistence and regenerated reports. */
 export function currentProtocolPriceTable(protocol: CurrentBenchmarkProtocol,
-  usage: Array<{ modelId: string; tokensCacheWrite?: number | null }> = []): PriceTable {
+  usage: ReadonlyArray<{ modelId: string; tokensCacheWrite?: number | null }> = []): PriceTable {
   const rates = new Map(protocol.priceSchedule.rates.map(rate => [rate.model, rate]));
   for (const row of usage) {
     const rate = rates.get(row.modelId);

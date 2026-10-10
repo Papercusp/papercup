@@ -160,6 +160,7 @@
     "@papercusp/testing-shell": "file:../../libs/testing-shell",
     "@papercusp/tooldef": "file:../../libs/generic/tooldef",
     "@papercusp/ui-primitives": "file:../../libs/generic/ui-primitives",
+    "@papercusp/verification-harness": "file:../../libs/generic/verification-harness",
     "@picovoice/porcupine-web": "^4.0.0",
     "@picovoice/web-voice-processor": "^4.0.10",
     "@qdrant/js-client-rest": "^1.13.0",

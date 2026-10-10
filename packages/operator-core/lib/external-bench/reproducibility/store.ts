@@ -127,14 +127,9 @@ export async function listRunResults(
   return rows.map(rowToTaskRunResult);
 }
 
-/** Use the existing immutable preregistration, never an observed-row task roster. */
-export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | null): SuiteReport[] {
-  const bySuite = new Map<string, TaskRunResult[]>();
-  for (const row of rows) {
-    const group = bySuite.get(row.suite) ?? [];
-    group.push(row);
-    bySuite.set(row.suite, group);
-  }
+/** Resolve the same immutable population for canonical and portable reports. */
+export function resolveRunReportAssignment(rows: readonly Pick<TaskRunResult,
+  'runId' | 'suite' | 'arm' | 'preregHash' | 'modelId' | 'tokensCacheWrite'>[], prereg: PreregRecord | null): AggregateOpts {
   let assignment: AggregateOpts = {};
   // Current protocols freeze structured execution controls per arm. Validate
   // the complete contract even if the task roster is missing; old string
@@ -176,8 +171,20 @@ export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | nu
       }
       assignment.priceTable = currentProtocolPriceTable(currentProtocol, rows);
     }
-    if (!bySuite.has(prereg.suites[0])) bySuite.set(prereg.suites[0], []);
   }
+  return assignment;
+}
+
+/** Use the existing immutable preregistration, never an observed-row task roster. */
+export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | null): SuiteReport[] {
+  const assignment = resolveRunReportAssignment(rows, prereg);
+  const bySuite = new Map<string, TaskRunResult[]>();
+  for (const row of rows) {
+    const group = bySuite.get(row.suite) ?? [];
+    group.push(row);
+    bySuite.set(row.suite, group);
+  }
+  if (assignment.suite && !bySuite.has(assignment.suite)) bySuite.set(assignment.suite, []);
   return [...bySuite.values()].map(group => {
     const report = buildSuiteReport(group, assignment);
     if (assignment.priceTable) report.priceTableVersion = assignment.priceTable.version;

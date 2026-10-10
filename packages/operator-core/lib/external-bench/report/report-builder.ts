@@ -15,6 +15,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { summarizeAssignedOutcomes } from '@papercusp/bench-metrics';
 import {
   BENCH_REPORT_SCHEMA_VERSION,
   type BenchReportArmSummary,
@@ -84,14 +85,6 @@ function recordedCosts(rows: readonly RunResultLike[]) {
     costBasis: bases.size === 1 ? [...bases][0] : 'mixed' };
 }
 
-/** Is this a SCORED row (counted in resolved%/meanScore) vs an infra/transient exclusion? */
-function isScored(rr: RunResultLike): boolean {
-  const g = rr.generationStatus;
-  if (g === 'error' || g === 'timeout') return false;
-  if (rr.graderStatus === 'error' || rr.graderStatus === 'timeout') return false;
-  return rr.resolved !== null;
-}
-
 /**
  * Assemble the shared core of a report bundle. Joins each TaskRunResult to its RolloutRecord (by
  * task×arm×seed) so a rollout row carries BOTH the score/cost AND the replay fingerprint
@@ -108,6 +101,8 @@ export function bundleFromRollouts(input: {
   harnessGitSha?: string | null;
   envFingerprint?: Record<string, unknown> | null;
   runResults: RunResultLike[];
+  assignedTaskIds?: readonly string[];
+  assignedSeeds?: readonly number[];
   rollouts?: RolloutLike[];
   coordTrace?: BenchReportCoordEvent[];
   spawnTree?: BenchReportSpawnNode[];
@@ -115,6 +110,10 @@ export function bundleFromRollouts(input: {
   concurrencyTimeline?: Record<string, Array<{ tMs: number; live: number }>>;
   suiteData?: Record<string, unknown>;
 }): BenchReportBundle {
+  if (input.runResults.some(row => !input.arms.includes(row.arm))) {
+    throw new Error('benchmark report: result outside frozen arm assignment');
+  }
+  const assignedTaskIds = input.assignedTaskIds ?? [...new Set(input.runResults.map(row => row.taskId))];
   const rolloutByKey = new Map<string, RolloutLike>();
   for (const r of input.rollouts ?? []) rolloutByKey.set(key(r.taskId, r.arm, r.seed), r);
 
@@ -155,18 +154,23 @@ export function bundleFromRollouts(input: {
   // per-arm rollups
   const arms: BenchReportArmSummary[] = input.arms.map((arm) => {
     const rows = input.runResults.filter((r) => r.arm === arm);
-    const scoredRows = rows.filter(isScored);
-    const resolved = scoredRows.filter((r) => r.resolved === true).length;
-    const scoresPresent = scoredRows.filter((r) => typeof r.score === 'number');
-    const meanScore = scoresPresent.length
-      ? scoresPresent.reduce((s, r) => s + (r.score as number), 0) / scoresPresent.length
-      : null;
+    const outcome = summarizeAssignedOutcomes(rows, { assignedTaskIds, assignedSeeds: input.assignedSeeds });
     return {
       arm,
-      resolved,
-      scored: scoredRows.length,
-      meanScore,
-      infraExcluded: rows.length - scoredRows.length,
+      resolved: outcome.resolved,
+      scored: outcome.gradedAttempts,
+      meanScore: rows.some(row => row.score != null) ? outcome.conditionalMeanScore : null,
+      assignedTasks: outcome.assignedTasks,
+      assignedAttempts: outcome.assignedAttempts,
+      attempts: outcome.attempts,
+      absentAttempts: outcome.absentAttempts,
+      missingMeasurements: outcome.missingMeasurements,
+      measurementComplete: outcome.measurementComplete,
+      primaryResolvedPct: outcome.primaryResolvedPct,
+      primaryMeanScore: outcome.primaryMeanScore,
+      conditionalResolvedPct: outcome.conditionalResolvedPct,
+      assignmentSource: input.assignedTaskIds && input.assignedSeeds ? 'frozen' : 'observed',
+      infraExcluded: rows.length - outcome.gradedAttempts,
       ...recordedCosts(rows),
       tokensTotal: rows.reduce((s, r) => s + (r.tokensTotal || 0), 0),
       concurrency: summarizeConcurrency(input.concurrencyTimeline?.[arm]),
@@ -174,7 +178,7 @@ export function bundleFromRollouts(input: {
   });
 
   const totals = {
-    tasks: new Set(input.runResults.map((r) => r.taskId)).size,
+    tasks: assignedTaskIds.length,
     ...recordedCosts(input.runResults),
     tokensIn: input.runResults.reduce((s, r) => s + (r.tokensIn || 0), 0),
     tokensOut: input.runResults.reduce((s, r) => s + (r.tokensOut || 0), 0),

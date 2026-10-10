@@ -56,17 +56,60 @@ export interface AggregateOpts {
 const DEFAULT_KS = [1, 3];
 const DEFAULT_SEED = 0xbe0c;
 
-/** Per-task (n scored attempts, c resolved) for one arm. Tasks with 0 scored attempts are dropped. */
-function perTaskCounts(rows: readonly TaskRunResult[]): Array<{ n: number; c: number }> {
-  const byTask = new Map<string, { n: number; c: number }>();
-  for (const r of rows) {
-    if (!isScored(r)) continue;
-    const t = byTask.get(r.taskId) ?? { n: 0, c: 0 };
-    t.n += 1;
-    if (r.resolved === true) t.c += 1;
-    byTask.set(r.taskId, t);
+/** Shared outcome-only projection; no pricing or statistical resampling is needed for exports. */
+export function summarizeAssignedOutcomes(rows: readonly {
+  taskId: string; seed: number; resolved: boolean | null; score?: number | null;
+  generationStatus?: string; generationError?: string | null; graderStatus: string;
+}[], opts: Pick<AggregateOpts, 'assignedTaskIds' | 'assignedSeeds'> = {}) {
+  const assignedIds = [...new Set(opts.assignedTaskIds ?? rows.map(row => row.taskId))];
+  const assignedSeeds = opts.assignedSeeds ? new Set(opts.assignedSeeds) : null;
+  if (opts.assignedTaskIds && (assignedIds.length !== opts.assignedTaskIds.length ||
+      assignedIds.some(id => !id.trim())) || assignedSeeds && (!assignedSeeds.size ||
+      assignedSeeds.size !== opts.assignedSeeds!.length || [...assignedSeeds].some(seed => !Number.isSafeInteger(seed) || seed < 0))) {
+    throw new Error('aggregateArm: invalid frozen task/seed assignment');
   }
-  return [...byTask.values()];
+  if (rows.some(row => !assignedIds.includes(row.taskId) || (assignedSeeds && !assignedSeeds.has(row.seed)))) {
+    throw new Error('aggregateArm: result outside frozen task/seed assignment');
+  }
+  const byTask = new Map(assignedIds.map(id => [id, { n: assignedSeeds?.size ?? 0, c: 0, scoreSum: 0, observed: 0 }]));
+  const conditional = new Map<string, { n: number; c: number; scoreSum: number }>();
+  let missingMeasurements = 0;
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const identity = JSON.stringify([row.taskId, row.seed]);
+    if (seen.has(identity)) throw new Error('aggregateArm: duplicate task/seed result');
+    seen.add(identity);
+    const task = byTask.get(row.taskId)!;
+    task.observed += 1;
+    if (!assignedSeeds) task.n += 1;
+    const generationFailed = row.generationStatus === 'error' || row.generationStatus === 'timeout' || !!row.generationError;
+    if (generationFailed) continue;
+    const scoreValid = typeof row.score === 'number' && Number.isFinite(row.score) && row.score >= 0 && row.score <= 1;
+    const gradeMissing = row.graderStatus === 'error' || row.graderStatus === 'timeout' ||
+      (row.resolved == null && !scoreValid) || (row.score != null && !scoreValid);
+    if (gradeMissing) { missingMeasurements += 1; continue; }
+    const c = row.resolved === true ? 1 : 0;
+    const score = scoreValid ? row.score! : c;
+    task.c += c;
+    task.scoreSum += score;
+    const measured = conditional.get(row.taskId) ?? { n: 0, c: 0, scoreSum: 0 };
+    measured.n += 1; measured.c += c; measured.scoreSum += score;
+    conditional.set(row.taskId, measured);
+  }
+  const counts = [...byTask.values()].map(task => ({ ...task, n: Math.max(task.n, 1) }));
+  const mean = (values: number[]) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+  const conditionalCounts = [...conditional.values()];
+  const assignedAttempts = counts.reduce((sum, task) => sum + task.n, 0);
+  return { counts, conditionalCounts, assignedTasks: counts.length, assignedAttempts,
+    attempts: rows.length, absentAttempts: assignedAttempts - rows.length,
+    absentTasks: counts.filter(task => !task.observed).length,
+    gradedAttempts: conditionalCounts.reduce((sum, task) => sum + task.n, 0),
+    resolved: counts.reduce((sum, task) => sum + task.c, 0), missingMeasurements,
+    measurementComplete: missingMeasurements === 0,
+    primaryResolvedPct: missingMeasurements ? null : mean(counts.map(task => task.c / task.n)),
+    primaryMeanScore: missingMeasurements ? null : mean(counts.map(task => task.scoreSum / task.n)),
+    conditionalResolvedPct: mean(conditionalCounts.map(task => task.c / task.n)),
+    conditionalMeanScore: mean(conditionalCounts.map(task => task.scoreSum / task.n)) };
 }
 
 /** Aggregate ONE arm on ONE suite. `rows` must already be filtered to that (suite, arm). */
@@ -78,30 +121,9 @@ export function aggregateArm(
 ): ArmReport {
   const ks = opts.protocolKs ?? DEFAULT_KS;
   const ci = opts.ci ?? 0.95;
-  const conditionalCounts = perTaskCounts(rows);
-  const conditionalPassAt1 = conditionalCounts.length === 0 ? 0
-    : conditionalCounts.reduce((sum, t) => sum + t.c / t.n, 0) / conditionalCounts.length;
-  const assignedIds = [...new Set(opts.assignedTaskIds ?? rows.map(row => row.taskId))];
-  const assignedSeeds = opts.assignedSeeds ? new Set(opts.assignedSeeds) : null;
-  if (rows.some(row => !assignedIds.includes(row.taskId) || (assignedSeeds && !assignedSeeds.has(row.seed)))) {
-    throw new Error('aggregateArm: result outside frozen task/seed assignment');
-  }
-  const byTask = new Map(assignedIds.map(id => [id, { n: assignedSeeds?.size ?? 0, c: 0, observed: 0 }]));
-  let missingMeasurements = 0;
-  const seen = new Set<string>();
-  for (const row of rows) {
-    const identity = JSON.stringify([row.taskId, row.seed]);
-    if (seen.has(identity)) throw new Error('aggregateArm: duplicate task/seed result');
-    seen.add(identity);
-    const task = byTask.get(row.taskId)!;
-    task.observed += 1;
-    if (!assignedSeeds) task.n += 1;
-    if (isScored(row) && row.resolved === true) task.c += 1;
-    if (row.generationStatus !== 'error' && row.generationStatus !== 'timeout' &&
-        (row.graderStatus === 'error' || row.graderStatus === 'timeout' ||
-          (row.resolved == null && row.score == null))) missingMeasurements += 1;
-  }
-  const counts = [...byTask.values()].map(task => ({ ...task, n: Math.max(task.n, 1) }));
+  const outcomes = summarizeAssignedOutcomes(rows, opts);
+  const { counts, missingMeasurements } = outcomes;
+  const conditionalPassAt1 = outcomes.conditionalResolvedPct ?? 0;
 
   // pass@1 = mean over tasks of c/n (== meanPassAtK at k=1); CI bootstrapped over tasks.
   const perTaskPass1 = counts.map((t) => t.c / t.n);
@@ -133,8 +155,8 @@ export function aggregateArm(
     suite,
     tasks: counts.length,
     attempts: rows.length,
-    gradedAttempts: rows.filter(isScored).length,
-    absentTasks: [...byTask.values()].filter(task => task.observed === 0).length,
+    gradedAttempts: outcomes.gradedAttempts,
+    absentTasks: outcomes.absentTasks,
     missingMeasurements,
     conditionalPassAt1,
     infraErrors: rows.filter((r) => !isScored(r)).length,

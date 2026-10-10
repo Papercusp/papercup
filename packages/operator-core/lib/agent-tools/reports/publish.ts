@@ -43,7 +43,7 @@ export default defineTool({
     'old body remains resolvable. After publishing, call `reports:get { id: report_id }` and ' +
     'verify the complete body and visibility before citing a descriptive Markdown link to the GUI report page. ' +
     'Use the returned same-origin path directly as its Markdown target in Papercusp/Tauri; use an absolute HTTP(S) URL only ' +
-    'when a verified GUI origin is available. Never guess or ask the owner for an origin solely to format the link, or give a bare id. Reports preserve ' +
+    'when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link, or give a bare id. Reports preserve ' +
     'dated evidence and conclusions; author reusable current procedures with `docs:author`, verify them with ' +
     '`docs:get`, and link the maintained procedure from the report without copying private incident details.',
   guidance: {

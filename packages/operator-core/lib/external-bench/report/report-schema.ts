@@ -40,7 +40,7 @@ export interface BenchReportRollout {
   score?: number | null;
   graderStatus: string;
   stopReason: string;
-  /** Infra/transient generation failure detail (excluded from accuracy). */
+  /** Generation failure detail; the failed assignment remains in primary outcome. */
   generationError?: string | null;
   // ── cost / timing (coordination overhead INCLUDED — fairness #2) ──
   /** Null when accounting is incomplete; the retained subtotal is separate. */
@@ -128,12 +128,24 @@ export interface BenchReportCall {
 /** Per-arm rollup (the headline comparison row). */
 export interface BenchReportArmSummary {
   arm: string;
-  /** Resolved (fully-passed) count + the scored denominator (infra-excluded rows dropped). */
+  /** Resolved and measured submission counts; these describe secondary quality. */
   resolved?: number;
   scored?: number;
-  /** Mean partial-credit score over scored rows (the headline for rubric/checkpoint suites). */
+  /** Secondary partial-credit score among officially measured submissions. */
   meanScore?: number | null;
-  /** Infra-excluded (non-scored) attempts — surfaced, not counted as fails. */
+  assignedTasks?: number;
+  assignedAttempts?: number;
+  attempts?: number;
+  absentAttempts?: number;
+  missingMeasurements?: number;
+  measurementComplete?: boolean;
+  /** Task-weighted mean over assigned seeds, including failures and absent attempts. */
+  primaryResolvedPct?: number | null;
+  primaryMeanScore?: number | null;
+  conditionalResolvedPct?: number | null;
+  /** Observed rosters cannot establish that assignments were never attempted. */
+  assignmentSource?: 'frozen' | 'observed';
+  /** Attempts without a usable official measurement, including generation failure. */
   infraExcluded?: number;
   costUsd: number | null;
   costKnownSubtotalUsd?: number | null;

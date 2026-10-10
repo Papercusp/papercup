@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateArm, buildSuiteReport } from './aggregate';
+import { aggregateArm, buildSuiteReport, summarizeAssignedOutcomes } from './aggregate';
 import type { TaskRunResult, ArmId, GraderStatus } from './schema';
 
 let seq = 0;
@@ -45,6 +45,33 @@ function attempt(taskId: string, arm: ArmId, resolved: boolean, tokensIn: number
     tokensTotal: tokensIn,
   });
 }
+
+describe('shared assigned outcome projection', () => {
+  it('matches canonical binary scoring and distinguishes budget outcome from grader outage', () => {
+    const rows = [mk({ seed: 0, resolved: true, graderStatus: 'passed' }),
+      mk({ taskId: 't2', seed: 0, resolved: null, generationStatus: 'timeout', graderStatus: 'error' })];
+    const opts = { assignedTaskIds: ['t1', 't2'], assignedSeeds: [0, 1] };
+    expect(summarizeAssignedOutcomes(rows, opts)).toMatchObject({ primaryResolvedPct: 0.25,
+      conditionalResolvedPct: 1, assignedAttempts: 4, absentAttempts: 2, missingMeasurements: 0 });
+    expect(aggregateArm(rows, 'swe-bench-pro', 'papercusp', opts).passAt1).toBe(0.25);
+    expect(summarizeAssignedOutcomes([rows[0], { ...rows[1], generationStatus: 'completed' }], opts))
+      .toMatchObject({ primaryResolvedPct: null, primaryMeanScore: null, missingMeasurements: 1 });
+  });
+  it('weights tasks equally when their observed seed counts differ', () => {
+    const rows = [mk({ seed: 0, score: 0.5 }), mk({ seed: 1, score: 1 }), mk({ taskId: 't2', seed: 0, score: 0.1 })];
+    expect(summarizeAssignedOutcomes(rows).primaryMeanScore).toBeCloseTo((0.75 + 0.1) / 2);
+  });
+  it('retains empty assigned populations and rejects duplicated attempts', () => {
+    expect(summarizeAssignedOutcomes([], { assignedTaskIds: ['t1'], assignedSeeds: [0, 1] }))
+      .toMatchObject({ primaryResolvedPct: 0, primaryMeanScore: 0, absentAttempts: 2, conditionalResolvedPct: null });
+    const row = mk({ seed: 0 });
+    expect(() => summarizeAssignedOutcomes([row, row])).toThrow('duplicate');
+  });
+  it.each([NaN, Infinity, -0.1, 1.1])('refuses an invalid partial-credit measurement %s', score => {
+    expect(summarizeAssignedOutcomes([mk({ seed: 0, resolved: true, score })]))
+      .toMatchObject({ primaryMeanScore: null, measurementComplete: false, missingMeasurements: 1 });
+  });
+});
 
 describe('frozen report population', () => {
   it.each(['papercusp', 'baseline-b-native'])('keeps primary outcome but excludes %s with missing usage from efficiency claims', missingArm => {

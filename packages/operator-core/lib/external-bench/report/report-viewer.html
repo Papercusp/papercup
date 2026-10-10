@@ -178,10 +178,17 @@ function tabOverview(b){
     card("Arms", String((b.run.arms||[]).length))));
   // per-arm table
   const rows = (b.arms||[]).map(a=>{
-    const acc = a.meanScore!=null ? fmt.score(a.meanScore) : (a.scored ? fmt.pct(a.resolved||0,a.scored) : "—");
+    const primary = a.meanScore!=null ? a.primaryMeanScore : a.primaryResolvedPct;
+    const primaryText = a.assignedAttempts==null ? "Unknown assigned population (legacy export)" :
+      a.measurementComplete===false ? "Inconclusive: "+fmt.int(a.missingMeasurements)+" missing grade(s)" :
+      (a.meanScore!=null ? fmt.score(primary) : primary==null ? "—" : fmt.pct(primary,1))+
+        " · "+fmt.int(a.assignedAttempts)+" assigned · "+fmt.int(a.absentAttempts)+" absent";
+    const secondary = a.meanScore!=null ? "mean score "+fmt.score(a.meanScore) :
+      a.conditionalResolvedPct!=null ? fmt.pct(a.conditionalResolvedPct,1) : a.scored ? fmt.pct(a.resolved||0,a.scored) : "—";
     return el("tr",{class:"row"},
       el("td",{}, el("b",{},a.arm)),
-      el("td",{}, a.meanScore!=null ? "mean score "+acc : (a.resolved||0)+"/"+(a.scored||0)+" = "+acc),
+      el("td",{}, primaryText, a.assignmentSource==='observed' ? " (observed roster only)" : ""),
+      el("td",{}, secondary+" · "+fmt.int(a.scored)+" graded"),
       el("td",{class:"num"}, a.infraExcluded!=null?fmt.int(a.infraExcluded):"—"),
       el("td",{class:"num"}, recordedCost(a)),
       el("td",{class:"num"}, fmt.int(a.tokensTotal)),
@@ -189,7 +196,7 @@ function tabOverview(b){
   });
   wrap.append(el("h3",{},"Per-arm summary"),
     el("table",{}, el("thead",{}, el("tr",{},
-      el("th",{},"Arm"), el("th",{},"Accuracy / score"), el("th",{class:"num"},"infra-excl"),
+      el("th",{},"Arm"), el("th",{},"Primary assigned outcome"), el("th",{},"Secondary graded quality"), el("th",{class:"num"},"unscored"),
       el("th",{class:"num"},"Cost"), el("th",{class:"num"},"Tokens"), el("th",{class:"num"},"concur avg/peak"))),
       el("tbody",{}, ...rows)));
   if (b.run.envFingerprint) wrap.append(el("h3",{},"Environment fingerprint"), jsonTree(b.run.envFingerprint,"env"));
