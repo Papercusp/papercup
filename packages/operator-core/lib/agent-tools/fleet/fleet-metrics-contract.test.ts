@@ -1,4 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import { compactLeaderBriefForResultDoor } from './leader-brief-shape';
+import { applyResultDoor, measureResultContextBytes, RESULT_DOOR_TOKENS } from '../../result-door';
+import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
+import { parseScratchReference } from '../../scratch-reference';
+
+vi.mock('../../context-doors-config', async () => {
+  const { BAKED_DOOR_CONSTANTS: constants } = await import('../../context-doors');
+  return { getDoorConstantsSync: () => constants };
+});
 import {
   FLEET_METRIC_ADMISSION_PARITY,
   FLEET_METRIC_COMPARISON_RULE,
@@ -152,6 +164,107 @@ function currentSpecExample(): FleetMetricsResult {
     },
   };
 }
+
+describe('P-001 complete queue comparison and same-snapshot recovery', () => {
+  function oversizedBrief() {
+    const metrics = currentSpecExample();
+    if (!metrics.ok) throw new Error('fixture must be available');
+    metrics.snapshot.remaining.total = 2143;
+    metrics.snapshot.remaining.buckets = {
+      needsHuman: 146, blocked: 440, claimHeld: 279,
+      inFlight: 496, claimable: 9, otherUnclaimable: 773,
+    };
+    const itemIds = Array.from({ length: 2143 }, (_, index) => `WI-census-${index}`);
+    return {
+      ok: true,
+      summary: {
+        fleet: 'nonp2p-bug-drain', members: 31,
+        claimable_now: { value: 9, population: { scope: metrics.snapshot.scope, itemIds } },
+      },
+      fleetMetrics: metrics,
+      exceptionalActions: itemIds.map((id) => ({ id, next: 'Verify current condition — 確認 '.repeat(15) })),
+    };
+  }
+
+  it('preserves the complete atomic comparison contract instead of sampling its totals', () => {
+    const source = oversizedBrief();
+    const preview = compactLeaderBriefForResultDoor(source);
+    expect(preview?.fleetMetrics).toMatchObject({
+      ok: true,
+      snapshot: {
+        scope: source.fleetMetrics.snapshot.scope,
+        quality: source.fleetMetrics.snapshot.quality,
+        flow: source.fleetMetrics.snapshot.flow,
+        remaining: source.fleetMetrics.snapshot.remaining,
+        authority: source.fleetMetrics.snapshot.authority,
+        issueUnits: source.fleetMetrics.snapshot.issueUnits,
+        admissionParity: source.fleetMetrics.snapshot.admissionParity,
+      },
+    });
+    expect(preview?.summary).toMatchObject({ claimable_now: { value: 9 } });
+    expect(preview?.leaderBriefProjection).toMatchObject({ completeIndexesInCursor: true });
+    expect(preview).not.toHaveProperty('exceptionalActions');
+    expect(source.exceptionalActions).toHaveLength(2143);
+  });
+
+  it('preserves unknown metrics and the unread claim-floor reason instead of inventing zero', () => {
+    const unavailable = {
+      ok: false as const, schemaVersion: FLEET_METRICS_SCHEMA_VERSION,
+      error: 'fleet_metrics_unavailable' as const,
+      reason: 'historical-spec-unreadable', recoverVia: 'fleet:metrics',
+      requested: { fleet: 'nonp2p-bug-drain', harness: 'papercusp', flowMode: 'current-spec' as const, window: 'fleet-lifetime' as const },
+    };
+    const source = {
+      ok: true, fleetMetrics: unavailable,
+      summary: { claimable_now: { value: null, unknown: { code: 'oracle-unavailable', detail: 'Read failed' } } },
+    };
+    const preview = compactLeaderBriefForResultDoor(source);
+    expect(preview?.fleetMetrics).toEqual(unavailable);
+    expect(preview?.summary).toMatchObject({
+      claimable_now: { value: null, unknown: { code: 'oracle-unavailable', detail: 'Read failed' } },
+    });
+    expect(compactLeaderBriefForResultDoor({ ...source, fleetMetrics: { ok: true, snapshot: { remaining: { total: 0 } } } })).toBeNull();
+  });
+
+  it.each([
+    { toolName: 'fleet:leader-brief' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'fleet:leader-brief' },
+  ])('keeps the complete numeric preview and recovers every original UTF-8 byte through $toolName', (route) => {
+    const directory = mkdtempSync(join(tmpdir(), 'fleet-metrics-door-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousOff = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = directory;
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    try {
+      const source = oversizedBrief();
+      const original = JSON.stringify(source);
+      const result = applyResultDoor({ content: [{ type: 'text', text: original }] }, {
+        ...route, workspaceId: 'fleet-core-test', runId: '11111111-2222-4333-8444-555555555555',
+      });
+      const body = JSON.parse((result.content.find((part) => part.type === 'text') as { text: string }).text);
+      expect(body.fleetMetrics.snapshot.remaining).toEqual(source.fleetMetrics.snapshot.remaining);
+      expect(body.fleetMetrics.snapshot.scope).toEqual(source.fleetMetrics.snapshot.scope);
+      expect(body.summary.claimable_now.value).toBe(9);
+      expect(measureResultContextBytes(result)).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+      expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
+      const spillPath = (result._meta?.resultDoor as { spillPath: string }).spillPath;
+      const reference = parseScratchReference(readFileSync(spillPath));
+      expect(reference).not.toBeNull();
+      const recovered = reference!.payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString('utf8');
+      expect(recovered).toBe(original);
+      const complete = JSON.parse(recovered);
+      expect(complete.exceptionalActions).toHaveLength(2143);
+      expect(complete.summary.claimable_now.population.itemIds).toEqual(source.summary.claimable_now.population.itemIds);
+      expect(complete.fleetMetrics.snapshot.generatedAt).toBe(source.fleetMetrics.snapshot.generatedAt);
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      if (previousOff === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousOff;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('fleet metrics v1 contract', () => {
   it('preserves the scoped intake partition on the parsed fleet wire response and rejects inflated delivery', () => {

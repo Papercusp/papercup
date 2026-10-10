@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('./system-actions', () => ({ registerSystemAction: vi.fn() }));
 
 import { makePlanCleanupSweepAction, type PlanCleanupSweepDeps } from './plan-cleanup-sweep-action';
-import { MAX_RUN_PLANS, PLAN_CLEANUP_SWEEP_REQUESTER } from '../../plan-cleanup/start-run';
+import { cleanupWorkflowRunId, MAX_RUN_PLANS, PLAN_CLEANUP_SWEEP_REQUESTER } from '../../plan-cleanup/start-run';
 import type { SystemActionCtx } from './system-actions';
 
 const CTX: SystemActionCtx = {
@@ -22,6 +22,7 @@ const CTX: SystemActionCtx = {
 function deps(overrides: Partial<PlanCleanupSweepDeps> = {}) {
   const logs: string[] = [];
   const base: PlanCleanupSweepDeps = {
+    readRun: vi.fn(async () => null),
     enabled: vi.fn(async () => true),
     runningRun: vi.fn(async () => null),
     listPlans: vi.fn(async () => ['plan-a', 'plan-b', 'plan-c']),
@@ -49,6 +50,38 @@ function deps(overrides: Partial<PlanCleanupSweepDeps> = {}) {
 }
 
 describe('system:plan-cleanup-sweep', () => {
+  it('DBOS replay resumes its existing run before the competing-run skip or fresh selection', async () => {
+    const { deps: d, logs } = deps({
+      readRun: vi.fn(async () => ({
+        runId: cleanupWorkflowRunId('workflow-1'), seedRefs: ['original-plan'],
+        filterSnapshot: { routineWorkflowId: 'workflow-1' },
+        launchSnapshot: { model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', carry: 'warm' },
+        automationPolicy: { mode: 'recommend', minConfidence: 'high' },
+      }) as never),
+      runningRun: vi.fn(async () => ({ runId: cleanupWorkflowRunId('workflow-1'), phase: 'pending' })),
+    });
+    const result = await makePlanCleanupSweepAction(d)({ ...CTX, workflowId: 'workflow-1' });
+    expect(result.diagnostics).toMatchObject({ outcome: 'resumed' });
+    expect(d.start).toHaveBeenCalledWith(expect.objectContaining({ workflowId: 'workflow-1', planSlugs: ['original-plan'] }));
+    expect(d.runningRun).not.toHaveBeenCalled();
+    expect(d.listPlans).not.toHaveBeenCalled();
+    expect(d.readLaunchProfile).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toContain('recovered workflow=workflow-1');
+  });
+
+  it('a new workflow retains the competing-run single-flight guard', async () => {
+    const { deps: d } = deps({ runningRun: vi.fn(async () => ({ runId: 'other-run', phase: 'running' })) });
+    const result = await makePlanCleanupSweepAction(d)({ ...CTX, workflowId: 'workflow-2' });
+    expect(result.diagnostics).toMatchObject({ outcome: 'skipped', runId: 'other-run' });
+    expect(d.start).not.toHaveBeenCalled();
+  });
+
+  it('passes the durable fire identity into a first start', async () => {
+    const { deps: d } = deps();
+    await makePlanCleanupSweepAction(d)({ ...CTX, workflowId: 'workflow-1' });
+    expect(d.start).toHaveBeenCalledWith(expect.objectContaining({ workflowId: 'workflow-1' }));
+  });
+
   it('a fire starts a plan-cleanup run through the shared start path', async () => {
     const { deps: d } = deps();
     const result = await makePlanCleanupSweepAction(d)(CTX);

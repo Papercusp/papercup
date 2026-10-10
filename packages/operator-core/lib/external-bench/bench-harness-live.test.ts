@@ -278,6 +278,17 @@ describe('auto-retry-on-transient (Priority 3)', () => {
   }
   const COST: BenchRunCost = { tokensIn: 100, tokensOut: 50, costUsd: 1.5, turns: 2 };
 
+  it('retains every retry cache count and billing/source observation', async () => {
+    const { ops } = retryingOps(['transient', 'done'], { ...COST, tokensCacheRead: 30, tokensCacheWrite: 5,
+      armMeta: { nativeCostAccounting: { billedCostUsd: null, normalizedCostUsd: 1.5 } }, costUsdMeasurementMissing: true });
+    const result = await liveBenchHarnessDriver(ops, { ...OPTS, maxTransientRetries: 1, transientRetryBackoffMs: 0 }).spinRunAndCost(req());
+    expect(result.telemetry).toMatchObject({ tokensCacheRead: 60, tokensCacheWrite: 10, costUsd: 3,
+      armMeta: { costUsdMeasurementMissing: true, costAttempts: [
+        { nativeCostAccounting: { billedCostUsd: null, normalizedCostUsd: 1.5 } },
+        { nativeCostAccounting: { billedCostUsd: null, normalizedCostUsd: 1.5 } },
+      ] } });
+  });
+
   it('rides out a transient throttle: retries up to N then records the eventual DONE, summing every attempt cost', async () => {
     // transient, transient, done — 1 initial + 2 retries (N=2) → 3 attempts.
     const { ops, drives } = retryingOps(['transient', 'transient', 'done'], COST);

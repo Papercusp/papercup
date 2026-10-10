@@ -46,6 +46,7 @@ const {
   BulkRunAlreadyActiveError,
   createRun,
   getRun,
+  getRunningRun,
   setRunPhase,
   failRunIfExecuting,
   settleRunPhase,
@@ -53,6 +54,9 @@ const {
   restartRun,
 } = await import('../attention/bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { startPlanCleanupRun, cleanupWorkflowRunId } = await import('./start-run');
+const { runDeterministicPlanCleanup } = await import('./deterministic-runner');
+const { makePlanCleanupSweepAction } = await import('../harness/routines/plan-cleanup-sweep-action');
 
 /** Findings shaped like scanner output for two plans (deterministic ids). */
 function scanFindings() {
@@ -122,6 +126,61 @@ describe('plan-cleanup run store (real PG)', () => {
   beforeEach(() => {
     wsSeq += 1;
     h.ws = `ws-cleanup-run-test-${wsSeq}`;
+  });
+
+  it('a scheduled workflow replay resumes persisted findings after a crash without repeating an effect', async () => {
+    const workflowId = `cleanup-recovery-${h.ws}`;
+    const ctx = { workflowId, installSlug: 'papercusp', workspaceId: h.ws, triggerConfig: {}, payloadTemplate: null };
+    let interrupted = true;
+    const dispatch = vi.fn(async () => ({ ok: true }));
+    const launchResolver = vi.fn(async () => ({ ok: true, sessionId: 'test-resolver' }));
+    const deterministic = vi.fn(async (input: Parameters<typeof runDeterministicPlanCleanup>[0]) => {
+      if (interrupted) {
+        interrupted = false;
+        await seedFindings({ runId: input.run.runId, findings: scanFindings() });
+        await executeCleanupFindingAction({
+          runId: input.run.runId, findingId: scanFindings()[0]!.findingId,
+          execute: async () => ({ effect: 'already applied before host crash' }),
+        });
+        throw new Error('simulated host crash before resolver launch');
+      }
+      return runDeterministicPlanCleanup({ ...input, deps: {
+        scanRun: async () => scanFindings().map((f, i) => ({
+          ...f, workspaceId: h.ws, autoApply: i === 0, autoApplyBlockedBy: i === 0 ? null : 'judgment-call',
+        })) as never,
+        dispatch,
+        notify: async () => undefined,
+      } });
+    });
+    const action = makePlanCleanupSweepAction({
+      enabled: async () => true, readRun: getRun, runningRun: getRunningRun,
+      listPlans: async () => ['plan-a', 'plan-b'],
+      select: async (input) => ({ planSlugs: [...input.planSlugs], requested: 2, accepted: 2, truncated: 0 }),
+      readPolicy: async () => ({ level: 'L2', minConfidence: 'medium' }) as never,
+      readLaunchProfile: async () => ({ model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', carry: 'warm' }),
+      start: (input) => startPlanCleanupRun(input, {
+        runDeterministic: deterministic, launchResolver, invalidate: async () => undefined,
+      }),
+      log: () => undefined,
+    });
+    await expect(action(ctx)).rejects.toThrow('simulated host crash');
+    const runId = cleanupWorkflowRunId(workflowId);
+    const before = (await getRunFindings(runId)).find((f) => f.outcome === 'auto_applied')!;
+    expect((await getRun(runId))?.phase).toBe('pending');
+
+    const replay = await action(ctx);
+    expect(replay.diagnostics).toMatchObject({ outcome: 'resumed', runId, phase: 'running' });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(launchResolver).toHaveBeenCalledTimes(1);
+    const after = (await getRunFindings(runId)).find((f) => f.findingId === before.findingId)!;
+    expect(after.outcome).toBe('auto_applied');
+    expect(after.decidedAt).toBe(before.decidedAt);
+    expect(after.evidence).toEqual(before.evidence);
+    expect((await getRun(runId))?.autoResolved).toBe(1);
+
+    expect((await action(ctx)).diagnostics).toMatchObject({ outcome: 'existing', runId, phase: 'running' });
+    expect(deterministic).toHaveBeenCalledTimes(2);
+    expect(launchResolver).toHaveBeenCalledTimes(1);
   });
 
   // ── per-kind single-flight (migration 937 re-keyed index) ─────────────────

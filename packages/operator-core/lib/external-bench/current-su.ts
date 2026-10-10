@@ -6,7 +6,7 @@ import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { TaskRow } from '../task-manager/types';
 import type { ControlOutcome } from '../task-manager/control';
 import { resolveBenchWorkspace } from './bench-workspace';
-import { liveBenchHarnessDriver, liveBenchHarnessOps, type BenchHarnessOps, type BenchHarnessHandle, type DriveResult, type LiveBenchHarnessOpts } from './bench-harness-live';
+import { liveBenchHarnessDriver, liveBenchHarnessOps, type BenchHarnessOps, type BenchHarnessHandle, type BenchRunCost, type DriveResult, type LiveBenchHarnessOpts } from './bench-harness-live';
 import { FULL_SPINE_BLUEPRINT, setBenchHarnessDriver } from './run-loop';
 import type { BenchTask, GenerationBudget } from './types';
 import type { DbScope } from './reproducibility/db';
@@ -22,6 +22,157 @@ import type { GatewayCarryTrialAttempt } from '../inference-gateway/gateway';
 import type { LearningReservationResourceBudget } from '../learning-governor/store';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import type { CredentialResolver } from '../inference-gateway/credential-store';
+import type { ClosedCodexSessionUsage } from '../session-transcript-resolvers';
+import { priceRun } from '@papercusp/bench-metrics';
+import { currentProtocolPriceTable } from './reproducibility/schema';
+
+interface NativeCostParticipant { taskId: string; ownerId: string; codexHome: string; terminal: boolean }
+export interface CurrentBenchNativeCostReaderPorts {
+  readParticipants(): Promise<NativeCostParticipant[]>;
+  readRuntime(participant: NativeCostParticipant): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] }>;
+  readBilled(participant: NativeCostParticipant, nativeSessionId: string, usage: Extract<ClosedCodexSessionUsage, { ok: true }>): Promise<{ knownSubtotalUsd: number; complete: boolean }>;
+  /** Full source-bound gateway attempt reconciliation is separate from a native
+   * transcript census. Omission keeps efficiency claims closed. */
+  readAttemptAccountingComplete?(): Promise<boolean>;
+}
+
+/** Reuses native source proofs and frozen pricing. Actual provider cost stays
+ * separately labelled; neither SQL estimates nor the normalized sum are bills. */
+export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProtocol, ports: CurrentBenchNativeCostReaderPorts): () => Promise<BenchRunCost> {
+  const protocol = currentBenchmarkProtocolSchema.parse(protocolInput);
+  const io = { ...ports };
+  return async () => {
+    const result: BenchRunCost = { tokensIn: 0, tokensOut: 0, tokensCacheRead: 0, tokensCacheWrite: 0, costUsd: 0, turns: 0 };
+    const participants = await io.readParticipants();
+    let complete = participants.length > 0 && participants.length < 1000;
+    const ids = new Set<string>(), bindings = new Set<string>(), homes = new Map<string, string>(), eventKeys = new Set<string>(), nativeSessions = new Set<string>();
+    const sources: { nativeSessionId: string; sourceSha256: string }[] = [];
+    let missingSources = 0, missingBills = 0, billedKnownSubtotalUsd = 0;
+    for (const participant of participants) {
+      const binding = canonicalJson([participant.taskId, participant.ownerId, participant.codexHome]);
+      if (!participant.taskId || !participant.ownerId || !participant.codexHome || bindings.has(binding)) {
+        complete = false; missingSources++; continue;
+      }
+      ids.add(participant.taskId); bindings.add(binding);
+      if (!participant.terminal) complete = false;
+      // Recovery tasks can share one exact host home; its full source census is
+      // charged once rather than once per task-ledger row.
+      if (homes.has(participant.codexHome)) {
+        if (homes.get(participant.codexHome) !== participant.ownerId) { complete = false; missingSources++; }
+        continue;
+      }
+      homes.set(participant.codexHome, participant.ownerId);
+      const runtime = await io.readRuntime(participant).catch(() => ({ complete: false, sessions: [] }));
+      if (!runtime.complete || !runtime.sessions.length) complete = false;
+      if (!runtime.sessions.length) missingSources++;
+      for (const source of runtime.sessions) {
+        if (nativeSessions.has(source.nativeSessionId)) { missingSources++; complete = false; continue; }
+        nativeSessions.add(source.nativeSessionId);
+        if (!source.usage.ok) { missingSources++; complete = false; continue; }
+        const usage = source.usage;
+        if (usage.events.some(event => eventKeys.has(event.usageEventKey)) ||
+            new Set(usage.events.map(event => event.usageEventKey)).size !== usage.events.length) {
+          missingSources++; complete = false; continue;
+        }
+        let priced = 0;
+        try {
+          const table = currentProtocolPriceTable(protocol, usage.events.map(event => ({ modelId: event.model, tokensCacheWrite: event.usage.cacheCreationTokens })));
+          for (const event of usage.events) priced += priceRun({ tokensIn: event.usage.inputTokens, tokensOut: event.usage.outputTokens,
+            tokensCacheRead: event.usage.cacheReadTokens, tokensCacheWrite: event.usage.cacheCreationTokens }, event.model, table);
+        } catch { missingSources++; complete = false; continue; }
+        for (const event of usage.events) {
+          eventKeys.add(event.usageEventKey); result.tokensIn += event.usage.inputTokens; result.tokensOut += event.usage.outputTokens;
+          result.tokensCacheRead! += event.usage.cacheReadTokens; result.tokensCacheWrite! += event.usage.cacheCreationTokens;
+        }
+        result.turns += usage.nativeTurnIds.length; result.costUsd += priced;
+        sources.push({ nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256 });
+        const billed = await io.readBilled(participant, source.nativeSessionId, usage).catch(() => ({ knownSubtotalUsd: 0, complete: false }));
+        if (!Number.isFinite(billed.knownSubtotalUsd) || billed.knownSubtotalUsd < 0) missingBills++;
+        else { billedKnownSubtotalUsd += billed.knownSubtotalUsd; if (!billed.complete) missingBills++; }
+      }
+    }
+    if (canonicalJson(participants) !== canonicalJson(await io.readParticipants())) complete = false;
+    const attemptsComplete = await io.readAttemptAccountingComplete?.().catch(() => false) ?? false;
+    result.costUsdMeasurementMissing = !complete || missingSources > 0 || missingBills > 0 || !attemptsComplete;
+    result.armMeta = { nativeCostAccounting: { basis: 'frozen-normalized-native-source', priceTableVersion: protocol.priceSchedule.version,
+      normalizedCostUsd: result.costUsd, billedKnownSubtotalUsd,
+      billedCostUsd: complete && !missingBills && attemptsComplete ? billedKnownSubtotalUsd : null,
+      sourceCensusComplete: complete, attemptAccountingComplete: attemptsComplete, missingSources, missingBills,
+      participantTaskIds: [...ids].sort(), sources } };
+    return result;
+  };
+}
+
+/** Bind the maintained native source reader to the complete task subtree and
+ * host-allocated homes. No task argument may supply a transcript path or bill.
+ * Gateway attempt reconciliation remains explicit and incomplete here. */
+export function liveCurrentBenchNativeCostReader(handle: BenchHarnessHandle,
+  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration'>, db: Pick<DbScope, 'sql'> = {}): () => Promise<BenchRunCost> {
+  const workspaceId = resolveBenchWorkspace(opts.workspaceId);
+  const protocol = currentBenchmarkProtocolSchema.parse(opts.preregistration.config);
+  if (protocol.runId !== opts.runId) throw new Error('Native accounting protocol/run binding mismatch.');
+  const labelPrefix = attemptLabel(opts.runId, handle);
+  const io: CurrentBenchNativeCostReaderPorts = {
+    async readParticipants() {
+      const { resolveDb } = await import('./reproducibility/db');
+      const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+      const { sql } = resolveDb({ ...db, workspaceId });
+      const rows = await sql<{ task_id: string; state: string; owner_id: string | null; adv_id: number | null; agent: string | null }[]>`
+        WITH RECURSIVE participants AS (
+          SELECT task_id FROM harness_shared.task_ledger
+           WHERE workspace_id = ${workspaceId} AND starts_with(detail->>'label', ${labelPrefix})
+          UNION
+          SELECT child.task_id FROM harness_shared.task_ledger child JOIN participants parent
+            ON child.parent_task_id = parent.task_id WHERE child.workspace_id = ${workspaceId}
+        )
+        SELECT t.task_id, t.state, t.detail->>'coordOwnerId' AS owner_id, a.id AS adv_id, a.agent
+          FROM participants p JOIN harness_shared.task_ledger t ON t.workspace_id = ${workspaceId} AND t.task_id = p.task_id
+          LEFT JOIN harness_shared.adv_sessions a ON a.workspace_id = t.workspace_id AND a.coord_owner_id = t.detail->>'coordOwnerId'
+         WHERE t.class = 'agent-session' ORDER BY t.task_id, a.id LIMIT 1001`;
+      return rows.map(row => ({ taskId: row.task_id, ownerId: row.owner_id ?? '',
+        codexHome: row.agent === 'codex' && row.adv_id != null ? codexHomeForSessionKey(row.adv_id) : '',
+        terminal: ['exited', 'killed', 'timed_out'].includes(row.state) }));
+    },
+    async readRuntime(participant) {
+      const { resolveDb } = await import('./reproducibility/db');
+      const { readClosedCodexRuntimeUsage } = await import('../session-transcript-resolvers');
+      const { sql } = resolveDb({ ...db, workspaceId });
+      return readClosedCodexRuntimeUsage(sql, { workspaceId, codexHome: participant.codexHome });
+    },
+    async readBilled(participant, nativeSessionId, usage) {
+      const { resolveDb } = await import('./reproducibility/db');
+      const { readIdentityTurnBilledCost } = await import('../cupboard/shadow-metering-reader');
+      const { sql } = resolveDb({ ...db, workspaceId });
+      const rows = await sql<{ usage_event_key: string; native_turn_id: string | null; session_id: string | null;
+        owner_id: string | null; principal_id: string | null; specification_revision: string | null; state_revision: string | null }[]>`
+        SELECT u.usage_event_key, u.usage_provenance->>'turnId' AS native_turn_id, a.session_id,
+          a.identity_owner_id AS owner_id, a.identity_principal_id AS principal_id,
+          a.identity_specification_revision AS specification_revision, a.identity_state_revision AS state_revision
+        FROM harness_shared.agent_usage_samples u JOIN harness_shared.agent_usage_samples_identity_attribution a
+          ON a.workspace_id = u.workspace_id AND a.id = u.id
+        WHERE u.workspace_id = ${workspaceId} AND u.usage_event_key = ANY(${[...usage.usageEventKeys]}::text[])`;
+      let complete = rows.length === usage.usageEventKeys.length, knownSubtotalUsd = 0;
+      for (const nativeTurnId of usage.nativeTurnIds) {
+        const expected = usage.events.filter(event => event.turnId === nativeTurnId).map(event => event.usageEventKey).sort();
+        if (!expected.length) continue;
+        const group = rows.filter(row => row.native_turn_id === nativeTurnId), first = group[0];
+        if (!first?.principal_id || !first.specification_revision || !first.state_revision ||
+            canonicalJson(group.map(row => row.usage_event_key).sort()) !== canonicalJson(expected) ||
+            group.some(row => row.session_id !== nativeSessionId || row.owner_id !== participant.ownerId ||
+              row.principal_id !== first.principal_id || row.specification_revision !== first.specification_revision || row.state_revision !== first.state_revision)) {
+          complete = false; continue;
+        }
+        const cost = await readIdentityTurnBilledCost(sql, { workspaceId, ownerId: participant.ownerId,
+          nativeSessionId, nativeTurnId, principalId: first.principal_id, specificationRevision: first.specification_revision,
+          stateRevision: first.state_revision, usageEventKeys: expected });
+        if (!cost.ok || cost.billedInferenceMicros > BigInt(Number.MAX_SAFE_INTEGER)) { complete = false; continue; }
+        knownSubtotalUsd += Number(cost.billedInferenceMicros) / 1_000_000;
+      }
+      return { knownSubtotalUsd, complete };
+    },
+  };
+  return currentBenchNativeCostReader(protocol, io);
+}
 
 /** Stable assignment identity shared by every solver/reviewer/retry. It is an
  * extension of the existing governor arm resource key, never a new ledger. */
@@ -563,6 +714,7 @@ export interface CurrentSuBenchObservations {
   observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
 export interface CurrentSuBenchPorts extends Pick<CurrentSuBenchObservations, 'admit'> {
+  collectCost?: BenchHarnessOps['collectCost'];
   readIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentity | null>;
   verifyPreregistration(): Promise<{ preregHash: string; gitCommitSha: string; receiptRef: string }>;
   readCompletion(handle: BenchHarnessHandle): Promise<'done' | 'failed' | null>;
@@ -712,6 +864,7 @@ export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: C
       return { ...result, armMeta: { currentExecution: record } };
     },
     async collectCost(input) {
+      if (ports.collectCost) return ports.collectCost(input);
       // TEMPORARY MITIGATION (WI-10007971): the legacy harness sum does not
       // prove complete native/retry/recovery usage. Retain its known subtotal
       // while full source-bound native accounting is implemented in this lane.
@@ -748,6 +901,7 @@ export function liveCurrentSuBenchPorts(
   const gateway = observations.nativeGateway === undefined ? null : snapshotScopedInferenceGateway(observations.nativeGateway);
   return {
     admit: (handle, budget) => observations.admit(handle, budget),
+    collectCost: input => liveCurrentBenchNativeCostReader(input.handle, opts, db)(),
     readIdentity: async task => {
       const observation = await observations.observeIdentity(task);
       return observation ? currentBenchIdentityFromObservation(task, observation) : null;

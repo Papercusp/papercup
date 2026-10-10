@@ -10,7 +10,7 @@
  * sweep fire — rotates through the whole population instead of re-scanning the
  * same first 200 slugs forever (the silent-truncation defect, WI-10004732).
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   BulkRunAlreadyActiveError,
@@ -26,6 +26,7 @@ import type { EffectiveBulkResolverLaunch } from '../agent-config-constants';
 import {
   buildResolverLaunchCommand,
   resolverSpawnOutcome,
+  resolvePersistedResolverLaunch,
 } from '../endpoint-route/routes/admin/attention-bulk-resolve';
 import { buildCleanupResolverBrief } from './resolver-brief';
 import {
@@ -40,6 +41,11 @@ export const MAX_RUN_PLANS = 200;
 
 /** Requester stamped on runs the scheduled sweep starts (vs `'owner'`). */
 export const PLAN_CLEANUP_SWEEP_REQUESTER = 'system:plan-cleanup-sweep';
+
+/** Reuse the run-store's caller-supplied identity across DBOS step replay. */
+export function cleanupWorkflowRunId(workflowId: string): string {
+  return `bulk-${createHash('sha256').update(workflowId).digest('hex').slice(0, 32)}`;
+}
 
 /** Plan statuses the sweep never offers: their lifecycle is already closed. */
 export const SWEEP_EXCLUDED_PLAN_STATUSES: readonly string[] = ['shipped', 'superseded'];
@@ -249,6 +255,8 @@ export async function launchCleanupResolver(
 }
 
 export interface StartPlanCleanupRunInput {
+  /** Present only for a durable scheduled fire; owner clicks keep random ids. */
+  workflowId?: string;
   /** Already selected (≤ MAX_RUN_PLANS) — see selectPlansLeastRecentlyScanned. */
   planSlugs: string[];
   harness: string;
@@ -262,6 +270,7 @@ export interface StartPlanCleanupRunInput {
 }
 
 export type StartPlanCleanupRunResult =
+  | { kind: 'existing'; runId: string; phase: BulkRunPhase; error: string | null }
   | {
       kind: 'settled';
       runId: string;
@@ -282,6 +291,7 @@ export type StartPlanCleanupRunResult =
   | { kind: 'already-active'; error: BulkRunAlreadyActiveError };
 
 export interface StartPlanCleanupRunDeps {
+  getRun: typeof getRun;
   createRun: typeof createRun;
   setRunPhase: typeof setRunPhase;
   runDeterministic: typeof runDeterministicPlanCleanup;
@@ -292,6 +302,7 @@ export interface StartPlanCleanupRunDeps {
 }
 
 const PRODUCTION_DEPS: StartPlanCleanupRunDeps = {
+  getRun,
   createRun,
   setRunPhase,
   runDeterministic: runDeterministicPlanCleanup,
@@ -310,13 +321,34 @@ export async function startPlanCleanupRun(
   overrides: Partial<StartPlanCleanupRunDeps> = {},
 ): Promise<StartPlanCleanupRunResult> {
   const deps = { ...PRODUCTION_DEPS, ...overrides };
-  let run: Awaited<ReturnType<typeof createRun>>;
+  const runId = input.workflowId ? cleanupWorkflowRunId(input.workflowId) : undefined;
+  let run = runId ? await deps.getRun(runId, input.workspaceId) : null;
+  let launch = input.launch;
+  if (run) {
+    if (run.runKind !== 'plan-cleanup' || run.harnessSlug !== input.harness ||
+        run.requestedBy !== input.requestedBy ||
+        run.filterSnapshot.routineWorkflowId !== input.workflowId ||
+        (input.workspaceId && run.workspaceId !== input.workspaceId)) {
+      throw new Error(`cleanup workflow ${input.workflowId}: existing run scope does not match`);
+    }
+    // A resolver assignment or a settled run is an already-executed launch
+    // boundary. Replay must not spawn a second resolver or reopen owner review.
+    if (run.phase !== 'pending' || run.resolverOwner || run.heartbeatAt) {
+      return { kind: 'existing', runId: run.runId, phase: run.phase, error: run.error };
+    }
+    const persisted = resolvePersistedResolverLaunch(run.launchSnapshot);
+    if (!persisted.ok || !persisted.effective) {
+      throw new Error(persisted.message ?? 'invalid persisted cleanup launch settings');
+    }
+    launch = persisted.effective;
+  }
   try {
-    run = await deps.createRun({
+    run ??= await deps.createRun({
       items: [],
+      ...(runId ? { runId } : {}),
       runKind: 'plan-cleanup',
       seedRefs: input.planSlugs,
-      filterSnapshot: input.filter,
+      filterSnapshot: { ...input.filter, ...(input.workflowId ? { routineWorkflowId: input.workflowId } : {}) },
       launchSnapshot: input.launch,
       automationPolicy: input.automationPolicy,
       requestedBy: input.requestedBy,
@@ -328,6 +360,7 @@ export async function startPlanCleanupRun(
     throw error;
   }
   const workspaceId = input.workspaceId ?? run.workspaceId;
+  const planSlugs = run.seedRefs ?? input.planSlugs;
 
   // Deterministic first. Scanner-authorized findings run through the SAME
   // run-row authority + canonical plan/claim dispatcher as plans:cleanup-act;
@@ -387,9 +420,9 @@ export async function startPlanCleanupRun(
   await deps.setRunPhase({ runId: run.runId, phase: 'pending', resolverOwner, workspaceId });
   const launched = await deps.launchResolver(
     run.runId,
-    input.planSlugs,
+    planSlugs,
     input.harness,
-    input.launch,
+    launch,
     resolverOwner,
     workspaceId,
   );

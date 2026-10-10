@@ -95,6 +95,10 @@ export interface BenchRunCost {
   tokensIn: number;
   tokensOut: number;
   costUsd: number;
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
+  /** Source/billing observations travel through the existing attempt metadata. */
+  armMeta?: Record<string, unknown>;
   /** COUNT(DISTINCT run_id) — every agent run that touched the harness (coordination overhead included). */
   turns: number;
   /** Known subtotal only; unknown usage must not support an efficiency claim. */
@@ -285,10 +289,15 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
         const measured = await ops.collectCost({ handle, workspaceId: ws });
         const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
         const validUsd = Number.isFinite(measured.costUsd) && measured.costUsd >= 0;
-        const invalid = !validUsd || !count(measured.tokensIn) || !count(measured.tokensOut) || !count(measured.turns);
+        const invalid = !validUsd || !count(measured.tokensIn) || !count(measured.tokensOut) || !count(measured.turns) ||
+          measured.tokensCacheRead !== undefined && !count(measured.tokensCacheRead) ||
+          measured.tokensCacheWrite !== undefined && !count(measured.tokensCacheWrite);
         cost = { tokensIn: count(measured.tokensIn) ? measured.tokensIn : 0,
           tokensOut: count(measured.tokensOut) ? measured.tokensOut : 0,
           turns: count(measured.turns) ? measured.turns : 0, costUsd: validUsd ? measured.costUsd : 0,
+          ...(measured.tokensCacheRead !== undefined ? { tokensCacheRead: count(measured.tokensCacheRead) ? measured.tokensCacheRead : 0 } : {}),
+          ...(measured.tokensCacheWrite !== undefined ? { tokensCacheWrite: count(measured.tokensCacheWrite) ? measured.tokensCacheWrite : 0 } : {}),
+          ...(measured.armMeta ? { armMeta: measured.armMeta } : {}),
           ...(invalid || measured.costUsdMeasurementMissing ? { costUsdMeasurementMissing: true } : {}) };
       } catch {
         cost = { ...cost, costUsdMeasurementMissing: true };
@@ -328,6 +337,14 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
           tokensOut: summedCost.tokensOut + result.cost.tokensOut,
           costUsd: summedCost.costUsd + result.cost.costUsd,
           turns: summedCost.turns + result.cost.turns,
+          ...(summedCost.tokensCacheRead !== undefined || result.cost.tokensCacheRead !== undefined
+            ? { tokensCacheRead: (summedCost.tokensCacheRead ?? 0) + (result.cost.tokensCacheRead ?? 0) } : {}),
+          ...(summedCost.tokensCacheWrite !== undefined || result.cost.tokensCacheWrite !== undefined
+            ? { tokensCacheWrite: (summedCost.tokensCacheWrite ?? 0) + (result.cost.tokensCacheWrite ?? 0) } : {}),
+          ...(summedCost.armMeta || result.cost.armMeta ? { armMeta: { costAttempts: [
+            ...(Array.isArray(summedCost.armMeta?.costAttempts) ? summedCost.armMeta.costAttempts : [summedCost.armMeta ?? {}]),
+            result.cost.armMeta ?? {},
+          ] } } : {}),
           ...(summedCost.costUsdMeasurementMissing || result.cost.costUsdMeasurementMissing
             ? { costUsdMeasurementMissing: true } : {}),
         };
@@ -339,11 +356,14 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
         tokensIn: summedCost.tokensIn,
         tokensOut: summedCost.tokensOut,
         costUsd: summedCost.costUsd,
+        ...(summedCost.tokensCacheRead !== undefined ? { tokensCacheRead: summedCost.tokensCacheRead } : {}),
+        ...(summedCost.tokensCacheWrite !== undefined ? { tokensCacheWrite: summedCost.tokensCacheWrite } : {}),
         turns: summedCost.turns,
         wallClockMs: ops.now() - startedAtMs,
         trajectoryRef: handle ? trajectoryRefFor(handle) : '',
         stopReason,
-        ...(result.armMeta || summedCost.costUsdMeasurementMissing ? { armMeta: {
+        ...(result.armMeta || summedCost.armMeta || summedCost.costUsdMeasurementMissing ? { armMeta: {
+          ...summedCost.armMeta,
           ...result.armMeta, ...(summedCost.costUsdMeasurementMissing ? { costUsdMeasurementMissing: true } : {}),
         } } : {}),
         // `generationError` carries the failure detail for every NON-scored terminal (error / timeout /

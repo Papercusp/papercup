@@ -39,7 +39,11 @@ describe('historical session projection cold replay', () => {
         'history', repeat('historical-identity-', 4000)) FROM generate_series(1, 130) AS g`);
     const before = await db.sql`SELECT id, md5(launch_spec::text) AS fingerprint FROM harness_shared.adv_sessions ORDER BY id`;
     await db.sql.unsafe(`CREATE FUNCTION harness_shared.force_projection_cancel() RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN IF NEW.id = 65 THEN RAISE EXCEPTION 'forced projection cancellation' USING ERRCODE = '57014'; END IF; RETURN NEW; END; $$;
+      BEGIN
+        IF current_setting('synchronous_commit') <> 'on' THEN RAISE EXCEPTION 'projection batch commit must be durable'; END IF;
+        IF NEW.id = 65 THEN RAISE EXCEPTION 'forced projection cancellation' USING ERRCODE = '57014'; END IF;
+        RETURN NEW;
+      END; $$;
       CREATE TRIGGER z_force_projection_cancel BEFORE UPDATE ON harness_shared.adv_sessions
       FOR EACH ROW EXECUTE FUNCTION harness_shared.force_projection_cancel()`);
 
@@ -50,6 +54,7 @@ describe('historical session projection cold replay', () => {
     await client.unsafe('ROLLBACK');
     expect((await db.sql`SELECT count(*)::int AS n FROM harness_shared.adv_sessions WHERE launch_harness_projection IS NOT NULL`)[0].n).toBe(0);
 
+    await client.unsafe('SET synchronous_commit = off');
     await expect(applyPendingMigrations({ client, sqlDir: dir })).rejects.toThrow(/forced projection cancellation/);
     expect((await db.sql`SELECT count(*)::int AS n FROM harness_shared.adv_sessions WHERE launch_harness_projection IS NOT NULL`)[0].n).toBe(64);
     expect(await db.sql`SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`).toEqual([]);

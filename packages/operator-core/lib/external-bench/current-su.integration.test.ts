@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { currentBenchObservationReader, currentBenchIdentityFromObservation, liveCurrentBenchObservationReaderPorts,
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
+  liveCurrentBenchNativeCostReader, currentBenchLaunchRequest,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
 import type { BenchHarnessOps } from './bench-harness-live';
@@ -19,15 +20,16 @@ import { readProcessIdentity } from '../process-identity';
 import { createInferenceGateway } from '../inference-gateway/gateway';
 import { createFailoverPool } from '../inference-gateway/account-failover';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
+import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
-const hostHome = vi.hoisted(() => ({ path: '' }));
+const hostHome = vi.hoisted(() => ({ path: '', byId: new Map<number, string>() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
   INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route') }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 // Only the private home allocator is substituted. SQL bindings, filesystem
 // bytes, process pins, request observation and HTTP reads use production IO.
-vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: () => hostHome.path }));
+vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: (id: number | string) => hostHome.byId.get(Number(id)) ?? hostHome.path }));
 
 const workspaceId = 'bench-current-private';
 const handle = { slug: 'xbench-current-private', featureId: 'xbench-private-task', worktreePath: '/private/task' };
@@ -92,20 +94,115 @@ beforeAll(async () => {
       UNIQUE (workspace_id, run_id));
     CREATE TABLE harness_shared.benchmark_run_result (run_id text, workspace_id text, created_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text);
-    CREATE TABLE harness_shared.task_ledger (task_id text, workspace_id text, session_id text, detail jsonb);
+    CREATE TABLE harness_shared.task_ledger (task_id text, workspace_id text, session_id text, detail jsonb,
+      class text DEFAULT 'agent-session', state text DEFAULT 'exited', parent_task_id text);
     CREATE TABLE harness_shared.adv_sessions (id bigserial, workspace_id text, coord_owner_id text, session_id text,
       agent text, started_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE harness_shared.runtime_vintage (workspace_id text, unit text, host text, tree_sha text,
-      build_time timestamptz, bundle_version text, pid int, extra jsonb, reported_at timestamptz);`);
+      build_time timestamptz, bundle_version text, pid int, extra jsonb, reported_at timestamptz);
+    CREATE TABLE harness_shared.interactive_usage_files (workspace_id text, file_path text, byte_offset bigint, parser_state jsonb);
+    CREATE TABLE harness_shared.agent_usage_samples (id bigserial, workspace_id text, session_id text,
+      usage_event_key text, usage_provenance jsonb, cost_source text, cost_usd numeric,
+      identity_activation_event_id text, identity_owner_id text, identity_principal_id text,
+      identity_specification_revision text, identity_state_revision text);
+    CREATE VIEW harness_shared.agent_usage_samples_identity_attribution AS SELECT * FROM harness_shared.agent_usage_samples;`);
 }, 90_000);
 beforeEach(async () => {
   vi.clearAllMocks();
+  hostHome.byId.clear();
   await sql`TRUNCATE harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
-    harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage`;
+    harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage,
+    harness_shared.interactive_usage_files, harness_shared.agent_usage_samples`;
   repoRoot = mkdtempSync(join(tmpdir(), 'current-bench-protocol-')); roots.push(repoRoot);
 });
 
 let hostGateway: ReturnType<typeof createInferenceGateway> | undefined;
+
+describe('production native accounting with private PG and full source bytes', () => {
+  async function costFixture() {
+    const opts: CurrentSuBenchOptions = { workspaceId, runId: 'PRIVATE', armId: 'papercusp', seed: 1,
+      agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto',
+      preregistration: { preregHash: 'private-cost-protocol', config } };
+    const label = currentBenchLaunchRequest(opts, handle, 'Private cost fixture.').label;
+    async function addSource(home: string, ownerId: string) {
+      const nativeSessionId = randomUUID(), nativeTurnId = randomUUID();
+      const dir = join(home, 'sessions', '2026', '10', '10'); mkdirSync(dir, { recursive: true });
+      const file = join(dir, `rollout-2026-10-10T00-00-00-${nativeSessionId}.jsonl`);
+      const transcript = [
+        { type: 'session_meta', payload: { id: nativeSessionId } },
+        { type: 'turn_context', payload: { turn_id: nativeTurnId, model: 'configured-alias' } },
+        { type: 'event_msg', payload: { type: 'token_count', info: {
+          total_token_usage: { input_tokens: 100, output_tokens: 10 },
+          last_token_usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 },
+        } } },
+        { type: 'event_msg', payload: { type: 'task_complete', turn_id: nativeTurnId } },
+      ].map(record => JSON.stringify(record) + '\n').join('');
+      writeFileSync(file, transcript);
+      const population = closedCodexSessionPopulation({ transcript, file, fileGeneration: 0, nativeSessionId });
+      if (!population.ok) throw new Error(population.detail);
+      await sql`INSERT INTO harness_shared.interactive_usage_files VALUES
+        (${workspaceId}, ${file}, ${Buffer.byteLength(transcript)}, '{"initialized":true,"fileGeneration":0}'::jsonb)`;
+      await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, session_id, usage_event_key, usage_provenance, cost_source, cost_usd,
+         identity_activation_event_id, identity_owner_id, identity_principal_id, identity_specification_revision, identity_state_revision)
+        VALUES (${workspaceId}, ${nativeSessionId}, ${population.usageEventKeys[0]},
+          ${sql.json({ turnId: nativeTurnId, costBound: null })}, 'provider', 0.002,
+          'private-cost-activation', ${ownerId}, 'private-cost-principal', 'private-spec', 'private-state')`;
+      return { file, nativeSessionId, nativeTurnId };
+    }
+    async function addParticipant(taskId: string, ownerId: string, parentTaskId: string | null = null) {
+      const home = join(repoRoot, taskId), source = await addSource(home, ownerId);
+      const [a] = await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
+        VALUES (${workspaceId}, ${ownerId}, ${source.nativeSessionId}, 'codex') RETURNING id`;
+      hostHome.byId.set(Number(a.id), home);
+      await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail, class, state, parent_task_id)
+        VALUES (${taskId}, ${workspaceId}, ${source.nativeSessionId},
+          ${sql.json({ coordOwnerId: ownerId, ...(parentTaskId === null ? { label } : {}) })}, 'agent-session', 'exited', ${parentTaskId})`;
+      return { ...source, home, taskId, ownerId };
+    }
+    const solver = await addParticipant('private-cost-solver', 'su-private-cost-solver');
+    return { solver, addParticipant, addSource, read: liveCurrentBenchNativeCostReader(handle, opts, scope()) };
+  }
+
+  it('uses exact full native bytes and provider attribution while leaving gateway-attempt reconciliation explicit', async () => {
+    const f = await costFixture(), result = await f.read();
+    expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result).toMatchObject({ tokensIn: 80, tokensOut: 10, tokensCacheRead: 20, costUsdMeasurementMissing: true,
+      armMeta: { nativeCostAccounting: { normalizedCostUsd: result.costUsd, billedKnownSubtotalUsd: 0.002,
+        billedCostUsd: null, sourceCensusComplete: true, attemptAccountingComplete: false, missingBills: 0 } } });
+  });
+  it('includes an unlabeled native reviewer subtree and excludes another workspace', async () => {
+    const f = await costFixture();
+    await f.addParticipant('private-cost-reviewer', 'su-private-cost-reviewer', f.solver.taskId);
+    await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, detail, class, state, parent_task_id)
+      VALUES ('foreign-workspace-task', 'other-workspace', '{"coordOwnerId":"foreign-owner"}'::jsonb, 'agent-session', 'running', ${f.solver.taskId})`;
+    const result = await f.read();
+    expect(result.costUsd).toBeCloseTo(0.00022, 10);
+    expect(result.armMeta).toMatchObject({ nativeCostAccounting: { sourceCensusComplete: true, billedKnownSubtotalUsd: 0.004,
+      participantTaskIds: ['private-cost-reviewer', 'private-cost-solver'] } });
+  });
+  it('accounts for the prior carry source even though adv_sessions names only the latest native session', async () => {
+    const f = await costFixture(); await f.addSource(f.solver.home, f.solver.ownerId);
+    const result = await f.read();
+    expect(result.costUsd).toBeCloseTo(0.00022, 10); expect(result.turns).toBe(2);
+    expect(result.armMeta).toMatchObject({ nativeCostAccounting: { sourceCensusComplete: true, billedKnownSubtotalUsd: 0.004 } });
+  });
+  it('preserves normalized tokens when ledger dollars are estimated rather than provider bills', async () => {
+    const f = await costFixture(); await sql`UPDATE harness_shared.agent_usage_samples SET cost_source = 'estimated'`;
+    const result = await f.read(); expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result.armMeta).toMatchObject({ nativeCostAccounting: { billedCostUsd: null, billedKnownSubtotalUsd: 0, missingBills: 1 } });
+  });
+  it('marks an incomplete ingest frontier as missing usage without guessing free work', async () => {
+    const f = await costFixture(); await sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = 0`;
+    expect(await f.read()).toMatchObject({ costUsdMeasurementMissing: true,
+      armMeta: { nativeCostAccounting: { sourceCensusComplete: false, missingSources: 1, billedCostUsd: null } } });
+  });
+  it('preserves known cost while refusing an unbound or foreign billed identity', async () => {
+    const f = await costFixture(); await sql`UPDATE harness_shared.agent_usage_samples SET identity_owner_id = 'foreign-owner'`;
+    const result = await f.read(); expect(result.costUsd).toBeCloseTo(0.00011, 10);
+    expect(result.armMeta).toMatchObject({ nativeCostAccounting: { billedCostUsd: null, billedKnownSubtotalUsd: 0, missingBills: 1 } });
+  });
+});
 let hostProvider: http.Server | undefined;
 afterEach(async () => {
   await hostGateway?.close(); hostGateway = undefined;
@@ -126,7 +223,7 @@ async function hostFixture() {
   ].map(row => JSON.stringify(row)).join('\n') + '\n');
   await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
     VALUES (${workspaceId}, ${ownerId}, ${nativeSessionId}, 'codex')`;
-  await sql`INSERT INTO harness_shared.task_ledger VALUES (${taskId}, ${workspaceId}, ${nativeSessionId},
+  await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail) VALUES (${taskId}, ${workspaceId}, ${nativeSessionId},
     ${sql.json({ coordOwnerId: ownerId })})`;
   const storedBinding = await sql`
     SELECT t.session_id, t.detail, jsonb_typeof(t.detail) AS detail_type, a.coord_owner_id
@@ -254,7 +351,10 @@ describe('production current benchmark protocol and private completion bindings'
     expect(result.telemetry.generationError ?? null).toBeNull();
     expect(result.telemetry.stopReason).toBe('done');
     expect(f.admit).toHaveBeenCalledOnce();
-    expect(native.launch).toHaveBeenCalledWith(expect.objectContaining({ harness: handle.slug, workItem: handle.featureId }), ctx);
+    expect(native.launch).toHaveBeenCalledWith(expect.objectContaining({ harness: handle.slug, workItem: handle.featureId }),
+      expect.objectContaining({ ...ctx, [Symbol.for('benchmark-test-private-route')]: {
+        baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64),
+      } }));
     expect(native.kill).toHaveBeenCalledWith('private-native', { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });
     expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
       preregistration: { preregHash: f.frozen.preregHash, gitCommitSha: expect.stringMatching(/^[a-f0-9]{40}$/) },

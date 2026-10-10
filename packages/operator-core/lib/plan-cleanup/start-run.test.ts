@@ -12,6 +12,7 @@ import {
   selectPlansForRun,
   selectPlansLeastRecentlyScanned,
   startPlanCleanupRun,
+  cleanupWorkflowRunId,
   type StartPlanCleanupRunDeps,
   type StartPlanCleanupRunInput,
 } from './start-run';
@@ -94,6 +95,7 @@ function deterministic(overrides: Record<string, unknown> = {}) {
 function harness(overrides: Partial<StartPlanCleanupRunDeps> = {}) {
   const phases: Array<{ phase: string; error?: string | null; resolverOwner?: string | null }> = [];
   const deps: StartPlanCleanupRunDeps = {
+    getRun: vi.fn(async () => null),
     createRun: vi.fn(async () => ({ runId: 'run-1', workspaceId: 'ws-1', totalItems: 2 }) as never),
     setRunPhase: vi.fn(async (input) => {
       phases.push({ phase: input.phase, error: input.error, resolverOwner: input.resolverOwner });
@@ -120,6 +122,62 @@ const INPUT: StartPlanCleanupRunInput = {
 };
 
 describe('startPlanCleanupRun (P-004)', () => {
+  function interruptedRun(overrides: Record<string, unknown> = {}) {
+    return {
+      runId: cleanupWorkflowRunId('workflow-1'), workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      requestedBy: INPUT.requestedBy, runKind: 'plan-cleanup', phase: 'pending',
+      resolverOwner: null, heartbeatAt: null, error: null, totalItems: 1,
+      seedRefs: ['original-plan'], filterSnapshot: { routineWorkflowId: 'workflow-1' },
+      launchSnapshot: { model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', carry: 'warm' },
+      automationPolicy: { mode: 'recommend', minConfidence: 'high' }, ...overrides,
+    } as never;
+  }
+
+  it('an interrupted workflow resumes its original run and launch snapshot without reseeding', async () => {
+    const prior = interruptedRun();
+    const { deps } = harness({
+      getRun: vi.fn(async () => prior),
+      runDeterministic: vi.fn(async () => deterministic({ needsResolver: true, phase: 'pending' }) as never),
+    });
+    const result = await startPlanCleanupRun({ ...INPUT, workflowId: 'workflow-1' }, deps);
+    expect(result).toMatchObject({ kind: 'settled', runId: cleanupWorkflowRunId('workflow-1'), launched: true });
+    expect(deps.createRun).not.toHaveBeenCalled();
+    expect(deps.runDeterministic).toHaveBeenCalledWith(expect.objectContaining({ run: prior }));
+    expect(deps.launchResolver).toHaveBeenCalledWith(
+      cleanupWorkflowRunId('workflow-1'), ['original-plan'], 'papercusp',
+      expect.objectContaining({ model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', carry: 'warm' }),
+      'su-resolver', 'ws-1',
+    );
+  });
+
+  it.each([
+    { phase: 'running' }, { phase: 'review' }, { phase: 'complete' },
+    { phase: 'failed', error: 'watchdog failed the run' },
+    { phase: 'pending', resolverOwner: 'su-existing' },
+  ])('replay preserves the existing launch/settlement boundary: %j', async (state) => {
+    const { deps } = harness({ getRun: vi.fn(async () => interruptedRun(state)) });
+    const result = await startPlanCleanupRun({ ...INPUT, workflowId: 'workflow-1' }, deps);
+    expect(result).toMatchObject({ kind: 'existing', phase: state.phase });
+    expect(deps.createRun).not.toHaveBeenCalled();
+    expect(deps.runDeterministic).not.toHaveBeenCalled();
+    expect(deps.launchResolver).not.toHaveBeenCalled();
+  });
+
+  it('workflow replay refuses another scope instead of adopting its run', async () => {
+    const { deps } = harness({ getRun: vi.fn(async () => interruptedRun({ harnessSlug: 'other' })) });
+    await expect(startPlanCleanupRun({ ...INPUT, workflowId: 'workflow-1' }, deps)).rejects.toThrow('scope does not match');
+    expect(deps.runDeterministic).not.toHaveBeenCalled();
+  });
+
+  it('a first durable fire stores a stable run id and workflow receipt', async () => {
+    const { deps } = harness();
+    await startPlanCleanupRun({ ...INPUT, workflowId: 'workflow-1' }, deps);
+    expect(deps.createRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: cleanupWorkflowRunId('workflow-1'),
+      filterSnapshot: { source: 'test', routineWorkflowId: 'workflow-1' },
+    }));
+  });
+
   it('a clean deterministic pass settles without ever spawning a resolver', async () => {
     const { deps, phases } = harness();
     const result = await startPlanCleanupRun(INPUT, deps);

@@ -31,6 +31,7 @@ describe('migration runner beforeApply guard', () => {
     const chunks = migrationTransactionChunks(projectionSql);
     expect(chunks.filter((chunk) => chunk.includes('LIMIT 64'))).toHaveLength(1024);
     expect(chunks[0]).toContain('CREATE TRIGGER adv_sessions_project_launch_harness');
+    expect(chunks.slice(1).every((chunk) => chunk.includes('SET LOCAL synchronous_commit = on;'))).toBe(true);
     expect(chunks.at(-1)).toContain('WHERE launch_harness_projection IS NULL');
     expect(chunks.at(-1)).toContain('RAISE EXCEPTION');
 

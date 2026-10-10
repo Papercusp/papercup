@@ -22,7 +22,8 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { readStandingBulkAutomationPolicy } from '../../attention/automation-policy';
 import { bulkAutomationSnapshot } from '../../attention/bulk-dispositions';
-import { getRunningRun } from '../../attention/bulk-run-store';
+import { getRun, getRunningRun } from '../../attention/bulk-run-store';
+import { resolvePersistedResolverLaunch } from '../../endpoint-route/routes/admin/attention-bulk-resolve';
 import { resolveBulkResolverLaunch, type BulkResolverLaunchProfile } from '../../agent-config-constants';
 import { readAgentConfig } from '../../agent-config';
 import {
@@ -31,12 +32,14 @@ import {
   PLAN_CLEANUP_SWEEP_REQUESTER,
   selectPlansLeastRecentlyScanned,
   startPlanCleanupRun,
+  cleanupWorkflowRunId,
 } from '../../plan-cleanup/start-run';
 import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from './system-actions';
 
 export const PLAN_CLEANUP_SWEEP = 'plan-cleanup-sweep';
 
 export interface PlanCleanupSweepDeps {
+  readRun: typeof getRun;
   enabled: () => Promise<boolean>;
   /** Single-flight: pending/running only. A run waiting in `review` waits on
    *  the OWNER and must never gate the sweep (WI-10004720). */
@@ -62,6 +65,7 @@ function maxPlansFrom(cfg: Record<string, unknown>): number {
 
 export function makePlanCleanupSweepAction(overrides: Partial<PlanCleanupSweepDeps> = {}) {
   const deps: PlanCleanupSweepDeps = {
+    readRun: getRun,
     enabled: () => getFlag(FLAGS.PLAN_CLEANUP, PLAN_CLEANUP_SWEEP_REQUESTER).catch(() => false),
     runningRun: (workspaceId) => getRunningRun(workspaceId, 'plan-cleanup'),
     listPlans: listSweepablePlanSlugs,
@@ -78,6 +82,35 @@ export function makePlanCleanupSweepAction(overrides: Partial<PlanCleanupSweepDe
       return { diagnostics: { outcome: 'skipped', reason, ...extra } };
     };
     if (!(await deps.enabled())) return skip('plan clean-up feature flag is off');
+    const prior = ctx.workflowId
+      ? await deps.readRun(cleanupWorkflowRunId(ctx.workflowId), ctx.workspaceId)
+      : null;
+    if (prior) {
+      // DBOS re-runs an interrupted action step. Its own pending run is the
+      // continuation, not a competing single-flight run (WI-10008035).
+      const persisted = resolvePersistedResolverLaunch(prior.launchSnapshot);
+      if (!persisted.ok || !persisted.effective) {
+        throw new Error(persisted.message ?? 'invalid persisted cleanup launch settings');
+      }
+      const resumed = await deps.start({
+        workflowId: ctx.workflowId,
+        planSlugs: prior.seedRefs,
+        harness: ctx.installSlug,
+        workspaceId: ctx.workspaceId,
+        filter: { ...prior.filterSnapshot },
+        launch: persisted.effective,
+        automationPolicy: prior.automationPolicy ?? bulkAutomationSnapshot(await deps.readPolicy(ctx.workspaceId)),
+        requestedBy: PLAN_CLEANUP_SWEEP_REQUESTER,
+      });
+      if (resumed.kind === 'already-active') {
+        throw new Error(`cleanup workflow recovery blocked by ${resumed.error.activeRunId}`);
+      }
+      if (resumed.phase === 'failed') {
+        throw new Error(`plan-cleanup sweep run ${resumed.runId} failed: ${resumed.kind === 'existing' ? resumed.error : resumed.kind === 'settled' ? resumed.launchError : resumed.refusal}`);
+      }
+      deps.log(`run=${resumed.runId} recovered workflow=${ctx.workflowId} phase=${resumed.phase}`);
+      return { diagnostics: { outcome: resumed.kind === 'existing' ? 'existing' : 'resumed', runId: resumed.runId, phase: resumed.phase } };
+    }
     const running = await deps.runningRun(ctx.workspaceId);
     if (running) return skip(`run=${running.runId} is ${running.phase} (single-flight)`, { runId: running.runId });
 
@@ -114,6 +147,7 @@ export function makePlanCleanupSweepAction(overrides: Partial<PlanCleanupSweepDe
       truncated: selection.truncated,
     };
     const started = await deps.start({
+      ...(ctx.workflowId ? { workflowId: ctx.workflowId } : {}),
       planSlugs: selection.planSlugs,
       harness: ctx.installSlug,
       workspaceId: ctx.workspaceId,
@@ -124,6 +158,10 @@ export function makePlanCleanupSweepAction(overrides: Partial<PlanCleanupSweepDe
     });
     if (started.kind === 'already-active') {
       return skip(`lost the single-flight race (${started.error.message})`, { runId: started.error.activeRunId });
+    }
+    if (started.kind === 'existing') {
+      if (started.phase === 'failed') throw new Error(`plan-cleanup sweep run ${started.runId} failed: ${started.error}`);
+      return { diagnostics: { outcome: 'existing', runId: started.runId, phase: started.phase, ...coverage } };
     }
     if (started.kind === 'authority-revoked') {
       deps.log(`run=${started.runId} authority revoked (${started.refusal})`);
