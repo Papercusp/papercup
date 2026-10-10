@@ -72,7 +72,7 @@ describe('Personalization theme ownership', () => {
       'saved-prompts': <p>Manage saved prompts in the desktop app.</p>,
     }}><PersonalizationSettingsPage /></OperatorSettingsSlotsProvider>);
     expect(screen.getByText('Manage saved prompts in the desktop app.')).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: 'Native saved prompts', exact: true })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Native saved prompts' })).toBeNull();
     expect(h.savedPromptsMount).not.toHaveBeenCalled();
   });
 
@@ -80,7 +80,7 @@ describe('Personalization theme ownership', () => {
     render(<OperatorSettingsSlotsProvider slots={{ theme: <p>Host theme</p> }}>
       <PersonalizationSettingsPage />
     </OperatorSettingsSlotsProvider>);
-    expect(screen.getByRole('heading', { name: 'Native saved prompts', exact: true })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Native saved prompts' })).toBeTruthy();
     expect(h.savedPromptsMount).toHaveBeenCalledWith({ scope: { kind: 'workspace' } });
   });
 
@@ -88,16 +88,16 @@ describe('Personalization theme ownership', () => {
     window.localStorage.setItem(wsLocalKey(THEME_STORAGE_KEY), 'frost');
     const mounted = render(<HostedPersonalization />);
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'));
-    fireEvent.click(screen.getByRole('button', { name: 'Dark', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Dark' }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'));
-    expect(screen.getByRole('button', { name: 'Dark', exact: true }).getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(screen.getByRole('button', { name: 'Light', exact: true }));
+    expect(screen.getByRole('button', { name: 'Dark' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Light' }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'));
     mounted.unmount();
     render(<HostedPersonalization />);
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'));
-    expect(screen.queryByRole('radiogroup', { name: 'Theme', exact: true })).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Visual effects', exact: true })).toBeTruthy();
+    expect(screen.queryByRole('radiogroup', { name: 'Theme' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Visual effects' })).toBeTruthy();
     expect(h.catalogReads).not.toHaveBeenCalled();
     expect(h.writeProfile).not.toHaveBeenCalled();
   });
@@ -108,7 +108,7 @@ describe('Personalization theme ownership', () => {
     </OperatorSettingsSlotsProvider>);
     expect(screen.getByText('Additional host preference')).toBeTruthy();
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('frost'));
-    fireEvent.click(screen.getByRole('radio', { name: 'Black', exact: true }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Black' }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('black'));
     expect(window.localStorage.getItem(wsLocalKey(THEME_STORAGE_KEY))).toBe('black');
     expect(h.writeProfile).toHaveBeenCalledWith('theme_id', 'black');
