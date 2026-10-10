@@ -585,7 +585,7 @@ describe('incremental reads each project\'s events and re-reads the touched task
     const limited = fakeHost(() => json(429, { errors: [{ message: 'You have made too many requests recently.' }] }, { 'Retry-After': '17' }));
     await expect(adapter.syncPage(syncReq(settled), limited.host)).rejects.toMatchObject({ kind: 'rate-limited', retryAfterSeconds: 17 });
     const denied = fakeHost(() => json(401, { errors: [{ message: 'Not Authorized' }] }));
-    await expect(adapter.syncPage(syncReq(settled), denied.host)).rejects.toMatchObject({ kind: 'auth', message: 'asana_access_denied:401: Not Authorized' });
+    await expect(adapter.syncPage(syncReq(settled), denied.host)).rejects.toMatchObject({ kind: 'auth', message: expect.stringMatching(/^asana_access_denied:401:GET \/\S+: Not Authorized$/) });
   });
 });
 
