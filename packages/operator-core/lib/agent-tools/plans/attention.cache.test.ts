@@ -21,6 +21,7 @@ const M = vi.hoisted(() => ({
   seenConversationsWs: [] as Array<string | undefined>,
   groupsOverride: null as unknown[] | null,
   inboxByWorkspace: new Map<string, unknown[]>(),
+  ackedByWorkspace: new Map<string, Set<string>>(),
   seenInboxWs: [] as Array<string | undefined>,
 }));
 
@@ -67,7 +68,7 @@ vi.mock("../coordination/messages", async () => {
       M.seenInboxWs.push(workspace);
       return M.inboxByWorkspace.get(workspace ?? '') ?? [];
     }),
-    readAckedMsgIds: vi.fn(async () => new Set()),
+    readAckedMsgIds: vi.fn(async () => M.ackedByWorkspace.get(currentRequestWorkspaceId() ?? '') ?? new Set()),
   };
 });
 // Exercise the real HTTP dispatcher without importing the unrelated catalog or
@@ -153,6 +154,7 @@ beforeEach(async () => {
   M.readAllPlans.mockClear();
   M.groupsOverride = null;
   M.inboxByWorkspace.clear();
+  M.ackedByWorkspace.clear();
   M.seenInboxWs.length = 0;
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
@@ -168,6 +170,21 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
+  it('refreshes a warm human inbox after acknowledgment and reversal without serving a settled row', async () => {
+    const workspace = 'ws-inbox-ack-refresh';
+    const messages = ['selected', 'neighbor'].map(msg_id => ({ msg_id, from: 'peer-' + msg_id,
+      to: ['human'], kind: 'message', summary: msg_id, body: msg_id + ' body', ts: new Date().toISOString() }));
+    M.inboxByWorkspace.set(workspace, messages);
+    const refs = async () => deriveAttentionRefs((await run({}, ctx(workspace))).groups as never).refs;
+    expect(await refs()).toEqual(expect.arrayContaining(['coord-message:selected', 'coord-message:neighbor']));
+    M.ackedByWorkspace.set(workspace, new Set(['selected']));
+    const acknowledged = await refs();
+    expect(acknowledged).not.toContain('coord-message:selected');
+    expect(acknowledged).toContain('coord-message:neighbor');
+    M.ackedByWorkspace.set(workspace, new Set());
+    expect(await refs()).toEqual(expect.arrayContaining(['coord-message:selected', 'coord-message:neighbor']));
+  });
+
   it('supports the device attention route through the real in-process dispatcher', async () => {
     const projected = lookupByMcpName('plans:attention');
     expect(projected).toBeDefined();
