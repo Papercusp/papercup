@@ -48,6 +48,24 @@ function request(requestKey: string, question = 'Recover this accepted consult')
 }
 
 describe('registered consult contract and persisted recovery', () => {
+  it('loads the production catalog without the retired reporting callable and retains ordinary consult and plan tools', async () => {
+    // Load the same registration entrypoint as the host. Merely importing the
+    // get-feedback tool cannot expose an obsolete sibling registration.
+    await import('../agent-tools/index');
+    for (const name of ['consult:get_feedback', 'consult:reply', 'consult:decline', 'consult:close', 'plans:start']) {
+      expect(lookupByMcpName(name), `positive catalog control ${name}`).toBeDefined();
+    }
+    expect(lookupByMcpName('consult:reconcile')).toBeUndefined();
+    // The remaining public workflow can still accept a request with no reporting
+    // step, using the actual consult schema and store beneath that catalog.
+    const accepted = await acceptFeedbackRequestCore(request('retired-reporting-catalog'), deps);
+    expect(accepted).toMatchObject({ verdict: 'accepted', pending: true });
+    const [stored] = await db.sql`SELECT requester_id, routing FROM harness_shared.consult_state
+      WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+    expect(stored.requester_id).toBe('contract-requester');
+    expect(stored.routing.deliveryIntent).toBe('retrieval-only');
+  });
+
   it('projects the same bounded retry field and recovery guidance that the store accepts', async () => {
     const projected = lookupByMcpName('consult:get_feedback');
     expect(projected).toBeDefined();
