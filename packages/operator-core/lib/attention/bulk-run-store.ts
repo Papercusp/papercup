@@ -178,6 +178,8 @@ function isSingleFlightViolation(e: unknown): boolean {
 /** The filters in force when the owner clicked — provenance for the record and
  *  the review header, never the source of membership. */
 export interface BulkRunFilterSnapshot {
+  /** Durable scheduled-fire identity; binds cleanup replay to its own run. */
+  routineWorkflowId?: string;
   /** The tier chip (`opci`): needs | alerts | all. */
   tier?: string | null;
   /** Selected kind facets (`opck`). */
