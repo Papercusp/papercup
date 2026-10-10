@@ -11,6 +11,7 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn().mockResolvedValue(t
 import graphQuery from '../agent-tools/gitnexus/query';
 import lspQuery from '../agent-tools/lsp/query';
 import codePack from '../agent-tools/lsp/pack';
+import codeStructural from '../agent-tools/lsp/astgrep';
 import { runLspDaemonServer } from './lsp-daemon-server';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import type { CodeIntelAnswer } from './contracts';
@@ -70,6 +71,23 @@ const query = async (name: string, paths?: string[]): Promise<CodeIntelAnswer> =
   return result.data;
 };
 const locations = (answer: CodeIntelAnswer) => answer.sites.map(site => `${site.path}:${site.line1}`).sort();
+
+describe('native syntax intent admission through the registered surface', () => {
+  it('rejects an unadmitted grammar at the real tool argument boundary', () => {
+    expect(() => codeStructural.args.parse({ op: 'syntax_index', language: 'cpp',
+      paths: ['src/unsupported.cpp'] })).toThrow(/language/);
+  });
+
+  it('refuses an unsupported source extension through the actual syntax handler', async () => {
+    put('src/unsupported.cpp', 'class Unsupported {};\n');
+    const args = codeStructural.args.parse({ op: 'syntax_index', language: 'ts',
+      paths: ['src/unsupported.cpp'] });
+    const result = await codeStructural.handler(args, { projectDir: root } as never) as { data: CodeIntelAnswer };
+    expect(result.data.error).toContain('unsupported source extension');
+    expect(result.data.sites).toEqual([]);
+    expect(result.data.freshness.health).toBe('unknown');
+  });
+});
 
 describe('native baseline real compiler route', () => {
   it('matches the recorded route and an independently enumerated barrel consumer', async () => {

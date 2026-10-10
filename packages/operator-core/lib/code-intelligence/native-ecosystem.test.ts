@@ -1,11 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { admitArm, ARM_ADMISSIONS, type ArmAdmission } from './fair-comparison-admission';
+import { astGrepSyntaxIndex } from './ast-grep-facade';
 
 // Production integration must not inherit the comparison's incumbent exemption.
 const permissive: ArmAdmission = {
   armId: 'reviewed-engine', upstream: 'example/engine', spdx: 'MIT', licence: 'permissive',
   licenceSha256Prefix: '0123456789abcdef', telemetryDefault: 'none', telemetryOffEnv: {},
 };
+
+describe('native syntax intent admission', () => {
+  it('refuses an unadmitted grammar instead of reporting a trustworthy empty', async () => {
+    // Persisted or untyped callers still reach this producer guard, even when
+    // the public tool's closed language enum rejects the request earlier.
+    const answer = await astGrepSyntaxIndex({ language: 'cpp' as never, paths: ['unsupported.cpp'] });
+    expect(answer.error).toContain('unsupported syntax-index language');
+    expect(answer.sites).toEqual([]);
+    expect(answer.freshness.health).toBe('unknown');
+  });
+});
 
 describe('native ecosystem distribution admission', () => {
   it('retains the recorded incumbent comparison while refusing its distribution', () => {
