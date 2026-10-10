@@ -137,6 +137,7 @@ function checkProof(
   if (!proof.ssmOnline) problems.push('SSM never came online');
   if (proof.publicIpv4Assigned) problems.push('the instance was assigned a public IPv4 address');
   if (!proof.terminated) problems.push('the instance was not terminated');
+  if (!proof.dataVolumeId || !proof.dataVolumeDeleted) problems.push('the canary data volume was not confirmed deleted');
   if (proof.residualResourceIds.length > 0) problems.push(`canary residue: ${proof.residualResourceIds.join(', ')}`);
   if (!proof.attestation || typeof proof.attestation !== 'object' || Array.isArray(proof.attestation)) {
     problems.push('the canary returned no bootstrap attestation');

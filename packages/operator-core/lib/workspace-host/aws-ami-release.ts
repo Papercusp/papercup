@@ -196,6 +196,9 @@ export interface AwsAmiCleanAccountLaunchProof {
   serviceHealthy: boolean;
   publicIpv4Assigned: boolean;
   terminated: boolean;
+  /** The fresh, tagged durable data disk used by the canary. */
+  dataVolumeId: string | null;
+  dataVolumeDeleted: boolean;
   residualResourceIds: readonly string[];
   observedAt: string;
   /** The fixture the canary executed; must equal the one the release built (WI-10005604). */
@@ -601,11 +604,13 @@ function validateCleanProof(
     !proof.serviceHealthy ||
     proof.publicIpv4Assigned ||
     !proof.terminated ||
+    !proof.dataVolumeId ||
+    !proof.dataVolumeDeleted ||
     proof.residualResourceIds.length > 0 ||
     !proof.evidenceRef.trim()
   ) {
     fail(
-      'clean-account launch proof must show SSM/bootstrap/service health, private networking, confirmed teardown, and zero residue',
+      'clean-account launch proof must show SSM/bootstrap/service health, private networking, confirmed instance and data-volume teardown, and zero residue',
     );
   }
   requireTimestamp(proof.observedAt, 'cleanAccountProof.observedAt');
