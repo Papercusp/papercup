@@ -1,6 +1,378 @@
 {
   "schemaVersion": 1,
   "kind": "retained-vitest-evidence",
+  "committedReplay": {
+    "kind": "clean-committed-replay",
+    "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+    "root": "/tmp/papercusp-lint-as-committed-81c209358c-teBkVc",
+    "materializerLog": "/tmp/loop-recovery-clean-materialize-20261010-0124.log",
+    "baselineReceipt": "/tmp/loop-recovery-clean-ledger-layered-20261010.json",
+    "supersededMetadataEdition": {
+      "runGroupId": "3d30b443-7155-5418-a1e7-afc115a8abf8",
+      "testRunIds": [
+        20966224,
+        20966225,
+        20966226,
+        20966227,
+        20966228,
+        20966229
+      ],
+      "reason": "Original retained report edition omitted test layers; new metadata edition uses actual recorded ROUTE and pinned config declarations, without re-executing or altering earlier rows."
+    },
+    "runGroupId": "df387919-b687-5729-ae63-53c7fadfaac6",
+    "testRunIds": [
+      20966327,
+      20966328,
+      20966329,
+      20966330,
+      20966331,
+      20966332
+    ],
+    "reports": [
+      {
+        "path": "/tmp/loop-recovery-clean-core-20261010-r2.json",
+        "sha256": "a57cbff2eed6f01dc9376f0d5de923e3cbd39219155ca9486a11acc0f06ac6d8"
+      },
+      {
+        "path": "/tmp/loop-recovery-clean-core-20261010-r2.1.json",
+        "sha256": "ed13e3030d8d6b8c744a329dbaef7ba6329bedc0586e83c47ce0f6ae4dea1529"
+      },
+      {
+        "path": "/tmp/loop-recovery-clean-native-20261010.json",
+        "sha256": "c050615793f2b576cc267cc13eab3f188ed776bdb563c355ac66bd5c99c8f834"
+      },
+      {
+        "path": "/tmp/loop-recovery-clean-native-20261010.1.json",
+        "sha256": "9cc5b070e6e08e38e099246a2ef051331b481c4b67961ab39a179222eae54177"
+      }
+    ],
+    "routeEvidence": [
+      {
+        "report": "/tmp/loop-recovery-clean-core-20261010-r2.json",
+        "log": "/tmp/loop-recovery-clean-core-20261010-r2.log",
+        "route": "ROUTE cwd=packages/operator-core config=vitest.config.ts",
+        "config": "packages/operator-core/vitest.config.ts",
+        "configSha256": "beddbc752d598b841a1ab6ed18bda21ce5f3dec6ddf18c2dd208dd0890fc1ecb",
+        "testLayer": "unit"
+      },
+      {
+        "report": "/tmp/loop-recovery-clean-core-20261010-r2.1.json",
+        "log": "/tmp/loop-recovery-clean-core-20261010-r2.log",
+        "route": "ROUTE cwd=packages/operator-core config=vitest.integration.config.ts",
+        "config": "packages/operator-core/vitest.integration.config.ts",
+        "configSha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337",
+        "testLayer": "integration"
+      },
+      {
+        "report": "/tmp/loop-recovery-clean-native-20261010.json",
+        "log": "/tmp/loop-recovery-clean-native-20261010.log",
+        "route": "ROUTE cwd=apps/operator config=vitest.config.ts",
+        "config": "apps/operator/vitest.config.ts",
+        "configSha256": "0890eaac64451615f986f265280c824c285400f0d527d10c4e3a09201d6d27a2",
+        "testLayer": "unit"
+      },
+      {
+        "report": "/tmp/loop-recovery-clean-native-20261010.1.json",
+        "log": "/tmp/loop-recovery-clean-native-20261010.log",
+        "route": "ROUTE cwd=apps/operator config=vitest.integration.config.ts",
+        "config": "apps/operator/vitest.integration.config.ts",
+        "configSha256": "238b3844717384e15c8cc362daa7aa0e7a365205fc591bf1a080bda2e6f94038",
+        "testLayer": "integration"
+      }
+    ],
+    "baselineFiles": [
+      {
+        "path": "packages/operator-core/lib/events/await/psu-pty-discovery.test.ts",
+        "passed": 105,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "unit"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+        "passed": 21,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "unit"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/routines/loop-execution-recovery.integration.test.ts",
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "integration"
+      },
+      {
+        "path": "apps/operator/lib/psu-pty-host-execution-state.test.ts",
+        "passed": 19,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "unit"
+      },
+      {
+        "path": "apps/operator/lib/psu-pty-host-kickoff-activity.test.ts",
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "unit"
+      },
+      {
+        "path": "apps/operator/lib/psu-pty-host-execution-recovery.integration.test.ts",
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "integration"
+      }
+    ],
+    "mutations": [
+      {
+        "name": "stop",
+        "log": "/tmp/loop-recovery-clean-mutation-stop-20261010.log",
+        "sha256": "b9bb398964ed0a7ab510d671ef298576d494c9d13bec310abc1f883d23a41133",
+        "replay": {
+          "cwd": ".",
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1",
+          "result": {
+            "relocation": "overlay",
+            "target": "copy-out",
+            "mutantParse": "unchecked",
+            "mutantLedger": "test_runs:20966212",
+            "baselineExit": 0,
+            "assertionEvidence": "test-file-assertion-failure",
+            "guardExit": 1,
+            "verdict": "caught",
+            "expected": "caught"
+          },
+          "runnerPath": "scripts/mutation-probe.sh",
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+            "--mutate",
+            "s/if \\(!i\\.active\\)/if (false)/",
+            "--relocation",
+            "overlay",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "schemaVersion": 1,
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e"
+        },
+        "measuredFailedCases": [
+          "expected loop execution recovery protects deliberate-stop"
+        ]
+      },
+      {
+        "name": "recover",
+        "log": "/tmp/loop-recovery-clean-mutation-recover-20261010.log",
+        "sha256": "2cd7b55a936d787c870905b228b7a611d5e06e114b6f517a4d7e566cc8bc8614",
+        "replay": {
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "result": {
+            "assertionEvidence": "test-file-assertion-failure",
+            "target": "copy-out",
+            "verdict": "caught",
+            "mutantLedger": "test_runs:20966230",
+            "baselineExit": 0,
+            "relocation": "overlay",
+            "mutantParse": "unchecked",
+            "guardExit": 1,
+            "expected": "caught"
+          },
+          "cwd": ".",
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+            "--mutate",
+            "s/action: 'recover', state:/action: 'observe', state:/",
+            "--relocation",
+            "overlay",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "schemaVersion": 1,
+          "runnerPath": "scripts/mutation-probe.sh",
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1"
+        },
+        "measuredFailedCases": [
+          "expected loop execution recovery retains a paced recovery deadline without relying on provider error wording",
+          "expected loop execution recovery bounds unknown-state probing and retains an explicit recoverable block",
+          "expected loop execution recovery does not retry forever after repeated starts fail"
+        ]
+      },
+      {
+        "name": "deadline",
+        "log": "/tmp/loop-recovery-clean-mutation-deadline-20261010.log",
+        "sha256": "a211e058d64a2f15208fc3d61c382756f059e376afe7fd0c542e65cdc18d46c8",
+        "replay": {
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1",
+          "result": {
+            "assertionEvidence": "test-file-assertion-failure",
+            "guardExit": 1,
+            "expected": "caught",
+            "target": "copy-out",
+            "mutantLedger": "test_runs:20966304",
+            "relocation": "overlay",
+            "mutantParse": "unchecked",
+            "verdict": "caught",
+            "baselineExit": 0
+          },
+          "schemaVersion": 1,
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+            "--mutate",
+            "s/nextProbeAt: i\\.nowMs \\+ Math\\.min\\(300_000, PROBE_INTERVAL_MS \\* 2 \\*\\* state\\.attempts\\)/nextProbeAt: i.nowMs/",
+            "--relocation",
+            "overlay",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "runnerPath": "scripts/mutation-probe.sh",
+          "cwd": "."
+        },
+        "measuredFailedCases": [
+          "expected loop execution recovery retains a paced recovery deadline without relying on provider error wording"
+        ]
+      },
+      {
+        "name": "observation",
+        "log": "/tmp/loop-recovery-clean-mutation-observation-20261010.log",
+        "sha256": "911236b5a6866caa7e9aa648cec125e0576d194ae294654840b18a6a6c61267b",
+        "replay": {
+          "argv": [
+            "--file",
+            "apps/operator/scripts/psu-pty-host.mjs",
+            "--mutate",
+            "s/let phase = 'unknown'/let phase = 'running'/; s/phase = failed \\? 'failed' : 'settled'/phase = 'settled'/",
+            "--relocation",
+            "overlay",
+            "--fake-destructive",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/psu-pty-host-execution-state.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "schemaVersion": 1,
+          "runnerPath": "scripts/mutation-probe.sh",
+          "result": {
+            "verdict": "caught",
+            "baselineExit": 0,
+            "assertionEvidence": "test-file-assertion-failure",
+            "expected": "caught",
+            "relocation": "overlay",
+            "mutantLedger": "test_runs:20966307",
+            "guardExit": 1,
+            "target": "copy-out",
+            "mutantParse": "ok"
+          },
+          "cwd": ".",
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1"
+        },
+        "measuredFailedCases": [
+          "native execution observations reports missing evidence as unknown for codex",
+          "native execution observations reports missing evidence as unknown for claude",
+          "native execution observations reports missing evidence as unknown for omp",
+          "native execution observations distinguishes an aborted Codex turn from a running turn without reading error text",
+          "native execution observations does not treat OMP tool-use as terminal and recognizes arbitrary failed outcomes",
+          "native execution observations does not certify older, future, or shared-home evidence",
+          "native execution observations keeps Claude tool results inside the same turn and uses typed API failure evidence"
+        ]
+      },
+      {
+        "name": "unknown",
+        "log": "/tmp/loop-recovery-clean-mutation-unknown-20261010.log",
+        "sha256": "51c50ce1e5116eec061e5b6fbe88a43f6581f1aff5c1e440f31642ad3b8dc150",
+        "replay": {
+          "cwd": ".",
+          "runnerPath": "scripts/mutation-probe.sh",
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+            "--mutate",
+            "s/status: 'unknown', reason: 'native-observation-unavailable'/status: 'running', reason: 'native-observation-unavailable'/",
+            "--relocation",
+            "overlay",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "result": {
+            "baselineExit": 0,
+            "target": "copy-out",
+            "mutantParse": "unchecked",
+            "verdict": "caught",
+            "mutantLedger": "test_runs:20966313",
+            "guardExit": 1,
+            "expected": "caught",
+            "assertionEvidence": "test-file-assertion-failure",
+            "relocation": "overlay"
+          },
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1",
+          "schemaVersion": 1
+        },
+        "measuredFailedCases": [
+          "expected loop execution recovery keeps absent, stale and mismatched proof unknown"
+        ]
+      },
+      {
+        "name": "generation",
+        "log": "/tmp/loop-recovery-clean-mutation-generation-20261010.log",
+        "sha256": "59931dc12662b096f8c9d20b16f0faffe5c5b2f9f78c9a200cc6660047244df7",
+        "replay": {
+          "result": {
+            "mutantParse": "unchecked",
+            "relocation": "overlay",
+            "verdict": "caught",
+            "target": "copy-out",
+            "assertionEvidence": "test-file-assertion-failure",
+            "guardExit": 1,
+            "expected": "caught",
+            "baselineExit": 0,
+            "mutantLedger": "test_runs:20966323"
+          },
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1",
+          "runnerPath": "scripts/mutation-probe.sh",
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "cwd": ".",
+          "schemaVersion": 1,
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+            "--mutate",
+            "s/envelope.expectedChildGeneration = msg.expectedChildGeneration/envelope.expectedChildGeneration = undefined/",
+            "--relocation",
+            "overlay",
+            "--fake-destructive",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/events/await/psu-pty-discovery.test.ts -t \"preserves optional native proof and generation fences\"",
+            "--expect",
+            "caught"
+          ]
+        },
+        "measuredFailedCases": [
+          "injectIntoHostWithConfirmation — WHY a true happened (WI-6862) preserves optional native proof and generation fences on the real socket: {\"expectedStartedAt\":100,\"requireNativeTurnStart\":true,\"expectedChildGeneration\":2,\"expectedHostStartedAt\":200,\"provenanceIssuedAtMs\":300}",
+          "injectIntoHostWithConfirmation — WHY a true happened (WI-6862) preserves optional native proof and generation fences on the real socket: {\"expectedStartedAt\":0,\"requireNativeTurnStart\":false,\"expectedChildGeneration\":0,\"expectedHostStartedAt\":0,\"provenanceIssuedAtMs\":0}"
+        ]
+      }
+    ],
+    "scope": [
+      "Real PTY, Unix socket, private PostgreSQL and actual recovery clocks.",
+      "Sanitized native events are fixtures; no provider model invocation is asserted.",
+      "Full maintained committed superproject and pinned submodules were materialized before tests; named accepted bytes retain D-005 identity.",
+      "Legacy originalRun and mutations are preserved as separately dirty historical executions.",
+      "Vetting passed under EI-25554964655258878; this replay does not assert implementation acceptance or deployed shipment."
+    ]
+  },
   "plan": "loop-expected-activity-recovery-2026-10-09",
   "workItemId": "WI-10007937",
   "summary": "Original private-runtime Vitest assertions retained and faithfully re-ingested using existing test parser/store; targeted canonical mutation guards were then run and caught. This artifact does not claim final acceptance or shipment.",
