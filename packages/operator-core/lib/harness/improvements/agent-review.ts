@@ -150,6 +150,8 @@ export interface AgentReviewDeps {
     ownerId: string,
     hints: { claimsHeld: boolean },
   ) => Promise<SubmitterLivenessVerdict | null>;
+  /** Exact signed-spawn alias from persisted dispatcher provenance; never a prefix guess. */
+  resolveVerifiedSubmitterAlias?: (ownerId: string) => Promise<string | null>;
   /**
    * WI-10006314: flip an own-node row's stranded `origin='remote'` to 'local'. The heal's WHERE
    * clause IS the identity check (WI-10003565), so a foreign remote row is never touched.
@@ -386,6 +388,29 @@ async function resolveSubmitterLiveness(
   return v && v.sessionState != null ? { sessionState: v.sessionState } : null;
 }
 
+async function resolveVerifiedSubmitterAlias(ownerId: string): Promise<string | null> {
+  if (!ownerId.startsWith('system:')) return null;
+  const { sql } = getOrgPg();
+  // Reuse the same authenticated telemetry and exact signed-client agreement as
+  // the session timeline. The caller identity alone is not evidence of an alias.
+  const rows = await sql<{ role: string; client: string }[]>`
+    SELECT role, metadata_json->'requestOrigin'->'query'->>'client' AS client
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${activeWorkspaceId()}
+       AND coord_owner_id = ${ownerId}
+       AND principal_kind = 'harness'
+       AND principal_auth_method = 'spawn-url'
+       AND principal_trust = 'trusted'
+       AND coord_owner_id = ('system:' || role || '/' || (metadata_json->'requestOrigin'->'query'->>'client'))
+     ORDER BY invoked_at DESC, id DESC LIMIT 1`;
+  if (!rows[0]) return null;
+  const { verifiedSpawnSessionAlias } = await import('../../agent-tools/coordination/identity');
+  return verifiedSpawnSessionAlias({
+    principal: { slug: `system:${rows[0].role}`, authMethod: 'spawn-url', trust: 'trusted' },
+    uiClientId: rows[0].client,
+  }, ownerId);
+}
+
 const defaultDeps: AgentReviewDeps = {
   getWorkItem,
   getWorkItemDetail,
@@ -398,6 +423,7 @@ const defaultDeps: AgentReviewDeps = {
   readLedgerGrade,
   deliverRevision,
   resolveSubmitterLiveness,
+  resolveVerifiedSubmitterAlias,
   healOwnNodeOrigin: selfHealOwnNodeOriginIfStranded,
 };
 
@@ -613,8 +639,12 @@ export async function resubmitAgentReview(
   const current = readAgentReviewState(workItem.payload);
   if (!current) return { resubmitted: false, reason: 'not-agent-review' };
   const legacySubmitter = readLegacySyntheticSubmitter(workItem, current);
-  const effectiveSubmitter = legacySubmitter ?? current.submittedBy;
-  const isProvenanceRepair = legacySubmitter !== null;
+  const signedSubmitter = !legacySubmitter && current.submittedBy.startsWith('system:')
+    ? await (deps.resolveVerifiedSubmitterAlias ?? resolveVerifiedSubmitterAlias)(current.submittedBy)
+    : null;
+  const effectiveSubmitter = legacySubmitter ?? signedSubmitter ?? current.submittedBy;
+  const isProvenanceRepair = legacySubmitter !== null || signedSubmitter !== null;
+  const submitterHolds = workItem.assignee === effectiveSubmitter || workItem.assignee === current.submittedBy;
   const isLegacyRebind = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER;
   if (isLegacyRebind && workItem.assignee !== input.submittedBy) {
     return { resubmitted: false, state: current, reason: 'legacy-revision-not-claimant' };
@@ -635,8 +665,11 @@ export async function resubmitAgentReview(
     if (current.status !== 'revision-requested') {
       return { resubmitted: false, state: current, reason: 'not-submitter' };
     }
+    if (current.submittedBy.startsWith('system:') && signedSubmitter === null) {
+      return { resubmitted: false, state: current, reason: 'not-submitter:authority-unknown' };
+    }
     const verdict = await deps.resolveSubmitterLiveness(effectiveSubmitter, {
-      claimsHeld: workItem.assignee === effectiveSubmitter,
+      claimsHeld: submitterHolds,
     });
     // FAIL CLOSED on an unmeasured verdict. `null` means the oracle had no signal, not
     // that the submitter is absent, and collapsing the two would quietly turn this into
@@ -654,7 +687,7 @@ export async function resubmitAgentReview(
     // submitter, or held by the caller are all adoptable; anything else is not ours to take.
     if (
       workItem.assignee != null &&
-      workItem.assignee !== effectiveSubmitter &&
+      !submitterHolds &&
       workItem.assignee !== input.submittedBy
     ) {
       return { resubmitted: false, state: current, reason: 'orphan-revision-held-by-other' };
@@ -667,7 +700,7 @@ export async function resubmitAgentReview(
   if (
     isProvenanceRepair &&
     workItem.assignee != null &&
-    workItem.assignee !== effectiveSubmitter &&
+    !submitterHolds &&
     workItem.assignee !== input.submittedBy
   ) {
     return { resubmitted: false, state: current, reason: 'orphan-revision-held-by-other' };
@@ -708,7 +741,7 @@ export async function resubmitAgentReview(
     // has already established the holder is adoptable.
     const released = await deps.releaseWorkItem(workItem.id, {
       ...(workItem.harness ? { harness: workItem.harness } : {}),
-      expectedAssignee: isOrphanRebind ? workItem.assignee : input.submittedBy,
+      expectedAssignee: isOrphanRebind || isProvenanceRepair ? workItem.assignee : input.submittedBy,
     });
     if (!released) throw new Error(`resubmitAgentReview: '${workItem.id}' is held by another agent`);
   }
