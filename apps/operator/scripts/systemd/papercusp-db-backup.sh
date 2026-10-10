@@ -110,9 +110,10 @@ readonly DISPOSABLE_SCHEMA_PATTERN='bench_memory*'
 
 # The host cron producer is a separate backup path from the per-workspace
 # hook, but it dumps the same Postgres cluster. Hold the canonical
-# backup↔migration rendezvous on a dedicated psql session for the complete
-# dump lifecycle; otherwise a long pg_dump can acquire AccessShareLock while a
-# migration is already retrying its DDL and exhaust all five short attempts.
+# backup↔migration rendezvous on a dedicated psql session around every dump of
+# the migration database; otherwise a long pg_dump can acquire AccessShareLock
+# while a migration is already retrying its DDL and exhaust all five short
+# attempts. Hold it around THOSE dumps only — see guarded_dump_one (WI-10008166).
 readonly BACKUP_MIGRATION_ADVISORY_LOCK_KEY='papercusp:backup:migration-rendezvous'
 # PostgreSQL advisory locks are DATABASE-scoped. Migration appliers connect to
 # the Papercusp database; using psql's historical `postgres` catalog default
@@ -401,10 +402,17 @@ release_migration_rendezvous() {
   if [ -n "${BACKUP_MIGRATION_LOCK_OUT_FD:-}" ]; then
     exec {BACKUP_MIGRATION_LOCK_OUT_FD}<&- 2>/dev/null || true
   fi
+  if [ "${BACKUP_MIGRATION_LOCK_HELD:-false}" = true ]; then
+    # The hold length is the number a waiting migration pays; log it so a
+    # regression to a whole-run hold is visible in the journal (WI-10008166).
+    log "migration rendezvous released after $(( $(date +%s) - ${BACKUP_MIGRATION_LOCK_SINCE:-$(date +%s)} ))s (${BACKUP_MIGRATION_LOCK_LEG:-host dump})"
+  fi
   BACKUP_MIGRATION_LOCK_PID=''
   BACKUP_MIGRATION_LOCK_IN_FD=''
   BACKUP_MIGRATION_LOCK_OUT_FD=''
   BACKUP_MIGRATION_LOCK_HELD=false
+  BACKUP_MIGRATION_LOCK_SINCE=''
+  BACKUP_MIGRATION_LOCK_LEG=''
 }
 
 trap release_migration_rendezvous EXIT
@@ -424,14 +432,15 @@ release_shared_backup_lock() {
   fi
 }
 
-# Acquire the shared rendezvous on a session that remains open while all of
-# this script's pg_dump children run. A one-shot `psql -c pg_advisory_lock`
-# would release the lock as soon as psql exits, so use a coprocess and keep its
-# stdin open until the dump lifecycle is complete. The marker is emitted only
-# after the advisory lock has been granted, making the hand-off observable and
-# preventing the first pg_dump from racing the lock wait.
+# Acquire the shared rendezvous on a session that remains open while the
+# guarded pg_dump runs. A one-shot `psql -c pg_advisory_lock` would release the
+# lock as soon as psql exits, so use a coprocess and keep its stdin open until
+# release_migration_rendezvous closes it. The marker is emitted only after the
+# advisory lock has been granted, making the hand-off observable and preventing
+# the pg_dump from racing the lock wait. Re-acquirable: release reaps the
+# coprocess, so each guarded leg opens its own session. $1 names the leg.
 acquire_migration_rendezvous() {
-  local line acquired=false
+  local line acquired=false leg="${1:-host dump}"
   coproc BACKUP_MIGRATION_LOCK_PSQL {
     exec sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
       psql -X -q -v ON_ERROR_STOP=1 -At \
@@ -473,7 +482,44 @@ acquire_migration_rendezvous() {
     return 1
   fi
   BACKUP_MIGRATION_LOCK_HELD=true
-  log "migration rendezvous acquired for host dump"
+  BACKUP_MIGRATION_LOCK_SINCE=$(date +%s)
+  BACKUP_MIGRATION_LOCK_LEG="$leg"
+  log "migration rendezvous acquired for $leg"
+}
+
+# guarded_dump_one <db> <label> [extra pg_dump args...] — dump_one, holding the
+# migration rendezvous for exactly that dump when <db> is the migration database.
+#
+# Only a dump of $BACKUP_MIGRATION_ADVISORY_DATABASE can collide with a papercusp
+# migration: the advisory lock AND the relation locks a pg_dump takes are both
+# per-database, and every migration applier connects to that one database. So
+# holding the rendezvous across any other leg — the other databases on this
+# cluster, oddsmith on its own server — blocks every papercusp migration while
+# protecting nothing. MEASURED 2026-10-10 (WI-10008166): the old whole-run hold
+# (acquired before the first dump, released after the transcript tier) covered
+# ~15 GB of unrelated databases plus a 35-min oddsmith dump on top of the two
+# papercusp tiers, ~3.4 h end to end. Armed migrations 1438-1440 waited out all
+# of it, and bg-host withheld the background plane until they applied.
+#
+# Each guarded leg takes its own session, so a waiting migration runs BETWEEN
+# legs. The tiers are separate pg_dump snapshots already, so nothing assumed
+# cross-leg consistency. A rendezvous that cannot be acquired fails THAT leg —
+# recorded like any dump failure — rather than dumping unguarded or aborting the
+# legs still to come.
+guarded_dump_one() {
+  local db="$1" label="$2" rc=0
+  if [ "$db" != "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
+    dump_one "$@"
+    return
+  fi
+  if ! acquire_migration_rendezvous "$label"; then
+    log "$label FAIL — migration rendezvous not acquired; leg not dumped"
+    return 1
+  fi
+  dump_one "$@" || rc=$?
+  release_migration_rendezvous
+  reap_own_stragglers   # nothing of ours may outlive the hold holding locks
+  return "$rc"
 }
 
 # Bounded run. NOTE the grandchild trap of EI-10730 does not exist here BY
@@ -495,7 +541,8 @@ run_bounded() {
 START=$(date +%s)
 reap_own_stragglers
 reap_foreign_dumps
-acquire_migration_rendezvous || exit 1
+# No whole-run rendezvous: guarded_dump_one holds it around each dump of the
+# migration database only (WI-10008166).
 
 FAILED=()
 DUMPED=()
@@ -741,7 +788,8 @@ for db in $DBS; do
     log "$db dumped as tiers ($db-state + $db-transcript), not undifferentiated"
     continue
   fi
-  if dump_one "$db" "$db"; then
+  # Guarded: when tiers are disabled the migration database itself lands here.
+  if guarded_dump_one "$db" "$db"; then
     DUMPED+=("$db")
   elif [ "$(db_presence "$db")" = absent ]; then
     # Dropped after enumeration (WI-10006723): nothing is left to back up, so
@@ -907,7 +955,7 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
     # database's backup and a failure has to reach ALERT-BACKUP-FAILING like any
     # other. Reporting a tier failure only in tierFailed[] would leave the run's
     # top-level "ok" true with the database wholly unbacked.
-    if dump_one "$db" "$db-state" "${ex[@]}"; then
+    if guarded_dump_one "$db" "$db-state" "${ex[@]}"; then
       TIER_DUMPED+=("$db-state"); DUMPED+=("$db-state")
     else
       TIER_FAILED+=("$db-state"); FAILED+=("$db-state")
@@ -925,15 +973,13 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
   done
 fi
 
-# Let migrations proceed before the final backend sweep/status bookkeeping. The
-# EXIT trap also makes this release happen when any later step aborts.
-# A run with a transcript tier still to dump keeps the rendezvous until that
-# dump is done: it is a papercusp pg_dump like the others, and a migration must
-# not take its tables mid-dump. The release after that phase covers this run.
-if [ ${#TRANSCRIPT_DUE[@]} -eq 0 ]; then
-  release_migration_rendezvous
-  reap_own_stragglers   # nothing of ours may outlive this script holding locks
-fi
+# Backstop before oddsmith (another server) and the final bookkeeping: the
+# rendezvous is held only inside guarded_dump_one, so it is never held here and
+# this release is an idempotent no-op — unconditional on purpose, so no future
+# edit can carry a held rendezvous across oddsmith again (WI-10008166). The EXIT
+# trap still covers every abort.
+release_migration_rendezvous
+reap_own_stragglers   # nothing of ours may outlive this script holding locks
 
 # ── oddsmith embedded Postgres (TCP 5544) — WI-39502 ────────────────────────
 # The enumeration above CANNOT see this database, by construction: it asks the
@@ -1055,14 +1101,15 @@ fi
 #     writes the repo on /mnt/data, while this dump writes /mnt/backup (HDD).
 #     They overlap on that disk only during the sweep's ~12 min db-dumps read.
 # What still serializes it is kept: this script's own single-instance lock
-# (pg_dump vs pg_dump) and the migration rendezvous, released only after this
-# phase so no migration takes these tables mid-dump.
+# (pg_dump vs pg_dump) and the migration rendezvous — re-acquired by
+# guarded_dump_one for exactly this dump so no migration takes these tables
+# mid-dump, and NOT held across oddsmith above (WI-10008166).
 if [ ${#TRANSCRIPT_DUE[@]} -gt 0 ]; then
   release_shared_backup_lock "${TRANSCRIPT_DUE[*]}"
   inc=()
   for t in $PC_BACKUP_TRANSCRIPT_TABLES; do inc+=("--table=$t"); done
   for db in "${TRANSCRIPT_DUE[@]}"; do
-    if dump_one "$db" "$db-transcript" "${inc[@]}"; then
+    if guarded_dump_one "$db" "$db-transcript" "${inc[@]}"; then
       TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
     else
       TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
