@@ -81,6 +81,7 @@ it('delivers restored frozen context to installed Codex through the real managed
   const owner = `test-scoped-frozen-${randomUUID()}`;
   const providerCalls: Record<string, unknown>[] = [], reads: unknown[] = [], errors: unknown[] = [];
   const requestPaths: string[] = [];
+  const mcpMethods: unknown[] = [];
   const hosts: McpServer[] = [];
   let probe: Client | undefined;
   let child: ReturnType<typeof spawn> | undefined;
@@ -109,6 +110,10 @@ it('delivers restored frozen context to installed Codex through the real managed
     try {
       requestPaths.push(`${req.method} ${req.url}`);
       if (req.url?.startsWith('/mcp')) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const message = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+        mcpMethods.push({ method: message?.method, tool: message?.params?.name, path: req.url });
         const host = new McpServer({ name: 'frozen-source-fixture', version: '1' }); hosts.push(host);
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
         host.registerTool('capability_read', { inputSchema: { file_path: z.string(), byte_offset: z.number(), byte_limit: z.number() },
@@ -118,7 +123,7 @@ it('delivers restored frozen context to installed Codex through the real managed
             content: Array<{ type: 'text'; text: string }>;
           };
         });
-        await host.connect(transport); await transport.handleRequest(req, res); return;
+        await host.connect(transport); await transport.handleRequest(req, res, message); return;
       }
       // The real launcher also posts operator lifecycle events. They are
       // distinct from Responses generation and must never advance its script.
@@ -189,7 +194,19 @@ it('delivers restored frozen context to installed Codex through the real managed
       child!.once('error', e => { clearTimeout(timer); reject(e); });
       child!.once('close', c => { clearTimeout(timer); resolve(c); });
     });
-    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, requestPaths,
+    const inputShapes = (value: unknown, path = 'input'): unknown[] => {
+      if (typeof value === 'string') {
+        const index = value.indexOf('capability_read');
+        return [{ path, length: value.length, ...(index < 0 ? {} :
+          { toolExcerpt: value.slice(Math.max(0, index - 300), index + 500) }) }];
+      }
+      if (Array.isArray(value)) return value.flatMap((entry, i) => inputShapes(entry, `${path}[${i}]`));
+      if (value && typeof value === 'object') return [{ path, keys: Object.keys(value) },
+        ...Object.entries(value).flatMap(([key, entry]) => inputShapes(entry, `${path}.${key}`))];
+      return [];
+    };
+    const diagnostics = JSON.stringify({ output: output.slice(-5000), errors, requestPaths, mcpMethods,
+      inputShapes: inputShapes(providerCalls[0]?.input),
       providerRequestKeys: providerCalls.map(request => Object.keys(request)),
       toolShapes: (providerCalls[0]?.tools as Array<Record<string, unknown>> | undefined)?.map(tool =>
         ({ type: tool.type, name: tool.name, keys: Object.keys(tool) })) });
