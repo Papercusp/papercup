@@ -33,6 +33,19 @@ export const productPortalSources = [
   'e2e/portal-product-tutorial.spec.ts',
 ];
 
+// The desktop child runs in the retained checkout. Resolve paths while they
+// still belong to the caller's directory, including manifests outside it.
+export function resolveReviewArgs(args, cwd = process.cwd()) {
+  const resolved = [...args];
+  for (const key of ['--root', '--source-root', '--manifest', '--out', '--portal-root', '--portal-source-root']) {
+    const i = resolved.indexOf(key);
+    if (i < 0) continue;
+    if (!resolved[i + 1] || resolved[i + 1].startsWith('--')) throw new Error(`Required ${key}`);
+    resolved[i + 1] = resolve(cwd, resolved[i + 1]);
+  }
+  return resolved;
+}
+
 export function reviewCommand({ profile = 'cloud', root, portalRoot }) {
   if (profile === 'cloud') return { cwd: join(root, 'apps/operator'),
     args: ['run', 'test:e2e', '--', 'e2e/cloud-tutorial.spec.ts', '--headed', '--workers=1', '--grep', 'beginner reviews'] };
@@ -172,7 +185,7 @@ async function desktop(root, out, review, profile) {
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  const args = resolveReviewArgs(process.argv.slice(2));
   const get = key => { const i = args.indexOf(key); if (i < 0 || !args[i + 1]) throw new Error(`Required ${key}`); return resolve(args[i + 1]); };
   const root = get('--root'), sourceRoot = get('--source-root'), manifestPath = get('--manifest'), out = get('--out');
   const profile = args.includes('--profile') ? args[args.indexOf('--profile') + 1] : 'cloud';

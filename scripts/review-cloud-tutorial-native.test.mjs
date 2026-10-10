@@ -2,9 +2,27 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { sources, productSources, productPortalSources, reviewCommand, verifySources, verifyProductImports, speechReady } from './review-cloud-tutorial-native.mjs';
+import { sources, productSources, productPortalSources, resolveReviewArgs, reviewCommand, verifySources, verifyProductImports, speechReady } from './review-cloud-tutorial-native.mjs';
+
+test('desktop re-entry keeps caller-relative manifests and roots when its working directory changes', () => {
+  const caller = resolve('/caller'), child = resolve('/retained');
+  const args = ['--root', '/retained', '--source-root', '.', '--manifest', 'docs/review.json',
+    '--out', '../evidence/native', '--portal-root', '../portal', '--portal-source-root', 'portal-current',
+    '--profile', 'product-guide'];
+  const normalized = resolveReviewArgs(args, caller);
+  assert.equal(normalized[normalized.indexOf('--manifest') + 1], resolve(caller, 'docs/review.json'));
+  assert.equal(normalized[normalized.indexOf('--out') + 1], resolve(caller, '../evidence/native'));
+  assert.equal(normalized[normalized.indexOf('--source-root') + 1], caller);
+  assert.equal(normalized[normalized.indexOf('--portal-root') + 1], resolve(caller, '../portal'));
+  assert.equal(normalized[normalized.indexOf('--portal-source-root') + 1], resolve(caller, 'portal-current'));
+  assert.deepEqual(resolveReviewArgs(normalized, child), normalized);
+  assert.deepEqual(args.slice(-2), normalized.slice(-2));
+  assert.equal(args[args.indexOf('--manifest') + 1], 'docs/review.json');
+  assert.throws(() => resolveReviewArgs(['--manifest', '--desktop'], caller), /Required --manifest/);
+  assert.throws(() => resolveReviewArgs(['--out'], caller), /Required --out/);
+});
 
 test('declared root source custody paths exist in the reviewed repository', () => {
   for (const path of [...sources, ...productSources]) {
