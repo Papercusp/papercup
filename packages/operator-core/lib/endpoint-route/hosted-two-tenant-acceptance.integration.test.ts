@@ -393,6 +393,66 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     }
   });
 
+  it.each(['expired', 'revoked'] as const)('rejects a %s persisted session over HTTP while the other tenant remains live', async (state) => {
+    const dependencies = runtimeDependencies();
+    const startProvisioning = vi.fn(dependencies.hostedBrowser!.startProvisioning!);
+    const authenticationPlane = await createHostedRuntime(CONFIGURATION, {
+      ...dependencies,
+      hostedBrowser: { ...dependencies.hostedBrowser, startProvisioning },
+    });
+    const session = await createSession(authenticationPlane, USER_A, ORG_A, WORKSPACE_A, `http-${state}`);
+    const retainedCookie = cookie(authenticationPlane, session);
+    const server = serve({ fetch: authenticationPlane.app.fetch, hostname: '127.0.0.1', port: 0 });
+    const query = `/api${HOSTED_BROWSER_REST_QUERY_PATH}?name=${HOSTED_BROWSER_QUERY_NAME}&args=%7B%7D`;
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private hosted HTTP address unavailable');
+      const base = `http://127.0.0.1:${address.port}`;
+      const before = await fetch(`${base}${query}`, { headers: { cookie: retainedCookie } });
+      expect(before.status).toBe(200);
+      const beforeRows = (await before.json() as { rows: Array<{ id: string }> }).rows;
+      expect(beforeRows.map(({ id }) => id)).toEqual([CONNECTION_A, HOST_A]);
+
+      if (state === 'expired') {
+        // Advance the persisted timestamps into the past, preserving the real
+        // schema's expiry-after-creation constraint and the original cookie.
+        const expired = await sql<Array<{ id: string }>>`
+          UPDATE papercusp_auth.hosted_sessions
+             SET created_at = now() - interval '2 hours',
+                 expires_at = now() - interval '1 hour'
+           WHERE id = ${session.id}
+          RETURNING id
+        `;
+        expect(expired).toEqual([{ id: session.id }]);
+      } else {
+        expect(await authenticationPlane.components.sessionStore.revoke(session.id, 'acceptance_logout')).toBe(true);
+      }
+
+      const read = await fetch(`${base}${query}`, { headers: { cookie: retainedCookie } });
+      expect(read.status).toBe(401);
+      const deniedBody = await read.text();
+      expect(deniedBody).not.toContain(session.id);
+      expect(deniedBody).not.toContain(CONNECTION_A);
+      expect(deniedBody).not.toContain(CONNECTION_B);
+      const write = await fetch(`${base}/api${HOSTED_BROWSER_PROVISION_PATH}`, {
+        method: 'POST',
+        headers: { cookie: retainedCookie, origin: ORIGIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ connectionId: CONNECTION_A, name: 'Invalidated session probe', desired: { hostId: HOST_A, target: 'gcp' } }),
+      });
+      expect(write.status).toBe(401);
+      await write.arrayBuffer();
+      expect(startProvisioning).not.toHaveBeenCalled();
+
+      const otherTenant = await fetch(`${base}${query}`, { headers: { cookie: cookie(authenticationPlane, sessionB) } });
+      expect(otherTenant.status).toBe(200);
+      const otherRows = (await otherTenant.json() as { rows: Array<{ id: string }> }).rows;
+      expect(otherRows.map(({ id }) => id)).toEqual([CONNECTION_B, HOST_B]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('distinguishes a missing fixture column from a foreign-host authorization refusal', async () => {
     const tenantErrors: unknown[] = [];
     const dependencies = runtimeDependencies();
