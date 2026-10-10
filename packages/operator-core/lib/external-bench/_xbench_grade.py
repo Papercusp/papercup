@@ -38,10 +38,13 @@ def verify_frozen_grader():
     manifest_hash = hashlib.sha256(json.dumps(images, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
     if manifest_hash != frozen.get("imageDigest"):
         raise RuntimeError("Frozen grader image manifest hash differs")
+    if any(not isinstance(uid, str) or uid in (".", "..") or "/" in uid or "\\" in uid for uid in images):
+        raise RuntimeError("Frozen grader task ids must be safe artifact basenames")
     source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=EVAL_DIR, text=True).strip()
     if source != frozen["version"]:
         raise RuntimeError("Official grader source differs from its frozen commit")
-    subprocess.run(["git", "diff", "--exit-code", "HEAD", "--", "swe_bench_pro_eval.py", "helper_code", "run_scripts"], cwd=EVAL_DIR, check=True)
+    if subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "swe_bench_pro_eval.py", "helper_code", "run_scripts"], cwd=EVAL_DIR).returncode != 0:
+        raise RuntimeError("Official grader executable sources differ from the frozen commit")
     untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "--", "swe_bench_pro_eval.py", "helper_code", "run_scripts"], cwd=EVAL_DIR, text=True)
     if untracked.strip():
         raise RuntimeError("Official grader has untracked executable inputs")
@@ -59,14 +62,10 @@ grader_receipt = verify_frozen_grader()
 with open(arm_json) as f:
     arm_data = json.load(f)
 
-# FAIRNESS (benchmark-fairness-fix, Priority 2): OMIT empty-diff / external-or-infra-failed rows from the
-# predictions. The grader keys resolved on (FAIL_TO_PASS pass) — for an instance that produced NO real
-# submission (empty patch) or whose generation was an EXTERNAL/transient/infra failure (a wall-clock
-# timeout, a 429/contention spawn, a drain-unsettled member, a crash), the grader would otherwise apply an
-# empty patch and manufacture resolved=false — scoring an unfairly-failed task as a capability fail. We drop
-# those rows from predictions instead, so they become resolved=null (no eval_results.json entry) → EXCLUDED
-# from the resolved% denominator by the readers (preserved-runs/summarizePreservedRun, _xbench_report,
-# run-store), never a fail. Kept in sync with NON_SCORED_STOP_REASONS in types.ts.
+# Do not manufacture an official submission grade for empty or failed attempts.
+# These rows have no conditional grade; the maintained TS readers retain them
+# in the assigned-task primary denominator and distinguish missing measurement
+# from budget/non-attempt outcomes. Keep this filter aligned with types.ts.
 NON_SCORED_STOP_REASONS = {"error", "timeout", "infra-failed"}
 
 preds = []
@@ -82,11 +81,11 @@ for t in arm_data["perTask"]:
     stop_reason = t.get("stopReason")
     gen_error = t.get("generationError")
     if stop_reason in NON_SCORED_STOP_REASONS or gen_error:
-        # External/transient/infra failure — never produced a fairly-given submission → exclude (resolved=null).
+        # No scoreable submission; preserve its assigned outcome in the TS store.
         omitted_infra += 1
         continue
     if not patch.strip():
-        # No real submission for this instance → exclude rather than manufacture a resolved=false.
+        # No real submission; leave its conditional grade unmeasured.
         omitted_empty += 1
         continue
     preds.append({"instance_id": iid, "patch": patch, "prefix": f"arm-{arm}"})
@@ -123,11 +122,18 @@ if frozen is not None:
     bootstrap = """import importlib.util,json,os,sys
 spec=importlib.util.spec_from_file_location('swe_bench_pro_eval', 'swe_bench_pro_eval.py')
 module=importlib.util.module_from_spec(spec)
+sys.modules[spec.name]=module
 spec.loader.exec_module(module)
 images=json.loads(os.environ['XBENCH_FROZEN_GRADER'])['images']
-module.get_dockerhub_image_uri=lambda uid,*args,**kwargs: images[uid]
+used_images={}
+def image_uri(uid,*args,**kwargs):
+    used_images[uid]=images[uid]
+    return images[uid]
+module.get_dockerhub_image_uri=image_uri
 sys.argv=['swe_bench_pro_eval.py']+sys.argv[1:]
 module.main()
+output_dir=next(arg.split('=',1)[1] for arg in sys.argv[1:] if arg.startswith('--output_dir='))
+with open(os.path.join(output_dir,'pinned-image-usage.json'),'w') as stream: json.dump(used_images,stream,sort_keys=True)
 """
     cmd = [PY, "-c", bootstrap] + cmd[2:] + ["--redo"]
 print("[grade] cmd:", " ".join(cmd))
@@ -141,6 +147,31 @@ else:
 if frozen is not None and proc.returncode == 0:
     if verify_frozen_grader() != grader_receipt:
         raise RuntimeError("Official grader inputs changed during evaluation")
+    if preds:
+        with open(os.path.join(grade_out, "out", "pinned-image-usage.json")) as stream:
+            used_images = json.load(stream)
+        expected_images = {p["instance_id"]: frozen["images"][p["instance_id"]] for p in preds}
+        if used_images != expected_images:
+            raise RuntimeError("Official scorer did not use every frozen task image resolver")
+    # The upstream aggregate maps an absent per-task output to false. That is
+    # missing grader measurement, so refuse it rather than score an outage.
+    outputs = {}
+    for prediction in preds:
+        uid = prediction["instance_id"]
+        output_path = os.path.join(grade_out, "out", uid, f"arm-{arm}_output.json")
+        try:
+            with open(output_path, "rb") as stream:
+                raw = stream.read()
+        except OSError as error:
+            raise RuntimeError(f"Official grader has no measured test output for {uid}") from error
+        output = json.loads(raw)
+        if not isinstance(output, dict) or not isinstance(output.get("tests"), list) or not output["tests"] or any(
+            not isinstance(test, dict) or not isinstance(test.get("name"), str) or not test["name"] or not isinstance(test.get("status"), str)
+            for test in output["tests"]
+        ):
+            raise RuntimeError(f"Official grader has no measured test output for {uid}")
+        outputs[uid] = hashlib.sha256(raw).hexdigest()
+    grader_receipt["taskOutputSha256"] = outputs
     with open(f"{grade_out}/grader-receipt.json", "w") as stream:
         json.dump(grader_receipt, stream, sort_keys=True)
 # Tail of stderr/stdout for diagnostics
