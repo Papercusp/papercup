@@ -1,4 +1,119 @@
 {
+  "currentFixed24Recheck": {
+  "observedAt": "2026-10-10T10:47:45.991Z",
+  "identity": {
+    "db": "papercusp",
+    "port": "5432",
+    "cluster": "7635091775813704249"
+  },
+  "selector": {
+    "source": "reports/bug-audits/2026-10-10-su055e9-evidence.json",
+    "decodedSha256": "947316f57d00e273825297ffbe258c1ed84b60e9acd8ff5bceba036d1e46e9ad",
+    "description": "Original primary blocked category with no external blocker and no work-item dependency edges",
+    "count": 24,
+    "ids": [
+      "EI-20565859968567853",
+      "WI-934440",
+      "EI-22365715996548478",
+      "EI-22136767702523358",
+      "EI-21314288888643029",
+      "WI-38341",
+      "EI-21574140812992625",
+      "EI-21669650422771311",
+      "EI-21123893604873334",
+      "EI-20192339459004669",
+      "EI-20224530966164417",
+      "EI-20205289076999667",
+      "EI-22463621859793399",
+      "EI-22126055661840542",
+      "EI-22190822851012325",
+      "EI-21985109959023423",
+      "EI-21072900319774164",
+      "EI-21387713518605329",
+      "EI-21401078531195034",
+      "EI-21306560247518837",
+      "EI-21172597553319764",
+      "EI-20965384912390907",
+      "EI-18428953542608533",
+      "EI-18523322426348819"
+    ]
+  },
+  "counts": {
+    "reserved": 22,
+    "not-blocked": 2
+  },
+  "coverage": {
+    "population": [
+      "EI-20565859968567853",
+      "WI-934440",
+      "EI-22365715996548478",
+      "EI-22136767702523358",
+      "EI-21314288888643029",
+      "WI-38341",
+      "EI-21574140812992625",
+      "EI-21669650422771311",
+      "EI-21123893604873334",
+      "EI-20192339459004669",
+      "EI-20224530966164417",
+      "EI-20205289076999667",
+      "EI-22463621859793399",
+      "EI-22126055661840542",
+      "EI-22190822851012325",
+      "EI-21985109959023423",
+      "EI-21072900319774164",
+      "EI-21387713518605329",
+      "EI-21401078531195034",
+      "EI-21306560247518837",
+      "EI-21172597553319764",
+      "EI-20965384912390907",
+      "EI-18428953542608533",
+      "EI-18523322426348819"
+    ],
+    "checked": [
+      "EI-20565859968567853",
+      "WI-934440",
+      "EI-22365715996548478",
+      "EI-22136767702523358",
+      "EI-21314288888643029",
+      "WI-38341",
+      "EI-21574140812992625",
+      "EI-21669650422771311",
+      "EI-21123893604873334",
+      "EI-20192339459004669",
+      "EI-20224530966164417",
+      "EI-20205289076999667",
+      "EI-22463621859793399",
+      "EI-22126055661840542",
+      "EI-22190822851012325",
+      "EI-21985109959023423",
+      "EI-21072900319774164",
+      "EI-21387713518605329",
+      "EI-21401078531195034",
+      "EI-21306560247518837",
+      "EI-21172597553319764",
+      "EI-20965384912390907",
+      "EI-18428953542608533",
+      "EI-18523322426348819"
+    ],
+    "notChecked": [],
+    "notApplicable": [],
+    "residue": [
+      "WI-10008018"
+    ]
+  },
+  "scope": "Current fixed24 control dispositions:22 independent park/owner floors retained,2 earlier cleared rows still open. Underlying park condition legitimacy belongs to P004. No row changed in this recheck.",
+  "exactControlReceipt": {
+    "encoding": "gzip+base64",
+    "decodedBytes": 10909,
+    "sha256": "701896c21fa7e1f5c93ea8d080f8c8da7ade814e7e369f7414947ca90e79bc6d",
+    "data": "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"
+  },
+  "fullWitness": {
+    "path": "/tmp/su055e9-p003-fixed24-current-status.json",
+    "sha256": "7ec8e4b92ae7feef6e278f38e447b15b6057ccc6a8d83c446460635f593e67f7",
+    "scope": "Complete before/after records; all24 payloads/states/assignees matched. Canonical historical43-row witness remains in exactReceipts."
+  }
+},
   "schemaVersion": "bug-queue-p003-current-control-repair-v1",
   "workItem": "WI-10008018",
   "plan": "bug-queue-legitimacy-and-actionable-validation-2026-10-10",
