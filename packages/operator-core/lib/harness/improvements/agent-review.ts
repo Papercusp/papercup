@@ -639,12 +639,13 @@ export async function resubmitAgentReview(
   const current = readAgentReviewState(workItem.payload);
   if (!current) return { resubmitted: false, reason: 'not-agent-review' };
   const legacySubmitter = readLegacySyntheticSubmitter(workItem, current);
-  const signedSubmitter = !legacySubmitter && current.submittedBy.startsWith('system:')
+  const signedSubmitter = current.status === 'revision-requested' && !legacySubmitter && current.submittedBy.startsWith('system:')
     ? await (deps.resolveVerifiedSubmitterAlias ?? resolveVerifiedSubmitterAlias)(current.submittedBy)
     : null;
   const effectiveSubmitter = legacySubmitter ?? signedSubmitter ?? current.submittedBy;
   const isProvenanceRepair = legacySubmitter !== null || signedSubmitter !== null;
-  const submitterHolds = workItem.assignee === effectiveSubmitter || workItem.assignee === current.submittedBy;
+  const submitterHolds = workItem.assignee === effectiveSubmitter ||
+    (signedSubmitter !== null && workItem.assignee === current.submittedBy);
   const isLegacyRebind = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER;
   if (isLegacyRebind && workItem.assignee !== input.submittedBy) {
     return { resubmitted: false, state: current, reason: 'legacy-revision-not-claimant' };
