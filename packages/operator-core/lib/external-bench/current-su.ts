@@ -1161,7 +1161,7 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
     ...lifecycle,
     async createHarness(input) {
       if (input.blueprintId !== (kind === 'stock-native' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT))
-        throw new Error('Current native driver refuses a different execution blueprint.');
+        throw new Error(kind === 'stock-native' ? 'Stock native driver refuses a different execution blueprint.' : 'Current su driver refuses a retired treatment blueprint.');
       return lifecycle.createHarness(input);
     },
     async addFeature(input) {

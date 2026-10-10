@@ -109,6 +109,46 @@ beforeEach(async () => {
 });
 
 describe('agent-session native-id binding (EI-21268871278252116)', () => {
+  it('links the exact initial native session after a real short child has exited (EI-25609725859690051)', async () => {
+    const { managedSpawn } = await import('./managed-spawn');
+    const spawned = await managedSpawn(process.execPath, ['-e', 'process.exit(0)'], {
+      class: 'agent-session', title: 'short stock child', argv: [], launchedBy: 'test',
+      detail: { coordOwnerId: 'stock-fast-owner' },
+    }, { workspaceId: WS, confine: false, requireRegistration: true });
+    if (spawned.child.exitCode === null) await new Promise<void>((resolve, reject) => {
+      spawned.child.once('exit', () => resolve()); spawned.child.once('error', reject);
+    });
+    await expect.poll(async () => (await store.getTask(spawned.taskId))?.state).toBe('exited');
+    const binding = { workspaceId: WS, coordOwnerId: 'stock-fast-owner', sessionId: 'native-fast-child',
+      initialTaskId: spawned.taskId };
+
+    // The old live-only path cannot account for this already-terminal child.
+    expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, initialTaskId: undefined })).toEqual([]);
+    await insertAgentSessionTask({ taskId: 'same-owner-sibling', coordOwnerId: 'stock-fast-owner' });
+    expect(await store.bindLiveAgentSessionTasksToNativeSession(binding)).toEqual([spawned.taskId]);
+    // A retried observation returns the same receipt, without reopening the task.
+    expect(await store.bindLiveAgentSessionTasksToNativeSession(binding)).toEqual([spawned.taskId]);
+    expect(await store.getTask(spawned.taskId)).toMatchObject({ state: 'exited', sessionId: 'native-fast-child', exitCode: 0 });
+    expect((await store.getTask('same-owner-sibling'))?.sessionId).toBeNull();
+  });
+
+  it('initial binding never retargets a conflicting session or crosses task, owner, workspace or class', async () => {
+    await insertAgentSessionTask({ taskId: 'conflict', coordOwnerId: 'stock-owner', state: 'exited', sessionId: 'other-native' });
+    await insertAgentSessionTask({ taskId: 'wrong-owner', coordOwnerId: 'other-owner', state: 'exited' });
+    await insertAgentSessionTask({ taskId: 'wrong-class', coordOwnerId: 'stock-owner', taskClass: 'bash-job' });
+    await insertAgentSessionTask({ taskId: 'exact', coordOwnerId: 'stock-owner', state: 'exited' });
+    await insertAgentSessionTask({ taskId: 'sibling', coordOwnerId: 'stock-owner' });
+    const binding = { workspaceId: WS, coordOwnerId: 'stock-owner', sessionId: 'new-native' };
+    for (const initialTaskId of ['conflict', 'wrong-owner', 'wrong-class', 'missing']) {
+      expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, initialTaskId })).toEqual([]);
+    }
+    expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, workspaceId: 'other-workspace', initialTaskId: 'exact' })).toEqual([]);
+    expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, initialTaskId: '' })).toEqual([]);
+    expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, initialTaskId: 'exact' })).toEqual(['exact']);
+    expect((await store.getTask('conflict'))?.sessionId).toBe('other-native');
+    for (const id of ['wrong-owner', 'wrong-class', 'sibling']) expect((await store.getTask(id))?.sessionId).toBeNull();
+  });
+
   it('binds every matching live task when enrolment lands before bootstrap, without crossing owner/class/state', async () => {
     await insertAgentSessionTask({ taskId: 'match-pending', coordOwnerId: 'su-owner', state: 'pending' });
     await insertAgentSessionTask({ taskId: 'match-running', coordOwnerId: 'su-owner' });

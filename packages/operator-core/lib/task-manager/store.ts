@@ -961,9 +961,15 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
  * key between those orderings. Updating all matching live rows is deliberate:
  * a duplicate launch under one owner is already an anomaly, and session end
  * must reap every subtree that identity owns rather than leave the duplicate.
+ *
+ * `initialTaskId` is the initial native observation for ONE enrolled launch,
+ * rather than a respawn. That exact row may already have exited before the
+ * stream reports its UUID. Link it without reopening it or replacing a different
+ * UUID, and return its id even for an idempotent observation so the caller can
+ * verify enrollment. The ordinary owner-wide respawn path stays live-only.
  */
 export async function bindLiveAgentSessionTasksToNativeSession(
-  input: { workspaceId?: string; coordOwnerId: string; sessionId: string },
+  input: { workspaceId?: string; coordOwnerId: string; sessionId: string; initialTaskId?: string },
   inject?: Sql,
 ): Promise<string[]> {
   const coordOwnerId = input.coordOwnerId.trim();
@@ -971,6 +977,21 @@ export async function bindLiveAgentSessionTasksToNativeSession(
   if (!coordOwnerId || !sessionId) return [];
   const sql = sqlOf(inject);
   const ws = input.workspaceId ?? activeWorkspaceId();
+  if (input.initialTaskId !== undefined) {
+    const taskId = input.initialTaskId.trim();
+    if (!taskId) return [];
+    const rows = await sql<Array<{ task_id: string }>>`
+      UPDATE harness_shared.task_ledger
+         SET session_id = ${sessionId}, updated_at = now()
+       WHERE workspace_id = ${ws}
+         AND task_id = ${taskId}
+         AND class = 'agent-session'
+         AND detail ->> 'coordOwnerId' = ${coordOwnerId}
+         AND (session_id IS NULL OR session_id = ${sessionId})
+      RETURNING task_id
+    `;
+    return rows.map((row) => row.task_id);
+  }
   const rows = await sql<Array<{ task_id: string }>>`
     UPDATE harness_shared.task_ledger
        SET session_id = ${sessionId}, updated_at = now()

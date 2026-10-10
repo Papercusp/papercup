@@ -74,6 +74,11 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
   const ports: CurrentStockBenchPorts = {
     ...common,
     readCompletion: async () => null,
+    async killTask(id) {
+      const result = await common.killTask(id);
+      await taskFinishes.get(id);
+      return result;
+    },
     async getTask(id) {
       const task = await common.getTask(id);
       if (task && !['pending', 'running'].includes(task.state)) await taskFinishes.get(id);
@@ -108,15 +113,19 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
               if (nativeSessionId) return;
               nativeSessionId = id;
               linked = linked.then(async () => {
+                if (!taskId) throw new Error('Stock native session was observed before task enrollment.');
                 const receipt = await reanchorAdvSessionNativeId(sessionKey, id);
                 if (receipt.owner !== ownerId) throw new Error('Stock native session registry binding failed.');
-                await bindLiveAgentSessionTasksToNativeSession({ workspaceId: opts.workspaceId, coordOwnerId: ownerId, sessionId: id }, db.sql);
+                const tasks = await bindLiveAgentSessionTasksToNativeSession({ workspaceId: opts.workspaceId,
+                  coordOwnerId: ownerId, sessionId: id, initialTaskId: taskId }, db.sql);
+                if (tasks.length !== 1 || tasks[0] !== taskId) throw new Error('Stock native task registry binding failed.');
               });
               // A failed registry write cannot leave an unaccounted loop running.
               linked.catch(() => child?.kill('SIGTERM'));
             },
             spawnProcess: async (command, args, options) => {
               const host = requireCurrentBenchHostBinding(observations, opts);
+              if (opts.signal?.aborted) throw new Error('Stock native assignment was cancelled before process creation.');
               if (!['codex', 'codex.js'].includes(basename(command)) || options.cwd !== handle.worktreePath || options.env?.CODEX_HOME !== home)
                 throw new Error('Stock native identity transport cannot be observed in this host.');
               const env: NodeJS.ProcessEnv = { PATH: options.env.PATH, LANG: options.env.LANG, LC_ALL: options.env.LC_ALL,
@@ -129,7 +138,7 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
               const spawned = await sandbox(command, args, { ...options, cwd: handle.worktreePath, env },
                 async (binary: string, argv: string[], spawnOptions: import('node:child_process').SpawnOptions) => managedSpawn(binary, argv,
                   { class: 'agent-session', title: label, argv: [], cwd: handle.worktreePath, harnessSlug: handle.slug,
-                    launchedBy: ctx.ownerId ?? ctx.principal!.slug, workItemId: handle.featureId,
+                    launchedBy: ctx.principal!.slug, workItemId: handle.featureId,
                     runtimeMaxSec: Math.max(1, Math.ceil((opts.driveTimeoutMs ?? 60_000) / 1000)), detail: { label, coordOwnerId: ownerId,
                       executionKind: 'stock-native', assignmentId: currentBenchAssignmentId(opts.runId, opts.armId, task.instanceId, opts.seed) } },
                   { workspaceId: opts.workspaceId, requireRegistration: true, spawnOptions }));
@@ -151,9 +160,9 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
           if (nativeSessionId) {
             const [{ ingestInteractiveUsage }, { defaultAdapters }] = await Promise.all([
               import('../interactive-usage/ingest-claude-transcripts'), import('../interactive-usage/ingest-adapters')]);
-            const adapter = defaultAdapters().find(value => value.agent === 'codex');
+            const adapter = defaultAdapters().find(value => value.name === 'codex');
             if (!adapter) throw new Error('Canonical Codex usage adapter is unavailable.');
-            await ingestInteractiveUsage({ adapters: [{ ...adapter, root: join(home, 'sessions') }],
+            await ingestInteractiveUsage({ adapters: [{ ...adapter, root: join(home, 'sessions'), ownerId, advSessionId: sessionKey }],
               includeIsolationRoots: false, maxFilesPerTick: 1000, maxBytesPerFile: 8_388_608 }, { ...db, workspaceId: opts.workspaceId });
           }
         }

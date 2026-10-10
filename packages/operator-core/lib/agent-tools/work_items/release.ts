@@ -12,7 +12,13 @@ import { defineTool } from '@papercusp/agent-mcp';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { releaseWorkItem, setWorkItemClaimHold, getWorkItem, commentWorkItem } from '../../work-items';
+import {
+  releaseWorkItem,
+  setWorkItemClaimHold,
+  getWorkItem,
+  commentWorkItem,
+  isClaimHoldParked,
+} from '../../work-items';
 import { runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
 import {
   assessForceRelease,
@@ -933,8 +939,9 @@ export default defineTool({
         // dead-end warning. Explicit claimHold:false is the caller's deliberate "re-pool"
         // signal and therefore suppresses the nudge. Forced reclaims carry mandatory audit
         // reasons with unrelated semantics, so they are excluded too.
+        const alreadyClaimHeld = isClaimHoldParked(workItem.payload);
         const claimHoldNudge =
-          !force && claimHold === undefined && wasHeld && (releaseCheckpoint || reason)
+          !force && claimHold === undefined && wasHeld && !alreadyClaimHeld && (releaseCheckpoint || reason)
             ? {
                 claimHoldNudge:
                   `Plain release left '${it.id}' self-selectable by other agents immediately (only your own short ` +

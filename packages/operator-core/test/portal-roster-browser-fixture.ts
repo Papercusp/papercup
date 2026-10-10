@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
@@ -309,6 +310,10 @@ export async function verifyPortalOverviewNavigation(portalSourceRoot: string) {
   const built = await buildPortalRosterBrowser({ portalSourceRoot, selected: 'overview-selected',
     neighbor: 'overview-neighbor', overview: true });
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
+  const evidence = mkdtempSync(join(tmpdir(), 'overview-navigation-'));
+  writeFileSync(join(evidence, 'browser-inputs.json'), JSON.stringify({
+    browserBundleSha256: digest(built.bundle), originals: [...built.originals].map(([path, identity]) => ({ path, ...identity })),
+  }, null, 2));
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://overview.invalid');
     if (url.pathname === '/overview.js') {
@@ -322,10 +327,11 @@ export async function verifyPortalOverviewNavigation(portalSourceRoot: string) {
     }
   });
   const errors: string[] = [];
+  let page: Page | undefined;
   try {
     await new Promise<void>((done, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', done); });
     const address = server.address(); assert.ok(address && typeof address === 'object');
-    const page = await browser.newPage();
+    page = await browser.newPage();
     page.on('pageerror', error => errors.push(error.stack ?? error.message));
     await page.goto(`http://127.0.0.1:${address.port}/?app=overview&q=retained-shell-search`);
     const button = page.getByRole('button', { name: 'Open Plans', exact: true });
@@ -342,8 +348,15 @@ export async function verifyPortalOverviewNavigation(portalSourceRoot: string) {
     await page.getByTestId('overview-destination').filter({ hasText: /^create$/ }).waitFor({ timeout: 20_000 });
     assert.equal(await page.locator('.pc-overview').count(), 0, 'reload must retain the destination');
     assert.deepEqual(errors, [], 'actual Portal surface graph must stay browser-safe');
-    return { keyboardNavigation: true, deepLinkReload: true, destination: 'create', shellQueryPreserved: true,
-      browserBundleSha256: digest(built.bundle), originalSourceCount: built.originals.size };
+    const receipt = { keyboardNavigation: true, deepLinkReload: true, destination: 'create', shellQueryPreserved: true,
+      browserBundleSha256: digest(built.bundle), originalSourceCount: built.originals.size, evidence };
+    writeFileSync(join(evidence, 'receipt.json'), JSON.stringify(receipt, null, 2));
+    console.info('OVERVIEW_NAVIGATION_RECEIPT ' + JSON.stringify(receipt));
+    return receipt;
+  } catch (error) {
+    if (page) await retainPortalBrowserFailure(page, evidence, error, errors);
+    const snapshot = page ? readFileSync(join(evidence, 'portal-browser-failure.json'), 'utf8') : JSON.stringify(errors);
+    throw new Error(`Overview browser evidence ${evidence}: ${snapshot}`);
   } finally {
     await browser.close();
     await new Promise<void>(done => server.close(() => done()));

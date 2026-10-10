@@ -21,6 +21,10 @@ vi.mock('../../work-items', () => ({
   setWorkItemClaimHold: vi.fn(),
   getWorkItem: vi.fn(),
   commentWorkItem: vi.fn(),
+  isClaimHoldParked: vi.fn((payload: unknown) => {
+    if (!payload || typeof payload !== 'object') return false;
+    return String((payload as Record<string, unknown>)._claimHold) === 'true';
+  }),
 }));
 // WI-10006515: release heals an own-node issue row stranded at origin='remote' and retries
 // once. Partial mock so every other export stays real. The helper is stubbed at the export
@@ -243,6 +247,26 @@ describe('work_items:release reason soft cap', () => {
 
     expect(b.results[0].claimHoldNudge).toMatch(/release reason was recorded, but does not change selectability/);
     expect(b.results[0].claimHoldNudge).toMatch(/work_items:release.*claimHold:true/);
+    expect(holdM).not.toHaveBeenCalled();
+  });
+
+  it('does not warn that a durably claim-held row is self-selectable after plain release', async () => {
+    releaseM.mockImplementation(async (id: string, opts?: Record<string, unknown>) => {
+      (opts?.onPriorState as ((p: { assignee: string | null; wasClaimed: boolean }) => void) | undefined)?.({
+        assignee: 'me',
+        wasClaimed: true,
+      });
+      return workItemFixture({
+        id,
+        assignee: null,
+        payload: { _claimHold: true, claim_hold_by: 'peer', claim_hold_reason: 'await recurrence' },
+      }) as never;
+    });
+
+    const b = await body({ id: 'WI-HELD', reason: 'no review until fresh recurrence' });
+
+    expect(b.results[0].workItem.payload).toMatchObject({ _claimHold: true });
+    expect(b.results[0]).not.toHaveProperty('claimHoldNudge');
     expect(holdM).not.toHaveBeenCalled();
   });
 });

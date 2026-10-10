@@ -16,6 +16,86 @@
     { "root": "portal", "path": "packages/ui/src/shell.tsx", "sha256": "8432c6424f9e30238f8aafd1b2af85f03afab0fdc2ee6d82f85b59541101c6a4" },
     { "root": "portal", "path": "apps/host/src/api.ts", "sha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701" }
   ],
+  "r11FullProductReview": {
+    "schemaVersion": 1,
+    "specId": "AUTO-BAR-R-11-P-016",
+    "specRevision": 2,
+    "specFingerprint": "a26bd754ff3206bcd5dff3fed1aafa6d0735f741badd8fcbd7c896c3ccdeb102",
+    "observedAt": "2026-10-10T16:14:00Z",
+    "commits": {
+      "papercusp": "50251d1ea31340a130cfacacb4639b0c10d0d183",
+      "portal": "ad1c224bed6345a6bb94baaeb97b6c4c56e3a0fe"
+    },
+    "oracle": "The immutable R11@2 falsifier requires full-product extensions of existing surfaces and a specific reuse assessment for each new durable surface. Evaluate that boundary from source and registry relationships.",
+    "procedure": "Read the full-product catalogue, independent source-census test, account progress writer, minimal lesson Help context, mounted account guide, Portal entry, authenticated host routes and Settings/theme provider seam. Compare each to its existing owner instead of deriving a pass from UI output.",
+    "findings": [
+      "ProductTutorialTarget entries navigate to registered destinations and their product controls. The full-product guide uses the existing product catalogue, maintained source census, operator surfaces and authenticated Portal entry; Cloud retains its domain lesson and workspace receipts.",
+      "Account progress extends the existing hosted_user_preferences profile.productTutorial version slot through readAccountTutorialProgress/updateAccountTutorialProgress/enrollAccountTutorial. Its transaction scope, optimistic revision and idempotency checks stay in that existing storage boundary.",
+      "Lesson Help extends cloud-tutorial-help with a strict versioned full-product context. It feeds the existing authorized Help/provider boundary with lesson information, with deterministic local guidance retained.",
+      "PortalEntry supplies authenticated account/session/workspace identity to AccountProductTutorial around FirstRunPortal or the existing shell destination. The guide renders navigation and review controls while explicit domain actions stay in their existing product surfaces.",
+      "Personalization retains NativeThemeSettings behind the existing OperatorSettingsSlot fallback; PortalSettingsAdditions supplies PortalAppearanceSettings through the theme case. Portal switchTheme continues to persist through /api/preferences and applyPortalTheme. This extends the existing page, slot and writer.",
+      "Portal API and web-runtime extend existing authenticated host/tutorial routes and the exact speech leaf under D-037. No separate host, theme store, progress table, service, cron or config key is introduced by these reviewed changes."
+    ],
+    "sourceFiles": [
+      {
+        "root": "papercusp",
+        "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+        "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4"
+      },
+      {
+        "root": "papercusp",
+        "path": "packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts",
+        "sha256": "b07594bc0aeff81564fa10b1c10df1a2e836f5527b2e5714bffecb2f1d1d7394"
+      },
+      {
+        "root": "papercusp",
+        "path": "packages/operator-core/lib/onboarding/cloud-tutorial-help.ts",
+        "sha256": "40d4d987304cfa59bba8c66a3dad79b6c22076f263986fd31ac58dd152630db8"
+      },
+      {
+        "root": "papercusp",
+        "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx",
+        "sha256": "6ef334883debb8355a81cfedba8308cd386977682e3661c971012a570ddd4453"
+      },
+      {
+        "root": "papercusp",
+        "path": "packages/operator-ui/src/settings-slots.tsx",
+        "sha256": "3aac0738311424fbef541dda2a8c8828eaf1d280f041b8ea7b2c16022739fd92"
+      },
+      {
+        "root": "papercusp",
+        "path": "apps/operator/app/settings/personalization/page.tsx",
+        "sha256": "57a711a1918c5ac75b103ee1110a0379dfd3c9fb1ab4a1455236e0d4fef63509"
+      },
+      {
+        "root": "papercusp",
+        "path": "apps/operator/app/settings/layout.tsx",
+        "sha256": "46452ead3cd622e9db03cab864ab1292c6e448c293167358d072d8934560cf29"
+      },
+      {
+        "root": "papercusp",
+        "path": "apps/operator/lib/theme.ts",
+        "sha256": "70a631c641a05aca5470a799da2325b57c2e7a84758dd1b509551cbb1f701776"
+      },
+      {
+        "root": "portal",
+        "path": "packages/ui/src/shell.tsx",
+        "sha256": "ac3b8ece7caf4311227efbd0879a0737d24632f6b5ca5c058e2bf30803d0b370"
+      },
+      {
+        "root": "portal",
+        "path": "apps/host/src/api.ts",
+        "sha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701"
+      },
+      {
+        "root": "portal",
+        "path": "apps/host/src/web-runtime.ts",
+        "sha256": "ad036f0d349bb7e172e552a1937e9ae2daf1bb6234242732ea3c5c8d244dcf85"
+      }
+    ],
+    "result": "The reviewed full-product implementation extends the identified existing product/control surfaces. R11@2 reuse assessment passes.",
+    "parentShipment": "Owner directive1534 and the full plan remain open. Original hosted failures, protected voice/human/native acceptance, novice review, required affected suite and final release obligations stay in their own acceptance records. This review changes no BAR, spec or shipment requirement."
+  },
   "reviews": [
     {
       "specId": "AUTO-BAR-R-11-P-016",
