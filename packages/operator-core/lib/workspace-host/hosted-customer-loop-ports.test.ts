@@ -9,7 +9,8 @@ import type { HostedPrincipalResolver, HostedPrincipalResolution } from '../auth
 import type { ModelPort, ModelRequest } from '../agent-loop/model-port';
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '../task-manager/enroll-sync';
 import { notifyTaskKillRequested } from '../task-manager/kill-notify';
-import { bindHostedCustomerChannelLoopPorts, bindHostedCustomerLoopPorts } from './hosted-customer-loop-ports';
+import { bindHostedCustomerChannelLoopPorts, bindHostedCustomerLoopPorts,
+  createHostedCustomerChannelOwnedLoopPort } from './hosted-customer-loop-ports';
 
 vi.mock('../task-manager/enroll-sync', () => ({
   beginSyncEnrolment: vi.fn(() => ({ taskId: 'testcustomertask', enrolled: true })),
@@ -22,7 +23,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'customer-loop-ports-'));
   project = join(root, 'project'); mkdirSync(project);
 });
-afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
 async function fixture(options: { tool?: Partial<ProjectedTool>; deps?: DispatchProjectedDeps;
   modelFactory?: (session: unknown, signal?: AbortSignal) => ModelPort | Promise<ModelPort> } = {}) {
@@ -49,7 +50,7 @@ async function fixture(options: { tool?: Partial<ProjectedTool>; deps?: Dispatch
     customerWorkspaceId: 'customer-workspace', projectDir: project, transform,
     signal: controller.signal, lookupTool: () => tool, dispatchDeps: { recordInvocation: telemetry, ...options.deps },
     createModelPort: modelFactory });
-  return { ports, resolve, transform, controller, modelFactory, modelStream, localHandler, telemetry,
+  return { ports, resolve, tool, transform, controller, modelFactory, modelStream, localHandler, telemetry,
     change: (patch: Partial<typeof current>) => { current = { ...current, ...patch }; } };
 }
 
@@ -59,6 +60,45 @@ async function consume(port: ModelPort, req = request) {
 }
 
 describe('private customer loop port composition', () => {
+  it('composes an owned native invocation with exact channel authority and customer commands', async () => {
+    vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'vm-release');
+    const f = await fixture();
+    const requests: ModelRequest[] = [];
+    const modelFactory = vi.fn((): ModelPort => ({ async *stream(request) {
+      requests.push(request);
+      if (requests.length === 1) {
+        yield { type: 'tool_call', id: 'customer-command', name: 'capability:bash', input: { command: 'printf native-customer' } };
+        yield { type: 'stop', reason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+      } else {
+        yield { type: 'text_delta', text: 'customer done' };
+        yield { type: 'stop', reason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+      }
+    } }));
+    const sessionHost = { resolveCustomerPrincipal: vi.fn(() => f.resolve(new Headers())),
+      customerInvocationSignal: vi.fn((_channel: string, signal?: AbortSignal) =>
+        signal ? AbortSignal.any([signal, f.controller.signal]) : f.controller.signal) };
+    const flushTelemetry = vi.fn(async () => {});
+    const host = createHostedCustomerChannelOwnedLoopPort({ workspaceId: 'vm-local-workspace',
+      sessionHost, channelId: 'private-channel', customerWorkspaceId: 'customer-workspace', projectDir: project,
+      transform: f.transform, lookupTool: () => f.tool, dispatchDeps: { recordInvocation: f.telemetry },
+      createModelPort: modelFactory, flushTelemetry });
+    const input = { role: 'worker', prompt: 'run a customer command', model: 'openrouter/fixture/model',
+      runId: 'native-run', featureId: null, chunkId: null, workspaceId: 'vm-local-workspace',
+      harnessSlug: 'customer-harness', projectDir: project, cwd: project, stateDir: join(project, '.papercusp'), emit: vi.fn() };
+    expect(await host.invoke(input)).toEqual({ exitCode: 0 });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].tools?.map(tool => tool.name)).toEqual(['capability:bash']);
+    expect(requests[0].ownerId).toBe('customer-user');
+    expect(f.localHandler).not.toHaveBeenCalled();
+    expect(f.transform).toHaveBeenCalledTimes(1);
+    const resultEvent = input.emit.mock.calls.map(call => call[0]).find(event => event.type === 'tool_result');
+    // The projected dispatcher may append its provenance advisory to text content.
+    expect(JSON.parse(resultEvent.result.split('\n')[0])).toMatchObject({ output: 'native-customer', exit_code: 0 });
+    expect(flushTelemetry).toHaveBeenCalledTimes(1);
+    f.controller.abort();
+    expect(await host.invoke(input)).toEqual({ exitCode: 1, stderr: 'owned-loop customer execution host unavailable' });
+    expect(requests).toHaveLength(2); expect(f.transform).toHaveBeenCalledTimes(1);
+  });
   it('composes the private channel authority door without admitting request labels', async () => {
     const f = await fixture();
     const principal = createHostedPrincipal({ workspaceId: 'control-workspace', userId: 'customer-user',

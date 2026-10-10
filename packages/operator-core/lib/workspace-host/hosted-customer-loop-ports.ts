@@ -5,7 +5,8 @@ import { posix } from 'node:path';
 import { dispatchProjectedTool, lookupByMcpName, type DispatchProjectedDeps,
   type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import type { ModelPort, ModelRequest } from '../agent-loop/model-port';
-import type { ToolDispatcher, DispatchResult } from '../agent-loop/capability-toolset';
+import { capabilityToolset, type ToolDispatcher, type DispatchResult } from '../agent-loop/capability-toolset';
+import { createOperatorOwnedLoopPort, type OperatorOwnedLoopPortOptions } from '../agent-loop/headless-invoke';
 import type { HostedWorkspaceHostSessionAdapter } from './hosted-session-host';
 import { awaitHostedCustomerOperation, bindHostedCustomerCommandExecutor, type HostedCustomerCommandDependencies,
   type HostedCustomerSessionBinding } from './hosted-customer-command';
@@ -23,6 +24,34 @@ export interface HostedCustomerLoopPortDependencies extends HostedCustomerComman
 }
 
 const SHELL_TOOL = 'capability:bash';
+
+/** Compose the existing one-shot native host on the customer VM. The local
+ * workspace pin is distinct from the control-plane customer-workspace id.
+ * No route installs this factory until independent acceptance is available. */
+export function createHostedCustomerChannelOwnedLoopPort(
+  deps: Omit<HostedCustomerLoopPortDependencies, 'resolvePrincipal' | 'sessionHeaders' | 'signal'> & {
+    readonly workspaceId: string;
+    readonly sessionHost: Pick<HostedWorkspaceHostSessionAdapter,
+      'resolveCustomerPrincipal' | 'customerInvocationSignal'>;
+    readonly channelId: string;
+    readonly flushTelemetry?: OperatorOwnedLoopPortOptions['flushTelemetry'];
+  },
+): ReturnType<typeof createOperatorOwnedLoopPort> {
+  const { workspaceId, sessionHost, channelId, flushTelemetry, ...ports } = { ...deps };
+  return createOperatorOwnedLoopPort({ ...(flushTelemetry ? { flushTelemetry } : {}),
+    customerExecution: { workspaceId, projectDir: ports.projectDir,
+      async bind(callerSignal) {
+        const signal = sessionHost.customerInvocationSignal(channelId, callerSignal);
+        if (signal.aborted) throw new Error('hosted_customer_execution_denied');
+        const bound = await bindHostedCustomerChannelLoopPorts({ ...ports, sessionHost, channelId, signal });
+        const lookup = ports.lookupTool ?? lookupByMcpName;
+        const tools = capabilityToolset({ dispatch: bound.dispatch, names: bound.toolNames, prefixes: [],
+          registry: () => bound.toolNames.map(name => lookup(name)).filter((tool): tool is ProjectedTool => !!tool) });
+        return { modelPort: bound.modelPort, tools, signal };
+      },
+    },
+  });
+}
 
 /** Compose privately on the customer VM. The host channel owns authentication;
  * request headers/account labels supply no authority. Route guard stays in place

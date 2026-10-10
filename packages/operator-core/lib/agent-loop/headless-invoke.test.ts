@@ -12,6 +12,54 @@ describe('createOperatorOwnedLoopPort', () => {
     emit: vi.fn(),
   });
 
+  it.each(['workspaceId', 'cwd', 'projectDir'])('refuses a changed customer %s before binding', async key => {
+    vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'vm-release');
+    const bind = vi.fn();
+    const input = { ...invocation(), [key]: 'foreign' };
+    const host = createOperatorOwnedLoopPort({ customerExecution: {
+      workspaceId: 'caller-workspace', projectDir: '/repo', bind }, flushTelemetry: async () => {} });
+    expect(await host.invoke(input)).toEqual({ exitCode: 1, stderr: 'owned-loop customer execution host unavailable' });
+    expect(bind).not.toHaveBeenCalled(); expect(input.emit).not.toHaveBeenCalled();
+  });
+
+  it('runs exclusively on the trusted customer ports and preserves channel cancellation', async () => {
+    vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'vm-release');
+    const lifetime = new AbortController();
+    const caller = new AbortController();
+    const requests: ModelRequest[] = [];
+    const modelPort: ModelPort = { async *stream(request) {
+      requests.push(request);
+      yield { type: 'text_delta', text: 'private result' };
+      yield { type: 'stop', reason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 } };
+    } };
+    const bind = vi.fn(async () => ({ modelPort, tools: [], signal: lifetime.signal }));
+    const ambient = vi.fn();
+    const host = createOperatorOwnedLoopPort({ customerExecution: {
+      workspaceId: 'caller-workspace', projectDir: '/repo', bind },
+    modelPort: ambient, tools: [], flushTelemetry: async () => {} });
+    expect(await host.invoke(invocation('customer-run', caller.signal))).toEqual({ exitCode: 0 });
+    expect(bind).toHaveBeenCalledExactlyOnceWith(caller.signal);
+    expect(ambient).not.toHaveBeenCalled();
+    expect(requests[0].signal?.aborted).toBe(false);
+    lifetime.abort();
+    expect(requests[0].signal?.aborted).toBe(true);
+    expect(await host.invoke(invocation())).toEqual({ exitCode: 130, stderr: 'owned-loop turn aborted' });
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each(['throws', 'model', 'tools', 'signal'])('refuses an invalid customer %s without ambient fallback', async mode => {
+    const bind = vi.fn(async () => {
+      if (mode === 'throws') throw new Error('private credential');
+      return { modelPort: { stream: vi.fn() }, tools: [], signal: new AbortController().signal,
+        [mode === 'model' ? 'modelPort' : mode]: null } as never;
+    });
+    const ambient = vi.fn(); const input = invocation();
+    const host = createOperatorOwnedLoopPort({ customerExecution: {
+      workspaceId: 'caller-workspace', projectDir: '/repo', bind }, modelPort: ambient, flushTelemetry: async () => {} });
+    expect(await host.invoke(input)).toEqual({ exitCode: 1, stderr: 'owned-loop customer execution host unavailable' });
+    expect(ambient).not.toHaveBeenCalled(); expect(input.emit).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: 'VM release', env: { PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release' } },
     { name: 'VM release with TCP opt-out', env: { PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release', PAPERCUSP_LOOPBACK_PEER_UID_POLICY: 'off' } },

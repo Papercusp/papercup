@@ -500,6 +500,8 @@ type Channel =
       userId: string;
       hostedSessionId: string;
       http: OperatorHttpChannel;
+      /** Private native invocations die with this exact operator channel. */
+      lifetime?: AbortController;
       /**
        * `app` for an `app-http` channel (P-007): the same one-way request pipe, built
        * with the app plane's route and header policy and no ticket user — the app's
@@ -889,6 +891,15 @@ export class HostedWorkspaceHostSessionAdapter {
     this.warn = options.onWarning ?? ((message: string) => console.warn(`[hosted-session-host] ${message}`));
   }
 
+  /** Private invocation lifetime, never a header or serialized credential.
+   * A later channel reusing the id cannot revive an earlier invocation. */
+  customerInvocationSignal(channelId: string, signal?: AbortSignal): AbortSignal {
+    const channel = this.channels.get(channelId);
+    if (this.closed || !channel || channel.kind !== 'operator-http' || channel.plane
+      || !channel.lifetime) throw new Error('hosted_customer_execution_denied');
+    return signal ? AbortSignal.any([signal, channel.lifetime.signal]) : channel.lifetime.signal;
+  }
+
   /** Private host API. A relay label is never a principal: query the current
    * ticket-bound control-plane session for EACH call on the authenticated socket. */
   resolveCustomerPrincipal(channelId: string, signal?: AbortSignal): ReturnType<HostedCustomerCommandDependencies['resolvePrincipal']> {
@@ -1193,7 +1204,8 @@ export class HostedWorkspaceHostSessionAdapter {
         ...(this.options.operatorHttp?.origin ? { origin: this.options.operatorHttp.origin } : {}),
         ...(this.options.operatorHttp?.fetch ? { fetch: this.options.operatorHttp.fetch } : {}),
       });
-      this.channels.set(channelId, { kind: 'operator-http', userId, hostedSessionId, http });
+      this.channels.set(channelId, { kind: 'operator-http', userId, hostedSessionId, http,
+        lifetime: new AbortController() });
       this.send(channelId, { type: 'http.ready' });
       this.audit('operator_http_attached', principal, channelId);
       return;
@@ -1986,6 +1998,7 @@ export class HostedWorkspaceHostSessionAdapter {
     this.channels.delete(channelId);
     if (channel.kind === 'operator-http') {
       // Aborts every in-flight forward, so a closed portal tab tears its SSE down.
+      channel.lifetime?.abort();
       channel.http.close();
       this.audit('operator_http_detached', channel, channelId, reason);
       return;
@@ -2011,7 +2024,10 @@ export class HostedWorkspaceHostSessionAdapter {
 
   private closeOperatorHttpChannels(): void {
     for (const channel of this.channels.values()) {
-      if (channel.kind === 'operator-http') channel.http.close();
+      if (channel.kind === 'operator-http') {
+        channel.lifetime?.abort();
+        channel.http.close();
+      }
       else if (channel.kind === 'app-key-mint') channel.mint.close();
     }
   }

@@ -149,6 +149,51 @@ describe('hosted customer PTY identity', () => {
     return f;
   }
 
+  it.each(['detach', 'release', 'close'])('aborts native invocations on channel %s', async action => {
+    const f = await authorityHarness();
+    const caller = new AbortController();
+    const signal = f.adapter.customerInvocationSignal('http', caller.signal);
+    expect(signal.aborted).toBe(false);
+    if (action === 'detach') await f.adapter.accept({ type: 'relay.close', channelId: 'http' });
+    else if (action === 'release') f.adapter.release();
+    else f.adapter.close();
+    expect(signal.aborted).toBe(true);
+    expect(caller.signal.aborted).toBe(false);
+    expect(() => f.adapter.customerInvocationSignal('http')).toThrow('hosted_customer_execution_denied');
+    f.adapter.close();
+  });
+
+  it('cannot revive an invocation by reopening the same channel id', async () => {
+    const f = await authorityHarness();
+    const old = f.adapter.customerInvocationSignal('http');
+    await f.adapter.accept({ type: 'relay.close', channelId: 'http' });
+    await f.adapter.accept({ type: 'relay.open', channelId: 'http', userId: 'user-1',
+      hostedSessionId: 'session-1', audience: 'workspace-operator', role: 'controller', kind: 'operator-http' });
+    const fresh = f.adapter.customerInvocationSignal('http');
+    expect(old.aborted).toBe(true); expect(fresh.aborted).toBe(false); expect(fresh).not.toBe(old);
+    f.adapter.close();
+  });
+
+  it('isolates native channel lifetimes and accepts caller cancellation', async () => {
+    const f = await authorityHarness();
+    await f.adapter.accept({ type: 'relay.open', channelId: 'other', userId: 'user-1',
+      hostedSessionId: 'session-1', audience: 'workspace-operator', role: 'controller', kind: 'operator-http' });
+    const caller = new AbortController();
+    const first = f.adapter.customerInvocationSignal('http', caller.signal);
+    const second = f.adapter.customerInvocationSignal('other');
+    caller.abort(); expect(first.aborted).toBe(true); expect(second.aborted).toBe(false);
+    await f.adapter.accept({ type: 'relay.close', channelId: 'http' });
+    expect(second.aborted).toBe(false); f.adapter.close(); expect(second.aborted).toBe(true);
+  });
+
+  it('refuses missing and PTY channel labels as invocation authority', async () => {
+    const f = harness(await projectRoot()); await f.open('pty');
+    for (const channel of ['missing', 'pty']) {
+      expect(() => f.adapter.customerInvocationSignal(channel)).toThrow('hosted_customer_execution_denied');
+    }
+    f.adapter.close();
+  });
+
   it('derives customer authority only from a correlated private connector answer', async () => {
     const f = await authorityHarness();
     const pending = f.adapter.resolveCustomerPrincipal('http');
