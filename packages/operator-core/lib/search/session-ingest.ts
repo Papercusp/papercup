@@ -2428,6 +2428,17 @@ export interface PromptOriginRecorrelationResult {
  * STORED text, so a row whose stored text differs from the raw prompt (for
  * example a truncated body) stays unmatched. This pass can miss a row; it
  * cannot attribute text the owner did not type.
+ *
+ * OLDER-VERSION ROWS ARE ELIGIBLE (WI-10008182). The provenance backfill does
+ * not rewrite a row whose verdict a newer catalogue leaves unchanged
+ * (WI-10006788), so an `unenrolled-origin` row keeps the version that first
+ * wrote it, indefinitely. Requiring version == current here stranded every such
+ * owner turn: owner directive #1594 sat at v6 and failed plans:audit. Each
+ * candidate is therefore re-derived with the CURRENT catalogue
+ * (stampTurnProvenance) before correlation, so a row the current catalogue
+ * calls machine or agent output is never promoted, and a promoted row is
+ * written at the current version. Rows a NEWER catalogue wrote are left to a
+ * build that carries it.
  */
 export async function recorrelatePromptOriginStampsOnce(
   sql: Sql,
@@ -2444,6 +2455,7 @@ export async function recorrelatePromptOriginStampsOnce(
       ts: Date | string;
       speaker: string;
       text: string;
+      version: number;
       prompt_hash: string;
       submitted_at: Date | string;
       expires_at: Date | string;
@@ -2451,6 +2463,7 @@ export async function recorrelatePromptOriginStampsOnce(
   >`
     SELECT turns.workspace_id, turns.source_kind, turns.session_id, turns.turn_idx,
            turns.ts, turns.speaker, turns.text,
+           turns.turn_origin_classifier_version AS version,
            stamps.prompt_hash, stamps.submitted_at, stamps.expires_at
       FROM harness_shared.session_prompt_origin_stamps AS stamps
       JOIN harness_shared.session_turns AS turns
@@ -2462,7 +2475,8 @@ export async function recorrelatePromptOriginStampsOnce(
      WHERE stamps.workspace_id = ${workspace}
        AND turns.speaker = 'user'
        AND turns.turn_origin_verdict = ${UNENROLLED_ORIGIN_VERDICT}
-       AND turns.turn_origin_classifier_version = ${MACHINE_SURFACE_CATALOGUE_VERSION}
+       -- Older versions included: the verdict is re-derived below (WI-10008182).
+       AND turns.turn_origin_classifier_version <= ${MACHINE_SURFACE_CATALOGUE_VERSION}
        -- Mirrors promptOriginHash (CRLF -> LF, trim). Prefilter only; a drift
        -- between the two makes rows MISS, which the integration test catches.
        AND encode(sha256(convert_to(
@@ -2488,11 +2502,12 @@ export async function recorrelatePromptOriginStampsOnce(
   if (!pairs.length) return { scanned: 0, promoted: 0, more: false };
 
   const rowsByKey = new Map<string, TurnRow>();
+  const storedVersion = new Map<TurnRow, number>();
   const stampsByKey = new Map<string, PromptOriginStamp>();
   for (const p of pairs) {
     const rowKey = [p.workspace_id, p.source_kind, p.session_id, p.turn_idx].join('\u0000');
     if (!rowsByKey.has(rowKey)) {
-      rowsByKey.set(rowKey, {
+      const row: TurnRow = {
         workspace_id: p.workspace_id,
         source_kind: p.source_kind,
         session_id: p.session_id,
@@ -2503,11 +2518,14 @@ export async function recorrelatePromptOriginStampsOnce(
         cwd: null,
         speaker: p.speaker,
         text: p.text,
-        turn_origin: null,
-        turn_origin_verdict: UNENROLLED_ORIGIN_VERDICT,
-        turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION,
         prompt_hash: promptOriginHash(p.text),
-      });
+      };
+      // The stored verdict may come from an older catalogue. Judge the row with
+      // the current one; correlation then only considers it if the current
+      // catalogue still finds no machine or agent origin.
+      stampTurnProvenance(row);
+      rowsByKey.set(rowKey, row);
+      storedVersion.set(row, Number(p.version));
     }
     const stampKey = [p.source_kind, p.session_id, p.prompt_hash, new Date(p.submitted_at).getTime()].join('\u0000');
     if (!stampsByKey.has(stampKey)) {
@@ -2527,18 +2545,23 @@ export async function recorrelatePromptOriginStampsOnce(
     await sql`
       UPDATE harness_shared.session_turns AS turns
          SET turn_origin = ${HOOK_AUTHENTICATED_PROMPT_ORIGIN},
-             turn_origin_verdict = 'owner-typed'
+             turn_origin_verdict = 'owner-typed',
+             turn_origin_classifier_version = ${MACHINE_SURFACE_CATALOGUE_VERSION}
         FROM UNNEST(
                ${sql.array(promoted.map((row) => row.workspace_id))}::text[],
                ${sql.array(promoted.map((row) => row.source_kind))}::text[],
                ${sql.array(promoted.map((row) => row.session_id))}::text[],
-               ${sql.array(promoted.map((row) => row.turn_idx))}::int[]
-             ) AS hit(workspace_id, source_kind, session_id, turn_idx)
+               ${sql.array(promoted.map((row) => row.turn_idx))}::int[],
+               ${sql.array(promoted.map((row) => storedVersion.get(row)!))}::int[]
+             ) AS hit(workspace_id, source_kind, session_id, turn_idx, version)
        WHERE turns.workspace_id = hit.workspace_id
          AND turns.source_kind = hit.source_kind
          AND turns.session_id = hit.session_id
          AND turns.turn_idx = hit.turn_idx
+         -- Only the exact state that was judged: a row another writer
+         -- re-derived in the meantime is left for the next tick.
          AND turns.turn_origin_verdict = ${UNENROLLED_ORIGIN_VERDICT}
+         AND turns.turn_origin_classifier_version = hit.version
     `;
   }
   return { scanned: rows.length, promoted: promoted.length, more: pairs.length === limit };

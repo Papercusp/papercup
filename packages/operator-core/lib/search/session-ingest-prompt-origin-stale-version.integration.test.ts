@@ -97,9 +97,14 @@ it('recorrelates older-version unenrolled rows with their hook stamp, re-derived
     cwd: root, encoding: 'utf8', timeout: 180000, maxBuffer: 2 * 1024 * 1024,
     env: { ...process.env, TEST_STALE_ORIGIN_MACHINE_TEXT: machineText },
   });
+  // with-test-pg's cleanup log fills the tail, so lead a failure with the
+  // probe's own output and the assertion that stopped it.
+  const diagnosis = `${result.stdout}\n${result.stderr}`.split('\n')
+    .filter((line) => /^STALE_ORIGIN_(RECORRELATE|RESULT)|AssertionError|^\s+(actual|expected|operator):|^\w*Error\b/.test(line))
+    .slice(0, 40).join('\n');
   const environment = result.stdout.match(/^STALE_ORIGIN_RUNTIME (.+)$/m)?.[1];
-  expect(environment, result.stdout.slice(-2000) + '\n' + result.stderr.slice(-2000)).toBeTruthy();
+  expect(environment, diagnosis || result.stderr.slice(-2000)).toBeTruthy();
   expect(existsSync(JSON.parse(environment!).home)).toBe(false);
-  expect(result.status, result.stdout.slice(-5000) + '\n' + result.stderr.slice(-5000)).toBe(0);
+  expect(result.status, diagnosis || result.stderr.slice(-5000)).toBe(0);
   expect(result.stdout).toContain('STALE_ORIGIN_RESULT');
 }, 200000);
