@@ -77,7 +77,12 @@ function fakeDeps(overrides: Partial<SyncBatchDeltaDeps> = {}, cursor: SyncDelta
     greenCheckpointRunning: async () => false,
     headSha: async () => SHA_B,
     listBatches: async () => [batch()],
-    probeRadius: async () => ({ workspaces: ['foo'], guards: [] }),
+    probeRadius: async () => ({
+      workspaces: ['foo'],
+      guards: [],
+      taskCommands: [{ workspace: 'foo', command: 'npm run test' }],
+      derivation: null,
+    }),
     runAffected: async () => ({ ok: true, failing: [] }),
     runTsc: async () => ({ ok: true, failing: [] }),
     confirmOne: async () => {
@@ -190,6 +195,10 @@ describe('idle-priority legs (R-1)', () => {
       expect(c.cmd).toBe('nice');
       expect(c.args.slice(0, 6)).toEqual(['-n', '19', 'ionice', '-c', '3', 'node']);
     }
+    const affectedRun = heavy.find(
+      (c) => c.args.includes('--changed-paths') && !c.args.includes('--print-affected'),
+    );
+    expect(affectedRun?.args).toContain('--related');
     await deps.headSha();
     await deps.greenCheckpointRunning();
     expect(calls.map((c) => c.cmd)).toEqual(['git', 'node']);

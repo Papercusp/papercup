@@ -43,7 +43,7 @@ import {
   type ConfirmVerdict,
   type EditorHit,
   type LoadReading,
-  type RadiusProbe,
+  type AffectedProbe,
   type RedFinding,
   type SyncBatch,
   type SyncBatchDeltaDeps,
@@ -62,7 +62,8 @@ export const SYNC_DELTA_TIMEOUTS_MS = {
   procGuard: 30_000,
   /** `--print-affected` is an enumeration — no test execution. */
   probe: 5 * 60_000,
-  /** The actual affected run, already capped at maxWorkspaces=3. */
+  /** The actual affected run, bounded by task/guard cardinality and narrowed by
+   *  `--related` when the selector has positive evidence. */
   affected: 25 * 60_000,
   tsc: 10 * 60_000,
   /** One file in its own invocation. */
@@ -268,7 +269,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       return parseSyncBatches(r.stdout);
     },
 
-    async probeRadius(paths: readonly string[]): Promise<RadiusProbe | null> {
+    async probeRadius(paths: readonly string[]): Promise<AffectedProbe | null> {
       const r = await heavy(
         'node',
         [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--print-affected'],
@@ -285,10 +286,14 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       failing: ReturnType<typeof parseFailingFilesLine>;
       diagnostic?: SubprocessDiagnostic;
     }> {
-      const r = await heavy('node', [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(',')], {
-        cwd: cfg.root,
-        timeoutMs: SYNC_DELTA_TIMEOUTS_MS.affected,
-      });
+      const r = await heavy(
+        'node',
+        [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--related'],
+        {
+          cwd: cfg.root,
+          timeoutMs: SYNC_DELTA_TIMEOUTS_MS.affected,
+        },
+      );
       // Unmeasurable spawn ⇒ red-with-no-break-set: the runner treats that as
       // UNDETERMINED and holds the cursor, which is the failure direction we want.
       if (!r) {

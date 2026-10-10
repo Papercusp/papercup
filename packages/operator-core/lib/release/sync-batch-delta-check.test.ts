@@ -13,10 +13,12 @@ import { parseConfirmOutput } from './sync-batch-delta-check-deps';
 import {
   conditionKeyForRed,
   evaluateRadius,
+  parseAffectedProbe,
   parseFailingFilesLine,
   parseSyncBatches,
   runSyncBatchDeltaCheck,
   unionBatchPaths,
+  type AffectedProbe,
   type FailingFile,
   type RedFinding,
   type SyncBatch,
@@ -31,6 +33,16 @@ const SHA_C = 'c'.repeat(40);
 
 function makeBatch(overrides: Partial<SyncBatch> = {}): SyncBatch {
   return { sha: SHA_B, committedAtMs: 1_700_000_000_000, agent: 'su-test', paths: ['packages/foo/src/a.ts'], ...overrides };
+}
+
+function makeProbe(overrides: Partial<AffectedProbe> = {}): AffectedProbe {
+  return {
+    workspaces: ['foo'],
+    guards: [],
+    taskCommands: [{ workspace: 'foo', command: 'npm run test' }],
+    derivation: null,
+    ...overrides,
+  };
 }
 
 interface FakeState {
@@ -54,7 +66,7 @@ function makeDeps(
     greenCheckpointRunning: async () => false,
     headSha: async () => SHA_B,
     listBatches: async () => [makeBatch()],
-    probeRadius: async () => ({ workspaces: ['foo'], guards: [] }),
+    probeRadius: async () => makeProbe(),
     runAffected: async () => ({ ok: true, failing: [] }),
     runTsc: async () => ({ ok: true, failing: [] }),
     confirmOne: async () => false,
@@ -105,22 +117,85 @@ describe('unionBatchPaths', () => {
   });
 });
 
-describe('evaluateRadius — production workspace bound', () => {
+describe('parseAffectedProbe and evaluateRadius — production radius bounds', () => {
+  it('parses task commands and guards as separate measured cardinalities', () => {
+    const probe = parseAffectedProbe([
+      'AFFECTED_DERIVATION source=explicit changedPaths=80 workspaces=10 guards=52 tasks=64',
+      'AFFECTED_WS\toperator-core',
+      'AFFECTED_WS_CMD\toperator-core\tnpm run test:lane-pure --workspace @papercusp/operator-core',
+      'AFFECTED_GUARD\toperator-core\tlint:tsc\tnpm run lint:tsc -- --files=a.ts',
+    ].join('\n'));
+    expect(probe.taskCommands).toEqual([
+      { workspace: 'operator-core', command: 'npm run test:lane-pure --workspace @papercusp/operator-core' },
+    ]);
+    expect(probe.guards).toEqual(['operator-core:lint:tsc']);
+    expect(probe.derivation?.counts).toMatchObject({ changedPaths: 80, workspaces: 10, guards: 52, tasks: 64 });
+  });
+
   it('accepts the observed 10-workspace ceiling and still refuses wider batches', () => {
     const union = unionBatchPaths([makeBatch()], 80);
     const accepted = evaluateRadius({
-      probe: { workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`), guards: [] },
+      probe: makeProbe({ workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`) }),
       union,
       batchCount: 1,
     });
     expect(accepted).toEqual({ run: true, workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`) });
 
     const refused = evaluateRadius({
-      probe: { workspaces: Array.from({ length: 11 }, (_, i) => `ws-${i}`), guards: [] },
+      probe: makeProbe({ workspaces: Array.from({ length: 11 }, (_, i) => `ws-${i}`) }),
       union,
       batchCount: 1,
     });
     expect(refused).toMatchObject({ run: false, reason: 'radius-too-wide' });
+  });
+
+  it('refuses the measured task-heavy radius and independently caps guards', () => {
+    const union = unionBatchPaths([makeBatch()], 80);
+    const observed = makeProbe({
+      workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`),
+      taskCommands: Array.from({ length: 64 }, (_, i) => ({ workspace: `ws-${i}`, command: `npm run task-${i}` })),
+      guards: Array.from({ length: 52 }, (_, i) => `ws-${i}:guard-${i}`),
+    });
+    const tasksRefused = evaluateRadius({ probe: observed, union, batchCount: 1 });
+    expect(tasksRefused).toMatchObject({ run: false, reason: 'radius-too-wide' });
+    if (!tasksRefused.run) {
+      expect(tasksRefused.detail).toContain('tasks=64');
+      expect(tasksRefused.detail).toContain('guards=52');
+      expect(tasksRefused.detail).toContain('maxTaskCommands=32');
+    }
+
+    const guardsRefused = evaluateRadius({
+      probe: makeProbe({
+        taskCommands: Array.from({ length: 20 }, (_, i) => ({ workspace: 'foo', command: `npm run task-${i}` })),
+        guards: Array.from({ length: 27 }, (_, i) => `foo:guard-${i}`),
+      }),
+      union,
+      batchCount: 1,
+    });
+    expect(guardsRefused).toMatchObject({ run: false, reason: 'radius-too-wide' });
+    if (!guardsRefused.run) expect(guardsRefused.detail).toContain('maxGuards=26');
+  });
+
+  it('runs a guard-only radius instead of treating zero workspaces as no work', () => {
+    const verdict = evaluateRadius({
+      probe: makeProbe({
+        workspaces: [],
+        taskCommands: [{ workspace: 'root', command: 'npm run lint:root' }],
+        guards: ['root:lint:root'],
+      }),
+      union: unionBatchPaths([makeBatch()], 80),
+      batchCount: 1,
+    });
+    expect(verdict).toEqual({ run: true, workspaces: [] });
+  });
+
+  it('treats workspace names without runnable tasks or guards as nothing selected', () => {
+    const verdict = evaluateRadius({
+      probe: makeProbe({ taskCommands: [] }),
+      union: unionBatchPaths([makeBatch()], 80),
+      batchCount: 1,
+    });
+    expect(verdict).toMatchObject({ run: false, reason: 'nothing-selected' });
   });
 });
 
@@ -175,7 +250,7 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     );
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res.status).toBe('skipped');
-    expect(res.reason).toBe('affected-run-undetermined');
+    expect(res.reason).toBe('affected-run-missing-terminal-break-set');
     expect(state.cursor?.sha).toBe(SHA_A); // re-judged next tick
   });
 
@@ -185,6 +260,8 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
         probeRadius: async () => ({
           workspaces: Array.from({ length: 11 }, (_, i) => `ws-${i}`),
           guards: [],
+          taskCommands: [],
+          derivation: null,
         }),
       },
       { sha: SHA_A, updatedAtMs: 1 },
@@ -255,8 +332,8 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
         probeRadius: async (paths) => {
           probed.push([...paths]);
           return paths.length > 1
-            ? { workspaces: ['ws-a', 'ws-b'], guards: [] }
-            : { workspaces: ['ws-a'], guards: [] };
+            ? makeProbe({ workspaces: ['ws-a', 'ws-b'] })
+            : makeProbe({ workspaces: ['ws-a'] });
         },
         runAffected: async (paths) => {
           testedPaths = [...paths];
@@ -275,6 +352,47 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     expect(state.cursor?.sha).toBe(SHA_A);
   });
 
+  it('shrinks a task- and guard-heavy prefix before executing it', async () => {
+    const probed: string[][] = [];
+    let testedPaths: string[] = [];
+    const oldest = makeBatch({ sha: SHA_A, paths: ['oldest.ts'] });
+    const middle = makeBatch({ sha: SHA_B, paths: ['middle.ts'] });
+    const newest = makeBatch({ sha: SHA_C, paths: ['newest.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_C,
+        listBatches: async () => [newest, middle, oldest],
+        probeRadius: async (paths) => {
+          probed.push([...paths]);
+          return paths.length > 1
+            ? makeProbe({
+                taskCommands: Array.from({ length: 3 }, (_, i) => ({ workspace: 'foo', command: `npm run task-${i}` })),
+                guards: ['foo:guard-a', 'foo:guard-b'],
+              })
+            : makeProbe({
+                taskCommands: [{ workspace: 'foo', command: 'npm run task-a' }],
+                guards: ['foo:guard-a'],
+              });
+        },
+        runAffected: async (paths) => {
+          testedPaths = [...paths];
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, {
+      caps: { maxWorkspaces: 10, maxPaths: 10, maxCommits: 10, maxTaskCommands: 1, maxGuards: 1 },
+    });
+
+    expect(res.status).toBe('green');
+    expect(probed).toHaveLength(2);
+    expect(probed[1]).toEqual(['oldest.ts']);
+    expect(testedPaths).toEqual(['oldest.ts']);
+    expect(state.cursor?.sha).toBe(SHA_A);
+  });
+
   it('advances past only a path-oversized oldest commit with an explicit non-evaluated reason', async () => {
     let probes = 0;
     const oversized = makeBatch({ sha: SHA_A, paths: Array.from({ length: 81 }, (_, i) => `path-${i}.ts`) });
@@ -285,7 +403,7 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
         listBatches: async () => [newer, oversized],
         probeRadius: async () => {
           probes += 1;
-          return { workspaces: ['foo'], guards: [] };
+          return makeProbe();
         },
       },
       { sha: 'd'.repeat(40), updatedAtMs: 1 },

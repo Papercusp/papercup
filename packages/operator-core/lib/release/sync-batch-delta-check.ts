@@ -140,13 +140,28 @@ export interface RadiusCaps {
   maxPaths: number;
   /** Commits one run may fold into a batch window before it is refused. */
   maxCommits: number;
+  /** Exact runnable task commands the affected runner may select. Optional for
+   *  callers that override only the original three dimensions. */
+  maxTaskCommands?: number;
+  /** Repo-wide invariant guards, a separately visible subset of task commands. */
+  maxGuards?: number;
 }
 
 // Production coverage measured 2026-10-06 showed 15 of 17 radius refusals
 // affected 7–10 workspaces. Keep the bound below the observed 20-workspace
 // outlier while admitting those normal batches; the 80-path and 40-commit
 // ceilings still bound the other dimensions independently.
-export const DEFAULT_RADIUS_CAPS: RadiusCaps = { maxWorkspaces: 10, maxPaths: 80, maxCommits: 40 };
+// WI-10007175: the admitted 80-path prefix measured 10 workspaces, 64 task commands,
+// and 52 guards; its affected child repeatedly hit the 25-minute timeout. Keep the
+// admitted prefix below half those task/guard counts, and use the existing related
+// selector in the runner to narrow test files when its evidence allows.
+export const DEFAULT_RADIUS_CAPS = {
+  maxWorkspaces: 10,
+  maxPaths: 80,
+  maxCommits: 40,
+  maxTaskCommands: 32,
+  maxGuards: 26,
+} satisfies RadiusCaps;
 
 /** Single-file re-runs spent CONFIRMING a red before anything is filed. Root
  *  CLAUDE.md: a multi-file vitest invocation can abort during collection, so a
@@ -306,7 +321,8 @@ export function tsFilesOf(paths: readonly string[]): string[] {
 export interface RadiusProbe {
   /** `AFFECTED_WS<TAB><name>` lines. */
   workspaces: string[];
-  /** `AFFECTED_GUARD<TAB><workspace><TAB><script>` lines, as `<workspace>:<script>`. */
+  /** `AFFECTED_GUARD<TAB><workspace><TAB><script><TAB><command>` lines, reduced to
+   *  `<workspace>:<script>` for cardinality checks. */
   guards: string[];
 }
 
@@ -371,7 +387,7 @@ export function parseAffectedProbe(stdout: string): AffectedProbe {
       workspaces.push(ws[1].trim());
       continue;
     }
-    const guard = /^AFFECTED_GUARD\t([^\t]+)\t(.+)$/.exec(line);
+    const guard = /^AFFECTED_GUARD\t([^\t]+)\t([^\t]+)(?:\t.*)?$/.exec(line);
     if (guard?.[1] && guard[2]) {
       guards.push(`${guard[1].trim()}:${guard[2].trim()}`);
       continue;
@@ -408,18 +424,21 @@ export type RadiusVerdict =
  * Should this batch window actually be EXECUTED?
  *
  * `nothing-selected` is a first-class PASS-BY-CONSTRUCTION, not a failure: a batch
- * of docs/plan edits legitimately selects zero workspaces, and running the suite for
- * it would be pure waste. It is reported separately from `radius-too-wide` because
+ * of docs/plan edits legitimately selects zero task commands and guards, and running
+ * the suite for it would be pure waste. A guard-only radius is still runnable even
+ * when it names no test workspace. `nothing-selected` is reported separately from `radius-too-wide` because
  * the two want opposite follow-ups (one advances the cursor happily, the other is a
  * measurement we declined to take).
  */
 export function evaluateRadius(input: {
-  probe: RadiusProbe;
+  probe: AffectedProbe;
   union: UnionedPaths;
   batchCount: number;
   caps?: RadiusCaps;
 }): RadiusVerdict {
   const caps = input.caps ?? DEFAULT_RADIUS_CAPS;
+  const maxTaskCommands = caps.maxTaskCommands ?? DEFAULT_RADIUS_CAPS.maxTaskCommands;
+  const maxGuards = caps.maxGuards ?? DEFAULT_RADIUS_CAPS.maxGuards;
   const { probe, union, batchCount } = input;
   if (union.truncated) {
     return {
@@ -444,11 +463,29 @@ export function evaluateRadius(input: {
         `exceeds maxWorkspaces=${caps.maxWorkspaces}`,
     };
   }
-  if (probe.workspaces.length === 0) {
+  if (probe.taskCommands.length > maxTaskCommands) {
+    return {
+      run: false,
+      reason: 'radius-too-wide',
+      detail:
+        `affected radius has workspaces=${probe.workspaces.length}, tasks=${probe.taskCommands.length}, ` +
+        `guards=${probe.guards.length}; exceeds maxTaskCommands=${maxTaskCommands}`,
+    };
+  }
+  if (probe.guards.length > maxGuards) {
+    return {
+      run: false,
+      reason: 'radius-too-wide',
+      detail:
+        `affected radius has workspaces=${probe.workspaces.length}, tasks=${probe.taskCommands.length}, ` +
+        `guards=${probe.guards.length}; exceeds maxGuards=${maxGuards}`,
+    };
+  }
+  if (probe.taskCommands.length === 0 && probe.guards.length === 0) {
     return {
       run: false,
       reason: 'nothing-selected',
-      detail: `${union.paths.length} changed path(s) select no test workspace`,
+      detail: `${union.paths.length} changed path(s) select no test task or invariant guard`,
     };
   }
   return { run: true, workspaces: probe.workspaces };
@@ -1048,7 +1085,7 @@ export interface SyncBatchDeltaDeps {
   /** Commits in `(sinceSha, HEAD]`, newest first; null when git could not be read. */
   listBatches(sinceSha: string): Promise<SyncBatch[] | null>;
   /** `affected-tests.mjs --print-affected` for a path set; null when the probe failed. */
-  probeRadius(paths: readonly string[]): Promise<RadiusProbe | null>;
+  probeRadius(paths: readonly string[]): Promise<AffectedProbe | null>;
   /** `affected-tests.mjs --changed-paths <paths>` — the actual run. `failing: null`
    *  on a red means the run named no files, i.e. UNDETERMINED. */
   runAffected(paths: readonly string[]): Promise<{
@@ -1418,11 +1455,11 @@ async function runSyncBatchDeltaTick(
   }
 
   // ── 5. radius probe + the cap ──────────────────────────────────────────────
-  let probe: RadiusProbe = { workspaces: [], guards: [] };
+  let probe: AffectedProbe = { workspaces: [], guards: [], taskCommands: [], derivation: null };
   let verdict: RadiusVerdict;
   for (;;) {
     if (union.paths.length === 0) {
-      probe = { workspaces: [], guards: [] };
+      probe = { workspaces: [], guards: [], taskCommands: [], derivation: null };
       verdict = { run: false, reason: 'nothing-selected', detail: 'oldest prefix has no changed paths' };
       break;
     }
@@ -1437,7 +1474,8 @@ async function runSyncBatchDeltaTick(
         deps,
         cursor,
         batch,
-        `this single commit selects ${probe.workspaces.length} affected workspaces; ${verdict.detail}`,
+        `this single commit selects workspaces=${probe.workspaces.length}, tasks=${probe.taskCommands.length}, ` +
+          `guards=${probe.guards.length}; ${verdict.detail}`,
         union.paths.length,
         probe.workspaces,
         stillOpen,
