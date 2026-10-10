@@ -553,6 +553,67 @@ describe('provider-counted complete native input', () => {
       } finally { f.reader.revoke(); f.revoke(); }
     });
 
+  it.each(['valid', 'turn-mismatch', 'thread-mismatch', 'session-mismatch', 'window-mismatch',
+    'installation-mismatch', 'root-mismatch', 'invalid-id', 'unknown'] as const)(
+    'bounds installed Codex metadata aliases (%s)', async mode => {
+      const f = fixture();
+      const session = '11111111-1111-1111-1111-111111111111', turn = '22222222-2222-2222-2222-222222222222';
+      const installation = '33333333-3333-3333-3333-333333333333', other = '44444444-4444-4444-4444-444444444444';
+      const body = JSON.parse(f.attempt.body);
+      body.client_metadata = { session_id: session, thread_id: session, turn_id: turn, root_turn_id: turn,
+        'x-codex-installation-id': installation, 'x-codex-window-id': `${session}:0`,
+        'x-codex-turn-metadata': JSON.stringify({ session_id: session, thread_id: session, turn_id: turn,
+          root_turn_id: turn, installation_id: installation, window_id: `${session}:0`, model: f.input.model }) };
+      const key = ({ 'turn-mismatch': 'turn_id', 'thread-mismatch': 'thread_id', 'session-mismatch': 'session_id',
+        'window-mismatch': 'x-codex-window-id', 'installation-mismatch': 'x-codex-installation-id',
+        'root-mismatch': 'root_turn_id' } as Record<string, string>)[mode];
+      if (key) body.client_metadata[key] = other;
+      if (mode === 'invalid-id') body.client_metadata['x-codex-installation-id'] = 'PRIVATE_UNCOUNTED_CONTEXT';
+      if (mode === 'unknown') body.client_metadata.unreviewed_context = 'PRIVATE_UNCOUNTED_CONTEXT';
+      f.attempt.body = JSON.stringify(body); f.attempt.bodySha256 = f.digest(f.attempt.body);
+      try {
+        const proof = await f.reader.read(f.attempt, f.credential);
+        if (mode === 'valid') {
+          expect(proof?.evidence?.bodySha256).toBe(f.attempt.bodySha256);
+          expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).not.toHaveProperty('client_metadata');
+        } else { expect(proof).toBeNull(); expect(f.fetch).not.toHaveBeenCalled(); }
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
+  it.each(['valid', 'empty-result', 'server-declaration', 'missing-execution', 'missing-schema', 'unknown-field',
+    'server-call', 'server-output', 'missing-call-id', 'hosted-result', 'nested-hosted-result', 'search-result'] as const)(
+    'counts only client discovery and complete returned local definitions (%s)', async mode => {
+      const f = fixture(), body = JSON.parse(f.attempt.body);
+      const declaration: Record<string, unknown> = { type: 'tool_search', execution: 'client',
+        description: 'Search installed deferred tools', parameters: { type: 'object', properties: {
+          query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'], additionalProperties: false } };
+      const call = { type: 'tool_search_call', execution: 'client', call_id: 'local-search', status: 'completed',
+        arguments: { query: 'work_items:get', limit: 4 } };
+      const output: Record<string, unknown> = { type: 'tool_search_output', execution: 'client', call_id: 'local-search',
+        status: 'completed', tools: [{ type: 'function', name: 'work_items_get', defer_loading: true,
+          description: 'Full maintained local tool', parameters: { type: 'object', properties: { id: { type: 'string' } } } }] };
+      if (mode === 'server-declaration') declaration.execution = 'server';
+      if (mode === 'missing-execution') delete declaration.execution;
+      if (mode === 'missing-schema') delete declaration.parameters;
+      if (mode === 'unknown-field') declaration.remote_context = 'unmeasured';
+      if (mode === 'server-call') call.execution = 'server';
+      if (mode === 'server-output') output.execution = 'server';
+      if (mode === 'missing-call-id') output.call_id = '';
+      if (mode === 'empty-result') output.tools = [];
+      if (mode === 'hosted-result') output.tools = [{ type: 'web_search' }];
+      if (mode === 'nested-hosted-result') output.tools = [{ type: 'namespace', name: 'hosted', tools: [{ type: 'web_search' }] }];
+      if (mode === 'search-result') output.tools = [declaration];
+      body.tools.push(declaration); body.input.push(call, output);
+      f.attempt.body = JSON.stringify(body); f.attempt.bodySha256 = f.digest(f.attempt.body);
+      try {
+        const proof = await f.reader.read(f.attempt, f.credential);
+        if (mode === 'valid' || mode === 'empty-result') {
+          expect(proof?.evidence?.bodySha256).toBe(f.attempt.bodySha256);
+          const counted = JSON.parse(f.fetch.mock.calls[0]![1]!.body as string);
+          expect(counted.tools).toEqual(body.tools); expect(counted.input).toEqual(body.input);
+        } else { expect(proof).toBeNull(); expect(f.fetch).not.toHaveBeenCalled(); }
+      } finally { f.reader.revoke(); f.revoke(); }
+    });
+
   it('counts the entire native payload with the final registered credential and reserves the frozen ceiling', async () => {
     const f = fixture();
     try {
