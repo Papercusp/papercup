@@ -16,7 +16,8 @@ vi.mock('../../workspace-registry', async (orig) => ({
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { FEATURE_COLS, featureRowToWorkItem } = await import('../../work-items');
-const { claimNextAgentReview, claimNextVerificationTask } = await import('./agent-review');
+const { adoptNextAgentReviewRevision, claimNextAgentReview, claimNextVerificationTask } = await import('./agent-review');
+const { LEGACY_AGENT_REVIEW_SUBMITTER } = await import('./agent-review-policy');
 const { buildP2pLaneFence } = await import('../../scheduler/p2p-lane-fence');
 const WS = 'ws-verifier-scope';
 const HARNESS = 'papercusp';
@@ -138,5 +139,63 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
     expect(indexDef).toMatch(/status\s*=\s*'open'(?:::text)?/);
     expect(indexDef).toMatch(/btrim\(\s*taken_by\s*\)\s*=\s*''(?:::text)?/);
     expect(JSON.stringify(plan)).toContain('work_items_agent_review_claim_next_idx');
+  });
+
+  it('adopt-next discovers the oldest proven-orphan content revision and leaves every other route alone (D-008)', async () => {
+    const revision = async (id: string, index: number, review: Record<string, unknown>) => {
+      const payload = { agentReview: { status: 'revision-requested', ledgerIdeaId: id, round: 2, revisionKind: 'content', ...review } };
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, item_kind, status, payload, created_ts, feature_order)
+        VALUES (${WS}, ${HARNESS}, ${id}, 'Neutral queue item', 'Current fixture', 'bug',
+          'open', ${JSON.stringify(payload)}::text::jsonb, ${index}, ${index})`;
+    };
+    await revision('WI-REPRO', 0, { submittedBy: 'su-gone', revisionKind: 'reproduction' });
+    await revision('WI-LEGACY', 1, { submittedBy: LEGACY_AGENT_REVIEW_SUBMITTER });
+    await revision('WI-OWN', 2, { submittedBy: 'su-adopter' });
+    await revision('WI-PENDING', 3, { submittedBy: 'su-gone', status: 'pending', revisionKind: undefined });
+    await revision('WI-LIVE', 4, { submittedBy: 'su-live' });
+    await revision('WI-ORPHAN', 5, { submittedBy: 'su-gone' });
+    await revision('WI-ORPHAN-LATER', 6, { submittedBy: 'su-gone' });
+
+    const { deps } = writer();
+    const liveness = vi.fn(async (ownerId: string) => ({ sessionState: ownerId === 'su-live' ? 'live' : 'ended' }) as const);
+    const adoptDeps = {
+      ...deps,
+      claimWorkItem: vi.fn(async (id: string, assignee: string, opts: { expectedAssignee?: string } = {}) => {
+        const rows = await db.adminSql`UPDATE harness_shared.work_items SET taken_by=${assignee}
+          WHERE workspace_id=${WS} AND feature_id=${id}
+            AND (taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? ''}) RETURNING feature_id`;
+        return rows.length ? deps.getWorkItem(id) : null;
+      }),
+      mergeWorkItemPayload: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+        await db.adminSql`UPDATE harness_shared.work_items
+          SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb
+          WHERE workspace_id=${WS} AND feature_id=${id}`;
+        return deps.getWorkItem(id);
+      }),
+      getWorkItemDetail: vi.fn(async () => ({ posts: [] })),
+      commentWorkItem: vi.fn(async () => ({})),
+      resolveSubmitterLiveness: liveness,
+      resolveVerifiedSubmitterAlias: vi.fn(async () => null),
+    };
+
+    const result = await adoptNextAgentReviewRevision(
+      { adopter: 'su-adopter', harnessSlug: HARNESS, workspaceId: WS },
+      adoptDeps as never,
+    );
+
+    expect(result).toMatchObject({ adopted: true, workItem: { id: 'WI-ORPHAN' }, scanned: 2, refusals: { 'not-submitter': 1 } });
+    // Liveness is measured only for content revisions the query admitted, oldest first.
+    expect(liveness.mock.calls.map((call) => call[0])).toEqual(['su-live', 'su-gone']);
+    const rows = await db.adminSql`SELECT feature_id, taken_by, payload FROM harness_shared.work_items
+      WHERE workspace_id=${WS} ORDER BY created_ts`;
+    const held = Object.fromEntries(rows.map((row) => [row.feature_id, row.taken_by]));
+    expect(held).toEqual({
+      'WI-REPRO': null, 'WI-LEGACY': null, 'WI-OWN': null, 'WI-PENDING': null,
+      'WI-LIVE': null, 'WI-ORPHAN': 'su-adopter', 'WI-ORPHAN-LATER': null,
+    });
+    const adopted = rows.find((row) => row.feature_id === 'WI-ORPHAN')?.payload as Record<string, Record<string, unknown>>;
+    expect(adopted.agentReview).toMatchObject({ status: 'revision-requested', submittedBy: 'su-adopter', round: 2 });
+    expect(adopted.agentReviewAdoption).toMatchObject({ from: 'su-gone', sessionState: 'ended', adoptedBy: 'su-adopter' });
   });
 });
