@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { sqlMock, enqueueMock, workspaceMock, homeMock } = vi.hoisted(() => ({
+const { sqlMock, enqueueMock, workspaceMock, homeMock, workflowImportMock } = vi.hoisted(() => ({
   sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
   enqueueMock: vi.fn(),
   workspaceMock: vi.fn(() => 'workspace-1'),
   homeMock: vi.fn(() => 'home'),
+  workflowImportMock: vi.fn(),
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -13,9 +14,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: workspaceMock }));
 vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: homeMock }));
-vi.mock('../../dbos/routines-workflow', () => ({ enqueueRoutineFire: enqueueMock }));
+vi.mock('../../dbos/routines-workflow', () => {
+  workflowImportMock();
+  return { enqueueRoutineFire: enqueueMock };
+});
 
 const tool = (await import('./fire')).default;
+const workflowLoadsDuringRegistration = workflowImportMock.mock.calls.length;
 
 const row = {
   id: 'rt_home_git_sync',
@@ -48,6 +53,12 @@ beforeEach(() => {
 });
 
 describe('routines:fire', () => {
+  it('registers the tool without loading the workflow engine', () => {
+    // Capture collection-time loading before beforeEach clears mock history.
+    // A metadata-only boot must not initialize worker queues/system actions.
+    expect(workflowLoadsDuringRegistration).toBe(0);
+  });
+
   it('looks up the live workspace row and delegates its full dispatch payload', async () => {
     const result = await tool.handler({ name: 'git-sync', installSlug: 'home', reason: 'verify recovery' } as never, {
       role: 'operator',
