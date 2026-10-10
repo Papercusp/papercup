@@ -18,6 +18,9 @@ import {
  */
 export type OperatorSettingsSlotName =
   | "personalization"
+  // Replaces the native picker and its theme-writing hooks. A host theme
+  // must have one owner even when the canonical Settings page is mounted.
+  | "theme"
   | "papercup-agent";
 
 export type OperatorSettingsSlots = Partial<
@@ -41,11 +44,13 @@ export function OperatorSettingsSlotsProvider({
   );
 }
 
-/** Render one host addition in the page that owns its information category. */
+/** Render a host control or an inert native fallback at its canonical location. */
 export function OperatorSettingsSlot({
   name,
+  fallback = null,
 }: {
   name: OperatorSettingsSlotName;
+  fallback?: ReactNode;
 }) {
-  return useContext(OperatorSettingsSlotsContext)[name] ?? null;
+  return useContext(OperatorSettingsSlotsContext)[name] ?? fallback;
 }
