@@ -1,5 +1,5 @@
 /** EI-25449368540823559: exercise teardown without rerunning security journeys. */
-import { fork } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -190,6 +190,51 @@ it('stops real private PG and removes its runtime after an ordinary child exit',
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('ISOLATED_CLEANUP_PREFLIGHT_PROOF_RUN ' + runId);
 }, workerOptions.testTimeoutMs);
+
+it.each([0, 7])('reports real private PG cleanup for an ordinary no-IPC isolated CLI with child exit %s', async exitCode => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-cli-cleanup-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: evidenceDir };
+  delete env.PC_ISOLATED_RUNTIME_PROOF;
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+    '--isolated-runtime', '--', process.execPath, '-e', `console.log('ordinary-cli-child-finished'); process.exit(${exitCode});`,
+  ], { cwd: root, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    expect(child.connected).toBe(false);
+    const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 120_000, killGraceMs: 45_000 });
+    expect(result, result.output.slice(-8000)).toMatchObject({ code: exitCode, signal: null, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(result.output).toContain('ordinary-cli-child-finished');
+    const stages = result.output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
+      .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
+    expect(stages.map(message => message.stage)).toEqual(expect.arrayContaining([
+      'start', 'pg-stop', 'pg-stopped', 'remove-private-state', 'complete',
+    ]));
+    const complete = stages.find(message => message.stage === 'complete');
+    expect(complete).toMatchObject({ kind: 'isolated-runtime-cleanup', supervisorPid: child.pid,
+      runtimeRemoved: true, pgDataRemoved: true });
+    expect(complete.workspace).toMatch(/^test-runtime-/);
+    expect(complete.runtimeRoot).toContain('papercusp-test-runtime-');
+    expect(complete.dataDir).toContain('papercusp-test-pg-');
+    expect(complete.pgPort).toBeGreaterThan(0);
+    expect(existsSync(complete.runtimeRoot)).toBe(false);
+    expect(existsSync(complete.dataDir)).toBe(false);
+    expect(() => process.kill(child.pid!, 0)).toThrow();
+    for (const stage of stages) {
+      expect(stage).toMatchObject({ supervisorPid: child.pid, workspace: complete.workspace,
+        runtimeRoot: complete.runtimeRoot, dataDir: complete.dataDir, pgPort: complete.pgPort });
+      expect(stage.elapsedMs).toBeGreaterThanOrEqual(0);
+    }
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise(resolve => child.once('exit', resolve));
+      process.kill(-child.pid!, 'SIGKILL');
+      await exited;
+    }
+    await rm(evidenceDir, { recursive: true, force: true });
+  }
+}, 180_000);
 
 it('cleans owned state when cancelled during real initdb before runtime-start', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-bootstrap-cancel-'));
