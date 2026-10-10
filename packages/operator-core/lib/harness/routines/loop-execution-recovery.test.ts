@@ -39,16 +39,16 @@ describe('expected loop execution recovery', () => {
   });
 
   it.each([
-    (i: ExecutionRecoveryInput) => { delete i.host.execution; },
-    (i: ExecutionRecoveryInput) => { i.host.execution!.ownerId = 'someone-else'; },
-    (i: ExecutionRecoveryInput) => { i.host.execution!.hostPid = 99; },
-    (i: ExecutionRecoveryInput) => { i.host.execution!.childPid = 99; },
-    (i: ExecutionRecoveryInput) => { i.host.execution!.observedAt -= 16_000; },
-    (i: ExecutionRecoveryInput) => { i.host.execution!.observedAt++; },
-    (i: ExecutionRecoveryInput) => { delete i.host.execution!.childGeneration; },
-    (i: ExecutionRecoveryInput) => { i.host.execution!.receivedAtMs = i.host.startedAt - 1; },
-    (i: ExecutionRecoveryInput) => { i.inference.active = null; },
-  ])('keeps absent, stale and mismatched proof unknown', change => {
+    ['absent execution', (i: ExecutionRecoveryInput) => { delete i.host.execution; }],
+    ['different owner', (i: ExecutionRecoveryInput) => { i.host.execution!.ownerId = 'someone-else'; }],
+    ['different host', (i: ExecutionRecoveryInput) => { i.host.execution!.hostPid = 99; }],
+    ['different child', (i: ExecutionRecoveryInput) => { i.host.execution!.childPid = 99; }],
+    ['stale observation', (i: ExecutionRecoveryInput) => { i.host.execution!.observedAt -= 16_000; }],
+    ['future observation', (i: ExecutionRecoveryInput) => { i.host.execution!.observedAt++; }],
+    ['missing generation', (i: ExecutionRecoveryInput) => { delete i.host.execution!.childGeneration; }],
+    ['pre-host observation', (i: ExecutionRecoveryInput) => { i.host.execution!.receivedAtMs = i.host.startedAt - 1; }],
+    ['unknown inference', (i: ExecutionRecoveryInput) => { i.inference.active = null; }],
+  ] as const)('keeps proof unknown: %s', (_condition, change) => {
     const i = fixture(); change(i);
     expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'observe', state: { status: 'unknown', attempts: 0 } });
   });
