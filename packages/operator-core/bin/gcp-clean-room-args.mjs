@@ -237,6 +237,13 @@ export function buildCleanRoomInstanceCreateArgs({
     `--machine-type=${machineType}`,
     `--image=${imageName}`,
     `--image-project=${imageProject}`,
+    // Stock Ubuntu carries a 10 GB minimum disk, not the workspace-host release capacity.
+    // Pre-build acceptance installs the same release that the maintained Packer template
+    // bakes on a 32 GB disk (infra/images/workspace-host.pkr.hcl: disk_size_gb). Inheriting
+    // Ubuntu's minimum rejected a genuine signed bundle before extraction (WI-10008005).
+    // Post-build canaries inherit the candidate image's size, which may be larger; forcing
+    // this size onto those images would discard their own capacity contract.
+    ...(role === 'bootstrap-acceptance' ? ['--boot-disk-size=32GB'] : []),
     `--subnet=${subnetwork.trim()}`,
     '--no-address',
     '--no-service-account',
