@@ -862,6 +862,26 @@ else
   vh_run_step() { shift; "$@"; }
 fi
 
+# EI-25558788631579977: claim the actual native slot and reject its known
+# capacity shortage before source/dependency/SPA/database preparation. Keep the
+# slot descriptor for the whole run; tauri-guarded inherits this exact target.
+# This preliminary reservation is released immediately to avoid counting it
+# twice. The final chokepoint still reserves/rechecks capacity before compiling.
+preflight_native_cargo() {
+  [ "$PREPARE_ONLY" != "1" ] || return 0
+  PAPERCUSP_DESKTOP_TARGET_ROOT="$DESKTOP_DIR" . "$DESKTOP_DIR/bin/lib/claim-target-dir.sh" || return $?
+  . "$DESKTOP_DIR/bin/lib/disk-preflight.sh" || return $?
+  (
+    PAPERCUSP_DISK_RESERVATION_FILE=""
+    trap papercusp_release_disk_reservation EXIT
+    local target need
+    target="$(papercusp_cargo_target_root "$DESKTOP_DIR/src-tauri")" || exit $?
+    need="$(papercusp_native_dev_cargo_need_gb "$target")" || exit $?
+    papercusp_require_free_gb "$target" "$need" "native dev Cargo build" >&2
+  )
+}
+vh_run_step native-cargo-capacity preflight_native_cargo || exit $?
+
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # EI-20229366113827667: cargo compilation and bridge readiness are separate
 # phases. A cold Rust build can consume most of the bridge budget before the
@@ -1386,7 +1406,7 @@ snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
   local snapshot_root receipt source_bytes
-  local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,scripts/lib/budgeted-task-scheduler.mjs,scripts/pc-heavy.sh,apps/operator/bin/release/dependency-generation.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,${VERIFY_TAURI_SOURCE_INPUTS:-}"
+  local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,scripts/lib/budgeted-task-scheduler.mjs,scripts/pc-heavy.sh,apps/operator/bin/release/dependency-generation.sh,papercusp-desktop/bin/tauri-guarded,papercusp-desktop/bin/lib/claim-target-dir.sh,papercusp-desktop/bin/lib/cargo-target-root.sh,papercusp-desktop/bin/lib/release-artifacts.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,${VERIFY_TAURI_SOURCE_INPUTS:-}"
   [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
     echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
     return 1
