@@ -1432,7 +1432,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
 
   it('a reply to an opted-in directed message fires an optimistic wake to the ORIGINAL sender', async () => {
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true }));
-    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
+    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [], pickup: [] });
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).toHaveBeenCalledTimes(1);
     expect(wakeM.mock.calls[0][0]).toEqual(['peer']);
@@ -1475,7 +1475,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
         expectedLifecycleAck: { kind: 'fleet-wind-down', fleet: '' },
       }),
     );
-    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
+    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [], pickup: [] });
     const b = await body({ to: ['peer'], summary: 'ordinary reply', related_msg_id: 'malformed-cue' });
     expect(wakeM).toHaveBeenCalledExactlyOnceWith(
       ['peer'],
@@ -1672,7 +1672,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
 
   it('WI-5072: a RESOLVED related_msg_id is fetched ONCE — validation result is reused by the reply-wake', async () => {
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true }));
-    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
+    mockResolvedOnceTyped(wakeM, { targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [], pickup: [] });
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(b.results[0].ok).toBe(true);
     expect(b.results[0].replyWake).toMatchObject({ target: 'peer', queued: 1, woken: 1, pickupConfirmed: false });

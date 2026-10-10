@@ -201,7 +201,7 @@ describe('failed native turn → durable routine retry → native wake', () => {
         eventKey: `fixture:recovery:${owner}`, payload: null, summary: 'Continue approved recovery',
         status: 'delivering', channel: null, attempts: 1, lastError: null, nextAttemptAt: at, createdAt: at,
         deliveredAt: null, urgent: false, minSleepSec: null, coalescedCount: 1, source: null,
-        wakeHandle: null, note: null };
+        wakeHandle: null, note: null, turnProof: null, turnStartedAt: null, pickupDeadlineAt: null };
       const wakeDeps: ExecuteWakeDeps = {
         findPsuHost: () => f.readHost(), injectPsuHostWithConfirmation: injectIntoHostWithConfirmation,
         resolveWakeModeFn: async () => 'auto', stageManualWakeFn: async () => undefined,
