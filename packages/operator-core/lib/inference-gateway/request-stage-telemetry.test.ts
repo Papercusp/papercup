@@ -523,7 +523,12 @@ describe('GatewayRequestTelemetry', () => {
   it('leaves ambiguous or malformed native skill-root templates unmeasured', () => {
     for (const text of ['<skills_instructions>missing root</skills_instructions>',
       '<skills_instructions>\n- `r0` = `relative/skills/.system`\n</skills_instructions>',
-      '<skills_instructions>\n- `r0` = `/a/skills/.system`\n- `r0` = `/b/skills/.system`\n</skills_instructions>']) {
+      '<skills_instructions>\n- `r0` = `/a/skills/.system`\n- `r0` = `/b/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a/../b/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a/./skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a\\b/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a\u0000b/skills/.system`\n</skills_instructions>',
+      '<skills_instructions>\n- `r0` = `/a/skills/.system`\n</skills_instructions>\n<skills_instructions>\n- `r0` = `/b/skills/.system`\n</skills_instructions>']) {
       const span = new GatewayRequestTelemetry().begin({ provider: 'codex', protocol: 'openai-responses' });
       span.setCacheShape(Buffer.from(JSON.stringify({ input: [{ type: 'message', role: 'developer',
         content: [{ type: 'input_text', text }] }] })));
