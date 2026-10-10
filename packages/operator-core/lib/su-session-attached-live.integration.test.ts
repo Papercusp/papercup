@@ -9,14 +9,17 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createAdaptorServer } from '@hono/node-server';
+import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA, type SuSessionEvent } from '@papercusp/chat-protocol';
 import { confirmedProviderRateLimit } from './su-session-attached-live-rate-limit';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
+import { modelArgsFor } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attached SU engine', () => {
   let db: OrgTestDb | undefined;
+  let pg: DedicatedNativePg | undefined;
   let fixture: BaselineCoordFixture | undefined;
   let server: ReturnType<typeof createAdaptorServer> | undefined;
   let home: string | undefined;
@@ -36,12 +39,18 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         return { id: entry.id, provider: entry.provider, credentialRef: '', addedAt: 0, boundTo: [] };
       });
     })() : [];
+    home = mkdtempSync(join(tmpdir(), 'pui-attached-live-'));
+    previousEnv.PAPERCUSP_TEST_PG_ADMIN_URL = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+    pg = await startDedicatedNativePg({ baseDir: home,
+      settings: { max_connections: '120', fsync: 'off', synchronous_commit: 'off' } });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = pg.getConnectionUri();
     db = await createOrgTestDb();
+    expect(new URL(db.adminDsn).port, 'the org fixture must use this test-owned PG process')
+      .toBe(new URL(pg.getConnectionUri()).port);
     if (account === 'auto') await db.adminSql`
       INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
       VALUES ('papercusp-workspace', ${JSON.stringify({ accounts })}::text::jsonb, ${Date.now()})
       ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
-    home = mkdtempSync(join(tmpdir(), 'pui-attached-live-'));
     const privateHome = join(home, '.papercusp');
     mkdirSync(privateHome, { recursive: true });
     writeFileSync(join(privateHome, 'superuser-token'), randomBytes(32).toString('base64url'), { mode: 0o600 });
@@ -57,15 +66,19 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_DBOS_ENABLE: '0',
       PAPERCUSP_MEMORY_EMBEDDER: 'disabled', PAPERCUSP_SERVE_UI: '0',
     };
-    previousEnv = Object.fromEntries([...Object.keys(env), 'HARNESS_DATABASE_URL',
+    Object.assign(previousEnv, Object.fromEntries([...Object.keys(env), 'HARNESS_DATABASE_URL',
       'HARNESS_ADMIN_DATABASE_URL', 'PAPERCUSP_HONO_PORT', 'PAPERCUSP_OPERATOR_URL',
-      'PAPERCUSP_MCP_PROXY_BASE'].map(key => [key, process.env[key]]));
+      'PAPERCUSP_MCP_PROXY_BASE'].map(key => [key, process.env[key]])));
     Object.assign(process.env, env);
     fixture = await setupBaselineCoordFixture({ dsn: db.adminDsn });
     const harness = process.env.PAPERCUSP_ATTACHED_TEST_HARNESS ?? 'papercusp';
     const { insertHiveIfAbsent } = await import('./hive-store');
     await insertHiveIfAbsent({ workspaceId: 'papercusp-workspace', homeSlug: harness,
       pubkeyBase64: randomBytes(32).toString('base64'), keychainId: `attached-fixture-${randomUUID()}` }, db.adminSql);
+    const { setHiveSetting } = await import('./hive-settings-store');
+    await setHiveSetting({ workspaceId: 'papercusp-workspace', potHomeSlug: harness,
+      settingKey: 'promptOverride.su', value: readFileSync(resolve(import.meta.dirname,
+        '../../../apps/operator/prompts/pot-instances/papercup-pot.su.md'), 'utf8') }, db.adminSql);
     const { saveHarnessRegistry } = await import('./harness-registry');
     await saveHarnessRegistry({ projects: [{ slug: harness, path: resolve(import.meta.dirname, '../../..'),
       harness_kind: 'hive', self_repo: true }] }, 'papercusp-workspace');
@@ -92,14 +105,18 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         server!.closeAllConnections();
       });
     } finally {
-      await fixture?.dispose();
-      for (const [key, value] of Object.entries(previousEnv)) {
-        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      try { await fixture?.dispose(); } finally {
+        try { await db?.cleanup(); } finally {
+          try { await pg?.stop(); } finally {
+            for (const [key, value] of Object.entries(previousEnv)) {
+              if (value === undefined) delete process.env[key]; else process.env[key] = value;
+            }
+            if (home) rmSync(home, { recursive: true, force: true });
+          }
+        }
       }
-      await db?.cleanup();
-      if (home) rmSync(home, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it('creates through launch-su, commits an owner turn, proves scoped SU tools, and ends the child', async (ctx) => {
     const [{ createChat, archiveChat, getChat }, { default: launchRoutes }, { suSessionRoutes }, { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId }, { readDurableSuSession }] = await Promise.all([
@@ -175,7 +192,8 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       expect(tasks[0].argv.length).toBeGreaterThan(0);
       const modelFlag = tasks[0].argv.indexOf('--model');
       expect(modelFlag, 'the real native launch must carry the explicit model pin').toBeGreaterThanOrEqual(0);
-      expect(tasks[0].argv[modelFlag + 1]).toBe(model);
+      const requestedArgs = modelArgsFor('claude', model);
+      expect(tasks[0].argv[modelFlag + 1]).toBe(requestedArgs[requestedArgs.indexOf('--model') + 1]);
       expect(tasks[0].detail).toMatchObject({ coordOwnerId: identity.ownerId, transport: 'structured' });
       iterator = host.subscribe()[Symbol.asyncIterator]();
       const nonce = `PUI-ATTACHED-${randomUUID()}`;
