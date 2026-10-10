@@ -10,6 +10,7 @@ import {
   type WorkspaceHostCleanRoomInstallFixture,
   type WorkspaceHostImageArtifact,
 } from '@papercusp/deployment-driver';
+import { workspaceHostAgentRuntimeInstalls } from './provision-bootstrap';
 
 import { AWS_IMAGE_SCAN_POLICY, evaluateImageScanPolicy } from './image-scan-policy';
 import {
@@ -572,6 +573,8 @@ export function awsCleanAccountFixture(
       workspaceUser: attestation.isolation.workspaceUser,
       workspaceGroup: attestation.isolation.workspaceGroup,
     },
+    agentRuntimeInstalls: workspaceHostAgentRuntimeInstalls(),
+    statusChannel: 'ec2-console-output',
   });
 }
 

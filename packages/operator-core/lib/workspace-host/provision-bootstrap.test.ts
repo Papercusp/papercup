@@ -33,6 +33,7 @@ import {
   renderWorkspaceHostProvisionBootstrap,
   resolveWorkspaceHostControllerAuthorizedKeys,
   resolveWorkspaceHostProvisionBootstrapProfile,
+  workspaceHostAgentRuntimeInstalls,
   type WorkspaceHostProvisionBootstrapReleaseOverride,
 } from './provision-bootstrap';
 
@@ -459,6 +460,15 @@ describe('workspace-host provision bootstrap profile', () => {
     // Same host + same controller configuration must render the same bytes; a bootstrap that
     // varied per call could not be reasoned about from the configuration alone.
     expect(renderWorkspaceHostProvisionBootstrap('host-p046-1', profile)).toBe(script);
+  });
+
+  it('exports the exact desktop Linux runtime install defaults used by provisioned hosts', () => {
+    const installs = workspaceHostAgentRuntimeInstalls();
+    expect(installs.map(({ agent }) => agent)).toEqual(['claude', 'codex', 'omp']);
+    for (const install of installs) {
+      expect(install.command).toBeTruthy();
+      expect(install.args.length).toBeGreaterThan(0);
+    }
   });
 
   it('installs the desktop connector enrollment conduit only when the controller names a control plane (D-403)', async () => {

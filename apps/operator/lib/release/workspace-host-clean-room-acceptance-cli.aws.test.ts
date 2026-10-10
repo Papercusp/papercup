@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  awsCleanRoomFixtureSpec,
   awsCleanRoomCompositionOptionsFromEnv,
   composeAwsBootcCleanRoomExecutor,
   parseCleanRoomAcceptanceCliInput,
 } from "./workspace-host-clean-room-acceptance-cli";
+import { workspaceHostAgentRuntimeInstalls } from "@papercusp/operator-core/lib/workspace-host/provision-bootstrap";
+import type { WorkspaceHostCleanRoomInstallSpec } from "@papercusp/deployment-driver";
 
 const bootcArtifact = { cloud: "aws", type: "ami", artifact: "/bake/disk.raw", sha256: "d".repeat(64), sizeBytes: 14 };
 const awsInput = {
@@ -87,5 +90,26 @@ describe("composeAwsBootcCleanRoomExecutor", () => {
         PAPERCUSP_AWS_AMI_CANARY_EXECUTABLE: "/bin/canary",
       }),
     ).toEqual({ coldsnapExecutable: "/home/u/.cargo/bin/coldsnap", canaryExecutable: "/bin/canary" });
+  });
+});
+
+describe("awsCleanRoomFixtureSpec", () => {
+  it("uses the production runtime set and the EC2 console status channel", () => {
+    const spec = {
+      fixtureId: "aws-clean-room-fixture",
+      action: "install",
+      provider: "aws",
+      architecture: "x86_64",
+      observedAt: "2026-10-10T00:00:00Z",
+      hostId: "aws-clean-room-host",
+      migrationId: "1013",
+      minimumNodeMajor: 22,
+      service: { name: "papercusp-workspace", port: 3070, user: "root", group: "root" },
+    } as WorkspaceHostCleanRoomInstallSpec;
+
+    expect(awsCleanRoomFixtureSpec(spec)).toMatchObject({
+      agentRuntimeInstalls: workspaceHostAgentRuntimeInstalls(),
+      statusChannel: "ec2-console-output",
+    });
   });
 });

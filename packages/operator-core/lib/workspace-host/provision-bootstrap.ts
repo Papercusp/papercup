@@ -336,7 +336,7 @@ const WORKSPACE_HOST_AGENT_HOME = `/home/${DEFAULT_WORKSPACE_HOST_AGENT_USER}`;
  * through `~` rather than relative paths, and the bootstrap runs each argv under an explicit
  * `HOME=$AGENT_HOME`, which is what makes them land in the agent identity's own home.
  */
-function workspaceHostAgentRuntimeInstalls(): WorkspaceHostAgentRuntimeInstall[] {
+export function workspaceHostAgentRuntimeInstalls(): WorkspaceHostAgentRuntimeInstall[] {
   return (['claude', 'codex', 'omp'] as const).map((agent) => {
     const spec = buildFrameworkInstallSpec(agent, 'linux', WORKSPACE_HOST_AGENT_HOME);
     return { agent, command: spec.command, args: spec.args };

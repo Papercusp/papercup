@@ -54,6 +54,7 @@ import {
   workspaceHostReleaseSubjectSha256,
   type WorkspaceHostBootcCloudArtifact,
 } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
+import { workspaceHostAgentRuntimeInstalls } from "@papercusp/operator-core/lib/workspace-host/provision-bootstrap";
 
 /**
  * AWS placement for a bootc image (WI-10005633): the bake's AWS disk is staged as a transient AMI
@@ -86,6 +87,15 @@ function isAwsInput(
   input: CleanRoomAcceptanceCliInput,
 ): input is Extract<CleanRoomAcceptanceCliInput, { placement: AwsCleanRoomCliPlacement }> {
   return (input.placement as { provider?: unknown }).provider === "aws";
+}
+
+/** The AWS clean room must run the same install set and report through the same channel as production. */
+export function awsCleanRoomFixtureSpec(spec: WorkspaceHostCleanRoomInstallSpec): WorkspaceHostCleanRoomInstallSpec {
+  return {
+    ...spec,
+    agentRuntimeInstalls: workspaceHostAgentRuntimeInstalls(),
+    statusChannel: "ec2-console-output",
+  };
 }
 
 export interface CleanRoomAcceptanceCliArgs {
@@ -294,7 +304,7 @@ export async function runCleanRoomAcceptanceCli(
   }
   return runWorkspaceHostCleanRoomAcceptance(
     input.artifact,
-    input.spec,
+    isAwsInput(input) ? awsCleanRoomFixtureSpec(input.spec) : input.spec,
     executor as Parameters<typeof runWorkspaceHostCleanRoomAcceptance>[2],
   );
 }
