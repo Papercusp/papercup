@@ -82,7 +82,7 @@ import type { WorkspaceHostBootcCloudArtifact } from './bootc-bake-manifest';
 import { AWS_AMI_SCAN_COLDSNAP_ENV } from './coldsnap-pin';
 import { spillDiagnostic } from './diagnostic-excerpt';
 import { resolveSbomGuestToolVersions } from './guest-tool-versions';
-import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
+import { CANARY_BUDGETS } from '../../bin/aws-ami-canary-measure.mjs';
 import { AWS_AMI_SCAN_RUNNER_TIMEOUT_MS } from '../../bin/aws-ami-scan-measure.mjs';
 import { TASK_DEADLINE_EPOCH_MS_ENV } from '../systemd-scope';
 // The argv/shell:false process boundary is cloud-neutral; reuse it rather than fork a second one.
@@ -149,22 +149,27 @@ const CANARY_RUNNER_SAFETY_MARGIN_MS = 5 * 60 * 1000;
  * cannot SIGKILL a valid run before the canary reaches its own timeout and residue census.
  */
 export function cleanAccountCanaryRunnerTimeoutMs(
-  input: { fixture?: { bootstrapScript?: string } },
+  _input: { fixture?: { bootstrapScript?: string } },
 ): number {
-  // Keep malformed test/caller payloads on the child path so its schema error remains visible.
-  const bootstrapScript = typeof input.fixture?.bootstrapScript === 'string' ? input.fixture.bootstrapScript : '';
-  const encodedChars = Math.ceil(Buffer.byteLength(bootstrapScript, 'utf8') / 3) * 4;
-  const uploadCount = Math.max(1, Math.ceil(encodedChars / SSM_CHUNK_CHARS));
-  const waitCount = uploadCount + 6; // instance, SSM online, uploads, bootstrap, attestation, service, teardown
-  const shortCommandCount = uploadCount + 2; // uploads plus success-path attestation and service checks
-  const ssmCommandCount = shortCommandCount + 1; // bootstrap also has a delivery allowance
+  // One compressed production push starts the detached unit. Up to three short Run Commands
+  // cover attestation, service check, and a failure-path journal read.
+  const shortCommandCount = 3;
+  const ssmCommandCount = 4;
+  // Include initial availability, attach, all SSM/bootstrap phases, termination, detach,
+  // post-detach availability, and confirmed deletion.
+  const waitCount = 12;
   const budgets = CANARY_BUDGETS;
-  // SSM waits reserve two poll intervals; allow one more for each wait-loop's final sleep/probe.
+  // SSM waits reserve delivery + execution; allow a poll margin for each async state transition.
   return (
+    2 * budgets.volumeAvailableMs +
+    budgets.volumeAttachedMs +
     budgets.runningMs +
     budgets.ssmOnlineMs +
     budgets.bootstrapMs +
+    budgets.bootstrapPushMs +
     budgets.terminateMs +
+    budgets.volumeDetachMs +
+    budgets.volumeDeleteMs +
     shortCommandCount * budgets.shortCommandMs +
     ssmCommandCount * budgets.ssmDeliveryMs +
     waitCount * 3 * budgets.pollMs +

@@ -27,6 +27,8 @@
  *   8. /admin/plans page renders without 500 (smoke).
  */
 import { test, expect, type APIRequestContext } from './_egress';
+import { seedFakeLlmHarness } from './_fake-llm-fixture';
+let harnessSlug = 'main';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -34,15 +36,18 @@ const baseURL =
 
 async function fakeLlmActive(request: APIRequestContext): Promise<boolean> {
   try {
-    const res = await request.post(`${baseURL}/api/agent-tools/architect:chat`, {
+    const res = await request.post(`${baseURL}/api/agent-tools/architect/chat`, {
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      data: { message: 'probe', harnessSlug: 'main' },
+      data: { message: 'probe', harnessSlug },
       timeout: 6_000,
     });
-    if (!res.ok()) return false;
+    if (!res.ok() && process.env.VERIFY_TAURI_ISOLATED_DB !== '1') return false;
     const body = await res.text();
-    return body.includes('[fake-llm]');
-  } catch {
+    const active = body.includes('[fake-llm]');
+    if (process.env.VERIFY_TAURI_ISOLATED_DB === '1' && !active) throw new Error(`Isolated fake LLM probe failed: ${res.status()} ${body}`);
+    return active;
+  } catch (error) {
+    if (process.env.VERIFY_TAURI_ISOLATED_DB === '1') throw error;
     return false;
   }
 }
@@ -108,6 +113,7 @@ async function pollRunStatus(
 }
 
 test.describe('plan-agent-launch E2E (P-028)', () => {
+  test.beforeAll(async () => { harnessSlug = await seedFakeLlmHarness(); });
   test('full flow: author → edit twice → launch → resume → verify rows', async ({ request, page }) => {
     if (!(await fakeLlmActive(request))) {
       test.skip(true, 'PAPERCUSP_FAKE_LLM=1 not set on dev server; skipping');

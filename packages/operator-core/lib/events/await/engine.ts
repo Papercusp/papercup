@@ -96,6 +96,7 @@ import {
   wakeProgressLeaseOwner,
 } from './progress-lease';
 import { appendFleetEventActivity } from '../../fleet-event-activity';
+import { pumpHealth } from './pump-health';
 
 function log(msg: string): void {
   console.warn(`[await-event] ${msg}`);
@@ -935,6 +936,10 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
     return stats;
   }
   pumpsInFlight.add(ws);
+  // WI-10008194: report every run's outcome so a pump that fails on every kick pages
+  // instead of only logging (the 2026-10-10 20:28-20:44Z fleet-wide wake outage).
+  let pumpThrew = false;
+  let pumpError: unknown;
   try {
     const claimed = await claimDueDeliveries({ limit: 25 });
     stats.claimed = claimed.length;
@@ -1340,7 +1345,13 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       if (verdict === 'dead') log(`wake #${headline.id} DEAD after ${headline.attempts} attempts → ${subscriberId}: ${outcome.error}`);
     }
     return stats;
+  } catch (e) {
+    pumpThrew = true;
+    pumpError = e;
+    throw e;
   } finally {
+    if (pumpThrew) pumpHealth().recordFailure(ws, 'pump', pumpError);
+    else pumpHealth().recordSuccess(ws, 'pump');
     pumpsInFlight.delete(ws);
     const rerunDeps = pumpRerunRequested.get(ws);
     if (rerunDeps) {
@@ -1573,8 +1584,12 @@ export async function sweepAllWorkspaces(): Promise<void> {
     // equivalent to the next tick — and a CONNECT_TIMEOUT fires in the connect phase, so
     // little-to-no work happened before the throw. Absorbs the self-healing pooler blip;
     // a sustained outage still exhausts retries and logs `sweep failed` below.
-    await withPgRetry(() => runWithWorkspace(ws, () => sweepOnce(ws)), { label: `await-sweep:${ws}` }).catch(
-      (e: unknown) => log(`sweep failed (ws=${ws}): ${e instanceof Error ? e.message : e}`),
+    await withPgRetry(() => runWithWorkspace(ws, () => sweepOnce(ws)), { label: `await-sweep:${ws}` }).then(
+      () => pumpHealth().recordSuccess(ws, 'sweep'),
+      (e: unknown) => {
+        pumpHealth().recordFailure(ws, 'sweep', e);
+        log(`sweep failed (ws=${ws}): ${e instanceof Error ? e.message : e}`);
+      },
     );
   }
 }
@@ -1799,7 +1814,9 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
           `re-queued ${pickup.escalated}, reported ${pickup.emitted} subscriber(s)`,
       );
     }
+    pumpHealth().recordSuccess(ws, 'pickup-sweep');
   } catch (e) {
+    pumpHealth().recordFailure(ws, 'pickup-sweep', e);
     log(`pickup sweep failed: ${e instanceof Error ? e.message : e}`);
   }
 

@@ -364,6 +364,9 @@ export default defineTool({
       barSeedPendingAmendment: z.unknown().optional(),
       barSeedPendingRepair: z.unknown().optional(),
       activationReadiness: z.object({ consult: z.unknown() }).optional(),
+      // WI-10008137: outcome of the plans:start run that follows a recorded
+      // activation audit on a draft plan (started, or plans:start's refusal).
+      autoStart: z.unknown().optional(),
       // Activation's owner-provenance check (itemProvenanceResult below); null
       // when no current plan was read. `returns` names this nested shape.
       itemProvenance: z
@@ -1040,9 +1043,24 @@ export default defineTool({
           `revision ${recorded.auditedPlanRevision.seq}`,
       });
 
+      // WI-10008137: a draft plan activates at the end of its activation audit by
+      // running the real plans:start (start gate, dependencies, spec quality, consult).
+      // A refusal leaves it draft and is reported here; it never fails the audit.
+      const { autoStartAfterActivationAudit } = await import('./auto-start-after-audit');
+      const autoStart = await autoStartAfterActivationAudit({
+        slug: args.slug,
+        harness: harnessSlug,
+        planContent: currentPlan?.content,
+        start: async (startArgs) => {
+          const { default: startTool } = await import('./start');
+          return startTool.handler(startArgs as never, ctx as never);
+        },
+      });
+
       return { data: {
         ok: true as const,
         slug: args.slug,
+        autoStart,
         phase: 'activation' as const,
         auditSeq: recorded.audit.auditSeq,
         auditedPlanRevision: recorded.auditedPlanRevision,

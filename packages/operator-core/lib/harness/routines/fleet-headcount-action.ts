@@ -869,6 +869,24 @@ export function supersedeLegacyHeadcountTransaction(args: {
   };
 }
 
+/**
+ * WI-10008195: the governor top-up's launch profile. The goal profile wins over
+ * the fleet config field by field, and the AGENT follows the same precedence as
+ * the MODEL so the pair stays coherent (a codex model never ships with the
+ * fleet config's default `--agent=claude`, which psu refuses at boot).
+ */
+export function resolveGovernorMemberLaunchProfile(
+  goalEffective: { agent?: FleetHeadcountConfig['agent']; model?: string; effort?: string; account?: string },
+  config: Pick<FleetHeadcountConfig, 'agent' | 'model' | 'effort' | 'account'>,
+): { agent: FleetHeadcountConfig['agent']; model: string | undefined; effort: string | undefined; account: string } {
+  return {
+    agent: goalEffective.agent ?? config.agent,
+    model: goalEffective.model ?? config.model,
+    effort: goalEffective.effort ?? config.effort,
+    account: goalEffective.account ?? config.account ?? 'default',
+  };
+}
+
 function governorLaunchTransaction(args: {
   prior: FleetLaunchTransaction | null;
   liveMemberIds: readonly string[];
@@ -876,6 +894,8 @@ function governorLaunchTransaction(args: {
   launcherOwnerId: string;
   now: number;
   config: FleetHeadcountConfig & { headless: boolean };
+  /** WI-10008195: the RESOLVED agent (goal profile > fleet config), never config.agent alone. */
+  agent: FleetHeadcountConfig['agent'];
   model: string | null;
   account: string;
   action: 'spawn' | 'respawn';
@@ -933,7 +953,7 @@ function governorLaunchTransaction(args: {
     requestedMembers: args.newMemberIds.map((ownerId, index) => ({
       index,
       ownerId,
-      agent: args.config.agent,
+      agent: args.agent,
       model: args.model,
       account: args.account,
       carry: args.config.carry ?? 'warm',
@@ -1281,14 +1301,21 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         'utf8',
       );
     }
-    const effectiveModel = goalLaunch.effective.model ?? config.model;
-    const effectiveEffort = goalLaunch.effective.effort ?? config.effort;
-    const effectiveAccount = goalLaunch.effective.account ?? config.account ?? 'default';
+    // WI-10008195: the agent backend MUST come from the same precedence as the
+    // model. A goal profile pinning a codex model (gpt-6.1-sol) on a fleet whose
+    // config.agent defaulted to claude produced `--agent=claude` + a codex model,
+    // which psu refuses at boot, so every governor top-up died silently.
+    const {
+      agent: effectiveAgent,
+      model: effectiveModel,
+      effort: effectiveEffort,
+      account: effectiveAccount,
+    } = resolveGovernorMemberLaunchProfile(goalLaunch.effective, config);
     const modelSpec = composeModelSpec(effectiveModel, effectiveEffort) ?? null;
     const newMemberIds = Array.from({ length: waveCount }, () => `su-${randomUUID()}`);
     const commands = newMemberIds.map((ownerId) => injectLaunchedByArg(memberLaunchCommand({
       fleetSlug,
-      agent: config.agent,
+      agent: effectiveAgent,
       harness: config.harness,
       headless: config.headless,
       ownerId,
@@ -1308,7 +1335,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     }), launcherOwnerId).command);
     const expectedAttestations: FreshLaunchExpectedAttestation[] = newMemberIds.map((ownerId) => ({
       ownerId,
-      agent: config.agent,
+      agent: effectiveAgent,
       workspaceId,
       harnessSlug: config.harness,
       // Governor members pull from the fleet claim spec. The persisted plan is
@@ -1316,7 +1343,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       // transiently claims the parent plan item before scheduler:get_next runs.
       planSlug: null,
       model: modelSpec,
-      modelSource: config.agent === 'codex' ? (modelSpec ? 'explicit' : 'configured-default') : null,
+      modelSource: effectiveAgent === 'codex' ? (modelSpec ? 'explicit' : 'configured-default') : null,
       effort: modelEffortFromSpec(modelSpec),
       account: effectiveAccount,
       carry: config.carry ?? 'warm',
@@ -1430,6 +1457,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       launcherOwnerId,
       now,
       config,
+      agent: effectiveAgent,
       model: modelSpec,
       account: effectiveAccount,
       action,

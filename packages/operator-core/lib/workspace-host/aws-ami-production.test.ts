@@ -25,7 +25,7 @@ import {
   type AwsAmiCommandRunner,
 } from './aws-ami-production';
 import { NodeGcpImageFamilyCommandRunner } from './gcp-image-family-adapter';
-import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
+import { CANARY_BUDGETS } from '../../bin/aws-ami-canary-measure.mjs';
 import { AWS_AMI_SCAN_RUNNER_TIMEOUT_MS } from '../../bin/aws-ami-scan-measure.mjs';
 import { TASK_DEADLINE_EPOCH_MS_ENV } from '../systemd-scope';
 
@@ -677,8 +677,6 @@ describe('SdkAwsAmiReleaseAdapter.launchCleanAccountCanary failure output', () =
       },
     });
     const bootstrapScript = 'x'.repeat(24_001);
-    const uploadCount = Math.ceil((Math.ceil(Buffer.byteLength(bootstrapScript, 'utf8') / 3) * 4) / SSM_CHUNK_CHARS);
-    expect(uploadCount).toBe(2);
 
     await adapter.launchCleanAccountCanary({
       region: 'us-east-1',
@@ -686,13 +684,19 @@ describe('SdkAwsAmiReleaseAdapter.launchCleanAccountCanary failure output', () =
     } as Parameters<SdkAwsAmiReleaseAdapter['launchCleanAccountCanary']>[0]);
 
     const expectedTimeoutMs =
+      CANARY_BUDGETS.volumeAvailableMs +
+      CANARY_BUDGETS.volumeAvailableMs +
+      CANARY_BUDGETS.volumeAttachedMs +
       CANARY_BUDGETS.runningMs +
       CANARY_BUDGETS.ssmOnlineMs +
       CANARY_BUDGETS.bootstrapMs +
+      CANARY_BUDGETS.bootstrapPushMs +
       CANARY_BUDGETS.terminateMs +
-      (uploadCount + 2) * CANARY_BUDGETS.shortCommandMs +
-      (uploadCount + 3) * CANARY_BUDGETS.ssmDeliveryMs +
-      (uploadCount + 6) * 3 * CANARY_BUDGETS.pollMs +
+      CANARY_BUDGETS.volumeDetachMs +
+      CANARY_BUDGETS.volumeDeleteMs +
+      3 * CANARY_BUDGETS.shortCommandMs +
+      4 * CANARY_BUDGETS.ssmDeliveryMs +
+      12 * 3 * CANARY_BUDGETS.pollMs +
       5 * 60_000;
     expect(runs[0]).toMatchObject({
       command: 'papercusp-aws-ami-clean-account-canary',

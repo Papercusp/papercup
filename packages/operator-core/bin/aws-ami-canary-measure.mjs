@@ -10,19 +10,31 @@
  * instance, volume or ENI can never be reported as a clean run.
  */
 import { createHash } from 'node:crypto';
+import {
+  WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
+  WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER,
+  parseEc2ConsoleBootstrapStatus,
+} from '@papercusp/deployment-driver';
 
 import { ToolError, fail } from './gcp-ephemeral.mjs';
+import {
+  AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC,
+  AWS_HOST_BOOTSTRAP_UNIT,
+  renderAwsHostBootstrapPushCore,
+} from '../lib/workspace-host/aws-host-bootstrap-push-core.mjs';
 
 export const AWS_AMI_CANARY_TOOL = 'papercusp-aws-ami-clean-account-canary';
 /** Must match WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX in @papercusp/deployment-driver. */
-export const ATTESTATION_PREFIX = 'PAPERCUSP_WORKSPACE_HOST_ATTESTATION=';
+export const ATTESTATION_PREFIX = WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX;
 /** The role AWS Organizations creates in every member account made by CreateAccount. */
 export const DEFAULT_CANARY_ROLE_NAME = 'OrganizationAccountAccessRole';
 export const CANARY_RUN_TAG = 'papercusp:ami-canary-run';
 export const CANARY_FIXTURE_TAG = 'papercusp:ami-canary-fixture';
-export const CANARY_RUN_DIR = '/run/papercusp-ami-canary';
-/** base64 characters per SSM SendCommand upload; keeps each command well under SSM's size cap. */
-export const SSM_CHUNK_CHARS = 32_000;
+/** Small, disposable data disk used to exercise the production durable-mount bootstrap path. */
+export const CANARY_DATA_VOLUME_GIB = 20;
+export const CANARY_DATA_VOLUME_TYPE = 'gp3';
+/** EC2 attach hint only; Nitro guest discovery uses the stable NVMe volume-id path. */
+export const CANARY_DATA_VOLUME_DEVICE = '/dev/sdf';
 /** Bound on the service diagnostics read back after a failed bootstrap (GetCommandInvocation caps stdout at 24,000 chars). */
 export const DIAGNOSTICS_MAX_CHARS = 16_000;
 /**
@@ -65,9 +77,14 @@ export const CANARY_BUDGETS = Object.freeze({
   ssmDeliveryMs: 10 * 60_000,
   runningMs: 10 * 60_000,
   ssmOnlineMs: 15 * 60_000,
+  volumeAvailableMs: 5 * 60_000,
+  volumeAttachedMs: 5 * 60_000,
   bootstrapMs: 25 * 60_000,
+  bootstrapPushMs: AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC * 1_000,
   shortCommandMs: 3 * 60_000,
   terminateMs: 10 * 60_000,
+  volumeDetachMs: 5 * 60_000,
+  volumeDeleteMs: 5 * 60_000,
   pollMs: 10_000,
 });
 const SSM_TERMINAL = new Set(['Success', 'Failed', 'TimedOut', 'Cancelled', 'Undeliverable', 'Terminated']);
@@ -181,56 +198,34 @@ export function canaryTags(input, runId) {
   ];
 }
 
+export function canaryDataVolumeTags(input, runId) {
+  return canaryTags(input, runId).map((tag) =>
+    tag.Key === 'Name' ? { ...tag, Value: `pc-ami-canary-data-${runId}` } : tag,
+  );
+}
+
 /**
- * The SSM command plan. The script travels as base64 in bounded chunks (each upload is one
- * SendCommand), is re-verified against its digest ON the host, and runs with its full output
- * captured to a file. That matters because GetCommandInvocation truncates stdout, while the
- * attestation marker is the LAST line, so it is read back by a separate grep, never from the
- * run's own stdout.
+ * The canary uses the same gzip/checksum/durable-mount/systemd-run renderer as production. The
+ * detached unit reports terminal status on the EC2 console; its journal carries the attestation
+ * and failure diagnostics because Run Command returns after the unit starts.
  */
-export function ssmScriptPlan(fixture, chunkChars = SSM_CHUNK_CHARS) {
-  const b64 = Buffer.from(fixture.bootstrapScript, 'utf8').toString('base64');
-  const uploads = [];
-  for (let offset = 0; offset < b64.length; offset += chunkChars) {
-    const chunk = b64.slice(offset, offset + chunkChars);
-    uploads.push(
-      offset === 0
-        ? ['set -eu', `install -d -m 0700 ${CANARY_RUN_DIR}`, `: > ${CANARY_RUN_DIR}/script.b64`, `printf '%s' '${chunk}' >> ${CANARY_RUN_DIR}/script.b64`]
-        : ['set -eu', `printf '%s' '${chunk}' >> ${CANARY_RUN_DIR}/script.b64`],
-    );
-  }
+export function ssmScriptPlan(fixture, volumeId) {
+  const push = renderAwsHostBootstrapPushCore({
+    volumeId,
+    hostBootstrapScript: fixture.bootstrapScript,
+    statusMarker: WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER,
+  });
+  const unit = `${AWS_HOST_BOOTSTRAP_UNIT}.service`;
   return {
-    uploads,
-    run: [
-      'set -eu',
-      `base64 -d ${CANARY_RUN_DIR}/script.b64 > ${CANARY_RUN_DIR}/bootstrap.sh`,
-      `echo '${fixture.bootstrapScriptSha256}  ${CANARY_RUN_DIR}/bootstrap.sh' | sha256sum -c -`,
-      'set +e',
-      `bash ${CANARY_RUN_DIR}/bootstrap.sh > ${CANARY_RUN_DIR}/out.log 2>&1`,
-      'rc=$?',
-      `tail -c 3000 ${CANARY_RUN_DIR}/out.log`,
-      'echo "PAPERCUSP_CANARY_BOOTSTRAP_EXIT=$rc"',
-      'exit $rc',
+    run: push.commands,
+    readAttestation: [
+      `journalctl --unit='${unit}' --no-pager --output=cat 2>/dev/null | grep '^${ATTESTATION_PREFIX}' | tail -n 1`,
     ],
-    readAttestation: [`grep '^${ATTESTATION_PREFIX}' ${CANARY_RUN_DIR}/out.log | tail -n 1`],
-    serviceCheck: [`systemctl is-active ${fixture.serviceName}`],
-    // Read on a FAILED bootstrap, before teardown: the service status + journal section the
-    // bootstrap's service_diagnostics printed (falling back to the log tail when that section is
-    // absent), then the bootstrap's own ERROR lines. Never fails, so it cannot mask the real
-    // failure it exists to explain.
+    serviceCheck: [`systemctl is-active '${fixture.serviceName}'`],
     readDiagnostics: [
       'set +e',
-      `f=${CANARY_RUN_DIR}/out.log`,
-      `d="$(awk '/--- systemctl status /{on=1} /--- native addon inventory /{on=0} on' "$f" 2>/dev/null)"`,
-      `if [ -n "$d" ]; then printf '%s\\n' "$d" | tail -c ${DIAGNOSTICS_SECTION_MAX_CHARS.status}; else tail -c ${DIAGNOSTICS_MAX_CHARS} "$f"; fi`,
-      // The start sampler's readings (process wait channels, diskstats, listeners) and the
-      // recent state logs. The LAST samples are kept: they show where the start was stuck.
-      `s="$(awk '/--- start samples/{on=1} /--- recent logs under /{on=0} on' "$f" 2>/dev/null)"`,
-      `if [ -n "$d" ] && [ -n "$s" ]; then printf '%s\\n' "$s" | tail -c ${DIAGNOSTICS_SECTION_MAX_CHARS.startSamples}; fi`,
-      `l="$(awk '/--- recent logs under /{on=1} /--- SELinux denials /{on=0} on' "$f" 2>/dev/null)"`,
-      `if [ -n "$d" ] && [ -n "$l" ]; then printf '%s\\n' "$l" | tail -c ${DIAGNOSTICS_SECTION_MAX_CHARS.recentLogs}; fi`,
-      "echo '--- bootstrap ERROR lines ---'",
-      `grep -n 'ERROR' "$f" | tail -n 10`,
+      "echo '--- bootstrap systemd journal ---'",
+      `journalctl --unit='${unit}' --no-pager --output=cat 2>&1 | tail -c ${DIAGNOSTICS_MAX_CHARS}`,
       'exit 0',
     ],
   };
@@ -289,6 +284,25 @@ async function readBootConsole(deps, instanceId) {
   }
 }
 
+/** Read the bootstrap's terminal report from the EC2 serial console without confusing old output. */
+async function readBootstrapStatus(deps, instanceId) {
+  try {
+    const raw = await deps.consoleOutput(instanceId);
+    const text = String(raw ?? '');
+    return {
+      status: parseEc2ConsoleBootstrapStatus(text),
+      tail: text.slice(-BOOT_CONSOLE_MAX_CHARS),
+      ...(!text ? { note: 'console output empty' } : {}),
+    };
+  } catch (error) {
+    return {
+      status: null,
+      tail: '',
+      note: `console unreadable: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 /** Decode the attestation marker; a missing or undecodable marker is a hard failure. */
 export function extractAttestation(stdout) {
   const lines = String(stdout ?? '').split(/\r?\n/);
@@ -342,6 +356,75 @@ async function runSsm(deps, instanceId, commands, budgetMs, pollMs, label, deliv
   return { commandId, ...result };
 }
 
+/** Delete the disposable EBS data disk after the instance has stopped using it. */
+async function deleteCanaryDataVolume(deps, volumeId, instanceId, instanceTerminated, budgets) {
+  let volume = await deps.describeVolume(volumeId);
+  if (volume?.state === 'deleted') return true;
+  if (!volume) throw new Error(`canary data volume ${volumeId} state was not observed before cleanup`);
+  if (volume.state === 'deleting') {
+    const deleted = await waitFor(
+      deps,
+      budgets.volumeDeleteMs,
+      budgets.pollMs,
+      'canary data volume deleted',
+      () => deps.describeVolume(volumeId),
+      (current) => current?.state === 'deleted',
+    );
+    return deleted.state === 'deleted';
+  }
+  if (volume.state === 'error') fail(`canary data volume ${volumeId} entered error state`);
+
+  if (volume.state === 'in-use' || ['attaching', 'attached', 'detaching'].includes(volume.attachmentState)) {
+    if (volume.attachmentState !== 'detaching') {
+      if (!instanceTerminated) {
+        throw new Error(`canary data volume ${volumeId} remains attached while instance termination is unconfirmed`);
+      }
+      if (volume.attachedInstanceId && volume.attachedInstanceId !== instanceId) {
+        throw new Error(`canary data volume ${volumeId} is attached to unexpected instance ${volume.attachedInstanceId}`);
+      }
+      await deps.detachVolume(volumeId);
+    }
+    volume = await waitFor(
+      deps,
+      budgets.volumeDetachMs,
+      budgets.pollMs,
+      'canary data volume detached',
+      () => deps.describeVolume(volumeId),
+      (current) => {
+        if (current?.state === 'error') fail(`canary data volume ${volumeId} entered error state while detaching`);
+        return current?.state === 'available' || current?.state === 'deleted';
+      },
+    );
+    if (volume.state === 'deleted') return true;
+  }
+
+  if (volume.state !== 'available') {
+    volume = await waitFor(
+      deps,
+      budgets.volumeAvailableMs,
+      budgets.pollMs,
+      'canary data volume available for deletion',
+      () => deps.describeVolume(volumeId),
+      (current) => {
+        if (current?.state === 'error') fail(`canary data volume ${volumeId} entered error state`);
+        return current?.state === 'available' || current?.state === 'deleted';
+      },
+    );
+    if (volume.state === 'deleted') return true;
+  }
+
+  await deps.deleteVolume(volumeId);
+  const deleted = await waitFor(
+    deps,
+    budgets.volumeDeleteMs,
+    budgets.pollMs,
+    'canary data volume deleted',
+    () => deps.describeVolume(volumeId),
+    (current) => current?.state === 'deleted',
+  );
+  return deleted.state === 'deleted';
+}
+
 function requireSsmSuccess(result, label) {
   if (result.status !== 'Success') {
     fail(`SSM ${label} ended ${result.status}`, {
@@ -379,13 +462,19 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
   const image = await deps.describeImage(input.imageId);
   if (!image) fail(`AMI ${input.imageId} is not visible to the clean account (share missing?)`);
   if (image.state !== 'available') fail(`AMI ${input.imageId} is ${image.state}, not available`);
-  if (!(await deps.describeSubnet(input.subnetId))) fail(`subnet ${input.subnetId} is not in the clean account/region`);
+  const subnet = await deps.describeSubnet(input.subnetId);
+  if (!subnet) fail(`subnet ${input.subnetId} is not in the clean account/region`);
+  if (!subnet.availabilityZone) fail(`subnet ${input.subnetId} has no availability zone`);
   const instanceType = instanceTypeFor(image.architecture, env);
 
   const observed = {
     instanceId: null,
+    dataVolumeId: null,
+    dataVolumeAttached: false,
+    dataVolumeDeleted: false,
     publicIpv4Assigned: false,
     ssmOnline: false,
+    bootstrapStatus: null,
     attestation: null,
     serviceHealthy: false,
     terminated: false,
@@ -398,6 +487,24 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
   let bootConsole = null;
   let plan = null;
   try {
+    observed.dataVolumeId = await deps.createDataVolume({
+      availabilityZone: subnet.availabilityZone,
+      sizeGiB: CANARY_DATA_VOLUME_GIB,
+      volumeType: CANARY_DATA_VOLUME_TYPE,
+      encrypted: true,
+      tags: canaryDataVolumeTags(input, runId),
+    });
+    await waitFor(
+      deps,
+      budgets.volumeAvailableMs,
+      budgets.pollMs,
+      'canary data volume available',
+      () => deps.describeVolume(observed.dataVolumeId),
+      (volume) => {
+        if (volume?.state === 'error') fail(`canary data volume ${observed.dataVolumeId} entered error state`);
+        return volume?.state === 'available';
+      },
+    );
     observed.instanceId = await deps.runInstance({
       imageId: input.imageId,
       subnetId: input.subnetId,
@@ -425,6 +532,22 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
     });
     observed.publicIpv4Assigned = Boolean(running.publicIpv4);
     if (observed.publicIpv4Assigned) fail(`canary instance ${instanceId} was assigned public IPv4 ${running.publicIpv4}`);
+    await deps.attachVolume({ instanceId, volumeId: observed.dataVolumeId, deviceName: CANARY_DATA_VOLUME_DEVICE });
+    await waitFor(
+      deps,
+      budgets.volumeAttachedMs,
+      budgets.pollMs,
+      'canary data volume attached',
+      () => deps.describeVolume(observed.dataVolumeId),
+      (volume) => {
+        if (volume?.state === 'error') fail(`canary data volume ${observed.dataVolumeId} entered error state while attaching`);
+        if (volume?.attachedInstanceId && volume.attachedInstanceId !== instanceId) {
+          fail(`canary data volume ${observed.dataVolumeId} attached to unexpected instance ${volume.attachedInstanceId}`);
+        }
+        return volume?.state === 'in-use' && volume.attachmentState === 'attached' && volume.attachedInstanceId === instanceId;
+      },
+    );
+    observed.dataVolumeAttached = true;
     let pingPolls = 0;
     await waitFor(
       deps,
@@ -449,24 +572,50 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
     );
     observed.ssmOnline = true;
 
-    plan = ssmScriptPlan(input.fixture);
-    for (const [index, commands] of plan.uploads.entries()) {
-      requireSsmSuccess(await runSsm(deps, instanceId, commands, budgets.shortCommandMs, budgets.pollMs, `upload ${index + 1}/${plan.uploads.length}`, budgets.ssmDeliveryMs), 'script upload');
-    }
-    let bootstrap;
+    plan = ssmScriptPlan(input.fixture, observed.dataVolumeId);
+    let bootstrapPush;
     try {
-      bootstrap = await runSsm(deps, instanceId, plan.run, budgets.bootstrapMs, budgets.pollMs, 'bootstrap', budgets.ssmDeliveryMs);
+      bootstrapPush = await runSsm(
+        deps,
+        instanceId,
+        plan.run,
+        budgets.bootstrapPushMs,
+        budgets.pollMs,
+        'bootstrap push',
+        budgets.ssmDeliveryMs,
+      );
     } catch (error) {
-      // A nonterminal GetCommandInvocation wait throws before the usual terminal-failure
-      // branch below. The guest log still has useful partial evidence, so read it before the
-      // finally block terminates the instance.
+      // The Run Command only delivers the detached unit. Preserve unit journal evidence if its
+      // delivery invocation itself never becomes terminal.
       bootstrapWaitFailed = true;
       throw error;
     }
-    if (bootstrap.status !== 'Success') {
+    if (bootstrapPush.status !== 'Success') {
       bootstrapDiagnostics = await readBootstrapDiagnostics(deps, instanceId, plan.readDiagnostics, budgets);
     }
-    requireSsmSuccess(bootstrap, 'bootstrap');
+    requireSsmSuccess(bootstrapPush, 'bootstrap push');
+    let terminal;
+    try {
+      terminal = await waitFor(
+        deps,
+        budgets.bootstrapMs,
+        budgets.pollMs,
+        'EC2 bootstrap terminal status',
+        () => readBootstrapStatus(deps, instanceId),
+        (read) => read.status?.state === 'succeeded' || read.status?.state === 'failed',
+      );
+    } catch (error) {
+      bootstrapWaitFailed = true;
+      throw error;
+    }
+    observed.bootstrapStatus = terminal.status;
+    if (terminal.status.state === 'failed') {
+      bootstrapDiagnostics = await readBootstrapDiagnostics(deps, instanceId, plan.readDiagnostics, budgets);
+      fail(`EC2 bootstrap failed in ${terminal.status.phase ?? 'unknown phase'}: ${terminal.status.error ?? 'no error reported'}`, {
+        bootstrapStatus: terminal.status,
+        bootstrapConsoleTail: terminal.tail,
+      });
+    }
     const marker = requireSsmSuccess(await runSsm(deps, instanceId, plan.readAttestation, budgets.shortCommandMs, budgets.pollMs, 'attestation read', budgets.ssmDeliveryMs), 'attestation read');
     observed.attestation = extractAttestation(marker.stdout);
     const service = await runSsm(deps, instanceId, plan.serviceCheck, budgets.shortCommandMs, budgets.pollMs, 'service check', budgets.ssmDeliveryMs);
@@ -491,9 +640,27 @@ export async function runAwsAmiCleanAccountCanary(input, deps, env = {}, budgets
         observed.teardownErrors.push(error instanceof Error ? error.message : String(error));
       }
     }
+    if (observed.dataVolumeId) {
+      try {
+        observed.dataVolumeDeleted = await deleteCanaryDataVolume(
+          deps,
+          observed.dataVolumeId,
+          observed.instanceId,
+          observed.terminated,
+          budgets,
+        );
+        if (!observed.dataVolumeDeleted) observed.teardownErrors.push(`canary data volume ${observed.dataVolumeId} was not confirmed deleted`);
+      } catch (error) {
+        observed.teardownErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
     try {
       const leftover = await deps.censusByRunTag(runId);
-      observed.residualResourceIds = [...new Set([...(observed.instanceId && !observed.terminated ? [observed.instanceId] : []), ...leftover])].sort();
+      observed.residualResourceIds = [...new Set([
+        ...(observed.instanceId && !observed.terminated ? [observed.instanceId] : []),
+        ...(observed.dataVolumeId && !observed.dataVolumeDeleted ? [observed.dataVolumeId] : []),
+        ...leftover,
+      ])].sort();
     } catch (error) {
       observed.teardownErrors.push(`residue census failed: ${error instanceof Error ? error.message : String(error)}`);
       // An unmeasured census can never read as zero residue.
@@ -541,6 +708,8 @@ export function buildAwsAmiCanaryProof(input, observed, observedAt) {
     serviceHealthy: observed.serviceHealthy,
     publicIpv4Assigned: observed.publicIpv4Assigned,
     terminated: observed.terminated,
+    dataVolumeId: observed.dataVolumeId,
+    dataVolumeDeleted: observed.dataVolumeDeleted,
     residualResourceIds: observed.residualResourceIds,
     observedAt,
     fixtureId: input.fixture.fixtureId,

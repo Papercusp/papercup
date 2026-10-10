@@ -41,6 +41,10 @@ import {
   DescribeNetworkInterfacesCommand,
   DescribeSubnetsCommand,
   DescribeVolumesCommand,
+  AttachVolumeCommand,
+  CreateVolumeCommand,
+  DeleteVolumeCommand,
+  DetachVolumeCommand,
   EC2Client,
   GetConsoleOutputCommand,
   RunInstancesCommand,
@@ -124,11 +128,53 @@ function sdkDeps(input, runId) {
     async describeSubnet(subnetId) {
       try {
         const subnet = (await ec2.send(new DescribeSubnetsCommand({ SubnetIds: [subnetId] }))).Subnets?.[0];
-        return subnet ? { subnetId: subnet.SubnetId, vpcId: subnet.VpcId } : null;
+        return subnet
+          ? { subnetId: subnet.SubnetId, vpcId: subnet.VpcId, availabilityZone: subnet.AvailabilityZone }
+          : null;
       } catch (error) {
         if (/InvalidSubnetID/.test(errorName(error))) return null;
         throw error;
       }
+    },
+    async createDataVolume({ availabilityZone, sizeGiB, volumeType, encrypted, tags }) {
+      const out = await ec2.send(
+        new CreateVolumeCommand({
+          AvailabilityZone: availabilityZone,
+          Size: sizeGiB,
+          VolumeType: volumeType,
+          Encrypted: encrypted,
+          TagSpecifications: [{ ResourceType: 'volume', Tags: [...tags] }],
+        }),
+      );
+      const volumeId = out.VolumeId;
+      if (!volumeId) throw new Error('CreateVolume returned no volume id');
+      return volumeId;
+    },
+    async describeVolume(volumeId) {
+      try {
+        const volume = (await ec2.send(new DescribeVolumesCommand({ VolumeIds: [volumeId] }))).Volumes?.[0];
+        if (!volume) return null;
+        const attachment = volume.Attachments?.[0];
+        return {
+          state: volume.State ?? 'unknown',
+          ...(attachment?.State ? { attachmentState: attachment.State } : {}),
+          ...(attachment?.InstanceId ? { attachedInstanceId: attachment.InstanceId } : {}),
+        };
+      } catch (error) {
+        // EC2's exact NotFound response is positive deletion evidence. An empty response or
+        // any other read failure remains unknown and must not be reported as a deleted disk.
+        if (/InvalidVolume\.NotFound/.test(errorName(error))) return { state: 'deleted' };
+        throw error;
+      }
+    },
+    async attachVolume({ instanceId, volumeId, deviceName }) {
+      await ec2.send(new AttachVolumeCommand({ InstanceId: instanceId, VolumeId: volumeId, Device: deviceName }));
+    },
+    async detachVolume(volumeId) {
+      await ec2.send(new DetachVolumeCommand({ VolumeId: volumeId }));
+    },
+    async deleteVolume(volumeId) {
+      await ec2.send(new DeleteVolumeCommand({ VolumeId: volumeId }));
     },
     async runInstance({ imageId, subnetId, instanceProfileArn, instanceType, tags, rootDeviceName, volumeInitializationRateMiBps, encryptRootVolume }) {
       const out = await ec2.send(
