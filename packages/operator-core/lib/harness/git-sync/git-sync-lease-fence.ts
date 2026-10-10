@@ -40,6 +40,8 @@ export class GitSyncLeaseLostError extends Error {
 export interface GitSyncLeaseFence {
   /** The loss that tripped the fence, or null while the lease is provably held. */
   readonly lost: GitSyncLeaseLostError | null;
+  /** Record when a lease-refresh attempt starts; this is diagnostic only, never confirmation. */
+  recordAttempt(sentAt: number): void;
   /** Record a refresh the store accepted for every resource; `sentAt` is when it was sent. */
   confirm(sentAt: number): void;
   /** Trip the fence. The first loss wins; later calls return that same error. */
@@ -58,6 +60,7 @@ export function createGitSyncLeaseFence(opts: {
 }): GitSyncLeaseFence {
   const now = opts.now ?? Date.now;
   let lastConfirmedAt = opts.acquiredAt;
+  let lastAttemptAt: number | null = null;
   let lost: GitSyncLeaseLostError | null = null;
 
   const markLost = (cause: GitSyncLeaseLossCause, detail: string): GitSyncLeaseLostError => {
@@ -67,13 +70,23 @@ export function createGitSyncLeaseFence(opts: {
   const tripIfStale = (at: number): void => {
     const gap = at - lastConfirmedAt;
     if (gap >= opts.unconfirmedLimitMs) {
-      markLost('unconfirmed', `no lease refresh confirmed for ${gap} ms (limit ${opts.unconfirmedLimitMs} ms)`);
+      const attemptDetail =
+        lastAttemptAt === null
+          ? 'no refresh attempt recorded since lease acquisition'
+          : `last refresh attempt was sent at ${lastAttemptAt} ms (${at - lastAttemptAt} ms ago)`;
+      markLost(
+        'unconfirmed',
+        `no lease refresh confirmed for ${gap} ms (limit ${opts.unconfirmedLimitMs} ms); ${attemptDetail}`,
+      );
     }
   };
 
   return {
     get lost() {
       return lost;
+    },
+    recordAttempt(sentAt: number): void {
+      if (!lost && (lastAttemptAt === null || sentAt > lastAttemptAt)) lastAttemptAt = sentAt;
     },
     confirm(sentAt: number): void {
       if (lost) return;

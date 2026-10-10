@@ -54,6 +54,23 @@ describe('git-sync lease fence (WI-10006724)', () => {
     expect(fence.lost?.leaseLossCause).toBe('unconfirmed');
   });
 
+  it('records the last refresh attempt in an unconfirmed loss without treating it as confirmation', () => {
+    const { fence, advance } = fenceAt(1_000);
+    const sentAt = advance(LIMIT - 1);
+    fence.recordAttempt(sentAt);
+    expect(() => fence.assertHeld()).not.toThrow();
+    advance(1);
+    expect(() => fence.assertHeld()).toThrow(GitSyncLeaseLostError);
+    expect(fence.lost?.detail).toContain(`last refresh attempt was sent at ${sentAt} ms (1 ms ago)`);
+  });
+
+  it('reports when an unconfirmed loss has no recorded refresh attempt', () => {
+    const { fence, advance } = fenceAt(1_000);
+    advance(LIMIT);
+    expect(() => fence.assertHeld()).toThrow(GitSyncLeaseLostError);
+    expect(fence.lost?.detail).toContain('no refresh attempt recorded since lease acquisition');
+  });
+
   it('does not re-arm when a refresh succeeds only AFTER an unconfirmed gap', () => {
     // A same-owner refresh can re-grant an expired row; another fire may have
     // written inside the gap, so the late success must not count as continuity.
