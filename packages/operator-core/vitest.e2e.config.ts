@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { tsImport } from 'tsx/esm/api';
+import { resolveExecutedMapPgUrl } from '../../scripts/lib/executed-source-map.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -13,11 +14,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // these files too, so the gate's unit run keeps covering them.
 export async function prepareRuntimeReader(
   loadRuntime = () => tsImport('./lib/runtime-vintage.ts', import.meta.url),
+  loadPg = async () => (await import('postgres')).default,
 ) {
   if (!process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE) return undefined;
   // Module loading belongs to configuration preparation, outside the reporter's
   // bounded observation window. tsImport starts a fresh loader on each call.
   const { listRuntimeVintage, measureRuntimeVintageEnvironment } = await loadRuntime();
+  const pg = await loadPg();
   return async () => {
     const profile = JSON.parse(readFileSync(resolve(__dirname, '../..',
       process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE!), 'utf8'));
@@ -25,8 +28,18 @@ export async function prepareRuntimeReader(
     if (!Array.isArray(units) || units.length === 0 || units.length > 32
       || units.some(unit => typeof unit !== 'string' || !unit.trim() || unit.length > 120)
       || new Set(units).size !== units.length) return null;
-    const fingerprint = measureRuntimeVintageEnvironment(await listRuntimeVintage(), units);
-    return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
+    // The app's default getOrgPg may discover an embedded replica. Runtime
+    // evidence must read the same ledger the native reporter writes, including
+    // the verifier's dedicated shared-ledger override.
+    const { url } = resolveExecutedMapPgUrl();
+    const sql = pg(url, { max: 1, connect_timeout: 1, onnotice: () => {} });
+    try {
+      const rows = await listRuntimeVintage(undefined, sql, units);
+      const fingerprint = measureRuntimeVintageEnvironment(rows, units);
+      return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
+    } finally {
+      await sql.end({ timeout: 0 });
+    }
   };
 }
 

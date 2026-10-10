@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { prepareRuntimeReader } from '../../vitest.e2e.config';
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -16,13 +17,17 @@ const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
 describe.skipIf(!profilePath)('Morning AI Research substrate in the live read-only catalog', () => {
   let origin: string;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
     // This acceptance route is intentionally local staging, with no deployment,
     // worker dispatch, publication, permissions or scheduler mutation.
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     expect(profile.runtimeUnits).toEqual(['hono-host:3170']);
     origin = profile.origin;
+    const readRuntime = await prepareRuntimeReader();
+    const witness = await readRuntime!();
+    expect(witness, 'The actual execution runtime must be independently measurable').not.toBeNull();
+    expect(witness?.units).toEqual(['hono-host:3170']);
   });
 
   async function read(script: string) {

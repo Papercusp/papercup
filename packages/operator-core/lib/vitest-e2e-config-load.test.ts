@@ -25,11 +25,14 @@ describe('operator e2e config loading', () => {
       'docs/evidence/app-agent-tasks-durable-execution-2026-10-06/live-e2e-profile-20261007.json');
     const listRuntimeVintage = vi.fn(async () => []);
     const measureRuntimeVintageEnvironment = vi.fn(() => 'a'.repeat(64));
+    const sql = { end: vi.fn(async () => {}) };
+    const pg = vi.fn(() => sql);
     let release!: (value: Record<string, unknown>) => void;
     const load = vi.fn(() => new Promise<Record<string, unknown>>(resolve => { release = resolve; }));
     try {
       let prepared = false;
-      const preparation = prepareRuntimeReader(load).then(reader => { prepared = true; return reader; });
+      const preparation = prepareRuntimeReader(load, async () => pg as any)
+        .then(reader => { prepared = true; return reader; });
       await Promise.resolve();
       expect(prepared).toBe(false);
       expect(listRuntimeVintage).not.toHaveBeenCalled();
@@ -40,6 +43,47 @@ describe('operator e2e config loading', () => {
       expect(load).toHaveBeenCalledTimes(1);
       expect(listRuntimeVintage).toHaveBeenCalledTimes(2);
       expect(measureRuntimeVintageEnvironment).toHaveBeenCalledTimes(2);
+      expect(sql.end).toHaveBeenCalledTimes(2);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('reads runtime witnesses from the reporter ledger instead of an embedded app database', async () => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+      'docs/evidence/app-agent-tasks-durable-execution-2026-10-06/live-e2e-profile-20261007.json');
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://ledger.test:5432/papercusp');
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://embedded.test:24680/papercusp');
+    const sql = { end: vi.fn(async () => {}) };
+    const pg = vi.fn(() => sql);
+    const rows = [{ unit: 'actual-live-runtime' }];
+    const listRuntimeVintage = vi.fn(async (_workspace, client) => {
+      expect(client).toBe(sql);
+      return rows;
+    });
+    const measureRuntimeVintageEnvironment = vi.fn(() => 'b'.repeat(64));
+    try {
+      const reader = await prepareRuntimeReader(async () => ({
+        listRuntimeVintage, measureRuntimeVintageEnvironment,
+      }), async () => pg as any);
+      expect(await reader!()).toMatchObject({ fingerprint: 'b'.repeat(64) });
+      expect(pg).toHaveBeenCalledWith('postgresql://ledger.test:5432/papercusp', expect.any(Object));
+      expect(listRuntimeVintage).toHaveBeenCalledWith(undefined, sql, expect.any(Array));
+      expect(measureRuntimeVintageEnvironment).toHaveBeenCalledWith(rows, expect.any(Array));
+      expect(sql.end).toHaveBeenCalledWith({ timeout: 0 });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('closes the observation client when the runtime ledger read fails', async () => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+      'docs/evidence/app-agent-tasks-durable-execution-2026-10-06/live-e2e-profile-20261007.json');
+    const sql = { end: vi.fn(async () => {}) };
+    const pg = vi.fn(() => sql);
+    try {
+      const reader = await prepareRuntimeReader(async () => ({
+        listRuntimeVintage: async () => { throw new Error('runtime ledger unavailable'); },
+        measureRuntimeVintageEnvironment: vi.fn(),
+      }), async () => pg as any);
+      await expect(reader!()).rejects.toThrow('runtime ledger unavailable');
+      expect(sql.end).toHaveBeenCalledWith({ timeout: 0 });
     } finally { vi.unstubAllEnvs(); }
   });
 });
