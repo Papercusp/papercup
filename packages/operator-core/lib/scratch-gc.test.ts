@@ -40,7 +40,7 @@ import {
 } from 'node:fs';
 import { readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import {
   runScratchGc,
   reserveScratchSpace,
@@ -74,12 +74,15 @@ import { spawn } from 'node:child_process';
 // /etc/passwd not $HOME, so the PAPERCUSP_SCRATCH_ROOT env-var
 // override is the only reliable swap.
 let prevScratchRoot: string | undefined;
+let prevFsMutexLockDir: string | undefined;
 let sandbox: string;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'papercusp-scratch-test-'));
   prevScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+  prevFsMutexLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, '.papercusp', 'scratch');
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(sandbox, 'fs-mutex-locks');
   _resetScratchGcCountersForTests();
   _resetScratchUsageForTests();
 });
@@ -88,6 +91,8 @@ afterEach(() => {
   _resetScratchUsageForTests();
   if (prevScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
+  if (prevFsMutexLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = prevFsMutexLockDir;
   rmSync(sandbox, { recursive: true, force: true });
 });
 
@@ -126,6 +131,60 @@ function markerBytes(workspaceId: string): number {
   const size = statSync(join(process.env.PAPERCUSP_SCRATCH_ROOT!, workspaceId, WORKSPACE_SCRATCH_MARKER)).size;
   expect(size).toBeGreaterThan(0);
   return size;
+}
+
+function scratchRmCallCount(): number {
+  const root = process.env.PAPERCUSP_SCRATCH_ROOT;
+  if (!root) return 0;
+  return vi.mocked(rmAsync).mock.calls.filter(([path]) =>
+    String(path).startsWith(root + sep),
+  ).length;
+}
+
+function startScratchChild(script: string, env: Record<string, string>) {
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+    cwd: process.cwd(),
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  let stdout = '';
+  let stderr = '';
+  let spawnError: string | null = null;
+  const seenMessages = new Set<string>();
+  const messageWaiters = new Map<string, () => void>();
+  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  child.on('message', (message: unknown) => {
+    const type = message && typeof message === 'object' && 'type' in message
+      ? String((message as { type: unknown }).type)
+      : '';
+    seenMessages.add(type);
+    messageWaiters.get(type)?.();
+  });
+  child.once('error', (error) => { spawnError = error.message; });
+  const finished = new Promise<{ code: number | null; stdout: string; stderr: string; spawnError: string | null }>((resolve) => {
+    child.once('close', (code) => resolve({ code, stdout, stderr, spawnError }));
+  });
+  const waitForMessage = (type: string) => {
+    if (seenMessages.has(type)) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        messageWaiters.delete(type);
+        reject(new Error('Timed out waiting for child message ' + type + '; stderr: ' + stderr));
+      }, 8_000);
+      messageWaiters.set(type, () => {
+        clearTimeout(timer);
+        messageWaiters.delete(type);
+        resolve();
+      });
+      child.once('close', () => {
+        clearTimeout(timer);
+        messageWaiters.delete(type);
+        reject(new Error('Child exited before message ' + type + '; stdout: ' + stdout + '; stderr: ' + stderr));
+      });
+    });
+  };
+  return { child, finished, waitForMessage };
 }
 
 /** A complete /proc scan that saw no holder anywhere. */
@@ -708,6 +767,119 @@ describe('runScratchGc — quota eviction', () => {
   });
 });
 
+describe('cross-process scratch quota coordination', () => {
+  it('shares one workspace quota reservation between writer processes', async () => {
+    const workspaceId = 'ws-MULTIPROCESS-QUOTA';
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    mkdirSync(workspaceRoot, { recursive: true });
+    const markerPath = join(workspaceRoot, WORKSPACE_SCRATCH_MARKER);
+    const marker = Buffer.from(JSON.stringify({
+      kind: 'papercusp-workspace-scratch-root',
+      workspaceId,
+      markedAt: new Date().toISOString(),
+    }) + '\n');
+    writeFileSync(markerPath, marker);
+    const baselinePath = join(workspaceRoot, 'legacy-baseline.bin');
+    const availableBytes = 120;
+    writeFileSync(baselinePath, Buffer.alloc(0));
+    truncateSync(baselinePath, WORKSPACE_QUOTA_BYTES - availableBytes - marker.length);
+
+    const script = [
+      'const { writeWithScratchQuota } = await import(process.env.PC_SCRATCH_GC_MODULE);',
+      "const { writeFile } = await import('node:fs/promises');",
+      'const workspaceId = process.env.PC_WORKSPACE_ID;',
+      'const filePath = process.env.PC_FILE_PATH;',
+      'try {',
+      '  await writeWithScratchQuota({ workspaceId, filePath, bytes: 80 }, async () => {',
+      '    await new Promise((resolve) => setTimeout(resolve, 80));',
+      '    await writeFile(filePath, Buffer.alloc(80));',
+      '  });',
+      '  process.stdout.write(JSON.stringify({ ok: true }));',
+      '} catch (error) {',
+      '  process.stdout.write(JSON.stringify({ ok: false, code: error && error.code }));',
+      '}',
+    ].join('\n');
+    const baseEnv = {
+      PC_SCRATCH_GC_MODULE: new URL('./scratch-gc.ts', import.meta.url).href,
+      PC_WORKSPACE_ID: workspaceId,
+    };
+    const firstPath = join(workspaceRoot, 'writer-one.bin');
+    const secondPath = join(workspaceRoot, 'writer-two.bin');
+    const first = startScratchChild(script, { ...baseEnv, PC_FILE_PATH: firstPath });
+    const second = startScratchChild(script, { ...baseEnv, PC_FILE_PATH: secondPath });
+    const [firstResult, secondResult] = await Promise.all([first.finished, second.finished]);
+
+    expect(firstResult.code, firstResult.stderr || firstResult.spawnError).toBe(0);
+    expect(secondResult.code, secondResult.stderr || secondResult.spawnError).toBe(0);
+    const outcomes = [JSON.parse(firstResult.stdout), JSON.parse(secondResult.stdout)];
+    expect(outcomes.map((outcome) => outcome.ok).sort()).toEqual([false, true]);
+    expect(outcomes.find((outcome) => !outcome.ok)).toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
+    expect([existsSync(firstPath), existsSync(secondPath)].filter(Boolean)).toHaveLength(1);
+  }, 15_000);
+
+  it('waits for a cross-process writer before retention deletes its run directory', async () => {
+    const workspaceId = 'ws-MULTIPROCESS-GC';
+    const runDir = makeRunDir(workspaceId, 'quota', UUID(8800), 8, RETENTION_MS + 60_000);
+    ageTree(runDir, RETENTION_MS + 60_000);
+    const filePath = join(runDir, 'live-write.bin');
+    const moduleUrl = new URL('./scratch-gc.ts', import.meta.url).href;
+    const writerScript = [
+      'const { writeWithScratchQuota } = await import(process.env.PC_SCRATCH_GC_MODULE);',
+      "const { open, utimes } = await import('node:fs/promises');",
+      'const filePath = process.env.PC_FILE_PATH;',
+      'const runDir = process.env.PC_RUN_DIR;',
+      'const old = new Date(Number(process.env.PC_OLD_MTIME));',
+      'await writeWithScratchQuota({ workspaceId: process.env.PC_WORKSPACE_ID, filePath, bytes: 16 }, async () => {',
+      "  const handle = await open(filePath, 'w');",
+      '  await utimes(runDir, old, old);',
+      "  process.send({ type: 'writer-ready' });",
+      '  await new Promise((resolve) => setTimeout(resolve, 8_000));',
+      "  await handle.writeFile('still-live');",
+      '  await handle.close();',
+      '  try { const fresh = new Date(); await utimes(runDir, fresh, fresh); } catch {}',
+      '});',
+      'process.stdout.write(JSON.stringify({ ok: true }));',
+    ].join('\n');
+    const gcScript = [
+      'const { runScratchGc } = await import(process.env.PC_SCRATCH_GC_MODULE);',
+      "process.send({ type: 'gc-started' });",
+      'const result = await runScratchGc({ workspaceRegistry: [process.env.PC_WORKSPACE_ID] });',
+      'process.stdout.write(JSON.stringify({ retentionEvictions: result.retentionEvictions }));',
+    ].join('\n');
+    const commonEnv = {
+      PC_SCRATCH_GC_MODULE: moduleUrl,
+      PC_WORKSPACE_ID: workspaceId,
+    };
+    const writer = startScratchChild(writerScript, {
+      ...commonEnv,
+      PC_FILE_PATH: filePath,
+      PC_RUN_DIR: runDir,
+      PC_OLD_MTIME: String(Date.now() - RETENTION_MS - 60_000),
+    });
+    let gc: ReturnType<typeof startScratchChild> | undefined;
+    try {
+      await writer.waitForMessage('writer-ready');
+      const lockPathEntries = readdirSync(join(sandbox, 'fs-mutex-locks'));
+      expect(lockPathEntries.some((entry) => entry.endsWith('.lock'))).toBe(true);
+      gc = startScratchChild(gcScript, commonEnv);
+      await gc.waitForMessage('gc-started');
+      const gcFinishedBeforeWriter = await Promise.race([
+        gc.finished.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 250)),
+      ]);
+      expect(gcFinishedBeforeWriter).toBe(false);
+      const [writerResult, gcResult] = await Promise.all([writer.finished, gc.finished]);
+      expect(writerResult.code, writerResult.stderr || writerResult.spawnError).toBe(0);
+      expect(gcResult.code, gcResult.stderr || gcResult.spawnError).toBe(0);
+      expect(JSON.parse(gcResult.stdout)).toMatchObject({ retentionEvictions: 0 });
+      expect(existsSync(filePath)).toBe(true);
+    } finally {
+      if (writer.child.exitCode === null) writer.child.kill('SIGTERM');
+      if (gc?.child.exitCode === null) gc.child.kill('SIGTERM');
+    }
+  }, 25_000);
+});
+
 describe('deferred scratch quota recovery', () => {
   it('the background usage refresh restores quota headroom before a writer needs recovery', async () => {
     const oldest = makeSparseRun('ws-Q', UUID(1), 512 * 1024 ** 2, 10_000);
@@ -733,7 +905,7 @@ describe('deferred scratch quota recovery', () => {
 
     expect(phaseRows).toHaveLength(1);
     expect(phaseRows[0]).toMatchObject({ quotaRecoveryMs: 0, refreshWaitMs: 0 });
-    expect(vi.mocked(rmAsync)).toHaveBeenCalledTimes(1);
+    expect(scratchRmCallCount()).toBe(1);
   });
 
   it('reuses an in-flight usage measurement when quota waiters have not written yet', async () => {
@@ -1162,7 +1334,7 @@ describe('deferred scratch quota recovery', () => {
     }));
     await refreshScratchUsage('ws-Q');
     expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 8 * 6709);
-    expect(vi.mocked(rmAsync)).not.toHaveBeenCalled();
+    expect(scratchRmCallCount()).toBe(0);
   });
 
   it('coalesces pressure recovery while preserving concurrent reservations without synchronous scans', async () => {
@@ -1188,7 +1360,7 @@ describe('deferred scratch quota recovery', () => {
         });
     }));
     expect(existsSync(old)).toBe(false);
-    expect(vi.mocked(rmAsync)).toHaveBeenCalledTimes(1);
+    expect(scratchRmCallCount()).toBe(1);
     expect(oldDataStatsAtFirstWrite).toBe(1);
     // One shared usage walk plus FIFO discovery. Waiting callers do not trigger another walk.
     expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(2);
@@ -1252,7 +1424,7 @@ describe('deferred scratch quota recovery', () => {
     }, () => writeFile(writePath, Buffer.alloc(writerBytes)));
 
     expect(existsSync(retainedRun)).toBe(true);
-    expect(vi.mocked(rmAsync)).not.toHaveBeenCalled();
+    expect(scratchRmCallCount()).toBe(0);
     expect(timings[0]?.quotaRecoveryDiagnostics).toMatchObject({
       sizeWalkMs: 0, runsConsidered: 0, deleteAttempts: 0,
     });
@@ -1346,7 +1518,7 @@ describe('deferred scratch quota recovery', () => {
     await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(old, 'next'),
       bytes: WORKSPACE_QUOTA_BYTES + 1 }, write)).rejects.toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
     expect(write).not.toHaveBeenCalled();
-    expect(vi.mocked(rmAsync)).not.toHaveBeenCalled();
+    expect(scratchRmCallCount()).toBe(0);
     expect(existsSync(old)).toBe(true);
   });
 

@@ -33,20 +33,24 @@
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T2.3.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import {
+  mkdir as mkdirAsync,
   readdir as readdirAsync,
   stat as statAsync,
   lstat as lstatAsync,
   rm as rmAsync,
   readFile as readFileAsync,
   writeFile as writeFileAsync,
+  rename as renameAsync,
   realpath as realpathAsync,
 } from 'node:fs/promises';
-import { join, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
 import { scratchRoot, scratchRootForWorkspace } from './scratch-uri';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 
 /** Retention window for run-dirs since last mtime. 24h default. */
 export const RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -71,6 +75,170 @@ export const SCRATCH_GC_CRONTAB = '0 0 3 * * *';
 
 /** Interval between sweeps implied by SCRATCH_GC_CRONTAB (daily). */
 export const SCRATCH_GC_SWEEP_PERIOD_MS = 24 * 60 * 60 * 1000;
+
+const SHARED_SCRATCH_QUOTA_STATE_VERSION = 1;
+const scratchMutexState = pinModuleState('@papercusp/operator-core.scratch-gc.mutex-queues', () =>
+  new Map<string, Promise<void>>(),
+);
+
+interface SharedScratchQuotaState {
+  version: typeof SHARED_SCRATCH_QUOTA_STATE_VERSION;
+  workspaceRoot: string;
+  bytes: number;
+  /** Last full filesystem reconciliation; delta writes preserve this timestamp. */
+  measuredAt: number;
+  /** Last state mutation; an old state is reconciled before it can authorize a write. */
+  updatedAt: number;
+}
+
+function scratchWorkspaceMutexName(workspaceId: string): string {
+  const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+  const digest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+  return 'papercusp-scratch-quota-' + digest;
+}
+
+function sharedScratchQuotaStatePath(workspaceId: string): string {
+  const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+  const digest = createHash('sha256').update(workspaceRoot).digest('hex');
+  const path = join(dirname(scratchRoot()), 'scratch-quota-state', digest + '.json');
+  usageState.sharedStatePaths.add(path);
+  return path;
+}
+
+function withScratchWorkspaceMutex<T>(
+  workspaceId: string,
+  operation: string,
+  run: () => Promise<T>,
+  onWaiting?: (info: { owner: string; elapsedMs: number }) => void,
+  onAcquired?: (info: { waitedMs: number }) => void,
+): Promise<T> {
+  const mutexName = scratchWorkspaceMutexName(workspaceId);
+  const previous = scratchMutexState.get(mutexName) ?? Promise.resolve();
+  let release!: () => void;
+  const held = new Promise<void>((resolveHeld) => { release = resolveHeld; });
+  const tail = previous.then(() => held, () => held);
+  scratchMutexState.set(mutexName, tail);
+
+  return (async () => {
+    await previous.catch(() => {});
+    try {
+      return await withFsMutex(mutexName, run, {
+        intent: { subsystem: 'scratch-quota', operation, workspaceId },
+        waitingNoticeIntervalMs: 5_000,
+        onWaiting,
+        onAcquired,
+      });
+    } finally {
+      release();
+      if (scratchMutexState.get(mutexName) === tail) scratchMutexState.delete(mutexName);
+    }
+  })();
+}
+
+async function readSharedScratchQuotaState(workspaceId: string): Promise<SharedScratchQuotaState | null> {
+  const path = sharedScratchQuotaStatePath(workspaceId);
+  let body: string;
+  try {
+    body = await readFileAsync(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  try {
+    const value = JSON.parse(body) as Partial<SharedScratchQuotaState>;
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    if (
+      value.version !== SHARED_SCRATCH_QUOTA_STATE_VERSION ||
+      value.workspaceRoot !== workspaceRoot ||
+      !Number.isSafeInteger(value.bytes) ||
+      Number(value.bytes) < 0 ||
+      !Number.isSafeInteger(value.measuredAt) ||
+      !Number.isSafeInteger(value.updatedAt)
+    ) {
+      return null;
+    }
+    return value as SharedScratchQuotaState;
+  } catch {
+    return null;
+  }
+}
+
+async function writeSharedScratchQuotaState(
+  workspaceId: string,
+  bytes: number,
+  measuredAt: number,
+): Promise<void> {
+  const path = sharedScratchQuotaStatePath(workspaceId);
+  const parent = dirname(path);
+  await mkdirAsync(parent, { recursive: true, mode: 0o700 });
+  const record: SharedScratchQuotaState = {
+    version: SHARED_SCRATCH_QUOTA_STATE_VERSION,
+    workspaceRoot: resolve(scratchRootForWorkspace(workspaceId)),
+    bytes: Math.max(0, Math.trunc(bytes)),
+    measuredAt,
+    updatedAt: Date.now(),
+  };
+  const temporary = path + '.' + process.pid + '.' + randomUUID() + '.tmp';
+  await writeFileAsync(temporary, JSON.stringify(record) + '\n', { mode: 0o600 });
+  try {
+    await renameAsync(temporary, path);
+  } catch (error) {
+    await rmAsync(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function removeSharedScratchQuotaState(workspaceId: string): Promise<void> {
+  await rmAsync(sharedScratchQuotaStatePath(workspaceId), { force: true });
+}
+
+function invalidateLocalScratchUsage(workspaceId: string): void {
+  const entry = usageEntry(workspaceId);
+  entry.measuredAt = 0;
+  entry.refreshDeferred = false;
+  entry.runBytesByPath.clear();
+  entry.runBytesValid = false;
+}
+
+async function measureAndAdoptSharedScratchUsage(
+  workspaceId: string,
+  cachedState?: SharedScratchQuotaState | null,
+): Promise<{
+  bytes: number;
+  measuredAt: number;
+  measured: boolean;
+}> {
+  const existing = cachedState === undefined
+    ? await readSharedScratchQuotaState(workspaceId)
+    : cachedState;
+  const now = Date.now();
+  if (existing && now - existing.updatedAt <= USAGE_REFRESH_MS) {
+    return { bytes: existing.bytes, measuredAt: existing.measuredAt, measured: false };
+  }
+
+  const diagnostics = newScratchQuotaRecoveryDiagnostics();
+  const workspaceRoot = scratchRootForWorkspace(workspaceId);
+  const bytes = await sizeOfDirAsync(workspaceRoot, undefined, undefined, 0, undefined, diagnostics);
+  if (diagnostics.directoryReadErrors > 0 || diagnostics.fileStatErrors > 0) {
+    throw new Error('Unable to establish a complete shared scratch quota measurement for workspace ' + workspaceId);
+  }
+  const measuredAt = Date.now();
+  await writeSharedScratchQuotaState(workspaceId, bytes, measuredAt);
+  return { bytes, measuredAt, measured: true };
+}
+
+function adoptSharedScratchUsage(
+  workspaceId: string,
+  bytes: number,
+): ScratchUsageEntry {
+  const entry = usageEntry(workspaceId);
+  entry.bytes = bytes;
+  entry.measuredAt = Date.now();
+  entry.refreshDeferred = false;
+  entry.runBytesByPath.clear();
+  entry.runBytesValid = false;
+  return entry;
+}
 
 /**
  * The oldest a run-dir can legitimately get. The sweep only removes dirs already past
@@ -282,7 +450,15 @@ export async function runScratchGc(opts: {
       } catch {
         continue; // an id with no valid scratch shape has no scratch root
       }
-      if (await writeMarkerIfAbsent(wsRoot, workspaceId)) summary.markersWritten += 1;
+      const wrote = await withScratchWorkspaceMutex(workspaceId, 'marker-backfill', async () => {
+        const wroteMarker = await writeMarkerIfAbsent(wsRoot, workspaceId);
+        if (wroteMarker) {
+          await removeSharedScratchQuotaState(workspaceId);
+          invalidateLocalScratchUsage(workspaceId);
+        }
+        return wroteMarker;
+      });
+      if (wrote) summary.markersWritten += 1;
     }
   }
 
@@ -326,28 +502,57 @@ export async function runScratchGc(opts: {
         summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'process-scan-incomplete' });
         continue;
       }
-      if (!dryRun) await rmAsync(c.dir, { recursive: true, force: true });
-      summary.deadWorkspaces += 1;
-      summary.deadWorkspaceBytes += c.bytes;
+      if (dryRun) {
+        summary.deadWorkspaces += 1;
+        summary.deadWorkspaceBytes += c.bytes;
+        continue;
+      }
+      await withScratchWorkspaceMutex(c.workspaceId, 'dead-workspace-gc', async () => {
+        if (!(await isProvenWorkspaceScratchRoot(c.dir, c.workspaceId))) return;
+        // A cooperating writer may have run after the initial bulk /proc scan. Its mutex lease
+        // has drained by this point; recheck age so the fresh write survives this sweep.
+        const currentTree = await treeStatsAsync(c.dir);
+        if (now - currentTree.newestMtimeMs < quietMs) {
+          summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'recent-write' });
+          return;
+        }
+        await rmAsync(c.dir, { recursive: true, force: true });
+        await removeSharedScratchQuotaState(c.workspaceId);
+        invalidateLocalScratchUsage(c.workspaceId);
+        summary.deadWorkspaces += 1;
+        summary.deadWorkspaceBytes += currentTree.bytes;
+      });
     }
   }
 
   // Step 1: retention sweep, per-workspace.
   for (const workspaceId of opts.workspaceRegistry) {
-    for (const run of await runDirsOf(scratchRootForWorkspace(workspaceId))) {
-      if (now - run.mtimeMs > retentionMs) {
-        const bytes = await sizeOfDirAsync(run.dir);
-        if (!dryRun) await rmAsync(run.dir, { recursive: true, force: true });
-        summary.retentionEvictions += 1;
-        summary.retentionEvictedBytes += bytes;
+    const prune = async () => {
+      let removed = false;
+      for (const run of await runDirsOf(scratchRootForWorkspace(workspaceId))) {
+        if (now - run.mtimeMs > retentionMs) {
+          const bytes = await sizeOfDirAsync(run.dir);
+          if (!dryRun) {
+            await rmAsync(run.dir, { recursive: true, force: true });
+            removed = true;
+          }
+          summary.retentionEvictions += 1;
+          summary.retentionEvictedBytes += bytes;
+        }
       }
-    }
+      if (removed) {
+        await removeSharedScratchQuotaState(workspaceId);
+        invalidateLocalScratchUsage(workspaceId);
+      }
+    };
+    if (dryRun) await prune();
+    else await withScratchWorkspaceMutex(workspaceId, 'retention-gc', prune);
   }
 
   // Step 3: per-workspace quota check + FIFO eviction by mtime.
   if (opts.enforceQuota !== false && !dryRun) {
     for (const workspaceId of opts.workspaceRegistry) {
-      const reclaimed = await evictWorkspaceQuota(workspaceId, () => WORKSPACE_QUOTA_BYTES);
+      const reclaimed = await evictWorkspaceQuotaWithLock(workspaceId, () => WORKSPACE_QUOTA_BYTES);
       summary.quotaEvictions += reclaimed.evictions;
       summary.quotaEvictedBytes += reclaimed.bytes;
     }
@@ -437,7 +642,9 @@ interface ScratchUsageEntry {
  *  fork it into two caches that each under-count. */
 const usageState = pinModuleState('@papercusp/operator-core.scratch-gc.usage', () => ({
   byWorkspace: new Map<string, ScratchUsageEntry>(),
+  sharedStatePaths: new Set<string>(),
 }));
+usageState.sharedStatePaths ??= new Set<string>();
 
 function usageEntry(workspaceId: string): ScratchUsageEntry {
   let entry = usageState.byWorkspace.get(workspaceId);
@@ -495,7 +702,7 @@ function scheduleDeferredUsageRefresh(workspaceId: string, entry: ScratchUsageEn
 }
 
 /** The same FIFO phase serves the daily sweep and request-time async quota recovery. */
-async function evictWorkspaceQuota(
+async function evictWorkspaceQuotaLocked(
   workspaceId: string,
   targetBytes: () => number,
   reconcileReservations = false,
@@ -711,6 +918,23 @@ async function evictWorkspaceQuota(
   return { used, evictions, bytes };
 }
 
+async function evictWorkspaceQuotaWithLock(
+  workspaceId: string,
+  targetBytes: () => number,
+  diagnostics?: ScratchQuotaRecoveryDiagnostics,
+  now: () => number = Date.now,
+): Promise<{ used: number; evictions: number; bytes: number }> {
+  return withScratchWorkspaceMutex(workspaceId, 'quota-eviction', async () => {
+    const entry = usageEntry(workspaceId);
+    entry.runBytesByPath.clear();
+    entry.runBytesValid = false;
+    entry.refreshDeferred = false;
+    const reclaimed = await evictWorkspaceQuotaLocked(workspaceId, targetBytes, false, diagnostics, now);
+    await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt || Date.now());
+    return reclaimed;
+  });
+}
+
 const SCRATCH_SIZE_SCAN_MAX_IN_FLIGHT = 2;
 let scratchSizeScanInFlight = 0;
 const scratchSizeScanWaiters: Array<() => void> = [];
@@ -841,15 +1065,73 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
   if (entry.refreshing) return entry.refreshing;
   const diagnostics = newScratchQuotaRecoveryDiagnostics();
   entry.refreshDiagnostics = diagnostics;
+  const targetBytes = WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES;
   const run = (async () => {
     try {
-      await evictWorkspaceQuota(
-        workspaceId,
-        () => WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
-        false,
-        diagnostics,
-        now,
-      );
+      const sharedAtStart = await readSharedScratchQuotaState(workspaceId);
+      // A known over-target cache needs immediate quota recovery. Keep that destructive walk
+      // inside the workspace mutex so no writer can reserve a path while FIFO candidates are
+      // being measured or deleted.
+      if (entry.bytes > targetBytes || (sharedAtStart && sharedAtStart.bytes > targetBytes)) {
+        await evictWorkspaceQuotaWithLock(workspaceId, () => targetBytes, diagnostics, now);
+        return;
+      }
+
+      // A below-target refresh is read-only until its result is reconciled. Let it overlap a
+      // writer so an ordinary size walk does not hold the quota mutex for the whole tree. The
+      // shared ledger timestamp and local generation reject a mixed snapshot before it can
+      // replace a concurrent reservation.
+      const writeGeneration = entry.writeGeneration;
+      const runBytesByPath = new Map<string, number>();
+      const sizeWalkStartedAt = performance.now();
+      let measuredBytes: number;
+      try {
+        measuredBytes = await sizeOfDirAsync(
+          scratchRootForWorkspace(workspaceId),
+          undefined,
+          runBytesByPath,
+          0,
+          undefined,
+          diagnostics,
+        );
+      } finally {
+        diagnostics.sizeWalkMs += Math.max(0, performance.now() - sizeWalkStartedAt);
+      }
+      if (diagnostics.directoryReadErrors > 0 || diagnostics.fileStatErrors > 0) {
+        throw new Error('Unable to establish a complete shared scratch quota measurement for workspace ' + workspaceId);
+      }
+      if (entry.writes.size > 0 || entry.writeGeneration !== writeGeneration) {
+        entry.refreshDeferred = true;
+        entry.runBytesValid = false;
+        return;
+      }
+
+      await withScratchWorkspaceMutex(workspaceId, 'usage-refresh-adopt', async () => {
+        const sharedNow = await readSharedScratchQuotaState(workspaceId);
+        const sharedChanged = (sharedNow?.updatedAt ?? null) !== (sharedAtStart?.updatedAt ?? null);
+        if (entry.writes.size > 0 || entry.writeGeneration !== writeGeneration || sharedChanged) {
+          entry.runBytesValid = false;
+          if (entry.writes.size > 0 || entry.writeGeneration !== writeGeneration || !sharedNow) {
+            entry.refreshDeferred = true;
+          }
+          if (sharedNow) {
+            entry.bytes = sharedNow.bytes;
+            entry.measuredAt = sharedNow.measuredAt;
+            if (sharedNow.bytes > targetBytes) entry.refreshDeferred = true;
+          }
+          return;
+        }
+
+        entry.bytes = measuredBytes;
+        entry.measuredAt = now();
+        entry.refreshDeferred = false;
+        entry.runBytesByPath = runBytesByPath;
+        entry.runBytesValid = [...runBytesByPath.values()].every(Number.isFinite);
+        if (measuredBytes > targetBytes) {
+          await evictWorkspaceQuotaLocked(workspaceId, () => targetBytes, true, diagnostics, now);
+        }
+        await writeSharedScratchQuotaState(workspaceId, entry.bytes, entry.measuredAt);
+      });
     } finally {
       entry.refreshDiagnostics = null;
       entry.refreshing = null;
@@ -875,6 +1157,15 @@ export function _setScratchUsageForTests(
   const entry = usageEntry(workspaceId);
   entry.bytes = bytes;
   entry.measuredAt = measuredAt;
+  const path = sharedScratchQuotaStatePath(workspaceId);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify({
+    version: SHARED_SCRATCH_QUOTA_STATE_VERSION,
+    workspaceRoot: resolve(scratchRootForWorkspace(workspaceId)),
+    bytes: Math.max(0, Math.trunc(bytes)),
+    measuredAt,
+    updatedAt: Date.now(),
+  }) + '\n', { mode: 0o600 });
   if (!preserveRunBytes) {
     entry.runBytesByPath.clear();
     entry.runBytesValid = false;
@@ -884,6 +1175,10 @@ export function _setScratchUsageForTests(
 /** Test-only: forget every cached usage total. */
 export function _resetScratchUsageForTests(): void {
   usageState.byWorkspace.clear();
+  for (const path of usageState.sharedStatePaths) {
+    try { rmSync(path, { force: true }); } catch { /* test cleanup only */ }
+  }
+  usageState.sharedStatePaths.clear();
 }
 
 /**
@@ -1110,7 +1405,7 @@ export async function writeWithScratchQuota(
   write: () => Promise<void>,
 ): Promise<void> {
   if (!Number.isSafeInteger(opts.bytes) || opts.bytes < 0 || opts.bytes > WORKSPACE_QUOTA_BYTES) {
-    throw new ScratchQuotaError(`scratch reservation: invalid single write of ${opts.bytes} bytes`);
+    throw new ScratchQuotaError('scratch reservation: invalid single write of ' + opts.bytes + ' bytes');
   }
   const entry = usageEntry(opts.workspaceId);
   const token = Symbol();
@@ -1121,6 +1416,7 @@ export async function writeWithScratchQuota(
     quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 0,
   };
   let activeRecoveryDiagnostics: ScratchQuotaRecoveryDiagnostics | undefined;
+  let sharedMeasuredAt = Date.now();
   const timed = async (
     phase: 'quotaWaitMs' | 'refreshWaitMs' | 'quotaRecoveryMs' | 'writeMs',
     run: () => Promise<void>,
@@ -1174,51 +1470,164 @@ export async function writeWithScratchQuota(
     }
   };
   let succeeded = false;
-  try {
-    if (entry.recovering) await timed('quotaWaitMs', () => entry.recovering!);
+  let reservedStatePersisted = false;
+  const refreshWaitOwner = Boolean(entry.refreshing) &&
+    [...entry.writes.keys()][0] === token;
+  const lockWaitStartedAt = performance.now();
+  const emitLockWaitProgress = () => {
+    const refreshActive = Boolean(entry.refreshing);
     try {
-      reserveScratchSpace({ workspaceId: opts.workspaceId, bytes: opts.bytes, filePath: opts.filePath });
-    } catch (err) {
-      if (!(err instanceof ScratchQuotaError)) throw err;
-      const startsRecovery = !entry.recovering;
-      if (!entry.recovering) {
-        entry.recovering = (async () => {
-          if (entry.refreshing) await timed('refreshWaitMs', () => entry.refreshing!);
-          // Waiters have not touched disk, so they do not invalidate a background walk.
-          // Reuse its reconciled total when it already makes room for the queued writes;
-          // otherwise every stale-quota spill pays for the same full-tree scan twice.
-          const waitingBytes = [...entry.writes.values()].reduce((sum, request) =>
-            sum + (request.reserved ? 0 : request.bytes), 0);
-          if (entry.bytes + waitingBytes <= WORKSPACE_QUOTA_BYTES) return;
-          await timed('quotaRecoveryMs', async () => {
-            const diagnostics = newScratchQuotaRecoveryDiagnostics();
-            activeRecoveryDiagnostics = diagnostics;
-            try {
-              await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0,
-                WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
-                [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true, diagnostics);
-            } finally {
-              timings.quotaRecoveryDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
-              activeRecoveryDiagnostics = undefined;
-            }
-          });
-        })().finally(() => { entry.recovering = null; });
-      }
-      if (startsRecovery) await entry.recovering;
-      else await timed('quotaWaitMs', () => entry.recovering!);
-      reserveScratchSpace({ workspaceId: opts.workspaceId, bytes: opts.bytes, filePath: opts.filePath }); // still full/protected/unreclaimable ⇒ explicit, bounded refusal
+      opts.onTiming?.({
+        ...timings,
+        progress: {
+          phase: refreshActive && refreshWaitOwner ? 'usage-refresh-wait' : 'quota-wait',
+          phaseElapsedMs: Math.max(0, performance.now() - lockWaitStartedAt),
+          totalElapsedMs: Math.max(0, performance.now() - startedAt),
+          bytes: opts.bytes,
+          pendingWrites: entry.writes.size,
+          recoveryActive: Boolean(entry.recovering) || refreshActive,
+          refreshActive,
+          ...(refreshActive && entry.refreshDiagnostics
+            ? { usageRefreshDiagnostics: snapshotScratchQuotaRecoveryDiagnostics(entry.refreshDiagnostics) }
+            : {}),
+        },
+      });
+    } catch {
+      // Diagnostic callbacks must never alter the writer's quota outcome.
     }
-    pending.reserved = true;
-    await timed('writeMs', write);
-    succeeded = true;
+  };
+  let lockWaitProgressTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleLockWaitProgress = () => {
+    if (!opts.onTiming) return;
+    lockWaitProgressTimer = setTimeout(() => {
+      emitLockWaitProgress();
+      scheduleLockWaitProgress();
+    }, SCRATCH_WRITE_PROGRESS_AFTER_MS);
+    (lockWaitProgressTimer as { unref?: () => void } | undefined)?.unref?.();
+  };
+  scheduleLockWaitProgress();
+  try {
+    await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
+      let shared: { bytes: number; measuredAt: number; measured: boolean } | undefined;
+      const cachedState = await readSharedScratchQuotaState(opts.workspaceId);
+      if (cachedState && Date.now() - cachedState.updatedAt <= USAGE_REFRESH_MS) {
+        shared = {
+          bytes: cachedState.bytes,
+          measuredAt: cachedState.measuredAt,
+          measured: false,
+        };
+      } else {
+        await timed('refreshWaitMs', async () => {
+          shared = await measureAndAdoptSharedScratchUsage(opts.workspaceId, cachedState);
+        });
+      }
+      if (!shared) throw new Error('Shared scratch quota state was not loaded');
+      sharedMeasuredAt = shared.measuredAt;
+      adoptSharedScratchUsage(opts.workspaceId, shared.bytes);
+
+      // A first reference write can create the workspace marker in addition to its payload. Count
+      // that known file size in the reservation when this is a workspace/tool/run path.
+      let markerBytes = 0;
+      const markerPath = join(scratchRootForWorkspace(opts.workspaceId), WORKSPACE_SCRATCH_MARKER);
+      if (scratchRunDirForFile(opts.workspaceId, opts.filePath)) {
+        try {
+          await lstatAsync(markerPath);
+        } catch {
+          markerBytes = Buffer.byteLength(workspaceScratchMarkerBody(opts.workspaceId));
+        }
+      }
+      const reservationBytes = opts.bytes + markerBytes;
+      pending.bytes = reservationBytes;
+
+      if (entry.recovering) await timed('quotaWaitMs', () => entry.recovering!);
+      try {
+        reserveScratchSpace({
+          workspaceId: opts.workspaceId,
+          bytes: reservationBytes,
+          filePath: opts.filePath,
+        });
+      } catch (err) {
+        if (!(err instanceof ScratchQuotaError)) throw err;
+        const startsRecovery = !entry.recovering;
+        if (!entry.recovering) {
+          entry.recovering = (async () => {
+            // The shared total was just read under this workspace lock. A queued background
+            // refresher runs after us, so waiting for it here would deadlock on our own lock.
+            const waitingBytes = [...entry.writes.values()].reduce((sum, request) =>
+              sum + (request.reserved ? 0 : request.bytes), 0);
+            if (entry.bytes + waitingBytes <= WORKSPACE_QUOTA_BYTES) return;
+            await timed('quotaRecoveryMs', async () => {
+              const diagnostics = newScratchQuotaRecoveryDiagnostics();
+              activeRecoveryDiagnostics = diagnostics;
+              try {
+                await evictWorkspaceQuotaLocked(opts.workspaceId, () => Math.max(0,
+                  WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
+                  [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)),
+                true, diagnostics);
+                await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, entry.measuredAt);
+                sharedMeasuredAt = entry.measuredAt;
+              } finally {
+                timings.quotaRecoveryDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
+                activeRecoveryDiagnostics = undefined;
+              }
+            });
+          })().finally(() => { entry.recovering = null; });
+        }
+        if (startsRecovery) await entry.recovering;
+        else await timed('quotaWaitMs', () => entry.recovering!);
+        reserveScratchSpace({
+          workspaceId: opts.workspaceId,
+          bytes: reservationBytes,
+          filePath: opts.filePath,
+        }); // still full/protected/unreclaimable ⇒ explicit, bounded refusal
+      }
+
+      pending.reserved = true;
+      try {
+        // Publish the reservation before touching the payload. A process crash can leave a
+        // conservative over-count, but never an under-count that admits another process past quota.
+        await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt);
+        reservedStatePersisted = true;
+        await timed('writeMs', write);
+        succeeded = true;
+
+        if (markerBytes > 0) {
+          try {
+            await lstatAsync(markerPath);
+          } catch {
+            entry.bytes = Math.max(0, entry.bytes - markerBytes);
+            pending.bytes -= markerBytes;
+            adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -markerBytes);
+            await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt).catch(() => {});
+          }
+        }
+      } catch (error) {
+        if (pending.reserved && !succeeded) {
+          entry.writeGeneration += 1;
+          entry.bytes = Math.max(0, entry.bytes - pending.bytes);
+          pending.reserved = false;
+          adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -pending.bytes);
+          if (reservedStatePersisted) {
+            // A failed write may have left a partial file. Remove the ledger so the next writer
+            // measures the actual tree before making a quota decision.
+            await removeSharedScratchQuotaState(opts.workspaceId).catch(() => {});
+          }
+        }
+        throw error;
+      }
+    }, undefined, () => {
+      if (lockWaitProgressTimer) {
+        clearTimeout(lockWaitProgressTimer);
+        lockWaitProgressTimer = undefined;
+      }
+      const elapsedMs = Math.max(0, performance.now() - lockWaitStartedAt);
+      if (refreshWaitOwner) timings.refreshWaitMs += elapsedMs;
+      else timings.quotaWaitMs += elapsedMs;
+    });
   } finally {
+    if (lockWaitProgressTimer) clearTimeout(lockWaitProgressTimer);
     entry.writes.delete(token);
     if (pending.reserved) entry.writeGeneration += 1;
-    if (pending.reserved && !succeeded) {
-      entry.bytes = Math.max(0, entry.bytes - opts.bytes);
-      pending.reserved = false;
-      adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -opts.bytes);
-    }
     scheduleDeferredUsageRefresh(opts.workspaceId, entry);
     timings.totalMs = Math.max(0, performance.now() - startedAt);
     // Diagnostic observers must never replace a write failure or invalidate a readable cursor.
