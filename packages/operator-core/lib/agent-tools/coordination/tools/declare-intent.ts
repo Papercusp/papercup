@@ -48,7 +48,7 @@ import { fetchPresenceFleet, type FleetMembership } from '../presence-fleet';
 import { COORD_ROLES } from '../roles';
 import { resolvePlanScope, getPlanRow, planItemsForRow } from '../../plans/source';
 import { ctxToPlanSourceOpts } from '../../plans/_ctx-opts';
-import { reconcileDeclaredClaims } from '../../../plan-items/claim-discipline';
+import { reconcileDeclaredClaims, releaseOwnClaim } from '../../../plan-items/claim-discipline';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../../plan-items/agent-names';
 import { convertPlanItem } from '../../../plan-items/convert';
 import { getFlag } from '@papercusp/flags/server';
@@ -361,9 +361,12 @@ export default defineTool({
         // claimed regardless. Fail-safe to OFF on a flag-read error.
         const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
         // WI-10008137: a coded refusal (e.g. activation_audit_required on an unaudited
-        // draft plan) is reported back instead of discarded, so the caller learns the
-        // lane holds a lease but no work started.
-        const notConverted: Array<{ item: string; code: string; reason: string }> = [];
+        // draft plan) is reported back instead of discarded. WI-10008206: when the gate
+        // refuses an item THIS call just claimed, its lease is released too, so a refused
+        // start leaves no claim behind (owner decision 1A, refuse until audited). A lease
+        // held before this call is left alone.
+        const notConverted: Array<{ item: string; code: string; reason: string; leaseReleased: boolean }> = [];
+        const newlyClaimed = new Set(reconciled.claimed);
         if (autoConvert) {
           const held = [...reconciled.claimed, ...reconciled.alreadyHeld];
           for (const itemId of held) {
@@ -385,12 +388,30 @@ export default defineTool({
               return null;
             });
             if (conv?.status === 'refused' && conv.code) {
-              notConverted.push({ item: itemId, code: conv.code, reason: conv.reason });
+              const leaseReleased =
+                conv.code === 'activation_audit_required' && newlyClaimed.has(itemId)
+                  ? await releaseOwnClaim(
+                      scope.workspaceId,
+                      scope.harnessSlug,
+                      declaredPlanSlug,
+                      itemId,
+                      identity.ownerId,
+                    ).catch(() => false)
+                  : false;
+              notConverted.push({ item: itemId, code: conv.code, reason: conv.reason, leaseReleased });
             }
           }
         }
 
-        const withRefusals = notConverted.length > 0 ? { ...reconciled, notConverted } : reconciled;
+        const releasedByGate = new Set(notConverted.filter((n) => n.leaseReleased).map((n) => n.item));
+        const withRefusals =
+          notConverted.length > 0
+            ? {
+                ...reconciled,
+                claimed: reconciled.claimed.filter((item) => !releasedByGate.has(item)),
+                notConverted,
+              }
+            : reconciled;
         claims =
           unknown.length > 0
             ? {
