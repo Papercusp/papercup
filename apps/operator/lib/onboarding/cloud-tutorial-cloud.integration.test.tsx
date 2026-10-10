@@ -5,15 +5,19 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { NuqsAdapter } from "../../../operator-vite/src/lib/nuqs-tanstack-router-adapter";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
-import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, currentTutorialStep, type TutorialState } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, currentTutorialStep, type TutorialEvent, type TutorialState } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { hostedBrowserApiMarker } from "../hosted-browser-api";
 import CloudWorkspacesPage from "@/app/cloud-workspaces/page";
 import type { CloudWorkspacesControlRow } from "@/app/cloud-workspaces/page";
 
+type TutorialObservation = Extract<TutorialEvent, { type: "observe" }>["observation"];
 const data = vi.hoisted(() => ({
   rows: [] as CloudWorkspacesControlRow[], loading: false, error: null as Error | null, mutate: vi.fn(), invalidate: vi.fn(),
   companionInputs: [] as Array<{ configurationValid: boolean; configurationReviewed: boolean; boundWorkspaceId: string | null; workspaceId: string | null; workspaceReady: boolean }>,
   observations: [] as unknown[], states: [] as unknown[],
+  injectionMode: null as null | "stale-next-reviewed",
+  injectedObservations: [] as Array<{ emitted: TutorialObservation; injected: TutorialObservation; priorRevision: number }>,
+  replayObservation: null as null | ((observation: TutorialObservation) => void),
 }));
 // Substitute only the authenticated network boundary. The Cloud forms, Radix
 // dialog, guide, highlighting, URL state and router are actual application code.
@@ -29,8 +33,19 @@ vi.mock("@/lib/onboarding/use-cloud-tutorial-progress", async importOriginal => 
     useCloudTutorialProgress: (...args: Parameters<typeof actual.useCloudTutorialProgress>) => {
       const result = actual.useCloudTutorialProgress(...args);
       if (result.state) data.states.push(result.state);
+      data.replayObservation = observation => result.dispatch({ type: "observe", observation });
       const dispatch = useCallback((event: Parameters<typeof result.dispatch>[0]) => {
-        if (event.type === "observe") data.observations.push(event.observation);
+        if (event.type === "observe") {
+          data.observations.push(event.observation);
+          if (data.injectionMode === "stale-next-reviewed" && event.observation.configuration?.costReviewed === true) {
+            data.injectionMode = null;
+            const current = data.states.at(-1) as TutorialState | undefined;
+            const priorRevision = current?.observation?.revision ?? 0;
+            const injected = { ...event.observation, revision: priorRevision };
+            data.injectedObservations.push({ emitted: event.observation, injected, priorRevision });
+            return result.dispatch({ ...event, observation: injected });
+          }
+        }
         return result.dispatch(event);
       }, [result.dispatch]);
       return { ...result, dispatch };
@@ -78,6 +93,7 @@ function mount(initial = "/cloud-workspaces", options: { resetQueue?: boolean } 
 beforeEach(() => {
   data.rows = []; data.loading = false; data.error = null; data.mutate.mockReset().mockResolvedValue({ ok: true }); data.invalidate.mockReset().mockResolvedValue(undefined);
   data.companionInputs = []; data.observations = []; data.states = [];
+  data.injectionMode = null; data.injectedObservations = []; data.replayObservation = null;
   window.__PAPERCUSP_HOSTED_BROWSER__ = hostedBrowserApiMarker("control");
   delete window.__PAPERCUSP_HOSTED_BROWSER_API__;
   vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })));
@@ -251,6 +267,42 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     await waitFor(() => expect(within(guide).queryByRole("heading", { name: "Wait for a healthy workspace" })).toBeTruthy(),
       { onTimeout: withBoundaryTrace });
     expect(screen.queryByRole("button", { name: "+ New session" })).toBeNull();
+    expect(data.mutate).not.toHaveBeenCalled();
+  });
+  it("isolates a V1 stale-revision rejection between the emitted observation and rendered guide", async () => {
+    data.rows = [connection, { ...workspace, health: { status: "healthy", checks: [] } }];
+    mount("/cloud-workspaces?step=operate&host=customer");
+    const guide = await screen.findByRole("region", { name: "First agent guide" });
+    await within(guide).findByRole("heading", { name: "Review configuration and cost" });
+    fireEvent.click(within(guide).getByRole("button", { name: "Show me" }));
+    const review = await screen.findByRole("button", { name: "I've reviewed the configuration and cost" });
+    await waitFor(() => {
+      const state = data.states.at(-1) as TutorialState | undefined;
+      expect(state && currentTutorialStep(state)?.id).toBe("configuration");
+      expect(state?.observation?.revision).toBeGreaterThan(0);
+    });
+    const priorRevision = (data.states.at(-1) as TutorialState).observation!.revision;
+
+    data.injectionMode = "stale-next-reviewed";
+    fireEvent.click(review);
+    await waitFor(() => expect(data.injectedObservations).toHaveLength(1));
+    const injection = data.injectedObservations[0];
+    expect(injection.emitted).toMatchObject({ scope, configuration: { valid: true, costReviewed: true } });
+    expect(injection.emitted.revision).toBeGreaterThan(priorRevision);
+    expect(injection.priorRevision).toBe(priorRevision);
+    expect(injection.injected.revision).toBe(priorRevision);
+
+    const rejectedState = data.states.at(-1) as TutorialState;
+    expect(rejectedState.observation?.revision).toBe(priorRevision);
+    expect(currentTutorialStep(rejectedState)?.id).toBe("configuration");
+    expect(within(guide).getByRole("heading", { name: "Review configuration and cost" })).toBeTruthy();
+
+    await act(async () => data.replayObservation?.(injection.emitted));
+    await waitFor(() => {
+      const state = data.states.at(-1) as TutorialState | undefined;
+      expect(state && currentTutorialStep(state)?.id).toBe("workspace");
+    });
+    await within(guide).findByRole("heading", { name: "Wait for a healthy workspace" });
     expect(data.mutate).not.toHaveBeenCalled();
   });
   it("keeps a prepared-workspace cost review when its connection row is absent from the control response", async () => {
