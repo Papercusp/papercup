@@ -29,6 +29,17 @@ bytes into a fresh isolated context; other arms' solutions and hidden grader
 answers remain forbidden. Runtime observations must match the frozen controls;
 requested settings alone do not establish execution identity.
 
+Current SWE-bench Pro grading also freezes `grader.version` as the official
+checkout commit, `grader.datasetSha256` as the canonical CSV hash, and
+`grader.images` as a task-to-immutable-image-URI map. `grader.imageDigest` hashes
+that map with the maintained canonical JSON serializer. The existing grade
+entry point verifies the committed protocol before dispatch; the Python wrapper
+checks the checkout and CSV and makes the official scorer resolve images by
+digest. It records a `grader-receipt.json` beside the grade outputs. Missing
+per-task test output, drift or a failed grader process leaves the run ungraded.
+Configure the existing `PAPERCUSP_SWEBENCH_EVAL_DIR`,
+`PAPERCUSP_SWEBENCH_CSV` and `PAPERCUSP_SWEBENCH_PYTHON` paths on the grading host.
+
 The approved measurement pilot is three tasks × three seeds × two arms with equal
 $3 generation caps and a $60 aggregate inference ceiling. Admission records a cap
 outcome when an attempt cannot fit. Retries, recovery and every participating role
