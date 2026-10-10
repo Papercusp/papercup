@@ -2202,6 +2202,7 @@ export function carryTurnProofRequiresNativeId(agent) {
  * @param {string|null} [opts.proofReason]
  * @param {number} [opts.retryCount]
  * @param {number} [opts.maxRetries]
+ * @param {boolean} [opts.unboundPastWindow] the failed child outlived its id window
  */
 export function shouldRetryCarryOnFreshEpoch({
   drillId = '',
@@ -2209,6 +2210,7 @@ export function shouldRetryCarryOnFreshEpoch({
   proofReason = null,
   retryCount = 0,
   maxRetries = 1,
+  unboundPastWindow = false,
 } = {}) {
   if (drillId || retryCount >= maxRetries) return false;
   if (reason === 'never-settled' ||
@@ -2223,8 +2225,10 @@ export function shouldRetryCarryOnFreshEpoch({
       // P-005 (D-003): the exact child never exposed its native id within its
       // spawn-anchored window (healthy p99 5.6s). That is a per-child startup
       // wedge (the update menu was the measured one), not a deterministic
-      // contract failure: a fresh child mints its own id.
-      reason === 'successor-native-id-missing') return true;
+      // contract failure: a fresh child mints its own id. A shorter CALLER
+      // deadline yields the same reason on a young child that may still bind
+      // (EI-25344556501316035), so only a child past its window is replaced.
+      (reason === 'successor-native-id-missing' && unboundPastWindow)) return true;
   return reason === 'turn-start-unverified' &&
     (proofReason === 'native-turn-marker-timeout' || proofReason === 'native-turn-prompt-timeout');
 }
@@ -2447,6 +2451,7 @@ export function codexLaunchStartingRetryMax(value, fallback = CODEX_LAUNCH_START
  * @param {boolean} [opts.isResume]
  * @param {number} [opts.retryCount]
  * @param {number} [opts.maxRetries]
+ * @param {boolean} [opts.unboundPastWindow] the failed child outlived its id window
  */
 export function shouldRetryLaunchKickoffOnFreshChild({
   agent = '',
@@ -2455,13 +2460,15 @@ export function shouldRetryLaunchKickoffOnFreshChild({
   isResume = false,
   retryCount = 0,
   maxRetries = 0,
+  unboundPastWindow = false,
 } = {}) {
   if (managedKickoff || isResume || retryCount >= maxRetries) return false;
   if (String(agent ?? '').trim().toLowerCase() !== 'codex') return false;
   // P-005 (D-003): a host-code-adopted carry and a fresh Codex launch bind
-  // through this kickoff. An unbound child here is the same per-child wedge as
-  // on the carry path, so it gets the same fresh child.
-  return reason === 'codex-startup-still-starting' || reason === 'successor-native-id-missing';
+  // through this kickoff. An unbound child past its spawn-anchored window is
+  // the same per-child wedge as on the carry path, so it gets a fresh child.
+  return reason === 'codex-startup-still-starting' ||
+    (reason === 'successor-native-id-missing' && unboundPastWindow);
 }
 
 /** EI-24818010361425604: how many times one launch kickoff may follow its owner
@@ -11075,6 +11082,8 @@ export function hostThroughPty(o) {
   // P-005 / D-003: the id-discovery window is anchored to the target child's
   // spawn, so every caller (carry, kickoff, wake turn, re-arm) shares one bound.
   const unboundWindowMs = unboundChildWindowMs(env);
+  const currentChildPastUnboundWindow = () =>
+    childStartedAtMs > 0 && Date.now() - childStartedAtMs >= unboundWindowMs;
   let stuckSnapshotChild = null;
   const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false) => {
     const target = child;
@@ -11252,7 +11261,12 @@ export function hostThroughPty(o) {
       let r = await injectLaunchKickoff();
       while (
         !r.delivered &&
-        shouldRetryLaunchKickoffOnFreshChild({ ...freshChildRetry, reason: r.reason, retryCount: freshChildRetries })
+        shouldRetryLaunchKickoffOnFreshChild({
+          ...freshChildRetry,
+          reason: r.reason,
+          retryCount: freshChildRetries,
+          unboundPastWindow: currentChildPastUnboundWindow(),
+        })
       ) {
         freshChildRetries += 1;
         appendHostEvent(ownerId, 'launch-kickoff-fresh-child-retry', {
@@ -15114,6 +15128,7 @@ export function hostThroughPty(o) {
           proofReason,
           retryCount: carryProofRetryCount,
           maxRetries: carryProofRetryMax,
+          unboundPastWindow: currentChildPastUnboundWindow(),
         })) return null;
         appendHostEvent(ownerId, 'respawn-carry-fresh-epoch-retry', {
           mode: respawnMode,

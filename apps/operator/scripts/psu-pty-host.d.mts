@@ -856,6 +856,7 @@ export function carryTurnProofRequiresNativeId(agent: any): boolean;
  * @param {string|null} [opts.proofReason]
  * @param {number} [opts.retryCount]
  * @param {number} [opts.maxRetries]
+ * @param {boolean} [opts.unboundPastWindow] the failed child outlived its id window
  */
 export function shouldRetryCarryOnFreshEpoch({ drillId, reason, proofReason, retryCount, maxRetries, unboundPastWindow, }?: {
     drillId?: string | undefined;
@@ -863,6 +864,7 @@ export function shouldRetryCarryOnFreshEpoch({ drillId, reason, proofReason, ret
     proofReason?: string | null | undefined;
     retryCount?: number | undefined;
     maxRetries?: number | undefined;
+    unboundPastWindow?: boolean | undefined;
 }): boolean;
 /** @param {Record<string, string | undefined>} [env] */
 export function unboundChildWindowMs(env?: Record<string, string | undefined>): any;
@@ -900,6 +902,7 @@ export function codexLaunchStartingRetryMax(value: unknown, fallback?: number): 
  * @param {boolean} [opts.isResume]
  * @param {number} [opts.retryCount]
  * @param {number} [opts.maxRetries]
+ * @param {boolean} [opts.unboundPastWindow] the failed child outlived its id window
  */
 export function shouldRetryLaunchKickoffOnFreshChild({ agent, reason, managedKickoff, isResume, retryCount, maxRetries, unboundPastWindow, }?: {
     agent?: string | undefined;
@@ -908,7 +911,8 @@ export function shouldRetryLaunchKickoffOnFreshChild({ agent, reason, managedKic
     isResume?: boolean | undefined;
     retryCount?: number | undefined;
     maxRetries?: number | undefined;
-}): any;
+    unboundPastWindow?: boolean | undefined;
+}): boolean;
 /** EI-24818010361425604: should an undelivered launch kickoff be re-delivered to
  *  the successor of a same-host respawn? `superseded` means THIS host replaced the
  *  child the kickoff targeted (a managed carry-respawn, a loop recycle) while the

@@ -4104,12 +4104,13 @@ describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
     })).toBe(false);
   });
 
-  it('replaces a child that never exposed its native id, within the same bound (P-005)', () => {
-    expect(shouldRetryCarryOnFreshEpoch({ reason: 'successor-native-id-missing' })).toBe(true);
-    expect(shouldRetryCarryOnFreshEpoch({
-      reason: 'successor-native-id-missing', retryCount: 1, maxRetries: 1,
-    })).toBe(false);
-    expect(shouldRetryCarryOnFreshEpoch({ reason: 'successor-native-id-missing', drillId: 'drill-1' })).toBe(false);
+  it('replaces a child that never exposed its native id past its window, within the same bound (P-005)', () => {
+    const missing = { reason: 'successor-native-id-missing', unboundPastWindow: true };
+    expect(shouldRetryCarryOnFreshEpoch(missing)).toBe(true);
+    // A short caller deadline on a young child is not a wedge (EI-25344556501316035).
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'successor-native-id-missing' })).toBe(false);
+    expect(shouldRetryCarryOnFreshEpoch({ ...missing, retryCount: 1, maxRetries: 1 })).toBe(false);
+    expect(shouldRetryCarryOnFreshEpoch({ ...missing, drillId: 'drill-1' })).toBe(false);
     // A found id whose operator report is slow is not a wedged child.
     expect(shouldRetryCarryOnFreshEpoch({ reason: 'successor-reanchor-unconfirmed' })).toBe(false);
   });
@@ -4157,12 +4158,13 @@ describe('launch kickoff fresh-child retry (WI-10004943)', () => {
   });
 
   it('also replaces an adopted-carry child that never exposed its native id (P-005)', () => {
-    const missing = 'successor-native-id-missing';
-    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: missing })).toBe(true);
-    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: missing, retryCount: 1 })).toBe(false);
-    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, isResume: true, reason: missing })).toBe(false);
-    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, agent: 'claude', reason: missing })).toBe(false);
-    expect(shouldRetryLaunchKickoffOnFreshChild({ ...plain, reason: 'successor-reanchor-unconfirmed' })).toBe(false);
+    const missing = { ...plain, reason: 'successor-native-id-missing', unboundPastWindow: true };
+    expect(shouldRetryLaunchKickoffOnFreshChild(missing)).toBe(true);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...missing, unboundPastWindow: false })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...missing, retryCount: 1 })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...missing, isResume: true })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...missing, agent: 'claude' })).toBe(false);
+    expect(shouldRetryLaunchKickoffOnFreshChild({ ...missing, reason: 'successor-reanchor-unconfirmed' })).toBe(false);
   });
 
   it('arms the early Starting drop only while a retry remains; the last attempt holds', () => {
