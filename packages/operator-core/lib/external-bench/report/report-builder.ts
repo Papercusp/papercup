@@ -56,6 +56,7 @@ interface RunResultLike {
   generationError?: string | null;
   stopReason?: string;
   costUsd: number;
+  armMeta?: Record<string, unknown> | null;
   tokensIn: number;
   tokensOut: number;
   tokensTotal: number;
@@ -67,6 +68,20 @@ interface RunResultLike {
 
 function key(taskId: string, arm: string, seed: number): string {
   return `${arm}::${taskId}::${seed}`;
+}
+
+/** Unknown telemetry retains its known subtotal, never a measured zero.
+ * Preserve the same explicit missing-measurement convention as bench-metrics. */
+function recordedCosts(rows: readonly RunResultLike[]) {
+  const subtotal = rows.reduce((sum, r) => sum + (Number.isFinite(r.costUsd) && r.costUsd >= 0 ? r.costUsd : 0), 0);
+  const costUsdMeasurementMissing = !rows.length || !Number.isFinite(subtotal) || rows.some(r =>
+    !Number.isFinite(r.costUsd) || r.costUsd < 0 ||
+    r.armMeta?.costUsdMeasurementMissing !== undefined && r.armMeta.costUsdMeasurementMissing !== false);
+  const bases = new Set(rows.map(r => (r.armMeta?.nativeCostAccounting as { basis?: unknown } | undefined)?.basis ===
+    'frozen-normalized-native-source' ? 'frozen-normalized-native-source' : 'recorded'));
+  return { costUsd: costUsdMeasurementMissing ? null : subtotal,
+    costKnownSubtotalUsd: Number.isFinite(subtotal) ? subtotal : null, costUsdMeasurementMissing,
+    costBasis: bases.size === 1 ? [...bases][0] : 'mixed' };
 }
 
 /** Is this a SCORED row (counted in resolved%/meanScore) vs an infra/transient exclusion? */
@@ -115,7 +130,8 @@ export function bundleFromRollouts(input: {
       graderStatus: rr.graderStatus,
       stopReason: rr.stopReason ?? rr.generationStatus ?? 'unknown',
       generationError: rr.generationError ?? null,
-      costUsd: rr.costUsd,
+      ...recordedCosts([rr]),
+      armMeta: rr.armMeta ?? null,
       tokensIn: rr.tokensIn,
       tokensOut: rr.tokensOut,
       tokensTotal: rr.tokensTotal,
@@ -151,7 +167,7 @@ export function bundleFromRollouts(input: {
       scored: scoredRows.length,
       meanScore,
       infraExcluded: rows.length - scoredRows.length,
-      costUsd: rows.reduce((s, r) => s + (r.costUsd || 0), 0),
+      ...recordedCosts(rows),
       tokensTotal: rows.reduce((s, r) => s + (r.tokensTotal || 0), 0),
       concurrency: summarizeConcurrency(input.concurrencyTimeline?.[arm]),
     };
@@ -159,7 +175,7 @@ export function bundleFromRollouts(input: {
 
   const totals = {
     tasks: new Set(input.runResults.map((r) => r.taskId)).size,
-    costUsd: input.runResults.reduce((s, r) => s + (r.costUsd || 0), 0),
+    ...recordedCosts(input.runResults),
     tokensIn: input.runResults.reduce((s, r) => s + (r.tokensIn || 0), 0),
     tokensOut: input.runResults.reduce((s, r) => s + (r.tokensOut || 0), 0),
     wallMs: input.runResults.reduce((m, r) => Math.max(m, r.wallClockMs || 0), 0),

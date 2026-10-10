@@ -33,6 +33,16 @@ function fakeReaders(over: Partial<PgReportReaders> = {}): PgReportReaders {
 }
 
 describe('buildBundleFromPg', () => {
+  it('retains source cost uncertainty and native timing metadata through the store adapter', async () => {
+    const readers = fakeReaders(), rows = await readers.listRunResults({ runId: 'r1' });
+    const armMeta = { costUsdMeasurementMissing: true, nativeCostAccounting: { billedCostUsd: null,
+      basis: 'frozen-normalized-native-source', taskLedgerConcurrency: { complete: false, wallClockMs: null } } };
+    const b = await buildBundleFromPg('r1', { readers: fakeReaders({ listRunResults: async () => [
+      { ...rows[0], armMeta }, rows[1],
+    ] }) });
+    expect(b?.rollouts[0]).toMatchObject({ costUsd: null, costKnownSubtotalUsd: 2, costUsdMeasurementMissing: true, armMeta });
+    expect(b?.run.totals).toMatchObject({ costUsd: null, costKnownSubtotalUsd: 5, costUsdMeasurementMissing: true });
+  });
   it('binds the requested workspace on each default store read', async () => {
     const fixtures = fakeReaders();
     defaults.listRunResults.mockResolvedValue(await fixtures.listRunResults({ runId: 'r1' }));

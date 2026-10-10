@@ -43,7 +43,13 @@ export interface BenchReportRollout {
   /** Infra/transient generation failure detail (excluded from accuracy). */
   generationError?: string | null;
   // ── cost / timing (coordination overhead INCLUDED — fairness #2) ──
-  costUsd: number;
+  /** Null when accounting is incomplete; the retained subtotal is separate. */
+  costUsd: number | null;
+  costKnownSubtotalUsd?: number | null;
+  costUsdMeasurementMissing?: boolean;
+  costBasis?: string;
+  /** Persisted execution/accounting evidence, including native lifetime timing. */
+  armMeta?: Record<string, unknown> | null;
   tokensIn: number;
   tokensOut: number;
   tokensTotal: number;
@@ -129,7 +135,10 @@ export interface BenchReportArmSummary {
   meanScore?: number | null;
   /** Infra-excluded (non-scored) attempts — surfaced, not counted as fails. */
   infraExcluded?: number;
-  costUsd: number;
+  costUsd: number | null;
+  costKnownSubtotalUsd?: number | null;
+  costUsdMeasurementMissing?: boolean;
+  costBasis?: string;
   tokensTotal: number;
   concurrency?: { avg: number; peak: number };
   /** Suite-specific headline (e.g. METR: { horizon50Min, horizon50Ci }). */
@@ -152,7 +161,8 @@ export interface BenchReportBundle {
     prereg?: { hash: string; config?: Record<string, unknown>; gitCommitSha?: string | null };
     harnessGitSha?: string | null;
     envFingerprint?: Record<string, unknown> | null;
-    totals: { tasks: number; costUsd: number; tokensIn: number; tokensOut: number; wallMs: number };
+    totals: { tasks: number; costUsd: number | null; costKnownSubtotalUsd?: number | null;
+      costUsdMeasurementMissing?: boolean; costBasis?: string; tokensIn: number; tokensOut: number; wallMs: number };
   };
   // ── shared sections (each optional → the viewer hides an absent one) ──
   arms: BenchReportArmSummary[];

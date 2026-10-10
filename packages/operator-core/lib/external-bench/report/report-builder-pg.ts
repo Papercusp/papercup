@@ -38,6 +38,7 @@ interface TaskRunResultRow {
   tokensOut: number;
   tokensTotal: number;
   costUsd: number;
+  armMeta?: Record<string, unknown> | null;
   wallClockMs: number;
   turns?: number;
   failToPass?: Array<{ test: string; passed: boolean }> | null;
@@ -143,6 +144,7 @@ export async function buildBundleFromPg(
       generationError: rr.generationError ?? null,
       stopReason: rr.generationStatus,
       costUsd: rr.costUsd,
+      armMeta: rr.armMeta ?? null,
       tokensIn: rr.tokensIn,
       tokensOut: rr.tokensOut,
       tokensTotal: rr.tokensTotal,

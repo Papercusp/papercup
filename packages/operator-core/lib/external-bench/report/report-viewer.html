@@ -86,6 +86,12 @@ const fmt = {
   ms: n => n == null ? "—" : n < 1000 ? n+"ms" : n < 60000 ? (n/1000).toFixed(1)+"s" : (n/60000).toFixed(1)+"m",
   score: n => n == null ? "—" : (Math.round(1000*n)/1000).toString(),
 };
+function recordedCost(row) {
+  const basis = row.costBasis === "frozen-normalized-native-source" ? " (normalized)" : row.costBasis === "mixed" ? " (mixed bases)" : "";
+  if (row.costUsdMeasurementMissing || row.costUsd == null)
+    return "Incomplete" + (row.costKnownSubtotalUsd != null ? " · known " + fmt.usd(row.costKnownSubtotalUsd) : "") + basis;
+  return fmt.usd(row.costUsd) + basis;
+}
 const pill = (txt, cls) => el("span",{class:"pill "+cls}, txt);
 // collapsible JSON tree (for config / args / result / suiteData)
 function jsonTree(v, key) {
@@ -167,7 +173,7 @@ function tabOverview(b){
   const wrap = el("div",{});
   const t = b.run.totals||{};
   wrap.append(el("div",{class:"cards"},
-    card("Tasks", fmt.int(t.tasks)), card("Total cost", fmt.usd(t.costUsd)),
+    card("Tasks", fmt.int(t.tasks)), card("Recorded cost", recordedCost(t)),
     card("Tokens", fmt.int((t.tokensIn||0)+(t.tokensOut||0))), card("Wall", fmt.ms(t.wallMs)),
     card("Arms", String((b.run.arms||[]).length))));
   // per-arm table
@@ -177,7 +183,7 @@ function tabOverview(b){
       el("td",{}, el("b",{},a.arm)),
       el("td",{}, a.meanScore!=null ? "mean score "+acc : (a.resolved||0)+"/"+(a.scored||0)+" = "+acc),
       el("td",{class:"num"}, a.infraExcluded!=null?fmt.int(a.infraExcluded):"—"),
-      el("td",{class:"num"}, fmt.usd(a.costUsd)),
+      el("td",{class:"num"}, recordedCost(a)),
       el("td",{class:"num"}, fmt.int(a.tokensTotal)),
       el("td",{class:"num"}, a.concurrency?`${a.concurrency.avg?.toFixed?.(2)??a.concurrency.avg} / ${a.concurrency.peak}`:"—"));
   });
@@ -214,7 +220,7 @@ function addRollout(tbody, ro){
   const row = el("tr",{class:"row"},
     el("td",{}, el("code",{}, shortId(ro.taskId))), el("td",{}, ro.arm),
     el("td",{}, outcomePill(ro)), el("td",{}, pill(ro.stopReason||"—", ro.stopReason==="done"?"good":ro.stopReason==="error"||ro.stopReason==="infra-failed"||ro.stopReason==="timeout"?"dim":"warn")),
-    el("td",{class:"num"}, fmt.usd(ro.costUsd)), el("td",{class:"num"}, fmt.int(ro.tokensTotal)), el("td",{class:"num"}, fmt.ms(ro.wallMs)));
+    el("td",{class:"num"}, recordedCost(ro)), el("td",{class:"num"}, fmt.int(ro.tokensTotal)), el("td",{class:"num"}, fmt.ms(ro.wallMs)));
   const det = el("tr",{class:"detail",style:"display:none"});
   const cell = el("td",{colspan:7}); det.append(cell);
   let built=false;
@@ -231,6 +237,7 @@ function rolloutDetail(ro){
   add("turns",ro.turns); add("graderStatus",ro.graderStatus); add("generationError",ro.generationError);
   add("trajectory",ro.trajectoryRef?(ro.trajectoryKind?ro.trajectoryKind+": ":"")+ro.trajectoryRef:null);
   w.append(kvg);
+  if (ro.armMeta) w.append(el("h4",{},"Execution and accounting evidence"), jsonTree(ro.armMeta,"evidence"));
   if (ro.configSnapshot) w.append(el("h4",{},"config snapshot"), jsonTree(ro.configSnapshot,"config"));
   if (ro.failToPass||ro.passToPass) w.append(el("h4",{},"tests"),
     el("div",{class:"muted"}, "FAIL_TO_PASS "+passCount(ro.failToPass)+" · PASS_TO_PASS "+passCount(ro.passToPass)),

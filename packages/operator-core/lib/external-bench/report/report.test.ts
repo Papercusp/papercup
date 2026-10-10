@@ -25,6 +25,26 @@ function rr(over: Record<string, unknown> = {}) {
 }
 
 describe('bundleFromRollouts', () => {
+  it('keeps incomplete cost unknown while preserving the known subtotal and native lifetime evidence', () => {
+    const armMeta = { costUsdMeasurementMissing: true, nativeCostAccounting: {
+      basis: 'frozen-normalized-native-source', billedCostUsd: null, normalizedCostUsd: 0.2,
+      taskLedgerConcurrency: { complete: true, basis: 'task-ledger-lifetime', wallClockMs: 100,
+        concurrencyTimeline: { samples: [{ tMs: 0, live: 1 }, { tMs: 100, live: 0 }], avgConcurrent: 1, peakConcurrent: 1 } },
+    } };
+    const b = bundleFromRollouts({ runId: 'r', suite: 'swe-bench-pro', createdAt: '2026-10-10',
+      arms: ['a', 'b'], models: { a: 'm', b: 'm' }, runResults: [rr({ costUsd: 0.2, armMeta }), rr({ arm: 'b', costUsd: 0.3 })] });
+    expect(b.rollouts[0]).toMatchObject({ costUsd: null, costKnownSubtotalUsd: 0.2, costUsdMeasurementMissing: true, armMeta });
+    expect(b.arms[0]).toMatchObject({ costUsd: null, costKnownSubtotalUsd: 0.2, costUsdMeasurementMissing: true });
+    expect(b.arms[1]).toMatchObject({ costUsd: 0.3, costUsdMeasurementMissing: false });
+    expect(b.run.totals).toMatchObject({ costUsd: null, costKnownSubtotalUsd: 0.5, costUsdMeasurementMissing: true });
+    expect(JSON.parse(JSON.stringify(b)).rollouts[0].armMeta).toEqual(armMeta);
+  });
+  it.each([NaN, Infinity, -1])('does not turn an invalid recorded cost %s into a measured total', costUsd => {
+    const b = bundleFromRollouts({ runId: 'r', suite: 'swe-bench-pro', createdAt: '2026-10-10',
+      arms: ['a'], models: { a: 'm' }, runResults: [rr({ costUsd })] });
+    expect(b.rollouts[0]).toMatchObject({ costUsd: null, costKnownSubtotalUsd: 0, costUsdMeasurementMissing: true });
+    expect(b.run.totals).toMatchObject({ costUsd: null, costKnownSubtotalUsd: 0, costUsdMeasurementMissing: true });
+  });
   it('computes per-arm resolved/scored + totals, excluding infra rows from the denominator', () => {
     const b = bundleFromRollouts({
       runId: 'r', suite: 'swe-bench-pro', createdAt: '2026-06-17', arms: ['a'],
