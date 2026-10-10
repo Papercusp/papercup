@@ -31,7 +31,7 @@ import {
 } from '../boot-all';
 import type { BootedHarnessHandle, BootHarnessOpts } from '../boot';
 import type { SwarmBinding } from '../derive-swarm-topic';
-import { RemoteBootedHarnessHandle } from '../remote-booted-harness';
+import { RemoteBootedHarnessHandle, type SubstrateRpcCaller } from '../remote-booted-harness';
 import { makeFakeBootedHandle } from './fake-booted-handle';
 import {
   _resetOwnLogForkGuardForTests,
@@ -1075,7 +1075,8 @@ describe('reconcileRemoteHandlesAfterSidecarRestart (WI-1877)', () => {
       harnessSlug,
       storeId: `store-${workspaceId}-${harnessSlug}`,
       ownLogKey: 'a'.repeat(64),
-      client: { call: vi.fn(async () => ({})) },
+      // vi.fn erases the generic `call<T>` signature, so cast it back to the injected type.
+      client: { call: vi.fn(async () => ({})) as unknown as SubstrateRpcCaller['call'] },
     });
   }
 

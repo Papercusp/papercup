@@ -93,7 +93,7 @@ describe('analyzeForExplicitPresence (WI-6004)', () => {
         + 'const namedColumn = result["0"].count || 0;\n'
         + 'const other = result.active ?? false;\n',
     });
-    expect(hits.map(hit => hit.line)).toEqual([3, 4, 5]);
+    expect(hits.map((hit: { line: number }) => hit.line)).toEqual([3, 4, 5]);
   });
 
   it('still flags absent JSON counts even when the same identifier was a SQL result', () => {
