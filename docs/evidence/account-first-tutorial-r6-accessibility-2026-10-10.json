@@ -210,6 +210,47 @@
     "startupQualification": "Retained operator startup reproduced reserved-slot refusals: private PG capacity100/reserved3,97-98client connections and52perorgpool. Private launcher budget repair committed9c646da512b18cf6cc5ce3a013a6ef54cd3b29bd with full4 integration tests passing as committed. Fixed actual hosted startup still requires verification in EI-25612926047410142.",
     "scope": "One real hosted non-Cloud task with pure keyboard traversal. Screen-reader/native input, wider full-product tasks, provider/human-heard voice, novice, full affected suite and final production shipment remain unproved."
   },
+  "fixedHostedRuntimeFollowUp": {
+    "observedAt": "2026-10-10T18:38:13Z",
+    "workItemId": "EI-25612926047410142",
+    "supervisorCommit": "9c646da512b18cf6cc5ce3a013a6ef54cd3b29bd",
+    "supervisorRoot": "/dev/shm/pcv/papercusp-lint-as-committed-9c646da512-z9S0qS",
+    "supervisorPath": "scripts/with-test-pg.mjs",
+    "supervisorSha256": "68300ca9929eb26c60be3838ab49ea7abf0273e8830e7d05b1534e757288d53f",
+    "hostedSourceCommit": "efdcd30aeff97d2775d71f26aa44b73ac000c90d",
+    "hostedSourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-efdcd30aef-z6uZN8",
+    "sourceCustody": "Both retained roots were clean and at the named commits before launch. The fixed supervisor launched the retained hosted-handler and hono-host source; the health endpoint returned200 with shaefdcd30aef. The prior8Rok browser artifact and its acceptance results were not replayed.",
+    "poolAdmission": {
+      "serverCapacity": 100,
+      "superuserReserved": 3,
+      "injectedPoolMax": 4,
+      "measuredProcessPoolMax": 4,
+      "observedPeakClientConnections": 27,
+      "reservedSlotRefusals": 0,
+      "regressionTestRunId": 20988446,
+      "regressionPassed": 4,
+      "regressionSkipped": 0
+    },
+    "shutdown": {
+      "route": "SIGINT to the verified original outer launcher process group",
+      "outerPid": 4043927,
+      "outerStartTicks": "44629777",
+      "supervisorPid": 4045922,
+      "cleanupElapsedMs": 292,
+      "runtimeRemoved": true,
+      "pgDataRemoved": true,
+      "supervisorAbsentAfter": true,
+      "runtimePathAbsentAfter": true,
+      "pgDataPathAbsentAfter": true,
+      "outerExitCode": 1,
+      "qualification": "The interrupted host's exit1 is a teardown outcome, not an automated test PASS. This exact group shutdown completed; the cause of the earlier missing cleanup receipt remains unproved and the owned follow-up remains open."
+    },
+    "log": "/dev/shm/tutorial-private-fixed-inner-20261010T1840.log",
+    "logSha256": "672d3331fa059c7869a4d0b6b1600fcc5fdf037f26e2e4b60b41be4834cdf99c",
+    "signalReceipt": "/dev/shm/tutorial-private-fixed-group-stop-20261010T1840.json",
+    "shutdownEvidence": "/dev/shm/tutorial-private-fixed-shutdown-evidence-20261010T1840.json",
+    "scope": "Fixed full hosted startup, actual private database admission and exact owned group teardown. This does not add browser, screen-reader, provider voice, novice or production shipment acceptance."
+  },
   "limitations": [
     "The earlier integration and browser fields cover mounted fixtures/jsdom; the qualified hosted field covers one actual preference task.",
     "Supported-runtime screen-reader announcements and wider full-product accessibility task coverage remain unproved; mounted Settings Tab proof20987694 and hosted pure Tab/arrow proof20988435 have their stated narrow scopes.",

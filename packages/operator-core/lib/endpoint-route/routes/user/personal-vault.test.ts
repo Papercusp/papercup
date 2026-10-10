@@ -322,20 +322,6 @@ describe('Personal Vault owner routes', () => {
             expect.objectContaining({ id: 'gmail', enabled: true, status: 'connected' }),
             expect.objectContaining({ id: 'calendar', enabled: true, status: 'connected' }),
             expect.objectContaining({ id: 'contacts', enabled: true, status: 'connected' }),
-            // D-019 IN ACTION, and the whole reason the YouTube scopes are kept
-            // out of GOOGLE_WORKSPACE_SCOPES: this connection never consented to
-            // them, so the capability must report NOT connected and name what is
-            // missing. Had they been added to the presumed-granted list, this
-            // would read connected — and the owner would discover otherwise via
-            // a 403 at call time.
-            expect.objectContaining({
-              id: 'youtube',
-              connected: false,
-              missingScopes: [
-                'https://www.googleapis.com/auth/youtube.readonly',
-                'https://www.googleapis.com/auth/youtube.force-ssl',
-              ],
-            }),
           ],
         },
         facebook: {
@@ -346,6 +332,11 @@ describe('Personal Vault owner routes', () => {
         },
       },
     });
+    // D-038: only Google capabilities with an implemented Personal Vault ingest
+    // path are surfaced. The YouTube social adapters are a separate pipeline.
+    expect(payload.integrations.google.capabilities.map((capability: { id: string }) => capability.id)).toEqual([
+      'gmail', 'calendar', 'contacts',
+    ]);
     expect(mocks.stats).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1');
     const body = JSON.stringify(payload);
     expect(body).not.toContain('historyId');
@@ -423,7 +414,7 @@ describe('Personal Vault owner routes', () => {
     ]);
   });
 
-  it('reports a persisted disabled YouTube capability as disabled on readback', async () => {
+  it('does not surface a connected YouTube source as a Personal Vault capability without an ingest path', async () => {
     mocks.listSources.mockResolvedValueOnce([
       {
         id: 'gmail-source',
@@ -446,8 +437,8 @@ describe('Personal Vault owner routes', () => {
         ownerUserId: 'user-1',
         providerAccountId: 'owner@example.com',
         credentialRef: 'google-workspace:owner-user-1',
-        status: 'disabled',
-        config: { capabilityEnabled: false },
+        status: 'connected',
+        config: { capabilityEnabled: true },
         cursor: {},
         lastError: null,
         lastConnectedAt: '2026-08-23T00:00:00.000Z',
@@ -458,18 +449,12 @@ describe('Personal Vault owner routes', () => {
     const response = await invoke('GET', '/user/personal-vault', new Request('http://localhost/user/personal-vault'));
     expect(response.status).toBe(200);
     const payload = await response.json();
-    expect(payload.integrations.google.capabilities).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'youtube',
-          sourceKind: 'youtube',
-          enabled: false,
-          connected: false,
-          status: 'disabled',
-          missingScopes: [],
-        }),
-      ]),
-    );
+    expect(payload.integrations.google.capabilities.map((capability: { id: string }) => capability.id)).toEqual([
+      'gmail', 'calendar', 'contacts',
+    ]);
+    expect(payload.integrations.google.accounts[0].sources.map((source: { kind: string }) => source.kind)).toEqual([
+      'gmail',
+    ]);
   });
 
   it('disconnects Google sources and clears server-side token fields without purging vault data', async () => {

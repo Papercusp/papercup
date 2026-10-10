@@ -34982,7 +34982,7 @@
           "POST"
         ]
       },
-      "description": "Hold a work-item OPEN without releasing your claim: stamps you as held_open_by (+ reason), excludes it from claim_next/scheduler self-select, and makes a terminal transition (done/resolved/closed/dropped) by anyone ELSE refuse until you clear it. { id, reason } to hold; { id, clear:true } to lift. Clearing another agent's hold needs force:true (leader override). ⚠ THIS HOLD IS A LEASE, NOT A PERMANENT FENCE: the WI-4531 dead-owner reaper lifts it once you are dead past grace, so the item re-enters self-select when your session ends. To fence anything that must OUTLIVE your session (an owner-gated item, a policy decision), use release { claimHold:true } — a durable PARK (claim_hold_by) no reaper touches.",
+      "description": "Hold a work-item OPEN without releasing your claim: stamps you as held_open_by (+ reason), excludes it from claim_next/scheduler self-select, and refuses a terminal transition by anyone ELSE until you clear it. { id, reason } to hold; { id, clear:true } to lift (another agent's hold needs force:true). A durable park whose release condition is met: { id, clear:true, reconcile:{ reasonCode, evidence } } — evidence + fingerprint CAS, no force. ⚠ THIS HOLD IS A LEASE: the WI-4531 dead-owner reaper lifts it once you are dead past grace. A fence that must OUTLIVE your session (an owner-gated item, a policy decision) needs release { claimHold:true } — a durable PARK (claim_hold_by) no reaper touches.",
       "capabilities": [
         "work_items:write"
       ],

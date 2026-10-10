@@ -12,9 +12,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const identity = vi.hoisted(() => ({ ownerId: 'me' }));
+const identity = vi.hoisted(() => ({ ownerId: 'me', workspaceId: 'ws-1' as string | null }));
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
+  resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
+}));
+
+// D-009: keep the REAL pure planner + fingerprint (the CAS semantics under test), mock only
+// the two database seams. The real-store path is pinned by hold_open.integration.test.ts.
+const readDurableParkControlRow = vi.fn();
+const runWorkItemDurableParkReconciliation = vi.fn();
+vi.mock('../../work-items-durable-park-audit', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  readDurableParkControlRow: (...a: unknown[]) => readDurableParkControlRow(...a),
+  runWorkItemDurableParkReconciliation: (...a: unknown[]) => runWorkItemDurableParkReconciliation(...a),
 }));
 
 const getWorkItem = vi.fn();
@@ -49,6 +59,7 @@ function itemWith(payload: Record<string, unknown> | null) {
 beforeEach(() => {
   vi.clearAllMocks();
   identity.ownerId = 'me';
+  identity.workspaceId = 'ws-1';
   sendMessage.mockResolvedValue(undefined);
   setWorkItemClaimHold.mockResolvedValue({ id: 'WI-9', harness: 'papercup', hold: false, applicable: true });
 });
