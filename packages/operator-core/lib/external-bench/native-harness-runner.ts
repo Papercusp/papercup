@@ -118,10 +118,20 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
                 if (receipt.owner !== ownerId) throw new Error('Stock native session registry binding failed.');
                 const tasks = await bindLiveAgentSessionTasksToNativeSession({ workspaceId: opts.workspaceId,
                   coordOwnerId: ownerId, sessionId: id, initialTaskId: taskId }, db.sql);
-                if (tasks.length !== 1 || tasks[0] !== taskId) throw new Error('Stock native task registry binding failed.');
+                if (!Array.isArray(tasks) || tasks.length !== 1 || tasks[0] !== taskId) throw new Error('Stock native task registry binding failed.');
+              }).catch(async failure => {
+                // The child handle may be only the managed launcher. Retire its
+                // ledgered subtree through the same owner-aware cleanup seam.
+                if (taskId) {
+                  const retired = await common.killTask(taskId);
+                  if (!retired.ok && retired.error !== 'already_gone' && retired.error !== 'task_not_found')
+                    throw new Error(`${errMsg(failure)} Native task cleanup failed: ${retired.error}`);
+                } else child?.kill('SIGTERM');
+                throw failure;
               });
-              // A failed registry write cannot leave an unaccounted loop running.
-              linked.catch(() => child?.kill('SIGTERM'));
+              // The stream and link run concurrently; pump joins the rejection
+              // before finalization even if stream iteration itself throws.
+              void linked.catch(() => {});
             },
             spawnProcess: async (command, args, options) => {
               const host = requireCurrentBenchHostBinding(observations, opts);
@@ -153,6 +163,12 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
           if (error) throw new Error(error);
         } catch (failure) { error = errMsg(failure); rejectStarted(failure); }
         finally {
+          try { await linked; }
+          catch (failure) {
+            const message = errMsg(failure);
+            error = error && error !== message ? `${error}; ${message}` : message;
+            rejectStarted(failure);
+          }
           if (child && child.exitCode === null && child.signalCode === null && taskId) await common.killTask(taskId);
           if (taskId && error) streamErrors.set(taskId, error);
           await markAdvSessionEnded(sessionKey, child?.exitCode ?? null, child?.signalCode ? 'signal' : 'self',

@@ -1,0 +1,145 @@
+/** Stock factory lifecycle guards; provider transport and host IO are substituted,
+ * so these tests never launch a model or spend inference budget. Physical native
+ * confinement and SQL binding are covered by their integration suites. */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
+import type { RunAgentChatOptions, ChatEvent } from '../agent-chat-stream';
+import type { CurrentStockBenchPorts, CurrentSuBenchOptions, CurrentSuBenchObservations } from './current-su';
+import type { BenchHarnessOps } from './bench-harness-live';
+import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
+
+const h = vi.hoisted(() => ({
+  home: '', owner: '', child: undefined as unknown as ChildProcess,
+  run: vi.fn<(input: RunAgentChatOptions) => AsyncIterable<ChatEvent>>(),
+  record: vi.fn(), reanchor: vi.fn(), bind: vi.fn(), end: vi.fn(), ingest: vi.fn(),
+  managed: vi.fn(), kill: vi.fn(), host: vi.fn(), get: vi.fn(),
+}));
+vi.mock('../adv-sessions', () => ({ recordAdvSession: h.record, reanchorAdvSessionNativeId: h.reanchor, markAdvSessionEnded: h.end }));
+vi.mock('../task-manager/store', () => ({ bindLiveAgentSessionTasksToNativeSession: h.bind }));
+vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: h.managed }));
+vi.mock('../agent-chat-stream', () => ({ runAgentChat: h.run }));
+vi.mock('../interactive-usage/ingest-claude-transcripts', () => ({ ingestInteractiveUsage: h.ingest }));
+vi.mock('../interactive-usage/ingest-adapters', () => ({ defaultAdapters: () => [{ name: 'codex' }] }));
+vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: () => h.home }));
+vi.mock('@papercusp/orchestrator/fleet-srt-spawn', () => ({
+  createScopedNativeSandboxSpawn: () => (command: string, args: string[], options: unknown, spawn: Function) => spawn(command, args, options),
+}));
+vi.mock('./current-su', async (original) => ({
+  ...await original<typeof import('./current-su')>(),
+  requireCurrentBenchHostBinding: h.host,
+  liveCurrentSuBenchPorts: () => ({ killTask: h.kill, getTask: h.get }),
+  // Exercise the actual factory's ports without replacing the separately tested
+  // shared assignment verifier with a fabricated committed protocol.
+  currentStockBenchHarnessDriver: (lifecycle: BenchHarnessOps, ports: CurrentStockBenchPorts) => ({ lifecycle, ports }),
+}));
+
+import { createCurrentStockBenchHarness } from './native-harness-runner';
+
+let root: string;
+let factories: Array<{ lifecycle: BenchHarnessOps; ports: CurrentStockBenchPorts }>;
+const opts = (): CurrentSuBenchOptions => ({ workspaceId: 'private-stock', runId: 'PRIVATE', armId: 'baseline', seed: 1,
+  agent: 'codex', model: 'frozen-model', effort: 'high', account: 'auto', preregistration: { preregHash: 'frozen', config: {} } });
+const input = () => ({ handle: { slug: 'stock-private', featureId: 'native-assignment', worktreePath: root },
+  task: { benchmark: 'swe-bench-pro' as const, instanceId: 't1', problemStatement: 'Public problem.', graderMeta: {} },
+  context: { contextText: '\nShared permitted corpus.' } as Parameters<CurrentStockBenchPorts['launchNative']>[0]['context'] });
+function factory(options = opts()) {
+  const observations = { nativeGateway: { baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) } } as CurrentSuBenchObservations;
+  const ctx = { workspaceId: options.workspaceId, principal: { slug: 'authenticated-test-caller' } } as PapercuspUnifiedToolContext;
+  const value = createCurrentStockBenchHarness(options, ctx, observations) as unknown as { lifecycle: BenchHarnessOps; ports: CurrentStockBenchPorts };
+  factories.push(value); return value;
+}
+async function spawn(input: RunAgentChatOptions) {
+  return input.spawnProcess!('codex', ['exec', '--json'], { cwd: root,
+    env: { PATH: '/private/runtime', CODEX_HOME: h.home, OPENAI_API_KEY: 'HOST_SECRET_SENTINEL' } });
+}
+const terminal = () => Object.assign(h.child, { exitCode: 0 });
+
+beforeEach(() => {
+  vi.resetAllMocks(); root = mkdtempSync(join(tmpdir(), 'stock-factory-')); h.home = join(root, 'native-home'); factories = [];
+  h.child = { exitCode: null, signalCode: null, kill: vi.fn(() => true) } as unknown as ChildProcess;
+  h.host.mockReturnValue({ taskId: 't1' });
+  h.record.mockImplementation(async (input) => { h.owner = input.coordOwnerId; return 1; });
+  h.reanchor.mockImplementation(async () => ({ owner: h.owner, reanchored: true }));
+  h.bind.mockResolvedValue(['stock-task']); h.end.mockResolvedValue(true); h.ingest.mockResolvedValue({});
+  h.managed.mockResolvedValue({ child: h.child, taskId: 'stock-task' });
+  h.get.mockImplementation(async () => ({ taskId: 'stock-task', workspaceId: 'private-stock', state: 'exited', exitCode: 0, detail: {} }));
+  h.kill.mockImplementation(async () => { terminal(); return { ok: true, taskId: 'stock-task', action: 'kill' }; });
+  h.run.mockImplementation(async function* (input) {
+    await spawn(input); input.onNativeSession!('native-stock'); terminal();
+    yield { type: 'result', finalText: 'done', costUsd: 0, tokensIn: 0, tokensOut: 0 };
+  });
+});
+afterEach(async () => {
+  await h.kill('stock-task');
+  for (const value of factories) await value.lifecycle.teardown({ handle: input().handle, workspaceId: 'private-stock' }).catch(() => {});
+  rmSync(root, { recursive: true, force: true });
+});
+
+describe('current stock native factory', () => {
+  it('binds exactly the enrolled task and ingests only its retained native home', async () => {
+    const value = factory();
+    expect(await value.ports.launchNative(input())).toMatchObject({ tasks: [{ taskId: 'stock-task' }] });
+    await value.ports.getTask('stock-task');
+    expect(h.bind).toHaveBeenCalledWith({ workspaceId: 'private-stock', coordOwnerId: h.owner,
+      sessionId: 'native-stock', initialTaskId: 'stock-task' }, undefined);
+    const config = h.run.mock.calls[0][0];
+    expect(config).toMatchObject({ backend: 'codex', model: 'frozen-model:high', isolateConfig: true, isolateDir: h.home });
+    expect(config.promptText).toContain('Public problem.'); expect(config.promptText).toContain('Shared permitted corpus.');
+    expect(config.promptText).not.toContain('work_items:');
+    expect(h.managed.mock.calls[0][3]).toMatchObject({ requireRegistration: true, workspaceId: 'private-stock',
+      spawnOptions: { env: { HOME: h.home, CODEX_HOME: h.home, PAPERCUSP_SID: h.owner } } });
+    expect(h.managed.mock.calls[0][3].spawnOptions.env.OPENAI_API_KEY).toBeUndefined();
+    expect(h.ingest).toHaveBeenCalledWith(expect.objectContaining({ includeIsolationRoots: false,
+      adapters: [expect.objectContaining({ name: 'codex', root: join(h.home, 'sessions'), ownerId: h.owner, advSessionId: 1 })] }),
+      { workspaceId: 'private-stock' });
+  });
+
+  it.each([{ receipt: [] }, { receipt: ['other-task'] }, { receipt: ['stock-task', 'other-task'] }, { receipt: null }])('retains an invalid task-binding receipt as a generation error ($receipt)', async ({ receipt }) => {
+    h.bind.mockResolvedValue(receipt); const value = factory(); await value.ports.launchNative(input());
+    expect(await value.ports.getTask('stock-task')).toMatchObject({ detail: { nativeStreamError: 'Stock native task registry binding failed.' } });
+  });
+
+  it('joins an in-flight native link before ending the session even when the stream throws', async () => {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const binding = new Promise<void>(resolve => { entered = resolve; });
+    h.reanchor.mockImplementation(async () => { entered(); await gate; return { owner: h.owner }; });
+    h.run.mockImplementation(async function* (options) {
+      await spawn(options); options.onNativeSession!('native-stock'); terminal(); throw new Error('stream failed');
+    });
+    const value = factory(); await value.ports.launchNative(input()); await binding;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const endedBeforeBinding = h.end.mock.calls.length > 0;
+    release(); await value.ports.getTask('stock-task');
+    expect(endedBeforeBinding).toBe(false);
+    expect(h.bind).toHaveBeenCalledOnce(); expect(h.end).toHaveBeenCalledOnce();
+    expect(await value.ports.getTask('stock-task')).toMatchObject({ detail: { nativeStreamError: 'stream failed' } });
+  });
+
+  it('retires the owned task rather than only its launcher handle when a live link is refused', async () => {
+    let stopped!: () => void; const stopping = new Promise<void>(resolve => { stopped = resolve; });
+    h.kill.mockImplementation(async () => { terminal(); stopped(); return { ok: true, taskId: 'stock-task', action: 'kill' }; });
+    h.bind.mockResolvedValue([]);
+    h.run.mockImplementation(async function* (options) {
+      await spawn(options); options.onNativeSession!('native-stock'); await stopping;
+      yield { type: 'result', finalText: '', costUsd: 0, tokensIn: 0, tokensOut: 0 };
+    });
+    const value = factory(); await value.ports.launchNative(input());
+    try { await expect.poll(() => h.kill.mock.calls.length, { timeout: 1000 }).toBeGreaterThan(0); }
+    finally { await h.kill('stock-task'); }
+    expect(await value.ports.getTask('stock-task')).toMatchObject({ detail: { nativeStreamError: 'Stock native task registry binding failed.' } });
+    expect(h.child.kill).not.toHaveBeenCalled();
+  });
+
+  it('refuses cancellation and failed enrollment before a native fork', async () => {
+    const cancel = new AbortController(); cancel.abort(); const value = factory({ ...opts(), signal: cancel.signal });
+    await expect(value.ports.launchNative(input())).rejects.toThrow('cancelled before process creation');
+    expect(h.managed).not.toHaveBeenCalled(); expect(h.end).toHaveBeenCalled();
+    h.record.mockResolvedValue(null);
+    await expect(factory().ports.launchNative(input())).rejects.toThrow('session enrollment failed');
+    expect(h.managed).not.toHaveBeenCalled();
+  });
+});
