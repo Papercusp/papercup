@@ -22,6 +22,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
         'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/agent-tools/plans/attention.ts',
+        'packages/operator-core/lib/events/cache-eca-rule.ts',
+        'libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql',
         'packages/operator-core/lib/agent-tools/coordination/messages.ts', 'packages/operator-core/lib/attention/adapters.ts',
         'packages/operator-core/lib/attention/terminal-action-dispatch.ts', 'packages/operator-core/lib/endpoint-route/routes/admin/coord.ts',
         'apps/operator/app/_components/inbox/InboxPane.tsx', 'apps/operator/app/_components/inbox/use-inbox-pending.ts',

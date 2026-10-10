@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
+import { getOrgPg } from '@papercusp/db-org';
 import { getMessageById, readAckedMsgIds, readInbox } from '../lib/agent-tools/coordination/messages';
 import { verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from './private-coord-receipt';
 import { portalBrowserPackagesPlugin, portalBrowserSurfaceBuild } from './private-http-workspace-preflight';
@@ -211,12 +212,30 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
   const selectedMessageIds: string[] = [];
   const marker = `private-browser-${process.pid}`;
   const pageErrors: string[] = [];
+  const inboxReads: Array<Record<string, unknown>> = [];
+  const inboxReadCaptures = new Set<Promise<void>>();
   let page: Page | undefined;
   try {
     await context.addCookies([cookie(input.ownToken)]);
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.message));
+    if (input.inbox) page.on('response', response => {
+      const url = new URL(response.url());
+      const name = url.searchParams.get('name');
+      if (!url.pathname.endsWith('/rest-query') || !name?.startsWith('plans.attention')) return;
+      const observation = { at: new Date().toISOString(), name, args: url.searchParams.get('args'),
+        delta: url.searchParams.get('delta'), status: response.status() };
+      const capture = response.json().then(body => {
+        inboxReads.push({ ...observation, body });
+      }, error => {
+        inboxReads.push({ ...observation, error: String(error) });
+      }).then(() => {
+        writeFileSync(join(evidence, 'portal-inbox-reads.json'), JSON.stringify(inboxReads, null, 2));
+      });
+      inboxReadCaptures.add(capture);
+      void capture.finally(() => inboxReadCaptures.delete(capture));
+    });
     const url = new URL(input.inbox ? '/?app=inbox&opci=alerts&opck=coord-message&opcsort=newest&q=retained-shell-search'
       : input.prompts ? '/?app=overview&panel=quick&q=retained-shell-search'
       : input.settings || input.shortcuts ? '/?app=settings' : '/?panel=agents', base); url.searchParams.set('ws', workspace);
@@ -325,7 +344,10 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       catch (diagnosticError) { console.error('PORTAL_BROWSER_FAILURE_CAPTURE_ERROR', diagnosticError); }
     }
     throw error;
-  } finally { await context.close(); await browser.close(); }
+  } finally {
+    await context.close(); await browser.close();
+    await Promise.allSettled([...inboxReadCaptures]);
+  }
 }
 
 /** Actual workspace prompts outline and its production sync/write clients. */
@@ -489,6 +511,18 @@ async function runPrivateInboxPage(page: Page, context: BrowserContext, input: P
   const detail = page.getByTestId('inbox-expanded-' + selectedId);
   const endpoint = new URL('/api/admin/coord/ack', input.base).href;
   const writes: Array<{ status: number; target: string; body: unknown }> = [];
+  const cacheStats: Array<{ phase: string; at: string; status: number; body: unknown; l2Rows: unknown }> = [];
+  const captureCacheStats = async (phase: string) => {
+    const url = new URL('/api/agent-tools/dev/cache_stats', input.base);
+    url.searchParams.set('superuser', '1');
+    url.searchParams.set('client', 'pc-admin-coord-ui');
+    const response = await page.request.post(url.href, { data: { tool: 'plans:attention' } });
+    const l2Rows = await getOrgPg().sql`SELECT workspace_id, cache_key, tags, generation, expires_at,
+      jsonb_path_query_array(value, '$.groups[*].items[*].id') AS item_ids
+      FROM harness_shared.cache_l2 WHERE cache_key LIKE 'plans:attention|%' LIMIT 10`;
+    cacheStats.push({ phase, at: new Date().toISOString(), status: response.status(), body: await response.json(), l2Rows });
+    writeFileSync(join(input.evidence, 'portal-inbox-cache-stats.json'), JSON.stringify(cacheStats, null, 2));
+  };
   const assertState = async (acked: boolean) => {
     const ids = await readAckedMsgIds('pc-admin-coord-ui');
     assert.equal(ids.has(inbox.selectedMessageId), acked, 'only the selected acknowledgment may change');
@@ -528,10 +562,12 @@ async function runPrivateInboxPage(page: Page, context: BrowserContext, input: P
   assert.equal(new URL(page.url()).searchParams.get('opcis'), selectedId);
   await detail.getByRole('button', { name: 'Acknowledge', exact: true }).waitFor();
   await context.unroute('**/api/admin/coord/ack');
+  await captureCacheStats('before-ack');
   const accepted = await acknowledge();
   assert.equal(accepted.status, 200, JSON.stringify(accepted));
   await assertState(true);
-  await selected.waitFor({ state: 'detached' });
+  try { await selected.waitFor({ state: 'detached' }); }
+  finally { await captureCacheStats('after-ack-refetch'); }
   await neighbor.waitFor();
   await page.reload();
   await neighbor.waitFor();
