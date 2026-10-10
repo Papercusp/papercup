@@ -4,12 +4,12 @@
   "workItemId": "WI-10007744",
   "planSlug": "cloud-app-live-tutorial-2026-10-01",
   "profile": "product-guide",
-  "root": "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-gqP3N6",
+  "root": "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR",
   "sourceRoot": "$HOME/papercupai-workspace/papercusp",
-  "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-a88e00241d-JIP8d8",
+  "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-d01eaf841e-HVsXHh",
   "portalSourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
   "rootCommit": "abecdede05c105975fbeb57709f1f8e858c70729",
-  "portalCommit": "a88e00241d4786dcc54f9ead11b2900eee01a4c7",
+  "portalCommit": "d01eaf841e035d562e14468e46f2201c6a81d7ce",
   "files": [
     {
       "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
@@ -27,7 +27,7 @@
   "portalFiles": [
     {
       "path": "packages/ui/src/shell.tsx",
-      "sha256": "8432c6424f9e30238f8aafd1b2af85f03afab0fdc2ee6d82f85b59541101c6a4"
+      "sha256": "1e7b345e0272d7304d0225a22b3a118503d0c5281cbfba91684b9da450682aaf"
     },
     {
       "path": "packages/ui/src/auth.tsx",
@@ -55,13 +55,13 @@
     }
   ],
   "consumedImports": [
-    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-gqP3N6/packages/operator-ui/src/onboarding/product-tutorial.tsx",
-    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-gqP3N6/packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
-    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-gqP3N6/packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
-    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-gqP3N6/packages/operator-ui/src/browser-telemetry.tsx",
-    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-gqP3N6/packages/operator-ui/src/browser-telemetry.tsx"
+    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-ui/src/onboarding/product-tutorial.tsx",
+    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-ui/src/browser-telemetry.tsx",
+    "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-ui/src/browser-telemetry.tsx"
   ],
-  "observedAt": "2026-10-10T04:37:11.782Z",
+  "observedAt": "2026-10-10T06:10:03.000Z",
   "limitations": [
     "Readiness and source custody only; actual native review remains pending."
   ]
