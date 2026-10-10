@@ -31,7 +31,7 @@
     "scripts/pc-heavy.sh",
     "--",
     "env",
-    "PAPERCUSP_MODEL_INFERENCE_BINDING=/home/marsh-office/papercupai-workspace/papercusp/.papercusp/portable-release/p058-amd8-postsweep-20261010/models-host-binding.json",
+    "PAPERCUSP_MODEL_INFERENCE_BINDING=$HOME/papercupai-workspace/papercusp/.papercusp/portable-release/p058-amd8-postsweep-20261010/models-host-binding.json",
     "PAPERCUSP_TRANSFORMERS_LOCAL_ONLY=1",
     "HF_HUB_OFFLINE=1",
     "TRANSFORMERS_OFFLINE=1",
