@@ -382,6 +382,36 @@ describe('spawnAgentInHarness — happy path', () => {
       .toBeLessThan(vi.mocked(superviseCrash).mock.invocationCallOrder[0]);
   });
 
+  it('automatically supervises a timed-out child after the child has started', async () => {
+    vi.mocked(spawnInvokeOnceWithFallback).mockImplementation(((
+      _dir: string,
+      _role: string,
+      _extras: string[],
+      _env: Record<string, string>,
+      opts?: { onChildPid?: (pid: number) => void },
+    ) => {
+      opts?.onChildPid?.(1234);
+      return Promise.resolve({ output: '', exitCode: 143, stderr: '', timedOut: true });
+    }) as never);
+
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });
+    await flush();
+
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId,
+      status: 'failed',
+      errorMessage: expect.stringContaining('invoke timeout'),
+    }));
+    expect(superviseCrash).toHaveBeenCalledTimes(1);
+    expect(superviseCrash).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      workspaceId: 'ws-1',
+      spawnId: res.spawnId,
+      reason: expect.stringContaining('invoke timeout'),
+    }));
+    expect(vi.mocked(finishSpawn).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(superviseCrash).mock.invocationCallOrder[0]);
+  });
+
   it.each([
     { label: 'successful', childStarted: true, cancelled: false, exitCode: 0, expectedStatus: 'done' },
     { label: 'cancelled', childStarted: true, cancelled: true, exitCode: 1, expectedStatus: 'cancelled' },

@@ -2017,6 +2017,47 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
     expect(stamp?.retracted_by).toBeTruthy();
   });
 
+  it.each([
+    { scenario: 'passing selected cases', declared: ['scope > selected'], superseded: true },
+    { scenario: 'a skipped selected case', declared: ['scope > selected', 'scope > skipped'], superseded: false },
+    { scenario: 'a partial selected title', declared: ['scope > select'], superseded: false },
+  ])('checks $scenario against the persisted ledger before scoped supersession', async ({ declared, superseded }) => {
+    await specs.setSpecClause(clause());
+    const [oldRun, freshRun] = [
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+    ];
+    await markRunAsPassing(freshRun.testRunId, REPLAY_TEST, 'outer > scope > selected');
+    // The aggregate skip count includes cases outside the selected scope. The
+    // production store must retain that count and corroborate each declared case.
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = jsonb_set(execution_details, '{skipped}', '95'::jsonb)
+      WHERE id = ${freshRun.testRunId}`;
+    const old = await bindViaTool({
+      evidenceKind: 'test', evidenceRef: 'test-run:old-scoped-attempt',
+      testRunId: oldRun.testRunId,
+      details: { adequacy: { ...PASSED, outcome: 'failed' } },
+    });
+    const fresh = await bindViaTool({
+      evidenceKind: 'test', evidenceRef: 'test-run:fresh-scoped-attempt',
+      testRunId: freshRun.testRunId,
+      details: { adequacy: { ...PASSED, testCases: declared } },
+    }, true);
+
+    expect(fresh.supersession).toEqual([expect.objectContaining({
+      bindingId: fresh.id, status: superseded ? 'superseded' : 'refused',
+    })]);
+    const live = await liveIds();
+    expect(live).toContain(fresh.id);
+    expect(live.includes(old.id)).toBe(!superseded);
+    const [measured] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], bindingIds: [fresh.id],
+    });
+    expect(measured?.testRunExecution).toMatchObject({
+      passed: 1, failed: 0, skipped: 95, passedCaseTitles: ['outer > scope > selected'],
+    });
+  });
+
   it('supersedes an earlier mutation using measured failed identities from the real ledger', async () => {
     await specs.setSpecClause(clause());
     const [oldRun, freshRun] = [
