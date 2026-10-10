@@ -312,6 +312,29 @@ it('keeps useful memory when the concurrently running corpus exhausts their shar
   } finally { deadline.close(); log.mockRestore(); warn.mockRestore(); resetMemoryDegradedForTest(); }
 });
 
+it('preserves ready healthy corpus when memory availability exceeds the native mid-turn deadline', async () => {
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const deadline = createMemoryWorkDeadline(1000);
+  const backend = mockBackend([]);
+  backend.available.mockImplementationOnce(() => new Promise(() => {}));
+  useBackend(backend);
+  corpusIoResult = {
+    block: null,
+    lines: [{ line: '- [doc doc:healthy-procedure] Retain the snapshot.', score: 1,
+      handle: { kind: 'doc', ref: 'doc:healthy-procedure', query: ['diagnostic evidence'],
+        resolve: 'docs:get { slugs: ["healthy-procedure"] }' } }],
+    dropped: [], outcome: 'ok', retrievalDepth: 24, rerank: 'nothing-to-reorder',
+    embedderAvailable: true, candidateCount: 1,
+  };
+  try {
+    const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws',
+      queryContext: 'diagnostic evidence', session: { sessionId: 'native-mid-turn-wall', port: 'mid-turn' }, deadline });
+    expect(block).toContain('healthy-procedure');
+    expect(block).toContain('memory leg: timed-out');
+    expect(backend.search).not.toHaveBeenCalled();
+  } finally { deadline.close(); log.mockRestore(); resetMemoryDegradedForTest(); }
+});
+
 it('charges availability and search to one budget and cancels the remaining search', async () => {
   vi.useFakeTimers();
   const log = vi.spyOn(console, 'log').mockImplementation(() => {});

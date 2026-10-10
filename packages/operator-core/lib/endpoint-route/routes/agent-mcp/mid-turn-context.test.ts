@@ -123,6 +123,28 @@ beforeEach(() => {
   evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
 });
 
+it('charges identity preparation to the native response wall before starting the memory builder', async () => {
+  resolveClaimedWorkItemIdForOwnerMock.mockImplementationOnce(async () => {
+    await new Promise(resolve => setTimeout(resolve, 80));
+    return undefined;
+  });
+  const began = Date.now();
+  const result = await post({ owner: owner(), workspace: 'ws-test',
+    tool: 'Grep', toolInput: { pattern: 'diagnostic evidence' }, wallMs: 1000 });
+  const input = firstCall() as { deadline?: { remainingMs(): number }; respondByMs?: number };
+  expect(result.text).toBe('MEM');
+  expect(input.respondByMs).toBeGreaterThanOrEqual(began + 750);
+  expect(input.respondByMs).toBeLessThanOrEqual(began + 780);
+  expect(input.deadline?.remainingMs()).toBeLessThan(700);
+  expect(input.deadline?.remainingMs()).toBeGreaterThan(0);
+});
+
+it('preserves the existing memory budget when the caller declares no native response wall', async () => {
+  await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'diagnostic evidence' } });
+  expect(firstCall()).not.toHaveProperty('deadline');
+  expect(firstCall()).not.toHaveProperty('respondByMs');
+});
+
 /** Every coverage event recorded this test, flattened across calls. */
 const coverageEvents = (): Array<Record<string, unknown>> =>
   recordInjectionCoverageMock.mock.calls.flatMap((call) => (call[0] ?? []) as Array<Record<string, unknown>>);
