@@ -110,6 +110,11 @@ const buildLaunchSpecMock = vi.fn(async (_input: any) => ({
   mcpJsonContents: '{}',
   stack: _input.stack ?? [],
 }));
+const sessionAllowsAmbientContextMock = vi.fn(async (_input: unknown) => true);
+vi.mock('../../capability-envelope/session-confinement-port', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../capability-envelope/session-confinement-port')>()),
+  sessionAllowsAmbientContext: (input: unknown) => sessionAllowsAmbientContextMock(input),
+}));
 const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
   promptText: input.promptText,
   stack: input.stack ?? [],
@@ -624,6 +629,7 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionAllowsAmbientContextMock.mockReset().mockResolvedValue(true);
   consumePendingCarryRespawnMock.mockReset().mockResolvedValue(null);
   restorePendingCarryRespawnMock.mockReset().mockResolvedValue(true);
   resolveWakeModeMock.mockReset().mockResolvedValue('auto');
@@ -648,6 +654,19 @@ beforeEach(() => {
   // P-002 brain-brief defaults: one started hive + a brief string. Tests that
   // exercise the no-brief / no-hive branches override per-call.
   listStartedHivesMock.mockResolvedValue([{ workspaceId: 'default', installSlug: 'papercup' }]);
+});
+
+describe('bootstrap frozen native prompt binding', () => {
+  it('threads the pre-pinned host identity into the renderer and suppresses live plan context', async () => {
+    sessionAllowsAmbientContextMock.mockResolvedValue(false);
+    const response = await callPost({ agent: 'codex', harness_slug: 'papercup', plan_slug: 'private-plan',
+      owner_id: 'su-frozen-native-123', model: 'gpt-6-sol', account: 'default' });
+    expect(response.status).toBe(200);
+    expect(sessionAllowsAmbientContextMock).toHaveBeenCalledWith({ ownerId: 'su-frozen-native-123', workspaceId: 'default' });
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      ownerId: 'su-frozen-native-123', planTitle: null, planNow: null,
+    }));
+  });
 });
 
 describe('bootstrap-su', () => {

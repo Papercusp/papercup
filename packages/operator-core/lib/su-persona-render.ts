@@ -64,12 +64,16 @@ export interface SuPlanContext {
  * self-disclose right here or it silently misleads the whole session.
  */
 export async function resolveSuPlanContext(opts: {
+  ownerId?: string | null;
   planSlug: string | null;
   harnessSlug: string | null;
   workspaceId: string;
 }): Promise<SuPlanContext> {
   const { planSlug, harnessSlug, workspaceId } = opts;
   if (!planSlug || !harnessSlug) return { planTitle: null, planNow: null };
+  const { sessionAllowsAmbientContext } = await import('./capability-envelope/session-confinement-port');
+  if (!await sessionAllowsAmbientContext({ ownerId: opts.ownerId, workspaceId }))
+    return { planTitle: null, planNow: null };
   try {
     const { resolveHarnessPlansDir, readPlanBySlug } = await import('./agent-tools/plans/source');
     const resolved = await resolveHarnessPlansDir(harnessSlug, { workspaceId });
@@ -559,6 +563,7 @@ export async function rebuildSuLaunchArtifact(
     : input.stack !== undefined && JSON.stringify(nextStack) !== JSON.stringify(record.stack ?? [])
       ? null : record.selectedIdentity ?? null;
   const plan = await resolveSuPlanContext({
+    ownerId,
     planSlug: record.planSlug,
     harnessSlug: record.harnessSlug,
     workspaceId: record.workspaceId,
@@ -573,6 +578,7 @@ export async function rebuildSuLaunchArtifact(
     planSlug: record.planSlug,
   });
   const spec = await buildLaunchSpec({
+    ownerId,
     kind: 'su',
     agent: record.agent,
     workspaceId: record.workspaceId,

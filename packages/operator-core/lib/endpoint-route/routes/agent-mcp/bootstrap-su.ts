@@ -1950,7 +1950,11 @@ export const bootstrapSu = defineTool({
     // (best-effort — buildLaunchSpec composes the addendum from these). Lives in
     // su-persona-render so the carry-respawn refresh resolves plan context through
     // the SAME code, including the WI-1442 liveness decoration of su-* mentions.
+    // The launcher persisted the pinned session's policy before spawning. Load
+    // the durable resolver in this serving process before any native prompt read.
+    await import('../../../capability-envelope/session-confinement-store');
     const { planNow, planTitle } = await resolveSuPlanContext({
+      ownerId: body.owner_id?.trim() || null,
       planSlug,
       harnessSlug,
       workspaceId: workspace,
@@ -1982,6 +1986,7 @@ export const bootstrapSu = defineTool({
     try {
       spec = await buildLaunchSpec({
         kind: 'su',
+        ownerId: body.owner_id?.trim() || null,
         agent,
         workspaceId: workspace,
         operatorBaseUrl: launchMcpBaseUrl,

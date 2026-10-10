@@ -1143,6 +1143,8 @@ export function assembleWorkspaceRolePrompt(opts: {
  */
 export interface BuildSuLaunchSpecInput {
   kind: 'su';
+  /** Host-pinned native identity, used to read the launch's context ceiling. */
+  ownerId?: string | null;
   /** Client whose tooling overlay is spliced into the playbook (omp/claude/codex). */
   agent: string;
   /** Active workspace id (baked into the superuser MCP URL as a default scope). */
@@ -1373,6 +1375,10 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const spawnId = randomUUID();
   const runId = randomUUID();
   const harnessSlug = input.harnessSlug?.trim() || null;
+  const { sessionAllowsAmbientContext } = await import('./capability-envelope/session-confinement-port');
+  const ambientContextAllowed = await sessionAllowsAmbientContext({
+    ownerId: input.ownerId, workspaceId: input.workspaceId,
+  });
 
   // 1. cwd — the harness project dir if scoped, else the workspace root.
   //    Matches console-launcher's superuser shell: a *given* slug must
@@ -1442,7 +1448,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const launchProfile: 'engineer' | 'power' | 'generic' =
     input.profile === 'power' || input.profile === 'generic' ? input.profile : 'engineer';
   let projectGuideSource: string | undefined;
-  if (launchProfile === 'generic') {
+  if (!ambientContextAllowed || launchProfile === 'generic') {
     projectGuideSource = ''; // non-coding hive → no repo guide; domain rides the hive override
   } else if (launchProfile === 'power') {
     projectGuideSource = '';
@@ -1583,7 +1589,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // (PAPERCUSP_HARNESS_SLUG, default 'papercusp'); the POWER profile's guide is the
   // managed repo's, so its parts live under that harness.
   const composeProjectGuide = await (async () => {
-    if (launchProfile === 'generic') return undefined;
+    if (!ambientContextAllowed || launchProfile === 'generic') return undefined;
     try {
       const bp = await import('@papercusp/orchestrator/blueprint');
       const { guideHarnessForLaunchProfile, projectGuideComposerForWearer, suGuideWearer } = await import(
@@ -1635,7 +1641,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // stored in the federated hive_settings layer (same as the harness-role path, P-003).
   // Best-effort; flag-off (suBaseSource undefined) or no hive ⇒ skipped (byte-identical).
   let suPersonaText = rendered.text;
-  if (suBaseSource && harnessSlug) {
+  if (ambientContextAllowed && suBaseSource && harnessSlug) {
     try {
       const { potHomeSlugForHarness } = await import('./hive-federation');
       const { getHiveInstancePromptOverride, setHiveInstancePromptOverride } = await import('./hive-settings-store');
@@ -1672,8 +1678,8 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const launchCtx = composeLaunchContext({
     harnessSlug,
     planSlug: input.planSlug ?? null,
-    planTitle: input.planTitle ?? null,
-    planNow: input.planNow ?? null,
+    planTitle: ambientContextAllowed ? input.planTitle ?? null : null,
+    planNow: ambientContextAllowed ? input.planNow ?? null : null,
     profile: launchProfile,
     fleetRole: input.fleetRole ?? null,
   });

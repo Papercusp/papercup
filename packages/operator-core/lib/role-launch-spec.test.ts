@@ -4,7 +4,8 @@
  * the test asserts the COMPOSITION + the role-scoped signed-URL shape,
  * not the leaves' internals (those have their own tests).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setSessionConfinementResolver } from './capability-envelope/session-confinement-port';
 
 const assembleRolePromptMock = vi.fn();
 const tagTurnForInjectionMock = vi.fn(({ text, sid, origin }: { text: string; sid: string; origin: string }) => ({
@@ -1724,6 +1725,32 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     expect(params, 'the composer issued no read').toBeDefined();
     return { harnessSlug: params[1], tokens: params[3], client: params[4][0] };
   };
+
+  describe('frozen native initial context', () => {
+    afterEach(() => setSessionConfinementResolver(undefined));
+
+    it.each(['frozen', 'unavailable', 'missing'])('excludes live guides, overrides and plan prose when policy is %s', async policy => {
+      setSessionConfinementResolver(policy === 'missing' ? undefined : () => {
+        if (policy === 'unavailable') throw new Error('private policy unavailable');
+        return { denyTools: [], denyAmbientContext: true, imposedBy: 'private host', reason: 'frozen context' };
+      });
+      const spec = await buildLaunchSpec({ ...su, ownerId: 'su-frozen-native', planSlug: 'private-plan',
+        planTitle: 'LIVE PLAN SECRET', planNow: { state: 'LIVE SOLUTION', next: 'LIVE ANSWER' } });
+      const render = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(render.projectGuideSource).toBe('');
+      expect(render.composeProjectGuide).toBeUndefined();
+      expect(spec.promptText).toContain('SU PLAYBOOK BODY');
+      expect(spec.promptText).not.toMatch(/LIVE PLAN SECRET|LIVE SOLUTION|LIVE ANSWER/);
+    });
+
+    it('retains ordinary native guidance when the host proves the session is unconfined', async () => {
+      setSessionConfinementResolver(() => null);
+      const spec = await buildLaunchSpec({ ...su, ownerId: 'su-ordinary-native', planSlug: 'private-plan',
+        planTitle: 'LIVE PLAN TITLE', planNow: { state: 'LIVE STATE', next: 'LIVE NEXT' } });
+      expect(spec.promptText).toContain('LIVE PLAN TITLE');
+      expect(renderSuPlaybookMock.mock.calls.at(-1)?.[0]).toMatchObject({ composeProjectGuide: expect.any(Function) });
+    });
+  });
 
   it('ENGINEER profile: reads with the su static layers + role tokens; no rows ⇒ the default guide byte-identical', async () => {
     addressedReadMock.fn.mockResolvedValueOnce([]);
