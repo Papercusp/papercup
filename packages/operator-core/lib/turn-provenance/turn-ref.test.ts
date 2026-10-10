@@ -603,7 +603,7 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
   const OWNER = 'su-successor-owner';
   const TS = '2026-08-25T02:21:27.909Z';
 
-  it('proves a clean predecessor owner turn as owner-turn with explicit scope', async () => {
+  it('proves an authenticated clean predecessor owner turn as owner-turn with explicit scope', async () => {
     const refs = parseTurnRefs(`${formatTurnRef(PREDECESSOR, TS)}: "continue the owner directive"`);
     const calls: Array<{ prefix: string; scope: string }> = [];
     const [verdict] = await verifyTurnRefs(OWNER, refs, {
@@ -617,8 +617,8 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
           ts: TS,
           speaker: 'user',
           text: 'continue the owner directive',
-          turnOrigin: null,
-          turnOriginVerdict: 'unenrolled-origin',
+          turnOrigin: 'hook-authenticated-prompt',
+          turnOriginVerdict: 'owner-typed',
         }];
       },
     });
@@ -628,6 +628,35 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
       found: true,
       checked: true,
       verdict: 'owner-turn',
+      scope: 'cross-session',
+      quoteMatch: true,
+    });
+  });
+
+  it.each([
+    ['unenrolled-origin', 'unenrolled-origin'],
+    ['legacy row without a stored verdict', null],
+    ['an unrecognized future verdict', 'future-non-owner-verdict'],
+  ])('keeps an indexed clean row as unknown when authorship is not positive (%s)', async (_label, turnOriginVerdict) => {
+    const refs = parseTurnRefs(`${formatTurnRef(PREDECESSOR, TS)}: "continue the owner directive"`);
+    const [verdict] = await verifyTurnRefs(OWNER, refs, {
+      filePath: join(tmpdir(), 'successor-only.jsonl'),
+      sessionId: CURRENT,
+      scope: 'cross-session',
+      loadIndexedTurns: async () => [{
+        sessionId: PREDECESSOR,
+        ts: TS,
+        speaker: 'user',
+        text: 'continue the owner directive',
+        turnOrigin: null,
+        turnOriginVerdict,
+      }],
+    });
+
+    expect(verdict).toMatchObject({
+      found: true,
+      checked: true,
+      verdict: 'unknown',
       scope: 'cross-session',
       quoteMatch: true,
     });
@@ -670,7 +699,7 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
     expect(verdict).toMatchObject({ found: false, checked: false, scope: 'cross-session' });
   });
 
-  it('production loader includes the corpus namespace alongside the active workspace', async () => {
+  it('production loader keeps the indexed unenrolled row non-owner and includes the corpus namespace', async () => {
     const sqlCalls: Array<{ text: string; values: unknown[] }> = [];
     const sql = Object.assign(
       async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -702,7 +731,7 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
     expect(verdict).toMatchObject({
       found: true,
       checked: true,
-      verdict: 'owner-turn',
+      verdict: 'unknown',
       scope: 'cross-session',
     });
     expect(sqlCalls).toHaveLength(1);
