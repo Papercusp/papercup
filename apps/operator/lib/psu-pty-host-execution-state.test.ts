@@ -1,8 +1,11 @@
 // @vitest-environment node
+import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decideLoopExecutionRecovery, type ExecutionRecoveryInput } from '@papercusp/operator-core/lib/harness/routines/loop-execution-recovery';
 import { makeAgentBusyGate, nativeExecutionBlocksInjection, nativeExecutionFromRows, nativeTurnVerifierSupport,
-  retainRunningNativeExecution } from '../scripts/psu-pty-host.mjs';
+  nativeLatestExecution, retainRunningNativeExecution } from '../scripts/psu-pty-host.mjs';
 
 const timestamp = new Date(1000).toISOString();
 const ctx = { receivedAtMs: 900, nowMs: 2000 };
@@ -27,6 +30,39 @@ describe('native execution observations', () => {
     expect(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx }).pendingTools).toBe(1);
     rows.push({ type: 'response_item', timestamp, payload: { type: 'function_call_output', call_id: 'tool-a' } });
     expect(nativeExecutionFromRows(rows, { agent: 'codex', ...ctx }).pendingTools).toBe(0);
+  });
+
+  it('keeps Codex execution running when the bounded tail evicts task_started', () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-native-execution-tail-'));
+    const codexHome = join(root, 'codex');
+    const sessionDir = join(codexHome, 'sessions', '2026', '10', '10');
+    const receivedAtMs = 1_700_000_000_000;
+    try {
+      mkdirSync(sessionDir, { recursive: true });
+      const transcriptPath = join(sessionDir, 'rollout.jsonl');
+      const rows = [
+        { type: 'event_msg', timestamp: new Date(receivedAtMs + 1).toISOString(),
+          payload: { type: 'task_started' } },
+        { type: 'response_item', timestamp: new Date(receivedAtMs + 2).toISOString(),
+          payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'x'.repeat(270 * 1024) }] } },
+        { type: 'response_item', timestamp: new Date(receivedAtMs + 3).toISOString(),
+          payload: { type: 'function_call', call_id: 'tool-a' } },
+      ];
+      writeFileSync(transcriptPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+      const size = statSync(transcriptPath).size;
+      const startRowBytes = Buffer.byteLength(JSON.stringify(rows[0]) + '\n');
+      expect(size - 256 * 1024).toBeGreaterThan(startRowBytes);
+
+      const execution = nativeLatestExecution({
+        agent: 'codex',
+        env: { CODEX_HOME: codexHome },
+        receivedAtMs,
+        nowMs: receivedAtMs + 10_000,
+      });
+      expect(execution).toMatchObject({ phase: 'running', pendingTools: 1 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('retains verified running state when a bounded transcript tail evicts task_started', () => {

@@ -165,6 +165,26 @@ async function coordCanary(health: unknown) {
   const verifyReceipt = (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean, summary = marker) =>
     verifyPrivateCoordReceipt(receipt, { ownerId: expectedOwner, summary, wake }, getMessageById);
   if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
+    let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
+    if (process.env.ROSTER_PLANS_BROWSER_PROOF === '1') {
+      const { operatorHomeHarnessSlug } = await import('../lib/harness/operator-home-harness');
+      const harness = operatorHomeHarnessSlug();
+      const stem = `private-plans-${process.pid}`;
+      plans = { selectedSlug: stem + '-selected', neighborSlug: stem + '-neighbor',
+        selectedTitle: stem + '-selected', neighborTitle: stem + '-neighbor', harness };
+      const staleAt = new Date(Date.now() - 16 * 24 * 60 * 60 * 1000).toISOString();
+      // Private fixture population only: product reads and archive writes use
+      // the maintained API and its normal workspace/harness resolution.
+      for (const suffix of ['selected', 'neighbor']) {
+        const slug = stem + '-' + suffix;
+        const content = `---\nslug: ${slug}\ntitle: ${slug}\nstatus: draft\nupdated: ${staleAt}\n---\n\n## Now\nPrivate Plans archive canary.\n`;
+        await sql`INSERT INTO harness_shared.harness_plans
+          (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, updated, updated_at)
+          VALUES (${workspace}, ${harness}, ${slug}, ${slug}, 'draft', ${content},
+            ${createHash('sha256').update(content).digest('hex')}, ${staleAt}, ${staleAt})`;
+      }
+      writeFileSync(join(evidence, 'portal-plans-seed.json'), JSON.stringify({ ...plans, workspace, staleAt }, null, 2));
+    }
     let inbox: { selectedMessageId: string; neighborMessageId: string; selectedTitle: string; neighborTitle: string } | undefined;
     if (process.env.ROSTER_INBOX_BROWSER_PROOF === '1') {
       const { sendMessage } = await import('../lib/agent-tools/coordination/messages');
@@ -191,6 +211,7 @@ async function coordCanary(health: unknown) {
       ...(process.env.ROSTER_SHORTCUT_BROWSER_PROOF === '1' ? { shortcuts: true } : {}),
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
+      ...(plans ? { plans } : {}),
       ...(inbox ? { inbox } : {}),
       ...(process.env.ROSTER_HISTORY_BROWSER_PROOF === '1' ? { history: {
         selectedSessionId: historySessions.get(selected)!.id, neighborSessionId: historySessions.get(neighbor)!.id,

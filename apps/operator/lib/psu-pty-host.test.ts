@@ -7322,6 +7322,7 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
   function harness({
     promptResults = [{ deferred: false }] as Array<{ deferred: boolean }>,
     deliver = async (): Promise<{ delivered: boolean; reason?: string }> => ({ delivered: true }),
+    waitWakeModeRetry = async () => {},
   } = {}) {
     const events: Ev[] = [];
     let promptCalls = 0;
@@ -7334,6 +7335,7 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
       },
       recycle: async () => {},
       performDelivery: deliver,
+      waitWakeModeRetry,
       emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
       capMs: 10,
     });
@@ -7370,6 +7372,32 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
       expect.objectContaining({ kind: 'wake-rearm-dropped', reason: 'exhausted', deliveryIds: ['d-2'] }),
     ]);
     expect(unjoined(h.events)).toEqual([]);
+  });
+
+  it('keeps a loop delivery pending when a carry-respawn temporarily owns the next write', async () => {
+    let deliveries = 0;
+    const wait = vi.fn(async () => {});
+    const h = harness({
+      waitWakeModeRetry: wait,
+      deliver: async () => {
+        deliveries += 1;
+        return deliveries === 1
+          ? { delivered: false, reason: 'carry-respawn-pending', retryable: true }
+          : { delivered: true };
+      },
+    });
+
+    expect(h.controller.schedule({ mode: 'turn', data: 'loop wake', deliveryId: 'd-carry-order' })).toBe('queued');
+    await h.drain();
+
+    expect(deliveries).toBe(2);
+    expect(wait).toHaveBeenCalledWith(30_000);
+    expect(h.events.filter((e) => e.kind === 'wake-rearm-dropped')).toEqual([]);
+    expect(h.events.filter((e) => e.kind === 'wake-rearm-delivered')).toEqual([
+      expect.objectContaining({ deliveryIds: ['d-carry-order'] }),
+    ]);
+    expect(unjoined(h.events)).toEqual([]);
+    expect(h.controller.pendingCount()).toBe(0);
   });
 
   it('a supersede folds the later id into the SAME terminal row, so both join', async () => {

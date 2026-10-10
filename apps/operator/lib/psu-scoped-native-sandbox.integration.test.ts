@@ -2,6 +2,8 @@ import { it, expect, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer, type Server } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -80,6 +82,7 @@ it('delivers restored frozen context to installed Codex through the real managed
   const providerCalls: Record<string, unknown>[] = [], reads: unknown[] = [], errors: unknown[] = [];
   const requestPaths: string[] = [];
   const hosts: McpServer[] = [];
+  let probe: Client | undefined;
   let child: ReturnType<typeof spawn> | undefined;
   let server: Server | undefined;
   try {
@@ -127,11 +130,15 @@ it('delivers restored frozen context to installed Codex through the real managed
       const request = JSON.parse(Buffer.concat(chunks).toString()); providerCalls.push(request);
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if (providerCalls.length === 1) {
-        const namespace = (request.tools as Array<Record<string, unknown>>).find(entry =>
+        const tools = (request.tools ?? []) as Array<Record<string, unknown>>;
+        const namespace = tools.find(entry =>
           entry.type === 'namespace' && (entry.tools as Array<Record<string, unknown>>)?.some(tool => tool.name === 'capability_read'));
-        if (!namespace) throw new Error('Installed native runtime did not advertise the frozen file-read tool');
-        const item = { id: 'fc_frozen', type: 'function_call', call_id: 'frozen-read', namespace: namespace.name,
-          name: 'capability_read', arguments: JSON.stringify({ file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) }), status: 'completed' };
+        const direct = tools.find(tool => tool.type === 'function' && typeof tool.name === 'string' &&
+          tool.name.endsWith('__capability_read'));
+        if (!namespace && !direct) throw new Error('Installed native runtime did not advertise the frozen file-read tool');
+        const item = { id: 'fc_frozen', type: 'function_call', call_id: 'frozen-read',
+          ...(namespace ? { namespace: namespace.name } : {}),
+          name: direct?.name ?? 'capability_read', arguments: JSON.stringify({ file_path: restored.memoryPath, byte_offset: 0, byte_limit: Buffer.byteLength(snapshot) }), status: 'completed' };
         const body = { ...codexCliResponsesBody({ model: 'gpt-6-sol', text: '', inputTokens: 0, outputTokens: 0 }), output: [item] };
         const event = (type: string, payload: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
         res.end(event('response.output_item.added', { output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } }) +
@@ -146,6 +153,10 @@ it('delivers restored frozen context to installed Codex through the real managed
     const home = writeSuCodexHome({ sessionKey: owner, sid: owner, mcpUrl: `${baseURL}/mcp`, token: 'offline-fixture',
       model: 'gpt-6-sol:medium', promptText: `${roleMarker}\n${restored.contextText}`, headless: true, trustDir: cwd, denyAmbientContext: true });
     expect(home.codexHome).toBe(codexHome);
+    probe = new Client({ name: 'native-fixture-preflight', version: '1' });
+    await probe.connect(new StreamableHTTPClientTransport(new URL(`${baseURL}/mcp`)));
+    expect((await probe.listTools()).tools.map(tool => tool.name)).toEqual(['capability_read']);
+    await probe.close(); probe = undefined;
     // The child must read the exact delivered AGENTS file and restored bytes.
     // Keep fixture-only provider and tool choices in CLI overrides, so a
     // replacement of the managed prompt cannot make this assertion pass.
@@ -157,7 +168,7 @@ it('delivers restored frozen context to installed Codex through the real managed
       'model_providers.frozen_fixture.supports_websockets': false,
       'model_providers.frozen_fixture.request_max_retries': 0,
       'model_providers.frozen_fixture.stream_max_retries': 0,
-      'features.apps': false, 'features.shell_tool': false, 'features.hooks': false, web_search: 'disabled' };
+      'features.apps': false, 'features.hooks': false, web_search: 'disabled' };
     const args = ['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox',
       ...Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]), 'Read the frozen assignment context.'];
     const env = hermeticEnv({ PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome, PAPERCUSP_SID: owner,
@@ -191,6 +202,7 @@ it('delivers restored frozen context to installed Codex through the real managed
   } finally {
     if (child && child.exitCode === null) child.kill('SIGKILL');
     try {
+      await probe?.close();
       await Promise.allSettled(hosts.map(host => host.close()));
       if (server?.listening) await stop(server);
     } finally {

@@ -17,6 +17,45 @@ const env = () => ({ PAPERCUSP_AGENT: 'codex', CODEX_HOME: home });
 const configure = (stateHome: string) => writeFileSync(join(home, 'config.toml'), `sqlite_home = ${JSON.stringify(stateHome)}\n`);
 
 describe('Codex SQLite storage before managed PTY startup', () => {
+  it('creates the default state home when the optional config is missing', () => {
+    rmSync(home, { recursive: true });
+    expect(prepareCodexSqliteHome({ env: env() })).toBe(home);
+    expect(readdirSync(home)).toEqual([]);
+  });
+
+  it('uses the environment state home when the optional config is missing', () => {
+    const state = join(root, 'env-state');
+    expect(prepareCodexSqliteHome({ env: { ...env(), CODEX_SQLITE_HOME: state } })).toBe(state);
+    expect(readdirSync(state)).toEqual([]);
+    expect(readdirSync(home)).toEqual([]);
+  });
+
+  it('uses the native override when the optional config is missing', () => {
+    const ignored = join(root, 'env-state');
+    expect(prepareCodexSqliteHome({
+      env: { ...env(), CODEX_SQLITE_HOME: ignored },
+      cwd: root,
+      args: ['-c', 'sqlite_home="native state"'],
+    })).toBe(join(root, 'native state'));
+    expect(existsSync(ignored)).toBe(false);
+  });
+
+  it('preserves invalid config and refuses it before creating state', () => {
+    const invalid = 'sqlite_home = [unterminated';
+    writeFileSync(join(home, 'config.toml'), invalid);
+    const state = join(root, 'env-state');
+    expect(() => prepareCodexSqliteHome({ env: { ...env(), CODEX_SQLITE_HOME: state } })).toThrow();
+    expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(invalid);
+    expect(existsSync(state)).toBe(false);
+  });
+
+  it('preserves config read errors other than an absent file', () => {
+    mkdirSync(join(home, 'config.toml'));
+    const state = join(root, 'env-state');
+    expect(() => prepareCodexSqliteHome({ env: { ...env(), CODEX_SQLITE_HOME: state } })).toThrow(/EISDIR/);
+    expect(existsSync(state)).toBe(false);
+  });
+
   it('restores a removed temp companion before a fresh launch or carry', () => {
     const state = join(root, 'temp-state', 'session-38931');
     configure(state);

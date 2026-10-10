@@ -105,7 +105,15 @@ const require = createRequire(import.meta.url);
 export function prepareCodexSqliteHome({ env, cwd = process.cwd(), args = [] }) {
   if (env.PAPERCUSP_AGENT !== 'codex' || !env.CODEX_HOME) return null;
   const parseToml = require('@iarna/toml').parse;
-  const config = parseToml(readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8'));
+  let configText = '';
+  try {
+    configText = readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8');
+  } catch (error) {
+    // A fresh Codex home can omit config.toml. Preserve every other read error,
+    // and parse outside this catch so malformed configuration still fails.
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const config = parseToml(configText);
   let configured = config.sqlite_home;
   // Explicit native config overrides win over config.toml and the environment.
   for (let i = 0; i < args.length; i++) {
@@ -1737,6 +1745,12 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       turnStartedAt = agent === 'codex' ? at : null;
       pendingTools.clear();
       lastProgressAt = at;
+    }
+    if (agent === 'codex' && row?.type === 'response_item' && phase === 'unknown') {
+      // A bounded transcript tail may evict task_started while retaining
+      // response_item rows. They prove native work began, but not its exact
+      // start time, so keep the phase positive without inventing a timestamp.
+      phase = 'running';
     }
     if ((agent === 'claude' || agent === 'omp') && message?.role === 'assistant') {
       phase = 'running';
@@ -4521,7 +4535,7 @@ export function makeCarryRearmController({
   //
   // Defaulting to null preserves the existing unit callers that construct this
   // controller with `recycle` alone.
-  /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string}) => Promise<{delivered: boolean, reason?: string} | void>)} */
+  /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string}) => Promise<{delivered: boolean, reason?: string, retryable?: boolean} | void>)} */
   performDelivery = null,
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
@@ -4765,6 +4779,7 @@ export function makeCarryRearmController({
             // the freshest carry document is always the right one to deliver.
             const current = latest.get(key) ?? msg;
             let deferred = false;
+            let deliveryDeferred = false;
             let wakeModePauseReason = null;
             try {
               // Check BEFORE waiting on the successor's output. Otherwise an
@@ -4846,14 +4861,24 @@ export function makeCarryRearmController({
                     drillId,
                     sessionClass: deliver.sessionClass ?? '',
                   });
-                const outcome = result ?? { delivered: false, reason: 'recycle-outcome-unavailable' };
-                // R-1: the newly-covered modes had NO terminal row on this path.
-                // A performDelivery that returned delivered:false (the turn
-                // verifier aborted or exhausted) settled silently — the one
-                // outcome the re-arm exists to make impossible. carry-respawn
-                // keeps its existing recycle-side rows (renaming would orphan
-                // the drill ledger), and drills keep their P-020 shape.
-                if (performDelivery && !isDrill && mode !== 'carry-respawn') {
+              const outcome = result ?? { delivered: false, reason: 'recycle-outcome-unavailable' };
+              if (performDelivery && !isDrill && mode !== 'carry-respawn'
+                && !outcome.delivered && outcome.retryable) {
+                // A turn re-arm can reach its verified prompt while a higher-priority
+                // carry-respawn still owns the next write. That is an ordering deferral,
+                // not a terminal delivery failure: keep the delivery ID pending and retry
+                // after a paced gap so the carry-respawn can finish without losing the loop
+                // wake or spinning on the already-quiet prompt.
+                deferReason = String(outcome.reason ?? 'delivery-deferred');
+                deliveryDeferred = true;
+              }
+              // R-1: the newly-covered modes had NO terminal row on this path.
+              // A performDelivery that returned delivered:false (the turn
+              // verifier aborted or exhausted) settled silently — the one
+              // outcome the re-arm exists to make impossible. carry-respawn
+              // keeps its existing recycle-side rows (renaming would orphan
+              // the drill ledger), and drills keep their P-020 shape.
+              if (!deliveryDeferred && performDelivery && !isDrill && mode !== 'carry-respawn') {
                   emitEvent(outcome.delivered ? 'wake-rearm-delivered' : droppedKind, {
                     ...extra,
                     rearmed: true,
@@ -4863,8 +4888,10 @@ export function makeCarryRearmController({
                     ...terminalIds(),
                   });
                 }
+              if (!deliveryDeferred) {
                 settle(key, outcome);
                 return;
+              }
               }
             } finally {
               // Release BETWEEN attempts — never hold the gated-inject mutex
@@ -4881,6 +4908,16 @@ export function makeCarryRearmController({
               } catch {
                 // A test/custom waiter failure must not turn a pause into a
                 // terminal drop; preserve the payload and retain the cadence.
+                await new Promise((resolve) => setTimeout(resolve, wakeModeRetryMs));
+              }
+              continue;
+            }
+            if (deliveryDeferred) {
+              // A retryable pre-write ordering block is already beyond the prompt gate;
+              // poll at the same bounded cadence used for wake-mode recovery.
+              try {
+                await waitWakeModeRetry(wakeModeRetryMs);
+              } catch {
                 await new Promise((resolve) => setTimeout(resolve, wakeModeRetryMs));
               }
               continue;
@@ -11416,7 +11453,7 @@ export function hostThroughPty(o) {
         // would kill the child and destroy the very turn being delivered.
         const text = String(message?.data ?? '');
         if (!text) return { delivered: false, reason: 'no-text' };
-        return injectTurnAtPrompt({
+        const outcome = await injectTurnAtPrompt({
           text,
           label: 'turn re-arm',
           promptAlreadyVerified: true,
@@ -11432,6 +11469,9 @@ export function hostThroughPty(o) {
             return prepareCurrentCarryBinding(deadline);
           },
         });
+        return !outcome.delivered && outcome.reason === 'carry-respawn-pending'
+          ? { ...outcome, retryable: true }
+          : outcome;
       }
       return recycleChild(message?.data, {
         systemPromptAddendum: message?.systemPromptAddendum ?? '',
