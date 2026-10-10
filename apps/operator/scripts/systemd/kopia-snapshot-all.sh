@@ -359,7 +359,14 @@ trap cleanup_kopia_pid EXIT
     # the moment they finish. The tail stays batched.
     if [ "${#PRIORITY[@]}" -gt 0 ]; then
       echo "snapshotting ${#PRIORITY[@]} required source(s) in their own kopia invocation"
-      run_kopia_snapshot "${PRIORITY[@]}" 2>&1 | tail -5
+      if [ "${#TAIL[@]}" -gt 0 ]; then
+        # Required-source coverage must commit promptly, but full auto-maintenance
+        # can hold the shared guard for tens of minutes before the remaining sweep.
+        # Defer it to the tail invocation so the same run can cover both tiers.
+        run_kopia_snapshot --no-auto-maintenance "${PRIORITY[@]}" 2>&1 | tail -5
+      else
+        run_kopia_snapshot "${PRIORITY[@]}" 2>&1 | tail -5
+      fi
     fi
     if [ "${#TAIL[@]}" -gt 0 ]; then
       echo "snapshotting ${#TAIL[@]} sources in ONE kopia invocation"
