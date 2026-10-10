@@ -17,7 +17,7 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { isSafeRunId } from '../../../external-bench/preserved-runs';
-import { launchBenchRun, cancelBenchRun } from '../../../external-bench/run-launcher';
+import { launchBenchRun, cancelBenchRun, type LaunchBenchRunInput } from '../../../external-bench/run-launcher';
 import { gradeBenchRun } from '../../../external-bench/grade-runner';
 import { deleteBenchRun } from '../../../external-bench/run-store';
 import { buildExportBundle } from '../../../external-bench/export-bundle';
@@ -26,9 +26,9 @@ import { estimateBenchLaunch } from '../../../external-bench/estimate';
 const launch = defineTool({
   method: 'POST',
   path: '/external-bench/runs/launch',
-  auth: 'loopback',
+  auth: { capabilities: ['capability:terminal'] },
   timeoutSec: 30,
-  async handler(req) {
+  async handler(req, ctx) {
     let body: {
       arm?: string;
       taskSetId?: string;
@@ -38,6 +38,7 @@ const launch = defineTool({
       maxUsdPerTask?: number;
       maxTokensPerTask?: number;
       maxUsdPerRun?: number;
+      current?: LaunchBenchRunInput['current'];
     };
     try {
       body = (await req.json()) as typeof body;
@@ -57,7 +58,12 @@ const launch = defineTool({
         maxUsdPerTask: body.maxUsdPerTask,
         maxTokensPerTask: body.maxTokensPerTask,
         maxUsdPerRun: body.maxUsdPerRun,
-      });
+        current: body.current,
+      }, body.current ? { currentContext: {
+        principal: ctx.principal ? { ...ctx.principal, capabilities: new Set(ctx.principal.capabilities) } : null,
+        workspaceId: body.current.workspaceId,
+        log: message => ctx.log('info', message),
+      } } : {});
       return Response.json({ ok: true, runId });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

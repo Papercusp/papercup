@@ -1087,7 +1087,7 @@ function measuredIdentity(value: CurrentBenchIdentity | null): CurrentBenchIdent
       !value.evidenceRefs.length || value.evidenceRefs.some(ref => typeof ref !== 'string' || !ref.trim())) return null;
   return value;
 }
-async function retirePrefix(ports: CurrentSuBenchPorts, workspaceId: string, labelPrefix: string): Promise<string[]> {
+async function retirePrefix(ports: Pick<CurrentSuBenchPorts, 'listTasks' | 'killTask'>, workspaceId: string, labelPrefix: string): Promise<string[]> {
   const tasks = await ports.listTasks({ workspaceId, labelPrefix, includeEnded: true, limit: 1000 });
   if (tasks.length >= 1000) throw new Error('Benchmark cleanup census exceeded its bound; cleanup is unverified.');
   const retired: string[] = [];
@@ -1100,7 +1100,7 @@ async function retirePrefix(ports: CurrentSuBenchPorts, workspaceId: string, lab
   return retired;
 }
 /** Explicit restart recovery for one interrupted run, never a workspace-wide sweep. */
-export async function recoverCurrentBenchRun(ports: CurrentSuBenchPorts, opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId'>): Promise<string[]> {
+export async function recoverCurrentBenchRun(ports: Pick<CurrentSuBenchPorts, 'listTasks' | 'killTask'>, opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId'>): Promise<string[]> {
   return retirePrefix(ports, resolveBenchWorkspace(opts.workspaceId), currentBenchRunLabel(opts.runId));
 }
 export function currentSuBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuBenchPorts, opts: CurrentSuBenchOptions) {
@@ -1341,6 +1341,10 @@ export function liveCurrentSuBenchPorts(
   };
 }
 export function bindCurrentSuBenchHarness(opts: CurrentSuBenchOptions, ctx: PapercuspUnifiedToolContext, observations: CurrentSuBenchObservations): void {
+  setBenchHarnessDriver(createCurrentSuBenchHarness(opts, ctx, observations));
+}
+/** An assignment owns its driver; concurrent host callers cannot replace a global binding. */
+export function createCurrentSuBenchHarness(opts: CurrentSuBenchOptions, ctx: PapercuspUnifiedToolContext, observations: CurrentSuBenchObservations) {
   if (resolveBenchWorkspace(opts.workspaceId) !== ctx.workspaceId) throw new Error('Benchmark launch context and run workspace differ.');
-  setBenchHarnessDriver(currentSuBenchHarnessDriver(liveBenchHarnessOps(opts), liveCurrentSuBenchPorts(ctx, observations, opts), opts));
+  return currentSuBenchHarnessDriver(liveBenchHarnessOps(opts), liveCurrentSuBenchPorts(ctx, observations, opts), opts);
 }

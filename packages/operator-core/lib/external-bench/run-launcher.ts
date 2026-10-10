@@ -46,6 +46,20 @@ import {
   type BenchRunStatus,
 } from './run-store';
 import { loadBenchTaskSet } from './task-sets';
+import { createHash, randomBytes } from 'node:crypto';
+import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
+import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
+import { canonicalJson } from './reproducibility/canonical-json';
+import { getPrereg } from './reproducibility/store';
+import { requireCommittedPreregistration } from './reproducibility/prereg';
+import { resolveBenchWorkspace } from './bench-workspace';
+import { runArmGeneration } from './arm-generation';
+import { cloneTaskRepo, extractDiff } from './clone';
+import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
+import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController,
+  currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
+  type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions } from './current-su';
+import { registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
 
 /** A run actively executing in THIS host process (ephemeral; PG is durable truth). */
 interface ActiveRun {
@@ -57,6 +71,9 @@ interface ActiveRun {
   startedAtMs: number;
   potSlugs: Set<string>;
   cancelled: boolean;
+  abort?: AbortController;
+  stopCurrent?: () => Promise<void>;
+  protocolRunId?: string;
 }
 const activeRuns = new Map<string, ActiveRun>();
 
@@ -78,6 +95,14 @@ export interface LaunchBenchRunInput {
   maxTokensPerTask?: number;
   /** Per-run spend ceiling (USD) — advisory, recorded in config. */
   maxUsdPerRun?: number;
+  /** Current execution is selected by a committed protocol, never a legacy arm fallback. */
+  current?: {
+    workspaceId: string;
+    protocolRunId: string;
+    preregHash: string;
+    seed: number;
+    observation: Pick<CurrentBenchObservationReaderOptions, 'runtimeWorkspaceId' | 'workerUnit' | 'gatewayUnit'>;
+  };
 }
 
 /**
@@ -110,6 +135,158 @@ export interface LaunchDeps {
   assertEnabled?: () => Promise<void>;
   /** Deterministic run id (tests). Default embeds a timestamp. */
   runId?: string;
+  /** Authenticated host context. The HTTP route supplies this; JSON cannot supply authority. */
+  currentContext?: PapercuspUnifiedToolContext;
+  currentRepoRoot?: string;
+  /** Assignment-local runtime seam; production starts the maintained native gateway/driver. */
+  currentTask?: (input: CurrentTaskInput) => Promise<{ driver: BenchHarnessDriver; stop(): Promise<void> }>;
+  currentGeneration?: Pick<import('./types').GenerationPorts, 'clone' | 'extractDiff'>;
+}
+
+export interface CurrentTaskInput {
+  options: CurrentSuBenchOptions;
+  protocol: CurrentBenchmarkProtocol;
+  task: BenchTask;
+  context: PapercuspUnifiedToolContext;
+  scope: DbScope;
+  resources: LearningReservationResourceBudget;
+  loopId: string;
+  observation: NonNullable<LaunchBenchRunInput['current']>['observation'];
+}
+
+/** Resolve the frozen controls once, before any durable run or native launch. */
+export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: unknown) {
+  if (!input.current) throw new Error('Current benchmark launch requires its protocol selection.');
+  const current = input.current;
+  resolveBenchWorkspace(current.workspaceId);
+  if (!current.workspaceId.trim() || !/^[a-f0-9]{64}$/.test(current.preregHash)) throw new Error('Invalid current benchmark workspace/hash.');
+  const protocol = currentBenchmarkProtocolSchema.parse(config);
+  const arm = protocol.arms.find(value => value.id === input.arm);
+  if (protocol.runId !== current.protocolRunId || !protocol.seeds.includes(current.seed) || !arm) {
+    throw new Error('Current benchmark launch is not in the frozen protocol.');
+  }
+  // The stock-native adapter is a separate execution route. It must never fall
+  // through to a Queen or become a second su treatment under a baseline label.
+  if (arm.id !== 'papercusp' || arm.agent !== 'codex') throw new Error('Unsupported current benchmark execution arm/client.');
+  if (input.taskSetId !== 'custom' || input.taskIds && canonicalJson(input.taskIds) !== canonicalJson(protocol.taskIds) ||
+      input.model !== undefined && input.model !== arm.model || input.cap !== undefined && input.cap !== 1 ||
+      input.maxUsdPerTask !== undefined && input.maxUsdPerTask !== arm.generationBudget.maxUsd ||
+      input.maxTokensPerTask !== undefined && input.maxTokensPerTask !== arm.generationBudget.maxTokens ||
+      input.maxUsdPerRun !== undefined && input.maxUsdPerRun !== protocol.aggregateBudgetUsd) {
+    throw new Error('Current benchmark launch controls drift from its frozen protocol.');
+  }
+  const id = createHash('sha256').update(canonicalJson({ workspaceId: current.workspaceId,
+    protocolRunId: protocol.runId, preregHash: current.preregHash, arm: arm.id, seed: current.seed })).digest('hex');
+  return { protocol, arm, runId: `current-${id}` };
+}
+
+function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningReservationResourceBudget {
+  const budget = protocol.arms[0].generationBudget;
+  const ceiling = Math.max(...protocol.priceSchedule.rates.map(rate => rate.inputTokenCeiling ?? 0));
+  if (!Number.isSafeInteger(ceiling) || ceiling <= 0) throw new Error('Current native launch requires frozen provider input ceilings.');
+  const requestsPerArm = 64;
+  const output = Math.min(budget.maxTokens ?? 4096, 4096);
+  const armIds = protocol.arms.flatMap(arm => protocol.taskIds.flatMap(taskId =>
+    protocol.seeds.map(seed => currentBenchAssignmentId(protocol.runId, arm.id, taskId, seed)))).sort();
+  const resources = { inputTokens: ceiling * requestsPerArm, outputTokens: output * requestsPerArm,
+    requestsPerArm, totalTokensPerArm: budget.maxTokens, armIds, usdPerArm: budget.maxUsd,
+    maxOpenUsd: protocol.maxInFlightUsd, wallClockMsPerArm: budget.maxWallClockMs,
+    wallClockMs: budget.maxWallClockMs * armIds.length };
+  if (!Number.isSafeInteger(resources.inputTokens) || !Number.isSafeInteger(resources.wallClockMs)) throw new Error('Invalid current benchmark resource bounds.');
+  return resources;
+}
+
+async function liveCurrentTask(input: CurrentTaskInput) {
+  const { options, protocol, task, context, scope, resources, loopId } = input;
+  const auth = currentBenchProviderAuthenticator({ workspaceId: options.workspaceId, preregHash: options.preregistration.preregHash,
+    protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed });
+  const controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId, token: randomBytes(32).toString('hex'),
+    preregHash: options.preregistration.preregHash, protocol, armId: options.armId, taskId: task.instanceId, seed: options.seed,
+    resources, outputTokenLimit: Math.min(4096, protocol.arms.find(arm => arm.id === options.armId)!.generationBudget.maxTokens ?? 4096),
+    authenticateProvider: auth.authenticateProvider }, { enabled: async () => true, getSql: async () => resolveDb(scope).sql });
+  let host: Awaited<ReturnType<typeof controller.startNativeGateway>> | undefined;
+  const stop = async () => { auth.revoke(); controller.revoke(); await host?.stop(); };
+  try {
+    host = await controller.startNativeGateway(context.log);
+    const observeIdentity = currentBenchObservationReader({ ...scope, ...input.observation,
+      workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL });
+    const driver = createCurrentSuBenchHarness(options, context, { ...host, observeIdentity,
+      admit: async () => ({ admitted: !options.signal?.aborted, receiptRef: `governor:${options.workspaceId}/${loopId}#${options.preregistration.preregHash}` }) });
+    return { driver, stop };
+  } catch (error) { await stop(); throw error; }
+}
+
+/** Restart/cancel recovery uses durable native task labels, independently of a vanished gateway. */
+async function retireCurrentRun(workspaceId: string, runId: string): Promise<void> {
+  const [{ listTasks }, { killTask }] = await Promise.all([import('../task-manager/store'), import('../task-manager/control')]);
+  await recoverCurrentBenchRun({ listTasks, killTask: id => killTask(id, {
+    includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 }) }, { workspaceId, runId });
+}
+
+async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDeps): Promise<{ runId: string; done: Promise<void> }> {
+  const current = input.current!, context = deps.currentContext;
+  const scope = { ...deps.scope, workspaceId: resolveBenchWorkspace(current.workspaceId) };
+  const { sql, ws } = resolveDb(scope);
+  if (!context?.principal?.slug || context.workspaceId !== ws) throw new Error('Current benchmark launch requires authenticated isolated host authority.');
+  const prereg = await getPrereg({ runId: current.protocolRunId, preregHash: current.preregHash }, scope);
+  if (!prereg) throw new Error('Current benchmark pre-registration was not found.');
+  const { protocol, arm, runId } = currentBenchLaunchSelection(input, prereg.config);
+  if (!['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(arm.effort)) throw new Error('Unsupported frozen native effort.');
+  const registration = { preregHash: prereg.preregHash, config: protocol, repoRoot: deps.currentRepoRoot };
+  await requireCommittedPreregistration(protocol.runId, registration, { ...scope, repoRoot: deps.currentRepoRoot });
+  const loaded = await (deps.loadBacklog ?? loadBenchTaskSet)('custom', protocol.taskIds);
+  if (canonicalJson(loaded.map(task => task.instanceId).sort()) !== canonicalJson([...protocol.taskIds].sort()) ||
+      loaded.some(task => task.benchmark !== (input.suite ?? 'swe-bench-pro'))) throw new Error('Current benchmark task loader differs from the frozen roster/suite.');
+  const backlog = protocol.taskIds.map(id => loaded.find(task => task.instanceId === id)!);
+  const resources = currentBenchResources(protocol), loopId = `benchmark:${prereg.preregHash}`;
+  const meta = { reservationBinding: prereg.preregHash, reservationResourceBudget: resources };
+  const loop = await registerLearningLoop(sql, { workspaceId: ws, loopId, ifMissing: true, budgetKind: 'lifetime',
+    budgetUsd: protocol.aggregateBudgetUsd, enabled: true, enforcement: 'governor', meta });
+  if (!loop.enabled || loop.budgetKind !== 'lifetime' || loop.budgetUsd !== protocol.aggregateBudgetUsd ||
+      canonicalJson(loop.meta) !== canonicalJson(meta)) throw new Error('Current benchmark governor registration differs from the frozen policy.');
+  await sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`benchmark-launch:${ws}`}, 0))`;
+    await assertNoActiveRun({ ...scope, sql: tx as typeof sql });
+    if ((await tx`SELECT id FROM harness_shared.bench_runs WHERE workspace_id = ${ws} AND id = ${runId}`).length) {
+      throw new Error('Current benchmark arm/seed already has a durable attempt; use a new frozen protocol.');
+    }
+    await upsertBenchRun({ id: runId, arm: arm.id, taskSetId: 'custom', suite: input.suite ?? 'swe-bench-pro', model: arm.model,
+      source: 'ui', status: 'running', taskCount: backlog.length,
+      config: { current: { ...current, protocolRunId: protocol.runId }, protocol, resources, loopId } }, { ...scope, sql: tx as typeof sql });
+    for (const task of backlog) await upsertBenchRunTask(runId, { instanceId: task.instanceId, taskStatus: 'todo' }, { ...scope, sql: tx as typeof sql });
+  });
+  const abort = new AbortController();
+  const active: ActiveRun = { runId, workspaceId: ws, arm: arm.id, taskSetId: 'custom', taskIds: protocol.taskIds,
+    startedAtMs: Date.now(), potSlugs: new Set(), cancelled: false, abort, protocolRunId: protocol.runId };
+  activeRuns.set(runId, active);
+  const run = async (req: HiveBacklogRunRequest): Promise<HiveBacklogResult> => {
+    const taskResults: FleetTaskResult[] = [];
+    for (const task of backlog) {
+      if (abort.signal.aborted) break;
+      await upsertBenchRunTask(runId, { instanceId: task.instanceId, taskStatus: 'in_progress' }, scope);
+      const options: CurrentSuBenchOptions = { workspaceId: ws, runId: protocol.runId, armId: arm.id, seed: current.seed,
+        agent: arm.agent, model: arm.model, effort: arm.effort as CurrentSuBenchOptions['effort'], account: arm.account,
+        preregistration: registration, signal: abort.signal, driveTimeoutMs: arm.generationBudget.maxWallClockMs };
+      const owned = await (deps.currentTask ?? liveCurrentTask)({ options, protocol, task, context, scope, resources, loopId, observation: current.observation });
+      active.stopCurrent = owned.stop;
+      const startedAtMs = Date.now();
+      try {
+        const attempt = await runArmGeneration({ arm: arm.id, blueprintId: FULL_SPINE_BLUEPRINT, task,
+          seed: String(current.seed), budget: arm.generationBudget }, {
+          clone: deps.currentGeneration?.clone ?? cloneTaskRepo, extractDiff: deps.currentGeneration?.extractDiff ?? extractDiff,
+          instantiate: (blueprintId, task, checkout, budget) => owned.driver.spinRunAndCost({ blueprintId, task, checkout, budget }) });
+        const result: FleetTaskResult = { attempt, cupId: currentBenchAssignmentId(protocol.runId, arm.id, task.instanceId, current.seed),
+          placedAtMs: startedAtMs, startedAtMs, finishedAtMs: Date.now(), disposition: 'spawn' };
+        taskResults.push(result);
+        await upsertBenchRunTask(runId, taskRowFromFleetResult(result), scope);
+      } finally { await owned.stop(); active.stopCurrent = undefined; }
+    }
+    return { arm: req.arm, suite: req.suite, runId, seed: current.seed, startedAtMs: active.startedAtMs,
+      finishedAtMs: Date.now(), taskResults, coordEvents: [], peakConcurrentBees: taskResults.length ? 1 : 0, runError: null };
+  };
+  const req: HiveBacklogRunRequest = { arm: arm.id as HiveBacklogRunRequest['arm'], suite: (input.suite ?? 'swe-bench-pro') as HiveBacklogRunRequest['suite'],
+    runId, seed: current.seed, backlog, budget: arm.generationBudget };
+  return { runId, done: executeDetached(active, req, run, deps.dissolve ?? dissolveBenchHive, scope) };
 }
 
 const ACTIVE_STATES: BenchRunStatus[] = ['pending', 'running', 'grading'];
@@ -138,6 +315,9 @@ export async function launchBenchRun(
 ): Promise<{ runId: string; done: Promise<void> }> {
   const assertEnabled = deps.assertEnabled ?? (() => assertExternalBenchEnabled('system'));
   await assertEnabled();
+
+  if (input.current) return launchCurrentBenchRun(input, deps);
+  if (input.arm === 'papercusp') throw new Error('Current Papercusp execution requires a committed frozen protocol; legacy launch is refused.');
 
   const scope = deps.scope ?? {};
   const { ws } = resolveDb(scope);
@@ -269,7 +449,8 @@ async function executeDetached(
           taskSetId: active.taskSetId,
           taskIds: active.taskIds,
         });
-      } catch {
+      } catch (error) {
+        if (active.protocolRunId) throw error;
         /* snapshot is best-effort — the PG store already has the live truth */
       }
     }
@@ -306,8 +487,8 @@ export async function cancelBenchRun(
   const { sql, ws } = resolveDb(scope);
   const dissolve = deps.dissolve ?? dissolveBenchHive;
 
-  const rows = await sql<{ status: string; pot_slug: string | null }[]>`
-    SELECT status, pot_slug FROM harness_shared.bench_runs
+  const rows = await sql<{ status: string; pot_slug: string | null; config: Record<string, unknown> | null }[]>`
+    SELECT status, pot_slug, config FROM harness_shared.bench_runs
      WHERE id = ${runId} AND workspace_id = ${ws} LIMIT 1
   `;
   const row = rows[0];
@@ -315,6 +496,10 @@ export async function cancelBenchRun(
 
   const active = activeRuns.get(runId);
   if (active) active.cancelled = true;
+  active?.abort?.abort();
+  await active?.stopCurrent?.();
+  const protocolRunId = active?.protocolRunId ?? storedCurrentRunId(row.config);
+  if (protocolRunId) await retireCurrentRun(ws, protocolRunId);
 
   // Freeze status FIRST so the detached completion handler won't overwrite it.
   await setBenchRunStatus(runId, 'cancelled', { runError: 'cancelled by operator' }, scope);
@@ -352,14 +537,16 @@ export async function reapStaleBenchRuns(
   const dissolve = deps.dissolve ?? dissolveBenchHive;
   const staleAfterSec = deps.staleAfterSec ?? 180;
 
-  const rows = await sql<{ id: string; pot_slug: string | null }[]>`
-    SELECT id, pot_slug FROM harness_shared.bench_runs
+  const rows = await sql<{ id: string; pot_slug: string | null; config: Record<string, unknown> | null }[]>`
+    SELECT id, pot_slug, config FROM harness_shared.bench_runs
      WHERE workspace_id = ${ws}
        AND status = ANY(${ACTIVE_STATES as unknown as string[]})
        AND updated_at < now() - make_interval(secs => ${staleAfterSec})
   `;
   const reaped: string[] = [];
   for (const r of rows) {
+    const protocolRunId = storedCurrentRunId(r.config);
+    if (protocolRunId) await retireCurrentRun(ws, protocolRunId);
     if (r.pot_slug) {
       await dissolve(r.pot_slug, ws).catch(() => {});
     }
@@ -372,6 +559,14 @@ export async function reapStaleBenchRuns(
     reaped.push(r.id);
   }
   return { reaped };
+}
+
+function storedCurrentRunId(config: Record<string, unknown> | null): string | null {
+  if (!config || !config.current) return null;
+  const protocol = currentBenchmarkProtocolSchema.parse(config.protocol);
+  const current = config.current as Record<string, unknown>;
+  if (current.protocolRunId !== protocol.runId) throw new Error('Current benchmark recovery protocol binding is invalid.');
+  return protocol.runId;
 }
 
 /** Test-only — clear the in-process active-run registry between tests. */
