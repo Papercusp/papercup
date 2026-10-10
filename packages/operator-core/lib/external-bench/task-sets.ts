@@ -531,8 +531,12 @@ export interface FrontierSweTaskRow {
   tags?: string[];
   /** The agent brief (instruction.md). */
   prompt: string;
-  /** Prebuilt task image, `ghcr.io/proximal-labs/frontier-swe/<task>:vN`. */
+  /** Agent task image. v1: `ghcr.io/proximal-labs/frontier-swe/<task>:vN`; v2: digest-pinned `…@sha256:<hex>` (plan D-002). */
   dockerImage: string;
+  /** v2 only: the SEPARATE verifier image (task.toml [verifier.environment], environment_mode='separate'). */
+  verifierDockerImage?: string;
+  /** v2 only: task.toml [environment].network_mode (e.g. 'allowlist'); v1 used `allowInternet` alone. */
+  networkMode?: string;
   /** Agent wall-clock budget (s) — 4–20h. Load-bearing for the C3 iso-budget WALL-CLOCK cap. */
   agentTimeoutSec?: number;
   /** Verifier wall-clock budget (s). */
@@ -553,6 +557,25 @@ export interface FrontierSweTaskRow {
   solutionCmd?: string | null;
   /** Whether the task ships an oracle.yaml (the gold-run config). */
   hasOracle?: boolean;
+  /**
+   * Corpus version tag (plan benchmark-coverage-frontierswe-v2-2026-10-10 R-1). v1 rows are labelled HISTORY and
+   * must never aggregate with v2 rows. Absent on a legacy v1 corpus written before the tag existed — treat as 'v1'.
+   */
+  corpusVersion?: 'v1' | 'v2';
+  /** The upstream commit the row was ingested from (full 40-hex SHA); absent on the legacy v1 corpus. */
+  upstreamCommit?: string;
+  /**
+   * v1 history rows only: true when this exact v1 instanceId does not exist in the pinned v2 corpus. A renamed
+   * v2 successor is a DIFFERENT task for aggregation, so a rename counts as retired here. Always false on v2 rows.
+   */
+  retiredInV2?: boolean;
+  /** v2 only: [verifier.environment] (or [verifier]) network_mode, e.g. 'no-network'. */
+  verifierNetworkMode?: string;
+  /**
+   * v2 only: external services the task needs beyond Docker + GPUs, from its job.yaml runtime profile — e.g.
+   * 'modal-vm-runtime', 'modal-sandbox', 'registry-secret:px-evals-gcr-secret'. Empty when the task has none.
+   */
+  externalNeeds?: string[];
 }
 
 /** Map one FrontierSWE row → a BenchTask. `in-container`: no repo/baseCommit; the runner pulls `dockerImage`,
