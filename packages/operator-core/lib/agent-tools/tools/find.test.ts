@@ -17,6 +17,7 @@ import { runInNewContext } from 'node:vm';
 import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
+import devServiceHealth from '../dev/service_health';
 import launchAgent from '../capability/launch-agent';
 import activityToolLog from '../activity/tool-log';
 import releaseTrace from '../release/trace';
@@ -422,6 +423,18 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       type: 'array',
       items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     })).toContain('array{id:string}');
+  });
+
+  it('projects dev:service_health registered result fields into discovery', async () => {
+    expect(devServiceHealth.name).toBe('dev:service_health');
+    const out = await callHandler({ query: 'dev:service_health', limit: 1 });
+    const health = out.hits.find((hit) => hit.tool === 'dev:service_health');
+
+    expect(health?.returnsSource).toBe('registered-output-schema');
+    expect(health?.returns).toContain('healthPhaseTimingsMs:object');
+    expect(health?.returns).toContain('unitStates?');
+    expect(health?.returns).toContain('unitsUnknown?');
+    expect(health?.returns).toContain('scopesUnavailable?');
   });
 
   it('publishes checkpoint and bounded comment paths under the work-item result envelope', async () => {
