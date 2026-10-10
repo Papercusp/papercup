@@ -10,6 +10,9 @@ vi.mock('../operator-state-pg', () => ({
   writeOperatorState: vi.fn(async (_table: string, next: unknown) => {
     pgState.payload = next;
   }),
+  updateOperatorState: vi.fn(async (_table: string, fallback: unknown, mutate: (current: unknown) => unknown) => {
+    pgState.payload = mutate(pgState.payload ?? fallback); return pgState.payload;
+  }),
 }));
 // Arming a real timer in a unit test would leak into the suite.
 vi.mock('@papercusp/scheduled-registry', () => ({ managedSetInterval: vi.fn() }));
@@ -24,6 +27,7 @@ import {
   refreshSessionConfinements,
   releaseSessionConfinement,
   sessionConfinementFor,
+  readSessionConfinement,
   type StoredSessionConfinement,
 } from './session-confinement-store';
 

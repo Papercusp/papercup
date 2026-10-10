@@ -73,6 +73,10 @@ import { matchesAny } from './policy';
 export interface SessionToolConfinement {
   /** Tool-name globs this session may never invoke, at any privilege level. */
   readonly denyTools: readonly string[];
+  /** Additional exact canonical ceiling: deny EVERY name outside this set.
+   * Empty denies everything. This cannot lift denyTools or ordinary gates.
+   * Aliases are resolved by the dispatcher; ambiguous mangled names never grant. */
+  readonly denyOutside?: readonly string[];
   /** Why this session is confined — surfaced verbatim in the refusal. */
   readonly reason: string;
   /** Who imposed it (the launching director/fleet), for audit and for the refusal text. */
@@ -131,7 +135,14 @@ export function evaluateSessionConfinement(args: {
   confinement?: SessionToolConfinement | null;
 }): SessionConfinementDecision {
   const { toolName, confinement } = args;
-  if (!confinement || confinement.denyTools.length === 0) return UNCONFINED;
+  if (!confinement) return UNCONFINED;
+  if (confinement.denyOutside !== undefined &&
+      (!Array.isArray(confinement.denyOutside) || !confinement.denyOutside.includes(toolName.trim()))) {
+    return { allowed: false, applied: true, matchedGlob: 'outside-exact-ceiling',
+      reason: `tool "${toolName.trim()}" is outside the launch-declared ceiling imposed by ${confinement.imposedBy}: ${confinement.reason}` };
+  }
+  if (confinement.denyTools.length === 0)
+    return confinement.denyOutside === undefined ? UNCONFINED : ALLOWED;
 
   const key = toDenyMatchKey(toolName);
   for (const glob of confinement.denyTools) {

@@ -45,7 +45,7 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isTransportOnlyIdentity, resolveAgentIdentity } from '../agent-tools/coordination/identity';
-import { readOperatorState, writeOperatorState } from '../operator-state-pg';
+import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import type { SessionToolConfinement } from './session-confinement';
 import { setSessionConfinementResolver } from './session-confinement-port';
 
@@ -83,14 +83,43 @@ function isExpired(row: StoredSessionConfinement, nowMs: number): boolean {
   return !Number.isFinite(t) || t <= nowMs;
 }
 
+// An exact launch ceiling must never age into broader authority. Legacy pair
+// engagements retain their documented TTL; strict ceilings require explicit release.
+function mayPrune(row: StoredSessionConfinement, nowMs: number): boolean {
+  return row.confinement?.denyOutside === undefined && isExpired(row, nowMs);
+}
+
+function effectiveConfinement(row: StoredSessionConfinement): SessionToolConfinement | null {
+  if (!isExpired(row, Date.now())) return row.confinement;
+  if (row.confinement.denyOutside === undefined) return null;
+  return { ...row.confinement, denyOutside: [], reason: `${row.confinement.reason}; launch ceiling expired, requiring external renewal` };
+}
+
+/** Authoritative per-call read: a warm miss in another host process is not
+ * evidence of absence. Read failures reject instead of manufacturing authority. */
+export async function readSessionConfinement(ownerId: string | null | undefined,
+  workspaceId?: string): Promise<SessionToolConfinement | null> {
+  if (!ownerId || isTransportOnlyIdentity(ownerId)) return null;
+  const payload = await readOperatorState<SessionConfinementsPayload>(STATE_TABLE, workspaceId, { fresh: true });
+  const row = payload?.sessions?.[ownerId];
+  if (row === undefined) return null;
+  if (!row?.confinement || !Array.isArray(row.confinement.denyTools) ||
+      row.confinement.denyTools.some(name => typeof name !== 'string') ||
+      row.confinement.denyOutside !== undefined && (!Array.isArray(row.confinement.denyOutside) ||
+        row.confinement.denyOutside.some(name => typeof name !== 'string')))
+    throw new Error('Stored session confinement is malformed');
+  state.cache[ownerId] = row;
+  return effectiveConfinement(row);
+}
+
 /** Read the table into the sync cache, dropping expired rows. */
-export async function refreshSessionConfinements(): Promise<void> {
-  const payload = (await readOperatorState<SessionConfinementsPayload>(STATE_TABLE)) ?? {};
+export async function refreshSessionConfinements(workspaceId?: string): Promise<void> {
+  const payload = (await readOperatorState<SessionConfinementsPayload>(STATE_TABLE, workspaceId, { fresh: true })) ?? {};
   const rows = payload.sessions ?? {};
   const nowMs = Date.now();
   const live: Record<string, StoredSessionConfinement> = {};
   for (const [ownerId, row] of Object.entries(rows)) {
-    if (!row?.confinement || isExpired(row, nowMs)) continue;
+    if (!row?.confinement || mayPrune(row, nowMs)) continue;
     // Defence in depth: a population-keyed row must never bind, even if one reached the
     // table by a path that skipped the write guard.
     if (isTransportOnlyIdentity(ownerId)) continue;
@@ -149,8 +178,8 @@ export function sessionConfinementFor(
 ): SessionToolConfinement | null {
   if (!ownerId || isTransportOnlyIdentity(ownerId)) return null;
   const row = state.cache[ownerId];
-  if (!row || isExpired(row, Date.now())) return null;
-  return row.confinement;
+  if (!row) return null;
+  return effectiveConfinement(row);
 }
 
 /**
@@ -164,6 +193,7 @@ export async function declareSessionConfinement(args: {
   ownerId: string;
   confinement: SessionToolConfinement;
   ttlSec?: number;
+  workspaceId?: string;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   const ownerId = args.ownerId?.trim();
   if (!ownerId) return { ok: false, reason: 'ownerId is required' };
@@ -176,41 +206,53 @@ export async function declareSessionConfinement(args: {
         `(including the owner's own). Launch the implementer with a per-session identity first.`,
     };
   }
-  if (!args.confinement?.denyTools?.length) {
+  if (!args.confinement?.denyTools?.length && args.confinement?.denyOutside === undefined) {
     return { ok: false, reason: 'confinement must deny at least one tool' };
   }
 
+  const confinement = { ...args.confinement, denyTools: [...args.confinement.denyTools],
+    ...(args.confinement.denyOutside === undefined ? {} : { denyOutside: [...args.confinement.denyOutside] }) };
+  if (!confinement.reason?.trim() || !confinement.imposedBy?.trim() ||
+      confinement.denyTools.some(name => typeof name !== 'string' || !name.trim()) ||
+      confinement.denyOutside?.some(name => typeof name !== 'string' || !/^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$/.test(name)))
+    return { ok: false, reason: 'confinement requires valid canonical ceiling names and attribution' };
+
   const ttlSec = args.ttlSec && args.ttlSec > 0 ? args.ttlSec : DEFAULT_TTL_SEC;
   const now = Date.now();
-  const payload = (await readOperatorState<SessionConfinementsPayload>(STATE_TABLE)) ?? {};
+  await updateOperatorState<SessionConfinementsPayload>(STATE_TABLE, {}, payload => {
   const sessions = { ...(payload.sessions ?? {}) };
+  const previous = sessions[ownerId]?.confinement;
+  if (previous?.denyOutside !== undefined && JSON.stringify(previous) !== JSON.stringify(confinement))
+    throw new Error('An exact launch ceiling cannot be replaced; launch a fresh session');
 
   // Prune while we hold the payload — the write path is the natural place to age the table out.
   for (const [key, row] of Object.entries(sessions)) {
-    if (!row?.confinement || isExpired(row, now)) delete sessions[key];
+    if (!row?.confinement || mayPrune(row, now)) delete sessions[key];
   }
 
   sessions[ownerId] = {
-    confinement: args.confinement,
+    confinement,
     declaredAt: new Date(now).toISOString(),
     expiresAt: new Date(now + ttlSec * 1000).toISOString(),
   };
 
-  await writeOperatorState<SessionConfinementsPayload>(STATE_TABLE, { ...payload, sessions });
+  return { ...payload, sessions };
+  }, args.workspaceId);
   // Same-process immediacy: the launch primes THIS process's cache before it spawns the
   // implementer, so there is no window in the launch case.
-  await refreshSessionConfinements();
+  await refreshSessionConfinements(args.workspaceId);
   return { ok: true };
 }
 
 /** Lift a confinement (engagement over, or the session ended). Idempotent. */
-export async function releaseSessionConfinement(ownerId: string): Promise<void> {
-  const payload = (await readOperatorState<SessionConfinementsPayload>(STATE_TABLE)) ?? {};
+export async function releaseSessionConfinement(ownerId: string, workspaceId?: string): Promise<void> {
+  await updateOperatorState<SessionConfinementsPayload>(STATE_TABLE, {}, payload => {
   const sessions = { ...(payload.sessions ?? {}) };
-  if (!(ownerId in sessions)) return;
+  if (!(ownerId in sessions)) return payload;
   delete sessions[ownerId];
-  await writeOperatorState<SessionConfinementsPayload>(STATE_TABLE, { ...payload, sessions });
-  await refreshSessionConfinements();
+  return { ...payload, sessions };
+  }, workspaceId);
+  await refreshSessionConfinements(workspaceId);
 }
 
 /** Test seam: replace the sync cache without touching Postgres. */
@@ -241,7 +283,6 @@ setSessionConfinementResolver(
       // spawn. Nothing to look up.
       return null;
     }
-    return sessionConfinementFor(ownerId);
+    return readSessionConfinement(ownerId, ctx.workspaceId ?? undefined);
   },
-  { ensureReady: ensureSessionConfinementsReady },
 );

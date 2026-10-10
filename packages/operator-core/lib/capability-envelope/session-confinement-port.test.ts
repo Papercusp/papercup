@@ -100,7 +100,7 @@ describe('session-confinement port — a broken resolver', () => {
     });
     await expect(
       checkSessionConfinement({ toolName: 'work_items:complete', ctx: PLAIN_CTX }),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({ decision: 'deny', posture: 'rejected' });
     expect(err).toHaveBeenCalled();
     err.mockRestore();
   });
@@ -112,6 +112,20 @@ describe('session-confinement port — a broken resolver', () => {
 // case, so these pin that it actually runs before the verdict — and that a broken one
 // degrades to unconfined rather than taking every dispatch on the box down.
 describe('session-confinement port — priming', () => {
+  it('denies an async authoritative read failure even when no policy was cached', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setSessionConfinementResolver(async () => { throw new Error('unavailable'); });
+    await expect(checkSessionConfinement({ toolName: 'capability:bash', ctx: SUPERUSER_CTX }))
+      .resolves.toMatchObject({ decision: 'deny', applied: true });
+    log.mockRestore();
+  });
+  it('denies a cold priming failure before consulting an empty cache', async () => {
+    const resolve = vi.fn(() => null);
+    setSessionConfinementResolver(resolve, { ensureReady: async () => { throw new Error('unavailable'); } });
+    await expect(checkSessionConfinement({ toolName: 'capability:bash', ctx: SUPERUSER_CTX }))
+      .resolves.toMatchObject({ decision: 'deny', applied: true });
+    expect(resolve).not.toHaveBeenCalled();
+  });
   it('awaits ensureReady BEFORE consulting the resolver', async () => {
     const order: string[] = [];
     setSessionConfinementResolver(

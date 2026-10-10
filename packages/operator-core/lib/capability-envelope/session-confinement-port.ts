@@ -43,7 +43,7 @@ import { evaluateSessionConfinement, type SessionToolConfinement } from './sessi
  */
 export type SessionConfinementResolver = (
   ctx: UnifiedToolContext,
-) => SessionToolConfinement | null | undefined;
+) => SessionToolConfinement | null | undefined | Promise<SessionToolConfinement | null | undefined>;
 
 const state = pinModuleState('@papercusp/operator-core.session-confinement-port', () => ({
   resolver: undefined as SessionConfinementResolver | undefined,
@@ -94,22 +94,23 @@ export async function checkSessionConfinement(input: {
       // Memoized by the host: one await per process, not one per dispatch.
       await ensureReady();
     } catch {
-      // A priming failure must not take every dispatch on the box down. The store logs it;
-      // here we simply proceed with whatever the cache holds (empty ⇒ unconfined).
+      return { decision: 'deny', posture: 'rejected', applied: true,
+        reason: 'Session confinement policy is unavailable; refusing the call until its authority can be read.' };
     }
   }
 
   let confinement: SessionToolConfinement | null | undefined;
   try {
-    confinement = resolver(input.ctx);
+    confinement = await resolver(input.ctx);
   } catch {
     // A resolver that throws must not fail OPEN into "unconfined", but it also must not
     // take down every dispatch on the box. Denying everything would do the latter, so the
     // narrow, honest behaviour is: treat it as unconfined and let the ordinary envelope
     // still run — while making the fault loud, because a silently-broken resolver is the
     // one way this gate quietly stops existing.
-    console.error('[session-confinement] resolver threw — session treated as UNCONFINED for this call');
-    return null;
+    console.error('[session-confinement] resolver failed — refusing dispatch until policy is readable');
+    return { decision: 'deny', posture: 'rejected', applied: true,
+      reason: 'Session confinement policy is unavailable; refusing the call until its authority can be read.' };
   }
   if (!confinement) return null;
 

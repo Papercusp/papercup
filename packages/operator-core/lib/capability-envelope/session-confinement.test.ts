@@ -123,6 +123,28 @@ describe('session confinement — the wiring invariant is itself falsifiable', (
   });
 });
 
+describe('session confinement — exact tool ceiling', () => {
+  const confinement = { denyTools: ['work_items:claim_next'],
+    denyOutside: ['work_items:get', 'work_items:complete', 'tools:invoke'],
+    reason: 'native benchmark has one metered inference route', imposedBy: 'benchmark-host' };
+
+  it.each(['capability:bash', 'consult:get_feedback', 'new_provider:infer',
+    'mcp__papercusp-su__work_items_get', 'work_items_get'])('denies unlisted %s, including ambiguous aliases', toolName => {
+    expect(evaluateSessionConfinement({ toolName, confinement }).allowed).toBe(false);
+  });
+  it.each(['work_items:get', 'work_items:complete', 'tools:invoke'])('keeps canonical %s available to ordinary gates', toolName => {
+    expect(evaluateSessionConfinement({ toolName, confinement }).allowed).toBe(true);
+  });
+  it('cannot use the ceiling to lift an explicit denial', () => {
+    expect(evaluateSessionConfinement({ toolName: 'work_items:get',
+      confinement: { ...confinement, denyTools: ['work_items:*'] } }).allowed).toBe(false);
+  });
+  it('treats an empty ceiling as deny everything', () => {
+    expect(evaluateSessionConfinement({ toolName: 'work_items:get',
+      confinement: { ...confinement, denyTools: [], denyOutside: [] } }).allowed).toBe(false);
+  });
+});
+
 describe('session confinement — structural guarantees, pinned to the source', () => {
   // Subject path is overridable so this guard can be falsifiability-probed against a
   // COPY outside the tree (scripts/mutation-probe.sh tier 2) instead of by mutating the

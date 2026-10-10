@@ -93,6 +93,16 @@ describe('activity read pair — the divergence these redirects exist for', () =
 describe('activity:recent guidance.argRedirects (EI-22047814129755519)', () => {
   const redirects = recentTool.guidance?.argRedirects ?? {};
 
+  it('describes since_id as an unsigned decimal row-ID cursor rather than a timestamp', () => {
+    expect(recentTool.description).toContain('unsigned decimal activity-row ID cursor');
+    expect(recentTool.description).toContain('not a timestamp');
+    expect(recentTool.guidance?.when).toContain('unsigned decimal activity-row ID');
+    expect(recentTool.guidance?.when).toContain('activity:tool-log');
+    expect(recentTool.args.shape.since_id.description).toContain('Unsigned decimal activity-row ID cursor');
+    expect(recentTool.args.safeParse({ since_id: '2026-10-10T05:11:05.418Z' }).success).toBe(false);
+    expect(recentTool.args.safeParse({ since_id: '1791612265418' }).success).toBe(true);
+  });
+
   it('relocates `since` to the declared since_id and names the wall-clock alternative', () => {
     const split = splitLocalSchemaTarget(redirects.since as string, recentKeys);
     // Null here is the D-004 defect: the caller is on the right tool and would be told
