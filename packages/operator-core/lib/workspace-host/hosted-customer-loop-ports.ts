@@ -34,11 +34,24 @@ export function createHostedCustomerChannelHttpHandler(
   deps: Omit<HostedCustomerLoopPortDependencies, 'resolvePrincipal' | 'sessionHeaders' | 'signal'> & {
     readonly workspaceId: string;
     readonly flushTelemetry?: OperatorOwnedLoopPortOptions['flushTelemetry'];
-    readonly handleNativeRequest: (request: Request,
-      port: ReturnType<typeof createOperatorOwnedLoopPort>) => Promise<Response>;
+    readonly handleNativeRequest?: (request: Request,
+      port: ReturnType<typeof createOperatorOwnedLoopPort>,
+      execution: NonNullable<OperatorOwnedLoopPortOptions['customerExecution']>) => Promise<Response>;
   },
 ): HostedCustomerOperatorHttpHandler {
-  const { handleNativeRequest, ...ports } = { ...deps };
+  const { handleNativeRequest: suppliedHandler, ...ports } = { ...deps };
+  const handleNativeRequest: NonNullable<typeof suppliedHandler> = suppliedHandler ?? (async (request, _port, execution) => {
+    const match = /^\/api\/harness\/([^/]+)\/agent-chats\/([^/]+)\/messages$/.exec(new URL(request.url).pathname);
+    if (!match) throw new Error('hosted_customer_execution_denied');
+    // Invoke the existing route privately; its default public mount is still
+    // guarded. Keep structured history, PG session/approval state and the
+    // transcript-before-done ordering rather than rebuilding a one-shot chat.
+    const { createAgentChatMessagesRoute } = await import('../endpoint-route/routes/agent-chats');
+    return createAgentChatMessagesRoute(execution).handler(request, {
+      params: { slug: decodeURIComponent(match[1]), chatId: decodeURIComponent(match[2]) },
+      principal: null, input: undefined, signal: request.signal, log: () => {},
+    }) as Promise<Response>;
+  });
   return async (request, { sessionHost, channelId }) => {
     const path = new URL(request.url).pathname;
     if (request.method !== 'POST' || !/^\/api\/harness\/[^/]+\/agent-chats\/[^/]+\/messages$/.test(path)) return undefined;
@@ -63,8 +76,10 @@ export function createHostedCustomerChannelHttpHandler(
             callerSignal ? AbortSignal.any([signal, callerSignal]) : signal);
         },
       });
-      const port = createHostedCustomerChannelOwnedLoopPort({ ...ports, sessionHost: requestHost, channelId });
-      const response = await awaitHostedCustomerOperation(() => handleNativeRequest(request, port), signal);
+      const execution = customerChannelExecution({ ...ports, sessionHost: requestHost, channelId });
+      const port = createOperatorOwnedLoopPort({ ...(ports.flushTelemetry ? { flushTelemetry: ports.flushTelemetry } : {}),
+        customerExecution: execution });
+      const response = await awaitHostedCustomerOperation(() => handleNativeRequest(request, port, execution), signal);
       if (!(response instanceof Response)) throw new Error('hosted_customer_execution_denied');
       return response;
     } catch {
@@ -85,9 +100,15 @@ export function createHostedCustomerChannelOwnedLoopPort(
     readonly flushTelemetry?: OperatorOwnedLoopPortOptions['flushTelemetry'];
   },
 ): ReturnType<typeof createOperatorOwnedLoopPort> {
-  const { workspaceId, sessionHost, channelId, flushTelemetry, ...ports } = { ...deps };
-  return createOperatorOwnedLoopPort({ ...(flushTelemetry ? { flushTelemetry } : {}),
-    customerExecution: { workspaceId, projectDir: ports.projectDir,
+  return createOperatorOwnedLoopPort({ ...(deps.flushTelemetry ? { flushTelemetry: deps.flushTelemetry } : {}),
+    customerExecution: customerChannelExecution(deps) });
+}
+
+function customerChannelExecution(
+  deps: Parameters<typeof createHostedCustomerChannelOwnedLoopPort>[0],
+): NonNullable<OperatorOwnedLoopPortOptions['customerExecution']> {
+  const { workspaceId, sessionHost, channelId, flushTelemetry: _flushTelemetry, ...ports } = { ...deps };
+  return { workspaceId, projectDir: ports.projectDir,
       async bind(callerSignal) {
         const signal = sessionHost.customerInvocationSignal(channelId, callerSignal);
         if (signal.aborted) throw new Error('hosted_customer_execution_denied');
@@ -97,8 +118,7 @@ export function createHostedCustomerChannelOwnedLoopPort(
           registry: () => bound.toolNames.map(name => lookup(name)).filter((tool): tool is ProjectedTool => !!tool) });
         return { modelPort: bound.modelPort, tools, signal };
       },
-    },
-  });
+  };
 }
 
 /** Compose privately on the customer VM. The host channel owns authentication;
