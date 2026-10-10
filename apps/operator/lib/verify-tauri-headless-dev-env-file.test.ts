@@ -180,4 +180,35 @@ describe('WI-10007640 — the verifier hands the launcher the preflight env file
     expect(preflight).toMatch(/if \[ -f \.env\.local \]; then \. \.\/\.env\.local/);
     expect(BLOCK).toContain('PAPERCUSP_DEV_ENV_FILE=\\"$REPO_DIR/apps/operator/.env.local\\"');
   });
+
+  it('passes the probed shared connection to assertions without exposing credentials', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'verifier-shared-assertion-env-'));
+    const operator = join(tmp, 'apps/operator');
+    const desktop = join(tmp, 'desktop');
+    const work = join(tmp, 'private-run');
+    mkdirSync(operator, { recursive: true });
+    mkdirSync(join(desktop, 'bin'), { recursive: true });
+    mkdirSync(work);
+    const url = 'postgresql://fixture:private-password@localhost:5432/fixture';
+    writeFileSync(join(operator, '.env.local'), `DATABASE_URL='${url}'\n`);
+    writeFileSync(join(desktop, 'bin/dev-operator-pg-probe.mjs'), `
+      export function resolveDevPgUrl() { return { url: process.env.DATABASE_URL }; }
+      if (process.argv.includes('--require-applied-schema')) console.log('schema-ready');
+    `);
+    const preflight = sliceLines(VERIFIER, 'shared_schema_readiness_preflight() {', '}');
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'unset DATABASE_URL HARNESS_ADMIN_DATABASE_URL; VERIFY_TAURI_ISOLATED_DB=0',
+      preflight,
+      'shared_schema_readiness_preflight',
+      'test "$HARNESS_ADMIN_DATABASE_URL" = "$EXPECTED_URL"',
+      'test ! -e "$WORK/shared-database-url"',
+      'node -e "if (process.env.HARNESS_ADMIN_DATABASE_URL !== process.env.EXPECTED_URL) process.exit(1)"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env,
+      REPO_DIR: tmp, DESKTOP_DIR: desktop, WORK: work, EXPECTED_URL: url,
+    } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('schema-ready\n');
+    expect(result.stdout + result.stderr).not.toContain('private-password');
+  });
 });
