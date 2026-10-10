@@ -15,6 +15,9 @@ import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetExecutionGrant } from './budget-store';
 import { createRoutedModelPort } from '../../../agent-loop/provider-router';
 import { runAgentLoop } from '../../../agent-loop/loop';
+import { createHostedPrincipal } from '../../hosted-principal';
+import { createHostedBillingRuntime } from '../../../endpoint-route/hosted-billing-runtime';
+import { createHostedCustomerModelPortFactory } from '../../../workspace-host/hosted-customer-loop-ports';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -471,6 +474,145 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
   const captureOptions = (scope: OpenRouterGenerationBinding['scope']) => ({ budget: budgetStore(),
     request: captureRequest(scope), context: captureContext(), credentialRef: 'env:FIXTURE_OPENROUTER_KEY',
     isByok: false, evidenceRef: 'execution:paused-native-capture', now: () => T });
+
+  // Join the PRIVATE channel reader and real runtime/store composition. Only
+  // the session, provider and funding authority are fixtures; no production
+  // callback, paid credential or customer execution host is installed here.
+  async function privateCustomerModel(scope: OpenRouterGenerationBinding['scope'], options: {
+    readContext?: HostedBudgetContextReader | null;
+    afterReservation?: () => void | Promise<void>;
+  } = {}) {
+    const session = { workspaceId: scope.controlWorkspaceId, userId: 'fixture-private-user',
+      activeOrganizationId: scope.organizationId, selectedWorkspaceId: scope.customerWorkspaceId,
+      sessionId: randomUUID(), sessionVersion: 1 };
+    let revoked = false;
+    const channel = vi.fn(async (_signal: AbortSignal) => ({ ok: true as const,
+      principal: createHostedPrincipal({ ...session, permissions: revoked ? ['workspace:view'] : ['workspace:operate'] }) }));
+    const publicResolver = vi.fn(async () => ({ ok: false as const, reason: 'authority_unavailable' as const }));
+    const request = captureRequest(scope);
+    const budget = new PostgresHostedBudgetStore({ run: runService, now: () => T,
+      readContext: options.readContext === null ? undefined : options.readContext ?? grantContext });
+    const admissionBudget: Pick<PostgresHostedBudgetStore, 'executeOnce'> = {
+      async executeOnce(input, execute) {
+        const result = await budget.executeOnce(input, execute);
+        await options.afterReservation?.();
+        return result;
+      },
+    };
+    const authorize = vi.fn(async () => ({ request, credentialRef: 'env:FIXTURE_OPENROUTER_KEY',
+      isByok: false, evidenceRef: 'fixture:private-channel-authority' }));
+    const runtime = await createHostedBillingRuntime({ publicOrigin: 'https://fixture.invalid',
+      stripeSecretKeyRef: null, stripeWebhookSecretRef: null, plans: [] }, {
+      resolvePrincipal: publicResolver, resolveSecret: async () => 'execution-key', runService,
+      usageStore: store(), openRouterAdmission: { budget: admissionBudget, authorize, now: () => T },
+    });
+    const generationId = 'gen-' + randomUUID();
+    const wire = vi.fn(async () => {
+      // Check from a NEW transaction at the actual provider seam. A mocked
+      // executeOnce or an uncommitted hold cannot satisfy this assertion.
+      expect(await budget.reserve(request)).toMatchObject({ outcome: 'duplicate',
+        receipt: { revision: 0, costMicros: null, providerFinal: false } });
+      return { stream: new ReadableStream({ start(controller) {
+        controller.enqueue({ type: 'response-metadata', id: generationId, modelId: intent.modelId });
+        controller.enqueue({ type: 'error', error: 'fixture provider ended after identity' }); controller.close();
+      } }) };
+    });
+    const sdkModel: LanguageModelV3 = { specificationVersion: 'v3', provider: 'fixture',
+      modelId: intent.modelId, supportedUrls: {}, doStream: wire,
+      async doGenerate() { throw new Error('unused'); } };
+    const select = vi.fn(() => null);
+    const factory = createHostedCustomerModelPortFactory({ billing: runtime, resolvePrincipal: channel,
+      openRouterAccounts: { active: () => ({ accountId: 'local-fixture-account', authMode: 'api-key',
+        token: async () => 'execution-key' }), select, onExhausted: () => null },
+      createLanguageModel: async () => sdkModel });
+    const abort = new AbortController();
+    const port = await factory(session, abort.signal);
+    const consume = async () => {
+      const events = [];
+      for await (const event of runAgentLoop({ port, model: 'openrouter/vendor/model', messages: [],
+        account: 'untrusted-account-label', ownerId: 'untrusted-owner-label', signal: abort.signal })) events.push(event);
+      return events;
+    };
+    return { session, request, budget, channel, publicResolver, authorize, wire, generationId, select, abort,
+      consume, revoke: () => { revoked = true; } };
+  }
+
+  it('joins the private customer model factory to committed PG admission and a restart-readable generation binding', async () => {
+    const scope = await tenant(); const p = await privateCustomerModel(scope);
+    const events = await p.consume();
+    expect(p.publicResolver).not.toHaveBeenCalled(); expect(p.select).not.toHaveBeenCalled();
+    expect(p.wire).toHaveBeenCalledOnce();
+    expect(p.channel).toHaveBeenCalledTimes(5);
+    expect(await bindings(scope)).toMatchObject([{ generationId: p.generationId, scope,
+      credentialRef: 'env:FIXTURE_OPENROUTER_KEY', budgetGrant: { reservationId: p.request.reservationId } }]);
+    expect(await read(scope)).toMatchObject([{ provider: 'openrouter', costSource: 'unpriced', costMicros: null }]);
+    expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
+    expect(JSON.stringify(events)).not.toMatch(/budgetGrant|reservationId|credentialSha256|execution-key|policyId/);
+    const replay = await p.consume();
+    expect(replay.at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
+    expect(p.wire).toHaveBeenCalledOnce();
+    expect(await bindings(scope)).toHaveLength(1);
+  });
+
+  it('refuses the private customer model when the real PG budget has no funding authority reader', async () => {
+    const scope = await tenant(); const p = await privateCustomerModel(scope, { readContext: null });
+    expect((await p.consume()).at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
+    expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
+    expect(await db.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts
+      WHERE control_workspace_id = ${scope.controlWorkspaceId} AND organization_id = ${scope.organizationId}`)
+      .toEqual([]);
+  });
+
+  it('retains the real PG reservation and denies wire I/O when channel authority is revoked after commit', async () => {
+    const scope = await tenant(); let revoke!: () => void;
+    const p = await privateCustomerModel(scope, { afterReservation: () => revoke() }); revoke = p.revoke;
+    expect((await p.consume()).at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
+    expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
+    expect(await p.budget.reserve(p.request)).toMatchObject({ outcome: 'duplicate',
+      receipt: { revision: 0, costMicros: null, providerFinal: false } });
+  });
+
+  it('serializes competing private customer streams against one real PG funding allowance', async () => {
+    const scope = await tenant();
+    const limited: HostedBudgetContextReader = async (sql, request) => {
+      const context = await grantContext(sql, request);
+      return context && { ...context, limits: context.limits.map(limit => ({ ...limit,
+        entitlements: { budgets: { [request.budgetKey]: 10 } }, fundedMicros: 100_000 })) };
+    };
+    const [a, b] = await Promise.all([privateCustomerModel(scope, { readContext: limited }),
+      privateCustomerModel(scope, { readContext: limited })]);
+    await Promise.all([a.consume(), b.consume()]);
+    expect(a.wire.mock.calls.length + b.wire.mock.calls.length).toBe(1);
+    expect(await bindings(scope)).toHaveLength(1);
+    expect(await db.adminSql`SELECT reservation_id FROM papercusp_auth.hosted_budget_receipts
+      WHERE control_workspace_id = ${scope.controlWorkspaceId} AND organization_id = ${scope.organizationId}`)
+      .toHaveLength(1);
+  });
+
+  it('cancels a private consumer during a real PG admission read without dispatching after its late commit', async () => {
+    const scope = await tenant(); let entered!: () => void; let release!: () => void; let committed!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const saved = new Promise<void>(resolve => { committed = resolve; });
+    const p = await privateCustomerModel(scope, { readContext: async (sql, request) => {
+      entered(); await gate; return grantContext(sql, request);
+    }, afterReservation: () => committed() });
+    const events = p.consume();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await started; p.abort.abort();
+      const outcome = await Promise.race([events.then(value => ({ completed: true as const, value })),
+        new Promise<{ completed: false }>(resolve => { timeout = setTimeout(() => resolve({ completed: false }), 500); })]);
+      expect(outcome.completed).toBe(true);
+      // The loop must keep an uncertain durable capture visible as an error,
+      // including when a parent abort overlaps it (loop.test.ts guards this).
+      if (outcome.completed) expect(outcome.value.at(-1)).toMatchObject({ type: 'done', stopReason: 'error' });
+      expect(p.wire).not.toHaveBeenCalled();
+    } finally { clearTimeout(timeout); release(); await events; await saved; }
+    expect(await p.budget.reserve(p.request)).toMatchObject({ outcome: 'duplicate',
+      receipt: { revision: 0, costMicros: null, providerFinal: false } });
+    expect(p.wire).not.toHaveBeenCalled(); expect(await bindings(scope)).toEqual([]);
+  });
 
   it.each(['error', 'abort-before-wire'] as const)('composes actual native routing with committed admission and early binding on %s', async ending => {
     const scope = await tenant(); const options = captureOptions(scope);
