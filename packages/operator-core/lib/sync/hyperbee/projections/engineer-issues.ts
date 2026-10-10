@@ -853,8 +853,66 @@ async function distinctEntityCollisions(sql: postgres.Sql, writes: readonly Issu
   return refused;
 }
 
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
+
+/**
+ * scope-unique-identifiers-2026-07-26 P-009 (D-004 writer #1): a work-item id names ONE row
+ * per workspace. A remote op whose scope-derived harness differs from where this workspace
+ * already keeps the id (typically the `operator:<ws>` fallback for an issue that lives under a
+ * concrete harness here) is applied to that RESIDENT row in place instead of inserting a
+ * second physical row. The resident row keeps its harness, so the `operator:<ws>` fallback
+ * never overwrites a concrete harness. A write with no resident row, or whose own harness
+ * already holds the id, passes through unchanged.
+ *
+ * Refused (logged, not applied) rather than guessed at: a resident that is not an
+ * issue-family row, and an id already held by two or more OTHER harnesses (pre-P-011 twin
+ * residue). One index-served read for the whole set (PG 18 skip scan on work_items_pkey).
+ * The landed write then goes through the EI-13285 distinct-entity check against the
+ * resident row, so a different issue that merely shares the id is still refused.
+ */
+async function landOnResidentRows(
+  sql: postgres.Sql,
+  workspaceId: string,
+  writes: readonly IssueWrite[],
+): Promise<IssueWrite[]> {
+  if (writes.length === 0) return [];
+  const ids = [...new Set(writes.map((w) => w.input.feature_id))];
+  const rows = await sql<{ feature_id: string; harness_slug: string; item_kind: string }[]>`
+    SELECT feature_id, harness_slug, item_kind
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND feature_id = ANY(${ids}::text[])`;
+  const residents = new Map<string, { harness_slug: string; item_kind: string }[]>();
+  for (const r of rows) {
+    const list = residents.get(r.feature_id);
+    if (list) list.push(r);
+    else residents.set(r.feature_id, [r]);
+  }
+  const landed: IssueWrite[] = [];
+  for (const w of writes) {
+    const here = residents.get(w.input.feature_id) ?? [];
+    if (here.length === 0 || here.some((r) => r.harness_slug === w.input.harness_slug)) {
+      landed.push(w);
+      continue;
+    }
+    const resident = here.length === 1 ? here[0] : null;
+    if (!resident || !ISSUE_FAMILY_KINDS.has(resident.item_kind)) {
+      console.warn(
+        `[engineer-issues projection] P-009 resident-row refusal: issue_id=${w.input.feature_id} ` +
+          `(scope harness_slug=${w.input.harness_slug}) is already held in workspace ${workspaceId} by ` +
+          `${here.map((r) => `${r.harness_slug}[${r.item_kind}]`).join(', ')}; refusing the op instead of minting a twin`,
+      );
+      continue;
+    }
+    landed.push({ ...w, input: { ...w.input, harness_slug: resident.harness_slug } });
+  }
+  return landed;
+}
+
 /** One issue write on its own: the per-op path, and what a failed group write replays. */
-async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts, write: IssueWrite): Promise<void | false> {
+async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts, incoming: IssueWrite): Promise<void | false> {
+  const [write] = await landOnResidentRows(sql, opts.workspaceId, [incoming]);
+  if (!write) return false;
   if ((await distinctEntityCollisions(sql, [write])).size > 0) return false;
   try {
     await upsertIssues(sql, [write]);
@@ -904,7 +962,10 @@ async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts,
  * check sees what it would have seen alone. Any failure (an identity-index 23505 among
  * them) rolls the group back and the lane replays each write through {@link writeIssue}.
  */
-async function writeIssueGroup(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<void> {
+async function writeIssueGroup(sql: postgres.Sql, workspaceId: string, incoming: readonly IssueWrite[]): Promise<void> {
+  // P-009: two writes that land on the same resident row make the one-statement upsert
+  // conflict with itself; that fails the group, which then replays each write alone.
+  const writes = await landOnResidentRows(sql, workspaceId, incoming);
   const refused = await distinctEntityCollisions(sql, writes);
   const kept = refused.size === 0 ? writes : writes.filter((w) => !refused.has(w));
   if (kept.length > 0) await upsertIssues(sql, kept);
@@ -914,7 +975,7 @@ function issueGroupWriter(opts: EngineerIssuesProjectionOpts): ProjectionGroupWr
   return {
     name: 'engineer-issues',
     rowOf: (w) => `${w.input.harness_slug}\u0000${w.input.feature_id}`,
-    writeMany: writeIssueGroup,
+    writeMany: (sql, writes) => writeIssueGroup(sql, opts.workspaceId, writes),
     writeOne: async (w) => writeIssue(await projectionSql(opts.sql ?? getOrgPg().sql), opts, w),
   };
 }
@@ -1157,10 +1218,26 @@ async function deleteFromPg(
   // the authorization boundary fail-closed.
   if (!provenance) return;
   const authorPubkey = provenance.authorPubkey;
+  // P-009: a qualified put whose id was resident under another harness landed on that row
+  // (landOnResidentRows), so its tombstone must follow it there. Only when nothing sits at
+  // the qualified key itself, and still author-guarded below. A bare legacy key never
+  // widens: its physical row depends on the op value, which a tombstone does not carry.
+  const followResident = parsed !== null;
   await sql`
     DELETE FROM harness_shared.work_items
     WHERE workspace_id = ${opts.workspaceId}
-      AND harness_slug = ${storageHarnessSlug}
+      AND (
+        harness_slug = ${storageHarnessSlug}
+        OR (
+          ${followResident}::boolean
+          AND NOT EXISTS (
+            SELECT 1 FROM harness_shared.work_items held
+             WHERE held.workspace_id = ${opts.workspaceId}
+               AND held.harness_slug = ${storageHarnessSlug}
+               AND held.feature_id = ${issueId}
+          )
+        )
+      )
       AND feature_id = ${issueId}
       AND item_kind IN ('bug', 'change', 'task')
       -- Remote tombstones may delete only the row materialised from that same
