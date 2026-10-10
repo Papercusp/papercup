@@ -3,12 +3,20 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
+let embedServer: Server | undefined;
+async function stopEmbedServer() {
+  if (!embedServer) return;
+  embedServer.closeAllConnections();
+  await new Promise<void>((done, reject) => embedServer!.close(error => error ? reject(error) : done()));
+  embedServer = undefined;
+}
 async function stopHost() {
   if (!host) return;
   if (host.exitCode === null && host.signalCode === null) {
@@ -50,7 +58,39 @@ async function main() {
   const bytes = readFileSync(bundle);
   assert.ok(bytes.includes(Buffer.from('makeDeferredConsultReachDispatcher')), 'executed bundle lacks deferred cascade adapter');
   const bundleSha256 = createHash('sha256').update(bytes).digest('hex');
-  host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Keep the maintained private sidecar's capability preflight, but control
+  // inference at an owned HTTP boundary. The same production client first
+  // succeeds, then spends its ordinary deadline on a withheld response.
+  const privateSidecar = e.PAPERCUSP_EMBED_SIDECAR_URL!;
+  assert.match(privateSidecar, /^http:\/\/127\.0\.0\.1:\d+$/);
+  let healthyEmbed = true;
+  let embedRequests = 0;
+  embedServer = createServer(async (request, response) => {
+    request.resume();
+    if (request.url === '/embed') {
+      embedRequests++;
+      if (healthyEmbed) {
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ vectors: [Array.from({ length: 768 }, (_, i) => i === 0 ? 1 : 0)],
+          dims: 768, runtime: 'private-http-fixture', modelRev: 'private-http-fixture' }));
+      }
+      return;
+    }
+    try {
+      const upstream = await fetch(privateSidecar + '/healthz', { signal: AbortSignal.timeout(2000) });
+      response.writeHead(upstream.status, { 'content-type': 'application/json' });
+      response.end(await upstream.text());
+    } catch {
+      response.writeHead(503); response.end();
+    }
+  });
+  await new Promise<void>(done => embedServer!.listen(0, '127.0.0.1', done));
+  const embedAddress = embedServer.address();
+  assert.ok(embedAddress && typeof embedAddress !== 'string');
+  const controlledSidecar = `http://127.0.0.1:${embedAddress.port}`;
+  host = spawn(process.execPath, [bundle], { cwd: root,
+    env: { ...e, PAPERCUSP_MEMORY_EMBEDDER: 'gemma', PAPERCUSP_EMBED_SIDECAR_URL: controlledSidecar },
+    stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
@@ -96,6 +136,42 @@ async function main() {
   }
   assert.ok(!catalogNames.includes('consult:reconcile'), 'retired reporting callable remains registered');
   const { sql } = getOrgPg();
+  const diagnosticRequests: Array<Record<string, unknown>> = [];
+  for (const control of ['healthy', 'timeout'] as const) {
+    healthyEmbed = control === 'healthy';
+    const question = `Private ${control} HTTP inference diagnostic`;
+    const accepted = await call('consult:get_feedback', { request_key: `private-http-embed-${control}`,
+      question, allow_dispatch: false });
+    assert.equal(accepted.verdict, 'accepted');
+    let persisted: any;
+    for (const stop = Date.now() + 35_000; Date.now() < stop;) {
+      const [row] = await sql`SELECT state, routing FROM harness_shared.consult_state
+        WHERE workspace_id = ${workspace} AND conversation_id = ${accepted.conversation_id}`;
+      if (row?.state !== 'routing' && row?.routing?.measurement) { persisted = row; break; }
+      await new Promise(done => setTimeout(done, 50));
+    }
+    assert.ok(persisted, 'production request did not persist its measured routing result');
+    const measurement = persisted.routing.measurement;
+    assert.equal(measurement.caller, 'consult:get_feedback');
+    assert.equal(measurement.stages.embedding?.outcome, control === 'healthy' ? 'returned' : 'threw');
+    if (control === 'timeout') {
+      assert.equal(measurement.stages.embedding.errorCode, 'ABORT_ERR');
+      assert.equal(measurement.outcome, 'degraded');
+      assert.equal(measurement.errorCode, null, 'recovered stage failure must not become a terminal router exception');
+    }
+    const [recorded] = await sql`SELECT metadata_json FROM harness_shared.route_invocations
+      WHERE workspace_id = ${workspace} AND method = 'INTERNAL' AND path = 'internal:expertise-routing'
+        AND metadata_json->>'correlationId' = ${measurement.correlationId}`;
+    assert.deepEqual(recorded?.metadata_json, measurement, 'durable telemetry must match the request snapshot');
+    assert.ok(!JSON.stringify(recorded).includes(question), 'diagnostic telemetry leaked the request text');
+    const read = await call('conversations:get', { id: accepted.conversation_id });
+    writeFileSync(join(evidenceDir, `embedding-${control}.json`), JSON.stringify({ base, identity, accepted,
+      persisted, recorded, read, embedRequests }));
+    diagnosticRequests.push({ control, conversationId: accepted.conversation_id,
+      correlationId: measurement.correlationId, embeddingOutcome: measurement.stages.embedding.outcome,
+      embeddingErrorCode: measurement.stages.embedding.errorCode ?? null, telemetryMatches: true });
+  }
+  assert.equal(embedRequests, 2, 'both controls must reach the same real HTTP client boundary');
   const lockKey = 741101;
   // Hold ONLY the background lease transition. The queued intent/post and
   // HTTP response must commit while this real production UPDATE waits.
@@ -172,8 +248,9 @@ async function main() {
     }
   }
   await stopHost();
+  await stopEmbedServer();
   console.log('CONSULT_CASCADE_HTTP_RECEIPT ' + JSON.stringify({ workspace, identity,
-    hostPid: host.pid, hostStopped: true, bundleSha256, health, catalogNames, requests }));
+    hostPid: host.pid, hostStopped: true, bundleSha256, health, catalogNames, requests, diagnosticRequests }));
 }
 
 try { await main(); }
@@ -184,5 +261,6 @@ catch (error) {
   process.exitCode = 1;
 } finally {
   await stopHost();
+  await stopEmbedServer();
   await getOrgPg().sql.end({ timeout: 1 });
 }
