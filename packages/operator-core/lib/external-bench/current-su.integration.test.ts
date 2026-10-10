@@ -14,7 +14,7 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   currentBenchAssignmentId, currentBenchGatewayController,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
-import type { BenchHarnessOps } from './bench-harness-live';
+import { readBenchRunCost, type BenchHarnessOps } from './bench-harness-live';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 import { readProcessIdentity } from '../process-identity';
@@ -109,6 +109,7 @@ beforeAll(async () => {
       identity_activation_event_id text, identity_owner_id text, identity_principal_id text,
       identity_specification_revision text, identity_state_revision text);
     CREATE VIEW harness_shared.agent_usage_samples_identity_attribution AS SELECT * FROM harness_shared.agent_usage_samples;`);
+  await sql.unsafe('ALTER TABLE harness_shared.agent_usage_samples ADD COLUMN harness_slug text, ADD COLUMN run_id text, ADD COLUMN input_tokens bigint, ADD COLUMN output_tokens bigint');
   for (const name of ['244-learning-governor.sql', '1116-learning-spend-reservations.sql', '1224-learning-reservation-resources.sql']) {
     const body = readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url), 'utf8')
       .split('\n').filter(line => !/\bGRANT\b|^\s*\\/.test(line)).join('\n');
@@ -128,6 +129,23 @@ beforeEach(async () => {
 });
 
 let hostGateway: ReturnType<typeof createInferenceGateway> | undefined;
+
+describe('legacy SQL usage measurement', () => {
+  it('distinguishes known empty usage from an incomplete charged population', async () => {
+    expect(await readBenchRunCost(sql, 'private-legacy', workspaceId))
+      .toEqual({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 });
+    await sql`INSERT INTO harness_shared.agent_usage_samples (workspace_id, harness_slug, run_id, input_tokens, output_tokens, cost_usd)
+      VALUES (${workspaceId}, 'private-legacy', 'private-run', 100, NULL, 0.002)`;
+    expect(await readBenchRunCost(sql, 'private-legacy', workspaceId))
+      .toMatchObject({ tokensIn: 100, tokensOut: 0, costUsd: 0.002, turns: 1, costUsdMeasurementMissing: true });
+  });
+  it('reports a missing dollar measurement alongside the known token subtotal', async () => {
+    await sql`INSERT INTO harness_shared.agent_usage_samples (workspace_id, harness_slug, run_id, input_tokens, output_tokens, cost_usd)
+      VALUES (${workspaceId}, 'private-legacy', 'private-run', 100, 20, NULL)`;
+    expect(await readBenchRunCost(sql, 'private-legacy', workspaceId))
+      .toMatchObject({ tokensIn: 100, tokensOut: 20, costUsd: 0, turns: 1, costUsdMeasurementMissing: true });
+  });
+});
 
 describe('production native accounting with private PG and full source bytes', () => {
   async function costFixture() {
