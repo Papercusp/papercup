@@ -1105,6 +1105,112 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     ]);
   });
 
+  it('does not reconcile a legacy unknown-class report into a different exact report', async () => {
+    const legacySignatureKey = 'tool-failure-signature:coord:read:structural:error-code-unknown:field-unknown';
+    const priorReport: SuspectedToolFailure = {
+      toolName: 'coord:read',
+      status: 'output_spill_failed',
+      message: 'The read for one known message id returned the full message, but its enrichment projection exceeded the hard budget and the spill write failed.',
+    };
+    const canonicalReport: SuspectedToolFailure = {
+      toolName: 'coord:read',
+      status: 'found:false',
+      message: "No message id starts with '7b902c85'; not a full msg_id",
+    };
+    const priorNormalized = normalizeSuspectedToolFailure(priorReport);
+    const canonicalNormalized = normalizeSuspectedToolFailure(canonicalReport);
+    expect(priorNormalized.classKey).toBe(canonicalNormalized.classKey);
+    expect(priorNormalized.watchdogKey).not.toBe(canonicalNormalized.watchdogKey);
+
+    // Legacy rows lack classKey and share a broad signature because their
+    // error/contract/runtime dimensions are unknown. Their full reports still
+    // identify different events and must survive separately.
+    const legacyProbation = (
+      reporter: string,
+      normalized: ReturnType<typeof normalizeSuspectedToolFailure>,
+      report: SuspectedToolFailure,
+      state: 'probation' | 'promoted',
+    ) => ({
+      state,
+      class: normalized.class,
+      watchdogKey: legacySignatureKey,
+      correlationFingerprint: normalized.correlationFingerprint,
+      intendedKind: 'change' as const,
+      reporters: [reporter],
+      report,
+    });
+    const loser = existing({
+      id: 'EI-LEGACY-REPORT-LOSER',
+      title: 'coord:read report with output spill failure',
+      kind: 'change',
+      scope: 'harness:papercusp',
+      payload: {
+        lane: 'observation',
+        watchdogKey: legacySignatureKey,
+        toolFailureProbation: legacyProbation('su-a', priorNormalized, priorReport, 'probation'),
+      },
+    });
+    const canonical = existing({
+      id: 'EI-LEGACY-REPORT-CANONICAL',
+      title: 'coord:read report with abbreviated message id',
+      kind: 'change',
+      scope: 'harness:papercusp',
+      payload: {
+        watchdogKey: legacySignatureKey,
+        toolFailureProbation: legacyProbation('su-existing', canonicalNormalized, canonicalReport, 'promoted'),
+      },
+    });
+    const mergeCalls: Array<{ id: string; patch: object; opts: { unset?: readonly string[] } | undefined }> = [];
+    const stateCalls: string[] = [];
+    const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
+      ...deps(),
+      findIssuesByWatchdogKeys: async () => [loser, canonical],
+      updateIssuePatch: async (id, patch) => existing({ ...(id === loser.id ? loser : canonical), ...patch }),
+      mergeIssuePayload: async (id, patch, opts) => {
+        mergeCalls.push({ id, patch, opts });
+        if (id === loser.id && opts?.unset?.includes('lane')) {
+          throw {
+            code: '23505',
+            constraint_name: 'work_items_watchdog_identity_uq',
+            message: 'duplicate key value violates unique constraint "work_items_watchdog_identity_uq"',
+          };
+        }
+        const target = id === canonical.id ? canonical : loser;
+        target.payload = { ...(target.payload as Record<string, unknown>), ...patch };
+        return target;
+      },
+      setIssueState: async (id, state) => {
+        stateCalls.push(`${id}:${state}`);
+        if (id !== loser.id) return null;
+        loser.state = state;
+        return loser;
+      },
+    };
+
+    const result = await captureImprovement(
+      {
+        title: canonical.title,
+        kind: 'change',
+        scope: 'harness:papercusp',
+        watchdogKey: legacySignatureKey,
+        createdBy: 'su-b',
+        payloadExtra: {
+          toolFailureProbation: legacyProbation('su-b', canonicalNormalized, canonicalReport, 'probation'),
+        },
+      },
+      d,
+    );
+
+    expect(result).not.toMatchObject({ reason: 'promoted' });
+    expect(loser.state).toBe('open');
+    expect((loser.payload as Record<string, any>).lane).toBe('observation');
+    expect((loser.payload as Record<string, any>).toolFailureProbation.report).toEqual(priorReport);
+    expect((canonical.payload as Record<string, any>).toolFailureProbation.report).toEqual(canonicalReport);
+    expect((canonical.payload as Record<string, any>).promotionReconciledFrom).toBeUndefined();
+    expect(stateCalls).not.toContain(`${loser.id}:resolved`);
+    expect(mergeCalls.some((call) => call.id === canonical.id && 'promotionReconciledFrom' in call.patch)).toBe(false);
+  });
+
   it('preserves the canonical top-level key when class-key coalescing sees a report-key collision', async () => {
     const classKey = 'repeated-tool-error-class:coord:send:caller:schema-7~field-body:runtime-9';
     const canonicalKey = 'repeated-tool-error:coord:send:caller:first-report';

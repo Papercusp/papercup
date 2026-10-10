@@ -1298,6 +1298,17 @@ function hasCompleteToolFailureClassReport(
   });
 }
 
+function completeToolFailureClassKey(
+  report: ToolFailureProbationPayload['report'] | undefined,
+): string | null {
+  if (
+    !hasCompleteToolFailureClassReport(report) ||
+    typeof report?.toolName !== 'string' ||
+    !report.toolName.trim()
+  ) return null;
+  return normalizeSuspectedToolFailure(report as SuspectedToolFailure).classKey;
+}
+
 /** Resolve the exact message identity even for legacy rows whose top-level key is a signature. */
 function exactToolFailureWatchdogKey(
   probation: ToolFailureProbationPayload | null | undefined,
@@ -1324,29 +1335,27 @@ function sameExactToolFailureWatchdogIdentity(
   return priorKey !== null && priorKey === incomingKey && (!expectedKey || expectedKey === incomingKey);
 }
 
-/**
- * Guard fallback promotion against a known stable-class mismatch.
- *
- * Migration 865 arbitrates the broad top-level watchdog identity, while the
- * nested classKey is the stable tool-failure contract/revision identity. A
- * legacy row may not carry classKey at all, so absence on either side remains
- * compatible; only two present, different class keys prove that the rows are
- * different failure classes.
- */
+/** Guard promotion against stable-class mismatches and ambiguous legacy rows. */
 function compatibleToolFailureClassIdentity(
   issue: EngineerIssue,
   incoming: ToolFailureProbationPayload | null | undefined,
 ): boolean {
   const prior = toolFailureProbationOf((issue.payload as Record<string, unknown> | null) ?? {});
+  if (!prior || !incoming) return true;
   const priorClassKey = prior?.classKey;
   const incomingClassKey = incoming?.classKey;
   const priorKnown = typeof priorClassKey === 'string' && priorClassKey.length > 0;
   const incomingKnown = typeof incomingClassKey === 'string' && incomingClassKey.length > 0;
   if (priorKnown && incomingKnown && priorClassKey !== incomingClassKey) return false;
-  if (!priorKnown || !incomingKnown) return true;
-  return sameExactToolFailureWatchdogIdentity(prior, incoming) ||
-    (hasCompleteToolFailureClassReport(prior?.report) &&
-      hasCompleteToolFailureClassReport(incoming?.report));
+  if (sameExactToolFailureWatchdogIdentity(prior, incoming)) return true;
+
+  const priorReportClassKey = completeToolFailureClassKey(prior?.report);
+  const incomingReportClassKey = completeToolFailureClassKey(incoming?.report);
+  if (priorKnown && incomingKnown) return priorReportClassKey !== null && incomingReportClassKey !== null;
+  if (priorReportClassKey === null || incomingReportClassKey === null) return false;
+  return priorReportClassKey === incomingReportClassKey &&
+    (!priorKnown || priorClassKey === priorReportClassKey) &&
+    (!incomingKnown || incomingClassKey === incomingReportClassKey);
 }
 
 function initialImplementationReadiness(reviewRequired: boolean): ImplementationReadinessState {
