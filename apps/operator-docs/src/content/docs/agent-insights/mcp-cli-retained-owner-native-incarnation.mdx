@@ -5,10 +5,10 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "CLI fallbacks must retain the current native incarnation of an owner"
-description: "A retained owner can have multiple session rows. Dropping the actual Codex native session can make a fallback select a stale predecessor and deny a valid leader for hours."
+description: "A retained owner can have multiple session rows. CLI fallbacks and control activation writers must preserve the live native incarnation or preflight can deny it as stale."
 type: Insight
 discovered: 2026-10-03
-tags: ["mcp", "codex", "recovery", "identity", "fleet"]
+tags: ["mcp", "codex", "recovery", "identity", "fleet", "activation"]
 status: active
 documents:
   - "apps/operator/scripts/ptool.mjs"
@@ -19,6 +19,9 @@ documents:
   - "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts"
   - "packages/operator-core/lib/work-item-admission-authority.ts"
   - "packages/operator-core/lib/harness/improvements/agent-review-policy.ts"
+  - "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts"
+  - "packages/operator-core/lib/session-identity-attribution.ts"
+  - "packages/operator-core/lib/adv-sessions-reanchor.integration.test.ts"
 ---
 
 ## Measured failure
@@ -38,6 +41,14 @@ EI-25305704795423227 records an isolated Codex target whose native MCP calls wer
 Codex 0.160.1 reads MCP environment headers from its process environment while shell-command setup injects the current session identity into the execution environment. A successful shell fallback therefore cannot prove that the native MCP client presented the same incarnation. Use per-call thread metadata for tool requests and keep the binding classifier: a nested thread with an inherited valid parent header must be rejected when its own thread does not belong to that owner. Metadata is a claim, not an authority grant. Malformed explicit thread metadata fails closed rather than falling back to a parent header.
 
 The maintained MCP gating matrix tests a valid child with an inherited header, a foreign nested thread with a matching parent header, and malformed values. The existing `mcp-handler-sdk-request-url.test.ts` also exercises the installed SDK transport and protocol to verify that request `params._meta` reaches handler `extra._meta`; each stateless fixture uses a separate transport. Local continuation evidence is matrix/home 360 passing tests plus SDK 3 passing tests and a clean named-file typecheck. These results establish source behavior only. The full consultation matrix, physical-actor attribution and deployed shipment still require their own evidence under WI-10005889 and the parent plan.
+
+## Control receipts must target the live session row
+
+session_briefs is keyed by owner, while native MCP preflight validates the adv_sessions row carried by the verified native session. A control-source transition therefore needs its activation event and launch receipt on the live owner row that will make the next tool call. Selecting ORDER BY id DESC alone can choose a newer row whose ended_at is already set. The owner-level activation then advances, but the still-live caller row lacks the applied pair and preflight reports stale-artifact / receipt-missing.
+
+The October 7, 2026 incident had 14 port-3170 refusals on build 7f880aeffb across two owners. The live caller row ids were 34453 and 34463; the matching applied events named higher-id siblings 34907 and 34806, which had ended the prior day. A bounded query of port-3170 fleet:assignments, coord:inbox, and work_items:list calls over 2026-10-07T10:41:36.877Z through 2026-10-09T15:54:42.306Z found 531 stale-artifact rows. For each row, the latest prior applied event for that owner and revision named a different adv_session_id than the request's candidateAdvSessionId. This broader mismatch does not by itself prove that every candidate was live or that every stale call should inherit another session's receipt. Check the caller and applied-row lifecycle at the time of each refusal; the October 7 sample above is the live-caller/newer-ended-sibling case.
+
+Both recordCurrentSessionIdentityActivation and carryControlActivationIdentityReceipt now select the newest owner row whose ended_at and ended_by are null. Receipt carry locks that row while reading and updating, so it also serializes with recordSuLaunchSpec. The PostgreSQL regression uses an older live row plus a newer ended sibling, then races a launch-spec rewrite; it checks that the activation event and applied receipt stay on the live row.
 
 ## Diagnose the actual request
 

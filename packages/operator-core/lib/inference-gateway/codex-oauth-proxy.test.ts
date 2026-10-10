@@ -131,6 +131,47 @@ describe('accepted Codex provider completion evidence', () => {
     expect(decoder.push(Buffer.from(filler + complete))).toMatchObject({ responseId: response.id });
     expect(decoder.finish()).toMatchObject({ responseId: response.id });
   });
+
+  const anthropicStart = { type: 'message_start', message: { type: 'message', id: 'message-provider-1',
+    model: 'claude-provider', stop_reason: null, usage: { input_tokens: 80, cache_read_input_tokens: 20,
+      cache_creation_input_tokens: 5, output_tokens: 0 } } };
+  const anthropicFinal = { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 17 } };
+  const frame = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
+  const decode = (protocol: 'openai-responses' | 'anthropic-messages', events: unknown[]) => {
+    const decoder = createCodexProviderCompletionDecoder('text/event-stream', protocol);
+    for (const event of events) decoder.push(Buffer.from(frame(event)));
+    return decoder.finish();
+  };
+  it.each([0, 17])('uses explicit final Anthropic output tokens %s instead of the initial placeholder', output => {
+    expect(decode('anthropic-messages', [anthropicStart,
+      { ...anthropicFinal, usage: { output_tokens: output } }, { type: 'message_stop' }]))
+      .toMatchObject({ responseId: 'message-provider-1', usage: { inputTokens: 105, outputTokens: output,
+        cacheReadTokens: 20, cacheCreationTokens: 5 } });
+  });
+  it('refuses an Anthropic final delta without a final output count', () => {
+    expect(() => decode('anthropic-messages', [anthropicStart, { ...anthropicFinal, usage: {} }, { type: 'message_stop' }])).toThrow();
+  });
+  it('refuses an Anthropic initial stop reason without any final usage event', () => {
+    expect(() => decode('anthropic-messages', [{ ...anthropicStart,
+      message: { ...anthropicStart.message, stop_reason: 'end_turn' } }, { type: 'message_stop' }])).toThrow();
+  });
+  it('refuses Anthropic usage arriving after message_stop', () => {
+    expect(() => decode('anthropic-messages', [anthropicStart, anthropicFinal, { type: 'message_stop' },
+      { ...anthropicFinal, usage: { output_tokens: 999 } }])).toThrow();
+  });
+  it.each(['error', 'response.failed', 'response.incomplete'])('refuses %s even around a provider completion', type => {
+    const complete = { type: 'response.completed', response };
+    expect(() => decode('openai-responses', [complete, { type }])).toThrow();
+    expect(() => decode('openai-responses', [{ type }, complete])).toThrow();
+  });
+  it('refuses an explicit unsuccessful JSON response status despite measured token usage', () => {
+    const decoder = createCodexProviderCompletionDecoder('application/json');
+    decoder.push(Buffer.from(JSON.stringify({ ...response, status: 'failed' })));
+    expect(() => decoder.finish()).toThrow();
+  });
+  it('refuses non-object SSE payloads after a provider completion', () => {
+    expect(() => decode('openai-responses', [{ type: 'response.completed', response }, []])).toThrow();
+  });
 });
 
 async function writeAuth(tokens: Record<string, unknown>, extra: Record<string, unknown> = {}) {

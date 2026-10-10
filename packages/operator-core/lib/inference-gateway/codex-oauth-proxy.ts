@@ -565,6 +565,8 @@ export function createCodexProviderCompletionDecoder(contentType: string,
   let carry = '';
   let completed: CodexProviderCompletionEvidence | null = null;
   let anthropicMessage: Record<string, unknown> | null = null;
+  let anthropicFinalUsageSeen = false;
+  let failure: Error | null = null;
   const frameLimit = () => responseKind === 'sse' ? 1_048_576 : 8_388_608;
   const detectHeaderlessFormat = () => {
     if (responseKind !== 'unknown') return;
@@ -585,6 +587,10 @@ export function createCodexProviderCompletionDecoder(contentType: string,
       throw new Error('accepted Codex response has no provider completion object');
     }
     const response = value as Record<string, unknown>;
+    if (protocol === 'openai-responses' && (response.error != null ||
+        response.status !== undefined && response.status !== 'completed')) {
+      throw new Error('accepted OpenAI response did not complete successfully');
+    }
     const reasoning = response.reasoning && typeof response.reasoning === 'object' &&
       !Array.isArray(response.reasoning) ? response.reasoning as Record<string, unknown> : null;
     const rawEffort = reasoning?.effort;
@@ -626,23 +632,36 @@ export function createCodexProviderCompletionDecoder(contentType: string,
     if (!data || data === '[DONE]') return null;
     let event: unknown;
     try { event = JSON.parse(data); } catch { throw new Error('accepted Codex response has malformed SSE JSON'); }
-    if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
+    if (!event || typeof event !== 'object' || Array.isArray(event)) {
+      throw new Error('accepted provider SSE payload is not an event object');
+    }
     const typed = event as { type?: unknown; response?: unknown; message?: unknown; usage?: unknown; delta?: unknown };
+    if (['error', 'response.failed', 'response.incomplete', 'response.error'].includes(String(typed.type))) {
+      throw new Error('accepted provider response contains an error or incomplete event');
+    }
+    if (completed && !(protocol === 'anthropic-messages' && typed.type === 'ping')) {
+      throw new Error('accepted provider response contains an event after completion');
+    }
     if (protocol === 'anthropic-messages') {
-      if (typed.type === 'error') throw new Error('accepted Anthropic response contains an error');
       if (typed.type === 'message_start') {
         if (anthropicMessage || !typed.message || typeof typed.message !== 'object' || Array.isArray(typed.message)) {
           throw new Error('accepted Anthropic response has invalid message start');
         }
         anthropicMessage = { ...typed.message as Record<string, unknown> };
+        if (anthropicMessage.stop_reason != null) throw new Error('accepted Anthropic start cannot establish final usage');
       } else if (typed.type === 'message_delta') {
         if (!anthropicMessage || !typed.usage || typeof typed.usage !== 'object' || Array.isArray(typed.usage) ||
             !typed.delta || typeof typed.delta !== 'object' || Array.isArray(typed.delta)) {
           throw new Error('accepted Anthropic response has invalid message delta');
         }
+        if (count((typed.usage as Record<string, unknown>).output_tokens) === null) {
+          throw new Error('accepted Anthropic final usage lacks output tokens');
+        }
         anthropicMessage.usage = { ...anthropicMessage.usage as Record<string, unknown>, ...typed.usage as Record<string, unknown> };
         anthropicMessage.stop_reason = (typed.delta as Record<string, unknown>).stop_reason;
+        anthropicFinalUsageSeen = typeof anthropicMessage.stop_reason === 'string' && !!anthropicMessage.stop_reason;
       } else if (typed.type === 'message_stop') {
+        if (!anthropicFinalUsageSeen) throw new Error('accepted Anthropic response lacks final output usage');
         return readResponse(anthropicMessage);
       }
       return null;
@@ -650,6 +669,8 @@ export function createCodexProviderCompletionDecoder(contentType: string,
     return typed.type === 'response.completed' ? readResponse(typed.response) : null;
   };
   const push = (chunk: Uint8Array): CodexProviderCompletionEvidence | null => {
+    if (failure) throw failure;
+    try {
     carry += decoder.write(Buffer.from(chunk));
     detectHeaderlessFormat();
     if (responseKind !== 'sse') {
@@ -674,8 +695,13 @@ export function createCodexProviderCompletionDecoder(contentType: string,
     carry = carry.slice(frameStart);
     if (carry.length > frameLimit()) throw new Error('accepted Codex response evidence frame exceeds its bound');
     return newlyCompleted;
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error('accepted provider response evidence is invalid');
+      throw failure;
+    }
   };
   const finish = (): CodexProviderCompletionEvidence => {
+    if (failure) throw failure;
     carry += decoder.end();
     detectHeaderlessFormat();
     if (responseKind === 'unknown') throw new Error('accepted Codex headerless response has an unrecognized format');

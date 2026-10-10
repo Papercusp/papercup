@@ -577,8 +577,9 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
       // pre-dispatch guards so a cap-blowing run never spawns another agent.
       const budgetExhausted = async (): Promise<boolean> => {
         const cost: BenchRunCost = await readBenchRunCost(sql, handle.slug, workspaceId).catch(
-          () => ({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 }),
+          () => { throw new Error('Benchmark spend measurement is unavailable; refusing another agent spawn.'); },
         );
+        if (cost.costUsdMeasurementMissing) throw new Error('Benchmark spend measurement is incomplete; refusing another agent spawn.');
         if (budget.maxUsd != null && cost.costUsd >= budget.maxUsd) return true;
         if (budget.maxTokens != null && cost.tokensIn + cost.tokensOut + (cost.tokensCacheRead ?? 0) + (cost.tokensCacheWrite ?? 0) >= budget.maxTokens) return true;
         return false;
@@ -701,19 +702,25 @@ export async function readBenchRunCost(
   workspaceId: string,
 ): Promise<BenchRunCost> {
   const rows = await sql<
-    { tokens_in: string | null; tokens_out: string | null; cost_usd: string | null; turns: string | null }[]
+    { tokens_in: string | null; tokens_out: string | null; cost_usd: string | null; turns: string | null; missing_measurements: string | null }[]
   >`
     SELECT SUM(COALESCE(input_tokens, 0))::text  AS tokens_in,
            SUM(COALESCE(output_tokens, 0))::text AS tokens_out,
            SUM(COALESCE(cost_usd, 0))::text      AS cost_usd,
-           COUNT(DISTINCT run_id)::text          AS turns
+           COUNT(DISTINCT run_id)::text          AS turns,
+           COUNT(*) FILTER (WHERE input_tokens IS NULL OR output_tokens IS NULL OR cost_usd IS NULL)::text AS missing_measurements
       FROM harness_shared.agent_usage_samples
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}`;
   const r = rows[0];
+  const values = [r?.tokens_in, r?.tokens_out, r?.cost_usd, r?.turns].map(value => Number(value ?? 0));
+  const missing = Number(r?.missing_measurements ?? 0);
+  const invalid = !r || !values.every(n => Number.isFinite(n) && n >= 0) ||
+    ![values[0], values[1], values[3]].every(Number.isSafeInteger) ||
+    !Number.isSafeInteger(missing) || missing < 0 || missing > 0 ||
+    values[3] > 0 && [r.tokens_in, r.tokens_out, r.cost_usd].some(value => value === null);
+  const known = (index: number) => Number.isFinite(values[index]) && values[index] >= 0 ? values[index] : 0;
   return {
-    tokensIn: Number(r?.tokens_in ?? 0) || 0,
-    tokensOut: Number(r?.tokens_out ?? 0) || 0,
-    costUsd: Number(r?.cost_usd ?? 0) || 0,
-    turns: Number(r?.turns ?? 0) || 0,
+    tokensIn: known(0), tokensOut: known(1), costUsd: known(2), turns: known(3),
+    ...(invalid ? { costUsdMeasurementMissing: true } : {}),
   };
 }

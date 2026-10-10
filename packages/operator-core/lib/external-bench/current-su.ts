@@ -18,7 +18,7 @@ import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from '.
 import { canonicalJson } from './reproducibility/canonical-json';
 import { createNativeGymGatewayController, type NativeGymProviderAuthorization } from '../gym/proposer';
 import type { GovernorGlueDeps } from '../learning-governor/registrants';
-import type { GatewayCarryTrialAttempt } from '../inference-gateway/gateway';
+import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 import type { LearningReservationResourceBudget, LearningSpendReservationCensus } from '../learning-governor/store';
 import { processMonotonicClock } from '../process-monotonic-clock';
 import type { CredentialResolver } from '../inference-gateway/credential-store';

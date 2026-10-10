@@ -2,8 +2,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
-import { parseEnvFile, resolveIntegrationReferences, siblingAppEnv } from "../systemd/portal-hosted-launcher";
+import { describe, expect, it, vi } from "vitest";
+import { assertTutorialVoiceEnvironment, parseEnvFile, resolveIntegrationReferences, siblingAppEnv } from "../systemd/portal-hosted-launcher";
 
 const ROOT = resolve(__dirname, "../../../..");
 const SCRIPT = join(ROOT, "apps/operator/scripts/systemd/deploy-cloud-portal.sh");
@@ -261,6 +261,36 @@ describe("hosted Portal boot launcher", () => {
   it("rejects malformed encrypted references before child startup", async () => {
     await expect(resolveIntegrationReferences({ BAD_REF: "integration:not-valid" }, async () => "never"))
       .rejects.toThrow("portal_hosted_secret_ref_malformed");
+  });
+
+  it("refuses incomplete tutorial voice setup before contacting the provider", async () => {
+    const provider = vi.fn();
+    await expect(assertTutorialVoiceEnvironment({}, provider)).rejects.toThrow("tutorial_voice_configuration_missing");
+    await expect(assertTutorialVoiceEnvironment({ PORTAL_ELEVENLABS_API_KEY: "test-key",
+      PORTAL_ELEVENLABS_AGENT_ID: "test-agent" }, provider)).rejects.toThrow("tutorial_voice_prompt_override_required");
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("verifies actual provider prompt capability rather than trusting the local flag", async () => {
+    const env = { PORTAL_ELEVENLABS_API_KEY: "test-key", PORTAL_ELEVENLABS_AGENT_ID: "test-agent",
+      PORTAL_ELEVENLABS_PROMPT_OVERRIDE: "1" };
+    const provider = vi.fn(async () => Response.json({ platform_settings: { overrides: {
+      conversation_config_override: { agent: { prompt: { prompt: false } } },
+    } } }));
+    await expect(assertTutorialVoiceEnvironment(env, provider)).rejects.toThrow("tutorial_voice_prompt_override_required");
+    provider.mockResolvedValueOnce(Response.json({ platform_settings: { overrides: {
+      conversation_config_override: { agent: { prompt: { prompt: true } } },
+    } } }));
+    await expect(assertTutorialVoiceEnvironment(env, provider)).resolves.toBeUndefined();
+    expect(provider).toHaveBeenLastCalledWith("https://api.elevenlabs.io/v1/convai/agents/test-agent",
+      expect.objectContaining({ headers: { "xi-api-key": "test-key" }, signal: expect.any(AbortSignal) }));
+  });
+
+  it("keeps provider refusal details out of tutorial preflight errors", async () => {
+    const provider = vi.fn(async () => Response.json({ secret: "provider-sentinel" }, { status: 403 }));
+    await expect(assertTutorialVoiceEnvironment({ PORTAL_ELEVENLABS_API_KEY: "test-key",
+      PORTAL_ELEVENLABS_AGENT_ID: "test-agent", PORTAL_ELEVENLABS_PROMPT_OVERRIDE: "1" }, provider))
+      .rejects.toThrow(/^tutorial_voice_provider_refused$/);
   });
 
   // WI-10006664: phone deploy mints the bearer secret into papercusp-phone/portal.env;

@@ -111,6 +111,28 @@ export async function resolveIntegrationReferences(
   return resolved;
 }
 
+/** Fail before hosted tutorial acceptance if its lesson-only provider cannot override prompts. */
+export async function assertTutorialVoiceEnvironment(
+  env: NodeJS.ProcessEnv,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<void> {
+  const apiKey = env.PORTAL_ELEVENLABS_API_KEY?.trim();
+  const agentId = env.PORTAL_ELEVENLABS_AGENT_ID?.trim();
+  if (!apiKey || !agentId) throw new Error("tutorial_voice_configuration_missing");
+  if (env.PORTAL_ELEVENLABS_PROMPT_OVERRIDE !== "1") {
+    throw new Error("tutorial_voice_prompt_override_required");
+  }
+  const response = await fetchImpl(
+    "https://api.elevenlabs.io/v1/convai/agents/" + encodeURIComponent(agentId),
+    { headers: { "xi-api-key": apiKey }, signal: AbortSignal.timeout(15_000) },
+  );
+  if (!response.ok) throw new Error("tutorial_voice_provider_refused");
+  const agent = await response.json().catch(() => null);
+  if (agent?.platform_settings?.overrides?.conversation_config_override?.agent?.prompt?.prompt !== true) {
+    throw new Error("tutorial_voice_prompt_override_required");
+  }
+}
+
 function readOptional(path: string | undefined): Record<string, string> {
   if (!path) return {};
   try {
@@ -162,6 +184,9 @@ async function main(): Promise<void> {
 
   const rewritten = await resolveIntegrationReferences(hosted, resolverModule.resolveHostedSecretRef);
   Object.assign(childEnv, rewritten);
+  if (childEnv.PORTAL_TUTORIAL_VOICE_SERVED_E2E === "1") {
+    await assertTutorialVoiceEnvironment(childEnv);
+  }
 
   // This maintained launcher is the service's supervision boundary. The Portal
   // checkout remains immutable/read-only here, and must not run a competing
