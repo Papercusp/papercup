@@ -244,8 +244,19 @@ export async function runScratchGc(opts: {
   now?: number;
   /** Test seam for the /proc open-writer scan. Missing or partial evidence always keeps a tree. */
   scanOpenPaths?: (paths: readonly string[]) => Promise<OpenWriterScan>;
+  /** Preview eligible evictions without writing markers, deleting paths, or enforcing quota. */
+  dryRun?: boolean;
+  /** Requested run-dir retention; the system's safe default remains a hard floor. */
+  retentionMs?: number;
+  /** Requested quiet window for dead workspace roots; the GC's safe default remains a floor. */
+  quietMs?: number;
+  /** Skip quota FIFO eviction when the caller only owns retention pruning. Defaults to true. */
+  enforceQuota?: boolean;
 }): Promise<ScratchGcSummary> {
   const now = opts.now ?? Date.now();
+  const dryRun = opts.dryRun ?? false;
+  const retentionMs = Math.max(RETENTION_MS, opts.retentionMs ?? RETENTION_MS);
+  const quietMs = Math.max(DEAD_WORKSPACE_QUIET_MS, opts.quietMs ?? DEAD_WORKSPACE_QUIET_MS);
   const root = scratchRoot();
   const summary: ScratchGcSummary = {
     retentionEvictions: 0,
@@ -261,16 +272,18 @@ export async function runScratchGc(opts: {
 
   const registrySet = new Set(opts.workspaceRegistry);
 
-  // Backfill: every registered workspace root that exists gets its marker, so that once the
-  // workspace leaves the registry its root is provably ours. Never creates a root.
-  for (const workspaceId of opts.workspaceRegistry) {
-    let wsRoot: string;
-    try {
-      wsRoot = scratchRootForWorkspace(workspaceId);
-    } catch {
-      continue; // an id with no valid scratch shape has no scratch root
+  if (!dryRun) {
+    // Backfill: every registered workspace root that exists gets its marker, so that once the
+    // workspace leaves the registry its root is provably ours. Never creates a root.
+    for (const workspaceId of opts.workspaceRegistry) {
+      let wsRoot: string;
+      try {
+        wsRoot = scratchRootForWorkspace(workspaceId);
+      } catch {
+        continue; // an id with no valid scratch shape has no scratch root
+      }
+      if (await writeMarkerIfAbsent(wsRoot, workspaceId)) summary.markersWritten += 1;
     }
-    if (await writeMarkerIfAbsent(wsRoot, workspaceId)) summary.markersWritten += 1;
   }
 
   // Step 2 (before step 1 so we don't waste work on dead workspaces): remove PROVABLY dead
@@ -284,7 +297,7 @@ export async function runScratchGc(opts: {
       continue;
     }
     const tree = await treeStatsAsync(dir);
-    if (now - tree.newestMtimeMs < DEAD_WORKSPACE_QUIET_MS) {
+    if (now - tree.newestMtimeMs < quietMs) {
       summary.deadWorkspacesDeferred.push({ workspaceId: name, reason: 'recent-write' });
       continue;
     }
@@ -313,7 +326,7 @@ export async function runScratchGc(opts: {
         summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'process-scan-incomplete' });
         continue;
       }
-      await rmAsync(c.dir, { recursive: true, force: true });
+      if (!dryRun) await rmAsync(c.dir, { recursive: true, force: true });
       summary.deadWorkspaces += 1;
       summary.deadWorkspaceBytes += c.bytes;
     }
@@ -322,9 +335,9 @@ export async function runScratchGc(opts: {
   // Step 1: retention sweep, per-workspace.
   for (const workspaceId of opts.workspaceRegistry) {
     for (const run of await runDirsOf(scratchRootForWorkspace(workspaceId))) {
-      if (now - run.mtimeMs > RETENTION_MS) {
+      if (now - run.mtimeMs > retentionMs) {
         const bytes = await sizeOfDirAsync(run.dir);
-        await rmAsync(run.dir, { recursive: true, force: true });
+        if (!dryRun) await rmAsync(run.dir, { recursive: true, force: true });
         summary.retentionEvictions += 1;
         summary.retentionEvictedBytes += bytes;
       }
@@ -332,10 +345,12 @@ export async function runScratchGc(opts: {
   }
 
   // Step 3: per-workspace quota check + FIFO eviction by mtime.
-  for (const workspaceId of opts.workspaceRegistry) {
-    const reclaimed = await evictWorkspaceQuota(workspaceId, () => WORKSPACE_QUOTA_BYTES);
-    summary.quotaEvictions += reclaimed.evictions;
-    summary.quotaEvictedBytes += reclaimed.bytes;
+  if (opts.enforceQuota !== false && !dryRun) {
+    for (const workspaceId of opts.workspaceRegistry) {
+      const reclaimed = await evictWorkspaceQuota(workspaceId, () => WORKSPACE_QUOTA_BYTES);
+      summary.quotaEvictions += reclaimed.evictions;
+      summary.quotaEvictedBytes += reclaimed.bytes;
+    }
   }
 
   return summary;
