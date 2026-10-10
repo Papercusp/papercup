@@ -900,6 +900,34 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  // WI-10008133: a freshly created EMPTY remote used to fail every tick with
+  // "couldn't find remote ref" + "cannot reconcile", so its first publish never landed.
+  it('publishes HEAD as the first commit of an EMPTY remote (WI-10008133)', async () => {
+    const emptyDir = join(root, 'empty.git');
+    git(root, 'init', '--bare', '-b', 'main', emptyDir);
+    git(repo, 'remote', 'set-url', 'origin', emptyDir);
+    writeFileSync(join(repo, 'first.txt'), 'first publish\n');
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('superproject');
+    expect(git(emptyDir, 'rev-parse', 'refs/heads/main')).toBe(git(repo, 'rev-parse', 'HEAD'));
+    // the next tick reconciles normally against the now-populated remote
+    const again = await runGitSync('test', { repoPath: repo, config: cfg });
+    expect(again.status).not.toBe('error');
+  });
+
+  it('still fails loudly when the remote has OTHER heads but not the branch (WI-10008133)', async () => {
+    const populatedDir = join(root, 'populated.git');
+    git(root, 'init', '--bare', '-b', 'main', populatedDir);
+    git(repo, 'push', populatedDir, 'HEAD:refs/heads/other');
+    git(repo, 'remote', 'set-url', 'origin', populatedDir);
+    writeFileSync(join(repo, 'local.txt'), 'x\n');
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+    expect(out.status).toBe('error');
+    if (out.status === 'error') expect(out.errors.map(e => e.message).join('\n')).toMatch(/cannot reconcile/);
+    expect(git(populatedDir, 'for-each-ref', '--format=%(refname)', 'refs/heads/')).toBe('refs/heads/other');
+  });
+
   it('includes harness identity in equivalent superproject guard logs across hives', async () => {
     const secondRepo = join(root, 'repo-second-hive');
     git(root, 'clone', originDir, secondRepo);

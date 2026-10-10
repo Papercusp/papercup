@@ -6106,6 +6106,36 @@ async function deepenShallowUntilMergeBase(
  * merge (handles diverged/behind) → push (one non-FF retry). Replay-safe: a re-run
  * re-fetches, proves an already-pushed HEAD is aligned, and skips the authenticated no-op push.
  */
+/**
+ * WI-10008133: publish HEAD as the first commit of an EMPTY remote. Returns null when
+ * the remote has any head, or cannot be listed, so the caller keeps its fail-loud
+ * missing-branch path for a mistyped branch on a populated remote.
+ */
+async function firstPublishToEmptyRemote(
+  runGit: RunGit,
+  repoPath: string,
+  remote: string,
+  branch: string,
+  log: ReconcileRepoOpts['log'],
+): Promise<ReconcilePushResult | null> {
+  const heads = await runNetworkGitWithGitHubHttpsFallback(runGit, ['ls-remote', '--heads', remote], repoPath, log);
+  if (heads.code !== 0 || heads.stdout.trim() !== '') return null;
+  log(`[git-sync] ${repoPath}: ${remote} has no branches; publishing HEAD as the first commit of '${branch}'`);
+  const push = await runNetworkGitWithGitHubHttpsFallback(
+    runGit,
+    ['push', remote, `HEAD:refs/heads/${branch}`],
+    repoPath,
+    log,
+  );
+  if (push.code !== 0) {
+    return {
+      status: 'error',
+      message: `first publish to empty ${remote}/${branch} failed: ${push.stderr.trim() || push.stdout.trim()}`,
+    };
+  }
+  return { status: 'synced', pushed: true, merged: false };
+}
+
 async function reconcileAndPushOneRepo(
   runGit: RunGit,
   repoPath: string,
@@ -6188,6 +6218,14 @@ async function reconcileAndPushOneRepo(
         ? `; pruned ${reclaimed.removed.length} newly-created unreferenced tmp_pack file(s), reclaimed ${reclaimed.bytesReclaimed} bytes`
         : '';
     if (cleanupNote) o.log(`[git-sync] ${repoPath}: failed fetch cleanup${cleanupNote}`);
+    // WI-10008133: a missing remote branch is deliberately fatal below, so a mistyped
+    // branch fails loudly. A freshly created EMPTY remote has nothing to mistype, yet the
+    // same rule stranded its first publish forever (slack-asana-bug-drill: 154 failed
+    // ticks). Only a remote with ZERO heads gets HEAD published as its first commit.
+    if (doPush && /couldn't find remote ref/i.test(fetch.stderr)) {
+      const firstPublish = await firstPublishToEmptyRemote(runGit, repoPath, remote, branch, o.log);
+      if (firstPublish) return firstPublish;
+    }
     // Fetch failed (offline / transient). GAP-4: when we're meant to push and HEAD has
     // commits not on the last-known origin tip, those commits are NOT on origin — return
     // 'error' so runGitSync DEFERS the superproject. Otherwise the superproject would
