@@ -3520,6 +3520,67 @@ describe('executeWake — the liveness ladder', () => {
     }
   });
 
+  it.each([
+    { repairResult: { ok: false, reason: 'repair-failed' }, reason: 'repair-failed' },
+    { repairResult: { ok: true, repaired: false, reason: 'no-launch-spec' }, reason: 'no-launch-spec' },
+  ])(
+    'parks a Codex auto-route resume when home repair cannot restore the gateway ($reason)',
+    async ({ repairResult, reason }) => {
+      const advSessionId = 1002;
+      const home = codexHomeForAdvSession(advSessionId);
+      const nativeId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      const spawnDetached = vi.fn(() => 4321);
+      const claimResume = vi.fn(async () => true);
+      const repair = vi.fn(async () => repairResult);
+      rmSync(home, { recursive: true, force: true });
+      const sessionsDir = join(home, 'sessions', '2026', '10', '06');
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(join(sessionsDir, `rollout-2026-10-06T18-00-00-${nativeId}.jsonl`), '{}');
+      try {
+        const out = await executeWake(
+          work({
+            subscriberId: 'su-codex-route',
+            wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }),
+          }),
+          deps({
+            alive: vi.fn(() => false),
+            getSession: vi.fn(async () =>
+              session({
+                id: advSessionId,
+                agent: 'codex',
+                sessionId: nativeId,
+                coordOwnerId: 'su-codex-route',
+                launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=auto'],
+              }),
+            ) as never,
+            claimResume,
+            ensureCodexHomeForWake: repair as never,
+            spawnDetached,
+          }),
+        );
+
+        expect(out).toEqual({
+          kind: 'park',
+          reason: expect.stringContaining(`Codex auto gateway route repair did not complete (${reason})`),
+        });
+        expect(repair).toHaveBeenCalledWith(
+          expect.objectContaining({
+            advSessionId,
+            owner: 'su-codex-route',
+            codexHome: home,
+            headless: true,
+            requireGatewayProvider: true,
+            codexGatewayAccountId: null,
+          }),
+        );
+        expect(claimResume).not.toHaveBeenCalled();
+        expect(spawnDetached).not.toHaveBeenCalled();
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('codexWakeGatewayInputs maps every account mode like the psu launcher route', () => {
     expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=auto'], 'su-x'))).toEqual({
       requireGatewayProvider: true,

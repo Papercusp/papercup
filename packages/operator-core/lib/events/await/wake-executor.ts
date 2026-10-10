@@ -4575,30 +4575,6 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
     }
 
-    // Channel 2: process gone → resume. The manual psu resume path claims the
-    // same ended row before spawning; this atomic predicate makes exactly one
-    // of the two competing resume writers proceed.
-    // A claim that could not be EVALUATED is not a claim that was LOST: reporting
-    // a datastore fault as a lost race sends the operator hunting a competing
-    // resumer that never existed. Park either way (never risk a second writer),
-    // but say which happened.
-    let claimed: boolean;
-    try {
-      claimed = await claimResume(handle.advSessionId, null, undefined, d.subscriberId);
-    } catch (err) {
-      return {
-        kind: 'park',
-        reason:
-          `resume claim for adv session #${handle.advSessionId} could not be evaluated ` +
-          `(${err instanceof Error ? err.message : String(err)}); parked before Channel 2 spawn`,
-      };
-    }
-    if (!claimed) {
-      return {
-        kind: 'park',
-        reason: `resume claim for adv session #${handle.advSessionId} was lost or superseded by a newer owner session; parked before Channel 2 spawn`,
-      };
-    }
     // `--account` is a launch-time choice and Claude does not retain launch
     // flags across `--resume`. Rebuild it from the persisted argv for Claude
     // wakes; the helper also emits the high-precedence settings overlay and
@@ -4610,6 +4586,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         : rehome?.action === 'rehome-account'
           ? autoWakeAccountRoute(d.subscriberId)
           : wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId);
+    const codexAccountRoute =
+      resumeAgent === 'codex' ? wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId) : null;
     // codex resumes from its per-session CODEX_HOME (keyed by the adv-session
     // id, exactly as bootstrap-su/psu minted it) and needs the conversation
     // UUID recovered from that home's rollout — codex carries no native id on
@@ -4654,18 +4632,30 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         // `accountRoute` above is Claude-only (it feeds `--settings`); codex
         // routes through config.toml, which this repair rewrites, so omitting
         // the route here stripped the gateway on every wake.
-        await ensureCodexHomeForWake({
+        const repair = await ensureCodexHomeForWake({
           advSessionId: handle.advSessionId,
           owner: fresh?.coordOwnerId ?? d.subscriberId,
           codexHome: home,
           headless: true,
           sessionRow: fresh,
-          ...codexWakeGatewayInputs(wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId)),
+          ...codexWakeGatewayInputs(codexAccountRoute),
         }).catch((err) => {
-          console.warn(
-            `[wake-executor] codex home repair seam failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn(`[wake-executor] codex home repair seam failed: ${reason}`);
+          return { ok: false, reason };
         });
+        if (
+          codexAccountRoute &&
+          (codexAccountRoute.mode === 'auto' || codexAccountRoute.mode === 'pin') &&
+          (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent')
+        ) {
+          return {
+            kind: 'park',
+            reason:
+              `Codex ${codexAccountRoute.mode} gateway route repair did not complete ` +
+              `(${repair.reason ?? 'unknown'}); parked before native resume`,
+          };
+        }
         // The adv-session/handle id is only an archive lookup hint. It may be
         // stale, and using it here would let a missing/failed rematerialize
         // launch `codex exec resume` against a home with no matching rollout.
@@ -4752,6 +4742,33 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         };
       }
       return degradeToInboxOrDrop(d, 'session ended, not resumable, presence gone — dead waiter', sendCoordMessage);
+    }
+
+    // Channel 2: process gone → resume. The manual psu resume path claims the
+    // same ended row before spawning; this atomic predicate makes exactly one
+    // of the two competing resume writers proceed. Claim only after resume
+    // preparation succeeds: claimResume clears terminal markers, so a failed
+    // required Codex gateway repair must leave the row resumable for the next wake.
+    // A claim that could not be EVALUATED is not a claim that was LOST: reporting
+    // a datastore fault as a lost race sends the operator hunting a competing
+    // resumer that never existed. Park either way (never risk a second writer),
+    // but say which happened.
+    let claimed: boolean;
+    try {
+      claimed = await claimResume(handle.advSessionId, null, undefined, d.subscriberId);
+    } catch (err) {
+      return {
+        kind: 'park',
+        reason:
+          `resume claim for adv session #${handle.advSessionId} could not be evaluated ` +
+          `(${err instanceof Error ? err.message : String(err)}); parked before Channel 2 spawn`,
+      };
+    }
+    if (!claimed) {
+      return {
+        kind: 'park',
+        reason: `resume claim for adv session #${handle.advSessionId} was lost or superseded by a newer owner session; parked before Channel 2 spawn`,
+      };
     }
 
     // A process-gone loop wake may arrive from an older adv-session row whose
