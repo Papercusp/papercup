@@ -172,6 +172,12 @@ export interface HostedOpenRouterAuthorization {
   readonly evidenceRef: string;
 }
 
+/** Private host reader, freshly authenticated on each request. A channel can
+ * use its existing connector resolver without forwarding a browser cookie or
+ * accepting a serialized principal as authority. */
+export type HostedOpenRouterPrincipalSource = Headers | (() => Promise<
+  { readonly ok: true; readonly principal: HostedPrincipal } | { readonly ok: false }>);
+
 export interface HostedBillingRuntimeDependencies {
   /** The hosted-auth runtime's resolver — billing never re-implements session authority. */
   readonly resolvePrincipal: HostedPrincipalResolver;
@@ -214,7 +220,7 @@ export interface HostedBillingRuntime {
   readonly unavailableReason: string | null;
   /** Private router seam. Reuses the hosted session resolver per request;
    * never promotes a local loop principal/ownerId into customer authority. */
-  readonly openRouterRequestCapture: (headers: Headers, signal?: AbortSignal) =>
+  readonly openRouterRequestCapture: (source: HostedOpenRouterPrincipalSource, signal?: AbortSignal) =>
     (context: Readonly<OpenRouterRequestContext>) => OpenRouterRequestCapture;
 }
 
@@ -229,8 +235,10 @@ function hostedOpenRouterCapture(
   const sourceBudget = dependencies.openRouterAdmission?.budget;
   const budget = sourceBudget ? { executeOnce: sourceBudget.executeOnce.bind(sourceBudget) } : undefined;
   const createCapture = store.createOpenRouterRequestCapture?.bind(store);
-  return (headers, signal) => {
-    const sessionHeaders = new Headers(headers);
+  return (source, signal) => {
+    const sessionHeaders = typeof source === 'function' ? undefined : new Headers(source);
+    const readPrincipal = typeof source === 'function' ? source
+      : () => resolvePrincipal(new Headers(sessionHeaders));
     return selected => {
       const context = Object.freeze({ modelId: selected.modelId, servedAccount: selected.servedAccount,
         credentialSha256: selected.credentialSha256 });
@@ -247,7 +255,7 @@ function hostedOpenRouterCapture(
               || observation.provider !== 'openrouter' || observation.modelId !== context.modelId
               || observation.response || observation.identityUncertain
               || !/^[a-f0-9]{64}$/.test(context.credentialSha256)) throw new Error('admission unavailable');
-            const resolution = await resolvePrincipal(new Headers(sessionHeaders));
+            const resolution = await readPrincipal();
             if (!resolution.ok || !isHostedPrincipal(resolution.principal)
               || !resolution.principal.permissions.has('workspace:operate')
               || !resolution.principal.selectedWorkspaceId || signal?.aborted || failed) throw new Error('tenant denied');
