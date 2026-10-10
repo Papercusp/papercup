@@ -10,13 +10,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkItem } from '../../work-items';
 import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
 
-const h = vi.hoisted(() => ({ rows: [] as Array<{ feature_id: string }> }));
+const h = vi.hoisted(() => ({ rows: [] as Array<{ feature_id: string }>, sqlSources: [] as string[] }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   // A tagged-template fake: the pickup query (and every nested SQL fragment builder) resolves to
   // the candidate rows. The rows are what is under test here, not the SQL text. Partial mock so
   // the package's other exports (other modules import them at load) stay real.
-  const sql: any = (..._args: unknown[]) => Promise.resolve(h.rows);
+  const sql: any = (strings: TemplateStringsArray, ..._args: unknown[]) => {
+    h.sqlSources.push(Array.from(strings).join(' '));
+    return Promise.resolve(h.rows);
+  };
   sql.unsafe = sql;
   sql.json = (v: unknown) => v;
   sql.array = (v: unknown) => v;
@@ -88,7 +91,16 @@ function build(ledger: Record<string, AgentReviewLedgerGrade | null>) {
 // filter on origin, so an own-node pending row stranded at 'remote' used to be selected and then
 // silently skipped as 'remote-owned'. It must be healed and handed out; a foreign one stays skipped.
 describe('P-026 review pickup scope and cancellation', () => {
-  beforeEach(() => { h.rows = [{ feature_id: 'WI-A' }, { feature_id: 'WI-B' }]; });
+  beforeEach(() => { h.rows = [{ feature_id: 'WI-A' }, { feature_id: 'WI-B' }]; h.sqlSources = []; });
+
+  it('uses the stored review projection in the candidate lookup (EI-25555666233005302)', async () => {
+    const { deps } = build({});
+
+    await claimNextAgentReview({ reviewer: 'su-reviewer' }, deps);
+
+    expect(h.sqlSources.some(source => source.includes("agent_review_projection ->> 'status' = 'pending'"))).toBe(true);
+    expect(h.sqlSources.join('\n')).not.toContain("-> 'agentReview' ->> 'status' = 'pending'");
+  });
 
   it('reports bounded lookup and per-candidate timings through the opt-in diagnostics callback', async () => {
     const { deps } = build({});

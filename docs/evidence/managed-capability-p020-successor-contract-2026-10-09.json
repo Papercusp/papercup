@@ -656,12 +656,13 @@
       "state": "preview-refused-no-write",
       "sourceAuditPreview": "passed; ten inherited mappings/baseAudit15",
       "code": "bar_contract_check_layer_mismatch",
-      "ownedBlocker": "WI-10008022",
+      "ownedBlocker": "EI-25556616484428615",
       "runtime": "staging-operator@1c8cf11a32",
       "evidencePath": "/dev/shm/p020-r9-plane-repair-preview.json",
       "sourceRepair": {
         "workItem": "WI-10008022",
-        "state": "canonical fix verified; actual P020 adoption remains pending containing staging runtime",
+        "state": "canonical source fix verified and contained by staging; actual P020 adoption remains pending the separately owned R6/R10 detector correction and existing owner hash choice",
+        "sourceCommit": "f5e87c7c87db1e4bd4677892169d57fa5c685dec",
         "rootCause": "The seed rederived an unstarted full canonical criterion from plaintext Requirements, and the preview exempted subjects with an existing rubric pin even when adopting a fresh successor.",
         "verification": {
           "unit": {

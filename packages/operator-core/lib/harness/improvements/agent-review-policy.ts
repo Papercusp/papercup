@@ -1685,7 +1685,9 @@ export function intakeStageAdmitsClaim(input: {
 }
 
 /** Reviewer lane: only submitted work, never revision work or approved work. */
-export function agentReviewPendingSelectorSql(sql: OrgSql, payloadCol: 'wi.payload' | 'payload' = 'wi.payload') {
-  const payload = sql.unsafe(payloadCol);
-  return sql`COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'pending'`;
+export function agentReviewPendingSelectorSql(sql: OrgSql) {
+  // EI-25555666233005302: this is the candidate-lookup hot path. Read the STORED
+  // projection, not payload->agentReview: the partial claim-next index is keyed
+  // by this exact predicate, avoiding a scan/detoast of every open work item.
+  return sql`agent_review_projection ->> 'status' = 'pending'`;
 }

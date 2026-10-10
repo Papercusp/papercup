@@ -1128,6 +1128,10 @@ export interface LoopStatus {
    *  it is the completion signal used by turnsStalled. Optional for legacy
    *  fixture compatibility; production status rows always populate it. */
   lastLoopTurnAt?: string | null;
+  /** Latest completed loop-origin turn after the most recent suppressed-redundant wake
+   *  was dispatched, regardless of the current arm. `lastLoopTurnAt` is intentionally
+   *  arm-scoped for turnsStalled; recovery proof for an older wake must survive re-arm. */
+  lastSuppressedWakeLoopTurnAt?: string | null;
   /** EI-24933871787030971 — completion proof for the latest fire when its
    *  delivery outcome was recorded as `loop-delivered-wake-no-loop-turn`.
    *  Unlike lastLoopTurnAt, this is scoped to `routines.last_fired_at`, not
@@ -1968,6 +1972,9 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     ...(r.metadata?.executionRecovery ? { executionRecovery: r.metadata.executionRecovery } : {}),
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
     lastLoopTurnAt: r.last_loop_turn_at ? new Date(r.last_loop_turn_at).toISOString() : null,
+    lastSuppressedWakeLoopTurnAt: r.last_suppressed_wake_loop_turn_at
+      ? new Date(r.last_suppressed_wake_loop_turn_at).toISOString()
+      : null,
     lastFailedFireLoopTurnCompletedAt: r.last_failed_fire_loop_turn_completed_at
       ? new Date(r.last_failed_fire_loop_turn_completed_at).toISOString()
       : null,
@@ -2154,6 +2161,37 @@ export async function getLoopStatuses(
                      (r.metadata->>'armed_at')::timestamptz,
                      '-infinity'::timestamptz
                    ))                                                    AS last_loop_turn_at,
+           -- EI-25552514553135466: turnsStalled needs the current arm's loop-turn clock
+           -- above, but suppressed-wake recovery needs proof tied to the dispatched wake.
+           -- Re-arming after a genuine loop-origin turn otherwise hides that completion and
+           -- leaves the old suppressed delivery looking unrecovered forever. Keep this
+           -- second clock scoped to the latest suppressed wake's dispatch time instead.
+           CASE WHEN lw.channel = 'suppressed-redundant' AND lw.created_at IS NOT NULL
+                THEN (SELECT max((
+                  SELECT max(a2.ts)
+                    FROM harness_shared.session_turns a2
+                   WHERE a2.workspace_id = u.workspace_id
+                     AND a2.source_kind = u.source_kind
+                     AND a2.session_id = u.session_id
+                     AND a2.speaker = 'assistant'
+                     AND a2.turn_idx > u.turn_idx
+                     AND a2.turn_idx < COALESCE((
+                           SELECT min(u2.turn_idx)
+                             FROM harness_shared.session_turns u2
+                            WHERE u2.workspace_id = u.workspace_id
+                              AND u2.source_kind = u.source_kind
+                              AND u2.session_id = u.session_id
+                              AND u2.speaker = 'user'
+                              AND u2.turn_idx > u.turn_idx
+                         ), 2147483647)
+                ))
+                  FROM harness_shared.session_turns u
+                 WHERE u.owner = r.target_owner_id
+                   AND u.speaker = 'user'
+                   AND u.turn_origin = 'loop-fire'
+                   AND u.ts > lw.created_at)
+                ELSE NULL
+           END                                                               AS last_suppressed_wake_loop_turn_at,
            -- EI-24933871787030971: lastLoopTurnAt is arm-scoped for turnsStalled, so a
            -- re-arm after a delayed real loop turn hides the evidence needed to clear a
            -- sticky last_status='loop-delivered-wake-no-loop-turn'. Keep a separate,

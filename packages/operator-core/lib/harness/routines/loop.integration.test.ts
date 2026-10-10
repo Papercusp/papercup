@@ -610,6 +610,71 @@ describe('loop surface round-trip (real PG)', () => {
     expect(status!.lastFailedFireLoopTurnCompletedAt).toBe(loopAssistant.toISOString());
   });
 
+  it('EI-25552514553135466: reports suppressed-wake loop completion after a later re-arm', async () => {
+    await sql`TRUNCATE harness_shared.session_turns CASCADE`;
+    await sql`TRUNCATE harness_shared.session_turn_journal`;
+    await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
+    await sql`DELETE FROM harness_shared.autoloop_state WHERE workspace_id = ${WS} AND role = ${loopRoutineName(OWNER)}`;
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+
+    const routine = await sql<Array<{ id: number }>>`
+      SELECT id FROM harness_shared.routines WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    const routineId = routine[0]!.id;
+    const now = Date.now();
+    const wakeCreated = new Date(now - 16 * 60_000);
+    const lastFired = new Date(wakeCreated.getTime() + 5_000);
+    const loopPrompt = new Date(wakeCreated.getTime() + 10_000);
+    const loopAssistant = new Date(wakeCreated.getTime() + 30_000);
+    const rearmedAt = new Date(wakeCreated.getTime() + 60_000);
+    const deliveredAt = new Date(now - 60_000);
+
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${lastFired.toISOString()}::timestamptz,
+             next_fire_at = 'infinity'::timestamptz,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+               'fire_count', 1,
+               'armed_at', ${rearmedAt.toISOString()}::text
+             )
+       WHERE id = ${routineId}
+    `;
+    const awaitRow = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
+      VALUES (${WS}, ${OWNER}, 'loop-recovery-test')
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, source, status, channel, created_at, delivered_at)
+      VALUES
+        (${WS}, ${awaitRow[0]!.id}, ${OWNER}, 'loop-recovery-test', ${'loop:' + routineId},
+         'delivered', 'suppressed-redundant', ${wakeCreated.toISOString()}::timestamptz,
+         ${deliveredAt.toISOString()}::timestamptz)
+    `;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text,
+         turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'claude', 'suppressed-loop-session', 0, ${loopPrompt.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'user', 'loop wake', 'loop-fire', 'agent-injected', 1),
+        (${WS}, 'claude', 'suppressed-loop-session', 1, ${loopAssistant.toISOString()}::timestamptz,
+         ${OWNER}, ${HARNESS}, 'assistant', 'loop turn completed', NULL, 'not-user-turn', 1)
+    `;
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status!.lastLoopTurnAt).toBeNull(); // current-arm clock remains intentionally scoped
+    expect(status!.lastSuppressedWakeLoopTurnAt).toBe(loopAssistant.toISOString());
+  });
+
   it('getLoopStatus surfaces carry:"cold" for a cold-armed loop (su-cold-auto P-008 observability)', async () => {
     await materializeLoop({
       workspaceId: WS,

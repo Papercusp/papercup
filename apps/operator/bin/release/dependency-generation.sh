@@ -42,6 +42,28 @@ dependency_generation_root_record() {
   printf '%s\n' "$1/.papercusp/dependency-generation-root"
 }
 
+# Keep the current root on line one for existing readers. Later absolute lines
+# name former stores which still need native pin/lease retention. Serialize
+# cross-store record changes with the existing portable publisher lock; the
+# command-substitution/subshell keeps its lock state separate from a publisher.
+dependency_generation_write_root_record() (
+  local integration_root="$1" configured="$2" previous="${3:-}" record state tmp
+  record="$(dependency_generation_root_record "$integration_root")"
+  state="$record.state"
+  case "$configured" in /*) ;; *) return 2 ;; esac
+  [[ "$configured" != *$'\n'* ]] || return 2
+  dependency_generation_ensure_store_root "$state" || return $?
+  DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC=5 \
+    dependency_generation_acquire_publish_lock "$state" || return $?
+  tmp="$record.tmp.$$"
+  trap 'rm -f -- "$tmp"; dependency_generation_release_publish_lock' EXIT
+  {
+    printf '%s\n' "$configured"
+    { [ ! -f "$record" ] || cat "$record"; printf '%s\n' "$previous"; } \
+      | awk -v current="$configured" '/^\// && $0 != current && !seen[$0]++ { print }'
+  } > "$tmp" && mv -f -- "$tmp" "$record"
+)
+
 dependency_generation_resolve_root() {
   local integration_root="$1" explicit="${2:-}" record recorded='' configured
   if [ -n "$explicit" ]; then
@@ -61,9 +83,7 @@ dependency_generation_resolve_root() {
     if [ "$recorded" != "$configured" ]; then
       [ -z "$recorded" ] || dependency_generation_log \
         "generation root record $record named $recorded; PAPERCUSP_DEPENDENCY_GENERATION_ROOT=$configured replaces it"
-      { mkdir -p "$(dirname "$record")" \
-          && printf '%s\n' "$configured" > "$record.tmp.$$" \
-          && mv -f "$record.tmp.$$" "$record"; } 2>/dev/null \
+      dependency_generation_write_root_record "$integration_root" "$configured" \
         || dependency_generation_log "WARNING: could not record generation root $configured at $record"
     fi
     printf '%s\n' "$configured"
@@ -1776,18 +1796,56 @@ dependency_generation_delete_prune_quarantines() {
 }
 
 dependency_generation_apply_retention() {
-  local generation_root="$1" integration_root="$2" rc=0
+  local generation_root="$1" integration_root="$2" retain_count="${3:-}" rc=0
   dependency_generation_acquire_publish_lock "$generation_root" || return $?
   dependency_generation_refresh_retention_state_locked "$generation_root" "$integration_root" || rc=$?
   if [ "$rc" -eq 0 ]; then
-    dependency_generation_quarantine_unretained_locked "$generation_root" || rc=$?
+    dependency_generation_quarantine_unretained_locked "$generation_root" "$retain_count" || rc=$?
   fi
   dependency_generation_release_publish_lock
   dependency_generation_delete_prune_quarantines
   if [ "$rc" -eq 0 ]; then
     dependency_generation_sweep_legacy_store "$generation_root" "$integration_root"
+    [ -n "$retain_count" ] || dependency_generation_sweep_recorded_stores "$generation_root" "$integration_root"
   fi
   return "$rc"
+}
+
+dependency_generation_store_is_published() {
+  local root="$1" generation
+  for generation in "$root"/v1-*; do
+    [[ "${generation##*/}" =~ ^v1-[0-9a-f]{64}$ ]] || continue
+    dependency_generation_marker_matches "$generation" "${generation##*/}" && return 0
+  done
+  return 1
+}
+
+# The existing hourly actor can keep invoking just the current-store CLI. Its
+# freshly loaded Bash helper visits recorded former stores too, so discovery
+# does not depend on restarting a background host after a store migration.
+dependency_generation_sweep_recorded_stores() {
+  local generation_root="$1" integration_root="$2" persistent current_real root_real record line former seen=' '
+  persistent="$(dependency_generation_persistent_root "$integration_root")"
+  [ -d "$persistent" ] || return 0
+  current_real="$(cd "$persistent" && pwd -P)" || return 0
+  root_real="$(cd "$generation_root" && pwd -P)" || return 0
+  [ "$root_real" = "$current_real" ] || return 0
+  # Existence alone is insufficient during a failed/unfinished migration.
+  dependency_generation_store_is_published "$current_real" || return 0
+  record="$(dependency_generation_root_record "$integration_root")"
+  [ -f "$record" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in /*) ;; *) continue ;; esac
+    [ -d "$line" ] || continue
+    former="$(cd "$line" && pwd -P)" || continue
+    [ "$former" != "$current_real" ] || continue
+    case "$seen" in *" $former "*) continue ;; esac
+    seen="$seen$former "
+    dependency_generation_log "sweeping recorded former generation store $former"
+    ( DEPENDENCY_GENERATION_PUBLISH_LOCK_TIMEOUT_SEC=5 \
+        dependency_generation_apply_retention "$former" "$integration_root" 0 ) \
+      || dependency_generation_log "WARNING: former store $former retention deferred"
+  done < "$record"
 }
 
 # WI-10006081: the persistent generation root for an integration root (env, then
@@ -3280,6 +3338,7 @@ dependency_generation_prepare_exact_ref_root() {
 
 dependency_generation_main() {
   local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only='' check_headroom=''
+  local remember_store='' retired_store='' current_root='' old_root='' record line registered=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
   local predict_ref='' predict_verdict='' predict_rc=0 line
   local workspace_dirs=()
@@ -3294,6 +3353,8 @@ dependency_generation_main() {
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       --predict-ref) predict_ref="$2"; shift 2 ;;
       --prune-only) prune_only='1'; shift ;;
+      --retired-store) retired_store='1'; shift ;;
+      --remember-store) remember_store="$2"; shift 2 ;;
       --check-headroom) check_headroom='1'; shift ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
@@ -3311,6 +3372,25 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   build_root="$integration_root"
+  if [ -n "$remember_store" ]; then
+    [ -z "$generation_root$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom$retired_store$predict_ref" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || return 2
+    current_root="$(dependency_generation_resolve_root "$integration_root")" || return $?
+    [ -d "$current_root" ] && [ -d "$remember_store" ] || return 2
+    old_root="$(cd "$remember_store" && pwd -P)" || return $?
+    [ "$old_root" != "$(cd "$current_root" && pwd -P)" ] || return 2
+    # Only adopt a creator-marked published store; an arbitrary directory must
+    # never gain disposal authority by being added to a record.
+    registered=''
+    for line in "$old_root"/v1-*; do
+      [[ "${line##*/}" =~ ^v1-[0-9a-f]{64}$ ]] || continue
+      if dependency_generation_marker_matches "$line" "${line##*/}"; then registered=1; break; fi
+    done
+    [ -n "$registered" ] || return 2
+    dependency_generation_write_root_record "$integration_root" "$current_root" "$old_root"
+    return $?
+  fi
+  [ -z "$retired_store" ] || [ -n "$prune_only" ] || return 2
   # WI-10005931: git-sync fetches into the integration checkout, so its
   # filesystem is the one the percentage headroom reserve protects.
   dependency_generation_record_reserve_fs "$integration_root"
@@ -3343,7 +3423,36 @@ dependency_generation_main() {
     # sweep it; the same publish lock protects live selectors and generation
     # publication when a checkout happens concurrently.
     [ -d "$generation_root" ] || return 0
-    dependency_generation_apply_retention "$generation_root" "$integration_root"
+    if [ -n "$retired_store" ]; then
+      current_root="$(dependency_generation_persistent_root "$integration_root")"
+      [ -d "$current_root" ] || return 2
+      current_root="$(cd "$current_root" && pwd -P)" || return $?
+      old_root="$(cd "$generation_root" && pwd -P)" || return $?
+      [ "$old_root" != "$current_root" ] || {
+        dependency_generation_log 'FATAL: cannot retire the current dependency store'
+        return 2
+      }
+      dependency_generation_store_is_published "$current_root" || {
+        dependency_generation_log 'FATAL: replacement dependency store is not published'
+        return 2
+      }
+      record="$(dependency_generation_root_record "$integration_root")"
+      registered=''
+      while IFS= read -r line; do
+        case "$line" in /*) ;; *) continue ;; esac
+        [ -d "$line" ] || continue
+        [ "$(cd "$line" && pwd -P)" != "$old_root" ] || registered=1
+      done < "$record"
+      [ -n "$registered" ] || {
+        dependency_generation_log 'FATAL: former dependency store is not recorded'
+        return 2
+      }
+      # A retired store keeps actual pins and selector leases, without recency
+      # copies which otherwise accumulate on every store migration.
+      dependency_generation_apply_retention "$generation_root" "$integration_root" 0
+    else
+      dependency_generation_apply_retention "$generation_root" "$integration_root"
+    fi
     return $?
   fi
   if [ -n "$select_inputs_from" ] && { [ -n "$ensure_ref" ] || [ -n "$fingerprint_ref" ]; }; then

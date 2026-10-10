@@ -70,6 +70,7 @@ export type LoopNextWakeInput =
           | 'lastWakeAt'
           | 'lastWakeCreatedAt'
           | 'lastLoopTurnAt'
+          | 'lastSuppressedWakeLoopTurnAt'
           | 'lastDeliveryOutcome'
           | 'lastFiredAt'
           | 'lastFailedFireLoopTurnCompletedAt'
@@ -176,7 +177,10 @@ export function classifyLoopNextWake(
       loop.lastWakeCreatedAt == null ? Number.NaN : Date.parse(loop.lastWakeCreatedAt);
     const proofWakeAtMs = Number.isFinite(wakeCreatedAtMs) ? wakeCreatedAtMs : wakeAtMs;
     const firedAtMs = loop.lastFiredAt == null ? Number.NaN : Date.parse(loop.lastFiredAt);
-    const completedAtMs = loop.lastLoopTurnAt == null ? Number.NaN : Date.parse(loop.lastLoopTurnAt);
+    const completedAt = Object.prototype.hasOwnProperty.call(loop, 'lastSuppressedWakeLoopTurnAt')
+      ? loop.lastSuppressedWakeLoopTurnAt
+      : loop.lastLoopTurnAt;
+    const completedAtMs = completedAt == null ? Number.NaN : Date.parse(completedAt);
     const latestFireAwaitBlocked = latestFireWasAwaitBlocked(loop);
     const proofWindowEndMs = latestFireAwaitBlocked ? wakeAtMs : Math.max(proofWakeAtMs, firedAtMs);
     if (
