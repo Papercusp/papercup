@@ -11,7 +11,7 @@ import { EventEmitter, once } from 'node:events';
 import type { Sql } from 'postgres';
 import { serve } from '@hono/node-server';
 import { WORKSPACE_HOST_CANARY_TAG_KEYS } from '@papercusp/deployment-driver';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   deriveTenantContext,
@@ -391,6 +391,53 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it('distinguishes a missing fixture column from a foreign-host authorization refusal', async () => {
+    const tenantErrors: unknown[] = [];
+    const dependencies = runtimeDependencies();
+    const diagnosticPlane = await createHostedRuntime(CONFIGURATION, {
+      ...dependencies,
+      hostedBrowser: {
+        ...dependencies.hostedBrowser,
+        runTenant: async (context, fn) => {
+          try {
+            return await runTenant(context, fn);
+          } catch (error) {
+            tenantErrors.push(error);
+            throw error;
+          }
+        },
+      },
+    });
+    const foreignHostRequest = () => request(diagnosticPlane, HOSTED_BROWSER_PROVISION_PATH, sessionA, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: ORIGIN },
+      body: JSON.stringify({
+        connectionId: CONNECTION_A,
+        name: 'Foreign host fixture control',
+        desired: { hostId: HOST_B, target: 'gcp' },
+      }),
+    });
+
+    // Recreate only the old fixture's missing column. Keep the repaired route,
+    // principal, session, tenants and request unchanged between both controls.
+    await sql`ALTER TABLE harness_shared.customer_workspaces RENAME COLUMN kind TO acceptance_fixture_kind`;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const missingColumn = await foreignHostRequest();
+      expect(missingColumn.status, await missingColumn.text()).toBe(500);
+      expect(tenantErrors).toHaveLength(1);
+      expect(tenantErrors[0]).toMatchObject({ code: '42703' });
+      expect((tenantErrors[0] as Error).message).toContain('kind');
+    } finally {
+      consoleError.mockRestore();
+      await sql`ALTER TABLE harness_shared.customer_workspaces RENAME COLUMN acceptance_fixture_kind TO kind`;
+    }
+
+    const restoredSchema = await foreignHostRequest();
+    expect(restoredSchema.status, await restoredSchema.text()).toBe(403);
+    expect(tenantErrors).toHaveLength(1);
   });
 
   it('isolates HTTP, SSE, MCP mount, and direct SQL under overlapping tenant names', async () => {
