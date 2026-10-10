@@ -1,5 +1,19 @@
 /** Types for aws-ami-scan-measure.mjs (papercusp-aws-ami-scan's pure logic, WI-10005587). */
 export declare const AWS_AMI_SCAN_TOOL: 'papercusp-aws-ami-scan';
+export declare const AWS_AMI_SCAN_BUDGETS: Readonly<{
+  downloadMs: number;
+  scanMs: number;
+  hostWorkMs: number;
+  teardownMs: number;
+  runnerMarginMs: number;
+}>;
+export declare const AWS_AMI_SCAN_WORK_TIMEOUT_MS: number;
+export declare const AWS_AMI_SCAN_RUNNER_TIMEOUT_MS: number;
+export declare function boundAwsAmiScanCommandTimeoutMs(
+  deadlineAtMs: number,
+  requestedMs: number,
+  nowMs?: number,
+): number;
 export declare const AWS_AMI_DESCRIPTION_PATTERN: RegExp;
 export declare const PAPERCUSP_BUNDLE_PATH: string;
 export declare const SECRET_BUNDLED_SAMPLE_CAP: number;

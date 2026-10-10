@@ -32,7 +32,7 @@ import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 import { runFlushGate, type FlushGateOutcome } from './enforcement-gate-io';
 import {
   PSU_PTY_DIR,
-  findLiveHost,
+  findLiveHostAsync,
   hostSupports,
   injectIntoHost,
   sanitizeKey,
@@ -792,7 +792,7 @@ function verifyDeps(overrides: Partial<VerifyColdBootDrillDeps>): VerifyColdBoot
     readHostEvents: readOwnerHostEvents,
     socketExists: async (ownerId) => {
       try {
-        const host = findLiveHost(ownerId);
+        const host = await findLiveHostAsync(ownerId);
         return !!host && (await fs.stat(host.sock)).isSocket();
       } catch {
         return false;

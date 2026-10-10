@@ -62,6 +62,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import { NuqsAdapter } from 'nuqs/adapters/react';
     import { parseAsString, useQueryState } from 'nuqs';
     import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
     import { configureOperatorUi } from '@papercusp/operator-ui/seam';
     import { ADV_TAB_SURFACE_KINDS } from '@papercusp/operator-ui/adv-navigation';
     import AdvOverviewTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvOverviewTab.tsx'))};
@@ -73,9 +74,11 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
         React.createElement(app === 'overview' ? AdvOverviewTab : AdvCreateDock),
         React.createElement('output', { 'data-testid': 'overview-destination' }, app));
     }
-    createRoot(document.getElementById('root')).render(React.createElement(NuqsAdapter, null,
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
       React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
-        React.createElement(Fixture))));
+        React.createElement(Fixture))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.docs ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
@@ -184,7 +187,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const boundary = input.inbox || input.plans || input.docs || input.overview
-    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs) }) : undefined;
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.overview) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
