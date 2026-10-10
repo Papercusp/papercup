@@ -264,6 +264,7 @@ export async function recordIsolatedIntegrationProof(options: {
     contract: { name: 'isolated-integration', phases: [
       { id: 'prepare' }, { id: 'execute', dependsOn: ['prepare'] }, { id: 'teardown' },
     ] }, evidenceRoot: defaultEvidenceRoot('isolated-integration'),
+    retainedArtifacts: ['phases/prepare/source.json', 'phases/execute/lifecycle.json'],
     runPhase: async ctx => {
       if (ctx.phase === 'prepare') {
         const commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
