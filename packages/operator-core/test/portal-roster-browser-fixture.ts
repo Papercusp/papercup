@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -281,6 +282,7 @@ async function runPrivateProfilePage(page: Page, context: BrowserContext, input:
     const response = await pending;
     const receipt = { status: response.status(), origin: response.request().headers().origin, body: await response.json() };
     writes.push(receipt);
+    writeFileSync(join(input.evidence, 'portal-profile-writes.json'), JSON.stringify(writes, null, 2));
     assert.equal(receipt.status, expectedStatus, JSON.stringify(receipt.body));
     return receipt;
   };
@@ -298,14 +300,19 @@ async function runPrivateProfilePage(page: Page, context: BrowserContext, input:
   await name.waitFor();
   assert.equal(await name.inputValue(), marker);
   await name.fill(draft);
-  // Chromium sends this header to the real API; no request interception or
-  // response substitution is used to manufacture a denied save.
-  await context.setExtraHTTPHeaders({ origin: 'https://unapproved.invalid' });
+  // Chromium synthesizes Origin even after route.continue header overrides.
+  // Forward an ACTUAL upstream denied response through the API transport;
+  // no status/body is invented. This branch proves form error handling and
+  // retry, not a native browser foreign-Origin request. Positive saves remain
+  // unmodified browser fetches, and the cheap preflight verifies this seam.
+  await context.route('**/api/profile', async route => {
+    const response = await route.fetch({ headers: { ...route.request().headers(), origin: 'https://unapproved.invalid' } });
+    await route.fulfill({ response });
+  });
   const denied = await submit(403);
-  assert.equal(denied.origin, 'https://unapproved.invalid');
   await page.getByText('save failed: HTTP 403', { exact: true }).waitFor();
   assert.equal(await name.inputValue(), draft, 'denied Profile save must retain the form draft');
-  await context.setExtraHTTPHeaders({});
+  await context.unroute('**/api/profile');
   assert.equal((await (await page.request.get(profile)).json()).display_name, marker,
     'denied Profile save must leave stored state untouched');
   await submit(200);
@@ -317,9 +324,60 @@ async function runPrivateProfilePage(page: Page, context: BrowserContext, input:
   const result = { workspace: input.workspace, authMethod: 'private-loopback-profile-with-cookie',
     savedExactValue: true, deepLinkReload: true, denialStatus: denied.status, draftRetained: true,
     deniedWriteIsolated: true, retryPersisted: true, retryReload: true, writes,
-    scope: 'Actual default Settings Profile page and private loopback profile HTTP with real Origin denial; host geometry is a fixture, no full Settings navigation or hosted tenant-profile acceptance' };
+    denialTransport: 'real-upstream-response-forwarded',
+    scope: 'Actual default Settings Profile page, unmodified private loopback save/reload/retry, and form handling of a real upstream Origin denial forwarded by the test proxy; no native-browser foreign-Origin, full Settings navigation or hosted tenant-profile acceptance' };
   writeFileSync(join(input.evidence, 'portal-profile-dom.html'), await page.content());
   return result;
+}
+
+/** Browser wire precondition, not product/API authorization evidence. */
+export async function verifyPrivateProfileOriginControl() {
+  const forbidden = 'https://unapproved.invalid';
+  const server = createServer((request, response) => {
+    if (request.url === '/api/profile') {
+      const origin = request.headers.origin ?? null;
+      response.writeHead(origin === forbidden ? 403 : 200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ origin }));
+    } else {
+      response.writeHead(200, { 'content-type': 'text/html' });
+      response.end('<button>Save</button><script>document.querySelector("button").onclick=()=>fetch("/api/profile",{method:"POST",body:"{}"})</script>');
+    }
+  });
+  await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  try {
+    browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    page.setDefaultTimeout(10_000);
+    await page.goto(base);
+    const submit = async () => {
+      const pending = page.waitForResponse(response => response.url() === base + '/api/profile');
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      const response = await pending;
+      return { status: response.status(), ...await response.json() };
+    };
+    await context.setExtraHTTPHeaders({ origin: forbidden });
+    const oldControl = await submit();
+    await context.setExtraHTTPHeaders({});
+    await context.route('**/api/profile', async route => {
+      const response = await route.fetch({ headers: { ...route.request().headers(), origin: forbidden } });
+      await route.fulfill({ response });
+    });
+    const continuedControl = await submit();
+    assert.equal(continuedControl.origin, forbidden, 'denial input must arrive on the wire');
+    assert.equal(continuedControl.status, 403, 'wire control must exercise the denied response');
+    const receipt = { base, oldControl, continuedControl, scope: 'Local echo-server browser wire preflight only' };
+    console.info('PROFILE_ORIGIN_PREFLIGHT ' + JSON.stringify(receipt));
+    return receipt;
+  } finally {
+    await browser?.close();
+    server.closeAllConnections();
+    await new Promise<void>(done => server.close(() => done()));
+  }
 }
 
 /** Real settings mutation and shortcut bus; only host navigation geometry is supplied. */

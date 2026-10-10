@@ -13,7 +13,7 @@ import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateSt
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
-import { retainPortalBrowserFailure } from '../test/portal-roster-browser-fixture';
+import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl } from '../test/portal-roster-browser-fixture';
 
 it('checks private socket capacity in bytes before runtime allocation, including multibyte scratch roots', () => {
   const suffix = '/papercusp-test-runtime-XXXXXX/tmp/rs-XXXXXX/su-rs-123456789-neighbor.sock';
@@ -144,6 +144,15 @@ it('joins cross-checkout toast producers and observers into one Sonner module st
     expect(await run(true)).toEqual(['Profile saved']);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'preflights the browser Origin denial input on the wire before a private database run', async () => {
+    const receipt = await verifyPrivateProfileOriginControl();
+    expect(receipt.continuedControl).toEqual({ origin: 'https://unapproved.invalid', status: 403 });
+    // Preserve what the browser actually sent with the old input mechanism.
+    // Chromium builds may differ; the fixed precondition must work either way.
+    expect([receipt.base, 'https://unapproved.invalid']).toContain(receipt.oldControl.origin);
+  });
 
 it('correlates a private browser stop to the exact owner, managed row, launch and disposition', () => {
   const expected = { ownerId: 'selected', managedSessionId: 17, startedAt: '2026-10-10T03:00:00Z' };

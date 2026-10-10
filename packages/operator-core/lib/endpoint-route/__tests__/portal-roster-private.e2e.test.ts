@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePortalBrowserSource, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
-import { buildPortalRosterBrowser } from '../../../test/portal-roster-browser-fixture';
+import { buildPortalRosterBrowser, verifyPrivateProfileOriginControl } from '../../../test/portal-roster-browser-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
@@ -14,6 +14,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor', settings: true });
+    await verifyPrivateProfileOriginControl();
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
