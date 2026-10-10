@@ -72,6 +72,23 @@ describe('narrow hosted auth runtime', () => {
     });
   });
 
+  it('mounts configured speech behind the same session authority without eager synthesis', async () => {
+    const speech = vi.fn();
+    const runtime = await createHostedAuthRuntime(configuration, {
+      resolveSecret: async () => 'hosted-auth-runtime-cookie-secret-more-than-32-bytes',
+      runService: serviceRunner(),
+      tutorialAssistance: { speech },
+    });
+    expect(runtime.tutorialMounted.map(route => `${route.method} ${route.path}`)).toContain(
+      'POST /hosted/browser/onboarding/tutorial-speech',
+    );
+    const response = await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-speech', { method: 'POST' });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { message: 'session_cookie_missing' } });
+    expect(speech).not.toHaveBeenCalled();
+    expect((await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-speech')).status).toBe(404);
+  });
+
   it('refuses boot before secrets when the service runner is not hosted_service', async () => {
     const resolveSecret = vi.fn(async () => 'must-not-resolve');
     await expect(createHostedAuthRuntime(configuration, {

@@ -41,7 +41,7 @@ export interface HostedAuthRuntimeDependencies {
   readonly resolveSecret?: HostedAuthRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
-  readonly tutorialAssistance?: Pick<TutorialAssistanceDependencies, 'answer'>;
+  readonly tutorialAssistance?: TutorialAssistanceDependencies;
 }
 
 export interface HostedAuthRuntime {

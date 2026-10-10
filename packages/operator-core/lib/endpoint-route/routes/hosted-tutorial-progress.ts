@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { VerifiedTenantServerContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, workspaceHeaderMismatch } from '../hosted-browser-context';
-import { authorizeTutorialHelp, authorizeProductTutorialHelp, tutorialAssistanceRequestSchema, tutorialHelpRequestSchema, type TutorialAssistanceRequest } from '../../onboarding/cloud-tutorial-help';
+import { authorizeTutorialHelp, authorizeProductTutorialHelp, tutorialAssistanceRequestSchema, tutorialHelpRequestSchema, productTutorialHelpRequestSchema, type TutorialAssistanceRequest } from '../../onboarding/cloud-tutorial-help';
 import { readAccountTutorialProgress } from '../../onboarding/cloud-tutorial-progress';
 import { isHostedPrincipal } from '../../auth/hosted-principal';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, createHostedTutorialProgressRoutes } from './hosted-tutorial-progress-routes';
@@ -12,12 +12,16 @@ export const HOSTED_BROWSER_TUTORIAL_SPEECH_PATH = '/hosted/browser/onboarding/t
 
 export interface TutorialAssistanceDependencies {
   answer?: (input: TutorialAssistanceRequest, signal: AbortSignal, workspaceId: string) => Promise<string>;
-  speech?: (text: string, engine: string, voiceId: string | undefined) => Promise<{ audio: ArrayBuffer; contentType: string }>;
+  speech?: (text: string, engine: string, voiceId: string | undefined, signal?: AbortSignal) => Promise<{ audio: ArrayBuffer; contentType: string }>;
 }
-const speechSchema = tutorialHelpRequestSchema.extend({
+const speechOptions = {
   engine: z.enum(['kokoro', 'elevenlabs', 'openai', 'cartesia']),
   voiceId: z.string().min(1).max(200).optional(),
-}).strict();
+};
+const speechSchema = z.union([
+  tutorialHelpRequestSchema.extend(speechOptions).strict(),
+  productTutorialHelpRequestSchema.extend(speechOptions).strict(),
+]);
 
 /** Guarded leaves shared by native and prebundled hosts. Each host supplies
  * its maintained execution provider; missing providers fail closed. */
@@ -41,9 +45,11 @@ export function createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorks
       if (!parsed.success) return jsonError('invalid_tutorial_context', 400);
       let input: TutorialAssistanceRequest;
       try {
-        if (parsed.data.context.version === 3 && path === HOSTED_BROWSER_TUTORIAL_HELP_PATH) {
+        if (parsed.data.context.version === 3) {
           const scope = { tenantId: principal.activeOrganizationId, userId: principal.userId };
-          input = authorizeProductTutorialHelp(scope, parsed.data);
+          input = authorizeProductTutorialHelp(scope, {
+            expectedScope: parsed.data.expectedScope, context: parsed.data.context, question: parsed.data.question,
+          });
           if (!runTenant) return jsonError('tutorial_help_unavailable', 503);
           const record = await runTenant({ principal: {
             kind: 'user', profile: 'hosted', authMethod: 'cookie-session', trust: 'verified', slug: principal.userId,
@@ -73,7 +79,7 @@ export function createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorks
         }
         const voice = speechSchema.parse(raw);
         if (!dependencies.speech) throw new Error('tutorial_speech_unavailable');
-        const speech = await dependencies.speech(input.question, voice.engine, voice.voiceId);
+        const speech = await dependencies.speech(input.question, voice.engine, voice.voiceId, signal);
         if (signal.aborted) return jsonError('tutorial_speech_cancelled', 408);
         return new Response(speech.audio, { headers: { 'content-type': speech.contentType, 'cache-control': 'no-store' } });
       } catch { return jsonError(path === HOSTED_BROWSER_TUTORIAL_HELP_PATH ? 'tutorial_help_unavailable' : 'tutorial_speech_unavailable', 503); }

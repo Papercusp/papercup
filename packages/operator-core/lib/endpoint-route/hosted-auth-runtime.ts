@@ -36,7 +36,7 @@ import {
   createHostedAuthRoutes,
 } from './routes/hosted-auth';
 import { createHostedTutorialProgressRoutes } from './routes/hosted-tutorial-progress-routes';
-import { createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_HELP_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
+import { createHostedTutorialAssistanceRoutes, HOSTED_BROWSER_TUTORIAL_HELP_PATH, HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, type TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
 
 // The billing runtime rides in this module's portal prebundle (one bundle, one
 // dynamic import). It mounts its own pinned surface; the four auth routes below
@@ -67,12 +67,12 @@ export interface HostedAuthRuntimeDependencies {
   readonly resolveSecret?: HostedAuthRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
-  readonly tutorialAssistance?: Pick<TutorialAssistanceDependencies, 'answer'>;
+  readonly tutorialAssistance?: TutorialAssistanceDependencies;
 }
 
 export interface HostedAuthRuntime {
   readonly app: Hono;
-  /** Canonical guide preferences and explicit text Help, with the same session authority. */
+  /** Canonical guide preferences and explicit Help, with the same session authority. */
   readonly tutorial: Hono;
   readonly tutorialMounted: readonly { method: string; path: string }[];
   readonly mounted: readonly { method: string; path: string }[];
@@ -236,7 +236,8 @@ export async function createHostedAuthRuntime(
   const tutorialMounted = [
     ...createHostedTutorialProgressRoutes(tutorialRouteOptions),
     ...createHostedTutorialAssistanceRoutes({ ...tutorialRouteOptions, dependencies: dependencies.tutorialAssistance })
-      .filter(route => route.path === HOSTED_BROWSER_TUTORIAL_HELP_PATH),
+      .filter(route => route.path === HOSTED_BROWSER_TUTORIAL_HELP_PATH
+        || (route.path === HOSTED_BROWSER_TUTORIAL_SPEECH_PATH && dependencies.tutorialAssistance?.speech)),
   ];
   const tutorial = new Hono().basePath('/api');
   for (const route of tutorialMounted) {

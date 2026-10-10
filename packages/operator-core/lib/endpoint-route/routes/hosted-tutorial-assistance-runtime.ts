@@ -22,13 +22,14 @@ async function answerLesson(input: TutorialAssistanceRequest, signal: AbortSigna
   return value.assembled.trim().slice(0, 2000);
 }
 
-async function speakLesson(text: string, engine: string, voiceId: string | undefined) {
+async function speakLesson(text: string, engine: string, voiceId: string | undefined, signal?: AbortSignal) {
+  if (signal?.aborted) throw new Error('tutorial_speech_cancelled');
   const { isHostedTtsEngineUnavailable } = await import('../../voice-release-availability');
   if (isHostedTtsEngineUnavailable(engine)) throw new Error('tutorial_speech_unavailable');
   const [{ synthesize }, { loadVoicePrefs }] = await Promise.all([
     import('./agent-mcp/tts-synth'), import('../../voice-prefs'),
   ]);
-  const speech = await synthesize(engine as Parameters<typeof synthesize>[0], text, voiceId, await loadVoicePrefs());
+  const speech = await synthesize(engine as Parameters<typeof synthesize>[0], text, voiceId, await loadVoicePrefs(), { signal });
   if (!speech.ok) throw new Error('tutorial_speech_unavailable');
   return speech;
 }

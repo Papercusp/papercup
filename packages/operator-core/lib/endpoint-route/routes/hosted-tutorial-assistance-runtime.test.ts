@@ -73,7 +73,17 @@ describe('native hosted tutorial provider composition', () => {
     expect(providers.synthesize).not.toHaveBeenCalled();
     const speech = { ok: true, audio: new ArrayBuffer(8), contentType: 'audio/wav' };
     providers.synthesize.mockResolvedValueOnce(speech);
-    await expect(dependencies.speech!('Lesson', 'elevenlabs', 'voice')).resolves.toBe(speech);
-    expect(providers.synthesize).toHaveBeenCalledWith('elevenlabs', 'Lesson', 'voice', {});
+    const signal = new AbortController().signal;
+    await expect(dependencies.speech!('Lesson', 'elevenlabs', 'voice', signal)).resolves.toBe(speech);
+    expect(providers.synthesize).toHaveBeenCalledWith('elevenlabs', 'Lesson', 'voice', {}, { signal });
+  });
+
+  it('refuses cancelled speech before loading or calling a provider', async () => {
+    const dependencies = composition();
+    const controller = new AbortController(); controller.abort();
+    await expect(dependencies.speech!('Lesson', 'kokoro', undefined, controller.signal))
+      .rejects.toThrow('tutorial_speech_cancelled');
+    expect(providers.synthesize).not.toHaveBeenCalled();
+    expect(providers.preferences).not.toHaveBeenCalled();
   });
 });
