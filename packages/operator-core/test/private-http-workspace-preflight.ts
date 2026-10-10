@@ -50,14 +50,21 @@ export function portalBrowserPackagesPlugin(portalSourceRoot: string): Plugin {
 
 /** Use the exact maintained Portal client boundary, including router and
  * server-only aliases. Do not duplicate the table in a fixture. */
-export async function portalBrowserSurfaceBuild(portalSourceRoot: string) {
+export async function portalBrowserSurfaceBuild(portalSourceRoot: string, options: { standaloneRouter?: boolean } = {}) {
   const portal = realpathSync(portalSourceRoot);
   const root = resolve(import.meta.dirname, '../../..');
   const source = join(portal, 'apps/host/src/operator-surface-build.mjs');
   const { assertShimsResolvable, operatorSurfaceShims, operatorSurfaceImportMetaEnv } = await import(pathToFileURL(source).href);
   const shims: Array<{ pattern: RegExp; replacement: string }> = assertShimsResolvable(operatorSurfaceShims(root, portal));
+  // The static private ADV fixture mounts the operator's real TanStack router,
+  // while the Portal host mounts Next. Keep the native router-compat modules
+  // for that fixture; all server-only boundaries still come from the registry.
+  const activeShims = options.standaloneRouter ? shims.filter(shim => ![
+    join(portal, 'apps/host/shims/router-compat-navigation.tsx'),
+    join(portal, 'apps/host/shims/router-compat-link.tsx'),
+  ].includes(shim.replacement)) : shims;
   const plugin: Plugin = { name: 'maintained-portal-surface-boundary', setup(builder) {
-    for (const shim of shims) builder.onResolve({ filter: shim.pattern }, () => ({ path: shim.replacement }));
+    for (const shim of activeShims) builder.onResolve({ filter: shim.pattern }, () => ({ path: shim.replacement }));
   } };
   return { plugin, define: { 'import.meta.env': JSON.stringify(operatorSurfaceImportMetaEnv()) }, source };
 }
