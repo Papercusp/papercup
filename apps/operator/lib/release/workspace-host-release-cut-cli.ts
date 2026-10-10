@@ -46,6 +46,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
+import { parseGithubUrl } from '@papercusp/operator-core/lib/harness/clone-github';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
@@ -247,6 +248,8 @@ export function parseWorkspaceHostBuildResult(value: unknown): WorkspaceHostBuil
 export interface WorkspaceHostPublicationFacts {
   version: string;
   sourceSha: string;
+  /** Credential-free upstream URL measured from the integration repository's origin. */
+  sourceRepository: string;
   desktopVersion: string;
   /** The papercusp-desktop gitlink — recorded as the `desktop_revision` build parameter. */
   desktopRevision: string;
@@ -258,6 +261,16 @@ export interface WorkspaceHostPublicationFacts {
    * manifest unshippable, so each caller must decide it explicitly.
    */
   rollbackVersion: string | null;
+}
+
+export function readWorkspaceHostSourceRepository(repoRoot: string): string {
+  const origin = execFileSync('git', ['-C', repoRoot, 'remote', 'get-url', 'origin'], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  }).trim();
+  const repository = parseGithubUrl(origin);
+  if (!repository) throw new Error('source origin must be a credential-free GitHub repository URL');
+  return repository.cloneUrl;
 }
 
 /**
@@ -276,6 +289,11 @@ export function buildWorkspaceHostPublicationInput(
   const { schemaVersion: _schema, image, source, builder, materials, parameters, ...rest } = template;
   if (!isRecord(image) || !isRecord(source) || !isRecord(builder)) {
     throw new Error('publication input template needs image, source and builder objects');
+  }
+  const repository = typeof facts.sourceRepository === 'string' ? parseGithubUrl(facts.sourceRepository) : null;
+  if (!repository) throw new Error('publication facts need a measured credential-free GitHub sourceRepository');
+  if (source.repository !== undefined) {
+    throw new Error('template must not pin source.repository: it is measured from the integration origin');
   }
   if (!Array.isArray(materials) || !Array.isArray(parameters)) {
     throw new Error('publication input template needs materials and parameters arrays');
@@ -308,7 +326,7 @@ export function buildWorkspaceHostPublicationInput(
     ...rest,
     ...(lifecycle ? { lifecycle } : {}),
     image: { ...image, version: facts.version },
-    source: { ...source, revision: facts.sourceSha },
+    source: { ...source, repository: repository.cloneUrl, revision: facts.sourceSha },
     builder: { ...builder, version: facts.desktopVersion },
     materials: resolvedMaterials,
     parameters: [...parameters, { name: 'desktop_revision', value: facts.desktopRevision }],
@@ -1346,6 +1364,7 @@ async function main(): Promise<void> {
                 {
                   version: identity.version,
                   sourceSha: identity.sourceSha,
+                  sourceRepository: readWorkspaceHostSourceRepository(repoRoot),
                   desktopVersion,
                   desktopRevision: identity.gitlinks['papercusp-desktop'] ?? '',
                   sourceRoot: cut.source,

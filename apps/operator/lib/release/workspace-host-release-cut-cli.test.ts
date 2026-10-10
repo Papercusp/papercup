@@ -27,6 +27,7 @@ import {
   cutDocVectorSeed,
   WorkspaceHostCutStepError,
   buildWorkspaceHostPublicationInput,
+  readWorkspaceHostSourceRepository,
   buildWorkspaceHostReleaseJournalSeed,
   buildWorkspaceHostBundle,
   cupboardBaseOverride,
@@ -566,12 +567,41 @@ describe('publication input', () => {
   const facts = {
     version: VERSION,
     sourceSha: SHA,
+    sourceRepository: 'https://github.com/Papercusp/papercup.git',
     desktopVersion: '0.0.21',
     desktopRevision: DESKTOP_PIN,
     sourceRoot: '/work/source',
     bundleRoot: '/work/extracted',
     rollbackVersion: null,
   };
+
+  it('uses the measured repository instead of a template repository', () => {
+    const template = JSON.parse(readFileSync(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8'));
+    const input = buildWorkspaceHostPublicationInput(template, facts);
+    expect(input.source.repository).toBe(facts.sourceRepository);
+  });
+
+  it.each([
+    'https://github.com/Papercusp/papercup.git',
+    'git@github.com:Papercusp/papercup.git',
+  ])('measures the actual integration origin %s', (origin) => {
+    const repo = join(workDir, 'origin-source');
+    mkdirSync(repo, { recursive: true });
+    execFileSync('git', ['init', '-q', repo]);
+    execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', origin]);
+    expect(readWorkspaceHostSourceRepository(repo)).toBe(facts.sourceRepository);
+  });
+
+  it('refuses hardcoded template origins and missing or credential-bearing measured origins', () => {
+    const template = JSON.parse(readFileSync(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8'));
+    expect(() => buildWorkspaceHostPublicationInput({
+      ...template, source: { repository: 'https://github.com/Papercusp/papercusp.git' },
+    }, facts)).toThrow(/template must not pin source.repository/);
+    for (const sourceRepository of [undefined, 'https://user:secret@github.com/Papercusp/papercup.git']) {
+      expect(() => buildWorkspaceHostPublicationInput(template, { ...facts, sourceRepository } as typeof facts))
+        .toThrow(/measured credential-free GitHub sourceRepository/);
+    }
+  });
 
   it('fills the tracked template from measured facts and passes the manifest CLI parser', () => {
     const template = JSON.parse(readFileSync(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8'));
