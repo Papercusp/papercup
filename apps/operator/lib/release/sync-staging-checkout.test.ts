@@ -253,6 +253,36 @@ describe('sync-staging-checkout.sh argument parsing', () => {
 });
 
 describe('sync-staging-checkout.sh migration restart preflight (EI-24180437038891110)', () => {
+  it.each([false, true])('loads the candidate runtime DB before reservation lint (broken env: %s)', (broken) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-lint-env-'));
+    try {
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      mkdirSync(join(root, 'apps/operator'), { recursive: true });
+      writeFileSync(join(root, 'apps/operator/.env.local'), broken ? 'return 1\n' : 'DATABASE_URL=candidate-db\n');
+      const trace = join(root, 'lint-trace');
+      writeFileSync(join(bin, 'node'), [
+        '#!/bin/sh',
+        'printf "%s:%s\\n" "$1" "$DATABASE_URL" >> "$TRACE_FILE"',
+        '[ "$DATABASE_URL" = candidate-db ]',
+        '',
+      ].join('\n'), { mode: 0o700 });
+      const r = runFn(['preflight_staging_migrations'],
+        'log() { printf "%s\\n" "$*"; }\npreflight_staging_migrations', {
+          env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: trace,
+            DATABASE_URL: 'inherited-discovery-db', PATH: `${bin}:${process.env.PATH}` },
+        });
+      expect(r.status).toBe(broken ? 1 : 0);
+      if (broken) expect(existsSync(trace)).toBe(false);
+      else expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual([
+        'scripts/lint-migrations.mjs:candidate-db',
+        'scripts/check-migration-forward-compat.mjs:candidate-db',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ['scripts/lint-migrations.mjs', ['scripts/lint-migrations.mjs']],
     ['scripts/check-migration-forward-compat.mjs', [

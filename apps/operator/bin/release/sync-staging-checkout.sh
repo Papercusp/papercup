@@ -479,6 +479,13 @@ preflight_staging_migrations() {
   local candidate_root="${1:-$STAGING_ROOT}"
   log "checking staging migration safety before restarting $UNIT"
   if ! (
+    # Match prepare_staging_schema and ExecStart: reservation lint must query
+    # the candidate's runtime DB, never an ambient desktop discovery target.
+    set -a
+    if [[ -f "$candidate_root/apps/operator/.env.local" ]]; then
+      . "$candidate_root/apps/operator/.env.local" || exit 1
+    fi
+    set +a
     cd "$candidate_root" &&
     export PAPERCUSP_INTEGRATION_ROOT="$candidate_root" &&
     node scripts/lint-migrations.mjs &&
