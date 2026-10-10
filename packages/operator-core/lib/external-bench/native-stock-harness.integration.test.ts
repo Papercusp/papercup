@@ -14,6 +14,7 @@ import { preregister } from './reproducibility/prereg';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { currentBenchAssignmentId, currentBenchGatewayController, type CurrentSuBenchOptions } from './current-su';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
+import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, homes: '' }));
 vi.mock('@papercusp/db-org', async original => ({ ...await original<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }) }));
@@ -33,9 +34,9 @@ beforeAll(async () => {
 });
 afterAll(async () => { await db?.cleanup(); if (root) rmSync(root, { recursive: true, force: true }); });
 
-it('retains a real native UUID and terminal ingestion after local refusal without provider forwarding', async () => {
-  const repoRoot = join(root, 'protocol'), checkout = join(root, 'checkout'); mkdirSync(repoRoot); mkdirSync(checkout);
-  const config = currentProtocolFixture('PRIVATE-STOCK-NATIVE', 8000);
+async function refusedAssignment(name: string, problemStatement: string) {
+  const repoRoot = join(root, `protocol-${name}`), checkout = join(root, `checkout-${name}`); mkdirSync(repoRoot); mkdirSync(checkout);
+  const config = currentProtocolFixture(`PRIVATE-STOCK-NATIVE-${name}`, 8000);
   const corpus = JSON.stringify({ entries: [{ key: 'permitted:test', text: 'Permitted frozen context.' }] });
   for (const name of ['corpus', 'memory']) writeFileSync(join(repoRoot, `${name}.json`), corpus);
   config.context = { ...config.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
@@ -71,7 +72,7 @@ it('retains a real native UUID and terminal ingestion after local refusal withou
     const factory = createCurrentStockBenchHarness(opts, ctx, { ...hosted,
       admit: async () => ({ admitted: true, receiptRef: 'private-no-spend-admission' }), observeIdentity: async () => null }, { sql: h.sql as never });
     const result = await factory.spinRunAndCost({ blueprintId: 'native-codex',
-      task: { benchmark: 'swe-bench-pro', instanceId: 't1', problemStatement: 'Describe the empty repository.', graderMeta: {} },
+      task: { benchmark: 'swe-bench-pro', instanceId: 't1', problemStatement, graderMeta: {} },
       checkout: { dir: checkout, repo: 'fixture/private', baseCommit: 'fixture', cleanup: async () => {} },
       budget: config.arms[1].generationBudget });
     // The listener supplies no model answer or billed identity. Refusal must
@@ -85,11 +86,52 @@ it('retains a real native UUID and terminal ingestion after local refusal withou
     const rows = await h.sql`SELECT t.task_id, t.session_id, t.state, t.ended_at, a.id, a.ended_at AS session_ended_at
       FROM harness_shared.task_ledger t JOIN harness_shared.adv_sessions a
         ON a.workspace_id=t.workspace_id AND a.coord_owner_id=t.detail->>'coordOwnerId' AND a.session_id=t.session_id
-      WHERE t.workspace_id=${workspaceId}`;
+      WHERE t.workspace_id=${workspaceId} AND t.detail->>'assignmentId'=${currentBenchAssignmentId(config.runId, 'baseline', 't1', 1)}`;
     expect(rows).toHaveLength(1); expect(rows[0].session_id).toMatch(/^[0-9a-f-]{36}$/i);
-    expect(rows[0].ended_at).not.toBeNull(); expect(rows[0].session_ended_at).not.toBeNull();
+    // managedSpawn persists exit asynchronously after its cgroup handoff
+    // barrier. Observe its authoritative terminal row, not the stream's exit.
+    await expect.poll(async () => {
+      const [terminal] = await h.sql`SELECT ended_at FROM harness_shared.task_ledger WHERE task_id=${rows[0].task_id}`;
+      return terminal?.ended_at;
+    }, { timeout: 10000, interval: 50 }).not.toBeNull();
+    expect(rows[0].session_ended_at).not.toBeNull();
     const files = await h.sql`SELECT file_path, byte_offset FROM harness_shared.interactive_usage_files WHERE workspace_id=${workspaceId}`;
     expect(files.length).toBeGreaterThan(0);
-    for (const file of files) expect(file.file_path).toContain(join(h.homes, String(rows[0].id), 'sessions'));
+    expect(files.some(file => file.file_path.includes(join(h.homes, String(rows[0].id), 'sessions')))).toBe(true);
+    const collector = new GatewayRequestTelemetry();
+    const span = collector.begin({ provider: 'codex', protocol: 'openai-responses' });
+    span.setCacheShape(Buffer.from(JSON.stringify(bodies[0])));
+    const cache = span.finish('gateway-error', 400)!.cache;
+    const text = JSON.stringify(bodies[0].input);
+    return { cache, checkout, body: bodies[0], checkoutInInput: text.includes(checkout) };
   } finally { await hosted.stop(); }
+}
+
+it('retains a real native UUID and terminal ingestion after local refusal without provider forwarding', async () => {
+  await refusedAssignment('lifecycle', 'Describe the empty repository.');
 }, 45000);
+
+it('keeps frozen native instruction and tool fingerprints across distinct isolated assignments', async () => {
+  const first = await refusedAssignment('fingerprint-first', 'Describe the first empty repository.');
+  const second = await refusedAssignment('fingerprint-second', 'Describe the second empty repository.');
+  expect(first.cache.shape).toBe('observed'); expect(second.cache.shape).toBe('observed');
+  expect(first.cache.instructions?.bytes).toBe(first.cache.instructions?.hashedBytes);
+  expect(first.cache.tools?.bytes).toBe(first.cache.tools?.hashedBytes);
+  console.info('NATIVE_ASSIGNMENT_FINGERPRINTS', JSON.stringify({ first: first.cache, second: second.cache,
+    checkoutInInput: [first.checkoutInInput, second.checkoutInInput] }));
+  const prefix = (body: Record<string, unknown>) => {
+    const parts: unknown[] = [body.system, body.instructions];
+    for (const item of body.input as Array<Record<string, unknown>>) {
+      if (!['developer', 'system'].includes(String(item.role))) break;
+      if (item.type === 'message') parts.push(item);
+    }
+    return JSON.stringify(parts).split('\\n');
+  };
+  const a = prefix(first.body), b = prefix(second.body);
+  console.info('NATIVE_INSTRUCTION_DIFF', JSON.stringify(a.flatMap((line, i) => line === b[i] ? [] :
+    [{ line: i, first: line.slice(0, 200), second: b[i]?.slice(0, 200) }]).slice(0, 20)));
+  // This is native request-shape proof only: refusal supplies no provider answer,
+  // metered success, preregistration pin or benchmark-performance evidence.
+  expect(second.cache.tools).toEqual(first.cache.tools);
+  expect(second.cache.instructions).toEqual(first.cache.instructions);
+}, 90000);
