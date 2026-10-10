@@ -9,6 +9,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import {
+  adoptAgentReviewRevision,
+  adoptNextAgentReviewRevision,
   claimAgentReview,
   claimNextAgentReview,
   resubmitAgentReview,
@@ -84,6 +86,30 @@ export function agentReviewAbortCompletionReceipt(
     };
   }
 
+  if (mode === 'adopt' || mode === 'adopt-next') {
+    const workItemId = asRecord(payload.workItem)?.id;
+    if (
+      payload.adopted === true &&
+      typeof workItemId === 'string' &&
+      workItemId.trim().length > 0 &&
+      (mode !== 'adopt' || input?.id === workItemId)
+    ) {
+      return { status: 'recorded', effectRef: `improvements-agent-review:${mode}:${workItemId}` };
+    }
+    // Every adoption refusal except 'state-changed' exits before or at a failed claim CAS,
+    // so nothing landed; 'state-changed' may have claimed then released.
+    const stateChanged = payload.reason === 'state-changed' ||
+      (asRecord(payload.refusals)?.['state-changed'] ?? 0) !== 0;
+    if (payload.adopted === false && !stateChanged) {
+      return { status: 'not-recorded', reason: typeof payload.reason === 'string' ? payload.reason : 'no-adoptable-revision' };
+    }
+    return {
+      status: 'recovery-incomplete',
+      reason: 'adoption raced a lifecycle change and may have claimed then released the row',
+      failures: ['ambiguous-adoption-outcome'],
+    };
+  }
+
   if (mode === 'resubmit') {
     const state = asRecord(payload.state);
     const itemId = input?.id;
@@ -119,9 +145,9 @@ export default defineTool({
   profile: 'engineer',
   abortCompletionReceipt: agentReviewAbortCompletionReceipt,
   description:
-    'Claim a specific or the next peer-review item in one concrete harness, or resubmit a revision-requested item. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.',
+    'Claim a specific or the next peer-review item in one concrete harness, resubmit a revision-requested item, or adopt one whose submitter is provably gone. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.',
   guidance: {
-    when: "Use mode:'claim' with an id when a directed review must take one known pending item without consuming unrelated review work. Use mode:'claim-next' only to take the next pending change/feature. Then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item — or to adopt one whose original submitter's session is provably gone, which is otherwise stuck forever.",
+    when: "Use mode:'claim' with an id when a directed review must take one known pending item without consuming unrelated review work. Use mode:'claim-next' only to take the next pending change/feature. Then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item. Use mode:'adopt' (id) or 'adopt-next' to take a content revision whose original submitter is provably gone, then revise and resubmit it.",
     notWhen:
       'Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.',
     chaining:
@@ -171,6 +197,23 @@ export default defineTool({
         .min(1)
         .max(80)
         .describe("The revision-requested work-item id — yours, or an orphan whose submitter is gone."),
+      reproduction: z
+        .object({
+          kind: z.enum(['failing-test', 'scripted-repro', 'current-build-observation']),
+          ref: z.string().min(1).max(2000),
+          buildSha: z.string().regex(/^[0-9a-f]{7,40}$/i),
+        })
+        .optional()
+        .describe('Only for a bug claimed as reproduction validation: your current-build reproduction receipt. The next review round verifies it.'),
+    }),
+    z.object({
+      mode: z.literal('adopt'),
+      id: z.string().min(1).max(80).describe('A revision-requested work-item whose original submitter is provably gone.'),
+      harness: z.string().min(1).max(120).optional().describe("Harness containing the item; 'all' and '*' are refused."),
+    }),
+    z.object({
+      mode: z.literal('adopt-next'),
+      harness: z.string().min(1).max(120).optional().describe("Harness to scan; 'all' and '*' are refused."),
     }),
   ]),
   async handler(args, ctx) {
@@ -229,7 +272,26 @@ export default defineTool({
       };
     }
 
-    const result = await resubmitAgentReview({ id: args.id, submittedBy: identity.ownerId });
+    if (args.mode === 'adopt' || args.mode === 'adopt-next') {
+      const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
+      if (!harnessSlug) return harnessRequiredResult('improvements:agent-review');
+      const result = args.mode === 'adopt'
+        ? await adoptAgentReviewRevision({ id: args.id, adopter: identity.ownerId, harnessSlug })
+        : await adoptNextAgentReviewRevision({
+            adopter: identity.ownerId,
+            harnessSlug,
+            workspaceId: identity.workspaceId ?? undefined,
+          });
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, mode: args.mode, ...result }) }],
+      };
+    }
+
+    const result = await resubmitAgentReview({
+      id: args.id,
+      submittedBy: identity.ownerId,
+      ...(args.reproduction ? { reproduction: args.reproduction } : {}),
+    });
     return {
       content: [
         {

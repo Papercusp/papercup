@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   claim: vi.fn(),
   claimNext: vi.fn(),
   resubmit: vi.fn(),
+  adopt: vi.fn(),
+  adoptNext: vi.fn(),
   claimSpec: vi.fn(),
   identity: vi.fn(() => ({ ownerId: 'su-reviewer' })),
 }));
@@ -16,6 +18,8 @@ vi.mock('../../harness/improvements/agent-review', () => ({
   claimAgentReview: h.claim,
   claimNextAgentReview: h.claimNext,
   resubmitAgentReview: h.resubmit,
+  adoptAgentReviewRevision: h.adopt,
+  adoptNextAgentReviewRevision: h.adoptNext,
 }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: h.identity }));
 vi.mock('../../scheduler/claim-spec-store', () => ({ getClaimSpecRecord: h.claimSpec }));
@@ -108,6 +112,39 @@ describe('improvements:agent-review public door', () => {
     expect(missing).toEqual({ status: 'not-recorded', reason: 'not-found' });
     expect(repairedThenRefused).toMatchObject({ status: 'recovery-incomplete', failures: ['ambiguous-claim-outcome'] });
     expect(queueMiss).toMatchObject({ status: 'recovery-incomplete', failures: ['ambiguous-claim-outcome'] });
+  });
+
+  it('routes adopt / adopt-next to the adoption core under the caller identity and a concrete harness (D-008)', async () => {
+    h.adopt.mockResolvedValueOnce({ adopted: true, workItem: { id: 'WI-8' }, brief: { lane: 'revision-adoption' } });
+    const adopted = body(await call({ mode: 'adopt', id: 'WI-8', harness: 'papercusp' }));
+    expect(h.adopt).toHaveBeenCalledWith({ id: 'WI-8', adopter: 'su-reviewer', harnessSlug: 'papercusp' });
+    expect(adopted).toMatchObject({ ok: true, mode: 'adopt', adopted: true, brief: { lane: 'revision-adoption' } });
+
+    h.adoptNext.mockResolvedValueOnce({ adopted: false, workItem: null, scanned: 3, refusals: { 'not-submitter': 3 } });
+    const next = body(await call({ mode: 'adopt-next', harness: 'papercusp' }));
+    expect(h.adoptNext).toHaveBeenCalledWith({ adopter: 'su-reviewer', harnessSlug: 'papercusp', workspaceId: undefined });
+    expect(next).toMatchObject({ ok: true, mode: 'adopt-next', adopted: false, scanned: 3 });
+    expect(h.resubmit).not.toHaveBeenCalled();
+  });
+
+  it('names an adopted row and treats only a raced adoption as ambiguous', () => {
+    const receipt = (args: Record<string, unknown>, value: Record<string, unknown>) =>
+      agentReviewAbortCompletionReceipt(args, dispatchResult({ ok: true, mode: args.mode, ...value }), attempt);
+
+    expect(receipt({ mode: 'adopt', id: 'WI-8' }, { adopted: true, workItem: { id: 'WI-8' } }))
+      .toEqual({ status: 'recorded', effectRef: 'improvements-agent-review:adopt:WI-8' });
+    expect(receipt({ mode: 'adopt-next' }, { adopted: true, workItem: { id: 'WI-9' } }))
+      .toEqual({ status: 'recorded', effectRef: 'improvements-agent-review:adopt-next:WI-9' });
+    expect(receipt({ mode: 'adopt', id: 'WI-8' }, { adopted: false, reason: 'not-submitter' }))
+      .toEqual({ status: 'not-recorded', reason: 'not-submitter' });
+    expect(receipt({ mode: 'adopt-next' }, { adopted: false, refusals: { 'not-submitter': 2 } }))
+      .toEqual({ status: 'not-recorded', reason: 'no-adoptable-revision' });
+    expect(receipt({ mode: 'adopt', id: 'WI-8' }, { adopted: true, workItem: { id: 'WI-9' } }))
+      .toMatchObject({ status: 'recovery-incomplete', failures: ['ambiguous-adoption-outcome'] });
+    expect(receipt({ mode: 'adopt', id: 'WI-8' }, { adopted: false, reason: 'state-changed' }))
+      .toMatchObject({ status: 'recovery-incomplete', failures: ['ambiguous-adoption-outcome'] });
+    expect(receipt({ mode: 'adopt-next' }, { adopted: false, refusals: { 'state-changed': 1 } }))
+      .toMatchObject({ status: 'recovery-incomplete', failures: ['ambiguous-adoption-outcome'] });
   });
 
   it('names the resubmitted review round and preserves explicit no-write refusals', () => {
@@ -224,6 +261,19 @@ describe('improvements:agent-review public door', () => {
 
     expect(h.resubmit).toHaveBeenCalledWith({ id: 'WI-7', submittedBy: 'su-reviewer' });
     expect(body(out)).toMatchObject({ ok: true, mode: 'resubmit', resubmitted: true });
+  });
+
+  // bug-queue-legitimacy D-006: a reproduction-validation claimant records its receipt here.
+  it('resubmit forwards a reproduction receipt, and the schema refuses a filing-time encounter', async () => {
+    const reproduction = { kind: 'failing-test', ref: 'test_runs:42', buildSha: '1234567' };
+    await call({ mode: 'resubmit', id: 'WI-7', reproduction }, { harnessSlug: '*' });
+    expect(h.resubmit).toHaveBeenCalledWith({ id: 'WI-7', submittedBy: 'su-reviewer', reproduction });
+
+    expect(tool.args.safeParse({ mode: 'resubmit', id: 'WI-7', reproduction }).success).toBe(true);
+    expect(tool.args.safeParse({ mode: 'resubmit', id: 'WI-7', reproduction: { ...reproduction, kind: 'encounter' } }).success)
+      .toBe(false);
+    expect(tool.args.safeParse({ mode: 'resubmit', id: 'WI-7', reproduction: { ...reproduction, buildSha: 'main' } }).success)
+      .toBe(false);
   });
 
   it('is projected under its public MCP name and imported by the production registry', () => {
