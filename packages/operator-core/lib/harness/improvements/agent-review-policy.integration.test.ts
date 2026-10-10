@@ -420,6 +420,28 @@ describe('intakeStageClaimFloorSql: one stage predicate, TS twin agrees (P-008 /
       passes: true,
     },
     { id: 'legacy-submitter pending still holds', payload: { agentReview: review('pending', LEGACY_AGENT_REVIEW_SUBMITTER) }, passes: false },
+    // bug-queue-legitimacy D-006/D-007: a reproduction-only revision is validation work for
+    // the drain lane — admitted with readiness still not-ready; a content revision holds.
+    {
+      id: 'reproduction-validation revision bypasses the readiness floor',
+      payload: { agentReview: { ...review('revision-requested'), revisionKind: 'reproduction' }, implementationReadiness: revision },
+      passes: true,
+    },
+    {
+      id: 'content revision still holds',
+      payload: { agentReview: { ...review('revision-requested'), revisionKind: 'content' }, implementationReadiness: revision },
+      passes: false,
+    },
+    {
+      id: 'reproduction kind on a pending review does not admit',
+      payload: { agentReview: { ...review('pending'), revisionKind: 'reproduction' }, implementationReadiness: mirror },
+      passes: false,
+    },
+    {
+      id: 'non-string revisionKind never matches',
+      payload: { agentReview: { ...review('revision-requested'), revisionKind: ['reproduction'] }, implementationReadiness: revision },
+      passes: false,
+    },
     { id: 'approved + accepted readiness', payload: { agentReview: review('approved'), implementationReadiness: acceptedReadiness() }, passes: true },
     {
       id: 'approved review does not lift a capture-policy hold',

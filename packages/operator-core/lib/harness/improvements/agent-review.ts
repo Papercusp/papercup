@@ -998,10 +998,11 @@ export async function reconcileAgentReviewGrade(
       deps,
     ));
     if (current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER) {
-      if (changed && workItem.assignee) {
+      const holder = workItem.assignee;
+      if (changed && holder) {
         const released = await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
           ...(workItem.harness ? { harness: workItem.harness } : {}),
-          expectedAssignee: workItem.assignee,
+          expectedAssignee: holder,
         }));
         if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
       }
@@ -1035,10 +1036,11 @@ export async function reconcileAgentReviewGrade(
         // off than before, and `returnedToSubmitter:false` reports the weaker disposition
         // rather than hiding it behind a thrown error.
         returnedToSubmitter = false;
-        if (workItem.assignee) {
+        const holder = workItem.assignee;
+        if (holder) {
           await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
             ...(workItem.harness ? { harness: workItem.harness } : {}),
-            expectedAssignee: workItem.assignee,
+            expectedAssignee: holder,
           }));
         }
       }
@@ -1116,10 +1118,11 @@ export async function reconcileAgentReviewGrade(
       ? `Agent review round ${current.round}: independent grade ${grade}/5 by ${gradedBy}; fixing remains gated. ${reproductionRefusal}`
       : approvalComment(current.round, grade, gradedBy), workItem, next, grade, gradedBy),
     gradedBy, deps));
-  if (workItem.assignee) {
+  const reviewerHolder = workItem.assignee;
+  if (reviewerHolder) {
     const released = await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
       ...(workItem.harness ? { harness: workItem.harness } : {}),
-      expectedAssignee: workItem.assignee,
+      expectedAssignee: reviewerHolder,
     }));
     if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
   }

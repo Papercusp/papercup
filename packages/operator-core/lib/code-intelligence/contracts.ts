@@ -272,7 +272,7 @@ export interface CodeIntelAnswer {
    * Omission on a legacy producer means unmeasured, never source completeness.
    */
   readonly coverage?: {
-    readonly basis: 'indexed-code' | 'compiler-project';
+    readonly basis: 'indexed-code' | 'compiler-project' | 'syntax';
     readonly sourceCompleteness: 'unverified';
     readonly limitations: readonly string[];
   };

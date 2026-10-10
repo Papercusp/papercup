@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkItem } from '../../work-items';
-import { readAgentReviewState } from './agent-review-policy';
+import { agentReviewIsReproductionValidation, intakeStageAdmitsClaim, readAgentReviewState } from './agent-review-policy';
 import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
 import {
   acceptanceSourceRevision,
@@ -207,6 +207,92 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
       }).state).not.toBe('qualifying');
       expect(h.deliverRevision).toHaveBeenCalledWith(expect.objectContaining({ to: 'su-author' }));
     }
+  });
+
+  // bug-queue-legitimacy D-006 / D-007: a passing grade refused ONLY for its reproduction
+  // receipt is VALIDATION work for the drain lane, not a revision owed by the submitter.
+  describe('reproduction-validation routing (D-006 / D-007)', () => {
+    const admits = (item: WorkItem) => intakeStageAdmitsClaim({
+      payload: item.payload, kind: item.kind, title: item.title, summary: item.summary, createdAtMs: Date.now(),
+    });
+    const validationRow = (extra: Record<string, unknown> = {}) => issue({ kind: 'bug', assignee: 'su-validator', payload: payloadWith({
+      agentReview: { status: 'revision-requested', revisionKind: 'reproduction', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 1 },
+      ...extra,
+    }) });
+
+    it('stamps a reproduction-only refusal as validation work the intake floor admits, with fixing still gated', async () => {
+      const h = harness(issue({ kind: 'bug', assignee: 'su-reviewer', payload: payloadWith({
+        agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 1 },
+      }) }));
+      h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: 'su-reviewer' };
+      await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+      expect(readAgentReviewState(h.state.issue.payload)).toMatchObject({ status: 'revision-requested', revisionKind: 'reproduction' });
+      expect(agentReviewIsReproductionValidation(h.state.issue.payload)).toBe(true);
+      expect(admits(h.state.issue)).toBe(true);
+      expect(readImplementationReadiness(h.state.issue.payload)?.status).toBe('not-ready');
+      expect(evaluateImplementationAcceptance(h.state.issue.payload, {
+        kind: h.state.issue.kind, title: h.state.issue.title, summary: h.state.issue.summary,
+      }).state).not.toBe('qualifying');
+    });
+
+    it('stamps a failed grade as a content revision that stays held, even after a reproduction-only round', async () => {
+      const h = harness(issue({ kind: 'bug', assignee: 'su-reviewer', payload: payloadWith({
+        agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 2 },
+      }) }));
+      h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 2, feedback: 'The report does not establish a defect', gradedBy: 'su-reviewer' };
+      await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+      expect(readAgentReviewState(h.state.issue.payload)).toMatchObject({ status: 'revision-requested', revisionKind: 'content' });
+      expect(agentReviewIsReproductionValidation(h.state.issue.payload)).toBe(false);
+      expect(admits(h.state.issue)).toBe(false);
+    });
+
+    it('lets the claimant resubmit only once a receipt is on the row, without a submitter-liveness proof', async () => {
+      const bare = harness(validationRow());
+      await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator' }, bare.deps))
+        .resolves.toMatchObject({ resubmitted: false, reason: 'validation-receipt-missing' });
+      expect(bare.state.issue.assignee).toBe('su-validator');
+
+      const h = harness(validationRow({ intakeReproduction: { receipt } }));
+      await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator' }, h.deps)).resolves.toEqual({
+        resubmitted: true,
+        state: {
+          status: 'pending',
+          submittedBy: 'su-validator',
+          ledgerIdeaId: 'WI-7',
+          round: 2,
+          timing: { round: 2, enteredAt: expect.any(String) },
+        },
+      });
+      expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+      expect(h.state.issue.assignee).toBeNull();
+      expect((h.state.issue.payload as { agentReview: Record<string, unknown> }).agentReview).not.toHaveProperty('revisionKind');
+
+      // The next round approves with the verified receipt and carries no revision kind.
+      h.state.issue = { ...h.state.issue, assignee: 'su-reviewer' };
+      h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 5, feedback: null, gradedBy: 'su-reviewer' };
+      h.deps.verifyReproduction = async () => ({ status: 'verified', detail: 'current target failed', checkedAt: new Date().toISOString() });
+      await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps))
+        .resolves.toMatchObject({ status: 'approved' });
+      expect((h.state.issue.payload as { agentReview: Record<string, unknown> }).agentReview).not.toHaveProperty('revisionKind');
+    });
+
+    it('keeps the holder fence: a non-holder cannot adopt validation work out from under its claimant', async () => {
+      const h = harness(validationRow({ intakeReproduction: { receipt } }));
+      h.state.submitterLiveness = { sessionState: 'ended' };
+      await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-stranger' }, h.deps))
+        .resolves.toMatchObject({ resubmitted: false, reason: 'orphan-revision-held-by-other' });
+      expect(h.state.issue.assignee).toBe('su-validator');
+    });
+
+    it('leaves a content revision on the submitter/orphan path for its holder too', async () => {
+      const h = harness(validationRow({
+        intakeReproduction: { receipt },
+        agentReview: { status: 'revision-requested', revisionKind: 'content', submittedBy: 'su-author', ledgerIdeaId: 'WI-7', round: 1 },
+      }));
+      await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator' }, h.deps))
+        .resolves.toMatchObject({ resubmitted: false, reason: 'not-submitter' });
+      expect(h.resolveSubmitterLiveness).toHaveBeenCalled();
+    });
   });
 
   it('emits per-phase reconciliation diagnostics while preserving the revision transition', async () => {

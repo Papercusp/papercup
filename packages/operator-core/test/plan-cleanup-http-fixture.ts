@@ -124,7 +124,7 @@ async function main() {
   const after = await readPlans();
   assert.deepEqual(after, [{ plan_slug: 'private-cleanup-selected', archived: true },
     { plan_slug: 'private-cleanup-outside', archived: false }], 'HTTP cleanup must archive exactly its selected plan');
-  const findings = await sql`SELECT outcome, kind, plan_slug FROM harness_shared.plan_cleanup_run_findings
+  const findings = await sql`SELECT outcome, finding_kind AS kind, plan_slug FROM harness_shared.plan_cleanup_run_findings
     WHERE workspace_id = ${workspace} AND run_id = ${request.runId}`;
   assert.equal(findings.length, 1, 'exact automatic effect must have one persisted finding');
   const outcome = { ...findings[0] };

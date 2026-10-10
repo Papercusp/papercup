@@ -17,6 +17,7 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   isStrictOwnerActionCapability,
   readAgentReviewState,
+  agentReviewIsReproductionValidation,
   readImplementationReadiness,
   readStructuredOwnerAsk,
   sealImplementationAcceptance,
@@ -666,6 +667,21 @@ describe('readAgentReviewState', () => {
     expect(
       readAgentReviewState({ agentReview: { status: 'approved', submittedBy: 'su', ledgerIdeaId: 'WI-7', round: 0 } }),
     ).toBeNull();
+  });
+
+  it('keeps revisionKind only on a revision-requested round and only for a known kind (D-006 / D-007)', () => {
+    const base = { submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 };
+    expect(readAgentReviewState({ agentReview: { ...base, status: 'revision-requested', revisionKind: 'reproduction' } }))
+      .toEqual({ ...base, status: 'revision-requested', revisionKind: 'reproduction' });
+    expect(readAgentReviewState({ agentReview: { ...base, status: 'revision-requested', revisionKind: 'content' } }))
+      .toEqual({ ...base, status: 'revision-requested', revisionKind: 'content' });
+    // A stale kind on any other status, or an unknown kind, is dropped rather than trusted.
+    expect(readAgentReviewState({ agentReview: { ...base, status: 'pending', revisionKind: 'reproduction' } }))
+      .toEqual({ ...base, status: 'pending' });
+    expect(readAgentReviewState({ agentReview: { ...base, status: 'revision-requested', revisionKind: 'whatever' } }))
+      .toEqual({ ...base, status: 'revision-requested' });
+    expect(agentReviewIsReproductionValidation({ agentReview: { ...base, status: 'pending', revisionKind: 'reproduction' } }))
+      .toBe(false);
   });
 });
 

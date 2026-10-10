@@ -15,6 +15,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import {
   AST_GREP_LANGUAGES,
   astGrepFacade,
+  astGrepSyntaxIndex,
   type AstGrepLanguage,
 } from '../../code-intelligence/ast-grep-facade.ts';
 
@@ -37,11 +38,12 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     op: z
-      .enum(['search', 'rewrite_preview'])
+      .enum(['search', 'rewrite_preview', 'syntax_index'])
       .describe('search lists matches; rewrite_preview also reports the replacement. Neither writes.'),
     pattern: z
       .string()
       .min(1)
+      .optional()
       .describe('Structural pattern: code with metavariables. `$X` is one node, `$$$X` is many.'),
     language: z
       .enum(LANGS)
@@ -65,6 +67,8 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const root = args.rootPath ?? resolveAgentWorkspaceRoot(ctx);
+    if (args.op === 'syntax_index') return { data: await astGrepSyntaxIndex({ language: args.language, paths: args.paths, rootPath: root, limit: args.limit }) };
+    if (!args.pattern) throw new Error(args.op + ' requires pattern');
     const answer = await astGrepFacade(args.op, {
       pattern: args.pattern,
       language: args.language,

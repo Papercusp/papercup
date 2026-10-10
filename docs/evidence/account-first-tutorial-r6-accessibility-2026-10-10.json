@@ -65,6 +65,34 @@
     "fixCommit": "0d6386879156b41f2321671f74a8778fcbe7caad",
     "detector": "Maintained Portal per-lesson narrow/zoom/reduced-motion browser tests plus account-modal axe/focus assertions."
   },
+  "hostedPreferenceTask": {
+    "observedAt": "2026-10-10T16:48:42.857Z",
+    "testRunId": 20987355,
+    "outcome": "pass",
+    "passed": 1,
+    "skipped": 0,
+    "retries": 0,
+    "portalCommit": "cc880c5d44f91e93325cb865956d4bfc3eff2c00",
+    "operatorCommit": "efdcd30aeff97d2775d71f26aa44b73ac000c90d",
+    "release": "/dev/shm/tutorial-preference-runtime-cc880-efdcd-20261010T1644/releases/8Rok3v9QCvSEnGHPZfMb2-20261010164624480-3141123-64f88c42",
+    "buildId": "8Rok3v9QCvSEnGHPZfMb2",
+    "log": "/dev/shm/tutorial-preference-served-cc880-efdcd-20261010T1648.log",
+    "logSha256": "a8f83b7fc1863881ac886c5db0c6c302e670bbd66c0a3cfa1657688fd2371f0d",
+    "taskEvidence": "/dev/shm/tutorial-preference-served-results-cc880-efdcd/portal-product-tutorial-se-96d52-ion-and-keyboard-activation/served-preference-task.json",
+    "taskEvidenceSha256": "075253c199d145a31cb4a6112b43977575f7c3bec6c80afaf7aab3520baf913b",
+    "viewport": { "width": 390, "height": 844, "rootFontPx": 32, "reducedMotion": true },
+    "verifiedBehavior": [
+      "Real authenticated non-Cloud theme PUT200 and persisted preference readback",
+      "Theme remains selected after reload",
+      "Keyboard Settings page picker and Personalization option activation",
+      "Contextual account Help and guide resume with heading focus",
+      "Account lesson preserved and reviewedLessonIds unchanged",
+      "Rendered immutable build identity equal before and after journey"
+    ],
+    "qualification": "Independent source custody was clean before and after. The raw execution_details has the correct retained Portal root and worktreeDirty:true: before-run git HEAD and status both exceeded the reporter's 2000ms deadline, while the after-run HEAD read succeeded. The testing:runs summary root:null is not absence of raw root custody. This run is not bound or claimed as clean ledger-backed proof; retain the original row and repair the measured snapshot failure before a qualified follow-up.",
+    "scope": "One real hosted preference task; excludes pure Tab traversal, screen-reader/native-input/provider/novice/full-affected/production acceptance. Prior failed 20986701/20986801 and 4Lhr artifact preserved.",
+    "runtimeCleanup": "Browser terminal0 and Portal Postgres shutdown observed. Private operator deliberately SIGTERM terminal1; maintained cleanup confirms runtimeRemoved and pgDataRemoved true."
+  },
   "limitations": [
     "Mounted browser fixtures and jsdom composition only.",
     "Supported-runtime screen-reader announcements and actual highlighted product task completion remain unproved.",
