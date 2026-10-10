@@ -142,6 +142,57 @@ export interface GoalPlacementTurnEndDeps extends Pick<GoalPlacementTurnReceiptD
   sleep?: (ms: number) => Promise<void>;
 }
 
+export interface GoalPlacementTurnEndStageTiming {
+  stage: string;
+  state: 'active' | 'completed' | 'error';
+  startedAtMs: number;
+  elapsedMs: number;
+  errorName?: string;
+  errorMessage?: string;
+}
+
+export interface GoalPlacementTurnEndDiagnostics {
+  version: 1;
+  boundary: 'completed' | 'timeout' | 'aborted' | 'error';
+  elapsedMs: number;
+  activeStage: string | null;
+  stages: GoalPlacementTurnEndStageTiming[];
+  error?: { name: string; message: string };
+}
+
+export interface GoalPlacementTurnEndResult {
+  recorded: boolean;
+  reason: string;
+  diagnostics?: GoalPlacementTurnEndDiagnostics;
+}
+
+type GoalPlacementTurnEndStageObserver = (timing: GoalPlacementTurnEndStageTiming) => void;
+
+function describeTurnEndError(error: unknown): { name: string; message: string } {
+  return error instanceof Error
+    ? { name: error.name.slice(0, 80), message: error.message.slice(0, 300) }
+    : { name: typeof error, message: String(error).slice(0, 300) };
+}
+
+async function runGoalPlacementTurnEndStage<T>(
+  stage: string,
+  work: () => Promise<T>,
+  observe?: GoalPlacementTurnEndStageObserver,
+): Promise<T> {
+  const startedAtMs = Date.now();
+  observe?.({ stage, state: 'active', startedAtMs, elapsedMs: 0 });
+  try {
+    const value = await work();
+    observe?.({ stage, state: 'completed', startedAtMs, elapsedMs: Math.max(0, Date.now() - startedAtMs) });
+    return value;
+  } catch (error) {
+    const detail = describeTurnEndError(error);
+    observe?.({ stage, state: 'error', startedAtMs, elapsedMs: Math.max(0, Date.now() - startedAtMs),
+      errorName: detail.name, errorMessage: detail.message });
+    throw error;
+  }
+}
+
 export interface GoalPlacementTurnReceiptDeps {
   current: (ownerId: string) => Promise<SelfSession | null>;
   lookup: (ownerId: string, sessionId: string) => Promise<SelfSession | null>;
@@ -238,16 +289,17 @@ export async function recordGoalPlacementTurnEnd(input: {
   goalSubject: async (ownerId, workspaceId) =>
     (await import('./agent-obligation-reader')).defaultAgentObligationReaderDeps().goalSubject(workspaceId, ownerId),
   agenda: async (ownerId, workspaceId) => (await import('./agent-obligation-reader')).readAgentObligationAgenda({ ownerId, workspaceId }),
-}): Promise<{ recorded: boolean; reason: string }> {
+}, observeStage?: GoalPlacementTurnEndStageObserver): Promise<{ recorded: boolean; reason: string }> {
   // Most journal callers do not hold a GOAL. One indexed mode read avoids
   // transcript and portfolio IO for them; missing scope is never inferred.
-  const goalId = await deps.goalSubject(input.ownerId, input.workspaceId);
+  const stage = <T>(name: string, work: () => Promise<T>) => runGoalPlacementTurnEndStage(name, work, observeStage);
+  const goalId = await stage('goal-subject', () => deps.goalSubject(input.ownerId, input.workspaceId));
   if (!goalId) return { recorded: false, reason: 'no-canonical-goal' };
-  const session = await deps.current(input.ownerId);
+  const session = await stage('current-session', () => deps.current(input.ownerId));
   if (!session || session.sessionId !== input.nativeSessionId || session.sourceKind !== input.sourceKind) {
     return { recorded: false, reason: 'native-session-mismatch' };
   }
-  let tail = await deps.tail(session);
+  let tail = await stage('transcript-tail', () => deps.tail(session));
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   // The Stop hook can read the transcript before the final response flushes. The unflushed
   // tail then ends on a progress response, or — when the turn's assistant entries were
@@ -255,11 +307,13 @@ export async function recordGoalPlacementTurnEnd(input: {
   // at 00:33:18.226Z, tail ended on the wake prompt). Both settle; nothing else is polled.
   const unflushed = (last: TranscriptTailTurn | undefined) => last?.speaker === 'user' ||
     (last?.speaker === 'assistant' && last.responseDisposition === 'progress');
-  for (let poll = 0; poll < GOAL_PLACEMENT_TURN_END_SETTLE_POLLS && !latestCompletedDecision(session, tail) &&
-    unflushed(tail[tail.length - 1]); poll++) {
-    await sleep(GOAL_PLACEMENT_TURN_END_SETTLE_POLL_MS);
-    tail = await deps.tail(session);
-  }
+  await stage('final-turn-settle', async () => {
+    for (let poll = 0; poll < GOAL_PLACEMENT_TURN_END_SETTLE_POLLS && !latestCompletedDecision(session, tail) &&
+      unflushed(tail[tail.length - 1]); poll++) {
+      await sleep(GOAL_PLACEMENT_TURN_END_SETTLE_POLL_MS);
+      tail = await deps.tail(session);
+    }
+  });
   const completed = latestCompletedDecision(session, tail);
   if (!completed) return { recorded: false, reason: 'native-decision-not-complete' };
   const endedAt = completed.ts!.getTime();
@@ -267,15 +321,15 @@ export async function recordGoalPlacementTurnEnd(input: {
   if (!timely(deps.now())) return { recorded: false, reason: 'turn-end-observation-stale' };
   // WI-10004818: scope belongs to the goal's filing harness, even when its portfolio
   // is unreadable, empty, or lists plans from other harnesses.
-  const harness = await deps.goalHarness(goalId, input.workspaceId);
-  const read = await deps.agenda(input.ownerId, input.workspaceId);
+  const harness = await stage('goal-harness', () => deps.goalHarness(goalId, input.workspaceId));
+  const read = await stage('agenda-read', () => deps.agenda(input.ownerId, input.workspaceId));
   if (!read.goalId) return { recorded: false, reason: 'no-canonical-goal' };
   if (read.goalId !== goalId) return { recorded: false, reason: 'goal-scope-changed-during-observation' };
   const observedAt = Date.parse(read.observedAt);
   if (!timely(observedAt) || !timely(deps.now()) || observedAt > deps.now()) {
     return { recorded: false, reason: 'turn-end-observation-stale' };
   }
-  const again = latestCompletedDecision(session, await deps.tail(session));
+  const again = latestCompletedDecision(session, await stage('revalidate-before-admission', () => deps.tail(session)));
   if (!again || completedRef(session, again) !== completedRef(session, completed)) {
     return { recorded: false, reason: 'native-decision-advanced-during-observation' };
   }
@@ -295,21 +349,25 @@ export async function recordGoalPlacementTurnEnd(input: {
       ...(row.measurementFailure ? { measurementFailure: {
         code: row.measurementFailure.code, detail: row.measurementFailure.detail.slice(0, 500) } } : {}) }));
   if (!rows.length) return { recorded: false, reason: 'placement-policy-unmeasured' };
-  const parsedDelivery = goalPlacementDeliverySchema.safeParse(await deps.pending?.(input.ownerId, input.workspaceId));
+  const pending = await stage('pending-delivery', () => deps.pending
+    ? deps.pending(input.ownerId, input.workspaceId) : Promise.resolve(undefined));
+  const parsedDelivery = goalPlacementDeliverySchema.safeParse(pending);
   const delivery = parsedDelivery.success && parsedDelivery.data.ownerId === input.ownerId &&
     parsedDelivery.data.workspaceId === input.workspaceId && parsedDelivery.data.nativeSessionId === session.sessionId &&
     parsedDelivery.data.sourceKind === session.sourceKind && Date.parse(parsedDelivery.data.offeredAt) <= endedAt
     ? parsedDelivery.data : null;
-  const admissionRows = delivery && deps.admission ? await Promise.all(delivery.rows.filter((row) => row.goalId === goalId)
-    .map(async (row) => ({ planRef: row.planRef, admission: await deps.admission!({ ownerId: input.ownerId,
-      workspaceId: input.workspaceId, row, window: { offeredAt: delivery.offeredAt, completedAt: completed.ts!.toISOString() } }) }))) : [];
+  const admissionRows = await stage('admission-observation', async () => delivery && deps.admission
+    ? Promise.all(delivery.rows.filter((row) => row.goalId === goalId)
+      .map(async (row) => ({ planRef: row.planRef, admission: await deps.admission!({ ownerId: input.ownerId,
+        workspaceId: input.workspaceId, row, window: { offeredAt: delivery.offeredAt, completedAt: completed.ts!.toISOString() } }) })))
+    : []);
   // Admission IO can span a new request or exceed the native observation window.
   // Recheck after that IO too; an earlier policy sample alone cannot prove this.
-  const afterAdmission = latestCompletedDecision(session, await deps.tail(session));
+  const afterAdmission = latestCompletedDecision(session, await stage('revalidate-after-admission', () => deps.tail(session)));
   if (!timely(deps.now()) || !afterAdmission || completedRef(session, afterAdmission) !== completedRef(session, completed)) {
     return { recorded: false, reason: 'native-decision-advanced-during-observation' };
   }
-  await deps.append({ workspaceId: input.workspaceId, owner: input.ownerId, agent: session.sourceKind,
+  await stage('receipt-append', () => deps.append({ workspaceId: input.workspaceId, owner: input.ownerId, agent: session.sourceKind,
     sessionId: session.sessionId, scope: harness,
     kind: 'lifecycle', toolName: null, phase: null, toolUseId: `goal-placement-turn-end:${completedRef(session, completed)}`,
     summary: 'Goal placement policy observed at native turn end', status: 'ok', cwd: null,
@@ -317,21 +375,61 @@ export async function recordGoalPlacementTurnEnd(input: {
       completedTurnRef: completedRef(session, completed), completedAt: completed.ts!.toISOString(),
       observedAt: read.observedAt, rows,
       ...(delivery ? { deliveryToken: delivery.token, admissions: admissionRows } : {}) } },
-  });
+  }));
   return { recorded: true, reason: 'turn-end-policy-recorded-not-yet-graded' };
 }
 
 /** Fail-soft bounded extension of the existing journal hook. No new Stop hook,
  * local token file, model call or background routine is introduced. */
-export async function boundedRecordGoalPlacementTurnEnd(input: Parameters<typeof recordGoalPlacementTurnEnd>[0]) {
-  const [{ withBoundedTimeout }, { trackDetached }] = await Promise.all([
-    import('./bounded-timeout'), import('./detached-imports'),
-  ]);
-  return (await withBoundedTimeout(trackDetached(recordGoalPlacementTurnEnd(input)), {
+export async function boundedRecordGoalPlacementTurnEnd(
+  input: Parameters<typeof recordGoalPlacementTurnEnd>[0],
+  deps?: GoalPlacementTurnEndDeps,
+): Promise<GoalPlacementTurnEndResult> {
+  const startedAtMs = Date.now();
+  const stages: GoalPlacementTurnEndStageTiming[] = [];
+  const observeStage: GoalPlacementTurnEndStageObserver = (timing) => {
+    const activeIndex = stages.findIndex((current) => current.stage === timing.stage && current.state === 'active');
+    if (timing.state === 'active' || activeIndex < 0) stages.push(timing);
+    else stages[activeIndex] = timing;
+  };
+  const diagnostics = (
+    boundary: GoalPlacementTurnEndDiagnostics['boundary'],
+    error?: { name: string; message: string },
+  ): GoalPlacementTurnEndDiagnostics => {
+    const now = Date.now();
+    const snapshot = stages.map((timing) => timing.state === 'active'
+      ? { ...timing, elapsedMs: Math.max(0, now - timing.startedAtMs) } : { ...timing });
+    const activeStage = [...snapshot].reverse().find((timing) => timing.state === 'active')?.stage ?? null;
+    return { version: 1, boundary, elapsedMs: Math.max(0, now - startedAtMs), activeStage, stages: snapshot,
+      ...(error ? { error } : {}) };
+  };
+  const importStartedAtMs = Date.now();
+  let withBoundedTimeout: typeof import('./bounded-timeout').withBoundedTimeout;
+  let trackDetached: typeof import('./detached-imports').trackDetached;
+  try {
+    [{ withBoundedTimeout }, { trackDetached }] = await Promise.all([
+      import('./bounded-timeout'), import('./detached-imports'),
+    ]);
+    observeStage({ stage: 'bounded-support-import', state: 'completed', startedAtMs: importStartedAtMs,
+      elapsedMs: Math.max(0, Date.now() - importStartedAtMs) });
+  } catch (error) {
+    const detail = describeTurnEndError(error);
+    observeStage({ stage: 'bounded-support-import', state: 'error', startedAtMs: importStartedAtMs,
+      elapsedMs: Math.max(0, Date.now() - importStartedAtMs), errorName: detail.name, errorMessage: detail.message });
+    return { recorded: false, reason: 'turn-end-read-unavailable', diagnostics: diagnostics('error', detail) };
+  }
+  const bounded = await withBoundedTimeout(trackDetached(recordGoalPlacementTurnEnd(input, deps, observeStage)), {
     // Settle polling (<=2s) plus the agenda read (0.65-0.92s measured live) must both fit, and
     // the detached Stop hook's 5s HTTP budget still has to cover the journal leg after this.
     timeoutMs: 3_500, label: 'goal-placement-turn-end', fallback: { recorded: false, reason: 'turn-end-read-unavailable' },
-  })).value;
+  });
+  const boundary = bounded.degraded ? bounded.reason ?? 'error' : 'completed';
+  const error = bounded.reason === 'error' ? describeTurnEndError(bounded.error ?? bounded.errorMessage) : undefined;
+  const result: GoalPlacementTurnEndResult = { ...bounded.value };
+  if (bounded.degraded || (!result.recorded && result.reason !== 'no-canonical-goal')) {
+    result.diagnostics = diagnostics(boundary, error);
+  }
+  return result;
 }
 
 /** Persist why the turn-end policy was not recorded without creating a receipt
@@ -339,7 +437,7 @@ export async function boundedRecordGoalPlacementTurnEnd(input: Parameters<typeof
  * normal case and intentionally produce no diagnostic row. */
 export async function recordGoalPlacementTurnEndOutcome(
   input: Parameters<typeof recordGoalPlacementTurnEnd>[0],
-  outcome: { recorded: boolean; reason: string },
+  outcome: GoalPlacementTurnEndResult,
   deps: Pick<GoalPlacementTurnReceiptDeps, 'append' | 'now'> = defaults,
 ): Promise<boolean> {
   if (outcome.recorded || outcome.reason === 'no-canonical-goal') return false;
@@ -358,7 +456,8 @@ export async function recordGoalPlacementTurnEndOutcome(
       summary: 'Goal placement policy turn-end observation was not recorded',
       status: null,
       cwd: null,
-      detail: { goalPlacementTurnEndOutcome: { version: 1, recorded: false, reason: outcome.reason, observedAt } },
+      detail: { goalPlacementTurnEndOutcome: { version: 1, recorded: false, reason: outcome.reason, observedAt,
+        ...(outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}) } },
     });
     return true;
   } catch {
