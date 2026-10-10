@@ -19,7 +19,10 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 // Keep revision notifications inside this isolated fixture; lifecycle/ledger writes are real PG.
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: vi.fn(async () => ({ ok: true })) }));
-vi.mock('../../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: vi.fn(async () => ({ woken: 0 })) }));
+vi.mock('../../agent-tools/coordination/inbox-wake', async (orig) => ({
+  ...(await orig<typeof import('../../agent-tools/coordination/inbox-wake')>()),
+  wakeRecipients: vi.fn(async () => ({ woken: 0 })),
+}));
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { getIssue, linkIssue } = await import('../../issues-engineer');
