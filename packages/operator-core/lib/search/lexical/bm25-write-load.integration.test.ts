@@ -111,86 +111,113 @@ async function indexBytes(qualified: string): Promise<number> {
   return Number(bytes);
 }
 
-describe('BM25 under sustained concurrent writes (P-008)', () => {
-  it('finds every committed item within 5 s, and every index ends within 1.5x of a fresh rebuild', async () => {
-    expect([...(await readBm25Indexes(sql))]).toContain('work_items_bm25');
+interface WriteLoadRun {
+  probes: Array<{ kind: 'insert' | 'update'; ms: number }>;
+  reclaims: Bm25Reclaim[];
+  maintenanceErrors: string[];
+  maxWorkItemsBytes: number;
+  sizes: Array<{ index: string; before: number; after: number; ratio: number }>;
+}
 
-    let loading = true;
-    const probes: Array<{ kind: 'insert' | 'update'; ms: number }> = [];
-    const reclaims: Bm25Reclaim[] = [];
-    const maintenanceErrors: string[] = [];
-    let maxWorkItemsBytes = 0;
+/**
+ * One load run feeds both bars, so each bar is its own case and a red names the bar it fails:
+ * R-6 rates the probes, R-7 rates the index sizes. Maintenance (compaction + D-010 reclaim)
+ * runs DURING the load, so R-7's REINDEX comparison measures what maintenance left behind.
+ */
+async function runWriteLoad(): Promise<WriteLoadRun> {
+  expect([...(await readBm25Indexes(sql))]).toContain('work_items_bm25');
 
-    const probeLoop = (async () => {
-      for (let n = 0; loading; n++) {
-        probes.push(await probe(n));
-        await sleep(100);
-      }
-    })();
-    const maintenanceLoop = (async () => {
-      while (loading) {
-        const r = await runBm25Maintenance(sql);
-        maintenanceErrors.push(...r.errors);
-        if (r.reclaimed) reclaims.push(r.reclaimed);
-        maxWorkItemsBytes = Math.max(maxWorkItemsBytes, await indexBytes('harness_shared.work_items_bm25'));
-        await sleep(1_000);
-      }
-    })();
+  let loading = true;
+  const probes: Array<{ kind: 'insert' | 'update'; ms: number }> = [];
+  const reclaims: Bm25Reclaim[] = [];
+  const maintenanceErrors: string[] = [];
+  let maxWorkItemsBytes = 0;
 
-    const started = performance.now();
-    let batches = 0;
-    try {
-      const done = await Promise.all(Array.from({ length: WRITERS }, (_, w) => writer(w, () => probes.length < MIN_PROBES)));
-      batches = done.reduce((a, b) => a + b, 0);
-    } finally {
-      loading = false;
-      await Promise.all([probeLoop, maintenanceLoop]);
+  const probeLoop = (async () => {
+    for (let n = 0; loading; n++) {
+      probes.push(await probe(n));
+      await sleep(100);
     }
-    const loadMs = performance.now() - started;
-
-    // Settle: run maintenance until a run neither compacts, reclaims, nor leaves work pending.
-    for (let i = 0; i < 10; i++) {
-      maxWorkItemsBytes = Math.max(maxWorkItemsBytes, await indexBytes('harness_shared.work_items_bm25'));
+  })();
+  const maintenanceLoop = (async () => {
+    while (loading) {
       const r = await runBm25Maintenance(sql);
       maintenanceErrors.push(...r.errors);
       if (r.reclaimed) reclaims.push(r.reclaimed);
-      const busy = r.reclaimed || r.pendingReclaims.length > 0 || r.compacted.some(c => c.stillNeeds || c.steps > 0);
-      if (!busy) break;
+      maxWorkItemsBytes = Math.max(maxWorkItemsBytes, await indexBytes('harness_shared.work_items_bm25'));
+      await sleep(1_000);
     }
+  })();
 
-    // R-7: each index against its own REINDEX.
-    const sizes: Array<{ index: string; before: number; after: number; ratio: number }> = [];
-    for (const name of [...(await readBm25Indexes(sql))].sort()) {
-      const qualified = `harness_shared.${name}`;
-      const before = await indexBytes(qualified);
-      await sql.unsafe(`REINDEX INDEX ${qualified}`);
-      const after = await indexBytes(qualified);
-      sizes.push({ index: qualified, before, after, ratio: before / after });
-    }
+  const started = performance.now();
+  let batches = 0;
+  try {
+    const done = await Promise.all(Array.from({ length: WRITERS }, (_, w) => writer(w, () => probes.length < MIN_PROBES)));
+    batches = done.reduce((a, b) => a + b, 0);
+  } finally {
+    loading = false;
+    await Promise.all([probeLoop, maintenanceLoop]);
+  }
+  const loadMs = performance.now() - started;
 
-    const found = probes.filter(p => Number.isFinite(p.ms)).map(p => p.ms).sort((a, b) => a - b);
-    console.info(JSON.stringify({
-      p008: 'bm25-write-load',
-      loadMs: Math.round(loadMs),
-      inserts: batches * BATCH_ROWS,
-      probes: probes.length,
-      probeP50Ms: found.length ? Math.round(found[Math.floor(found.length / 2)]!) : null,
-      probeMaxMs: found.length ? Math.round(found[found.length - 1]!) : null,
-      maxWorkItemsBytes,
-      reclaims,
-      sizes,
-    }));
+  // Settle: run maintenance until a run neither compacts, reclaims, nor leaves work pending.
+  for (let i = 0; i < 10; i++) {
+    maxWorkItemsBytes = Math.max(maxWorkItemsBytes, await indexBytes('harness_shared.work_items_bm25'));
+    const r = await runBm25Maintenance(sql);
+    maintenanceErrors.push(...r.errors);
+    if (r.reclaimed) reclaims.push(r.reclaimed);
+    const busy = r.reclaimed || r.pendingReclaims.length > 0 || r.compacted.some(c => c.stillNeeds || c.steps > 0);
+    if (!busy) break;
+  }
 
-    expect(maintenanceErrors).toEqual([]);
-    // R-6
+  // R-7: each index against its own REINDEX.
+  const sizes: Array<{ index: string; before: number; after: number; ratio: number }> = [];
+  for (const name of [...(await readBm25Indexes(sql))].sort()) {
+    const qualified = `harness_shared.${name}`;
+    const before = await indexBytes(qualified);
+    await sql.unsafe(`REINDEX INDEX ${qualified}`);
+    const after = await indexBytes(qualified);
+    sizes.push({ index: qualified, before, after, ratio: before / after });
+  }
+
+  const found = probes.filter(p => Number.isFinite(p.ms)).map(p => p.ms).sort((a, b) => a - b);
+  console.info(JSON.stringify({
+    p008: 'bm25-write-load',
+    loadMs: Math.round(loadMs),
+    inserts: batches * BATCH_ROWS,
+    probes: probes.length,
+    probeP50Ms: found.length ? Math.round(found[Math.floor(found.length / 2)]!) : null,
+    probeMaxMs: found.length ? Math.round(found[found.length - 1]!) : null,
+    maxWorkItemsBytes,
+    reclaims,
+    sizes,
+  }));
+
+  return { probes, reclaims, maintenanceErrors, maxWorkItemsBytes, sizes };
+}
+
+describe('BM25 under sustained concurrent writes (P-008)', () => {
+  let run: WriteLoadRun;
+
+  beforeAll(async () => {
+    run = await runWriteLoad();
+  }, 900_000);
+
+  it('R-6: finds every committed item, inserted or updated, within 5 s of its commit', () => {
+    const { probes } = run;
     expect(probes.length).toBeGreaterThanOrEqual(MIN_PROBES);
     expect(probes.filter(p => p.kind === 'update').length).toBeGreaterThanOrEqual(10);
     expect(probes.filter(p => !Number.isFinite(p.ms) || p.ms > VISIBILITY_BOUND_MS)).toEqual([]);
-    // The load really took work_items past the reclaim floor, and maintenance reclaimed it.
+  });
+
+  it('R-7: with maintenance running during the load, every index ends within 1.5x of a fresh rebuild', () => {
+    const { maintenanceErrors, maxWorkItemsBytes, reclaims, sizes } = run;
+    expect(maintenanceErrors).toEqual([]);
+    // The load really took work_items past the reclaim floor, and maintenance reclaimed it,
+    // so the size bar cannot pass by never exercising the reclaim path.
     expect(maxWorkItemsBytes).toBeGreaterThanOrEqual(BM25_RECLAIM_MIN_BYTES);
     expect(reclaims.some(r => r.index === 'harness_shared.work_items_bm25')).toBe(true);
-    // R-7
     expect(sizes.map(s => s.index)).toContain('harness_shared.work_items_bm25');
     expect(sizes.filter(s => s.ratio > SIZE_BOUND)).toEqual([]);
-  }, 900_000);
+  });
 });

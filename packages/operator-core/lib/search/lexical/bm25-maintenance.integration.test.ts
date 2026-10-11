@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { runBm25Maintenance } from './bm25-maintenance';
+import { BM25_MAX_BLOAT_RATIO, runBm25Maintenance } from './bm25-maintenance';
 import { resetBm25Availability } from './rank';
 import { rankWorkItemIds, seedBm25Corpus, startBm25TestDb, type Bm25TestDb } from './test-pg/bm25-test-db';
 
@@ -227,6 +227,63 @@ describe('index maintenance workflow body (P-006)', () => {
       expect(n).toBe(40);
     } finally {
       await sql.unsafe('DROP TABLE IF EXISTS harness_shared.compaction_probe');
+    }
+  });
+
+  // Plan decision D-010, measured on pg_textsearch 1.5.1: compaction merges segments into new
+  // pages and never returns the old ones, so a churned index file sits far above its live data.
+  // Two scratch indexes get four spilled level-0 segments each; the first run compacts both and
+  // must rebuild exactly ONE with REINDEX CONCURRENTLY, leaving the other pending for the next
+  // run. The floor is lowered to 1 MiB so these indexes qualify and the 400-row fixture's do not.
+  it('reclaims a bloated index with REINDEX CONCURRENTLY, at most one per run, and the other on the next run', async () => {
+    const tables = ['reclaim_probe_a', 'reclaim_probe_b'];
+    const idx = (t: string) => `harness_shared.${t}_bm25`;
+    const opts = { reclaimMinBytes: 1024 * 1024 };
+    try {
+      for (const t of tables) {
+        await sql.unsafe(`
+          CREATE TABLE harness_shared.${t} (id serial PRIMARY KEY, body text);
+          CREATE INDEX ${t}_bm25 ON harness_shared.${t} USING bm25 (body)
+            WITH (text_config = 'english', compaction = 'manual');`);
+        for (let s = 0; s < 4; s++) {
+          await sql.unsafe(`INSERT INTO harness_shared.${t} (body)
+            SELECT 'tok' || md5('${t}' || g) FROM generate_series(${s * 3000 + 1}, ${(s + 1) * 3000}) g`);
+          await sql`SELECT public.bm25_spill_index(${idx(t)})`;
+        }
+      }
+      const bytes = async (qualified: string) =>
+        Number((await sql<{ b: string }[]>`SELECT pg_relation_size(${qualified}::regclass) AS b`)[0]!.b);
+
+      const first = await runBm25Maintenance(sql, opts);
+      expect(first.errors).toEqual([]);
+      expect(first.built).toBeNull();
+      const target = first.reclaimed!;
+      expect(tables.map(idx)).toContain(target.index);
+      expect(target.ratio).toBeGreaterThan(BM25_MAX_BLOAT_RATIO);
+      expect(target.afterBytes).toBeLessThan(target.beforeBytes);
+      const other = tables.map(idx).find(i => i !== target.index)!;
+      expect(first.pendingReclaims).toEqual([other]);
+      const otherBefore = await bytes(other);
+
+      const second = await runBm25Maintenance(sql, opts);
+      expect(second.errors).toEqual([]);
+      expect(second.reclaimed?.index).toBe(other);
+      expect(second.pendingReclaims).toEqual([]);
+      expect(await bytes(other)).toBeLessThan(otherBefore);
+
+      const third = await runBm25Maintenance(sql, opts);
+      expect(third.errors).toEqual([]);
+      expect(third.reclaimed).toBeNull();
+      expect(third.pendingReclaims).toEqual([]);
+
+      // The rebuilt indexes still answer for every row.
+      for (const t of tables) {
+        const [{ n }] = await sql.unsafe<{ n: number }[]>(
+          `SELECT count(*)::int AS n FROM harness_shared.${t} WHERE body <@> ('tok' || md5('${t}' || 7)) < 0`);
+        expect(n).toBe(1);
+      }
+    } finally {
+      for (const t of tables) await sql.unsafe(`DROP TABLE IF EXISTS harness_shared.${t}`);
     }
   });
 
