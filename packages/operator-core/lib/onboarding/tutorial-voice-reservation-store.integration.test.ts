@@ -5,7 +5,8 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { TutorialVoiceAdmission } from '../endpoint-route/routes/hosted-tutorial-progress';
-import { PostgresTutorialVoiceReservationStore, validateTutorialVoiceIdentityForUpdate, withTutorialVoiceTenantContext, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
+import { PostgresTutorialVoiceReservationStore, validateTutorialVoiceIdentityForUpdate, validateTutorialVoiceLessonForUpdate, withTutorialVoiceTenantContext, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
+import { enrollAccountTutorial } from './cloud-tutorial-progress';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
@@ -290,6 +291,27 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
       authenticationMethods: [], mfaVerified: false,
     } }) };
     await expect(validateTutorialVoiceIdentityForUpdate(db.adminSql, input, provider)).rejects.toThrow('hosted_session_lock_requires_transaction');
+    // Migration 1418 enrolls new active memberships; explicitly remove that
+    // automatic fixture enrollment to exercise the absent-record refusal.
+    await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences SET profile = profile - 'productTutorial'
+      WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid`;
+    expect(await run(tx => validateTutorialVoiceLessonForUpdate(tx, input, provider))).toBe(false);
+    await db.adminSql.begin(tx => enrollAccountTutorial(tx as unknown as Sql,
+      { tenantId: organization.id, userId: user.id }));
+    await run(async tx => {
+      expect(await validateTutorialVoiceLessonForUpdate(tx, input, provider)).toBe(true);
+      expect(await validateTutorialVoiceLessonForUpdate(tx, { ...input,
+        lesson: { ...input.lesson, step: 'navigation' } }, provider)).toBe(false);
+      await expect(db.adminSql.begin(async writer => {
+        await writer.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await writer`UPDATE papercusp_auth.hosted_user_preferences SET profile = '{}'::jsonb
+          WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+    await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences
+      SET profile = jsonb_set(profile, '{productTutorial,3,disposition}', '"paused"'::jsonb)
+      WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid`;
+    expect(await run(tx => validateTutorialVoiceLessonForUpdate(tx, input, provider))).toBe(false);
     await run(async tx => {
       expect(await validateTutorialVoiceIdentityForUpdate(tx, input, provider)).toBe(true);
       externalUserId = randomUUID();

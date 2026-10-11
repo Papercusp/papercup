@@ -7,6 +7,8 @@ import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import type { HostedIdentityProvider } from '../auth/hosted/provider';
+import { readAccountTutorialProgress, readTutorialProgress } from './cloud-tutorial-progress';
+import { authorizeTutorialVoice } from './cloud-tutorial-help';
 
 /** Read a verified tenant's lesson inside the reservation transaction. Unlike
  * withTenantContext, this must not open a second transaction: successful row
@@ -62,6 +64,37 @@ export async function validateTutorialVoiceIdentityForUpdate(sql: Sql, admission
       customerWorkspaceId: admission.customerWorkspaceId, controlPlaneWorkspaceId: admission.controlWorkspaceId }))) return false;
   // Upstream verification can take time; expiry must still hold after all reads.
   return session.expiresAt.getTime() > Date.now() && upstream.value.expiresAtMs > Date.now();
+}
+
+/** Identity must be revalidated before constructing tenant authority. Both
+ * identity and persisted lesson locks remain in the reservation transaction;
+ * policy and provider duration evidence are still separate required checks. */
+export async function validateTutorialVoiceLessonForUpdate(sql: Sql, admission: TutorialVoiceAdmission,
+  provider: Pick<HostedIdentityProvider, 'providerId' | 'validateSession'>): Promise<boolean> {
+  if (!await validateTutorialVoiceIdentityForUpdate(sql, admission, provider)) return false;
+  const account = admission.lesson.version === 3;
+  if (!account && admission.customerWorkspaceId === null) return false;
+  const workspaceId = account ? undefined : admission.customerWorkspaceId!;
+  const context: VerifiedTenantServerContext = { principal: {
+    kind: 'user', profile: 'hosted', authMethod: 'cookie-session', trust: 'verified', slug: admission.userId,
+    workspaceId: admission.controlWorkspaceId, userId: admission.userId,
+    activeOrganizationId: admission.organizationId, sessionId: admission.sessionId,
+    sessionVersion: admission.sessionVersion, ...(workspaceId ? { selectedWorkspaceId: workspaceId } : {}),
+  }, ...(workspaceId ? { selectedWorkspace: { id: workspaceId, organizationId: admission.organizationId } } : {}) };
+  const lessonValid = await withTutorialVoiceTenantContext(sql, context, async tx => {
+    const scope = { tenantId: admission.organizationId, userId: admission.userId,
+      ...(workspaceId ? { workspaceId } : {}) };
+    const record = account ? await readAccountTutorialProgress(tx, scope, { lock: true })
+      : await readTutorialProgress(tx, { ...scope, workspaceId: workspaceId! },
+        admission.lesson.version === 2 ? 2 : 1, { lock: true, requirePersisted: true });
+    try {
+      authorizeTutorialVoice(scope, { expectedScope: scope, context: admission.lesson }, record);
+      return true;
+    } catch { return false; }
+  });
+  // Waiting on a lesson writer can cross local/upstream expiry. Revalidate
+  // after that wait rather than authorizing from the earlier time snapshot.
+  return lessonValid && await validateTutorialVoiceIdentityForUpdate(sql, admission, provider);
 }
 
 export interface TutorialVoiceQuotaAuthority {
