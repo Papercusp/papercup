@@ -1430,12 +1430,15 @@ snapshot_committed_operator_source() {
   # REPO_DIR remains the canonical coordination/fence/dependency donor domain.
   # Only runtime source and desktop execution move to the verified archive.
   local snapshot_root receipt source_bytes
-  local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,scripts/lib/budgeted-task-scheduler.mjs,scripts/pc-heavy.sh,apps/operator/bin/release/dependency-generation.sh,papercusp-desktop/bin/tauri-guarded,papercusp-desktop/bin/lib/claim-target-dir.sh,papercusp-desktop/bin/lib/cargo-target-root.sh,papercusp-desktop/bin/lib/release-artifacts.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,papercusp-desktop/src-tauri/src/main.rs,papercusp-desktop/src-tauri/src/native_console.rs,papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs,papercusp-desktop/test/native-console-gnome.test.js,papercusp-desktop/test/monorepo-host-preflight.mjs,scripts/lib/node-test-host-preflight.mjs,packages/operator-core/lib/gnome-terminal-policy.json,${VERIFY_TAURI_SOURCE_INPUTS:-}"
   [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
     echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
     return 1
   }
-  local input_args=(--inputs "$inputs")
+  # source-preview owns the tooling profile, also checked before e2e admission.
+  local input_args=(--tauri-inputs)
+  if [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}" ]; then
+    input_args+=(--inputs "$VERIFY_TAURI_SOURCE_INPUTS")
+  fi
   if [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
     input_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
   fi
