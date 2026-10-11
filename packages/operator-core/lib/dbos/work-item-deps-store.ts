@@ -358,6 +358,14 @@ function newlyActiveDependantConflicts(
     if (workItemRowIsTerminal(dependant.row) || edgeIsSatisfiedByRow(edge, blocker.row)) continue;
     if (!workItemRowIsActivelyOwned(dependant.row)) continue;
 
+    // A claimant may add a dependency they discovered on their own active item:
+    // the authenticated link author is the row's current holder, so the change
+    // cannot strand another agent's in-flight work. Keep the refusal for every
+    // other caller. Callers without a server-derived author remain fail-closed.
+    const holder = dependant.row.taken_by?.trim();
+    const author = edge.createdBy?.trim();
+    if (holder && author && author === holder) continue;
+
     conflicts.push({
       edge,
       dependant: {

@@ -502,7 +502,7 @@ export default defineTool({
   guidance: {
     when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:"blocks" }; bare blocked is refused. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
     notWhen: "Never on non-work or human-audience rows, not even needs-human: data or a person's job.",
-    chaining: 'work_items:claim → work_items:set_blocker or work_items:link → work_items:set_state; terminal writes use completionRef + assumptions.',
+    chaining: 'work_items:link records internal dependency readiness (no separate blocked-state write); work_items:set_blocker parks external blockers; terminal writes use completionRef + assumptions.',
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',
       'work_items:set_blocker { id, kind, ref, summary } (typed external event/gate/runtime/human blocker)',
