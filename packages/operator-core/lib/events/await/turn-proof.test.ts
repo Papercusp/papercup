@@ -176,6 +176,33 @@ describe('judgeHostTail (D-007: one tail judge for P-006 and P-007)', () => {
     expect(judge([delivered(5), delivered(10), delivered(20)]).stuckPending).toBeNull();
   });
 
+  it('counts only pending TURN deliveries: a pending carry-respawn or control delivery is not a stuck turn', () => {
+    const pendingMode = (min: number, mode: string) => ({ ...pending(min), mode });
+    // The measured false alarm (P-012, su-ef6886ef): two pending carry-respawn deliveries closed by
+    // respawn-carry-dropped; the host's first wake turn was delivered on poll 1.
+    const carryTail = [
+      pendingMode(5, 'carry-respawn'),
+      pendingMode(6, 'carry-respawn'),
+      { kind: 'busy-gate-expired', mode: 'carry-respawn', ts: at(8) },
+      { kind: 'respawn-carry-dropped', reason: 'superseded', rearmed: true, ts: at(8) },
+    ];
+    expect(judge(carryTail).stuckPending).toBeNull();
+    for (const mode of ['reset', 'recycle', 'mcp-reconnect', 'shutdown']) {
+      expect(judge([pendingMode(5, mode), pendingMode(20, mode), pendingMode(40, mode)]).stuckPending).toBeNull();
+    }
+    // Explicit turn deliveries still report; so does a tail predating the mode stamp (no mode).
+    expect(judge([pendingMode(5, 'turn'), pendingMode(20, 'turn')]).stuckPending).toEqual({
+      repolls: 2,
+      oldestAtMs: START + 5 * MIN,
+    });
+    expect(judge([pending(5), pending(20)]).stuckPending).not.toBeNull();
+    // A mixed tail counts only its turn re-polls (and their oldest).
+    expect(judge([pendingMode(3, 'carry-respawn'), pendingMode(5, 'turn'), pendingMode(20, 'turn')]).stuckPending).toEqual({
+      repolls: 2,
+      oldestAtMs: START + 5 * MIN,
+    });
+  });
+
   it('does not report a visibly busy host: running with progress, or writing output, inside the window', () => {
     const tail = [pending(5), pending(20), pending(40)];
     expect(judge(tail, { execution: { phase: 'running', lastProgressAt: NOW - MIN } }).stuckPending).toBeNull();

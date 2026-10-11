@@ -166,6 +166,19 @@ export interface HostTailVerdict {
 }
 
 /**
+ * Only a pending TURN delivery can be a stuck turn. The host stamps every
+ * `duplicate-delivery-id` with the delivery's `mode`; a `carry-respawn` or control delivery
+ * (reset, recycle, mcp-reconnect, shutdown) that pends does not block the next wake turn, and
+ * its own terminal events (`respawn-carry-dropped`/`-delivered`) never write `turn-delivered`.
+ * Measured 2026-10-11 (P-012): su-ef6886ef's tail held 2 pending carry-respawn deliveries closed
+ * by `respawn-carry-dropped`; it was judged pending-turn-stuck, yet its first wake turn was
+ * delivered on poll 1. A missing `mode` predates the stamp and stays a turn.
+ */
+function isTurnDelivery(e: HostTailEvent): boolean {
+  return e.mode === undefined || e.mode === null || e.mode === 'turn';
+}
+
+/**
  * Judge a psu host's lifecycle tail (D-007). The ONE reading both the pickup sweep (P-006) and
  * the stalled-loops guard (P-007) use, so "this host is wedged" means one thing everywhere.
  *
@@ -209,7 +222,7 @@ export function judgeHostTail(
     if (kind === 'turn-delivered') {
       oldestPendingMs = null;
       repolls = 0;
-    } else if (kind === 'duplicate-delivery-id' && e.state === 'pending') {
+    } else if (kind === 'duplicate-delivery-id' && e.state === 'pending' && isTurnDelivery(e)) {
       oldestPendingMs ??= at;
       repolls += 1;
     }
