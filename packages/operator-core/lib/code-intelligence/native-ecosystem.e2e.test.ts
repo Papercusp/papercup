@@ -17,12 +17,12 @@ describe.runIf(Boolean(baseUrl))('native P017 required BAR real CLI runtime prov
     expect(route.currentBuildTestRoute.id).toBe('operator-api');
     expect(route.servingRuntimes.some((runtime: { runtime: string; containsChange: boolean | null }) =>
       runtime.runtime === 'staging-operator' && runtime.containsChange === true)).toBe(true);
-    const rootProbe = call('dev:pipeline_position', { path: sourcePath, view: 'source-runtime',
+    const rootProbe = call('dev:pipeline_position', { path: sourcePath, sourceRuntimeOnly: true,
       projection: { pick: ['repoRoot'] } });
     expect(typeof rootProbe.repoRoot).toBe('string');
     const hash = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
     const captured = hash(join(rootProbe.repoRoot, sourcePath));
-    const oracle = call('dev:pipeline_position', { path: sourcePath, expectedSourceSha256: captured, view: 'source-runtime' });
+    const oracle = call('dev:pipeline_position', { path: sourcePath, expectedSourceSha256: captured, sourceRuntimeOnly: true });
     const runtime = oracle.servingRuntimes.find((row: { runtime: string }) => row.runtime === 'staging-operator');
     expect(oracle.acceptedSource.matches).toBe(true);
     expect(runtime.containsChange).toBe(true);
@@ -55,7 +55,7 @@ describe.runIf(Boolean(baseUrl))('native P017 required BAR real CLI runtime prov
       const afterHash = hash(file);
       expect(afterHash).not.toBe(beforeHash);
       const after = query('nativeRuntimePrivateTarget', rel, 'release-operator');
-      const negativeOracle = call('dev:pipeline_position', { path: rel, expectedSourceSha256: afterHash, view: 'source-runtime' });
+      const negativeOracle = call('dev:pipeline_position', { path: rel, expectedSourceSha256: afterHash, sourceRuntimeOnly: true });
       const release = negativeOracle.servingRuntimes.find((row: { runtime: string }) => row.runtime === 'release-operator');
       // The production blob reader treats an absent artifact path as unknown.
       // Preserve that uncertainty rather than upgrading it to a measured mismatch.
