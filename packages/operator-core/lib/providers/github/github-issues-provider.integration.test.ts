@@ -410,6 +410,46 @@ describe('a freshly connected source syncs tickets without hand-written SQL (WI-
       live.unregister(KIND);
     }
   });
+
+  // cupboard-distributable-integrations-2026-10-10 P-010: GitHub is shown like any provider. The
+  // generic Settings → Integrations card labels a connected account with the source's
+  // accountLabel, which the generic connect derives from the package's declared identity
+  // (oauth.identity: /user, idField id, displayNameField login). Nothing GitHub-specific runs.
+  it('resolves the connected identity from the package\'s declared /user endpoint and labels the source with the login (P-010)', async () => {
+    const live = providerRegistry();
+    await live.register({ descriptor: provider.descriptor, adapter: provider.adapter, pluginName: provider.pluginName, runtime: provider.runtime });
+    const requests: Array<{ url: string; method: string; authorization: string | null }> = [];
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      requests.push({ url: String(input), method: init?.method ?? 'GET', authorization: headers.get('authorization') });
+      // GitHub's /user answers a numeric id and the login.
+      return new Response(JSON.stringify({ login: 'octocat', id: 583231, name: 'The Octocat' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    try {
+      const adapter = descriptorConnectionAdapter(descriptorOAuthPlugin(provider.descriptor));
+      expect(adapter).not.toBeNull();
+      const account = await adapter!.resolveAccount('gho_fixture_access_token');
+      expect(requests).toEqual([{ url: 'https://api.github.com/user', method: 'GET', authorization: 'Bearer gho_fixture_access_token' }]);
+      expect(account).toEqual({ providerAccountId: '583231', displayName: 'octocat' });
+
+      await adapter!.provision(sql, {
+        owner: { workspaceId: WS, ownerUserId: alice, reconnectProviderAccountId: null },
+        account,
+        field: 'owner',
+        createdBy: 'github-issues-it',
+      });
+      const [source] = await sql<Array<{ config: Record<string, unknown>; status: string }>>`
+        SELECT config, status FROM harness_shared.data_sources
+         WHERE workspace_id = ${WS} AND kind = ${KIND} AND owner_user_id = ${alice}::uuid`;
+      expect(source).toMatchObject({ config: { accountLabel: 'octocat' }, status: 'connected' });
+    } finally {
+      vi.unstubAllGlobals();
+      live.unregister(KIND);
+    }
+  });
 });
 
 // ── Registration ────────────────────────────────────────────────────────────
