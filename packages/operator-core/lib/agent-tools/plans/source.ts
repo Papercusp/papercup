@@ -26,6 +26,7 @@ import { VALID_PLAN_SLUG } from './run-instance-slug';
 import { summarizeForcedPast, type ForcedPastSummary } from './forced-past-stamp';
 import type { ParsePromoteResult } from './promote-policy';
 import type { Sql } from 'postgres';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
@@ -538,7 +539,7 @@ export async function resolvePlanScope(
       ...(opts.registryFallback ? { registryFallback: opts.registryFallback } : {}),
     }));
   if (workspaceId === null) {
-    throw new Error(
+    throw new InvalidInputError(
       `resolvePlanScope: harness '${raw}' is not registered in the harness registry ` +
         `(harness_shared.harness_registry) or harness_shared.projects in any workspace, so ` +
         `its plan workspace cannot be resolved. Register the harness, or pass an explicit ` +
@@ -547,7 +548,7 @@ export async function resolvePlanScope(
   }
   const hiveHome = await potHomeSlugForHarness(workspaceId, raw!);
   if (!hiveHome) {
-    throw new Error(
+    throw new InvalidInputError(
       `resolvePlanScope: plans are Hive-scoped, but '${raw}' is not a Hive home and ` +
         `does not belong to one in workspace '${workspaceId}'. Add it to a Hive or pass ` +
         `the Hive home slug explicitly; refusing to create/read a non-Hive-scoped plan.`,
