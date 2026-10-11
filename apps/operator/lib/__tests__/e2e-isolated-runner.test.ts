@@ -94,10 +94,25 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       `exit ${playwrightExit}`,
     ].join('\n'),
   );
+  // Stands in for scripts/lib/run-in-isolated-netns.sh (covered by its own suite): records
+  // the command it was asked to isolate, then runs it.
+  const netns = join(dir, 'netns.sh');
+  const netnsRecord = join(dir, 'netns-argv.txt');
+  writeFileSync(
+    netns,
+    [
+      '#!/usr/bin/env bash',
+      '[ "$1" = "--" ] || { echo "netns stub: expected --" >&2; exit 44; }',
+      'shift',
+      `printf '%s\\n' "$@" > '${netnsRecord}'`,
+      'exec "$@"',
+    ].join('\n'),
+  );
   chmodSync(rig, 0o755);
   chmodSync(npm, 0o755);
   chmodSync(pw, 0o755);
-  return { dir, rig, pw, npm, record, viteCwd };
+  chmodSync(netns, 0o755);
+  return { dir, rig, pw, npm, record, viteCwd, netns, netnsRecord };
 }
 
 function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, string> = {}) {
@@ -121,6 +136,7 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
       HARNESS_ADMIN_DATABASE_URL: SHARED,
       OPERATOR_E2E_RIG: f.rig,
       OPERATOR_E2E_PLAYWRIGHT: f.pw,
+      OPERATOR_E2E_NETNS_WRAPPER: f.netns,
       E2E_FIXTURE_VITE_CWD: f.viteCwd,
       PATH: `${f.dir}:${base.PATH ?? ''}`,
       ...env,
@@ -234,6 +250,24 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain('HARNESS_RESULT');
     expect(r.out).toContain('verdict=pass');
+  });
+
+  it('runs Playwright (and only Playwright) inside the network-namespace wrapper', () => {
+    // WI-6554700010008480: host interface churn must not reach the browser.
+    const f = fixture(3);
+    const r = run(f, ['some.spec.ts']);
+    expect(r.status, r.out).toBe(3);
+    const isolated = readFileSync(f.netnsRecord, 'utf8').trim().split('\n');
+    expect(isolated[0]).toBe(f.pw);
+    expect(isolated).toContain('some.spec.ts');
+    // Vite is started outside the wrapper: it must stay in the host namespace.
+    expect(isolated.join(' ')).not.toContain('run dev');
+  });
+
+  it('defaults the wrapper to scripts/lib/run-in-isolated-netns.sh', () => {
+    const runner = readFileSync(RUNNER, 'utf8');
+    expect(runner).toContain('OPERATOR_E2E_NETNS_WRAPPER="${OPERATOR_E2E_NETNS_WRAPPER:-$ROOT/scripts/lib/run-in-isolated-netns.sh}"');
+    expect(existsSync(join(REPO_ROOT, 'scripts/lib/run-in-isolated-netns.sh'))).toBe(true);
   });
 
   it('points the ledger at the shared database while the app keeps the isolated one', () => {

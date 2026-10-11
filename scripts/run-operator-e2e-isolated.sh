@@ -27,6 +27,11 @@
 #                               operator-e2e-isolated-<utc>-<pid>.
 #   OPERATOR_E2E_RIG            rig command (default scripts/verify-tauri-headless.sh).
 #   OPERATOR_E2E_PLAYWRIGHT     playwright command (default "npx playwright test").
+#   OPERATOR_E2E_NETNS_WRAPPER  network-namespace wrapper Playwright runs under (default
+#                               scripts/lib/run-in-isolated-netns.sh). It keeps host
+#                               interface churn from aborting Chromium loads with
+#                               net::ERR_NETWORK_CHANGED (WI-6554700010008480);
+#                               PAPERCUSP_E2E_NETNS=auto|required|off selects its mode.
 #   The rig exports OPERATOR_SOURCE_ROOT at its assertion boundary; Vite and
 #   Playwright both execute from that frozen source. Legacy/test rigs without
 #   a source snapshot keep the caller checkout.
@@ -70,6 +75,7 @@ else
   echo "run-operator-e2e-isolated: WARNING no caller workspace (PAPERCUSP_TEST_RUN_WORKSPACE / PAPERCUSP_WORKSPACE_ID / PAPERCUSP_WORKSPACE); ledger rows will carry the rig's throwaway workspace id" >&2
 fi
 export OPERATOR_E2E_PLAYWRIGHT="${OPERATOR_E2E_PLAYWRIGHT:-npx playwright test}"
+export OPERATOR_E2E_NETNS_WRAPPER="${OPERATOR_E2E_NETNS_WRAPPER:-$ROOT/scripts/lib/run-in-isolated-netns.sh}"
 # The native host handles agent chat; setting this only on Vite leaves the
 # backend using live credentials and makes fake-LLM-only cases skip.
 export PAPERCUSP_FAKE_LLM=1
@@ -205,14 +211,14 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   if [ -n "$assertion_evidence" ]; then
     # Write browser artifacts outside the disposable source from the outset.
     # Keep both output streams and the first-failure trace even without retries.
-    $OPERATOR_E2E_PLAYWRIGHT "$@" \
+    "$OPERATOR_E2E_NETNS_WRAPPER" -- $OPERATOR_E2E_PLAYWRIGHT "$@" \
       --output="$assertion_evidence/playwright" --trace=retain-on-failure \
       2>&1 | tee "$assertion_evidence/playwright.log"
     statuses=("${PIPESTATUS[@]}")
     [ "${statuses[0]}" -eq 0 ] || exit "${statuses[0]}"
     [ "${statuses[1]}" -eq 0 ] || exit 98
   else
-    $OPERATOR_E2E_PLAYWRIGHT "$@"
+    "$OPERATOR_E2E_NETNS_WRAPPER" -- $OPERATOR_E2E_PLAYWRIGHT "$@"
   fi
 ' operator-e2e-isolated "$ROOT" "$@" &
 rig_pid=$!
