@@ -1,7 +1,8 @@
 /**
  * The BM25 lexical-search health probe (plan bm25-lexical-search-evoke-adoption-2026-10-10,
  * P-004 / R-4). The database side (bm25Health, measureBm25Latency against a real
- * pg_textsearch server) is covered in search/lexical/bm25.integration.test.ts; this file
+ * pg_textsearch server, with and without the preload) is covered in
+ * search/lexical/bm25-health.integration.test.ts and bm25-latency.integration.test.ts; this file
  * covers the probe's mapping, its fail-soft read and its latency re-measure window.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
