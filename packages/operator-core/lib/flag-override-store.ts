@@ -68,6 +68,21 @@ export async function readGlobalFlagOverridesForUpdate(
   return payload as Partial<Record<FlagKey, boolean>>;
 }
 
+/** Fixed hosted-service policy bridge; retains the lock in caller transaction. */
+export async function readTutorialVoiceGlobalFlagsForUpdate(
+  tx: Sql,
+): Promise<Partial<Record<FlagKey, boolean>> | null> {
+  if (typeof (tx as { begin?: unknown }).begin === 'function') {
+    throw new Error('flag_override_lock_requires_transaction');
+  }
+  const [row] = await tx<{ payload: unknown }[]>`
+    SELECT papercusp_auth.lock_tutorial_voice_global_flags() AS payload`;
+  const payload = row?.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || Object.values(payload).some(value => typeof value !== 'boolean')) return null;
+  return payload as Partial<Record<FlagKey, boolean>>;
+}
+
 /**
  * PG NOTIFY channel announcing an override write to EVERY listening process
  * (WI-6793). `publishFlagChange` (flag-bus.ts) is an in-process dispatch, so

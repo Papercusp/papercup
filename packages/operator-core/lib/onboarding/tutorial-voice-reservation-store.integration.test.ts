@@ -9,7 +9,7 @@ import { PostgresTutorialVoiceReservationStore, type TutorialVoiceQuotaAuthority
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
-import { readGlobalFlagOverridesForUpdate } from '../flag-override-store';
+import { readGlobalFlagOverridesForUpdate, readTutorialVoiceGlobalFlagsForUpdate } from '../flag-override-store';
 
 let db: OrgTestDb;
 const run: HostedServiceContextRunner = <T>(fn: (sql: Sql) => Promise<T>) => db.appSql.begin(async tx => {
@@ -71,6 +71,31 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
       VALUES ('@global', '{"fixture-policy":true}'::jsonb)
       ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload`;
     await expect(run(tx => readGlobalFlagOverridesForUpdate(tx)))
+      .rejects.toMatchObject({ code: '42501' });
+  });
+
+  it('reads global policy through the service-only bridge and retains its lock until admission commits', async () => {
+    await expect(readTutorialVoiceGlobalFlagsForUpdate(db.appSql))
+      .rejects.toThrow('flag_override_lock_requires_transaction');
+    await db.adminSql`INSERT INTO harness_shared.operator_flag_overrides (workspace_id, payload)
+      VALUES ('@global', '{"fixture-policy":true}'::jsonb)
+      ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload`;
+    await run(async tx => {
+      expect(await readTutorialVoiceGlobalFlagsForUpdate(tx)).toEqual({ 'fixture-policy': true });
+      await expect(db.adminSql.begin(async writer => {
+        await writer.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await writer`UPDATE harness_shared.operator_flag_overrides SET payload = '{}'::jsonb
+          WHERE workspace_id = '@global'`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+    for (const payload of ['[]', '{"fixture-policy":"true"}']) {
+      await db.adminSql`UPDATE harness_shared.operator_flag_overrides SET payload = ${payload}::jsonb
+        WHERE workspace_id = '@global'`;
+      expect(await run(tx => readTutorialVoiceGlobalFlagsForUpdate(tx))).toBeNull();
+    }
+    await db.adminSql`DELETE FROM harness_shared.operator_flag_overrides WHERE workspace_id = '@global'`;
+    expect(await run(tx => readTutorialVoiceGlobalFlagsForUpdate(tx))).toBeNull();
+    await expect(db.appSql.begin(tx => tx`SELECT papercusp_auth.lock_tutorial_voice_global_flags()`))
       .rejects.toMatchObject({ code: '42501' });
   });
 
