@@ -76,7 +76,7 @@ async function write(md: string): Promise<void> {
     { slug: SLUG, intent: 'plan-index-rows test write', harnessSlug: HARNESS, workspaceId: wsId, ttlSec: 30 },
     async () => ({ newBody: md, value: { ok: true } }),
   );
-  if (res.kind !== 'applied') throw new Error(`plan write was busy: ${JSON.stringify(res.busy)}`);
+  if (res.kind !== 'applied') throw new Error(`plan write failed: ${JSON.stringify(res)}`);
   // This helper exercises index synchronization, not activation. Keep the fixture
   // draft so the central activation gate cannot turn a refusal into a false success.
   expect(res.value.ok).toBe(true);
