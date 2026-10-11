@@ -346,7 +346,7 @@ describe('attachCompletionEvidenceToSettledItem — real PG', () => {
     expect(target.payload._completionAttestations).toHaveLength(1);
   });
 
-  it('reopening with a null harness hint still changes only one physical row (WI-10006010)', async () => {
+  it('a null harness hint among slug twins is refused; naming the harness reopens only that row (WI-10006010, P-013)', async () => {
     const item = await wi.createWorkItem({ kind: 'bug', title: 'reopen slug twin', harness: 'papercup' });
     await seedSlugTwin(item.id);
     const siblingBefore = await physicalSnapshot(item.id, 'papercup');
@@ -361,7 +361,15 @@ describe('attachCompletionEvidenceToSettledItem — real PG', () => {
     expect(closed).not.toBeNull();
     expect(await physicalSnapshot(item.id, 'papercup')).toEqual(siblingBefore);
 
-    const reopened = await issues.setIssueState(item.id, 'open', AGENT, undefined, { harnessSlug: null });
+    // P-013 (R-5): with no harness the write cannot know which twin is meant, so it refuses.
+    const twinClosed = await physicalSnapshot(item.id, TWIN_HARNESS);
+    await expect(
+      issues.setIssueState(item.id, 'open', AGENT, undefined, { harnessSlug: null }),
+    ).rejects.toMatchObject({ code: 'work_item_id_ambiguous', candidates: [TWIN_HARNESS, 'papercup'].sort() });
+    expect(await physicalSnapshot(item.id, TWIN_HARNESS)).toEqual(twinClosed);
+    expect(await physicalSnapshot(item.id, 'papercup')).toEqual(siblingBefore);
+
+    const reopened = await issues.setIssueState(item.id, 'open', AGENT, undefined, { harnessSlug: TWIN_HARNESS });
 
     expect(reopened).not.toBeNull();
     expect(await physicalSnapshot(item.id, TWIN_HARNESS)).toMatchObject({ status: 'open' });
@@ -384,21 +392,29 @@ describe('attachCompletionEvidenceToSettledItem — real PG', () => {
     });
   });
 
-  it('pins null-hint metadata writes and author-origin repair to one physical row (WI-10006010)', async () => {
+  it('refuses a null-hint metadata write among twins and pins named and author-origin writes to one physical row (WI-10006010, P-013)', async () => {
     const item = await wi.createWorkItem({
       kind: 'bug', title: 'metadata update slug twin', harness: 'papercup', createdBy: AGENT,
     });
     await seedSlugTwin(item.id);
+    // Recency must not decide (P-013 / R-5): the fresher 'papercup' row is not picked either.
     await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 60000
                   WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
     const twinBefore = await physicalSnapshot(item.id, TWIN_HARNESS);
+    const papercupBeforeRefusal = await physicalSnapshot(item.id, 'papercup');
+
+    await expect(
+      issues.updateIssue(item.id, { title: 'null-hint metadata update', silent: true }, { harnessSlug: null }),
+    ).rejects.toMatchObject({ code: 'work_item_id_ambiguous' });
+    expect(await physicalSnapshot(item.id, TWIN_HARNESS)).toEqual(twinBefore);
+    expect(await physicalSnapshot(item.id, 'papercup')).toEqual(papercupBeforeRefusal);
 
     const metadata = await issues.updateIssue(
       item.id,
-      { title: 'null-hint metadata update', silent: true },
-      { harnessSlug: null },
+      { title: 'named metadata update', silent: true },
+      { harnessSlug: 'papercup' },
     );
-    expect(metadata).toMatchObject({ title: 'null-hint metadata update' });
+    expect(metadata).toMatchObject({ title: 'named metadata update' });
     expect(await physicalSnapshot(item.id, TWIN_HARNESS)).toEqual(twinBefore);
 
     await db.sql`UPDATE harness_shared.work_items SET origin = 'remote'

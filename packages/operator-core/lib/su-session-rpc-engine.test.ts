@@ -37,7 +37,10 @@ vi.mock('./su-session-persistence', () => ({
   bindSuSessionToAdvSession: vi.fn(async () => ({ status: 'bound' })),
   persistSuSessionDescriptor: mocks.persist, readDurableSuSession: vi.fn(), classifySuSessionRuntime: vi.fn(),
 }));
-vi.mock('./mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3170' }));
+vi.mock('./mcp-base-url', () => ({
+  resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3170',
+  resolveChildSessionOperatorBaseUrl: () => 'http://127.0.0.1:3170',
+}));
 vi.mock('./su-session-stdio-peer', () => ({ startSuStdioPeer: vi.fn() }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
   resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,

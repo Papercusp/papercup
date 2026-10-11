@@ -39,6 +39,7 @@ import { planItemTextDriftForWorkItem } from "../../plan-items/text-drift-report
 import { attachHolderContext } from "./_holder-lens";
 import { holderContextReader } from "../coordination/holder-advisory";
 import { getWorkItemLifecycleHistory } from "../../work-item-lifecycle-history";
+import { isWorkItemIdAmbiguousError, type WorkItemIdAmbiguousError } from "../../work-items-physical-row";
 import { activeWorkspaceId } from "../../workspace-registry";
 import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../../agent-facts/cited-facts";
 import { shapeWorkItemsGet } from "./get-shape";
@@ -154,6 +155,26 @@ function workItemsGetReadFailureResult(id: string, budgetMs: number, error: unkn
     message:
       `work_items:get read did not complete because of a transient database/pool deadline: ${detail}. ` +
       'No item was returned or reported as absent; retry shortly.',
+  };
+}
+
+/**
+ * P-013 (R-5): the id is held by several rows in this workspace and the caller's harness does
+ * not pick one. Reported, never resolved: the reader chooses by passing `harness`. Not
+ * retryable — the same read gives the same answer until the twins are merged.
+ */
+function workItemsGetAmbiguousResult(id: string, error: unknown) {
+  if (!isWorkItemIdAmbiguousError(error)) return null;
+  return {
+    ok: false as const,
+    id,
+    availability: 'ambiguous' as const,
+    error: 'ambiguous_id' as const,
+    retryable: false as const,
+    phase: 'read' as const,
+    candidates: [...error.candidates],
+    ...(error.workspaceId ? { workspaceId: error.workspaceId } : {}),
+    message: error.message,
   };
 }
 
@@ -596,7 +617,9 @@ const workItemsGetResultRowSchema = z.object({
       body: z.string(),
     }).passthrough()),
   }).passthrough().nullable().optional(),
-  availability: z.enum(['available', 'absent', 'unavailable']).optional(),
+  availability: z.enum(['available', 'absent', 'unavailable', 'ambiguous']).optional(),
+  /** P-013: present with availability 'ambiguous' — every harness holding the id. */
+  candidates: z.array(z.string()).optional(),
   workItem: workItemIdentityResultSchema.optional(),
   // P-012 (D-049): distinct reporters + filings from the occurrence ledger. Orders
   // verification work; never a verification receipt. Absent when nothing corroborates.
@@ -634,6 +657,8 @@ const workItemsGetReadSchema = z.object({
   available: z.number().int().nonnegative(),
   absent: z.number().int().nonnegative(),
   unavailable: z.number().int().nonnegative(),
+  /** P-013: ids held by several rows the caller's harness did not narrow; present only when > 0. */
+  ambiguous: z.number().int().nonnegative().optional(),
   budgetMs: z.number().int().positive(),
   elapsedMs: z.number().int().nonnegative(),
   baseReadMaxMs: z.number().int().nonnegative().nullable(),
@@ -886,11 +911,12 @@ export default defineTool({
     let projectedBatch: Awaited<ReturnType<typeof getWorkItemsByIds>> | typeof WORK_ITEMS_GET_TIMEOUT | null = null;
     let projectedBatchError: unknown = null;
     let projectedBatchElapsedMs: number | null = null;
+    const projectedAmbiguity = { ambiguous: [] as WorkItemIdAmbiguousError[] };
     if (canBatchProjectedBaseRead) {
       const batchStartedAt = Date.now();
       const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (batchStartedAt - bulkStartedAt));
       const bounded = await withWorkItemsGetBudget(
-        getWorkItemsByIds(ids, args.harness, sourceReadOptions),
+        getWorkItemsByIds(ids, args.harness, sourceReadOptions, projectedAmbiguity),
         { timeoutMs: remainingBudgetMs, signal: ctx.signal, label: 'work_items:get:projected-batch' },
       );
       projectedBatchElapsedMs = Date.now() - batchStartedAt;
@@ -928,7 +954,14 @@ export default defineTool({
             return workItemsGetUnavailableResult(id, remainingBudgetMs, 'timeout');
           }
           const workItem = projectedById?.get(id);
-          if (!workItem) return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
+          if (!workItem) {
+            const ambiguous = workItemsGetAmbiguousResult(
+              id,
+              projectedAmbiguity.ambiguous.find((err) => err.id === id),
+            );
+            if (ambiguous) return ambiguous;
+            return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
+          }
           const completion = workItem.terminalCompletionEvidence ?? null;
           const hasCompletionEvidence =
             completion !== null && typeof completion === 'object' && !Array.isArray(completion) && Object.keys(completion).length > 0;
@@ -1472,6 +1505,8 @@ export default defineTool({
           label: `work_items:get:${id}`,
         });
         if (bounded.reason === "error") {
+          const ambiguous = workItemsGetAmbiguousResult(id, bounded.error);
+          if (ambiguous) return ambiguous;
           const readFailure = workItemsGetReadFailureResult(id, remainingBudgetMs, bounded.error);
           if (readFailure) return readFailure;
           throw bounded.error;
@@ -1501,6 +1536,9 @@ export default defineTool({
       available: availability.filter((value) => value === 'available').length,
       absent: availability.filter((value) => value === 'absent').length,
       unavailable: availability.filter((value) => value === 'unavailable').length,
+      ...(availability.includes('ambiguous')
+        ? { ambiguous: availability.filter((value) => value === 'ambiguous').length }
+        : {}),
       budgetMs: WORK_ITEMS_GET_BUDGET_MS,
       elapsedMs: Date.now() - bulkStartedAt,
       baseReadMaxMs: maxMeasured(stageSamples.map((sample) => sample?.baseReadMs ?? null)),

@@ -1545,7 +1545,7 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     } });
   }
 
-  it.each(['improvement-triage', 'Queen'])('repairs %s enrollment for its proven original reporter', async (submittedBy) => {
+  it.each(['improvement-triage', 'improvement-retriage', 'Queen'])('repairs %s enrollment for its proven original reporter', async (submittedBy) => {
     const h = harness(triageRow({}, submittedBy));
     await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-original' }, h.deps)).resolves.toMatchObject({
       resubmitted: true, state: { status: 'pending', submittedBy: 'su-original', round: 2 },
@@ -1564,6 +1564,31 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-original', { claimsHeld: false });
     expect(result).toMatchObject(reason ? { resubmitted: false, reason } : { resubmitted: true });
     if (reason) expect(readAgentReviewState(h.state.issue.payload)?.submittedBy).toBe('improvement-triage');
+  });
+
+  // bug-queue-legitimacy D-008 residue: the retriage-all batch pass enrolled under its own
+  // label before 0be339d360. Adoption must measure the recovered reporter, never the label.
+  it.each([
+    ['live', { sessionState: 'live' } as const, 'not-submitter'],
+    ['unknown', null, 'not-submitter:liveness-unknown'],
+    ['ended', { sessionState: 'ended' } as const, undefined],
+  ])('measures the original retriage reporter, keeping %s adoption honest', async (_label, verdict, reason) => {
+    const h = harness(triageRow({}, 'improvement-retriage'));
+    h.state.submitterLiveness = verdict;
+    const result = await resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps);
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-original', { claimsHeld: false });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalledWith('improvement-retriage', expect.anything());
+    expect(result).toMatchObject(reason ? { resubmitted: false, reason } : { resubmitted: true });
+  });
+
+  it('keeps a retriage row with no recorded creator authority-free (no identity to measure)', async () => {
+    const h = harness({ ...triageRow({ _ei: {} }, 'improvement-retriage'), createdBy: null });
+    h.state.submitterLiveness = null;
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false, reason: 'not-submitter:liveness-unknown',
+    });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalledWith('su-original', expect.anything());
+    expect(readAgentReviewState(h.state.issue.payload)?.submittedBy).toBe('improvement-retriage');
   });
 
   it.each([

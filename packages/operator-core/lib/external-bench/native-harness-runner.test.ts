@@ -22,6 +22,7 @@ import {
 import { liveNativeHarnessPorts } from './native-harness-live';
 import { cloneTaskRepo, extractDiff } from './clone';
 import { diffSubmission, type BenchTask, type GenerationBudget } from './types';
+import { benchDefaultModelId } from './model-registry-snapshot';
 
 const PATCH = 'diff --git a/src/f.py b/src/f.py\n@@ -1 +1 @@\n-bug\n+fix\n';
 
@@ -116,7 +117,8 @@ describe('runNativeHarnessAttempt — M1 (diff-batch) native arm', () => {
     expect(res.attempt.trajectoryRef).toBe('traj-ref-1');
     expect(res.attempt.generationError).toBeUndefined();
 
-    expect(res.model).toBe('claude-opus-4-8');
+    // R-9: the default model is the registry-resolved benchmark default, never a literal.
+    expect(res.model).toBe(benchDefaultModelId());
     expect(res.harnessVersion).toBe('claude-code/2.1.3 (Claude Code)');
     expect(res.capped).toBe(false);
     expect(res.armMeta).toMatchObject({
@@ -157,7 +159,8 @@ describe('runNativeHarnessAttempt — M1 (diff-batch) native arm', () => {
     const { ports } = makePorts({
       spawnAgent: makeSpawn([toolEv(), toolEv(), toolEv(), resultEv({ tokensIn: 1_000_000, tokensOut: 1_000_000, costUsd: 0 })]),
     });
-    const res = await runNativeHarnessAttempt(task(), '1', {}, ports);
+    // Pin a concrete model so the list-price arithmetic below is independent of the moving registry default.
+    const res = await runNativeHarnessAttempt(task(), '1', {}, ports, { model: 'claude-opus-4-8' });
     expect(res.attempt.turns).toBe(3); // no num_turns → proxy off the 3 tool_calls
     // claude-opus-4-8 = $5/MTok in + $25/MTok out → 1M+1M tokens = $5 + $25 = $30.
     expect(res.attempt.costUsd).toBeCloseTo(30, 5);

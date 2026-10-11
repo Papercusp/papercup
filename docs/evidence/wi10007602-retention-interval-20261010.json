@@ -1,8 +1,9 @@
 {
+  "pathNotation": "Home paths are normalized to ~/. Original native receipts retain exact machine paths in the referenced private capture logs and DBOS ledger.",
   "schemaVersion": 1,
   "workItem": "WI-10007602",
   "plan": "durable-disk-and-checkpoint-recovery-2026-10-09",
-  "edition": "2026-10-11T00:10:51.546391+00:00",
+  "edition": "2026-10-11T01:14:24.741Z",
   "verdict": "OPEN",
   "scope": "Observed capacity, reservation, recorder, SQLite and retention receipts; no full-interval or shipment claim.",
   "reservationRepair": {
@@ -177,24 +178,43 @@
     "specId": "AUTO-BAR-R-2-P-002",
     "revision": 3,
     "specFingerprint": "67f33f83a13478955ec53d539c3da3ed1eb307d070e757ac73f704ae7d8b5c92",
-    "assessmentRecordedAt": "2026-10-11T00:10:51.546391+00:00",
+    "historicalAssessmentRecordedAt": "2026-10-11T00:10:51.546391+00:00",
+    "currentAssessmentObservedAfter": "2026-10-11T01:13:15.827Z",
+    "evaluatorBuild": "22a41ff6e9",
+    "classRef": "plan-class-bugfix",
     "evaluatorOrigin": "http://127.0.0.1:3170",
     "verdict": "pass",
     "wouldBlock": [],
     "currentRefreshBindings": [
       35602,
-      35603,
+      35739,
       35636
     ],
     "cohortNote": "Only measured stale gen/prune proofs refreshed; unaffected prior bindings and clean counterexample remain canonical.",
     "limits": [
       "Tree/source adequacy only; does not discharge R5 or main promotion.",
       "Named source/test/fixture paths are measured; complete imported/descendant-input closure is not claimed."
-    ]
+    ],
+    "assessmentStatus": "CURRENT at the observed staging evaluation: all mandatory dimensions pass, wouldBlock empty; binding35739 supersedes35603 for the changed retention suite."
   },
   "retentionRepair": {
     "workItem": "EI-25637075692558914",
     "decision": "D-011",
+    "d012SourceProof": {
+      "decision": "D-012",
+      "taskId": "0mv34dn671ezze8t1y7",
+      "testRunId": 21017283,
+      "commit": "3f29d6b65503943fc8b995a120a50131d546878b",
+      "passed": 16,
+      "skipped": 0,
+      "dirty": false,
+      "bindingId": 35739,
+      "helperBlob": "3175ba332b52197ddb38df6f4803906ee6f4c494",
+      "actorBlob": "11123959107b58e42a1b7ab21bfc9ace5563d158",
+      "testBlob": "23cd8ca5ab2dbe529a3d78655d7dc57da5e37fbb",
+      "notification": "coord-send-b79d5bed350445ec0af7fb39099b33d761d75ad50a800de25d86b360b8bb99e5",
+      "boundary": "Named source/test/fixture paths measured; complete imported and descendant input closure is not claimed. EI-25640813818635971 is independently owned."
+    },
     "sourceProof": {
       "taskId": "0mv31txqb1c39igoo2o",
       "testRunId": 21015962,
@@ -204,11 +224,145 @@
       "dirty": false,
       "bindingId": 35603
     },
-    "nativeActivation": "UNVERIFIED",
+    "nativeActivation": "VERIFIED: native DBOS report behavior plus bg-host runtime-vintage c3451c17b1 containsChange=true by blob; no restart by this session.",
     "limits": [
-      "Fix skips absent integration roots, deduplicates physical stores with current-mode precedence, and preserves bounded per-store stdout/stderr/errors in the DBOS report.",
-      "Loaded actor and actual native per-store execution/removal receipts remain pending; work-item stays open."
-    ]
+      "Native current and former store operation receipts are pruned, stdout/stderr empty and untruncated; nine missing integrations are explicitly skipped.",
+      "Empty output is not a universal no-removal claim: quarantine cleanup can delete older residue silently.",
+      "A selected-current integration with recorded-former history may cause compatibility cascades as well as actor enumeration; owned diagnostic task0mv331cgx11cp3op4uc must decide this before a universal physical-sweep claim.",
+      "Full R5 interval, custody/recorder and final candidate evidence remain separate."
+    ],
+    "nativeReceipt": {
+      "workflow_uuid": "sched-.sessionDirGc-2026-10-10T23:50:00.000Z",
+      "status": "SUCCESS",
+      "executor_id": "bg-host-3270",
+      "workflow_started_at": "2026-10-10 23:53:29.941+00",
+      "workflow_updated_at": "2026-10-10 23:54:00.485+00",
+      "retention_started_at": "2026-10-10 23:53:30.007+00",
+      "retention_completed_at": "2026-10-10 23:54:00.387+00",
+      "retention_report": {
+        "errors": [],
+        "status": "complete",
+        "stores": [
+          {
+            "status": "pruned",
+            "stderr": "",
+            "stdout": "",
+            "retired": false,
+            "generationRoot": "/mnt/data/papercusp-dependency-generations",
+            "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+            "stderrTruncated": false,
+            "stdoutTruncated": false
+          },
+          {
+            "status": "pruned",
+            "stderr": "",
+            "stdout": "",
+            "retired": true,
+            "generationRoot": "/mnt/data/dependency-generations/papercusp",
+            "integrationRoot": "~/papercupai-workspace/papercusp",
+            "stderrTruncated": false,
+            "stdoutTruncated": false
+          }
+        ],
+        "schemaVersion": 1,
+        "skippedIntegrations": [
+          {
+            "root": "/tmp/devboard-smoke",
+            "reason": "integration is absent or not a directory"
+          },
+          {
+            "root": "/tmp/devboard",
+            "reason": "integration is absent or not a directory"
+          },
+          {
+            "root": "/tmp/gym",
+            "reason": "integration is absent or not a directory"
+          },
+          {
+            "root": "/tmp/e2e-imp-projects/e2e-imp-j1",
+            "reason": "integration is absent or not a directory"
+          },
+          {
+            "root": "/tmp/create-atomic-c-JGQpM7",
+            "reason": "integration is absent or not a directory"
+          },
+          {
+            "root": "/tmp/wi3467-smoke-test",
+            "reason": "integration is absent or not a directory"
+          },
+          {
+            "root": "/tmp/ei669-repro-su-b621d",
+            "reason": "integration is absent or not a directory"
+          },
+          {
+            "root": "/tmp/papercusp-mobile-greenfield-20260821/stonebrook-android-20260821",
+            "reason": "integration is absent or not a directory"
+          },
+          {
+            "root": "/tmp/papercusp-mobile-greenfield-20260821/thornbury-iphone-20260821",
+            "reason": "integration is absent or not a directory"
+          }
+        ]
+      },
+      "error": null
+    },
+    "cascadeRefinement": {
+      "decision": "D-012",
+      "planVersion": 20,
+      "diagnosticTaskId": "0mv331cgx11cp3op4uc",
+      "diagnosticLogPath": ".papercusp/scratch/bash-a08536ed-a32.log",
+      "diagnostic": {
+        "schemaVersion": 1,
+        "kind": "retention-cascade-call-measurement",
+        "at": "2026-10-11T00:26:03.078303+00:00",
+        "sourceScript": "~/papercupai-workspace/papercusp/apps/operator/bin/release/dependency-generation.sh",
+        "fixture": "Selected published current store plus recorded former store; trace wraps real apply_retention and calls original implementation.",
+        "actorInputs": [
+          "current --prune-only",
+          "former --prune-only --retired-store"
+        ],
+        "distinctInputStores": 2,
+        "observedApplyRetentionCalls": [
+          "current",
+          "former",
+          "former"
+        ],
+        "results": [
+          {
+            "store": "current",
+            "retired": false,
+            "exitCode": 0,
+            "stdout": "",
+            "stderr": "[dependency-generation] sweeping recorded former generation store /tmp/retention-cascade-diagnostic-3617yxq_/former\n"
+          },
+          {
+            "store": "former",
+            "retired": true,
+            "exitCode": 0,
+            "stdout": "",
+            "stderr": ""
+          }
+        ],
+        "replacementPreserved": true
+      },
+      "fix": "Existing CLI --no-recorded-store-cascade is passed by actor; compatibility default and legacy/pin/lease behavior retained.",
+      "localVerification": {
+        "testRunId": 21016640,
+        "passed": 16,
+        "failed": 0,
+        "skipped": 0,
+        "dirty": true,
+        "rootCommit": "22a41ff6e968359a00602e94ebbdf5ac720fb6da",
+        "note": "Conventional testing:run files router; local proof only."
+      },
+      "immutableProof": "PENDING_EXACT_COMMIT",
+      "syncTaskId": "0mv33gexo1yxaj5i19y",
+      "syncLogPath": ".papercusp/scratch/bash-0135810f-2d8.log",
+      "limits": [
+        "Source c345 native report predates D012. Re-check latest source activation only after immutable proof.",
+        "Former-store sweep multiplicity is now confirmed; old unconfirmed note is superseded by real helper call measurement3 for2 inputs."
+      ]
+    }
   },
   "pruneRefresh": {
     "taskId": "0mv320p6mrd3tz0c6j7",
@@ -439,10 +593,901 @@
       "Alarm warning10percent/100GiB thresholds remain distinct from hard writer floors; no all-warning-clear claim."
     ]
   },
+  "intervalAfter": {
+    "taskId": "0mv34ra5bh1qb7pihsw",
+    "logPath": ".papercusp/scratch/bash-8bf92e33-6e8.log",
+    "receipt": {
+      "schemaVersion": 1,
+      "kind": "r5-interval-after",
+      "at": "2026-10-11T01:14:24.741Z",
+      "sourceSha": "a4c970f4b2bf75125d2db9357fb35e5b44e817d5",
+      "bgPid": 1508753,
+      "bgStart": "46801644",
+      "bgEnv": {
+        "PAPERCUSP_DISK_ALARM_FREE_GB": "100"
+      },
+      "policy": {
+        "freePctMin": 0.1,
+        "freeBytesMin": 107374182400,
+        "freeInodesPctMin": 0.05,
+        "criticalFreePctMin": 0.02,
+        "criticalFreeBytesMin": 2147483648,
+        "criticalFreeBytesCap": 68719476736
+      },
+      "reservationLedger": "/tmp/papercusp-disk-reservations",
+      "snapshots": [
+        {
+          "at": "2026-10-11T01:14:24.647Z",
+          "path": "/",
+          "dev": 66307,
+          "key": "dev-66307",
+          "totalBytes": 2013991550976,
+          "availableBytes": 101187710976,
+          "reservedBytes": 0,
+          "usableAfterReservationsBytes": 101187710976,
+          "criticalFloorBytes": 40279831019.520004,
+          "totalInodes": 124960768,
+          "freeInodes": 104349385,
+          "meetsCriticalFloor": true
+        },
+        {
+          "at": "2026-10-11T01:14:24.688Z",
+          "path": "/mnt/data",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 235740942336,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 222856040448,
+          "criticalFloorBytes": 68719476736,
+          "totalInodes": 491214984,
+          "freeInodes": 461893731,
+          "meetsCriticalFloor": true
+        },
+        {
+          "at": "2026-10-11T01:14:24.735Z",
+          "path": "/tmp/pcv",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 235739709440,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 222854807552,
+          "criticalFloorBytes": 68719476736,
+          "totalInodes": 491212576,
+          "freeInodes": 461890957,
+          "meetsCriticalFloor": true
+        }
+      ],
+      "limits": [
+        "Read-only sample; no restart, prune or ledger rewrite.",
+        "Only named physical devices and published generations; allocations require the separate published-population receipt.",
+        "Endpoint capacity does not measure every instant of the interval."
+      ]
+    },
+    "custody": {
+      "samePhysicalDevice": true,
+      "removedPinNames": [],
+      "protectedBaselineGenerationDirectoriesPresent": true,
+      "changedCurrentPinHashes": 6,
+      "changedFormerPinHashes": 2,
+      "addedCurrentLeases": 4,
+      "limits": [
+        "Pin metadata changes from producer activity remain explicit; unchanged metadata or full payload content is not claimed.",
+        "The diagnostic .complete generation filter was incorrect; its empty generations field is retracted. Marker-qualified population is recorded separately."
+      ]
+    }
+  },
+  "registeredIntervalLatest": {
+    "workflowId": "sched-.sessionDirGc-2026-10-11T00:50:00.000Z",
+    "startedAt": "2026-10-11T00:50:26.403Z",
+    "completedAt": "2026-10-11T00:50:40.255Z",
+    "status": "complete",
+    "errors": [],
+    "stores": [
+      {
+        "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+        "generationRoot": "/mnt/data/papercusp-dependency-generations",
+        "retired": false,
+        "status": "pruned",
+        "stdout": "",
+        "stderr": "",
+        "stdoutTruncated": false,
+        "stderrTruncated": false
+      },
+      {
+        "integrationRoot": "~/papercupai-workspace/papercusp",
+        "generationRoot": "/mnt/data/dependency-generations/papercusp",
+        "retired": true,
+        "status": "pruned",
+        "stdout": "",
+        "stderr": "",
+        "stdoutTruncated": false,
+        "stderrTruncated": false
+      }
+    ],
+    "skippedAbsentIntegrations": 9,
+    "limits": [
+      "Full JSON report independently read from native DBOS output::jsonb->json; each store receipt is distinct.",
+      "Empty stdout is not proof that silent quarantine cleanup removed nothing.",
+      "Full post-D012 runtime interval and actual candidate demand remain separate."
+    ]
+  },
+  "afterPublishedAllocation": {
+    "taskId": "0mv34twal1exb96y8yz",
+    "logPath": ".papercusp/scratch/bash-b12c18c7-3aa.log",
+    "receipt": {
+      "schemaVersion": 1,
+      "kind": "r5-published-allocation-receipt",
+      "root": "/mnt/data/papercusp-dependency-generations",
+      "device": 66304,
+      "startedAt": "2026-10-11T01:16:14.697245+00:00",
+      "completedAt": "2026-10-11T01:16:54.059734+00:00",
+      "inputPopulation": [
+        "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+        "v1-2f9c1648ec8be307c47504c139e10b34ad6900a9905f5431bc4f3f2b2ae371bd",
+        "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+        "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+        "v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b",
+        "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+        "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+        "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+        "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+      ],
+      "afterPopulation": [
+        "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+        "v1-2f9c1648ec8be307c47504c139e10b34ad6900a9905f5431bc4f3f2b2ae371bd",
+        "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+        "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+        "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645",
+        "v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b",
+        "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+        "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+        "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+        "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+      ],
+      "newlyPublished": [
+        "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645"
+      ],
+      "removed": [],
+      "selectionStable": true,
+      "duExitCode": 0,
+      "timedOut": false,
+      "allocatedPublishedBytes": 63344230400,
+      "isLowerBound": true,
+      "completePublishedPopulation": false,
+      "stdout": "518356992\t/mnt/data/papercusp-dependency-generations/v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1\n36864\t/mnt/data/papercusp-dependency-generations/v1-2f9c1648ec8be307c47504c139e10b34ad6900a9905f5431bc4f3f2b2ae371bd\n1274417152\t/mnt/data/papercusp-dependency-generations/v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c\n4096\t/mnt/data/papercusp-dependency-generations/v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249\n1483030528\t/mnt/data/papercusp-dependency-generations/v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b\n759873536\t/mnt/data/papercusp-dependency-generations/v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0\n19780546560\t/mnt/data/papercusp-dependency-generations/v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41\n26041700352\t/mnt/data/papercusp-dependency-generations/v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673\n13486264320\t/mnt/data/papercusp-dependency-generations/v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0\n63344230400\ttotal\n",
+      "stderr": "",
+      "stderrTruncated": false,
+      "excluded": [
+        "mutable .build-pending/.inflight and other non-published children",
+        "pins/leases/input-selector metadata"
+      ],
+      "exclusiveReclaim": false,
+      "scope": "Captured published generation population only; physical filesystem df covers mutable producer demand separately."
+    },
+    "comparison": "The measured9 input roots total63,344,230,400 nonexclusive allocated bytes. One root published during the scan, so this is explicitly incomplete/lower-bound for the after population, not a universal store total."
+  },
+  "recorderAfter": {
+    "taskId": "0mv34uzccmkn0ct4o0c",
+    "logPath": ".papercusp/scratch/bash-892ccfe9-8ff.log",
+    "at": "2026-10-11T01:17:05.699Z",
+    "pid": 1525229,
+    "origin": "http://127.0.0.1:3270",
+    "indexed": true,
+    "loaded": true,
+    "count": 250,
+    "persistedSnapshot": {
+      "taskId": "0mv34xaa21eaqg69m7u",
+      "logPath": ".papercusp/scratch/bash-d697046b-ccf.log",
+      "at": "2026-10-11T01:18:53.026Z",
+      "count": 250,
+      "latestTs": 1791674734133,
+      "inMemoryLatestTs": 1791674734133
+    },
+    "legacyPerfKeyHash": "e17a25ab8500cef33d2b7a3cb2cd0f2f1169c5d94e1a9ceaa4a2e91493b9341d",
+    "legacyPerfKeyUnchangedSince": "2026-10-10T23:04:30.007Z",
+    "limits": [
+      "Existing buffer read through maintained persistence.load; no synthetic event, reload or desktop restart performed.",
+      "No localStorage performance-event write in the compared snapshots; other WebKit writers remain active."
+    ]
+  },
+  "nativeWalAfter": {
+    "taskId": "0mv34x7nq2e2hja1x06",
+    "logPath": ".papercusp/scratch/bash-45068cb0-e1a.log",
+    "receipt": {
+      "schemaVersion": 1,
+      "kind": "r5-native-sqlite-recovery",
+      "dbPath": "~/.local/share/com.papercusp.gui/localstorage/http_127.0.0.1_3270.localstorage",
+      "dev": 66307,
+      "inode": 7353270,
+      "before": {
+        "at": "2026-10-11T01:18:51.741Z",
+        "quickCheck": {
+          "quick_check": "ok"
+        },
+        "keyCount": 22,
+        "keyHashes": {
+          "harness.brainstorm-chat.shared-hive-test-hive-2": "5ee9173b1b564e61afd2359a897c180b5ea83875a91a28537df4202aad4b3aa7",
+          "papercusp.operatorGenerating.v1": "e3311525fcad2160def902366204c674853a31b46c933db0d31dfe443b2b85f3",
+          "papercusp.operatorShared.v1": "84095dbf78b39c8d25b42b425110c0a3e174afbcd76c8f9fc639cbf51011d185",
+          "papercusp.testing.perf-events.v1": "e17a25ab8500cef33d2b7a3cb2cd0f2f1169c5d94e1a9ceaa4a2e91493b9341d",
+          "papercusp:sync-cache:v1": "4b3766f1740e9708688612f065979043860934ff189955bd38bc2e17725cd9b9",
+          "papercusp_user_welcomed_120f421b-25c9-47f7-8e3b-329c0edd4bf2": "fe3c745e713678ea121b6e7991f0dcfc0dd6841fd3821c8a4df841613ac63a55",
+          "pc-colw:adv:work-items": "a18859f635c211d022253ef0d70a50bd27fc898092b14545dfe0222043ffbef9",
+          "pc:ws:papercusp-workspace:adv.recentSecondaryTabs": "3119eb0ad1fa14906731dca4552f08d8f72f7e0401e9a37fb880604602e65c7e",
+          "pc:ws:papercusp-workspace:harness.activeProject": "86361f200e440a26663d639f7f2115ec678903017157ff190b67b181bc30158e",
+          "pc:ws:papercusp-workspace:papercusp.customThemesCatalog": "5ee9173b1b564e61afd2359a897c180b5ea83875a91a28537df4202aad4b3aa7",
+          "pc:ws:papercusp-workspace:papercusp.customThemesCss": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "pc:ws:papercusp-workspace:papercusp.customThemesMeta": "bbaa971bc41901db6f76aea6ec5f59b97567aa1fcae8b7abc2533f1375bc61be",
+          "pc:ws:papercusp-workspace:papercusp.devRail.width": "4fab832bc9cad0ffe8b99563e7a7afab6dfe02bbd0e95d72b03d12a02b7ec9b1",
+          "pc:ws:papercusp-workspace:papercusp.leftSidebar.width": "5cd008e7212cffe3ad3b936beb8450cebb1cc11e84752e6fc2dbf22bb2614c49",
+          "pc:ws:papercusp-workspace:papercusp.operatorChat.width": "605b9b9fb4d24e7d207270e790dff65c1499bd0b9d27d7328217de656a1651f1",
+          "pc:ws:papercusp-workspace:papercusp.shortcuts.v1": "bbaa971bc41901db6f76aea6ec5f59b97567aa1fcae8b7abc2533f1375bc61be",
+          "pc:ws:papercusp-workspace:papercusp.theme": "b6d744273639040cccc2cf46bcafce81c294e8ffd100b0061d88c6b767c97e44",
+          "pc:ws:papercusp-workspace:papercusp.toastLog.lastSeen": "aa09379a9846194ad16257c64b4697348c00fd59060e92fd7bde055f674c1839",
+          "pc:ws:papercusp-workspace:papercusp.voice.config.v1": "11a61aab45d749417f383f629a1714a487f60e7604569abc5b8fd42f5bc4c5a7",
+          "pc:ws:papercusp-workspace:papercusp.voice.outputMuted.v1": "e79e418e48623569d75e2a7b09ae88ed9b77b126a445b9ff9dc6989a08efa079",
+          "pc:ws:papercusp-workspace:pc-voice-ptt-hint-seen-v1": "e79e418e48623569d75e2a7b09ae88ed9b77b126a445b9ff9dc6989a08efa079",
+          "pc:ws:papercusp-workspace:pc-voice-wake-hint-seen-v1": "e79e418e48623569d75e2a7b09ae88ed9b77b126a445b9ff9dc6989a08efa079"
+        }
+      },
+      "checkpoint": {
+        "dbPath": "~/.local/share/com.papercusp.gui/localstorage/http_127.0.0.1_3270.localstorage",
+        "ok": true,
+        "busy": true,
+        "framesInWal": 2720,
+        "framesCheckpointed": 0,
+        "walBytesBefore": 11206432,
+        "walBytesAfter": 11206432
+      },
+      "after": {
+        "at": "2026-10-11T01:18:51.803Z",
+        "quickCheck": {
+          "quick_check": "ok"
+        },
+        "keyCount": 22,
+        "keyHashes": {
+          "harness.brainstorm-chat.shared-hive-test-hive-2": "5ee9173b1b564e61afd2359a897c180b5ea83875a91a28537df4202aad4b3aa7",
+          "papercusp.operatorGenerating.v1": "e3311525fcad2160def902366204c674853a31b46c933db0d31dfe443b2b85f3",
+          "papercusp.operatorShared.v1": "84095dbf78b39c8d25b42b425110c0a3e174afbcd76c8f9fc639cbf51011d185",
+          "papercusp.testing.perf-events.v1": "e17a25ab8500cef33d2b7a3cb2cd0f2f1169c5d94e1a9ceaa4a2e91493b9341d",
+          "papercusp:sync-cache:v1": "4b3766f1740e9708688612f065979043860934ff189955bd38bc2e17725cd9b9",
+          "papercusp_user_welcomed_120f421b-25c9-47f7-8e3b-329c0edd4bf2": "fe3c745e713678ea121b6e7991f0dcfc0dd6841fd3821c8a4df841613ac63a55",
+          "pc-colw:adv:work-items": "a18859f635c211d022253ef0d70a50bd27fc898092b14545dfe0222043ffbef9",
+          "pc:ws:papercusp-workspace:adv.recentSecondaryTabs": "3119eb0ad1fa14906731dca4552f08d8f72f7e0401e9a37fb880604602e65c7e",
+          "pc:ws:papercusp-workspace:harness.activeProject": "86361f200e440a26663d639f7f2115ec678903017157ff190b67b181bc30158e",
+          "pc:ws:papercusp-workspace:papercusp.customThemesCatalog": "5ee9173b1b564e61afd2359a897c180b5ea83875a91a28537df4202aad4b3aa7",
+          "pc:ws:papercusp-workspace:papercusp.customThemesCss": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "pc:ws:papercusp-workspace:papercusp.customThemesMeta": "bbaa971bc41901db6f76aea6ec5f59b97567aa1fcae8b7abc2533f1375bc61be",
+          "pc:ws:papercusp-workspace:papercusp.devRail.width": "4fab832bc9cad0ffe8b99563e7a7afab6dfe02bbd0e95d72b03d12a02b7ec9b1",
+          "pc:ws:papercusp-workspace:papercusp.leftSidebar.width": "5cd008e7212cffe3ad3b936beb8450cebb1cc11e84752e6fc2dbf22bb2614c49",
+          "pc:ws:papercusp-workspace:papercusp.operatorChat.width": "605b9b9fb4d24e7d207270e790dff65c1499bd0b9d27d7328217de656a1651f1",
+          "pc:ws:papercusp-workspace:papercusp.shortcuts.v1": "bbaa971bc41901db6f76aea6ec5f59b97567aa1fcae8b7abc2533f1375bc61be",
+          "pc:ws:papercusp-workspace:papercusp.theme": "b6d744273639040cccc2cf46bcafce81c294e8ffd100b0061d88c6b767c97e44",
+          "pc:ws:papercusp-workspace:papercusp.toastLog.lastSeen": "aa09379a9846194ad16257c64b4697348c00fd59060e92fd7bde055f674c1839",
+          "pc:ws:papercusp-workspace:papercusp.voice.config.v1": "11a61aab45d749417f383f629a1714a487f60e7604569abc5b8fd42f5bc4c5a7",
+          "pc:ws:papercusp-workspace:papercusp.voice.outputMuted.v1": "e79e418e48623569d75e2a7b09ae88ed9b77b126a445b9ff9dc6989a08efa079",
+          "pc:ws:papercusp-workspace:pc-voice-ptt-hint-seen-v1": "e79e418e48623569d75e2a7b09ae88ed9b77b126a445b9ff9dc6989a08efa079",
+          "pc:ws:papercusp-workspace:pc-voice-wake-hint-seen-v1": "e79e418e48623569d75e2a7b09ae88ed9b77b126a445b9ff9dc6989a08efa079"
+        }
+      },
+      "removedKeys": [],
+      "changedKeys": [],
+      "limits": [
+        "Maintained checkpointOne engine operation, no restart or reload.",
+        "Concurrent WebKit writes can change logical values; differences remain explicit.",
+        "WAL bytes can grow again from other legitimate writers; perf-event key must remain unchanged."
+      ]
+    },
+    "interpretation": "Native maintained checkpoint is safe but busy:0frames checkpointed and0bytes reclaimed. All22 logical key hashes unchanged and quick_check=ok before/after. This is not a successful journal-drain claim.",
+    "scheduledGuard": {
+      "workflowId": "sched-.localstorageWalGuard-2026-10-11T01:08:00.000Z",
+      "startedAt": "2026-10-11T01:08:09.612Z",
+      "completedAt": "2026-10-11T01:08:09.621Z",
+      "error": null,
+      "limits": [
+        "Void DBOS step does not disclose skip/kill-switch/threshold outcome."
+      ]
+    }
+  },
+  "latestRuntimeIdentity": {
+    "taskId": "0mv353cn7126msu21x9",
+    "logPath": ".papercusp/scratch/bash-36ebfcb9-3e9.log",
+    "receipt": {
+      "at": "2026-10-11T01:23:35.767Z",
+      "pid": 1508753,
+      "entries": [],
+      "health": {
+        "status": 200,
+        "ok": true,
+        "sha": "22a41ff6e9",
+        "version": "0.0.0",
+        "bundleStale": null
+      },
+      "limits": [
+        "Read-only native identity; no restart or gate read."
+      ]
+    },
+    "stagingBuild": "3f29d6b655",
+    "bgPresenceMethod": "start-after-mtime",
+    "limits": [
+      "BG host advertises22a41ff6e9; source-ready3f29 is a separate immutable test boundary.",
+      "No direct entry-path match was measured; do not infer full D012 runtime activation from start time alone."
+    ]
+  },
+  "stableAfterPublishedAllocation": {
+    "taskId": "0mv356026nvhuzfjndp",
+    "logPath": ".papercusp/scratch/bash-5556f322-d15.log",
+    "receipt": {
+      "schemaVersion": 1,
+      "kind": "r5-published-allocation-custody-receipt",
+      "root": "/mnt/data/papercusp-dependency-generations",
+      "device": 66304,
+      "startedAt": "2026-10-11T01:25:39.374653+00:00",
+      "completedAt": "2026-10-11T01:26:19.204440+00:00",
+      "population": {
+        "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1": {
+          "dev": 66304,
+          "inode": 2418438880,
+          "markerInode": 2418441858,
+          "markerSha256": "4f3b952845b5584285dae9bc0cc8f4cdf425b628d54c8473da97bf3cfe244b2a"
+        },
+        "v1-2f9c1648ec8be307c47504c139e10b34ad6900a9905f5431bc4f3f2b2ae371bd": {
+          "dev": 66304,
+          "inode": 15569365994,
+          "markerInode": 15569365992,
+          "markerSha256": "59d7ccd7a86492024195707db12cc1b9e292b8f82184fc29c06b7a08a8f7a893"
+        },
+        "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c": {
+          "dev": 66304,
+          "inode": 1549392526,
+          "markerInode": 2416566183,
+          "markerSha256": "b3b3cdb76c617174a87c53390c1c11546793aeb3249848270c0a2238da9d7476"
+        },
+        "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249": {
+          "dev": 66304,
+          "inode": 5913877200,
+          "markerInode": 5913877206,
+          "markerSha256": "17919f2da23b7fdda775b1dbfa2f3b1b1291dbf3078f1775106af9611b152dfa"
+        },
+        "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0": {
+          "dev": 66304,
+          "inode": 9126884355,
+          "markerInode": 9158387524,
+          "markerSha256": "f0c98c3bfba01acac6b4239a07be93fb018463e661cae6c4b26df7dc067846ca"
+        },
+        "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41": {
+          "dev": 66304,
+          "inode": 4294977544,
+          "markerInode": 4382929692,
+          "markerSha256": "f252f4c82d099861bc8119b71b76d4b74a05bf6bc8c3c5719c2c2c3b96712425"
+        },
+        "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673": {
+          "dev": 66304,
+          "inode": 2506218259,
+          "markerInode": 6198630492,
+          "markerSha256": "cb854b671a94178f417e3b1e9aa21151b792158d947a44eb0ac3e70207bca535"
+        },
+        "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703": {
+          "dev": 66304,
+          "inode": 6499444905,
+          "markerInode": 6499439702,
+          "markerSha256": "43b14782fe9e93c17b4e187340ca06e756a129b5fadd0a141f87f2413c87b4ed"
+        },
+        "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0": {
+          "dev": 66304,
+          "inode": 16134055834,
+          "markerInode": 16134472097,
+          "markerSha256": "550f59e8e5ae78effc51f0d9ef4a317dfe40808eef3f6caa862acfb913ad6f4e"
+        }
+      },
+      "populationStable": true,
+      "publisherLockHeld": true,
+      "duExitCode": 0,
+      "allocatedPublishedBytes": 70246080512,
+      "completeCapturedPublishedPopulation": true,
+      "stdout": "518356992\t/mnt/data/papercusp-dependency-generations/v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1\n36864\t/mnt/data/papercusp-dependency-generations/v1-2f9c1648ec8be307c47504c139e10b34ad6900a9905f5431bc4f3f2b2ae371bd\n1274417152\t/mnt/data/papercusp-dependency-generations/v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c\n4096\t/mnt/data/papercusp-dependency-generations/v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249\n759873536\t/mnt/data/papercusp-dependency-generations/v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0\n19780546560\t/mnt/data/papercusp-dependency-generations/v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41\n26041700352\t/mnt/data/papercusp-dependency-generations/v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673\n8384880640\t/mnt/data/papercusp-dependency-generations/v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703\n13486264320\t/mnt/data/papercusp-dependency-generations/v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0\n70246080512\ttotal\n",
+      "stderr": "",
+      "stderrTruncated": false,
+      "exclusiveReclaim": false,
+      "excluded": [
+        "mutable .build-pending/.inflight and control metadata"
+      ],
+      "auditRef": "WI-10007602 checkpoint472ce195c197",
+      "limits": [
+        "Existing maintained publisher lock serializes this bounded read with publication/pruning; no generation payload modified.",
+        "Identity/marker fingerprints and same-device membership checked before and after.",
+        "Allocated blocks may share hardlinks/reflinks, so never exclusive reclaim."
+      ]
+    },
+    "publisherLockReleased": true
+  },
+  "nativeBundleCustody": {
+    "taskId": "0mv359x6w3btlzg1urb",
+    "logPath": ".papercusp/scratch/bash-24aa132f-f64.log",
+    "receipt": {
+      "at": "2026-10-11T01:28:45.934Z",
+      "path": "apps/operator/dist-host/hono-host.mjs",
+      "device": 66307,
+      "inode": 7361515,
+      "mtime": "2026-10-11T00:36:01.759Z",
+      "sha256": "2e444dc50429982b4052bc3e1ec0ae73bbc00be9042317a03c16ec312475efca",
+      "containsD012Flag": true,
+      "starts": [
+        "ExecMainStartTimestamp=Sat 2026-10-10 20:37:22 EDT",
+        "ActiveEnterTimestamp=Sat 2026-10-10 20:37:22 EDT"
+      ],
+      "serviceEntryPaths": [
+        "dist-host/hono-host.mjs"
+      ],
+      "limits": [
+        "Current disk bundle and declared service route measured; no restart or gate read."
+      ]
+    },
+    "interpretation": "Maintained BG service starts dist-host/hono-host.mjs. The measured bundle contains D012 flag and its mtime00:36:01.759 precedes observed service start00:37:22Z; healthsha22a is a source-build label and does not alone fingerprint the dirty-at-build bundle. Source-ready3f29 remains the independently verified immutable source boundary."
+  },
+  "retentionChildDisposition": {
+    "id": "EI-25637075692558914",
+    "state": "done",
+    "completionAuthority": "committed",
+    "terminalEvent": "work-item:done:EI-25637075692558914",
+    "residueOwner": "WI-10007602",
+    "sourceTestRunId": 21017283,
+    "sourceBindingId": 35739
+  },
+  "registeredInterval0150": {
+    "workflow_uuid": "sched-.sessionDirGc-2026-10-11T01:50:00.000Z",
+    "started_at_epoch_ms": "1791683407905",
+    "completed_at_epoch_ms": "1791683413562",
+    "error": null,
+    "receipt": {
+      "errors": [],
+      "status": "complete",
+      "stores": [
+        {
+          "status": "pruned",
+          "stderr": "",
+          "stdout": "",
+          "retired": false,
+          "generationRoot": "/mnt/data/papercusp-dependency-generations",
+          "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+          "stderrTruncated": false,
+          "stdoutTruncated": false
+        },
+        {
+          "status": "pruned",
+          "stderr": "",
+          "stdout": "",
+          "retired": true,
+          "generationRoot": "/mnt/data/dependency-generations/papercusp",
+          "integrationRoot": "~/papercupai-workspace/papercusp",
+          "stderrTruncated": false,
+          "stdoutTruncated": false
+        }
+      ],
+      "schemaVersion": 1,
+      "skippedIntegrations": [
+        {
+          "root": "/tmp/devboard-smoke",
+          "reason": "integration is absent or not a directory"
+        },
+        {
+          "root": "/tmp/devboard",
+          "reason": "integration is absent or not a directory"
+        },
+        {
+          "root": "/tmp/gym",
+          "reason": "integration is absent or not a directory"
+        },
+        {
+          "root": "/tmp/e2e-imp-projects/e2e-imp-j1",
+          "reason": "integration is absent or not a directory"
+        },
+        {
+          "root": "/tmp/create-atomic-c-JGQpM7",
+          "reason": "integration is absent or not a directory"
+        },
+        {
+          "root": "/tmp/wi3467-smoke-test",
+          "reason": "integration is absent or not a directory"
+        },
+        {
+          "root": "/tmp/ei669-repro-su-b621d",
+          "reason": "integration is absent or not a directory"
+        },
+        {
+          "root": "/tmp/papercusp-mobile-greenfield-20260821/stonebrook-android-20260821",
+          "reason": "integration is absent or not a directory"
+        },
+        {
+          "root": "/tmp/papercusp-mobile-greenfield-20260821/thornbury-iphone-20260821",
+          "reason": "integration is absent or not a directory"
+        }
+      ]
+    }
+  },
+  "native0150Window": {
+    "preTaskId": "0mv35xvfp4u7i5kngah",
+    "preLogPath": ".papercusp/scratch/bash-033079d6-d30.log",
+    "pre": {
+      "kind": "r5-native-pre-0150",
+      "at": "2026-10-11T01:47:32.305Z",
+      "bgPid": 1508753,
+      "nativeEnv": {
+        "PAPERCUSP_DISK_ALARM_FREE_GB": "100"
+      },
+      "policy": {
+        "freePctMin": 0.1,
+        "freeBytesMin": 107374182400,
+        "freeInodesPctMin": 0.05,
+        "criticalFreePctMin": 0.02,
+        "criticalFreeBytesMin": 2147483648,
+        "criticalFreeBytesCap": 68719476736
+      },
+      "reservationLedger": "/tmp/papercusp-disk-reservations",
+      "snapshots": [
+        {
+          "path": "/",
+          "dev": 66307,
+          "key": "dev-66307",
+          "totalBytes": 2013991550976,
+          "availableBytes": 98299297792,
+          "reservedBytes": 10737418240,
+          "usableAfterReservationsBytes": 87561879552,
+          "criticalFloorBytes": 40279831019.520004,
+          "meetsCriticalFloor": true
+        },
+        {
+          "path": "/mnt/data",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 235694489600,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 222809587712,
+          "criticalFloorBytes": 68719476736,
+          "meetsCriticalFloor": true
+        },
+        {
+          "path": "/tmp/pcv",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 235694362624,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 222809460736,
+          "criticalFloorBytes": 68719476736,
+          "meetsCriticalFloor": true
+        }
+      ],
+      "stores": [
+        {
+          "path": "/mnt/data/papercusp-dependency-generations",
+          "physical": "/mnt/data/papercusp-dependency-generations",
+          "dev": 66304,
+          "generations": [
+            "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+            "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+            "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+            "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+            "v1-be30308f67158093653001fc9417c4f27d78a603043623540eaf4090d467c08f",
+            "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+            "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+            "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+            "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+          ],
+          "quarantines": []
+        },
+        {
+          "path": "/mnt/data/dependency-generations/papercusp",
+          "physical": "/mnt/data/dependency-generations/papercusp",
+          "dev": 66304,
+          "generations": [
+            "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+            "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb"
+          ],
+          "quarantines": []
+        }
+      ],
+      "nativeDemand": {
+        "target": "/mnt/data/cargo-target/.papercusp-target-slots/dev3",
+        "cargoNeedGiB": 12,
+        "writer": "papercusp-desktop/bin/lib/cargo-target-root.sh:papercusp_native_dev_cargo_need_gb",
+        "candidateBinding": "unknown; historical dev3 target inspected only"
+      },
+      "limits": [
+        "Read-only endpoint, not continuous sampling.",
+        "Marker-qualified membership is not an allocated-byte measurement.",
+        "No candidate-bound native demand or deletion attribution is claimed."
+      ]
+    },
+    "afterTaskId": "0mv362f8q65kwjdib56",
+    "afterLogPath": ".papercusp/scratch/bash-36c87f59-d5a.log",
+    "after": {
+      "kind": "r5-native-after-0150",
+      "at": "2026-10-11T01:51:02.363Z",
+      "bgPid": 1508753,
+      "nativeEnv": {
+        "PAPERCUSP_DISK_ALARM_FREE_GB": "100"
+      },
+      "policy": {
+        "freePctMin": 0.1,
+        "freeBytesMin": 107374182400,
+        "freeInodesPctMin": 0.05,
+        "criticalFreePctMin": 0.02,
+        "criticalFreeBytesMin": 2147483648,
+        "criticalFreeBytesCap": 68719476736
+      },
+      "reservationLedger": "/tmp/papercusp-disk-reservations",
+      "snapshots": [
+        {
+          "path": "/",
+          "dev": 66307,
+          "key": "dev-66307",
+          "totalBytes": 2013991550976,
+          "availableBytes": 97895718912,
+          "reservedBytes": 10737418240,
+          "usableAfterReservationsBytes": 87158300672,
+          "criticalFloorBytes": 40279831019.520004,
+          "meetsCriticalFloor": true
+        },
+        {
+          "path": "/mnt/data",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 239890694144,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 227005792256,
+          "criticalFloorBytes": 68719476736,
+          "meetsCriticalFloor": true
+        },
+        {
+          "path": "/tmp/pcv",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 239886299136,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 227001397248,
+          "criticalFloorBytes": 68719476736,
+          "meetsCriticalFloor": true
+        }
+      ],
+      "stores": [
+        {
+          "path": "/mnt/data/papercusp-dependency-generations",
+          "physical": "/mnt/data/papercusp-dependency-generations",
+          "dev": 66304,
+          "generations": [
+            "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+            "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+            "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+            "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+            "v1-be30308f67158093653001fc9417c4f27d78a603043623540eaf4090d467c08f",
+            "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+            "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+            "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+            "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+          ],
+          "quarantines": []
+        },
+        {
+          "path": "/mnt/data/dependency-generations/papercusp",
+          "physical": "/mnt/data/dependency-generations/papercusp",
+          "dev": 66304,
+          "generations": [
+            "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+            "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb"
+          ],
+          "quarantines": []
+        }
+      ],
+      "nativeDemand": {
+        "target": "/mnt/data/cargo-target/.papercusp-target-slots/dev3",
+        "cargoNeedGiB": 12,
+        "writer": "papercusp-desktop/bin/lib/cargo-target-root.sh:papercusp_native_dev_cargo_need_gb",
+        "candidateBinding": "unknown; historical dev3 target inspected only"
+      },
+      "limits": [
+        "Read-only endpoint, not continuous sampling.",
+        "Marker-qualified membership is not an allocated-byte measurement.",
+        "No candidate-bound native demand or deletion attribution is claimed."
+      ]
+    },
+    "comparison": [
+      {
+        "physical": "/mnt/data/papercusp-dependency-generations",
+        "sameDevice": true,
+        "removedCapturedGenerations": [],
+        "addedCapturedGenerations": [],
+        "quarantinesBefore": [],
+        "quarantinesAfter": []
+      },
+      {
+        "physical": "/mnt/data/dependency-generations/papercusp",
+        "sameDevice": true,
+        "removedCapturedGenerations": [],
+        "addedCapturedGenerations": [],
+        "quarantinesBefore": [],
+        "quarantinesAfter": []
+      }
+    ],
+    "limits": [
+      "These endpoint observations bracket the native 01:50 step. They do not continuously sample the hour.",
+      "Captured published generation membership was unchanged; capacity gains are not attributed to these prunes.",
+      "The inspected dev3 warm demand is current for that path, but candidate binding remains unknown."
+    ]
+  },
+  "quarantineUnlinkRepair": {
+    "workItem": "WI-10007998",
+    "rootCause": "The deletion helper lost earlier rm status and its caller discarded the final helper status. Crash-left deletions were silent.",
+    "before": {
+      "taskId": "0mv35z6lpigwgwh7uv3",
+      "logPath": ".papercusp/scratch/bash-5503ee3b-b25.log",
+      "testRunId": 21024112,
+      "result": "Expected prune exit23 after refused unlink; observed0, conventional regression failed."
+    },
+    "afterShell": {
+      "taskId": "0mv360emh7a2e58ryix",
+      "logPath": ".papercusp/scratch/bash-c6ab8cad-b3c.log",
+      "testRunId": 21024257,
+      "result": "4 targeted conventional shell tests passed;127 unmatched tests skipped explicitly. Current-tree proof only."
+    },
+    "afterActor": {
+      "taskId": "0mv363ybem32oebgtx4",
+      "logPath": ".papercusp/scratch/bash-a4f50f41-047.log",
+      "result": "Full16 conventional actor tests passed/0skipped; current-tree proof."
+    },
+    "sourceReadiness": "OPEN: helper/test working blobs did not match HEAD at01:53. Immutable refresh and current proof binding remain required.",
+    "commitExpedite": {
+      "taskId": "0mv36545vw87xqe4183",
+      "logPath": ".papercusp/scratch/bash-4a6a2176-2ef.log",
+      "result": "Terminal exit0, native git-sync receipt skipped/held_exclusive; no commit claimed.",
+      "continuationEvent": "resource:released:git-sync:papercusp"
+    }
+  },
+  "latestQuarantineUnlinkProof": {
+    "candidateSha": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+    "helperBlob": "7aff14b2795edb600c618fc9351f3d83a7eaec2b",
+    "testBlob": "2dd9c7a6e4944f58bab6fadff94f6edbf70646e4",
+    "taskId": "0mv36m0vg19aytta1lg",
+    "logPath": ".papercusp/scratch/bash-d24d00a5-8a0.log",
+    "terminalExit": 0,
+    "sourceBoundary": "Maintained lint:as-committed immutable clone with exact committed bytes.",
+    "shell": {
+      "testRunId": 21024489,
+      "worktreeDirty": false,
+      "passed": 4,
+      "skipped": 127,
+      "bindingId": 35916,
+      "scope": "Four selected shell controls;127 unmatched cases not executed."
+    },
+    "actor": {
+      "testRunId": 21024491,
+      "worktreeDirty": false,
+      "passed": 16,
+      "skipped": 0,
+      "bindingId": 35909,
+      "supersededBindingId": 35739
+    },
+    "currentR2Assessment": {
+      "at": "2026-10-11T02:16:50.895Z",
+      "verdict": "fail",
+      "wouldBlock": [
+        "correct-layer",
+        "freshness"
+      ],
+      "reason": "Older pruning binding35636 is stale; required registered source BAR file proof remains unknown.",
+      "pendingPruneTaskId": "0mv372153rp7xt71myq",
+      "pendingPruneLogPath": ".papercusp/scratch/bash-67ef584b-960.log"
+    },
+    "limits": [
+      "This establishes committed helper/shell/actor proof, not overall R2 acceptance or main shipment.",
+      "The unrelated old eight-file and D010 matrices were not repeated."
+    ]
+  },
+  "candidateGenerationDemand": {
+    "taskId": "0mv36ox9zcrtvwnnyet",
+    "logPath": ".papercusp/scratch/bash-1bddfe20-4b1.log",
+    "terminalExit": 0,
+    "receipt": {
+      "kind": "r5-candidate-generation-demand",
+      "at": "2026-10-11T02:08:41.304198+00:00",
+      "candidateSha": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+      "inputFingerprint": "66dfab64aaf71e23264f75996d348de6d618de8a9321e6ab2a4d9fc60de52ca3",
+      "generation": "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+      "physicalStore": "/mnt/data/papercusp-dependency-generations",
+      "device": 66304,
+      "treeBytesSha256": "716b8dc2c92ac8aa29eaef6a4b2b985c11a26dfecce1d098c1762e00f5fe7536",
+      "recordedTreeCount": 97,
+      "recordedDemandSumBytes": 8374775808,
+      "rootNodeModulesRecord": [
+        {
+          "relativePath": "node_modules",
+          "recordedBytes": 7192342528
+        }
+      ],
+      "limits": [
+        "Maintained immutable-ref input fingerprint and prevalidated selector succeeded.",
+        "Recorded sum bounds the listed tree copies, and is not exclusive allocation or reclaim.",
+        "Final native candidate/build demand remains a separate binding."
+      ]
+    },
+    "comparisonBoundary": "Demand belongs to this exact source candidate's maintained selector. It is distinct from earlier26,031,611,904B recorded generation demand and from native Cargo demand."
+  },
   "remaining": [
-    "Observe complete registered retention interval with same-device before/after receipts and current-store allocated-byte coverage.",
-    "Verify D011 is loaded by the native actor and consume actual per-store removal/preservation/error receipts.",
-    "Verify active recorder and native SQLite journal recovery evidence at acceptance time.",
+    "Consume the next complete native registered interval on the measured D012 bundle and compare same-device capacity and actual per-store removal/preservation receipts.",
+    "Calibrate current candidate allocation demand from its maintained writer; the historical recorded generation demand is not a universal candidate demand estimate.",
+    "Preserve the verified IndexedDB recorder and native SQLite custody evidence; the measured busy checkpoint did not drain the journal.",
     "Consume independent candidate-bound final promotion/shipment receipt from existing LIVE_GATE_OPS owner; do not control or monitor that lane."
-  ]
+  ],
+  "allocationHarnessAudit": {
+    "workItem": "WI-10007602",
+    "checkpointHash": "472ce195c197",
+    "attempts": [
+      {
+        "taskId": "0mv31rn851qcrv0a1xp",
+        "cause": "Whole mutable-store du25-second bound elapsed; current-store total unknown."
+      },
+      {
+        "taskId": "0mv32k1h316snpodblv",
+        "cause": "Child duEXIT1 while concurrent .build-pending/.inflight entries disappeared; caller discarded stdout, so allocation unknown."
+      }
+    ],
+    "repair": "Preflight physical identity and marker-qualified published population; retain stdout even on failure; compare before/after membership and selection; report drift/lower-bound explicitly. Mutable temporary and control metadata are excluded from this measurement scope.",
+    "nextAttempt": {
+      "taskId": "0mv32y1ihvbunso1ti4",
+      "logPath": ".papercusp/scratch/bash-8782c675-3d5.log",
+      "state": "TERMINAL_EXIT_0",
+      "receipt": {
+        "schemaVersion": 1,
+        "kind": "r5-published-allocation-receipt",
+        "root": "/mnt/data/papercusp-dependency-generations",
+        "device": 66304,
+        "startedAt": "2026-10-11T00:23:28.764058+00:00",
+        "completedAt": "2026-10-11T00:24:23.093491+00:00",
+        "inputPopulation": [
+          "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+          "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+          "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+          "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645",
+          "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+          "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+          "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+          "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+          "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+        ],
+        "afterPopulation": [
+          "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+          "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+          "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+          "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645",
+          "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+          "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+          "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+          "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+          "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+        ],
+        "newlyPublished": [],
+        "removed": [],
+        "selectionStable": true,
+        "duExitCode": 0,
+        "timedOut": false,
+        "allocatedPublishedBytes": 70693376000,
+        "isLowerBound": false,
+        "completePublishedPopulation": true,
+        "stdout": "518356992\t/mnt/data/papercusp-dependency-generations/v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1\n1274417152\t/mnt/data/papercusp-dependency-generations/v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c\n4096\t/mnt/data/papercusp-dependency-generations/v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249\n447348736\t/mnt/data/papercusp-dependency-generations/v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645\n759873536\t/mnt/data/papercusp-dependency-generations/v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0\n19780546560\t/mnt/data/papercusp-dependency-generations/v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41\n26041700352\t/mnt/data/papercusp-dependency-generations/v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673\n8384864256\t/mnt/data/papercusp-dependency-generations/v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703\n13486264320\t/mnt/data/papercusp-dependency-generations/v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0\n70693376000\ttotal\n",
+        "stderr": "",
+        "stderrTruncated": false,
+        "excluded": [
+          "mutable .build-pending/.inflight and other non-published children",
+          "pins/leases/input-selector metadata"
+        ],
+        "exclusiveReclaim": false,
+        "scope": "Captured published generation population only; physical filesystem df covers mutable producer demand separately."
+      }
+    }
+  }
 }

@@ -410,6 +410,14 @@ export async function retainPortalBrowserFailure(page: Pick<Page, 'url' | 'conte
   writeFileSync(join(evidence, 'portal-browser-failure.json'), JSON.stringify(snapshot, null, 2));
 }
 
+/** Start observing a response before driving its UI action. The original
+ * rejection still reaches the later await; it cannot kill the worker while
+ * Playwright is reporting an earlier action failure. */
+export function retainPortalResponse<T>(pending: Promise<T>): Promise<T> {
+  void pending.catch(() => {});
+  return pending;
+}
+
 /** Evaluate the real ADV module graph before allocating a private database. */
 export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
   assert.ok(input.docs, 'Docs preflight requires a Docs surface');
@@ -499,12 +507,14 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
   });
   const errors: string[] = [];
   const failedRequests: string[] = [];
+  let page: Page | undefined;
   try {
     await new Promise<void>((done, reject) => {
       server.once('error', reject); server.listen(0, '127.0.0.1', done);
     });
     const address = server.address(); assert.ok(address && typeof address === 'object');
-    const page = await browser.newPage();
+    page = await browser.newPage();
+    page.setDefaultTimeout(15_000);
     page.on('pageerror', error => errors.push(error.stack ?? error.message));
     // This browser-only preflight has no API. Capture the renderer's handled
     // failures, rather than treating background flag-bootstrap requests as
@@ -529,12 +539,12 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       await page.getByText('loading mindmap…', { exact: true }).waitFor({ state: 'attached' });
       await page.getByText('loading canvas…', { exact: true }).waitFor({ state: 'attached' });
       await page.waitForTimeout(1_400); // longer than both actual save debounces
-      assert.deepEqual(writes, [], 'no editor may persist before the selected Sync row arrives');
+      assert.equal(writes.length, 0, 'no editor may persist before the selected Sync row arrives');
       assert.equal(await page.locator('.excalidraw').count(), 0, 'pending canvas must not mount writable');
-      const mapWrite = page.waitForResponse(response => response.request().method() === 'PUT'
-        && new URL(response.url()).pathname.endsWith('/brainstorm-mindmap'));
-      const canvasWrite = page.waitForResponse(response => response.request().method() === 'PUT'
-        && new URL(response.url()).pathname.endsWith('/brainstorm-canvas'));
+      const mapWrite = retainPortalResponse(page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith('/brainstorm-mindmap')));
+      const canvasWrite = retainPortalResponse(page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith('/brainstorm-canvas')));
       releaseHydration();
       await page.locator('.rf-mind-label').getByText(savedMap, { exact: true }).waitFor({ state: 'attached' });
       await page.locator('.excalidraw').waitFor({ state: 'attached' });
@@ -548,13 +558,46 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       // Match the PG journey's observed initial-save barrier. Normal editor
       // mount measurements must settle before strict field-isolation checks.
       const hydrated = JSON.parse(JSON.stringify(savedRow));
-      const textWrite = page.waitForResponse(response => response.request().method() === 'PUT'
-        && new URL(response.url()).pathname.endsWith('/brainstorm'));
+      const textWrite = retainPortalResponse(page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith('/brainstorm')));
       await page.locator('.h-brainstorm-write [contenteditable="true"]').first().fill('preflight-edited-text');
       assert.equal((await textWrite).status(), 200);
       assert.ok(savedRow.content.includes('preflight-edited-text'));
       assert.deepEqual(savedRow.mindmap, hydrated.mindmap, 'settled text save must preserve the saved map');
       assert.deepEqual(savedRow.canvas, hydrated.canvas, 'settled text save must preserve the saved canvas');
+      const mapTab = page.getByRole('tab', { name: 'map', exact: true });
+      await mapTab.focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(() => new URL(location.href).searchParams.get('brainstormTab') === 'map');
+      const renamedMap = 'preflight-edited-map';
+      const editedMapWrite = retainPortalResponse(page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith('/brainstorm-mindmap')
+        && (response.request().postData() ?? '').includes(renamedMap)));
+      await page.locator('.rf-mind-node').filter({ has: page.getByText(savedMap, { exact: true }) }).dblclick();
+      await page.locator('.rf-mind-input').fill(renamedMap);
+      await page.locator('.rf-mind-input').press('Enter');
+      assert.equal((await editedMapWrite).status(), 200);
+      assert.equal(savedRow.mindmap.nodes[0].data.text, renamedMap);
+      assert.ok(savedRow.content.includes('preflight-edited-text'));
+      assert.deepEqual(savedRow.canvas, hydrated.canvas);
+      const canvasTab = page.getByRole('tab', { name: 'canvas', exact: true });
+      await canvasTab.focus(); await page.keyboard.press('Space');
+      await page.waitForFunction(() => new URL(location.href).searchParams.get('brainstormTab') === 'canvas');
+      const canvas = page.locator('.excalidraw__canvas.interactive');
+      await canvas.waitFor();
+      const box = await canvas.boundingBox();
+      assert.ok(box && box.width > 300 && box.height > 250, 'preflight requires usable actual canvas geometry');
+      const drawnWrite = retainPortalResponse(page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith('/brainstorm-canvas')
+        && (response.request().postData() ?? '').includes('"type":"ellipse"')));
+      await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+      await page.keyboard.press('o');
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width / 2 + 90, box.y + box.height / 2 + 60, { steps: 4 });
+      await page.mouse.up();
+      assert.equal((await drawnWrite).status(), 200);
+      assert.ok(savedRow.canvas.elements.some(element => element.type === 'ellipse'));
+      assert.equal(savedRow.mindmap.nodes[0].data.text, renamedMap);
     }
     if (input.markdownPreflight) {
       try { await page.getByRole('heading', { name: input.markdownPreflight.heading, exact: true }).waitFor({ timeout: 15_000 }); }
@@ -593,6 +636,13 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     }
     return { sourceCount: built.originals.size, mounted: true, ...(options.brainstormHydration
       ? { selectedHydration: true, noPendingWrites: true, savedMapRetained: true, savedCanvasRetained: true } : {}) };
+  } catch (error) {
+    if (page && options.brainstormHydration) {
+      const evidence = mkdtempSync(join(tmpdir(), 'brainstorm-hydration-'));
+      await retainPortalBrowserFailure(page, evidence, error, errors);
+      console.info('BRAINSTORM_HYDRATION_FAILURE_EVIDENCE ' + evidence);
+    }
+    throw error;
   } finally {
     releaseHydration();
     await browser.close();
@@ -987,9 +1037,9 @@ async function runPrivateBrainstormPage(page: Page, context: BrowserContext, inp
   const untouched = initial.filter(row => row.harness_slug !== scope.selected);
   assert.equal(untouched.length, 2);
   const endpoint = (surface: string) => input.base + `/api/harness/${scope.selected}/${surface}`;
-  const matchingWrite = (surface: string, marker: string) => page.waitForResponse(response =>
+  const matchingWrite = (surface: string, marker: string) => retainPortalResponse(page.waitForResponse(response =>
     new URL(response.url()).pathname === `/api/harness/${scope.selected}/${surface}`
-    && response.request().method() === 'PUT' && (response.request().postData() ?? '').includes(marker));
+    && response.request().method() === 'PUT' && (response.request().postData() ?? '').includes(marker)));
   const recordWrite = async (response: Awaited<ReturnType<Page['waitForResponse']>>) => {
     const receipt = { url: response.url(), status: response.status(), request: response.request().postDataJSON(), body: await response.json() };
     writes.push(receipt);
@@ -1028,7 +1078,7 @@ async function runPrivateBrainstormPage(page: Page, context: BrowserContext, inp
   const deniedMap = `private-brainstorm-denied-map-${process.pid}`;
   await deny('brainstorm-mindmap', deniedMap);
   response = matchingWrite('brainstorm-mindmap', deniedMap);
-  await page.locator('.rf-mind-label').getByText('private-brainstorm-selected-map', { exact: true }).dblclick();
+  await page.locator('.rf-mind-node').filter({ has: page.getByText('private-brainstorm-selected-map', { exact: true }) }).dblclick();
   await page.locator('.rf-mind-input').fill(deniedMap); await page.locator('.rf-mind-input').press('Enter');
   assert.equal((await recordWrite(await response)).status, 403);
   await page.getByText(/Mindmap save failed:/).waitFor();
@@ -1036,7 +1086,7 @@ async function runPrivateBrainstormPage(page: Page, context: BrowserContext, inp
   await allow('brainstorm-mindmap');
   const savedMap = `private-brainstorm-saved-map-${process.pid}`;
   response = matchingWrite('brainstorm-mindmap', savedMap);
-  await page.locator('.rf-mind-label').getByText(deniedMap, { exact: true }).dblclick();
+  await page.locator('.rf-mind-node').filter({ has: page.getByText(deniedMap, { exact: true }) }).dblclick();
   await page.locator('.rf-mind-input').fill(savedMap); await page.locator('.rf-mind-input').press('Enter');
   assert.equal((await recordWrite(await response)).status, 200);
   const mapSaved = selectedRow(await snapshot('map-saved'));

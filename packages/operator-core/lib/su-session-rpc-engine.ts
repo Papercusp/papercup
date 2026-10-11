@@ -14,7 +14,7 @@ import { splitModelSpec } from './agent-config-constants';
 import { setAdvSessionOmpThreadId } from './adv-sessions';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
-import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
+import { resolveChildSessionOperatorBaseUrl } from './mcp-base-url';
 import type { CodexNativeSessionHandle, OmpNativeSessionHandle } from './native-session-handles';
 import { createCodexSuSessionAdapter, type CodexSuSessionAdapter } from './su-session-codex-adapter';
 import { createOmpSuSessionAdapter, type OmpSuSessionAdapter } from './su-session-omp-adapter';
@@ -139,7 +139,8 @@ export function startSuRpcEngine(
   if (su) assertLaunchPersona(boot.promptFile);
   const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
   delete env.PAPERCUSP_TTY;
-  env.PAPERCUSP_OPERATOR_URL = resolveSpawnHostOperatorBaseUrl();
+  // WI-6554700010008332: same routing as the Claude engine (see resolveChildSessionOperatorBaseUrl).
+  env.PAPERCUSP_OPERATOR_URL = resolveChildSessionOperatorBaseUrl();
   let selectedModel = options.model;
   // D-026: the prompted Codex launch below (on-request + workspace-write) is
   // `auto-edit`. An unprompted launch (never + full access) has no neutral mode.

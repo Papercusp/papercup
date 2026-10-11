@@ -27,6 +27,16 @@ const SENSITIVE_VALUE_KEY_RE =
 const SAFE_REFERENCE_KEY_RE = /(?:credential|secret|token|key)ref$/i;
 
 /**
+ * True when an object KEY names a credential-bearing value (token, secret,
+ * password, API key, ...). Opaque storage references (`credentialRef`,
+ * `tokenRef`) are not sensitive. The one key-directed test shared by every
+ * structured redactor, so consumers never fork the pattern.
+ */
+export function isSensitiveValueKey(key: string): boolean {
+  return SENSITIVE_VALUE_KEY_RE.test(key) && !SAFE_REFERENCE_KEY_RE.test(key);
+}
+
+/**
  * The self-identifying set as plain data, for a redactor that must rebuild it
  * elsewhere — capability:bash streams it chunk-safely and ships it to its
  * durable systemd runner, which cannot import TypeScript (WI-10003538). This
@@ -159,7 +169,7 @@ function redactSensitiveValueWith(
   const result: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     result[key] =
-      SENSITIVE_VALUE_KEY_RE.test(key) && !SAFE_REFERENCE_KEY_RE.test(key)
+      isSensitiveValueKey(key)
         ? '[redacted]'
         : redactSensitiveValueWith(entry, redactString, seen);
   }

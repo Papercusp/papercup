@@ -8,6 +8,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { WorkItemIdAmbiguousError } from '../../work-items-physical-row';
 
 const getWorkItem = vi.fn();
 const getWorkItemsByIds = vi.fn();
@@ -246,6 +247,44 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ workItemsGet: out.data.read }));
   });
 
+  // P-013 (plan scope-unique-identifiers-2026-07-26, R-5): an id held by twin rows is REPORTED
+  // with its candidate harnesses — never read as not-found and never resolved to one twin.
+  it('P-013: reports an ambiguous id with its candidates on the per-id path', async () => {
+    getWorkItem.mockRejectedValue(
+      new WorkItemIdAmbiguousError('WI-twin', 'papercusp-workspace', ['papercup', 'papercusp'], null),
+    );
+    const out = (await get.handler({ id: 'WI-twin' } as never, ctx as never)) as Out & {
+      data: { read: Record<string, unknown> };
+    };
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-twin',
+      availability: 'ambiguous',
+      error: 'ambiguous_id',
+      retryable: false,
+      candidates: ['papercup', 'papercusp'],
+    });
+    expect(String(out.data.results[0]!.message)).toContain('Pass harness');
+    expect(out.data.read).toMatchObject({ ambiguous: 1, absent: 0, available: 0 });
+  });
+
+  it('P-013: reports an ambiguous id on the projected batch path, not as absent', async () => {
+    getWorkItemsByIds.mockImplementation(
+      async (_ids: string[], _harness: unknown, _opts: unknown, report?: { ambiguous: unknown[] }) => {
+        report?.ambiguous.push(new WorkItemIdAmbiguousError('WI-twin', 'ws', ['a', 'b'], null));
+        return [{ id: 'WI-one', kind: 'bug', family: 'issue', harness: 'papercusp', state: 'done', title: 'one' }];
+      },
+    );
+    const out = (await get.handler(
+      { ids: ['WI-one', 'WI-twin', 'WI-missing'], detail: true, threadLimit: 0 } as never,
+      { ...ctx, sourceProjection: { pick: ['results[].id', 'read'] } } as never,
+    )) as Out;
+    const byId = new Map(out.data.results.map((r) => [r.id, r]));
+    expect(byId.get('WI-one')).toMatchObject({ ok: true, availability: 'available' });
+    expect(byId.get('WI-twin')).toMatchObject({ ok: false, availability: 'ambiguous', candidates: ['a', 'b'] });
+    expect(byId.get('WI-missing')).toMatchObject({ ok: false, availability: 'absent' });
+  });
+
   it('uses one set-based read for projected multi-id completion evidence', async () => {
     const ids = ['WI-batch-1', 'WI-batch-2', 'WI-batch-3', 'WI-batch-4', 'WI-batch-5', 'WI-batch-6'];
     getWorkItemsByIds.mockResolvedValue(
@@ -282,6 +321,8 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       ids,
       undefined,
       { includeBody: false, payloadProjection: 'completionEvidence' },
+      // P-013: the batch read reports ids held by twin rows here instead of picking one.
+      { ambiguous: [] },
     );
     expect(getWorkItem).not.toHaveBeenCalled();
     expect(out.data.results).toHaveLength(ids.length);

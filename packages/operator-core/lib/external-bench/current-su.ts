@@ -1310,6 +1310,64 @@ export async function readCurrentBenchCompletion(
   if (!normalized.ok) return null;
   return normalized.state === 'done' ? 'done' : normalized.state === 'dropped' ? 'failed' : null;
 }
+
+/** Host allocation of private subjects and exact fires, never candidate metadata.
+ * The status latch retains only the latest fire: capture each edge before the
+ * next transition. An overwritten latch cannot prove the earlier edge. */
+export function currentBenchWorkloadTransitionReader(options: DbScope & {
+  workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string;
+  notBefore: string;
+  receipts: Array<{ receiptRef: string; subjectId: string; transitionId: string; index: number }>;
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, ...allocation } = options;
+  const frozen = structuredClone(allocation);
+  const workspaceId = resolveBenchWorkspace(frozen.workspaceId);
+  const start = Date.parse(frozen.notBefore);
+  const present = (value: string) => typeof value === 'string' && value.trim().length > 0;
+  if (!present(frozen.workspaceId) || !present(frozen.harnessSlug) || !present(frozen.runId) ||
+      !/^[a-f0-9]{64}$/.test(frozen.trialBindingHash) || !Number.isFinite(start) ||
+      !frozen.receipts.length || frozen.receipts.some(row =>
+        ![row.receiptRef, row.subjectId, row.transitionId].every(present) ||
+        !Number.isSafeInteger(row.index) || row.index < 0) ||
+      new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
+    throw new Error('Workload transition reader requires an explicit private allocation and unique exact receipts.');
+  const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
+  return async (ref, binding) => {
+    const receipt = allowed.get(ref);
+    if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const { resolveDb } = await import('./reproducibility/db');
+    const { keyFireId } = await import('../events/await/store');
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
+    const eventKey = `work-item:status:${receipt.subjectId}`;
+    const [row] = await sql<{
+      first_us: string; fire_count: number; last_fired_at: Date; last_fired_by: string; last_payload: Record<string, unknown>;
+    }[]>`
+      SELECT floor(extract(epoch FROM fire.first_fired_at) * 1000000)::bigint::text AS first_us,
+             fire.fire_count, fire.last_fired_at, fire.last_fired_by, fire.last_payload
+        FROM harness_shared.event_key_fires AS fire
+       WHERE fire.workspace_id = ${workspaceId} AND fire.event_key = ${eventKey}
+         AND EXISTS (SELECT 1 FROM harness_shared.work_items AS item
+                      WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
+                        AND item.feature_id = ${receipt.subjectId})
+    `;
+    const payload = row?.last_payload;
+    const at = row?.last_fired_at instanceof Date ? row.last_fired_at.getTime() : NaN;
+    const count = Number(row?.fire_count);
+    if (!row || !Number.isSafeInteger(count) || count < 1 || !/^\d+$/.test(row.first_us) ||
+        keyFireId(eventKey, { firstFiredAtUs: row.first_us, count }) !== ref ||
+        row.last_fired_by !== 'work-items' || !Number.isFinite(at) || at < start ||
+        !payload || payload.id !== receipt.subjectId || payload.harness !== frozen.harnessSlug ||
+        typeof payload.prevState !== 'string' || !present(payload.prevState) ||
+        typeof payload.state !== 'string' || !present(payload.state) || payload.prevState === payload.state) return null;
+    return [{ index: receipt.index, kind: 'tool-result', name: 'work-item:status',
+      at: new Date(at).toISOString(), content: canonicalJson(payload),
+      metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
+        durableTransition: { id: receipt.transitionId,
+          subjectRef: `work-item:${frozen.harnessSlug}:${receipt.subjectId}`, from: payload.prevState, to: payload.state } } }];
+  };
+}
+
 export function liveCurrentSuBenchPorts(
   ctx: PapercuspUnifiedToolContext, observations: CurrentSuBenchObservations,
   opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>,

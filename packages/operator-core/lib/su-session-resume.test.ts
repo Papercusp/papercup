@@ -43,7 +43,10 @@ vi.mock('./events/await/psu-pty-discovery', () => ({
   findLiveHost: m.live,
   findLiveHostAsync: async (ownerId: string) => m.live(ownerId),
 }));
-vi.mock('./mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3170' }));
+vi.mock('./mcp-base-url', () => ({
+  resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3170',
+  resolveChildSessionOperatorBaseUrl: () => 'http://localhost:3170',
+}));
 vi.mock('./session-transcript-resolvers', () => ({ findOmpSessionPath: m.ompPath }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ resolveAccountPin: m.account }));
 import { prepareStructuredSuResume } from './su-session-resume';

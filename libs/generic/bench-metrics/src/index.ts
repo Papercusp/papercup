@@ -68,6 +68,8 @@ export {
 // Benchmark cost layer.
 export {
   PRICE_TABLE_V1,
+  PRICE_TABLE_V2,
+  priceTableForVersion,
   DEFAULT_PRICE_TABLE,
   priceRun,
   resolveModelPrice,

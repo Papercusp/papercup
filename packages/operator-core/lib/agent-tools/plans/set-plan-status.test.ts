@@ -181,6 +181,29 @@ describe('flipPlanFrontmatterStatus accepted YAML styles', () => {
 });
 
 describe('launchAcceptanceGraderForGate (D-006)', () => {
+  it('keeps exact current evidence comparisons when evaluating the ceremony recruitment tail', async () => {
+    const current = [{
+      planSlug: 'plan-a', specId: 'delivery', specRevision: 3,
+      specFingerprint: 'spec-current', evidenceKind: 'operational' as const,
+      evidenceRef: 'delivery-receipt', sourceFingerprint: 'source-current',
+      environmentFingerprint: 'environment-current',
+    }];
+    const evaluate = vi.fn(async (_slug: string, options: { current?: unknown }) => ({
+      satisfied: false,
+      code: options.current === current ? 'acceptance_ungraded' : 'acceptance_bar_contract_not_ready',
+    }));
+    const launch = vi.fn(async () => ({ state: 'launched' as const,
+      idempotencyKey: 'acceptance-grader:key', label: 'acceptance-grader:rubric:key' }));
+    const result = await launchAcceptanceGraderForGate('plan-a',
+      { satisfied: false, code: 'plan_items_unfinished' },
+      { workspaceId: 'ws-test', harnessSlug: 'wrong-ambient' } as never,
+      'papercusp', launch as never, evaluate as never, current);
+    expect(evaluate).toHaveBeenCalledWith('plan-a', {
+      harnessSlug: 'papercusp', gradingRecruitment: true, current,
+    });
+    expect(result?.state).toBe('launched');
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
   it('recruits for an audited ceremony tail while preserving the strict ship refusal and shipper exclusion', async () => {
     const strict = { satisfied: false, code: 'plan_items_unfinished' };
     const evaluate = vi.fn(async () => ({ satisfied: false, code: 'acceptance_ungraded' }));

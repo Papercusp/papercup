@@ -80,6 +80,9 @@ const SHARED_SCRATCH_QUOTA_STATE_VERSION = 1;
 const scratchMutexState = pinModuleState('@papercusp/operator-core.scratch-gc.mutex-queues', () =>
   new Map<string, Promise<void>>(),
 );
+const scratchMutexWaiters = pinModuleState('@papercusp/operator-core.scratch-gc.mutex-waiters', () =>
+  new Map<string, Array<{ operation: string; startedAt: number }>>(),
+);
 
 interface SharedScratchQuotaState {
   version: typeof SHARED_SCRATCH_QUOTA_STATE_VERSION;
@@ -114,13 +117,43 @@ function withScratchWorkspaceMutex<T>(
 ): Promise<T> {
   const mutexName = scratchWorkspaceMutexName(workspaceId);
   const previous = scratchMutexState.get(mutexName) ?? Promise.resolve();
+  const requests = scratchMutexWaiters.get(mutexName) ?? [];
+  const request = { operation, startedAt: Date.now() };
+  requests.push(request);
+  scratchMutexWaiters.set(mutexName, requests);
   let release!: () => void;
   const held = new Promise<void>((resolveHeld) => { release = resolveHeld; });
   const tail = previous.then(() => held, () => held);
   scratchMutexState.set(mutexName, tail);
+  const localWaitStartedAt = performance.now();
+  let localWaitTimer: ReturnType<typeof setInterval> | undefined;
+  if (requests[0] !== request && onWaiting) {
+    localWaitTimer = setInterval(() => {
+      const holder = requests[0];
+      if (!holder || holder === request) return;
+      try {
+        onWaiting({
+          owner: JSON.stringify({
+            layer: 'process-local',
+            operation: holder.operation,
+            pid: process.pid,
+            startedAt: new Date(holder.startedAt).toISOString(),
+          }),
+          elapsedMs: Math.max(0, performance.now() - localWaitStartedAt),
+        });
+      } catch {
+        // Diagnostic observers must not change mutex admission behavior.
+      }
+    }, 5_000);
+    (localWaitTimer as { unref?: () => void }).unref?.();
+  }
 
   return (async () => {
     await previous.catch(() => {});
+    if (localWaitTimer) {
+      clearInterval(localWaitTimer);
+      localWaitTimer = undefined;
+    }
     try {
       return await withFsMutex(mutexName, run, {
         intent: { subsystem: 'scratch-quota', operation, workspaceId },
@@ -129,7 +162,11 @@ function withScratchWorkspaceMutex<T>(
         onAcquired,
       });
     } finally {
+      if (localWaitTimer) clearInterval(localWaitTimer);
       release();
+      const requestIndex = requests.indexOf(request);
+      if (requestIndex >= 0) requests.splice(requestIndex, 1);
+      if (requests.length === 0) scratchMutexWaiters.delete(mutexName);
       if (scratchMutexState.get(mutexName) === tail) scratchMutexState.delete(mutexName);
     }
   })();
@@ -1467,8 +1504,40 @@ export interface ScratchWriteProgress {
   pendingWrites: number;
   recoveryActive: boolean;
   refreshActive: boolean;
+  mutexWaitOwner?: ScratchWriteMutexWaitOwner;
   quotaRecoveryDiagnostics?: ScratchQuotaRecoveryDiagnostics;
   usageRefreshDiagnostics?: ScratchQuotaRecoveryDiagnostics;
+}
+
+export interface ScratchWriteMutexWaitOwner {
+  layer: 'process-local' | 'filesystem' | 'unknown';
+  operation?: string;
+  subsystem?: string;
+  pid?: number;
+  host?: string;
+  startedAt?: string;
+}
+
+function scratchWriteMutexWaitOwner(owner: string): ScratchWriteMutexWaitOwner {
+  try {
+    const parsed = JSON.parse(owner) as Record<string, unknown>;
+    const layer = parsed.layer === 'process-local' ? 'process-local' : 'filesystem';
+    const intent = parsed.intent && typeof parsed.intent === 'object'
+      ? parsed.intent as Record<string, unknown>
+      : undefined;
+    const operation = layer === 'process-local' ? parsed.operation : intent?.operation;
+    const subsystem = intent?.subsystem;
+    return {
+      layer,
+      ...(typeof operation === 'string' ? { operation: operation.slice(0, 100) } : {}),
+      ...(typeof subsystem === 'string' ? { subsystem: subsystem.slice(0, 100) } : {}),
+      ...(Number.isSafeInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
+      ...(typeof parsed.host === 'string' ? { host: parsed.host.slice(0, 120) } : {}),
+      ...(typeof parsed.startedAt === 'string' ? { startedAt: parsed.startedAt.slice(0, 40) } : {}),
+    };
+  } catch {
+    return { layer: 'unknown' };
+  }
 }
 
 const SCRATCH_WRITE_PROGRESS_AFTER_MS = 5_000;
@@ -1548,6 +1617,7 @@ export async function writeWithScratchQuota(
   const refreshWaitOwner = Boolean(entry.refreshing) &&
     [...entry.writes.keys()][0] === token;
   const lockWaitStartedAt = performance.now();
+  let mutexWaitOwner: ScratchWriteMutexWaitOwner | undefined;
   const emitLockWaitProgress = () => {
     const refreshActive = Boolean(entry.refreshing);
     try {
@@ -1561,6 +1631,7 @@ export async function writeWithScratchQuota(
           pendingWrites: entry.writes.size,
           recoveryActive: Boolean(entry.recovering) || refreshActive,
           refreshActive,
+          ...(mutexWaitOwner ? { mutexWaitOwner } : {}),
           ...(refreshActive && entry.refreshDiagnostics
             ? { usageRefreshDiagnostics: snapshotScratchQuotaRecoveryDiagnostics(entry.refreshDiagnostics) }
             : {}),
@@ -1570,16 +1641,10 @@ export async function writeWithScratchQuota(
       // Diagnostic callbacks must never alter the writer's quota outcome.
     }
   };
-  let lockWaitProgressTimer: ReturnType<typeof setTimeout> | undefined;
-  const scheduleLockWaitProgress = () => {
-    if (!opts.onTiming) return;
-    lockWaitProgressTimer = setTimeout(() => {
-      emitLockWaitProgress();
-      scheduleLockWaitProgress();
-    }, SCRATCH_WRITE_PROGRESS_AFTER_MS);
-    (lockWaitProgressTimer as { unref?: () => void } | undefined)?.unref?.();
-  };
-  scheduleLockWaitProgress();
+  const onMutexWaiting = opts.onTiming ? (info: { owner: string; elapsedMs: number }) => {
+    mutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);
+    emitLockWaitProgress();
+  } : undefined;
   try {
     await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
       let shared: { bytes: number; measuredAt: number; measured: boolean; updatedAt: number } | undefined;
@@ -1690,17 +1755,12 @@ export async function writeWithScratchQuota(
         }
         throw error;
       }
-    }, undefined, () => {
-      if (lockWaitProgressTimer) {
-        clearTimeout(lockWaitProgressTimer);
-        lockWaitProgressTimer = undefined;
-      }
+    }, onMutexWaiting, () => {
       const elapsedMs = Math.max(0, performance.now() - lockWaitStartedAt);
       if (refreshWaitOwner) timings.refreshWaitMs += elapsedMs;
       else timings.quotaWaitMs += elapsedMs;
     });
   } finally {
-    if (lockWaitProgressTimer) clearTimeout(lockWaitProgressTimer);
     entry.writes.delete(token);
     if (pending.reserved) entry.writeGeneration += 1;
     scheduleDeferredUsageRefresh(opts.workspaceId, entry);

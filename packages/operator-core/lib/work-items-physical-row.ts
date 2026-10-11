@@ -20,16 +20,87 @@
  * other agents had closed `done/committed` to `dropped/proposed`, and stamped the closer's
  * id as `terminal_owner` on all 11.
  *
- * THE RULE
- * --------
- * Every state write and origin heal touches exactly ONE physical row, chosen once:
- *   1. the row whose `harness_slug` matches the harness the caller named, if any;
- *   2. otherwise the most recently updated row (tie-broken by slug, so the choice is
- *      deterministic) — the SAME row `getIssue` returns for a read, so the row a caller
- *      inspects and the row it writes cannot disagree.
+ * THE RULE (scope-unique-identifiers-2026-07-26 P-013, requirement R-5)
+ * -----------------------------------------------------------------------
+ * A work-item id names ONE row in a workspace (R-1; migration 1443 cleared the twins and
+ * 1444 makes the database refuse new ones). Every by-id read and write therefore picks
+ * its physical row with {@link choosePhysicalSlug}:
+ *   1. exactly one row → that row, whatever harness the caller passed (harness is an
+ *      attribute of an item, not part of its id, so a stale or loose harness never turns
+ *      a resolvable id into "not found");
+ *   2. several rows and the caller named a harness that matches exactly one → that row;
+ *   3. several rows otherwise → refuse with {@link WorkItemIdAmbiguousError}, naming every
+ *      candidate harness. It used to take the most recently updated row, which is how
+ *      a write meant for one item silently landed on its twin (R-5's falsifier).
  * A sibling row is never written.
  */
 import type { getOrgPg } from '@papercusp/db-org';
+
+/**
+ * A by-id lookup found more than one row for the id in one workspace and the caller did not
+ * name a harness that picks exactly one. Thrown instead of choosing a row, so every caller
+ * reports the ambiguity rather than reading or writing the wrong item.
+ */
+export class WorkItemIdAmbiguousError extends Error {
+  readonly code = 'work_item_id_ambiguous' as const;
+  constructor(
+    readonly id: string,
+    readonly workspaceId: string | null,
+    /** Every physical `harness_slug` holding the id, sorted. */
+    readonly candidates: readonly string[],
+    /** The harness the caller passed, if any (it matched none or several of them). */
+    readonly harness: string | null,
+  ) {
+    super(
+      `work_item '${id}' is ambiguous${workspaceId ? ` in workspace '${workspaceId}'` : ''}: ` +
+        `${candidates.length} rows under harnesses [${candidates.join(', ')}]` +
+        (harness ? `, and harness '${harness}' does not pick exactly one` : '') +
+        `. Pass harness to choose one. Work-item ids are meant to be unique per workspace, ` +
+        `so this is a twin that needs merging (plan scope-unique-identifiers-2026-07-26).`,
+    );
+    this.name = 'WorkItemIdAmbiguousError';
+  }
+}
+
+/** Duck-typed so a module-split copy of the class (a mocked or re-bundled module) still matches. */
+export function isWorkItemIdAmbiguousError(err: unknown): err is WorkItemIdAmbiguousError {
+  return (
+    err instanceof WorkItemIdAmbiguousError ||
+    (typeof err === 'object' &&
+      err !== null &&
+      (err as { code?: unknown }).code === 'work_item_id_ambiguous' &&
+      Array.isArray((err as { candidates?: unknown }).candidates))
+  );
+}
+
+/** What {@link choosePhysicalSlug} decided. */
+export type PhysicalSlugChoice =
+  | { kind: 'none' }
+  | { kind: 'unique'; slug: string }
+  /** Several rows; the caller's harness picked `slug`. `twins` are the rows it did not pick. */
+  | { kind: 'named'; slug: string; twins: string[] }
+  | { kind: 'ambiguous'; candidates: string[] };
+
+/**
+ * Decide which physical row a by-id read or write may use, from every `harness_slug` that
+ * holds the id in one workspace. Order-independent: recency never decides (R-5).
+ */
+export function choosePhysicalSlug(
+  slugs: readonly string[],
+  harness?: string | null,
+): PhysicalSlugChoice {
+  const candidates = [...new Set(slugs)].sort();
+  if (candidates.length === 0) return { kind: 'none' };
+  if (candidates.length === 1) return { kind: 'unique', slug: candidates[0]! };
+  const want = harnessPreference(harness);
+  if (want) {
+    const named = candidates.filter((slug) => harnessSlugMatches(slug, want));
+    if (named.length === 1) {
+      return { kind: 'named', slug: named[0]!, twins: candidates.filter((slug) => slug !== named[0]) };
+    }
+  }
+  return { kind: 'ambiguous', candidates };
+}
 
 /** Strip the `harness:` scope prefix a caller may pass. */
 function bareHarness(harness: string): string {
@@ -59,20 +130,58 @@ export function harnessSlugMatches(slug: string, harness: string): boolean {
 }
 
 /**
- * Pick the one physical slug a write may touch, from candidate slugs ALREADY ORDERED by read
- * preference (most recent first). Returns null when there is no row at all.
+ * Pick the one physical slug a write may touch. Returns null when there is no row at all and
+ * throws {@link WorkItemIdAmbiguousError} when the id has several rows the caller's harness
+ * does not disambiguate — never a recency guess.
  */
 export function pickPhysicalSlug(
-  orderedSlugs: readonly string[],
+  slugs: readonly string[],
   harness?: string | null,
+  subject: { id: string; workspaceId?: string | null } = { id: '(unknown)' },
 ): string | null {
-  if (orderedSlugs.length === 0) return null;
-  const want = harnessPreference(harness);
-  if (want) {
-    const named = orderedSlugs.find((slug) => harnessSlugMatches(slug, want));
-    if (named !== undefined) return named;
+  const choice = choosePhysicalSlug(slugs, harness);
+  switch (choice.kind) {
+    case 'none':
+      return null;
+    case 'unique':
+    case 'named':
+      return choice.slug;
+    case 'ambiguous':
+      throw new WorkItemIdAmbiguousError(
+        subject.id,
+        subject.workspaceId ?? null,
+        choice.candidates,
+        harnessPreference(harness),
+      );
   }
-  return orderedSlugs[0] ?? null;
+}
+
+/**
+ * The twin census a by-id read selects beside its columns, computed by a window aggregate
+ * before LIMIT so detecting twins costs no extra round trip:
+ *   `workspace_id AS __ws, array_agg(<slug column>) OVER (PARTITION BY workspace_id) AS __ws_slugs`
+ */
+export interface TwinCensus {
+  __ws?: string | null;
+  __ws_slugs?: string[] | null;
+}
+
+/**
+ * Strip the {@link TwinCensus} from a by-id read's row, refusing the row when its census holds
+ * several slugs `harness` does not narrow to one (P-013 / R-5). A row without a census (a
+ * mocked or legacy read) is treated as unique.
+ */
+export function stripTwinCensus<T extends object>(
+  id: string,
+  row: T & TwinCensus,
+  harness?: string | null,
+): T {
+  const { __ws, __ws_slugs, ...rest } = row;
+  const choice = choosePhysicalSlug(__ws_slugs ?? [], harness);
+  if (choice.kind === 'ambiguous') {
+    throw new WorkItemIdAmbiguousError(id, __ws ?? null, choice.candidates, harnessPreference(harness));
+  }
+  return rest as T;
 }
 
 /** The org pool or a transaction handle (`boundedOrgTxn` passes the same type). */
@@ -81,7 +190,9 @@ type SlugReader = ReturnType<typeof getOrgPg>['sql'];
 /**
  * Resolve the single issue-family physical row a write for `(workspaceId, id)` may touch.
  * Returns its `harness_slug`, or null when the id has no issue-family row in that workspace
- * (the caller's own lookup then reports not-found exactly as before).
+ * (the caller's own lookup then reports not-found exactly as before). Throws
+ * {@link WorkItemIdAmbiguousError} when several rows hold the id and `harness` does not
+ * pick exactly one.
  */
 export async function resolveIssuePhysicalSlug(
   sql: SlugReader,
@@ -95,10 +206,10 @@ export async function resolveIssuePhysicalSlug(
       FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId}
        AND feature_id = ${id}
-       AND item_kind IN ('bug', 'change', 'task')
-     ORDER BY updated_ts DESC NULLS LAST, harness_slug ASC`;
+       AND item_kind IN ('bug', 'change', 'task')`;
   return pickPhysicalSlug(
     rows.map((r) => r.harness_slug),
     harness,
+    { id, workspaceId },
   );
 }

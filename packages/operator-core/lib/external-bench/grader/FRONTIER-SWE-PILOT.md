@@ -25,7 +25,8 @@ Every task is a self-contained Docker env with a uniform contract:
   tasks ship no solution** (`frogsgame-rl`, `lua-native-compiler`, `modular-stack-wan21`,
   `notebook-compression`, `postgres-sqlite-wire-adapter`, `pyright-type-checking-optimization`).
 - `tasks/<task>/oracle.yaml` / `job.yaml` — the Harbor run configs (the `job.yaml` `agents:`
-  list IS the public competitor pool: opus-4-6, gpt-5.4, gemini-3.1-pro, qwen, kimi, glm-5).
+  list IS the public competitor pool at the pinned upstream commit — read it from there, never from a
+  copy here: a pool written into this runbook goes stale the moment the leaderboard moves on).
 
 **v1 rows only:** our TS grader reads **`reward.txt`** (falls back to `reward.json` `reward`/`score`). A
 present-and-numeric reward (incl. `0`) is SCORED; an absent reward is a `graderError`. v2 rows use Harbor
@@ -184,7 +185,7 @@ await runFrontierSweResilient({
   resultsPath: '<dedicated-volume>/frontier-swe/runs/<arm>.jsonl',  // durable; re-invoke to resume only missing (task,seed)
   runAgent,
   budget: { maxModelCalls: N, maxWallMs: M },  // iso-budget — wall-clock is load-bearing (4–20h/task)
-  rowMeta: { version, modelId: 'claude-opus-4-8', harnessVersion, preregHash, rolloutId },
+  rowMeta: { version, modelId: pin.model.modelId /* pinEvaluatedModel() */, harnessVersion, preregHash, rolloutId },
 });
 // rows → buildFrontierSweSuiteData(rows) (mean@5/best@5/avgRank/dominance) + buildFairnessAudit (the C1–C10 table).
 ```

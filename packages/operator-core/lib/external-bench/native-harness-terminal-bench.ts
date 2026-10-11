@@ -21,7 +21,7 @@ import type {
   GenerationBudget,
   GradeResult,
 } from './types';
-import { BASELINE_B_ARM } from './native-harness-config';
+import { BASELINE_B_ARM, DEFAULT_NATIVE_HARNESS_CONFIG } from './native-harness-config';
 
 /** `blueprintId` for the Harbor-driven native arm — documents the harness, not a Papercusp spine. */
 export const HARBOR_BLUEPRINT_ID = 'native-claude-code-harbor';
@@ -194,4 +194,4 @@ export async function runNativeHarnessTerminalBench(
 }
 
 /** Default model for the TB scaffold; the pilot pins the same id as the Papercusp/M1 arms. */
-const DEFAULT_TB_MODEL = 'claude-opus-4-8';
+const DEFAULT_TB_MODEL = DEFAULT_NATIVE_HARNESS_CONFIG.model;

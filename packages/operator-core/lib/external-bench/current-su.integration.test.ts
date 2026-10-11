@@ -12,6 +12,7 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
   liveCurrentBenchNativeCostReader, currentBenchLaunchRequest,
   currentBenchAssignmentId, currentBenchGatewayController,
+  currentBenchWorkloadTransitionReader,
   currentBenchProviderAuthenticator, currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
@@ -127,6 +128,9 @@ beforeAll(async () => {
       UNIQUE (workspace_id, run_id));
     CREATE TABLE harness_shared.benchmark_run_result (run_id text, workspace_id text, created_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text, feature_id text, status text);
+    CREATE TABLE harness_shared.event_key_fires (workspace_id text, event_key text, first_fired_at timestamptz,
+      last_fired_at timestamptz, last_fired_by text, last_payload jsonb, fire_count bigint,
+      PRIMARY KEY (workspace_id, event_key));
     CREATE TABLE harness_shared.task_ledger (task_id text, workspace_id text, session_id text, detail jsonb,
       class text DEFAULT 'agent-session', state text DEFAULT 'exited', parent_task_id text,
       started_at timestamptz NOT NULL DEFAULT now(), ended_at timestamptz);
@@ -158,7 +162,7 @@ beforeEach(async () => {
   operationAttestation.mockReset().mockResolvedValue(undefined);
   vi.clearAllMocks();
   hostHome.byId.clear();
-  await sql`TRUNCATE harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
+  await sql`TRUNCATE harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
     harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage,
     harness_shared.interactive_usage_files, harness_shared.agent_usage_samples,
     harness_shared.learning_governor_loops, harness_shared.learning_spend_events, harness_shared.learning_spend_reservations`;
@@ -166,6 +170,61 @@ beforeEach(async () => {
 });
 
 let hostGateway: ReturnType<typeof createInferenceGateway> | undefined;
+
+describe('private workload status authority', () => {
+  const eventKey = 'work-item:status:private-dependency';
+  const receiptRef = `${eventKey}@1791676800000000#1`;
+  const binding = { runId: 'private-workload-run', trialBindingHash: 'a'.repeat(64) };
+  const payload = { id: 'private-dependency', harness: 'private-workload-harness', prevState: 'wip', state: 'done' };
+  const options = () => ({ sql, workspaceId, harnessSlug: payload.harness, ...binding,
+    notBefore: '2026-10-11T00:00:00Z',
+    receipts: [{ receiptRef, subjectId: payload.id, transitionId: 'dependency-complete', index: 2 }] });
+  async function populate() {
+    await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${payload.harness}, ${payload.id}, 'done')`;
+    await sql`INSERT INTO harness_shared.event_key_fires VALUES (${workspaceId}, ${eventKey},
+      '2026-10-11T00:00:00Z', '2026-10-11T00:00:01Z', 'work-items', ${sql.json(payload)}, 1)`;
+  }
+  it('projects the independently stored before/after edge with the exact fire identity', async () => {
+    await populate();
+    expect(await currentBenchWorkloadTransitionReader(options())(receiptRef, binding)).toEqual([
+      { index: 2, kind: 'tool-result', name: 'work-item:status', at: '2026-10-11T00:00:01.000Z',
+        content: JSON.stringify({ harness: payload.harness, id: payload.id, prevState: 'wip', state: 'done' }),
+        metadata: { ...binding, receiptRef, durableTransition: { id: 'dependency-complete',
+          subjectRef: 'work-item:private-workload-harness:private-dependency', from: 'wip', to: 'done' } } },
+    ]);
+  });
+  it('does not treat a done item without its status receipt as an observed edge', async () => {
+    await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${payload.harness}, ${payload.id}, 'done')`;
+    expect(await currentBenchWorkloadTransitionReader(options())(receiptRef, binding)).toBeNull();
+  });
+  it.each(['workspace', 'harness', 'subject', 'source', 'count', 'generation', 'old', 'payload-harness', 'no-edge'])
+  ('rejects %s authority substitution', async fault => {
+    await populate();
+    if (fault === 'workspace') await sql`UPDATE harness_shared.event_key_fires SET workspace_id = 'foreign-workspace'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign-harness'`;
+    if (fault === 'subject') await sql`UPDATE harness_shared.event_key_fires SET last_payload = ${sql.json({ ...payload, id: 'foreign-subject' })}`;
+    if (fault === 'source') await sql`UPDATE harness_shared.event_key_fires SET last_fired_by = 'candidate'`;
+    if (fault === 'count') await sql`UPDATE harness_shared.event_key_fires SET fire_count = 2`;
+    if (fault === 'generation') await sql`UPDATE harness_shared.event_key_fires SET first_fired_at = first_fired_at + interval '1 microsecond'`;
+    if (fault === 'old') await sql`UPDATE harness_shared.event_key_fires SET last_fired_at = '2026-10-10T23:59:59Z'`;
+    if (fault === 'payload-harness') await sql`UPDATE harness_shared.event_key_fires SET last_payload = ${sql.json({ ...payload, harness: 'foreign-harness' })}`;
+    if (fault === 'no-edge') await sql`UPDATE harness_shared.event_key_fires SET last_payload = ${sql.json({ ...payload, prevState: 'done' })}`;
+    expect(await currentBenchWorkloadTransitionReader(options())(receiptRef, binding)).toBeNull();
+  });
+  it('keeps host allocation fixed and refuses foreign bindings and unallocated refs', async () => {
+    await populate();
+    const allocation = options(), reader = currentBenchWorkloadTransitionReader(allocation);
+    allocation.harnessSlug = 'foreign-harness'; allocation.receipts[0].index = 99;
+    expect((await reader(receiptRef, binding))?.[0].index).toBe(2);
+    expect(await reader(receiptRef, { ...binding, runId: 'another-run' })).toBeNull();
+    expect(await reader(receiptRef, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
+    expect(await reader('candidate-chosen-ref', binding)).toBeNull();
+  });
+  it('refuses production allocation and ambiguous receipt mappings before reading', () => {
+    expect(() => currentBenchWorkloadTransitionReader({ ...options(), workspaceId: 'papercusp-workspace' })).toThrow(/PRODUCTION/);
+    expect(() => currentBenchWorkloadTransitionReader({ ...options(), receipts: [...options().receipts, ...options().receipts] })).toThrow(/unique exact receipts/);
+  });
+});
 
 describe('legacy SQL usage measurement', () => {
   it('distinguishes known empty usage from an incomplete charged population', async () => {

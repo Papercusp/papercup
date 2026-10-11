@@ -4,10 +4,17 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
-import { buildPortalRosterBrowser, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateHarnessesBrowserMount, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateWorkspaceBrowserMount } from '../../../test/portal-roster-browser-fixture';
+import { buildPortalRosterBrowser, retainPortalResponse, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateHarnessesBrowserMount, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateWorkspaceBrowserMount } from '../../../test/portal-roster-browser-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
+
+it('retains a browser response rejection while an earlier UI action is still running', async () => {
+  const failure = new Error('original browser response deadline');
+  const pending = retainPortalResponse(Promise.reject(failure));
+  await new Promise(done => setTimeout(done, 20));
+  await expect(pending).rejects.toBe(failure);
+});
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal Brainstorm panel mounts and compiles its editor graph through the maintained standalone boundary', async () => {

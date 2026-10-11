@@ -12,7 +12,10 @@
  * `PAPERCUSP_MCP_STAGING_PROXY_PORT` (for example `9171`); that proxy forwards only to staging and
  * stays available during staging restarts. The background host `:3271` may use
  * `PAPERCUSP_MCP_PROXY_BASE` only when `PAPERCUSP_MCP_PROXY_TARGET_PORT=3271`, so it also stays on
- * its own runtime vintage. Other explicit non-live ports remain direct, so a reviewer or hermetic
+ * its own runtime vintage — unless its unit sets `PAPERCUSP_BG_HOST_AGENTS_MCP_BASE`, which moves
+ * the agents it mints for its own base (or for the inherited live base) to that endpoint
+ * (WI-6554700010008332). A proxy declared to front a non-live port never receives a `:3070` base.
+ * Other explicit non-live ports remain direct, so a reviewer or hermetic
  * run cannot cross runtime vintages. Unset proxy configuration (CI, a fresh
  * deploy with no proxy) leaves the caller's own operator base unchanged. The signed/superuser query
  * params + bearer header are preserved either way (the proxy is a pure passthrough), so auth is
@@ -61,15 +64,52 @@ export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
     proxyTargetPort === '3271'
     ? proxy
     : undefined;
+  // WI-6554700010008332 [owner 2026-10-11 "Move all to :3070"]: when the background host's
+  // unit declares an agents endpoint, the agents it mints for its OWN base (and for the inherited
+  // live base, e.g. wake-executor resumes) use it instead. Its turn-end hook ran at p50 ~9s vs
+  // ~149ms on :3070 and starved the goal turn-end recorder. Only the :3271 process itself honours
+  // it, so an explicit :3271 pin chosen from another host stays a pin. Blueprint/orchestrator
+  // roles (release fixers) resolve through orchestrator spawn-mcp.ts and keep bg-host's build
+  // (WI-212675 bootstrap-deadlock guard).
+  const bgHostAgentsBase = resolveBackgroundHostAgentsBase(process.env);
+  const backgroundHostAgents = bgHostAgentsBase && isLocalHttpOperator &&
+    (operatorPort === '3271' || operatorPort === '3070')
+    ? bgHostAgentsBase
+    : undefined;
 
   // The default resilient proxy is intentionally a live-operator (:3070) transport.
   // Other explicit non-live ports (:3271 current-build, hermetic gym/smoke hosts, …)
   // stay authoritative; only local staging may opt into its dedicated same-vintage proxy.
+  // A proxy declared to front another port (bg-host's :9271 -> :3271) is not a live
+  // transport, so it must never receive a :3070 base (that silently crossed vintages).
   const isExplicitNonLiveRuntime = operatorPort.length > 0 && operatorPort !== '3070';
-  const base = stagingProxy || backgroundHostProxy || (proxy && proxy.length > 0 && !isExplicitNonLiveRuntime
-    ? proxy
-    : operatorBaseUrl);
+  const proxyFrontsLive = !proxyTargetPort || proxyTargetPort === '3070';
+  const base = stagingProxy || backgroundHostAgents || backgroundHostProxy ||
+    (proxy && proxy.length > 0 && proxyFrontsLive && !isExplicitNonLiveRuntime
+      ? proxy
+      : operatorBaseUrl);
   return base.replace(/\/$/, '');
+}
+
+/**
+ * The endpoint for agents minted by the background host (`:3271`), when its unit declares one via
+ * `PAPERCUSP_BG_HOST_AGENTS_MCP_BASE` (WI-6554700010008332). Undefined in every other process, and
+ * on a background host that does not declare it (which keeps its agents on its own vintage).
+ */
+export function resolveBackgroundHostAgentsBase(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (env.PAPERCUSP_HONO_PORT?.trim() !== '3271') return undefined;
+  const declared = env.PAPERCUSP_BG_HOST_AGENTS_MCP_BASE?.trim();
+  return declared ? declared.replace(/\/+$/, '') : undefined;
+}
+
+/**
+ * `PAPERCUSP_OPERATOR_URL` for a long-lived CLI child that THIS process spawns or resumes (the SU
+ * session engines and the resume path). Starts from the spawn host's own identity (WI-6154) and
+ * applies the agent routing above: live and bg-host children use the resilient proxy, staging uses
+ * its same-vintage proxy, and the desktop sidecar or a hermetic host stays direct.
+ */
+export function resolveChildSessionOperatorBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveAgentMcpBaseUrl(resolveSpawnHostOperatorBaseUrl(env));
 }
 
 /**
@@ -78,6 +118,10 @@ export function resolveAgentMcpBaseUrl(operatorBaseUrl: string): string {
  * persistent clients use the stable proxy instead.
  */
 export function resolveLongLivedSessionMcpBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  // On the background host its own proxy (:9271) fronts :3271; a declared agents endpoint wins
+  // so terminal/fleet launches it runs follow the same routing as its other agents.
+  const bgHostAgents = resolveBackgroundHostAgentsBase(env);
+  if (bgHostAgents) return bgHostAgents;
   const configuredProxy = env.PAPERCUSP_MCP_PROXY_BASE?.trim();
   return (configuredProxy || 'http://127.0.0.1:9071').replace(/\/+$/, '');
 }

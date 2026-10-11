@@ -41,7 +41,7 @@ import {
   type CitationDeployment,
   type PlanAcceptanceRepairAction,
 } from '../../plan-acceptance-gate';
-import { evidenceCurrentInputSchema } from './spec-evidence-store';
+import { evidenceCurrentInputSchema, type EvidenceCurrentInput } from './spec-evidence-store';
 import {
   ACCEPTANCE_GRADING_SWEEP_ACTOR,
   launchAcceptanceGrader,
@@ -433,6 +433,7 @@ export async function launchAcceptanceGraderForGate(
   harness: string | undefined,
   launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
   evaluateRecruitment: typeof evaluatePlanAcceptanceGate = evaluatePlanAcceptanceGate,
+  current?: EvidenceCurrentInput[],
 ): Promise<AcceptanceGraderLifecycle | undefined> {
   if (!gate.satisfied && gate.code === 'plan_items_unfinished') {
     // The real ship gate stays strict. Its not-code ceremony tail can still
@@ -441,6 +442,9 @@ export async function launchAcceptanceGraderForGate(
     gate = await evaluateRecruitment(slug, {
       harnessSlug: harness ?? ctx.harnessSlug,
       gradingRecruitment: true,
+      // Recruitment evaluates the same proof as the strict gate. Keep the exact
+      // comparison inputs; dropping opaque dimensions makes current proof unknown.
+      ...(current ? { current } : {}),
     });
   }
   if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
@@ -719,7 +723,9 @@ export default defineTool({
             };
           }
           if (!gate.satisfied) {
-            const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx, harnessSlug);
+            const acceptanceGrader = await launchAcceptanceGraderForGate(
+              slug, gate, ctx, harnessSlug, undefined, undefined, args.current,
+            );
             // EI-24032136322947460: say whether a stall will be recovered
             // automatically. Read only when a grader is in play and unsettled.
             const sweep = acceptanceGrader && acceptanceGrader.state !== 'settled'

@@ -23,7 +23,12 @@ import { isDeepStrictEqual } from 'node:util';
 import type { OrgSql } from './work-items';
 import { admittedWhereSql, selfHealOwnNodeOriginIfStranded, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
-import { harnessPreference, resolveIssuePhysicalSlug } from './work-items-physical-row';
+import {
+  harnessPreference,
+  resolveIssuePhysicalSlug,
+  stripTwinCensus,
+  type TwinCensus,
+} from './work-items-physical-row';
 import { resolveWorkItemPot } from './pot-membership';
 import { hasActiveStrictHumanAsk } from './hold-registry';
 import { ANY_FAMILY_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
@@ -2739,14 +2744,22 @@ export async function getIssue(
   );
   const want = harnessPreference(preferHarness);
   const bare = want?.startsWith('harness:') ? want.slice('harness:'.length) : want;
-  const rows = await sql<IssueRowDb[]>`
-    SELECT ${sql.unsafe(columns)} FROM harness_shared.engineer_issues
+  // P-013 (R-5): `__ws_slugs` carries every physical slug holding the id in the chosen row's
+  // workspace, computed before LIMIT, so twins are detected without a second round trip and
+  // without fetching their bodies. Several slugs the caller's harness does not narrow to one
+  // is refused, never resolved by the recency term below (which now only orders rows the
+  // choice has already made equivalent).
+  const rows = await sql<(IssueRowDb & TwinCensus)[]>`
+    SELECT ${sql.unsafe(columns)},
+           workspace_id AS __ws,
+           array_agg(base_harness_slug) OVER (PARTITION BY workspace_id) AS __ws_slugs
+      FROM harness_shared.engineer_issues
      WHERE issue_id = ${id}
      ORDER BY (workspace_id = ${ambient}) DESC,
               ${want ? sql`(base_harness_slug IN (${want}, ${bare}, ${`harness:${bare}`})) DESC,` : sql``}
               updated_at DESC NULLS LAST, base_harness_slug ASC
      LIMIT 1`;
-  return rows[0] ? toIssue(rows[0]) : null;
+  return rows[0] ? toIssue(stripTwinCensus(id, rows[0], want)) : null;
 }
 
 /**
@@ -2861,13 +2874,18 @@ export async function getIssueInWorkspace(
     opts.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS,
     opts.payloadProjection,
   );
-  const rows = await sql<IssueRowDb[]>`
-    SELECT ${sql.unsafe(columns)} FROM harness_shared.engineer_issues
+  // P-013 (R-5): with no `baseHarnessSlug`, several twins are refused rather than resolved by
+  // recency. A pinned slug filters to exactly one physical row, so its census is that row.
+  const rows = await sql<(IssueRowDb & TwinCensus)[]>`
+    SELECT ${sql.unsafe(columns)},
+           workspace_id AS __ws,
+           array_agg(base_harness_slug) OVER () AS __ws_slugs
+      FROM harness_shared.engineer_issues
      WHERE workspace_id = ${workspaceId} AND issue_id = ${id}
        AND ${opts.baseHarnessSlug != null ? sql`base_harness_slug = ${opts.baseHarnessSlug}` : sql`TRUE`}
      ORDER BY updated_at DESC NULLS LAST
      LIMIT 1`;
-  return rows[0] ? toIssue(rows[0]) : null;
+  return rows[0] ? toIssue(stripTwinCensus(id, rows[0], null)) : null;
 }
 
 /**

@@ -418,6 +418,11 @@ overlap caused the container-start stall.
 
 The 99-mcp-proxy.conf drop-in routes MCP clients minted by the background host
 through the separate `papercup-mcp-proxy-bg-host.service` (`:9271` → `:3271`).
+Since WI-6554700010008332 (2026-10-11) that pin covers only orchestrator/blueprint
+spawns such as release fixers, which must stay on bg-host's current build
+(WI-212675). Its `PAPERCUSP_BG_HOST_AGENTS_MCP_BASE=http://127.0.0.1:9071` line moves
+the SU sessions, resumes and console-launched agents bg-host starts to the live
+proxy; delete that line to return them to `:9271`.
 That proxy retries only upstream connection refusals, where the request has not
 reached the host; post-connect failures are surfaced so a write is never replayed
 after it may have run.
@@ -500,8 +505,9 @@ Once loaded, the effective unit should show `bundle-host.sh` as `ExecStartPre` a
 `node dist-host/hono-host.mjs` as the final command, `TimeoutStartUSec=5min`, and retain
 the `PAPERCUSP_HONO_PORT=3271`, `PAPERCUSP_BACKGROUND_WORKERS=1`, and DBOS/routine
 assignments from the base unit. It should also show
-`PAPERCUSP_MCP_PROXY_BASE=http://127.0.0.1:9271` and
-`PAPERCUSP_MCP_PROXY_TARGET_PORT=3271`. A configured drop-in is not proof that the
+`PAPERCUSP_MCP_PROXY_BASE=http://127.0.0.1:9271`,
+`PAPERCUSP_MCP_PROXY_TARGET_PORT=3271` and
+`PAPERCUSP_BG_HOST_AGENTS_MCP_BASE=http://127.0.0.1:9071`. A configured drop-in is not proof that the
 running service has loaded it; verify after the next managed restart.
 
 ---

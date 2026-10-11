@@ -22,7 +22,7 @@ import { buildConsoleEnvelope } from './console-launcher';
 import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
-import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
+import { resolveChildSessionOperatorBaseUrl, resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
 import type { NativeSessionHandle } from './native-session-handles';
 import { findOmpSessionPath } from './session-transcript-resolvers';
 import { launchContextPathFor } from './su-launch-context';
@@ -164,7 +164,9 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     const envelope = await buildConsoleEnvelope({ workspaceId: record.workspaceId,
       slug: record.harnessSlug, operatorBaseUrl: operatorUrl });
     const env = Object.fromEntries(Object.entries({ ...envelope.env, ...buildResumeEnv(session, { accountEnv: accountRoute }),
-      PAPERCUSP_PROFILE: spec.profile, PAPERCUSP_OPERATOR_URL: operatorUrl,
+      // WI-6554700010008332: this process keeps `operatorUrl` for its own calls; the resumed
+      // child's MCP and turn-end hooks follow agent routing (live proxy from the bg-host).
+      PAPERCUSP_PROFILE: spec.profile, PAPERCUSP_OPERATOR_URL: resolveChildSessionOperatorBaseUrl(),
       ...(spec.specificationRevision ? { PAPERCUSP_SPECIFICATION_REVISION: spec.specificationRevision } : {}),
       ...(spec.stateRevision ? { PAPERCUSP_STATE_REVISION: spec.stateRevision } : {}),
     }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));

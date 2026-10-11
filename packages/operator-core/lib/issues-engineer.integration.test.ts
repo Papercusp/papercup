@@ -1401,14 +1401,14 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.getIssue(feature.id)).toMatchObject({ kind: 'change', title: 'legacy feature row' });
   });
 
-  // WI-4514: the EI-7808 legacy/federated write path can leave TWO base `work_items`
-  // rows sharing (workspace_id, feature_id) but with different `harness_slug` values
-  // (e.g. '' beside 'operator:<ws>'). Before this fix, getIssueInWorkspace's plain
-  // get-path (no baseHarnessSlug pin) had NO ORDER BY, so PG could hand back either
-  // twin depending on heap/index scan order — a read that could non-deterministically
-  // surface an hours-stale twin instead of the fresh one. Assert the freshest twin
-  // (by updated_at) always wins, repeated to catch any residual nondeterminism.
-  it('getIssueInWorkspace resolves duplicate base rows deterministically to the freshest twin (WI-4514)', async () => {
+  // WI-4514 → scope-unique-identifiers-2026-07-26 P-013 (R-5): the EI-7808 legacy/federated
+  // write path could leave TWO base `work_items` rows sharing (workspace_id, feature_id) under
+  // different `harness_slug` values ('' beside 'operator:<ws>'). WI-4514 made the harness-less
+  // read deterministic by returning the freshest twin; P-013 replaces that recency pick with a
+  // refusal naming both, because an id names one item and recency silently chose the wrong one.
+  // Repeated to show the refusal is deterministic too. A named harness or a pinned physical slug
+  // still reads exactly the row it names.
+  it('getIssue / getIssueInWorkspace refuse duplicate base rows without a harness and read a named twin exactly (WI-4514, P-013)', async () => {
     const staleTs = Date.now() - 3 * 60 * 60_000; // 3h ago
     const freshTs = Date.now();
     await db.sql`
@@ -1418,10 +1418,18 @@ describe('engineer issues surface (real PG)', () => {
         (${PINNED_WS}, 'EI-DUP', '', 'bug', 'stale twin', 'open', ${staleTs}, ${staleTs}),
         (${PINNED_WS}, 'EI-DUP', ${'operator:' + PINNED_WS}, 'bug', 'fresh twin', 'open', ${freshTs}, ${freshTs})`;
 
-    for (let i = 0; i < 5; i++) {
-      const got = await issues.getIssue('EI-DUP');
-      expect(got?.title).toBe('fresh twin');
+    for (let i = 0; i < 3; i++) {
+      await expect(issues.getIssue('EI-DUP')).rejects.toMatchObject({
+        code: 'work_item_id_ambiguous',
+        workspaceId: PINNED_WS,
+        candidates: ['', 'operator:' + PINNED_WS],
+      });
     }
+    await expect(issues.getIssueInWorkspace(PINNED_WS, 'EI-DUP')).rejects.toMatchObject({
+      code: 'work_item_id_ambiguous',
+    });
+    // Naming the harness picks that twin, stale or fresh alike (recency never decides).
+    expect((await issues.getIssue('EI-DUP', {}, undefined, 'operator:' + PINNED_WS))?.title).toBe('fresh twin');
 
     // The EI-6480 claim re-read path (baseHarnessSlug pinned) is untouched — it still
     // reads the EXACT physical twin it names, stale or not.
@@ -1858,19 +1866,26 @@ describe('setIssueState pins exactly one physical row among slug twins (WI-10006
     expect(await snapshot(ws, slug, id)).toEqual(before);
   });
 
-  it('an unpinned close writes only the most recently updated row', async () => {
+  // P-013 (R-5): an unpinned write among twins used to land on the most recently updated row.
+  // It is refused instead, naming both harnesses, and neither row changes.
+  it('an unpinned close among twins is refused and writes neither row (P-013)', async () => {
     const { id, ws, slug } = await seedTwin();
     await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 60000
                   WHERE workspace_id = ${ws} AND harness_slug = ${TWIN_SLUG} AND feature_id = ${id}`;
     const before = await snapshot(ws, slug, id);
+    const twinBefore = await snapshot(ws, TWIN_SLUG, id);
 
-    await issues.setIssueState(id, 'resolved', 'agA', 'wi10006010');
+    await expect(issues.setIssueState(id, 'resolved', 'agA', 'wi10006010')).rejects.toMatchObject({
+      code: 'work_item_id_ambiguous',
+      workspaceId: ws,
+      candidates: [slug, TWIN_SLUG].sort(),
+    });
 
-    expect(await statusOf(ws, TWIN_SLUG, id)).not.toBe(await statusOf(ws, slug, id));
     expect(await snapshot(ws, slug, id)).toEqual(before);
+    expect(await snapshot(ws, TWIN_SLUG, id)).toEqual(twinBefore);
   });
 
-  it('getIssue prefers the named slug and otherwise agrees with the row the write pins', async () => {
+  it('getIssue reads the named slug and refuses to guess between twins without one (P-013)', async () => {
     const { id, ws, slug } = await seedTwin();
     await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 60000
                   WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${id}`;
@@ -1878,6 +1893,11 @@ describe('setIssueState pins exactly one physical row among slug twins (WI-10006
                   WHERE workspace_id = ${ws} AND harness_slug = ${TWIN_SLUG} AND feature_id = ${id}`;
 
     expect((await issues.getIssue(id, {}, undefined, TWIN_SLUG))?.title).toBe('twin copy');
-    expect((await issues.getIssue(id))?.title).not.toBe('twin copy');
+    expect((await issues.getIssue(id, {}, undefined, slug))?.title).not.toBe('twin copy');
+    await expect(issues.getIssue(id)).rejects.toMatchObject({
+      code: 'work_item_id_ambiguous',
+      workspaceId: ws,
+      candidates: [slug, TWIN_SLUG].sort(),
+    });
   });
 });

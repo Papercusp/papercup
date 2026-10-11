@@ -89,7 +89,13 @@ import {
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
 } from './work-items-admission';
-import { resolveIssuePhysicalSlug } from './work-items-physical-row';
+import {
+  WorkItemIdAmbiguousError,
+  choosePhysicalSlug,
+  resolveIssuePhysicalSlug,
+  stripTwinCensus,
+  type TwinCensus,
+} from './work-items-physical-row';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind, type DatatypeNature } from './datatype-registry-store';
 import {
@@ -1809,15 +1815,21 @@ async function getFeatureWorkItemOnly(
   // F-B3 (workspace-data-isolation-leaks): a bare WI/F id is unique only within a
   // (workspace, harness), not globally — scope to the active workspace so an id
   // collision across workspaces can't return the wrong row (getOrgPg bypasses RLS).
-  const rows = await sql<FeatureRowDb[]>`
-    SELECT ${sql.unsafe(projectWorkItemColumns(FEATURE_COLS, opts.payloadProjection))}
+  const workspaceId = activeWorkspaceId();
+  // P-013 (R-5): with no harness, several rows for the id are refused rather than resolved by
+  // recency; `__slugs` is computed before LIMIT, so detecting them costs no extra round trip.
+  // A named harness filters to the one physical row (harness_slug, feature_id).
+  const rows = await sql<(FeatureRowDb & TwinCensus)[]>`
+    SELECT ${sql.unsafe(projectWorkItemColumns(FEATURE_COLS, opts.payloadProjection))},
+           workspace_id AS __ws,
+           array_agg(harness_slug) OVER () AS __ws_slugs
       FROM harness_shared.harness_features_consolidated
      WHERE feature_id = ${id}
-       AND workspace_id = ${activeWorkspaceId()}
+       AND workspace_id = ${workspaceId}
        AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
      ORDER BY updated_ts DESC NULLS LAST
      LIMIT 1`;
-  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  return rows[0] ? featureRowToWorkItem(stripTwinCensus(id, rows[0], harness)) : null;
 }
 
 export interface WorkItemDetail extends WorkItem {
@@ -2249,14 +2261,54 @@ export async function getWorkItemsByIds(
   ids: string[],
   harness?: string,
   opts: WorkItemReadOptions = {},
+  /**
+   * P-013 (R-5): where to report ids held by several rows that `harness` does not narrow to
+   * one. Those ids are omitted from the result and recorded here. Without a sink the first
+   * ambiguity throws, so no caller ever receives a twin chosen by row order.
+   */
+  report?: { ambiguous: WorkItemIdAmbiguousError[] },
 ): Promise<WorkItem[]> {
   if (ids.length === 0) return [];
   const uniqueIds = [...new Set(ids)];
+  const byId = new Map<string, WorkItem>();
+  const ambiguous = new Set<string>();
+  const refuse = (err: unknown, id: string) => {
+    if (!(err instanceof WorkItemIdAmbiguousError) || !report) throw err;
+    report.ambiguous.push(err);
+    ambiguous.add(id);
+  };
+
   const issues = await issuesByIds(uniqueIds, opts);
-  const byId = new Map<string, WorkItem>(issues.map((issue) => [issue.id, issueToWorkItem(issue)]));
-  const featureIds = uniqueIds.filter((id) => !byId.has(id));
+  const issueRows = new Map<string, EngineerIssue[]>();
+  for (const issue of issues) issueRows.set(issue.id, [...(issueRows.get(issue.id) ?? []), issue]);
+  for (const [id, rows] of issueRows) {
+    if (rows.length === 1) {
+      byId.set(id, issueToWorkItem(rows[0]!));
+      continue;
+    }
+    // Twins: the single-id read resolves the named row or refuses (one extra query, twins only).
+    try {
+      const issue = await getIssue(id, opts, undefined, harness);
+      if (issue) byId.set(id, issueToWorkItem(issue));
+    } catch (err) {
+      refuse(err, id);
+    }
+  }
+
+  const featureIds = uniqueIds.filter((id) => !byId.has(id) && !ambiguous.has(id) && !issueRows.has(id));
   const features = await featuresByIds(featureIds, harness, opts);
-  for (const feature of features) byId.set(feature.id, feature);
+  const featureRows = new Map<string, WorkItem[]>();
+  for (const feature of features) featureRows.set(feature.id, [...(featureRows.get(feature.id) ?? []), feature]);
+  for (const [id, rows] of featureRows) {
+    // featuresByIds filters to `harness` when one is named, so several rows means no harness.
+    const choice = choosePhysicalSlug(rows.map((row) => row.harness ?? ''), harness);
+    if (choice.kind === 'ambiguous') {
+      refuse(new WorkItemIdAmbiguousError(id, activeWorkspaceId(), choice.candidates, harness ?? null), id);
+      continue;
+    }
+    const chosen = choice.kind === 'none' ? rows[0] : rows.find((row) => (row.harness ?? '') === choice.slug);
+    if (chosen) byId.set(id, chosen);
+  }
   return ids.flatMap((id) => {
     const item = byId.get(id);
     return item ? [item] : [];

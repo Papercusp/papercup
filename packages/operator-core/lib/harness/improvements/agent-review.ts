@@ -1088,6 +1088,16 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /**
+ * Triage writers that enrolled review under their own `by` label instead of the reporter.
+ * triage-core passed `submittedBy: by` until 0be339d360 (2026-10-10) switched it to
+ * `effectiveReporter(issue).id ?? by`; rows enrolled before then still carry the label.
+ * 'improvement-retriage' is the retriage-all batch pass (agent-tools/improvements/triage.ts),
+ * which writes the same triaged/gate lifecycle markers as 'improvement-triage'
+ * (bug-queue-legitimacy D-008 residue: 243 open revision rows carried it on 2026-10-11).
+ */
+const LEGACY_TRIAGE_SUBMITTERS: ReadonlySet<string> = new Set(['improvement-triage', 'improvement-retriage', 'Queen']);
+
+/**
  * Recover the reporter on rows enrolled by known service writers. Their own persisted
  * routing markers must prove the enrollment, and creation/reporter identities must
  * agree. This only selects whose liveness to measure; it does not authorize adoption.
@@ -1099,7 +1109,7 @@ function readLegacySyntheticSubmitter(workItem: WorkItem, current: AgentReviewSt
   if (current.submittedBy === STRANDED_SWEEP_OWNER) {
     const marker = record(payload.strandedToolFailureSweep);
     if (marker.owner !== STRANDED_SWEEP_OWNER || marker.outcome !== 'review' || !dated(marker.at)) return null;
-  } else if (current.submittedBy === 'improvement-triage' || current.submittedBy === 'Queen') {
+  } else if (LEGACY_TRIAGE_SUBMITTERS.has(current.submittedBy)) {
     const lifecycle = record(payload.ideaLifecycle);
     const screen = record(payload.deploymentStalenessScreen);
     const reviewedPlace = lifecycle.triageDecision === 'place' && screen.screened === true &&

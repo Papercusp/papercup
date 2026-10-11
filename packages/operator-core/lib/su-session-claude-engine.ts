@@ -12,7 +12,7 @@ import { applyDefaultClaudeAuthSettingsArgs, applyDefaultClaudeOAuthToken, apply
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { SuApprovalsMode } from '@papercusp/chat-protocol';
 import { splitModelSpec } from './agent-config-constants';
-import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
+import { resolveChildSessionOperatorBaseUrl } from './mcp-base-url';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import { syncPersonalClaudeMemory } from './interactive-claude-config';
 import type { PuiSuSessionBinding } from './launch-agent';
@@ -401,7 +401,9 @@ export function startClaudeSuEngine(
   env.PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED = '1';
   env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE = '1';
   env.DISABLE_AUTOUPDATER = '1';
-  env.PAPERCUSP_OPERATOR_URL = resolveSpawnHostOperatorBaseUrl();
+  // WI-6554700010008332: the child's MCP and turn-end hooks follow agent routing, so a session
+  // the background host runs reaches the live proxy instead of the busy :3271 main thread.
+  env.PAPERCUSP_OPERATOR_URL = resolveChildSessionOperatorBaseUrl();
   // The user-level papercusp-su MCP url expands ${PAPERCUSP_TOOLS:-}; psu's CLI
   // sets it, but this engine has no psu process. Unset, the server advertises
   // the whole catalog: measured 941 tools and a 255k-token first call, which

@@ -60,4 +60,9 @@ describe('papercup-mcp-proxy background-host restart profile', () => {
     expect(backgroundHost).toMatch(/^Environment=PAPERCUSP_MCP_PROXY_BASE=http:\/\/127\.0\.0\.1:9271$/m);
     expect(backgroundHost).toMatch(/^Environment=PAPERCUSP_MCP_PROXY_TARGET_PORT=3271$/m);
   });
+
+  it('routes the SU and console agents bg-host starts through the live proxy (WI-6554700010008332)', () => {
+    // Owner decision 2026-10-11. Gate-repair roles keep the :9271 pin above (WI-212675).
+    expect(backgroundHost).toMatch(/^Environment=PAPERCUSP_BG_HOST_AGENTS_MCP_BASE=http:\/\/127\.0\.0\.1:9071$/m);
+  });
 });
