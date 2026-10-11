@@ -5,6 +5,9 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import { ArrowDown, ArrowUp, Check, Infinity as InfinityIcon, Plus, RefreshCw, Search, Settings2,
   X } from 'lucide-react';
 import { Modal } from '@/app/harness/Modal';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
+import { Table, type TableColumn } from '@/app/harness/Table';
 import { TextInput, TextArea } from '@/app/harness/TextInput';
 import { Tooltip } from '@/app/harness/Tooltip';
 import GoalStatusControl from './GoalStatusControl';
@@ -26,19 +29,72 @@ const RUBRIC_DUTIES = [
   ['grading-correction-closure', 'Grade, improve and re-grade', 'Assign graders, preserve a baseline, verify repairs and compare the result.'],
 ] as const;
 
+type GradingCycle = NonNullable<GoalDetailInput['rubricStewardship']>['cycles'][number];
+
+const WOE_TABLE_HEADER_STYLE = {
+  padding: '9px 12px',
+  textAlign: 'left',
+  fontSize: 11,
+  fontWeight: 500,
+  color: 'var(--fg-mute)',
+  opacity: 1,
+  background: 'var(--bg)',
+  borderBottom: '1px solid var(--border)',
+} as const;
+
+const WOE_TABLE_CELL_STYLE = {
+  padding: '9px 12px',
+  borderBottom: '1px solid var(--border)',
+  verticalAlign: 'middle',
+  minWidth: 0,
+} as const;
+
 function RubricStewardship({ data, onOpenWorkItem }: { data: GoalDetailInput; onOpenWorkItem?: (id: string) => void }) {
   const quality = data.rubricStewardship;
+  const cycleColumns: TableColumn<GradingCycle>[] = [
+    {
+      key: 'target',
+      header: 'Target / rubric',
+      headerStyle: WOE_TABLE_HEADER_STYLE,
+      cellStyle: WOE_TABLE_CELL_STYLE,
+      render: (cycle) => <><strong>{cycle.target}</strong>
+        <small>{cycle.rubricRef}{cycle.rubricRevision ? ` · revision ${cycle.rubricRevision}` : ''}</small></>,
+    },
+    {
+      key: 'progress',
+      header: 'Progress',
+      headerStyle: WOE_TABLE_HEADER_STYLE,
+      cellStyle: WOE_TABLE_CELL_STYLE,
+      render: (cycle) => <><span className="woe__state" data-state={cycle.status}>
+        {({ baseline: 'Baseline recorded', 'needs-repair': 'Repairs needed', 'needs-regrade': 'Re-grade needed',
+          unverified: 'Needs verification', incomparable: 'Fresh baseline needed', verified: 'Improvement verified' })[cycle.status]}</span>
+        <p className="woe__muted">{cycle.reason}</p></>,
+    },
+    {
+      key: 'evidence',
+      header: 'Evidence',
+      headerStyle: WOE_TABLE_HEADER_STYLE,
+      cellStyle: WOE_TABLE_CELL_STYLE,
+      render: (cycle) => <>
+        {[...(cycle.baselineRef ? [{ ref: cycle.baselineRef, label: 'Baseline' }] : []),
+          { ref: cycle.scorecardRef, label: 'Scorecard' }, ...cycle.repairRefs.map(ref => ({ ref, label: ref }))]
+          .map(item => onOpenWorkItem
+            ? <button key={item.ref} type="button" className="woe__link" onClick={() => onOpenWorkItem(item.ref)}>{item.label}</button>
+            : <span key={item.ref}>{item.ref} </span>)}
+      </>,
+    },
+  ];
   return <section className="woe__quality" aria-label="Rubric stewardship">
     <div className="woe__quality-heading"><h3>Rubrics &amp; continuous improvement</h3>
-      <a className="woe__link" href="/rubrics" title="Browse the Work on everything stewardship rubric">
-        Browse rubrics{quality?.rubricRevision ? ` · stewardship revision ${quality.rubricRevision}` : ''}</a></div>
+      <Tooltip label="Browse the Work on everything stewardship rubric"><a className="woe__link" href="/rubrics">
+        Browse rubrics{quality?.rubricRevision ? ` · stewardship revision ${quality.rubricRevision}` : ''}</a></Tooltip></div>
     <div className="woe__quality-duties">{RUBRIC_DUTIES.map(([key, title, description]) => {
       const measured = quality?.criteria[key];
       return <div key={key}><h4>{title}</h4><p>{description}</p>
         <span className="woe__state" data-state={measured ? measured.rating : 'unmeasured'}>
           {measured?.rating ?? 'Not measured'}</span>
-        {measured ? onOpenWorkItem ? <button type="button" className="woe__link" onClick={() => onOpenWorkItem(measured.scorecardRef)}
-          title={measured.evidence}>View evidence</button> : <span>{measured.scorecardRef}</span> : null}</div>;
+        {measured ? onOpenWorkItem ? <Tooltip label={measured.evidence}><button type="button" className="woe__link"
+          onClick={() => onOpenWorkItem(measured.scorecardRef)}>View evidence</button></Tooltip> : <span>{measured.scorecardRef}</span> : null}</div>;
     })}</div>
     {quality?.error ? <p role="alert" className="woe__warning">{quality.error}</p> :
       !quality ? <p className="woe__muted">Quality evidence has not loaded. Refresh to check this goal’s grading activity.</p> :
