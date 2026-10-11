@@ -27,10 +27,9 @@ import type postgres from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { providerEgressAllows, type ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { getProvider, loadAndRegisterProvidersFromDisk, type OAuthProvider, type TokenResponse } from '../oauth/providers';
-import { operatorApiBase } from '../operator-api-base';
 import type { OAuthFlowPrivateContext } from '../oauth/state';
 import { fsTokenStorage } from '../oauth/storage-fs';
-import { papercuspPath } from '../papercusp-root';
+import { clientRegistrationRefOf, credentialGroupOf, defaultOAuthRedirectUri, readOAuthClientRegistration } from './oauth-client-registration';
 import {
   disconnectOwnedExternalTriggerSources,
   listOwnedExternalTriggerSources,
@@ -381,10 +380,6 @@ export async function connectionAccessToken(
 
 /* ─── Descriptor-derived connections ─── */
 
-function credentialGroupOf(descriptor: ProviderDescriptor): string {
-  return descriptor.oauth?.credentialGroup ?? descriptor.id;
-}
-
 /** Token-store plugin for a descriptor provider's (possibly shared) credential. */
 export function descriptorOAuthPlugin(descriptor: ProviderDescriptor): string {
   return `${DESCRIPTOR_OAUTH_PLUGIN_PREFIX}${credentialGroupOf(descriptor)}`;
@@ -494,24 +489,6 @@ export function descriptorConnectionAdapter(plugin: string): ConnectionAdapter |
   return adapter;
 }
 
-interface ClientRegistration {
-  clientId: string;
-  clientSecret?: string;
-  clientSecretFile?: string;
-  redirectUri?: string;
-}
-
-async function readClientRegistration(ref: string): Promise<ClientRegistration | null> {
-  let parsed: Record<string, ClientRegistration>;
-  try {
-    parsed = JSON.parse(await fs.readFile(papercuspPath('oauth-apps.json'), 'utf8')) as Record<string, ClientRegistration>;
-  } catch {
-    return null;
-  }
-  const entry = parsed?.[ref];
-  return entry && typeof entry.clientId === 'string' && entry.clientId ? entry : null;
-}
-
 function base64Url(buffer: Buffer): string {
   return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -618,8 +595,8 @@ export async function resolveOAuthProvider(providerId: string): Promise<OAuthPro
   const members = descriptorGroupMembers(providerId);
   const lead = members[0]?.descriptor;
   if (!lead?.oauth) return null;
-  const group = providerId.slice(DESCRIPTOR_OAUTH_PLUGIN_PREFIX.length);
-  const client = await readClientRegistration(lead.oauth.clientRegistrationRef ?? group);
+  const ref = clientRegistrationRefOf(lead, members.map((entry) => entry.descriptor));
+  const client = ref ? await readOAuthClientRegistration(ref) : null;
   if (!client) return null;
   let clientSecret = client.clientSecret;
   if (!clientSecret && client.clientSecretFile) {
@@ -628,7 +605,7 @@ export async function resolveOAuthProvider(providerId: string): Promise<OAuthPro
   const scopes = [...new Set(members.flatMap((entry) => entry.descriptor.oauth?.scopes ?? []))];
   // Default to the operator's one provider-neutral OAuth callback; a provider that
   // needs another redirect declares it in its client registration.
-  const redirectUri = client.redirectUri ?? new URL('/api/oauth/callback', operatorApiBase()).toString();
+  const redirectUri = client.redirectUri ?? defaultOAuthRedirectUri();
   return makeDescriptorOAuthProvider(providerId, { ...lead.oauth, scopes }, { clientId: client.clientId, clientSecret, redirectUri });
 }
 

@@ -28,6 +28,11 @@ import {
 import { createSourceHostFetch } from './source-host-fetch';
 import { descriptorOAuthPlugin } from './connection-lifecycle';
 import { providerCredentialStatus, type ProviderCredentialStatus } from './provider-credentials';
+import {
+  clientRegistrationRefOf,
+  oauthClientRegistrationStatuses,
+  type OAuthClientRegistrationStatus,
+} from './oauth-client-registration';
 import type { TokenStorage } from '../oauth/token';
 import { listTriggerPackSettings, type TriggerPackSettings } from '../cupboard/trigger-pack-lifecycle';
 import {
@@ -129,6 +134,18 @@ export interface TicketProviderSummary {
    * when the provider declares none.
    */
   appRegistration: ProviderAppRegistrationView | null;
+  /**
+   * The owner's OAuth app registration for an OAuth provider (P-009): whether one is saved, its
+   * client ID and the redirect URL to give the vendor. Never the client secret. Null when the
+   * provider does not sign in through OAuth.
+   */
+  oauthClient: ProviderOAuthClientSummary | null;
+}
+
+/** An OAuth provider's client registration status, plus whether its flow needs a client secret. */
+export interface ProviderOAuthClientSummary extends OAuthClientRegistrationStatus {
+  /** False when the provider's flow uses PKCE and can run with a client ID alone. */
+  secretRequired: boolean;
 }
 
 export interface TicketSourceSummary {
@@ -256,7 +273,11 @@ function configSchemaOf(descriptor: ProviderDescriptor): Record<string, unknown>
   return isPlainObject(schema) ? schema : null;
 }
 
-export function summarizeIntegrationProvider(entry: RegisteredProvider, credentials: ProviderCredentialStatus[]): TicketProviderSummary {
+export function summarizeIntegrationProvider(
+  entry: RegisteredProvider,
+  credentials: ProviderCredentialStatus[],
+  oauthClient: OAuthClientRegistrationStatus | null = null,
+): TicketProviderSummary {
   const d = entry.descriptor;
   const schema = configSchemaOf(d);
   const properties = isPlainObject(schema?.properties) ? schema.properties : {};
@@ -272,6 +293,7 @@ export function summarizeIntegrationProvider(entry: RegisteredProvider, credenti
     connectHref: d.oauth ? ticketConnectHref(d) : null,
     credentials,
     appRegistration: providerAppRegistrationView(d),
+    oauthClient: d.oauth && oauthClient ? { ...oauthClient, secretRequired: !d.oauth.pkce } : null,
   };
 }
 
@@ -351,11 +373,21 @@ export async function ticketIntegrationsOverview(
     };
   });
   // Pasted credentials live under the harness the connect link writes tokens to, the same one the
-  // credentials route reads and writes.
+  // credentials route reads and writes. OAuth client registrations come from one read of the
+  // host's oauth-apps.json, keyed the way the connect flow keys them.
+  const registered = registry.list().map((entry) => entry.descriptor);
+  const clientRefs = new Map(providers.map((entry) => [entry.descriptor.id, clientRegistrationRefOf(entry.descriptor, registered)]));
   const [summaries, triggerPacks] = await Promise.all([
-    Promise.all(
-      providers.map(async (entry) =>
-        summarizeIntegrationProvider(entry, await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, deps.credentialStorage)),
+    oauthClientRegistrationStatuses([...new Set([...clientRefs.values()].filter((ref): ref is string => ref !== null))]).then((clients) =>
+      Promise.all(
+        providers.map(async (entry) => {
+          const ref = clientRefs.get(entry.descriptor.id);
+          return summarizeIntegrationProvider(
+            entry,
+            await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, deps.credentialStorage),
+            ref ? (clients.get(ref) ?? null) : null,
+          );
+        }),
       ),
     ),
     listTriggerPackSettings(sql, scope.workspaceId),

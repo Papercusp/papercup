@@ -72,6 +72,19 @@ import Page from './page';
 
 const API = '/api/user/integrations/tickets';
 
+/** A registered OAuth app (P-009): status only, never a secret. */
+function oauthClient(ref: string, configured = true) {
+  return {
+    ref,
+    configured,
+    clientId: configured ? `${ref}-client` : null,
+    hasClientSecret: configured,
+    redirectUri: 'http://127.0.0.1/api/oauth/callback',
+    savedAt: null,
+    secretRequired: true,
+  };
+}
+
 const LINEAR = {
   id: 'linear',
   displayName: 'Linear',
@@ -84,6 +97,7 @@ const LINEAR = {
   connectHref: '/api/oauth/start?provider=linear&return=%2Fsettings%2Fintegrations',
   credentials: [],
   appRegistration: null,
+  oauthClient: oauthClient('linear'),
 };
 const ASANA = {
   id: 'asana',
@@ -97,6 +111,7 @@ const ASANA = {
   connectHref: '/api/oauth/start?provider=asana&return=%2Fsettings%2Fintegrations',
   credentials: [],
   appRegistration: null,
+  oauthClient: oauthClient('asana'),
 };
 
 function source(overrides: Record<string, unknown> = {}) {
@@ -142,6 +157,7 @@ const CHAT = {
     { key: 'botToken', label: 'Bot token', help: null, helpUrl: null, placeholder: null, pattern: null, hosts: ['chat.example'], configured: false, savedAt: null },
   ],
   appRegistration: null,
+  oauthClient: null,
 };
 
 const PACK_REVIEW = {

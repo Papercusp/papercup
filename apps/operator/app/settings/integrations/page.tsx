@@ -46,6 +46,7 @@ import { isDesktop } from '@/lib/ipc-status-tauri';
 import { SlackSetupCard } from './SlackSetupCard';
 import { ProviderAppRegistration } from './ProviderAppRegistration';
 import { ProviderCredentialsForm } from './ProviderCredentialsForm';
+import { ProviderOAuthClientForm } from './ProviderOAuthClientForm';
 import { TriggerPackSection } from './TriggerPackSection';
 
 export const PANELS = ['scope', 'mapping', 'rules'] as const;
@@ -269,7 +270,13 @@ function ProviderCard({
           </div>
         </div>
         {provider.connectHref ? (
-          <Button variant={sources.length > 0 ? 'neutral' : 'primary'} onClick={() => void connect()} disabled={connecting}>
+          <Button
+            variant={sources.length > 0 ? 'neutral' : 'primary'}
+            onClick={() => void connect()}
+            // Sign-in cannot start until the owner's OAuth app is registered (P-009).
+            disabled={connecting || provider.oauthClient?.configured === false}
+            title={provider.oauthClient?.configured === false ? `Register your ${provider.displayName} OAuth app first` : undefined}
+          >
             {sources.length > 0 ? 'Connect another account' : `Connect ${provider.displayName}`}
           </Button>
         ) : (
@@ -279,6 +286,7 @@ function ProviderCard({
         )}
       </div>
       <ProviderAppRegistration providerId={provider.id} displayName={provider.displayName} registration={provider.appRegistration} />
+      <ProviderOAuthClientForm providerId={provider.id} displayName={provider.displayName} client={provider.oauthClient ?? null} />
       <ProviderCredentialsForm providerId={provider.id} displayName={provider.displayName} credentials={provider.credentials} />
       {!provider.tracksTickets ? null : sources.length === 0 ? (
         <p style={muteText}>No {provider.displayName} account connected.</p>
