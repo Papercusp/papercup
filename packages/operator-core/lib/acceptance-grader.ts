@@ -1589,6 +1589,15 @@ export interface AcceptanceShipperCarrier {
    * allowed to override the gate (WI-10003286: it counted a 'role-…' card the gate
    * excluded and answered "settled" to every ship retry). An exclusion input only. */
   acceptanceGateFoundNoAdmissibleGrading?: boolean | null;
+  /** WI-6554700010008529: set when the gate refused `independent_verification_missing`.
+   * The rendered re-observation step every grader brief carries ahead of grading. */
+  acceptanceIndependentVerificationBrief?: string | null;
+}
+
+/** The carried re-observation section, or '' (WI-6554700010008529). */
+export function carriedIndependentVerificationBrief(ctx: unknown): string {
+  const raw = ((ctx ?? {}) as AcceptanceShipperCarrier).acceptanceIndependentVerificationBrief;
+  return typeof raw === 'string' ? raw.trim() : '';
 }
 
 /** The union of the carried cohort-stale ids, trimmed and de-duplicated (WI-10003286). */
@@ -2188,7 +2197,8 @@ async function prodOpenGradingCascade(
   }
 
   const head = params.graders[0]!;
-  const brief =
+  const verify = carriedIndependentVerificationBrief(ctx);
+  const brief = (verify ? `${verify}\n\n` : '') + (
     head.via === 'minimum'
       ? briefs.buildMinimumFillAcceptanceGraderBrief(
           params.planSlug,
@@ -2201,7 +2211,7 @@ async function prodOpenGradingCascade(
           params.harnessSlug,
           params.rubricId,
           params.reservation,
-        );
+        ));
 
   const opened = await conversations.openConversation(identity, {
     kind: 'consult',
@@ -2838,6 +2848,7 @@ export async function launchAcceptanceGrader(
   const brief = [
     `You are the dedicated acceptance judge for plan ${planSlug}. Grade rubric ${rubricRef} as a fresh non-implementer.`,
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
+    ...(carriedIndependentVerificationBrief(ctx) ? [carriedIndependentVerificationBrief(ctx)] : []),
     'If FROZEN_ACCEPTANCE_CONTEXT has contextIntegrity.degraded, follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED. Recovered evidence is admissible only when plans:get still matches frozenIdentity.planVersion/planContentHash and the completion audit still matches frozenIdentity.auditSeq; on a read or identity mismatch, mark only the affected criteria unknown and name the exact gap.',
     ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,
     ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,

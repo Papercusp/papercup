@@ -60,7 +60,10 @@ import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon
 import { configureCpuWorkerBreakerNotifier } from '@papercusp/operator-core/lib/cpu-task-worker';
 import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFreshInstallGap } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 import { applyToProcessEnv, readAgentConfig, agentCmdBootWarning } from '@papercusp/operator-core/lib/agent-config';
-import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
+import {
+  reportPostgresRuntimeVintageOnBoot,
+  reportRuntimeVintageOnBoot,
+} from '@papercusp/operator-core/lib/runtime-vintage';
 import {
   gracefulStopChild,
   isSidecarEnabledFromEnv,
@@ -530,6 +533,9 @@ export function runBootstrap(): void {
       arch: process.arch,
       port,
     });
+    // WI-6554700010008529: the database this host serves is a runtime too. Live
+    // DB-state evidence pins `postgres:<port>`, which outlives this process.
+    reportPostgresRuntimeVintageOnBoot();
   } catch (e) {
     console.warn('[runtime-vintage] boot self-report wiring failed (non-fatal):', (e as Error)?.message ?? e);
   }

@@ -53,6 +53,8 @@ export interface IndependentVerificationGap {
   reason: IndependentVerificationGapReason;
   /** Independent-verification row ids that were considered and rejected for lineage. */
   rejectedBindingIds: number[];
+  /** Live implementer (non-IV) bindings at this revision that a verifier can cite. */
+  citableBindingIds: number[];
 }
 
 export interface IndependentVerificationVerdict {
@@ -171,6 +173,30 @@ export async function evaluateIndependentVerificationGate(
     return refuseUnreadable('the independent-verification bindings', error);
   }
 
+  // What a recruited verifier would cite (WI-6554700010008529): the refusal names the
+  // gap, and the verifier brief needs the exact implementer rows to re-observe.
+  let citable: Array<{ id: number | string; spec_id: string }>;
+  try {
+    citable = await sql<Array<{ id: number | string; spec_id: string }>>`
+      WITH in_scope AS (
+        SELECT * FROM unnest(${scope.map((row) => row.spec_id)}::text[], ${scope.map((row) => row.revision)}::int[])
+          AS s(spec_id, revision)
+      )
+      SELECT b.id, b.spec_id
+        FROM harness_shared.spec_evidence_bindings b
+        JOIN in_scope s
+          ON s.spec_id = b.spec_id
+         AND s.revision = b.spec_revision
+       WHERE b.workspace_id = ${workspaceId}
+         AND b.harness_slug = ${input.harnessSlug}
+         AND b.plan_slug = ${input.planSlug}
+         AND b.evidence_kind <> 'independent-verification'
+         AND b.retracted_at IS NULL
+       ORDER BY b.id`;
+  } catch (error) {
+    return refuseUnreadable('the implementer bindings a verifier would cite', error);
+  }
+
   let implementers: string[];
   try {
     implementers = await resolveImplementers(input.planSlug, workspaceId);
@@ -218,6 +244,7 @@ export async function evaluateIndependentVerificationGate(
           barKey: clause.source_bar_key,
           reason: rows.length === 0 ? 'no-independent-binding' : 'only-lineage-related',
           rejectedBindingIds: rejected,
+          citableBindingIds: citable.filter((row) => row.spec_id === clause.spec_id).map((row) => Number(row.id)),
         });
       }
     }
@@ -247,4 +274,44 @@ export async function evaluateIndependentVerificationGate(
       'verifiesBindingId:<the implementer binding id>, sourceFingerprint and environmentFingerprint equal to ' +
       "that binding's }. Not waivable by force: it is an independence check, like independent grading.",
   };
+}
+
+/**
+ * The verifier half of a grader brief (WI-6554700010008529).
+ *
+ * `independent_verification_missing` recruits through the same router as grading: the
+ * recruited grader is outside the implementers' lineage by construction, which is
+ * exactly the independence D-005 asks of a verifier. Re-observation comes FIRST because
+ * a fresh judge's task ends when its scorecard is written.
+ */
+export function renderIndependentVerificationBrief(
+  planSlug: string,
+  harnessSlug: string,
+  gaps: readonly IndependentVerificationGap[],
+): string {
+  if (gaps.length === 0) return '';
+  const scope = `slug:${JSON.stringify(planSlug)}, harness:${JSON.stringify(harnessSlug)}`;
+  const lines = gaps.map((gap) =>
+    `- ${gap.specId}@${gap.revision} (${gap.barKey}, ${gap.evidencePlane}): ` +
+    (gap.citableBindingIds.length > 0
+      ? `implementer binding(s) ${gap.citableBindingIds.join(', ')}`
+      : 'no live implementer binding to cite; rate the criterion on what you can observe and say so'),
+  );
+  return [
+    `INDEPENDENT VERIFICATION — do this BEFORE scorecards:emit. ${gaps.length} live/deployed outcome bar(s) of ` +
+      `plan '${planSlug}' carry implementer evidence that nobody outside the implementers' lineage has re-observed, ` +
+      `and the ship gate refuses independent_verification_missing until each has an independent-verification ` +
+      `binding (verification-system-improvements-2026-10-10 D-005). You were recruited outside that lineage. For ` +
+      `each clause: (1) read the cited binding with plans:get-spec-evidence { ${scope} } — its evidenceRef, ` +
+      `workItemId, details.note/observedVia/instrument and details.currentMeasurement; (2) re-observe the same ` +
+      `thing yourself through the read the binding names (for a database census, re-run its read-only ` +
+      `dev:pg_query) and compare with the receipt; (3) if it matches, record plans:bind-spec-evidence ` +
+      `{ ${scope}, binding:{ workItemId, specId, specRevision, evidenceKind:'independent-verification', ` +
+      `verifiesBindingId:<the cited id>, evidenceRef:<the same evidenceRef>, measurement:<its ` +
+      `details.currentMeasurement, unchanged>, details:{ note:<what you re-observed, when, and through which ` +
+      `runtime> } } }. The store re-measures source and environment and refuses a mismatch: report a refusal ` +
+      `in your card rather than working around it. If your observation contradicts the receipt, do not bind; ` +
+      `rate the affected criterion fail with what you saw.`,
+    ...lines,
+  ].join('\n');
 }

@@ -24,7 +24,12 @@ import { basename, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { coerceJson } from './pg-jsonb';
-import { readProcessIdentity, linuxProcStateFromStat, linuxStartTicksFromProcStat } from './process-identity';
+import {
+  readProcessIdentity,
+  linuxProcStateFromStat,
+  linuxStartTicksFromProcStat,
+  linuxPpidFromProcStat,
+} from './process-identity';
 
 /** The tagged org-PG client, optionally supplied by a caller's read transaction. */
 export type RuntimeVintageSql = ReturnType<typeof getOrgPg>['sql'];
@@ -359,6 +364,122 @@ export function reportRuntimeVintageOnBoot(unit: string, extra?: Record<string, 
         `[runtime-vintage] self-report failed for unit=${unit} (non-fatal):`,
         (e as Error)?.message ?? e,
       );
+    }
+  })();
+}
+
+/**
+ * The DATABASE INSTANCE as a runtime of its own (WI-6554700010008529).
+ *
+ * A live claim about database state ("zero twin rows; the unique index exists") is a
+ * claim about the Postgres instance, not about the operator process that relayed the
+ * query. Pinning that evidence to `hono-host:<port>` made it go stale on every operator
+ * restart (staging restarts about every 30 minutes) although the database never
+ * changed, so a multi-agent ship sequence could not finish inside one process lifetime.
+ *
+ * Unit `postgres:<port>` names the instance by its postmaster: pid + kernel identity,
+ * the server build (sha256 of `version()`), and `pg_postmaster_start_time()`. All three
+ * survive operator restarts and all change when Postgres restarts. Bind live DB-state
+ * evidence with `runtimeUnits: ['postgres:<port>']`.
+ *
+ * Fails closed: when the server is not a local process (another host, or a container
+ * whose pids live in another namespace), no row is reported, so evidence naming the
+ * unit reads as unmeasured instead of pinned to an unrelated local process.
+ */
+export interface PostgresInstanceProbe {
+  /** `pg_backend_pid()` of the probing session. */
+  backendPid: number;
+  /** `current_setting('port')`. */
+  port: string;
+  /** `version()`. */
+  version: string;
+  /** `pg_postmaster_start_time()`, as the driver returned it. */
+  postmasterStartTime: string | Date;
+}
+
+export interface PostgresInstanceProcDeps {
+  readStat(pid: number): string | null;
+  readComm(pid: number): string | null;
+  /** Wall-clock ms at which the process described by this stat line started, or null. */
+  startedAtMs(stat: string): number | null;
+}
+
+/** Postmaster start time vs the kernel's process start. Slow boots fit; a pid collision does not. */
+export const POSTGRES_START_TIME_TOLERANCE_MS = 5_000;
+
+const linuxPostgresProcDeps: PostgresInstanceProcDeps = {
+  readStat: (pid) => {
+    try { return readFileSync(`/proc/${pid}/stat`, 'utf8'); } catch { return null; }
+  },
+  readComm: (pid) => {
+    try { return readFileSync(`/proc/${pid}/comm`, 'utf8').trim(); } catch { return null; }
+  },
+  startedAtMs: (stat) => {
+    try {
+      const ticks = Number(linuxStartTicksFromProcStat(stat));
+      const uptime = Number(readFileSync('/proc/uptime', 'utf8').split(' ')[0]);
+      if (!Number.isFinite(ticks) || ticks <= 0 || !Number.isFinite(uptime)) return null;
+      // USER_HZ=100, as in liveNodeEntryDigest above.
+      return Date.now() - uptime * 1000 + ticks * 10;
+    } catch { return null; }
+  },
+};
+
+/** Turn one probe of the connected server into the `postgres:<port>` report, or null. */
+export function resolvePostgresInstanceReport(
+  probe: PostgresInstanceProbe,
+  deps: PostgresInstanceProcDeps = linuxPostgresProcDeps,
+): RuntimeVintageReport | null {
+  const port = String(probe.port ?? '').trim();
+  const version = String(probe.version ?? '').trim();
+  const startedMs = new Date(probe.postmasterStartTime).getTime();
+  if (!/^\d{1,5}$/.test(port) || !version || !Number.isFinite(startedMs)) return null;
+  if (!Number.isSafeInteger(probe.backendPid) || probe.backendPid <= 0) return null;
+  const backendStat = deps.readStat(probe.backendPid);
+  if (!backendStat || deps.readComm(probe.backendPid) !== 'postgres') return null;
+  const postmasterPid = linuxPpidFromProcStat(backendStat);
+  if (postmasterPid == null || postmasterPid <= 1) return null;
+  const postmasterStat = deps.readStat(postmasterPid);
+  if (!postmasterStat || deps.readComm(postmasterPid) !== 'postgres') return null;
+  // The same pid in another namespace can name an unrelated local postgres; its
+  // start time will not match the server's own record of when it started.
+  const processStartedMs = deps.startedAtMs(postmasterStat);
+  if (processStartedMs == null || Math.abs(processStartedMs - startedMs) > POSTGRES_START_TIME_TOLERANCE_MS) {
+    return null;
+  }
+  return {
+    unit: `postgres:${port}`,
+    treeSha: createHash('sha256').update(version).digest('hex').slice(0, 40),
+    buildTime: new Date(startedMs).toISOString(),
+    bundleVersion: null,
+    pid: postmasterPid,
+    extra: { kind: 'postgres', port, serverVersion: version.split(' ').slice(0, 2).join(' ') },
+  };
+}
+
+/** Boot-time report of the connected Postgres instance. Never throws, never blocks boot. */
+export function reportPostgresRuntimeVintageOnBoot(): void {
+  void (async () => {
+    try {
+      const { sql } = getOrgPg();
+      const [row] = await sql<Array<{ backend_pid: number; port: string; version: string; started: string | Date }>>`
+        SELECT pg_backend_pid() AS backend_pid, current_setting('port') AS port,
+               version() AS version, pg_postmaster_start_time() AS started`;
+      const report = row
+        ? resolvePostgresInstanceReport({
+            backendPid: Number(row.backend_pid),
+            port: row.port,
+            version: row.version,
+            postmasterStartTime: row.started,
+          })
+        : null;
+      if (!report) {
+        console.warn('[runtime-vintage] postgres instance is not a verifiable local process; no postgres:<port> row reported');
+        return;
+      }
+      await reportRuntimeVintage(report);
+    } catch (e) {
+      console.warn('[runtime-vintage] postgres instance report failed (non-fatal):', (e as Error)?.message ?? e);
     }
   })();
 }

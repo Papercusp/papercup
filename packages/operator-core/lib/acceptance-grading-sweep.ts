@@ -69,6 +69,7 @@ export const ACCEPTANCE_GRADING_SWEEP_MAX_PER_TICK = 10;
 export const ACCEPTANCE_GRADING_STALL_GATE_CODES: readonly PlanAcceptanceGateCode[] = [
   'acceptance_ungraded',
   'self_graded_only',
+  'independent_verification_missing',
 ];
 
 export type AcceptanceGradingSweepAction = 'skip' | 'dispatch' | 'escalate';

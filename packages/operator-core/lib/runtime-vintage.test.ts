@@ -23,6 +23,7 @@ import {
   reportRuntimeVintage,
   listRuntimeVintage,
   measureRuntimeVintageEnvironment,
+  resolvePostgresInstanceReport,
   type RuntimeVintageRow,
 } from './runtime-vintage';
 
@@ -235,5 +236,80 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
       identity: () => ++reads === 1 ? 'boot:start' : 'boot:replacement' })).toBeNull();
     expect(measureRuntimeVintageEnvironment([row], ['native'], {
       host: 'local', identity: deps.identity })).toBeNull();
+  });
+});
+
+describe('runtime-vintage — the postgres instance as a runtime (WI-6554700010008529)', () => {
+  beforeEach(() => configureRuntimeVintageStore(new InMemoryRuntimeVintageStore()));
+  afterEach(() => resetRuntimeVintageStore());
+
+  const VERSION = 'PostgreSQL 16.4 (Ubuntu 16.4-1.pgdg24.04+1) on x86_64-pc-linux-gnu';
+  const STARTED = '2026-10-11T07:28:36.539Z';
+  const stat = (pid: number, ppid: number) =>
+    `${pid} (postgres) S ${ppid} ${ppid} ${ppid} 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 12345 0 0`;
+  /** A process table: backend 900 -> postmaster 800 -> init. */
+  const table = (over: Partial<Record<'backendComm' | 'postmasterComm', string>> = {}, startedAt = Date.parse(STARTED) + 400) => ({
+    readStat: (pid: number) => (pid === 900 ? stat(900, 800) : pid === 800 ? stat(800, 1) : null),
+    readComm: (pid: number) =>
+      pid === 900 ? over.backendComm ?? 'postgres' : pid === 800 ? over.postmasterComm ?? 'postgres' : null,
+    startedAtMs: () => startedAt,
+  });
+  const probe = { backendPid: 900, port: '5432', version: VERSION, postmasterStartTime: STARTED };
+
+  it('names the instance by its postmaster, server build and start time', () => {
+    expect(resolvePostgresInstanceReport(probe, table())).toEqual({
+      unit: 'postgres:5432',
+      treeSha: createHash('sha256').update(VERSION).digest('hex').slice(0, 40),
+      buildTime: STARTED,
+      bundleVersion: null,
+      pid: 800,
+      extra: { kind: 'postgres', port: '5432', serverVersion: 'PostgreSQL 16.4' },
+    });
+    // The driver may return a Date; the instant, not its encoding, is the identity.
+    expect(resolvePostgresInstanceReport({ ...probe, postmasterStartTime: new Date(STARTED) }, table())?.buildTime)
+      .toBe(STARTED);
+  });
+
+  it('fails closed unless the server is a verifiable local process', () => {
+    expect(resolvePostgresInstanceReport(probe, table({ backendComm: 'bash' }))).toBeNull();
+    expect(resolvePostgresInstanceReport(probe, table({ postmasterComm: 'systemd' }))).toBeNull();
+    // A container backend whose pid collides with an unrelated local postgres: the
+    // local process started at a different time from the server's own record.
+    expect(resolvePostgresInstanceReport(probe, table({}, Date.parse(STARTED) - 3_600_000))).toBeNull();
+    expect(resolvePostgresInstanceReport({ ...probe, backendPid: 901 }, table())).toBeNull();
+    expect(resolvePostgresInstanceReport({ ...probe, port: 'abc' }, table())).toBeNull();
+    expect(resolvePostgresInstanceReport({ ...probe, version: ' ' }, table())).toBeNull();
+    expect(resolvePostgresInstanceReport({ ...probe, postmasterStartTime: 'never' }, table())).toBeNull();
+    expect(resolvePostgresInstanceReport(probe, { ...table(), readStat: (pid) => (pid === 900 ? stat(900, 1) : null) }))
+      .toBeNull();
+  });
+
+  it('keeps one environment fingerprint across operator reboots and changes it when postgres restarts', async () => {
+    if (process.platform !== 'linux' || !readProcessIdentity(process.pid)) return;
+    // This test process stands in for the postmaster so the kernel pin is real.
+    const self = process.pid;
+    const selfStat = readFileSync(`/proc/${self}/stat`, 'utf8');
+    const local = (startedAt: number) => ({
+      readStat: (pid: number) => (pid === 999_999 ? stat(999_999, self) : pid === self ? selfStat : null),
+      readComm: () => 'postgres',
+      startedAtMs: () => startedAt,
+    });
+    const at = Date.parse(STARTED);
+    const bootReport = async () => {
+      const report = resolvePostgresInstanceReport({ ...probe, backendPid: 999_999 }, local(at));
+      expect(report).not.toBeNull();
+      await reportRuntimeVintage({ ...report!, workspaceId: 'default' });
+      return measureRuntimeVintageEnvironment(await listRuntimeVintage('default'), ['postgres:5432']);
+    };
+    const first = await bootReport();
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    // A second operator (or the same one after a restart) reports the same instance.
+    expect(await bootReport()).toBe(first);
+    // A postgres restart moves the start time, so evidence pinned to the old instance goes stale.
+    const restarted = resolvePostgresInstanceReport(
+      { ...probe, backendPid: 999_999, postmasterStartTime: new Date(at + 60_000) }, local(at + 60_000));
+    await reportRuntimeVintage({ ...restarted!, workspaceId: 'default' });
+    expect(measureRuntimeVintageEnvironment(await listRuntimeVintage('default'), ['postgres:5432']))
+      .not.toBe(first);
   });
 });

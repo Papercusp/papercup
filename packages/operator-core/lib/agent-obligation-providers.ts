@@ -1048,10 +1048,10 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   acceptance_bar_contract_not_ready: 'author',
   acceptance_bar_not_met: 'author',
   design_evidence_unsatisfied: 'author',
-  // verification-system-improvements P-008: the author arranges the re-observation by an
-  // agent outside the implementer lineage. Not 'grader': the recruiter is not widened to
-  // this code, and it does not recruit a verifier.
-  independent_verification_missing: 'author',
+  // verification-system-improvements P-008 + WI-6554700010008529: the ship recruiter
+  // routes this code to a grader outside the implementer lineage, whose brief carries the
+  // re-observation step. Waiting on that recruit is grader work, as for acceptance_ungraded.
+  independent_verification_missing: 'grader',
   // P-006: the author recruits a blind reviewer and dispositions its gaps.
   blind_review_missing: 'author',
   blind_review_gap_undispositioned: 'author',
