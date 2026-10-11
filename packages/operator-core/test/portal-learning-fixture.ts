@@ -57,7 +57,9 @@ export async function preflightPrivateLearning(seed: PrivateLearningSeed, base: 
   assert.deepEqual(reads[0].body.rows[0].degraded, []);
   assert.equal(reads[1].body.rows[0].total, 2); assert.equal(reads[1].body.rows[0].matched, 2);
   assert.equal(reads[2].body.rows[0].memories, 2);
-  assert.equal(reads[3].body.rows[0].body, seed.selected.text);
+  const detail = reads[3].body.rows?.[0];
+  assert.ok(detail, 'Learning detail prerequisite failed: the selected canonical memory exists in the feed, but detail returned no row; inspect the retained API response and backend-availability log before another private run');
+  assert.equal(detail.body, seed.selected.text);
   console.log('ROSTER_STOP_HTTP_PHASE learning-api-preflight-ready');
 }
 
