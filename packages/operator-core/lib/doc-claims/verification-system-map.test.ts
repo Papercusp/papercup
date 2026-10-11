@@ -115,6 +115,16 @@ describe('testAssertsOnCode', () => {
     const t = "const input = { code: 'zz_alpha_refused' };\nconst x = 1;\nconst y = 2;\nconst z = 3;\nexpect(run(input)).toBe(true);";
     expect(testAssertsOnCode(t, 'zz_alpha_refused')).toBe(false);
   });
+
+  it('CALIBRATION: counts a literal deep inside a multi-line toMatchObject', () => {
+    const t = "expect(result).toMatchObject({\n  satisfied: false,\n  applicable: true,\n  mode: 'enforced',\n  code: 'zz_alpha_refused',\n});";
+    expect(testAssertsOnCode(t, 'zz_alpha_refused')).toBe(true);
+  });
+
+  it('CONTROL: a literal on the line after a finished expect statement does not count', () => {
+    const t = "expect(result.ok).toBe(false);\nconst next = { code: 'zz_alpha_refused' };";
+    expect(testAssertsOnCode(t, 'zz_alpha_refused')).toBe(false);
+  });
 });
 
 describe('findUnregisteredDoorCodes', () => {

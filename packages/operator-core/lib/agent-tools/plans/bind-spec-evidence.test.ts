@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { asCommittedRunOf, bindingSchema, bindingStageDiagnostics, measureBindingForStore } from './bind-spec-evidence';
+import {
+  asCommittedRunOf,
+  bindingSchema,
+  bindingStageDiagnostics,
+  measureBindingForStore,
+  parseDerivedBinding,
+} from './bind-spec-evidence';
 
 describe('evidence-binding timeout diagnostics', () => {
   it('retains confirmed writes and identifies an advisory failure after storage', async () => {
@@ -430,5 +436,20 @@ describe('as-committed bindings are measured at the run commit', () => {
       f.deps,
     );
     expect(f.calls).toEqual(['atCommit:abc123', 'live', 'live']);
+  });
+});
+
+// verification-system-improvements-2026-10-10 P-001: the verification-system map names
+// derived_binding_invalid, so a test must trigger it.
+describe('parseDerivedBinding', () => {
+  it('CALIBRATION: a binding the schema accepts passes through unchanged', () => {
+    const result = parseDerivedBinding(measuredBinding, 42);
+    expect(result).toEqual({ ok: true, binding: bindingSchema.parse(measuredBinding) });
+  });
+
+  it('a derived binding the schema rejects is refused as derived_binding_invalid, naming the run', () => {
+    const result = parseDerivedBinding({ ...measuredBinding, evidenceKind: 'not-a-kind' }, 42);
+    expect(result).toMatchObject({ ok: false, error: 'derived_binding_invalid', testRunId: 42 });
+    expect(result.ok ? '' : result.message).toContain('evidenceKind');
   });
 });

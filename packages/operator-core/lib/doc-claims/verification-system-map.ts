@@ -149,19 +149,32 @@ export function extractMapRefusalCodes(docText: string): string[] {
   return codes;
 }
 
+/** Longest expect statement (in lines) the span scan follows before giving up. */
+const MAX_EXPECT_STATEMENT_LINES = 40;
+
 /**
- * True when `testText` asserts on `code`: the quoted literal appears on a line
- * that is inside, or within three lines after the start of, an `expect(`. A code
- * that only appears in fixture construction does not count.
+ * True when `testText` asserts on `code`: the quoted literal appears inside an
+ * `expect(` statement. The statement runs from the `expect(` line until its parentheses
+ * balance on a line that ends the statement, so a code deep inside a multi-line
+ * `toMatchObject({ … })` counts. A code that only appears in fixture construction
+ * before the `expect(` does not.
  */
 export function testAssertsOnCode(testText: string, code: string): boolean {
   const quoted = [`'${code}'`, `"${code}"`, '`' + code + '`'];
   const lines = testText.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i]!;
-    if (!quoted.some((q) => line.includes(q))) continue;
-    for (let j = Math.max(0, i - 3); j <= i; j += 1) {
-      if (lines[j]!.includes('expect(')) return true;
+    const at = lines[i]!.indexOf('expect(');
+    if (at < 0) continue;
+    let depth = 0;
+    const end = Math.min(lines.length, i + MAX_EXPECT_STATEMENT_LINES);
+    for (let j = i; j < end; j += 1) {
+      const line = j === i ? lines[j]!.slice(at) : lines[j]!;
+      if (quoted.some((q) => line.includes(q))) return true;
+      for (const ch of line) {
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth -= 1;
+      }
+      if (depth <= 0 && /[;)]\s*$/.test(line.trimEnd())) break;
     }
   }
   return false;

@@ -1941,3 +1941,86 @@ describe('blocking BARs carry their contract kind (P-038 guard)', () => {
     ]);
   });
 });
+
+// verification-system-improvements-2026-10-10 P-001: every contract refusal code the
+// verification-system map names must have a test that triggers it. Each case breaks one
+// source of an otherwise valid fixture and looks for the code wherever the snapshot reports it.
+describe('snapshot source codes (verification-system map)', () => {
+  const allCodes = (snapshot: ReturnType<typeof projectAcceptanceBarContractSnapshot>): string[] => [
+    ...snapshot.completeness.problems.map((problem) => problem.code),
+    ...snapshot.readiness.codes,
+    ...snapshot.bars.flatMap((b) => b.readiness.codes),
+  ];
+  const triggered = [
+    'bar_snapshot_plan_missing',
+    'bar_snapshot_cohort_incomplete',
+    'bar_snapshot_rubric_ambiguous',
+    'bar_snapshot_bar_key_duplicate',
+    'bar_snapshot_bar_set_hash_mismatch',
+    'bar_snapshot_work_contract_missing',
+    'bar_snapshot_work_contract_stale',
+    'bar_snapshot_author_verdict_stale',
+    'bar_snapshot_grading_missing',
+  ];
+
+  it('no grading scorecard raises bar_snapshot_grading_missing', () => {
+    const input = fixture(1);
+    input.scorecards.rows.length = 0;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_grading_missing');
+  });
+
+  it('CALIBRATION: the unmodified fixture raises none of these codes', () => {
+    const codes = allCodes(projectAcceptanceBarContractSnapshot(fixture(2)));
+    for (const code of triggered) expect(codes).not.toContain(code);
+  });
+
+  it('an absent subject plan row raises bar_snapshot_plan_missing', () => {
+    const input = fixture(1);
+    input.planRows = rows([], 1);
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_plan_missing');
+  });
+
+  it('a post-epoch plan with no seed identity raises bar_snapshot_cohort_incomplete', () => {
+    const input = fixture(1);
+    input.planRows.rows[0]!.seededBy = null as unknown as string;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_cohort_incomplete');
+  });
+
+  it('two active acceptance rubrics raise bar_snapshot_rubric_ambiguous', () => {
+    const input = fixture(1);
+    input.rubrics.rows.push({ ...input.rubrics.rows[0]!, rubricId: 'acceptance-plan-a-twin' } as Rubric);
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_rubric_ambiguous');
+  });
+
+  it('two BARs sharing one key raise bar_snapshot_bar_key_duplicate', () => {
+    const input = fixture(2);
+    const criteria = input.rubrics.rows[0]!.criteria;
+    criteria[1]!.barKey = criteria[0]!.barKey;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_bar_key_duplicate');
+  });
+
+  it('a plan BAR-set pin that differs from the recomputed hash raises bar_snapshot_bar_set_hash_mismatch', () => {
+    const input = fixture(2);
+    input.planRows.rows[0]!.barSetHash = 'f'.repeat(64);
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_bar_set_hash_mismatch');
+  });
+
+  it('a clause with no linked work-item raises bar_snapshot_work_contract_missing', () => {
+    const input = fixture(1);
+    input.workContracts.rows.length = 0;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_work_contract_missing');
+  });
+
+  it('a work-item linked to an older clause revision raises bar_snapshot_work_contract_stale', () => {
+    const input = fixture(1);
+    input.workContracts.rows[0]!.specRevision = 99;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_work_contract_stale');
+  });
+
+  it('an implementer verdict older than the grading raises bar_snapshot_author_verdict_stale', () => {
+    const input = fixture(1);
+    const author = input.scorecards.rows.find((card) => card.issueId === 'SC-AUTHOR')!;
+    author.createdAt = '2026-09-04T00:00:00.000Z';
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_author_verdict_stale');
+  });
+});
