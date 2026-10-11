@@ -5217,6 +5217,9 @@ export function registerMcpHost(server: McpServer): void {
                         spillErrorCode: settlement.errorCode ?? null,
                         spillSettlementStatus: settlement.status,
                         spillSettledAt: settledAt,
+                        ...(raced.phaseTimingsMs.scratchWrites
+                          ? { scratchWriteTimings: { ...raced.phaseTimingsMs.scratchWrites } }
+                          : {}),
                         resultDoorReason: settlement.reason,
                         aggregateOutputEscape: settlement.aggregateOutputEscape,
                       },

@@ -6,6 +6,7 @@ const readGitStats = vi.fn();
 vi.mock('../../../harness-core', () => ({
   resolvePhasedProject: (...args: unknown[]) => resolvePhasedProject(...args),
 }));
+vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'private-own' }));
 vi.mock('../../../harness/git-stats', async () => {
   const actual = await vi.importActual<typeof import('../../../harness/git-stats')>(
     '../../../harness/git-stats',
@@ -61,5 +62,20 @@ describe('GET /harness/:slug/git/stats', () => {
     const response = await call();
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'git timed out' });
+  });
+});
+
+describe('Git HTTP workspace boundary', () => {
+  it.each(routes as unknown as RouteEntry[])('denies foreign targets on $path before repository inspection', async entry => {
+    // The generic resolver can find a foreign slug when no workspace is pinned.
+    resolvePhasedProject.mockImplementation(async (_slug, _phase, workspace) =>
+      workspace === 'private-own' ? null : { slug: 'foreign', path: '/repos/foreign' });
+    const response = await entry.handler(
+      new Request('http://127.0.0.1:3070/api/harness/foreign/git/stats?ws=private-foreign'),
+      { params: { slug: 'foreign', sha: 'abc1234' } },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'unknown project' });
+    expect(readGitStats).not.toHaveBeenCalled();
   });
 });

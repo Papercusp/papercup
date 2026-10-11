@@ -44,7 +44,7 @@ vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: vi.fn(() => 'default'),
 }));
 
-import { resolveWorkspaceForHarnessSlugIn, RegistryReadUnavailableError } from './harness-core';
+import { resolveWorkspaceForHarnessSlugIn, RegistryReadUnavailableError, resolvePhasedProject } from './harness-core';
 
 const entry = (slug: string, path: string): ProjectEntry => ({ slug, path, harness_kind: 'coding' });
 
@@ -55,6 +55,22 @@ beforeEach(() => {
     scratch: [],
   };
   failing = new Set();
+});
+
+describe('resolvePhasedProject workspace pin', () => {
+  it('rejects a target registered only in another workspace', async () => {
+    await expect(resolvePhasedProject('papercup', undefined, 'default')).resolves.toBeNull();
+  });
+
+  it('resolves the selected workspace registration when the same slug exists elsewhere', async () => {
+    registries['papercusp-workspace'].push(entry('sheets', '/repos/foreign-sheets'));
+    await expect(resolvePhasedProject('sheets', 'staging', 'default')).resolves.toMatchObject({ path: '/home/u/sheets' });
+    await expect(resolvePhasedProject('sheets', 'staging', 'papercusp-workspace')).resolves.toMatchObject({ path: '/repos/foreign-sheets' });
+  });
+
+  it('preserves the unpinned cross-workspace resolver for non-request callers', async () => {
+    await expect(resolvePhasedProject('papercup', undefined)).resolves.toMatchObject({ path: '/home/u/papercup' });
+  });
 });
 afterEach(() => vi.clearAllMocks());
 

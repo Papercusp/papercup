@@ -316,6 +316,24 @@ describe('disk read', () => {
     expect(detail!.coordRates.counts.breakdown).toBe(1);
   });
 
+  it('preserves the archived model identity without substituting a configured model', () => {
+    const id = 'explicit-model';
+    const dir = join(base, id);
+    mkdirSync(dir);
+    writeFileSync(join(dir, `${ARM}.json`), JSON.stringify({
+      ...fixtureRun(), model: 'provider-model-frozen-version',
+    }));
+    expect(readPreservedRun(id, base)!.run.model).toBe('provider-model-frozen-version');
+  });
+
+  it('leaves absent model provenance unknown for the importing caller', () => {
+    const id = 'missing-model';
+    const dir = join(base, id);
+    mkdirSync(dir);
+    writeFileSync(join(dir, `${ARM}.json`), JSON.stringify(fixtureRun()));
+    expect(readPreservedRun(id, base)!.run.model).toBeUndefined();
+  });
+
   it('returns null for a missing / unsafe run id', () => {
     expect(readPreservedRun('nope', base)).toBeNull();
     expect(readPreservedRun('../etc', base)).toBeNull();

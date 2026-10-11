@@ -30,6 +30,7 @@ import {
   MAX_RECORDED_PASSED_CASES,
   passedCaseTitlesIncomplete,
 } from '@papercusp/test-config/execution-details';
+import { CALIBRATION_LEGS, type MutationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 
 export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
 
@@ -129,6 +130,17 @@ export interface SpecEvidenceForAdequacy {
     source?: string | null;
     /** Server-parsed phase from test_runs.execution_details. */
     mutationPhase?: string | null;
+    /** Reporter-written descriptor and its server-read calibration row, never binder metadata. */
+    mutation?: MutationDescriptor;
+    mutationBaseline?: {
+      testRunId: number;
+      status: string | null;
+      mutation: MutationDescriptor;
+      passed: number;
+      failed: number;
+      skipped: number;
+      collectionFailed: boolean;
+    } | null;
     commitSha: string | null;
     worktreeDirty: boolean | null;
     /**
@@ -1012,6 +1024,7 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
         `testRunLedgerCommit=${JSON.stringify(row.testRunProvenance.commitSha)}, ` +
         `testRunLedgerWorktreeDirty=${row.testRunProvenance.worktreeDirty ?? 'unknown'}`
       : null,
+    ...mutationProvenanceDescription(row),
     details.fixtureCalibrated !== undefined ? `fixtureCalibrated=${details.fixtureCalibrated}` : null,
     details.fixtureFree !== undefined ? `fixtureFree=${details.fixtureFree}` : null,
     details.falsifiable !== undefined ? `falsifiable=${details.falsifiable}` : null,
@@ -1227,6 +1240,42 @@ function hasUnmatchedPassingCaseDeclaration(row: SpecEvidenceForAdequacy): boole
 
 type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
 
+/** A descriptor-bearing catch must be calibrated by this invocation's measured pass. */
+function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean {
+  const provenance = row.testRunProvenance;
+  const mutation = provenance?.mutation;
+  const baseline = provenance?.mutationBaseline;
+  return mutation !== undefined && mutation.leg === 'mutant' &&
+    provenance?.source === 'mutation-probe' && provenance.mutationPhase === 'mutant' &&
+    baseline != null && baseline.testRunId !== row.testRunId &&
+    baseline.status === 'pass' && baseline.passed > 0 && baseline.failed === 0 &&
+    baseline.skipped === 0 && baseline.collectionFailed === false &&
+    CALIBRATION_LEGS.includes(baseline.mutation.leg) &&
+    baseline.mutation.probeInvocationId === mutation.probeInvocationId &&
+    baseline.mutation.subjectBeforeSha256 === mutation.subjectBeforeSha256;
+}
+
+function mutationProvenanceDescription(row: SpecEvidenceForAdequacy): string[] {
+  if (row.evidenceKind !== 'mutation' && !isCanonicalMutantCounterexample(row)) return [];
+  const provenance = row.testRunProvenance;
+  const mutation = provenance?.mutation;
+  if (!mutation) return ['mutationLinkage=unverified-legacy'];
+  const reaim = row.details.reaim;
+  return [
+    `mutationLinkage=${hasLinkedMutationBaseline(row) ? 'verified' : 'unverified'}`,
+    `mutationLeg=${JSON.stringify(mutation.leg)}`,
+    `probeInvocationId=${JSON.stringify(mutation.probeInvocationId)}`,
+    `mutationSubjectPath=${JSON.stringify(mutation.subjectPath)}`,
+    `mutationExpression=${JSON.stringify(mutation.mutateExpression)}`,
+    `mutationAgainstCommit=${JSON.stringify(mutation.againstCommit)}`,
+    `mutationSubjectBeforeSha256=${mutation.subjectBeforeSha256}`,
+    `mutationFailedCaseTitles=${JSON.stringify(provenance?.mutationFailedCaseTitles ?? [])}`,
+    `mutationBaselineTestRunId=${provenance?.mutationBaseline?.testRunId ?? 'unavailable'}`,
+    `mutationReaim=${JSON.stringify(reaim ?? null)}`,
+    'mutationReaimCoverage=ledgered-mutant-leg-rows-only',
+  ];
+}
+
 /** Only canonical ledger provenance can identify a counterexample mutant run. */
 function isCanonicalMutantCounterexample(row: SpecEvidenceForAdequacy): boolean {
   return row.testRunId !== null &&
@@ -1253,6 +1302,14 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
   const status = run?.status?.toLowerCase();
   if (!run || !status || status === 'running' || status === 'error') return 'unknown';
   if (status === 'skipped' || status === 'cancelled' || status === 'canceled') return 'fail';
+
+  if ((row.evidenceKind === 'mutation' || isCanonicalMutantCounterexample(row)) &&
+      row.testRunProvenance?.mutation) {
+    const outcome = detailsOf(row).outcome?.toLowerCase();
+    if (!hasLinkedMutationBaseline(row) ||
+        !row.testRunProvenance.mutationFailedCaseTitles?.length ||
+        (outcome !== undefined && !SUCCESS_OUTCOMES.has(outcome)) || status !== 'fail') return 'unknown';
+  }
 
   if (row.evidenceKind === 'mutation') {
     if (status === 'pass') return 'fail';
@@ -1958,8 +2015,10 @@ function appendRatingRerunProbes(
  *  20 — disclosure-bearing metadata is scanned recursively, preserving gaps moved outside scopeNote.
  *  21 — passing selected scopes tolerate unrelated skips only when every declared case canonically passed.
  *  22 — qualified test nouns in input inventories do not imply a coverage limitation.
+ *  23 — descriptor-bearing catches require invocation-linked calibration and named failures;
+ *       grader evidence exposes the descriptor, linkage and ledger-only re-aim coverage.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 22;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 23;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
