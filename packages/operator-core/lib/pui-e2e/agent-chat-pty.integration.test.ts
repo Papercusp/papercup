@@ -7580,6 +7580,47 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
 });
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
+  test('operator OS process setup selects the seeded project before native launch', async () => {
+    const first = await startOperatorProcess();
+    const pane = new PuiPane(bin, first.port, home, { cwd: journeyDir('process-context') });
+    let primaryFailure: { error: unknown } | null = null;
+    try {
+      await verifyOperatorProcessViewState(first.port);
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      // Isolate project lookup from the asynchronous wizard driver and
+      // provider execution; review never reaches the launch step here.
+      await openComposer(pane, false);
+      pane.write('Retain this draft while I review the project.');
+      pane.enter();
+      await pane.waitFor('New session — 1 Context');
+      await pane.waitFor('Connection: Connected');
+      pane.write('/');
+      pane.write(HARNESS);
+      pane.enter();
+      await pane.waitFor(`> ${HARNESS}`);
+      pane.enter();
+      await pane.waitFor('New session — 2 Runtime');
+      expect(first.responses.filter(({ path: responsePath }) =>
+        responsePath === '/api/adv/sessions/launch-su')).toEqual([]);
+      expect(first.events).toEqual([]);
+      console.info('PUI_OPERATOR_CONTEXT_PREFLIGHT', JSON.stringify({
+        binarySha256, project: HARNESS, screen: pane.screen(), nativeLaunches: 0,
+      }));
+    } catch (error) {
+      primaryFailure = { error };
+      console.info('PUI_OPERATOR_CONTEXT_PREFLIGHT_FAILURE', JSON.stringify({
+        diagnostics: first.diagnostics, screen: pane.failureScreen(),
+        responses: first.responses, output: first.output(),
+      }));
+      throw error;
+    } finally {
+      await preservePrimaryFailureDuringCleanup(primaryFailure, [
+        { label: 'project-selection pane', run: () => pane.stop() },
+        { label: 'project-selection operator', run: () => first.stop() },
+      ]);
+    }
+  }, 180_000);
+
   // WI-10004247: each journey launches `pui` from its own directory. The
   // workbench lands on, and resumes, the newest resumable chat started in its
   // launch directory (P-010 / D-008), so a shared directory put the previous
