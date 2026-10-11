@@ -5798,27 +5798,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // server-side from each template's RRULE/cron/one-shot (the rrule lib is the single
   // source of truth; the calendar UI lib stays swappable — D-004). Workspace-scoped
   // via the active-workspace ALS; the harness_shared.harness_plans filter is by
-  // workspace_id (shared table, no schema routing). Best-effort: a read error degrades
-  // to [] rather than a 500, so the calendar shows its empty state.
+  // workspace_id (shared table, no schema routing). Propagate read failures through
+  // sync's error contract so consumers can distinguish them from a healthy empty window.
   'plans.scheduledOccurrences': {
     argsSchema: scheduledOccurrencesArgsSchema,
     resolve: async (args) => {
       const a = args as { rangeStartMs: number; rangeEndMs: number; harnessSlug?: string };
-      try {
-        const { activeWorkspaceId } = await import('../workspace-registry');
-        const { getOrgPg } = await import('@papercusp/db-org');
-        const { gatherScheduledOccurrences } = await import('../harness/routines/scheduled-occurrences');
-        const { sql } = getOrgPg();
-        return await gatherScheduledOccurrences(sql, {
-          workspaceId: activeWorkspaceId(),
-          rangeStartMs: a.rangeStartMs,
-          rangeEndMs: a.rangeEndMs,
-          ...(a.harnessSlug ? { harnessSlug: a.harnessSlug } : {}),
-        });
-      } catch (err) {
-        console.warn('[plans.scheduledOccurrences] read failed:', err instanceof Error ? err.message : err);
-        return [];
-      }
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { gatherScheduledOccurrences } = await import('../harness/routines/scheduled-occurrences');
+      const { sql } = getOrgPg();
+      return await gatherScheduledOccurrences(sql, {
+        workspaceId: activeWorkspaceId(),
+        rangeStartMs: a.rangeStartMs,
+        rangeEndMs: a.rangeEndMs,
+        ...(a.harnessSlug ? { harnessSlug: a.harnessSlug } : {}),
+      });
     },
   },
 
