@@ -526,6 +526,7 @@ export async function resolveScorecardInstrumentSnapshots(
           resolverVersion: 1,
           criterion: holderCriterion,
           reason: rating.reason,
+          ...(rating.unknownReason ? { unknownReason: rating.unknownReason } : {}),
           goalId: measured.metrics.window.goalId,
           metrics: {
             planAuthorship: measured.metrics.planAuthorship,

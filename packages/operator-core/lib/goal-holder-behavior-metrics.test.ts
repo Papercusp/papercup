@@ -12,9 +12,11 @@ import {
   ownerReportCostVerdict,
   rateGoalHolderBehavior,
   summarizeGoalReviews,
+  summarizeGoalDayHolderAttribution,
   summarizeOwnerReports,
   walledEntries,
   type GoalHolderBehaviorMetrics,
+  type GoalHolderModeChange,
 } from './goal-holder-behavior-metrics';
 import { goalSpendFromGoalRow, type GoalReportMeasuredSpend } from './goal-owner-report';
 
@@ -40,6 +42,33 @@ const WINDOW = {
   windowStart: '2026-10-03T00:53:17Z',
   windowEnd: '2026-10-03T02:13:10Z',
 };
+
+describe('goal-day holder attribution (D-008)', () => {
+  const change = (id: string, at: string, ownerId = WINDOW.holderOwnerId, oldMode: string | null = null, newMode: string | null = 'goal', subject: string | null = WINDOW.goalId): GoalHolderModeChange =>
+    ({ id, at, ownerId, oldMode, newMode, subject });
+
+  it('requires affirmative full-day election coverage, preserving a same-holder reassertion', () => {
+    const full = change('1', '2026-10-02T02:13:10Z');
+    const reassert = change('2', WINDOW.windowStart, WINDOW.holderOwnerId, 'goal');
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [reassert, full])).toEqual({ status: 'full-goal-day', holderSince: '2026-10-02T02:13:10.000Z' });
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [reassert])).toEqual({ status: 'inherited', holderSince: '2026-10-03T00:53:17.000Z' });
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [])).toEqual({ status: 'unverified', holderSince: null });
+  });
+
+  it('does not credit an old lease after a competing election, own exit, or goal switch; equal timestamps use ledger ids', () => {
+    const entry = change('1', '2026-10-02T01:00:00Z');
+    const peer = change('9007199254740993', WINDOW.windowStart, 'peer');
+    const regain = change('9007199254740994', WINDOW.windowStart);
+    const expected = { status: 'inherited', holderSince: '2026-10-03T00:53:17.000Z' };
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [regain, peer, entry])).toEqual(expected);
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [entry, peer, regain])).toEqual(expected);
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [entry, peer])).toEqual({ status: 'unverified', holderSince: null });
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [entry, change('2', WINDOW.windowStart, WINDOW.holderOwnerId, 'goal', null)])).toEqual({ status: 'unverified', holderSince: null });
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [entry, change('2', WINDOW.windowStart, WINDOW.holderOwnerId, 'goal', 'goal', 'other-goal')])).toEqual({ status: 'unverified', holderSince: null });
+    // A future election and a retired peer's exit cannot change this exact historical window.
+    expect(summarizeGoalDayHolderAttribution(WINDOW, [entry, change('2', WINDOW.windowStart, 'peer', 'goal', null), change('3', '2026-10-04T00:00:00Z', 'peer')]).status).toBe('full-goal-day');
+  });
+});
 
 /**
  * The witnessed window (holder su-9e72a11f, 2026-10-03 00:53:17Z-02:13:10Z), measured from
@@ -411,6 +440,29 @@ describe('rateGoalHolderBehavior thresholds', () => {
     expect(at({ plansNew: 0, ideasFiled: 1 })).toBe('pass');
     expect(at({ reviewsWithUncoveredClusterNeed: 1 })).toBe('fail');
     expect(at({ noNewPlanReviewsOverUnplannedCluster: 1 })).toBe('fail');
+  });
+
+  it('ideation: inherited zero-candidate exposure is uncertain, while a full due day or an attributable failed review still fails (D-008)', () => {
+    const metrics = healthy();
+    metrics.ideation = {
+      ...metrics.ideation, plansNew: 0, ideasFiled: 0, reviews: 0,
+      holderAttribution: { status: 'inherited', holderSince: WINDOW.windowStart, exercisedReviews: 0 },
+    };
+    const rate = () => rateGoalHolderBehavior(metrics)['ideation-yield'];
+    expect(rate()).toMatchObject({ verdict: 'unknown', unknownReason: 'scope-mismatch' });
+    // The old unconditional zero => fail policy distinguishes this fixture from a due day.
+    expect(metrics.ideation.plansNew + metrics.ideation.ideasFiled === 0 ? 'fail' : 'pass').toBe('fail');
+    metrics.ideation.holderAttribution = { status: 'full-goal-day', holderSince: metrics.ideation.since, exercisedReviews: 0 };
+    expect(rate().verdict).toBe('fail');
+    metrics.ideation.holderAttribution = { status: 'inherited', holderSince: WINDOW.windowStart, exercisedReviews: 1 };
+    expect(rate().verdict).toBe('unknown');
+    metrics.ideation.reviewsWithUncoveredClusterNeed = 1;
+    expect(rate().verdict).toBe('fail');
+    metrics.ideation.reviewsWithUncoveredClusterNeed = 0;
+    metrics.ideation.ideasFiled = 1;
+    expect(rate().verdict).toBe('pass');
+    metrics.ideation.reviewsWithUncoveredClusterNeed = 1;
+    expect(rate().verdict).toBe('fail');
   });
 
   it('owner reports: no report is unknown; one unmeasured COST or one bare walled entry fails', () => {

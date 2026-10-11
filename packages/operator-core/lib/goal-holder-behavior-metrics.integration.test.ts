@@ -14,6 +14,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   readGoalDayCandidates,
+  readGoalDayHolderAttribution,
+  collectGoalHolderBehaviorMetrics,
+  rateGoalHolderBehavior,
   readHolderPlanToolCounts,
   ROUTED_PLAN_CLOCK_SLACK_MS,
 } from './goal-holder-behavior-metrics';
@@ -167,6 +170,57 @@ describe('goal-holder plan authorship (real PG)', () => {
     );
     expect(other.plansNew).toBe(1);
   });
+
+  it('D-008: collector distinguishes inherited uncertainty from due-negative and due-positive without shrinking the goal-day population', async () => {
+    const goalId = 'd008-inherited';
+    const window = { workspaceId: WS, goalId, holderOwnerId: HOLDER, windowStart: '2026-10-03T04:00:00.000Z', windowEnd: WINDOW_END };
+    const elect = async (goal: string, owner: string, when: string, oldMode: string | null = null, newMode: string | null = 'goal') => {
+      await db.adminSql`
+        INSERT INTO harness_shared.agent_mode_changes
+          (workspace_id, owner_id, axis_key, old_mode, new_mode, subject, changed_at, reason, set_by)
+        VALUES (${WS}, ${owner}, 'objective', ${oldMode}, ${newMode}, ${goal}, ${at(when)}, 'D-008 test', 'test')`;
+    };
+    await elect(goalId, HOLDER, '2026-10-02T08:00:00Z');
+    await elect(goalId, PEER, '2026-10-03T06:00:00Z');
+    await elect(goalId, HOLDER, WINDOW_START);
+    // A predecessor's bad review and this holder's earlier separated-tenure review stay
+    // in the population, but neither is attributed to the recovered continuous tenure.
+    await invocation({ owner: PEER, tool: 'blender:ideate-pass-record', goalId, invokedAt: '2026-10-03T06:00:00Z', args: { goalReview: { goalId, disposition: 'existing-plans-sufficient', coverage: [{ itemRefs: ['a', 'b', 'c'] }] }, ideasFiled: [] } });
+    await invocation({ owner: HOLDER, tool: 'blender:ideate-pass-record', goalId, invokedAt: '2026-10-03T05:00:00Z', args: { goalReview: { goalId, disposition: 'existing-plans-sufficient', coverage: [{ itemRefs: ['a', 'b', 'c'] }] }, ideasFiled: [] } });
+    await invocation({ owner: HOLDER, tool: 'blender:ideate-pass-record', goalId: OTHER_GOAL, invokedAt: '2026-10-03T08:00:00Z', args: { goalReview: { goalId: OTHER_GOAL, coverage: [{ itemRefs: ['a', 'b', 'c'] }] }, ideasFiled: [] } });
+    const inherited = await collectGoalHolderBehaviorMetrics(window, { sql: db.adminSql });
+    expect(inherited.ideation.holderAttribution).toEqual({ status: 'inherited', holderSince: WINDOW_START, exercisedReviews: 0 });
+    expect(inherited.ideation.reviewsWithUncoveredClusterNeed).toBe(0);
+    expect(rateGoalHolderBehavior(inherited)['ideation-yield']).toMatchObject({ verdict: 'unknown', unknownReason: 'scope-mismatch' });
+    expect(await collectGoalHolderBehaviorMetrics(window, { sql: db.adminSql })).toEqual(inherited);
+
+    await invocation({ owner: HOLDER, tool: 'blender:ideate-pass-record', goalId, invokedAt: '2026-10-03T08:00:00Z', args: { goalReview: { goalId, disposition: 'existing-plans-sufficient', coverage: [] }, ideasFiled: [] } });
+    const exercised = await collectGoalHolderBehaviorMetrics(window, { sql: db.adminSql });
+    expect(exercised.ideation.holderAttribution?.exercisedReviews).toBe(1);
+    expect(rateGoalHolderBehavior(exercised)['ideation-yield'].verdict).toBe('unknown');
+    // Predecessor candidates before the recovered tenure still count for the goal.
+    await invocation({ owner: PEER, tool: 'plans:new', goalId, invokedAt: '2026-10-03T05:00:00Z' });
+    await invocation({ owner: PEER, tool: 'blender:ideate-pass-record', goalId, invokedAt: '2026-10-03T05:30:00Z', args: { goalReview: { goalId }, ideasFiled: ['peer-idea'] } });
+    const positive = await collectGoalHolderBehaviorMetrics(window, { sql: db.adminSql });
+    const population = await readGoalDayCandidates({ workspaceId: WS, goalId, at: at(WINDOW_END) }, { sql: db.adminSql });
+    expect(positive.ideation).toMatchObject({ since: population.since, plansNew: 1, ideasFiled: 1 });
+    expect(rateGoalHolderBehavior(positive)['ideation-yield'].verdict).toBe('pass');
+    await invocation({ owner: HOLDER, tool: 'blender:ideate-pass-record', goalId, invokedAt: '2026-10-03T08:10:00Z', args: { goalReview: { goalId, coverage: [{ itemRefs: ['a', 'b', 'c'] }] }, ideasFiled: [] } });
+    const failedReview = await collectGoalHolderBehaviorMetrics({ ...window, windowStart: '2026-10-03T08:30:00Z' }, { sql: db.adminSql });
+    expect(failedReview.ideation.reviewsWithUncoveredClusterNeed).toBe(1);
+    expect(rateGoalHolderBehavior(failedReview)['ideation-yield'].verdict).toBe('fail');
+
+    const dueWindow = { ...window, goalId: 'd008-full-day' };
+    await elect(dueWindow.goalId, HOLDER, '2026-10-02T08:00:00Z');
+    await elect(dueWindow.goalId, HOLDER, '2026-10-03T07:30:00Z', 'goal');
+    const due = await collectGoalHolderBehaviorMetrics(dueWindow, { sql: db.adminSql });
+    expect(due.ideation.holderAttribution?.status).toBe('full-goal-day');
+    expect(rateGoalHolderBehavior(due)['ideation-yield'].verdict).toBe('fail');
+    const shortDue = await collectGoalHolderBehaviorMetrics({ ...dueWindow, windowStart: '2026-10-03T08:50:00Z' }, { sql: db.adminSql });
+    expect(rateGoalHolderBehavior(shortDue)['ideation-yield'].verdict).toBe('fail');
+    await elect(dueWindow.goalId, HOLDER, '2026-10-03T08:30:00Z', 'goal', null);
+    expect(await readGoalDayHolderAttribution(dueWindow, { sql: db.adminSql })).toEqual({ status: 'unverified', holderSince: null });
+  }, 120_000);
 
   it('does not backdate probation promotions into a historical cluster window', async () => {
     const boundary = at('2026-10-06T21:13:28.490Z').getTime();

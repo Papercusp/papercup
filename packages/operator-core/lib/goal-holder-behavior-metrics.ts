@@ -88,6 +88,80 @@ export interface GoalHolderWindow {
   windowEnd: string;
 }
 
+/** Exposure evidence for attribution; the candidate population remains the whole goal-day. */
+export interface GoalDayHolderAttribution {
+  status: 'full-goal-day' | 'inherited' | 'unverified';
+  holderSince: string | null;
+  exercisedReviews: number;
+}
+
+export interface GoalHolderModeChange {
+  id: string;
+  at: string;
+  ownerId: string;
+  oldMode: string | null;
+  newMode: string | null;
+  subject: string | null;
+}
+
+/** Fold the existing election/exit ledger, never infer continuous exposure from call absence. */
+export function summarizeGoalDayHolderAttribution(
+  window: GoalHolderWindow,
+  changes: readonly GoalHolderModeChange[],
+): Omit<GoalDayHolderAttribution, 'exercisedReviews'> {
+  const end = Date.parse(window.windowEnd);
+  const since = end - GOAL_DAY_MS;
+  let holder: string | null = null;
+  let holderSince: number | null = null;
+  const ordered = changes.filter((row) => Number.isFinite(Date.parse(row.at)) && Date.parse(row.at) <= end)
+    .slice().sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0));
+  for (const change of ordered) {
+    if (change.newMode === 'goal' && change.subject === window.goalId) {
+      // A same-holder reassertion/backfill is not a new exposure boundary.
+      if (holder !== change.ownerId) holderSince = Date.parse(change.at);
+      holder = change.ownerId;
+    } else if (change.ownerId === holder && change.oldMode === 'goal') {
+      holder = null;
+      holderSince = null;
+    }
+  }
+  if (holder !== window.holderOwnerId || holderSince === null) return { status: 'unverified', holderSince: null };
+  return {
+    status: holderSince <= since ? 'full-goal-day' : 'inherited',
+    holderSince: new Date(holderSince).toISOString(),
+  };
+}
+
+export async function readGoalDayHolderAttribution(
+  window: GoalHolderWindow,
+  deps: { sql: Sql },
+): Promise<Omit<GoalDayHolderAttribution, 'exercisedReviews'>> {
+  const { sql } = deps;
+  const end = new Date(window.windowEnd);
+  const since = new Date(end.getTime() - GOAL_DAY_MS);
+  const rows = await sql<Array<{ id: string; changed_at: Date; owner_id: string; old_mode: string | null; new_mode: string | null; subject: string | null }>>`
+    WITH boundary AS (
+      SELECT c.changed_at, c.id FROM harness_shared.agent_mode_changes c
+       WHERE c.workspace_id = ${window.workspaceId} AND c.subject = ${window.goalId}
+         AND c.new_mode = 'goal' AND c.changed_at <= ${since}
+       ORDER BY c.changed_at DESC, c.id DESC LIMIT 1
+    )
+    SELECT c.id::text, c.changed_at, c.owner_id, c.old_mode, c.new_mode, c.subject
+      FROM harness_shared.agent_mode_changes c
+     WHERE c.workspace_id = ${window.workspaceId} AND c.changed_at <= ${end}
+       AND ((c.subject = ${window.goalId} AND (c.old_mode = 'goal' OR c.new_mode = 'goal'))
+         OR (c.owner_id = ${window.holderOwnerId} AND c.old_mode = 'goal'))
+       AND (c.changed_at, c.id) >= COALESCE(
+         (SELECT (b.changed_at, b.id) FROM boundary b), (${since}::timestamptz, 0::bigint))
+     ORDER BY c.changed_at, c.id LIMIT 1001`;
+  // A capped history cannot prove uninterrupted ownership.
+  if (rows.length > 1000) return { status: 'unverified', holderSince: null };
+  return summarizeGoalDayHolderAttribution(window, rows.map((row) => ({
+    id: row.id, at: new Date(row.changed_at).toISOString(), ownerId: row.owner_id,
+    oldMode: row.old_mode, newMode: row.new_mode, subject: row.subject,
+  })));
+}
+
 export interface GoalReviewRow {
   invokedAt: string;
   disposition: string | null;
@@ -158,6 +232,8 @@ export interface GoalHolderBehaviorMetrics {
   };
   ideation: {
     since: string;
+    /** Present on current collector reads; absent on legacy v2 metrics. */
+    holderAttribution?: GoalDayHolderAttribution;
     plansNew: number;
     ideasFiled: number;
     reviews: number;
@@ -327,7 +403,7 @@ export function coverageHasUncoveredClusterNeed(coverage: unknown): boolean {
 
 export function summarizeGoalReviews(rows: readonly GoalReviewRow[]): Omit<
   GoalHolderBehaviorMetrics['ideation'],
-  'since' | 'plansNew'
+  'since' | 'plansNew' | 'holderAttribution'
 > {
   const noNewPlan = new Set<string>(GOAL_REVIEW_NO_NEW_PLAN_DISPOSITIONS);
   let ideasFiled = 0;
@@ -428,6 +504,7 @@ export type HolderBehaviorVerdict = 'pass' | 'fail' | 'unknown';
 export interface HolderBehaviorRating {
   verdict: HolderBehaviorVerdict;
   reason: string;
+  unknownReason?: 'scope-mismatch';
 }
 
 /**
@@ -545,6 +622,17 @@ export function rateGoalHolderBehavior(
     }
     if (candidates >= GOAL_DAY_MIN_CANDIDATES) {
       return { verdict: 'pass', reason: `${candidates} evaluated candidate(s) (plans ${ideation.plansNew}, ideas ${ideation.ideasFiled}) in the goal-day.` };
+    }
+    const attribution = ideation.holderAttribution;
+    if (attribution && attribution.status !== 'full-goal-day') {
+      return {
+        verdict: 'unknown', unknownReason: 'scope-mismatch',
+        reason: `0 evaluated candidates in the goal-day since ${ideation.since}; ` +
+          (attribution.status === 'inherited'
+            ? `this holder inherited it at ${attribution.holderSince}`
+            : 'continuous elected-holder exposure could not be verified') +
+          ', and no failed review is attributable to this continuous tenure.',
+      };
     }
     return { verdict: 'fail', reason: `0 evaluated new candidates for the goal in the goal-day since ${ideation.since}.` };
   })();
@@ -922,7 +1010,7 @@ export async function collectGoalHolderBehaviorMetrics(
   const daySince = new Date(end.getTime() - GOAL_DAY_MS);
   const endMs = end.getTime();
 
-  const [planTools, unplannedRows, reviewRows, plansNewDay, reportRows, loopRows, reminderRows, churnRows] =
+  const [planTools, unplannedRows, reviewRows, plansNewDay, reportRows, loopRows, reminderRows, churnRows, holderAttribution] =
     await Promise.all([
       readHolderPlanToolCounts(window, { sql }),
       sql<{ n: string }[]>`
@@ -993,6 +1081,7 @@ export async function collectGoalHolderBehaviorMetrics(
            AND expires_ts IS NULL
            AND cancelled_at BETWEEN ${start} AND ${end}
            AND cancel_reason IS NULL`,
+      readGoalDayHolderAttribution(window, { sql }),
     ]);
   // The goal's spend, read the way the send-time truth gate reads it. Only reports whose stamp
   // carries no truth summary are judged against it (at grading time, not their send time).
@@ -1005,6 +1094,13 @@ export async function collectGoalHolderBehaviorMetrics(
      WHERE workspace_id = ${window.workspaceId} AND id = ${window.goalId}`;
   const goalSpend = spendRow ? goalSpendFromGoalRow(spendRow, GOAL_SPEND_ROLLUP_SOURCE) : null;
 
+  // Reviews are attributed to the continuous tenure, not a chosen short sample and not
+  // an earlier separated stint by the same owner. Candidate counts still include all authors.
+  const reviewSince = holderAttribution.holderSince
+    ? Math.max(daySince.getTime(), Date.parse(holderAttribution.holderSince))
+    : start.getTime();
+  const isCurrentHolderReview = (row: typeof reviewRows[number]) =>
+    row.author === window.holderOwnerId && new Date(row.invoked_at).getTime() >= reviewSince;
   const reviews = summarizeGoalReviews(
     reviewRows.map((row) => ({
       invokedAt: new Date(row.invoked_at).toISOString(),
@@ -1012,7 +1108,7 @@ export async function collectGoalHolderBehaviorMetrics(
       coverage: row.coverage,
       ideasFiled: row.ideas_filed,
       unplannedAtReview: Number(row.unplanned),
-      byHolder: row.author === window.holderOwnerId,
+      byHolder: isCurrentHolderReview(row),
     })),
   );
   const clusters = await readWindowClusters(window, start.getTime(), endMs, sql);
@@ -1030,7 +1126,13 @@ export async function collectGoalHolderBehaviorMetrics(
       dissolvedOverdueClusters: clusters.dissolved,
       overdueClustersNudged: clusters.nudged,
     },
-    ideation: { since: daySince.toISOString(), plansNew: plansNewDay, ...reviews },
+    ideation: {
+      since: daySince.toISOString(), plansNew: plansNewDay, ...reviews,
+      holderAttribution: {
+        ...holderAttribution,
+        exercisedReviews: reviewRows.filter(isCurrentHolderReview).length,
+      },
+    },
     ownerReports: summarizeOwnerReports(
       reportRows.map((row) => ({
         ts: new Date(row.ts).toISOString(),

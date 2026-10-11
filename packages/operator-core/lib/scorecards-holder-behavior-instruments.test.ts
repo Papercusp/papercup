@@ -189,6 +189,29 @@ describe('WOE holder-behavior instruments', () => {
     }
   });
 
+  it('accepts inherited uncertainty but refuses false passes and unknown claims over due-negative evidence (D-008)', async () => {
+    const metrics = healthy();
+    metrics.ideation = {
+      ...metrics.ideation, plansNew: 0, ideasFiled: 0, reviews: 0,
+      holderAttribution: { status: 'inherited', holderSince: subject.windowStart!, exercisedReviews: 0 },
+    };
+    const measure = () => resolveScorecardInstrumentSnapshots({ rubric, subject }, { now, holderMetrics: async () => metrics });
+    const key = HOLDER_BEHAVIOR_INSTRUMENT_KEYS['ideation-yield'];
+    const ratings = claim('pass');
+    ratings['ideation-yield'] = { ...ratings['ideation-yield']!, rating: 'unknown' };
+    const inherited = await measure();
+    expect(inherited?.[key]).toMatchObject({ verdict: 'unknown', value: { unknownReason: 'scope-mismatch' } });
+    expect(evaluateScorecardInstrumentContract({ rubric, ratings, instrumentSnapshots: inherited, nowMs: now() }).valid).toBe(true);
+    expect(evaluateScorecardInstrumentContract({ rubric, ratings: claim('pass'), instrumentSnapshots: inherited, nowMs: now() }).verdictMismatches).toEqual([key]);
+    metrics.ideation.holderAttribution = { status: 'full-goal-day', holderSince: metrics.ideation.since, exercisedReviews: 0 };
+    const due = await measure();
+    expect(due?.[key].verdict).toBe('fail');
+    expect(evaluateScorecardInstrumentContract({ rubric, ratings, instrumentSnapshots: due, nowMs: now() }).verdictMismatches).toEqual([key]);
+    metrics.ideation.ideasFiled = 1;
+    const positive = await measure();
+    expect(evaluateScorecardInstrumentContract({ rubric, ratings: claim('pass'), instrumentSnapshots: positive, nowMs: now() }).valid).toBe(true);
+  });
+
   it('reads unknown, never fail, when the holder stewarded no goal or the ledgers are unreadable', async () => {
     const none = await resolveScorecardInstrumentSnapshots({ rubric, subject }, { now, holderMetrics: async () => null });
     const broken = await resolveScorecardInstrumentSnapshots(
