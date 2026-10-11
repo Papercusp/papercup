@@ -54,6 +54,25 @@ export interface ArmObservation {
    * and host I/O pressure at call start. Artifacts written before D-026 omit it.
    */
   attrib?: CallAttribution;
+  /**
+   * D-027: whether a full-database dump (application `pcbackup`, a transaction open) was in
+   * progress just before this call, sampled outside the timed window. `null` when the check
+   * failed; absent in artifacts written before D-027.
+   */
+  dumpActive?: boolean | null;
+}
+
+/**
+ * D-027: whether a full-database dump overlapped these calls. `true` if any call saw one;
+ * `false` only if every call was checked and none did; `null` if some call could not be
+ * checked; `undefined` when no call carries the check (an artifact written before D-027).
+ */
+export function dumpOverlapOf(pairs: readonly PairResult[]): boolean | null | undefined {
+  const seen = pairs.flatMap((p) => ARMS.flatMap((a) => (p.arms[a] ? [p.arms[a]!.dumpActive] : [])));
+  if (seen.length === 0 || seen.every((d) => d === undefined)) return undefined;
+  if (seen.some((d) => d === true)) return true;
+  if (seen.some((d) => d !== false)) return null;
+  return false;
 }
 
 /** Per-call attribution of an R-18 observation (D-026). See {@link callAttribution}. */
@@ -184,14 +203,16 @@ export const LATENCY_P95_CEILING_MS: Readonly<Record<string, number>> = {
 
 /**
  * R-18's judgment, separate from R-13's recall verdict. Both bounds time the whole
- * `runHybridSearch` call (the BM25 list, the D-016 exact list and the fusion):
- * - D-019: on the paired cold pass, the BM25 arm's p95 may not exceed the legacy arm's p95 on
- *   the same pairs.
- * - D-020 as measured by D-024/D-025: the source's absolute ceiling in `LATENCY_P95_CEILING_MS`
- *   bounds the p95 of the STEADY pass, a timed BM25-only pass over a disjoint sample of novel
- *   queries after an untimed warm-up on a third disjoint sample. On a disk-contended host the
- *   cold pass is dominated by the disk queue, which the BM25 path does not control. With no
- *   steady pass (an artifact written before D-024), the ceiling bounds the paired BM25 p95.
+ * `runHybridSearch` call (the BM25 list, the D-016 exact list and the fusion), on the paired
+ * cold pass:
+ * - D-019: the BM25 arm's p95 may not exceed the legacy arm's p95 on the same pairs. Judged on
+ *   every run: both arms meet the same host conditions.
+ * - D-020: the source's absolute ceiling in `LATENCY_P95_CEILING_MS` bounds the paired BM25 p95.
+ *   D-027: it is judged only when no full-database dump (application `pcbackup`) was in progress
+ *   during the source's paired calls. A run that overlapped one is `invalid` for the ceiling, not
+ *   a pass or a fail: a 19 GB full-table read on the same disk is not the BM25 path's latency.
+ * The steady pass (D-024/D-025) is reported data only; D-026 retracted the premise that it
+ * isolates the path's own cost, so it judges nothing.
  */
 export interface LatencyJudgment {
   verdict: Verdict;
@@ -208,10 +229,14 @@ export interface SourceSummary {
   reasons: string[];
   /**
    * The steady pass (D-024/D-025): the BM25 arm over this source's steady sample, or null when
-   * none was run. Its `latencyP95Ms` is what the absolute ceiling judges.
+   * none was run. Reported data only since D-026; it judges nothing.
    */
   steady: ArmSummary | null;
-  /** R-18: the paired relative bound (D-019) and the absolute ceiling (D-020, D-024). */
+  /** Why the steady pass is not a sound sample (see {@link steadyPassProblems}); empty when none was run. */
+  steadyProblems: string[];
+  /** D-027: whether a full-database dump overlapped this source's paired calls (see {@link dumpOverlapOf}). */
+  dumpOverlap: boolean | null | undefined;
+  /** R-18: the paired relative bound (D-019) and the absolute ceiling (D-020, D-027). */
   latency: LatencyJudgment;
 }
 
@@ -297,16 +322,12 @@ export function summarizeSource(
     verdict = 'pass';
     reasons.push(`BM25 recall@${RECALL_K} ${arms.bm25.hitsAtK}/${arms.bm25.scored} >= legacy ${arms.legacy.hitsAtK}/${arms.legacy.scored}`);
   }
-  let latency: LatencyJudgment;
-  if (verdict === 'invalid') {
-    latency = { verdict: 'invalid', reason: 'the comparison is invalid (see reasons), so latency is not judged' };
-  } else {
-    const problems = steadyMine ? steadyPassProblems(steadyMine, minPairs) : [];
-    latency = problems.length > 0
-      ? { verdict: 'invalid', reason: `the steady pass is invalid: ${problems.join('; ')}` }
-      : judgeLatency(arms, LATENCY_P95_CEILING_MS[source] ?? null, steady);
-  }
-  return { source, scored: mine.length, arms, paired: pairedCounts(mine), verdict, reasons, steady, latency };
+  const dumpOverlap = dumpOverlapOf(mine);
+  const latency: LatencyJudgment = verdict === 'invalid'
+    ? { verdict: 'invalid', reason: 'the comparison is invalid (see reasons), so latency is not judged' }
+    : judgeLatency(arms, LATENCY_P95_CEILING_MS[source] ?? null, dumpOverlap);
+  const steadyProblems = steadyMine ? steadyPassProblems(steadyMine, minPairs) : [];
+  return { source, scored: mine.length, arms, paired: pairedCounts(mine), verdict, reasons, steady, steadyProblems, dumpOverlap, latency };
 }
 
 /**
@@ -326,47 +347,37 @@ export function steadyPassProblems(steadyPairs: readonly PairResult[], minPairs:
 }
 
 /**
- * R-18: `fail` when the paired BM25 p95 exceeds the legacy arm's (D-019), or when the ceiling's
- * subject exceeds `ceilingMs` (D-020). The ceiling's subject is the steady pass's p95 when
- * `steady` is given (D-024/D-025), else the paired BM25 p95. `invalid` with no samples.
- * `ceilingMs: null` judges against legacy only.
+ * R-18 on the paired pass: `fail` when the BM25 p95 exceeds the legacy arm's (D-019, judged on
+ * every run), or exceeds `ceilingMs` (D-020). The ceiling is judged only when `dumpOverlap` is
+ * `false`, or `undefined` (an artifact written before D-027, judged as it was then); with a dump
+ * overlapping (`true`) or unchecked (`null`) the result is `invalid` for the ceiling unless the
+ * relative bound already failed (D-027). `invalid` with no samples. `ceilingMs: null` judges
+ * against legacy only.
  */
 export function judgeLatency(
   arms: Record<Arm, ArmSummary>,
   ceilingMs: number | null = null,
-  steady: ArmSummary | null = null,
+  dumpOverlap: boolean | null | undefined = undefined,
 ): LatencyJudgment {
   const bm25 = arms.bm25.latencyP95Ms;
   const legacy = arms.legacy.latencyP95Ms;
   if (bm25 == null || legacy == null) {
     return { verdict: 'invalid', reason: 'an arm has no latency samples' };
   }
-  const steadyP95 = steady?.latencyP95Ms ?? null;
-  if (steady && steadyP95 == null) {
-    return { verdict: 'invalid', reason: 'the steady pass has no latency samples' };
+  if (bm25 > legacy) {
+    const ceiling = ceilingMs != null && bm25 > ceilingMs ? `; it also exceeds the ${ceilingMs} ms ceiling` : '';
+    return { verdict: 'fail', reason: `BM25-arm p95 ${bm25} ms exceeds legacy p95 ${legacy} ms${ceiling}` };
   }
-  const failures: string[] = [];
-  if (bm25 > legacy) failures.push(`BM25-arm p95 ${bm25} ms exceeds legacy p95 ${legacy} ms`);
-  if (ceilingMs != null) {
-    if (steadyP95 != null) {
-      if (steadyP95 > ceilingMs) failures.push(`steady-pass BM25 p95 ${steadyP95} ms exceeds the ${ceilingMs} ms ceiling`);
-    } else if (bm25 > ceilingMs) {
-      failures.push(`BM25-arm p95 ${bm25} ms exceeds the ${ceilingMs} ms ceiling`);
-    }
+  const relative = `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms`;
+  if (ceilingMs == null) return { verdict: 'pass', reason: `${relative} (no absolute ceiling for this source)` };
+  if (dumpOverlap === true || dumpOverlap === null) {
+    const why = dumpOverlap
+      ? 'a full-database dump (pcbackup) was in progress during the paired calls'
+      : 'whether a full-database dump overlapped the paired calls could not be checked';
+    return { verdict: 'invalid', reason: `${relative}; the ${ceilingMs} ms ceiling is not judged on this run: ${why} (D-027)` };
   }
-  if (failures.length > 0) return { verdict: 'fail', reason: failures.join('; ') };
-  if (ceilingMs == null) {
-    return { verdict: 'pass', reason: `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms (no absolute ceiling for this source)` };
-  }
-  if (steadyP95 == null) {
-    return { verdict: 'pass', reason: `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms and the ${ceilingMs} ms ceiling` };
-  }
-  return {
-    verdict: 'pass',
-    reason:
-      `paired BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms; ` +
-      `steady-pass BM25 p95 ${steadyP95} ms (${steady!.scored} novel queries, warm index) <= the ${ceilingMs} ms ceiling`,
-  };
+  if (bm25 > ceilingMs) return { verdict: 'fail', reason: `${relative}, but it exceeds the ${ceilingMs} ms ceiling` };
+  return { verdict: 'pass', reason: `${relative} and the ${ceilingMs} ms ceiling` };
 }
 
 /** One normalized statement's cumulative counters from `pg_stat_statements`. */

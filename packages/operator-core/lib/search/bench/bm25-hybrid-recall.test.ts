@@ -10,6 +10,7 @@ import {
   RECALL_K,
   armOrder,
   callAttribution,
+  dumpOverlapOf,
   judgeLatency,
   summarizeAttribution,
   legDurations,
@@ -165,7 +166,7 @@ describe('R-18 latency judgment (D-019)', () => {
     expect(LATENCY_P95_CEILING_MS).toEqual({ work_item: 200, session_turn: 400 });
     const s = summarizeSource('work_item', timed(30, 3000, 201));
     expect(s.verdict).toBe('pass');
-    expect(s.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 201 ms exceeds the 200 ms ceiling' });
+    expect(s.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 201 ms <= legacy p95 3000 ms, but it exceeds the 200 ms ceiling' });
     const turns = timed(30, 3000, 401).map((p) => ({ ...p, source: 'session_turn' }));
     expect(summarizeSource('session_turn', turns).latency.verdict).toBe('fail');
     const turnsOk = timed(30, 3000, 400).map((p) => ({ ...p, source: 'session_turn' }));
@@ -177,7 +178,7 @@ describe('R-18 latency judgment (D-019)', () => {
 
   it('names both failures when the BM25 arm breaks the legacy bound and the ceiling', () => {
     expect(summarizeSource('work_item', timed(30, 250, 300)).latency.reason).toBe(
-      'BM25-arm p95 300 ms exceeds legacy p95 250 ms; BM25-arm p95 300 ms exceeds the 200 ms ceiling',
+      'BM25-arm p95 300 ms exceeds legacy p95 250 ms; it also exceeds the 200 ms ceiling',
     );
   });
 
@@ -230,21 +231,70 @@ function turnsTimed(n: number, legacyMs: number, bm25Ms: number): PairResult[] {
   return timed(n, legacyMs, bm25Ms).map((p) => ({ ...p, source: 'session_turn' }));
 }
 
-describe('R-18 steady pass: the ceiling judges novel queries on a warm index (D-024, D-025)', () => {
-  it('judges the ceiling on the steady p95, not the cold paired p95', () => {
-    // Cold paired BM25 p95 1100 ms (disk queue) is under legacy 4000 ms; steady 250 ms is under 400.
+/** Stamp every arm of `pairs` with a D-027 dump check; `at` limits it to one pair index. */
+function dumped(pairs: PairResult[], flag: boolean | null, at?: number): PairResult[] {
+  return pairs.map((p, i) => {
+    if (at !== undefined && i !== at) {
+      return { ...p, arms: { legacy: { ...p.arms.legacy!, dumpActive: false }, bm25: { ...p.arms.bm25!, dumpActive: false } } };
+    }
+    return { ...p, arms: { legacy: { ...p.arms.legacy!, dumpActive: flag }, bm25: { ...p.arms.bm25!, dumpActive: flag } } };
+  });
+}
+
+describe('R-18 ceiling precondition: no full-database dump during the paired calls (D-027)', () => {
+  it('dumpOverlapOf: true on any overlap, false only when every call was checked clean, null when some call is unchecked', () => {
+    expect(dumpOverlapOf(turnsTimed(30, 4000, 100))).toBeUndefined();
+    expect(dumpOverlapOf(dumped(turnsTimed(30, 4000, 100), false))).toBe(false);
+    expect(dumpOverlapOf(dumped(turnsTimed(30, 4000, 100), true, 17))).toBe(true);
+    expect(dumpOverlapOf(dumped(turnsTimed(30, 4000, 100), null, 3))).toBeNull();
+    const oneUnstamped = dumped(turnsTimed(30, 4000, 100), false);
+    oneUnstamped[5] = turnsTimed(30, 4000, 100)[5]!;
+    expect(dumpOverlapOf(oneUnstamped)).toBeNull();
+  });
+
+  it('does not judge the ceiling when a dump overlapped, in either direction', () => {
+    const over = summarizeSource('session_turn', dumped(turnsTimed(30, 4000, 500), true, 0));
+    expect(over.dumpOverlap).toBe(true);
+    expect(over.latency).toEqual({
+      verdict: 'invalid',
+      reason: 'BM25-arm p95 500 ms <= legacy p95 4000 ms; the 400 ms ceiling is not judged on this run: a full-database dump (pcbackup) was in progress during the paired calls (D-027)',
+    });
+    expect(summarizeSource('session_turn', dumped(turnsTimed(30, 4000, 100), true)).latency.verdict).toBe('invalid');
+    const unchecked = summarizeSource('session_turn', dumped(turnsTimed(30, 4000, 100), null, 2));
+    expect(unchecked.latency.verdict).toBe('invalid');
+    expect(unchecked.latency.reason).toContain('could not be checked');
+  });
+
+  it('still fails the relative bound when a dump overlapped', () => {
+    const s = summarizeSource('session_turn', dumped(turnsTimed(30, 400, 500), true));
+    expect(s.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 500 ms exceeds legacy p95 400 ms; it also exceeds the 400 ms ceiling' });
+  });
+
+  it('judges the ceiling when every paired call was checked with no dump', () => {
+    expect(summarizeSource('session_turn', dumped(turnsTimed(30, 4000, 401), false)).latency.verdict).toBe('fail');
+    expect(summarizeSource('session_turn', dumped(turnsTimed(30, 4000, 400), false)).latency).toEqual({
+      verdict: 'pass',
+      reason: 'BM25-arm p95 400 ms <= legacy p95 4000 ms and the 400 ms ceiling',
+    });
+    expect(judgeLatency(summarizeSource('session_turn', turnsTimed(30, 4000, 401)).arms, 400, false).verdict).toBe('fail');
+  });
+});
+
+describe('R-18 steady pass: reported data only, it judges nothing (D-026, D-027)', () => {
+  it('judges the ceiling on the cold paired p95; the steady p95 is only reported', () => {
+    // Cold paired BM25 p95 1100 ms is under legacy 4000 ms but over 400; a fast steady pass does not rescue it.
     const s = summarizeSource('session_turn', turnsTimed(30, 4000, 1100), 20, steadyCalls(30, 250));
     expect(s.steady?.latencyP95Ms).toBe(250);
     expect(s.arms.bm25.latencyP95Ms).toBe(1100);
     expect(s.latency).toEqual({
-      verdict: 'pass',
-      reason: 'paired BM25-arm p95 1100 ms <= legacy p95 4000 ms; steady-pass BM25 p95 250 ms (30 novel queries, warm index) <= the 400 ms ceiling',
+      verdict: 'fail',
+      reason: 'BM25-arm p95 1100 ms <= legacy p95 4000 ms, but it exceeds the 400 ms ceiling',
     });
   });
 
-  it('fails when the steady p95 exceeds the ceiling, even with a fast cold pass', () => {
+  it('a slow steady pass does not fail a fast paired pass', () => {
     const s = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, steadyCalls(30, 401));
-    expect(s.latency).toEqual({ verdict: 'fail', reason: 'steady-pass BM25 p95 401 ms exceeds the 400 ms ceiling' });
+    expect(s.latency).toEqual({ verdict: 'pass', reason: 'BM25-arm p95 100 ms <= legacy p95 4000 ms and the 400 ms ceiling' });
   });
 
   it('keeps the D-019 relative bound on the paired pass when a steady pass exists', () => {
@@ -252,13 +302,14 @@ describe('R-18 steady pass: the ceiling judges novel queries on a warm index (D-
     expect(s.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 151 ms exceeds legacy p95 150 ms' });
   });
 
-  it('is invalid, not pass, when the steady pass is too small, incomplete or ran another engine', () => {
+  it('reports a steady pass that is too small, incomplete or ran another engine without changing the verdict', () => {
     const tooFew = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, steadyCalls(5, 10));
-    expect(tooFew.latency.verdict).toBe('invalid');
-    expect(tooFew.latency.reason).toBe('the steady pass is invalid: only 5 steady call(s); at least 20 are needed');
+    expect(tooFew.latency.verdict).toBe('pass');
+    expect(tooFew.steadyProblems).toEqual(['only 5 steady call(s); at least 20 are needed']);
     const legacyEngine = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, steadyCalls(30, 10, 'session_turn', 'legacy'));
-    expect(legacyEngine.latency.verdict).toBe('invalid');
-    expect(legacyEngine.latency.reason).toContain('steady calls ran engine(s) [legacy], expected [bm25]');
+    expect(legacyEngine.latency.verdict).toBe('pass');
+    expect(legacyEngine.steadyProblems.join()).toContain('steady calls ran engine(s) [legacy], expected [bm25]');
+    expect(summarizeSource('session_turn', turnsTimed(30, 4000, 100)).steadyProblems).toEqual([]);
     const incomplete = steadyCalls(30, 10);
     incomplete[3] = { ...incomplete[3]!, arms: {} };
     expect(steadyPassProblems(incomplete, 20)).toEqual(['1 steady call(s) recorded no BM25 observation']);
@@ -269,8 +320,11 @@ describe('R-18 steady pass: the ceiling judges novel queries on a warm index (D-
     const steady = [...steadyCalls(30, 900, 'work_item'), ...steadyCalls(30, 120, 'session_turn')];
     const s = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, steady);
     expect(s.steady?.scored).toBe(30);
+    expect(s.steady?.latencyP95Ms).toBe(120);
     expect(s.latency.verdict).toBe('pass');
-    expect(summarizeSource('work_item', timed(30, 4000, 100), 20, steady).latency.verdict).toBe('fail');
+    const w = summarizeSource('work_item', timed(30, 4000, 100), 20, steady);
+    expect(w.steady?.latencyP95Ms).toBe(900);
+    expect(w.latency.verdict).toBe('pass');
   });
 
   it('judges an artifact with no steady pass exactly as before D-024', () => {
@@ -279,12 +333,11 @@ describe('R-18 steady pass: the ceiling judges novel queries on a warm index (D-
     expect(s.latency).toEqual({ verdict: 'pass', reason: 'BM25-arm p95 400 ms <= legacy p95 3000 ms and the 400 ms ceiling' });
   });
 
-  it('is invalid when the steady summary has no samples', () => {
-    const arms = { legacy: summarizeArm(timed(30, 100, 50), 'legacy'), bm25: summarizeArm(timed(30, 100, 50), 'bm25') };
-    expect(judgeLatency(arms, 400, summarizeArm([], 'bm25'))).toEqual({
-      verdict: 'invalid',
-      reason: 'the steady pass has no latency samples',
-    });
+  it('reports an empty steady pass as a problem without judging it', () => {
+    const s = summarizeSource('session_turn', turnsTimed(30, 3000, 100), 20, []);
+    expect(s.steady?.latencyP95Ms).toBeNull();
+    expect(s.steadyProblems).toEqual(['only 0 steady call(s); at least 20 are needed']);
+    expect(s.latency.verdict).toBe('pass');
   });
 
   it('splits candidates into disjoint paired / warm-up / steady samples, paired first in seeded order', () => {

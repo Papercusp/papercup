@@ -89,6 +89,27 @@ interface HostSnapshot {
   psiIoSome: string | null;
   psiCpuSome: string | null;
   activeBackends: number | null;
+  /** D-027: a full-database dump (application `pcbackup`) has a transaction open; null if unreadable. */
+  dumpInProgress: boolean | null;
+}
+
+/**
+ * D-027: whether the scheduled full-database dump (papercusp-db-backup.service, which connects
+ * as application `pcbackup`) has a transaction open right now. pg_dump holds one snapshot
+ * transaction for the whole dump, so this is true from its first COPY to its last. Null when
+ * pg_stat_activity is unreadable: the caller must treat that as unchecked, not as no dump.
+ */
+async function dumpActive(pg: Sql): Promise<boolean | null> {
+  try {
+    const [row] = await pg<{ on: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_stat_activity
+         WHERE application_name = 'pcbackup' AND xact_start IS NOT NULL AND pid <> pg_backend_pid()
+      ) AS on`;
+    return row?.on ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function firstLine(file: string): string | null {
@@ -115,6 +136,7 @@ async function hostSnapshot(pg: Sql): Promise<HostSnapshot> {
     psiIoSome: firstLine('/proc/pressure/io'),
     psiCpuSome: firstLine('/proc/pressure/cpu'),
     activeBackends,
+    dumpInProgress: await dumpActive(pg),
   };
 }
 
@@ -317,6 +339,9 @@ async function main(): Promise<number> {
     process.env[envVar] = arm === 'bm25' ? '1' : '0';
     const engine = await rank.lexicalEngine(pg, SOURCE_TABLES[p.source as SourceName]);
     const track = attribute && lexicalIds.length > 0;
+    // Outside the timed window, on every call: the D-020 ceiling is judged only when no call of
+    // the source's paired pass met a dump (D-027).
+    const dump = await dumpActive(pg);
     const snapBefore = track ? await statementSnapshot(pg, lexicalIds) : null;
     const psi = track ? psiIoAvg10() : undefined;
     const loop = track ? monitorEventLoopDelay({ resolution: 10 }) : null;
@@ -362,6 +387,7 @@ async function main(): Promise<number> {
       hits: results.length,
       ...(Object.keys(legMs).length ? { legMs } : {}),
       ...(attrib ? { attrib } : {}),
+      dumpActive: dump,
     };
   };
 
@@ -441,15 +467,16 @@ async function main(): Promise<number> {
     sameProcess: true,
     sources: summaries,
     verdict,
-    // R-18: end-to-end p95 of the BM25 arm against the legacy arm on the paired pass (D-019),
-    // and the steady pass's p95 under the per-source ceiling (D-020, D-024, D-025).
+    // R-18, on the paired pass: the BM25 arm's end-to-end p95 against the legacy arm's (D-019)
+    // and under the per-source ceiling (D-020). The ceiling is judged only when no paired call
+    // of the source met a full-database dump (sources[].dumpOverlap === false, D-027).
     latencyRequirement: 'R-18',
-    latencyDecisions: ['D-019', 'D-020', 'D-021', 'D-024', 'D-025'],
+    latencyDecisions: ['D-019', 'D-020', 'D-021', 'D-026', 'D-027'],
     latencyCeilingsMs: LATENCY_P95_CEILING_MS,
     // D-024/D-025: after the paired pass over P, per source an untimed BM25-only warm-up over
     // W and a timed BM25-only pass over S. P, W and S are disjoint by target id and query.
-    // sources[].arms.bm25.latencyP95Ms is the cold paired p95; sources[].steady.latencyP95Ms
-    // is what the ceiling judges.
+    // sources[].arms.bm25.latencyP95Ms is the cold paired p95, which the ceiling judges;
+    // sources[].steady.latencyP95Ms is reported data only (D-026).
     steadyPass: {
       order: ['paired over P', 'per source: untimed warm-up over W, then timed BM25-only over S'],
       pairedPerSource: perSourceCount(pairs),
@@ -495,7 +522,8 @@ async function main(): Promise<number> {
     console.log(
       `[r13] ${s.source}: legacy ${l.hitsAtK}/${l.scored} (MRR ${l.mrrAtK.toFixed(3)}) vs bm25 ${b.hitsAtK}/${b.scored} ` +
         `(MRR ${b.mrrAtK.toFixed(3)}) -> ${s.verdict}: ${s.reasons.join('; ')}; ` +
-        `cold paired BM25 p95 ${b.latencyP95Ms ?? '-'} ms, steady p95 ${s.steady?.latencyP95Ms ?? '-'} ms; ` +
+        `cold paired BM25 p95 ${b.latencyP95Ms ?? '-'} ms, steady p95 ${s.steady?.latencyP95Ms ?? '-'} ms (reported only); ` +
+        `dump overlap ${s.dumpOverlap === undefined ? 'unchecked' : String(s.dumpOverlap)}; ` +
         `latency ${s.latency.verdict}: ${s.latency.reason}`,
     );
   }
