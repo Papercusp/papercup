@@ -19,9 +19,11 @@
 # callers retain only their output- and platform-specific steps.
 #
 # Usage:
-#   apps/operator/bin/bundle-host.sh [entry] [outfile]
+#   apps/operator/bin/bundle-host.sh [entry] [outfile] [development|release]
 #     entry    default bin/hono-host.ts   (relative to apps/operator)
 #     outfile  default dist-host/hono-host.mjs
+#     profile  default development (source comments); release compacts whitespace
+#              and syntax while preserving workflow/step/class names
 #
 # Consumers:
 #   - papercup-bg-host.service drop-in 95-bundled-entry.conf: ExecStartPre runs
@@ -110,6 +112,18 @@ fi
 
 cd "$OPERATOR_DIR"
 
+# >>> host bundle profile
+source "$SCRIPT_DIR/bundle-host-common.sh"
+HOST_BUNDLE_PROFILE="${3:-development}"
+bundle_host_select_profile "$HOST_BUNDLE_PROFILE" || exit $?
+# Existing freshness proofs attest the development recipe. A release build must
+# compile its own bytes rather than reuse a proof for a different profile.
+if [[ "$HOST_BUNDLE_PROFILE" == "release" && "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ]]; then
+  echo "ERROR: release host bundles do not use development freshness reuse" >&2
+  exit 78
+fi
+# <<< host bundle profile
+
 ENTRY="${1:-bin/hono-host.ts}"
 OUTFILE="${2:-dist-host/hono-host.mjs}"
 # The package-cache reader executes from REPO_ROOT. Resolve both paths while
@@ -169,7 +183,7 @@ fi
 # them. The dummy `module`/`exports` neutralise the CJS
 # `if (require.main === module)` CLI-guard idiom inside bundled files (always
 # false → guard body skipped, correct: they are not the entrypoint).
-source "$SCRIPT_DIR/bundle-host-common.sh"
+# Shared inputs were sourced before selecting the build profile above.
 
 # Native (.node-addon) packages esbuild cannot inline — they resolve platform
 # binaries relative to their real package dir. On the dev host they resolve
@@ -485,6 +499,7 @@ bundle_rc=0
     if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/npm-install-safe.mjs" \
       --repo-root "$REPO_ROOT" --exec-under-cache-lock -- npx --yes esbuild@0.25.0 "$ENTRY" \
       --bundle --platform=node --format=esm --target=node22 \
+      "${HOST_MINIFY_ARGS[@]}" \
       --outfile="$TMPFILE" \
       --metafile="$METAFILE" \
       --banner:js="$HOST_BANNER" \
@@ -835,7 +850,7 @@ fi
 case "${ENTRY##*/}" in
   hono-host.ts|serve.ts)
     SPAWNER_BUILD_LOG="$OUTDIR/spawner-sidecar.mjs.build-error.log"
-    if ! bundle_host_spawner "$REPO_ROOT" "$OUTDIR" "${BUNDLED_SOURCE_SHA_DEFINE[@]}" "${HOST_EXTERNALS[@]}" >"$SPAWNER_BUILD_LOG" 2>&1; then
+    if ! bundle_host_spawner "$REPO_ROOT" "$OUTDIR" "${HOST_MINIFY_ARGS[@]}" "${BUNDLED_SOURCE_SHA_DEFINE[@]}" "${HOST_EXTERNALS[@]}" >"$SPAWNER_BUILD_LOG" 2>&1; then
       cat "$SPAWNER_BUILD_LOG"
       "${COMMITTED_NODE[@]}" "$HELPER_DIR/write-bundle-stale-marker.mjs" \
         "$STALE_MARKER" "bin/spawner-sidecar.ts" "$OUTDIR/spawner-sidecar.mjs" "$SPAWNER_BUILD_LOG" || true

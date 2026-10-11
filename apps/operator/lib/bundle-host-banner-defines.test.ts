@@ -381,12 +381,44 @@ describe('shared esbuild host banner (WI-10005299)', () => {
     // The development host still needs its emitted source-comment diagnostics.
     function desktopCompaction() {
       const desktop = readFileSync(join(REPO_ROOT, 'papercusp-desktop/bin/build-desktop-sidecar.sh'), 'utf8');
-      const declaration = /^MINIFY_ARGS=\(([^)]*)\)/m.exec(desktop);
-      expect(declaration, 'desktop compaction policy must remain discoverable').not.toBeNull();
-      const flags = declaration![1].trim().split(/\s+/);
+      const block = desktop.split('# >>> desktop release compaction\n')[1]?.split('# <<< desktop release compaction')[0];
+      expect(block, 'desktop compaction policy must remain discoverable').toBeTruthy();
+      const selected = spawnSync('bash', ['-c', 'set -euo pipefail; source "$1";\n' + block +
+        '\nprintf "%s\\n" "${MINIFY_ARGS[@]}"', '_', COMMON_SCRIPT], {
+        encoding: 'utf8', env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '' },
+      });
+      expect(selected.status, selected.stderr).toBe(0);
+      const flags = selected.stdout.trim().split(/\s+/);
       expect(flags.sort()).toEqual(['--minify-syntax', '--minify-whitespace']);
       return { minifyWhitespace: flags.includes('--minify-whitespace'), minifySyntax: flags.includes('--minify-syntax') };
     }
+
+    it('selects release compaction explicitly and rejects unknown or unbound freshness profiles', () => {
+      const host = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
+      const block = host.split('# >>> host bundle profile\n')[1]?.split('# <<< host bundle profile')[0];
+      expect(block).toBeTruthy();
+      const select = (profile: string, reuse = '0') => spawnSync('bash', ['-c',
+        'set -euo pipefail; SCRIPT_DIR="$1"; shift;\n' + block +
+        '\nprintf "%s\\n" "${HOST_MINIFY_ARGS[@]}"', '_', dirname(COMMON_SCRIPT), 'entry', 'output', profile], {
+        encoding: 'utf8', env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '', PAPERCUSP_BUNDLE_REUSE_FRESH: reuse },
+      });
+      expect(select('development').stdout.trim()).toBe('');
+      const release = select('release');
+      expect(release.status, release.stderr).toBe(0);
+      expect(release.stdout.trim().split('\n')).toEqual(['--minify-whitespace', '--minify-syntax']);
+      expect(select('unknown').status).toBe(78);
+      expect(select('release', '1').status).toBe(78);
+      expect(select('release', '1').stderr).toContain('do not use development freshness reuse');
+    });
+
+    it('retains desktop compaction for an exact-source target predating the shared policy', () => {
+      const desktop = readFileSync(join(REPO_ROOT, 'papercusp-desktop/bin/build-desktop-sidecar.sh'), 'utf8');
+      const block = desktop.split('# >>> desktop release compaction\n')[1].split('# <<< desktop release compaction')[0];
+      const selected = spawnSync('bash', ['-c', 'set -euo pipefail;\n' + block +
+        '\nprintf "%s\\n" "${MINIFY_ARGS[@]}"'], { encoding: 'utf8' });
+      expect(selected.status, selected.stderr).toBe(0);
+      expect(selected.stdout.trim().split('\n')).toEqual(['--minify-whitespace', '--minify-syntax']);
+    });
 
     async function bundleAndRun(entrySource: string, opts: {
       banner: string;
