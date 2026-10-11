@@ -7620,10 +7620,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
 });
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
-  test.for([
+  for (const { name, verifyViewState } of [
     { name: 'without observer reads', verifyViewState: false },
     { name: 'with observer view-state read', verifyViewState: true },
-  ])('operator OS cold startup verifies identity before native launch $name', async ({ verifyViewState }) => {
+  ]) {
+  test(`operator OS cold startup verifies identity before native launch ${name}`, async () => {
     const first = await startOperatorProcess();
     // No REST prewarming: exercise the installed client's own cold probe.
     const pane = new PuiPane(bin, first.port, home, { cwd: journeyDir('cold-identity') });
@@ -7655,6 +7656,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       ]);
     }
   }, 300_000);
+  }
 
   test('operator OS process setup selects the seeded project before native launch', async () => {
     const first = await startOperatorProcess();
