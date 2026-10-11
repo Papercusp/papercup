@@ -185,9 +185,14 @@ function tabOverview(b){
         " · "+fmt.int(a.assignedAttempts)+" assigned · "+fmt.int(a.absentAttempts)+" absent";
     const secondary = a.meanScore!=null ? "mean score "+fmt.score(a.meanScore) :
       a.conditionalResolvedPct!=null ? fmt.pct(a.conditionalResolvedPct,1) : a.scored ? fmt.pct(a.resolved||0,a.scored) : "—";
+    const c = a.contamination;
+    const pc = c && c.postCutoff && c.postCutoff.taskIds.length ? (a.meanScore!=null ? c.postCutoff.primaryMeanScore : c.postCutoff.primaryResolvedPct) : null;
+    const contaminationText = !c ? "—" : c.label+" (cutoff "+(c.trainingDataCutoff||"unknown")+")"+
+      (c.label==="contamination-exposed" ? " · post-cutoff "+fmt.int(c.postCutoff.taskIds.length)+" task(s): "+(pc==null?"—":a.meanScore!=null?fmt.score(pc):fmt.pct(pc,1)) : "");
     return el("tr",{class:"row"},
       el("td",{}, el("b",{},a.arm)),
       el("td",{}, primaryText, a.assignmentSource==='observed' ? " (observed roster only)" : ""),
+      el("td",{}, contaminationText),
       el("td",{}, secondary+" · "+fmt.int(a.scored)+" graded"),
       el("td",{class:"num"}, a.infraExcluded!=null?fmt.int(a.infraExcluded):"—"),
       el("td",{class:"num"}, recordedCost(a)),
@@ -196,7 +201,7 @@ function tabOverview(b){
   });
   wrap.append(el("h3",{},"Per-arm summary"),
     el("table",{}, el("thead",{}, el("tr",{},
-      el("th",{},"Arm"), el("th",{},"Primary assigned outcome"), el("th",{},"Secondary graded quality"), el("th",{class:"num"},"unscored"),
+      el("th",{},"Arm"), el("th",{},"Primary assigned outcome"), el("th",{},"Contamination"), el("th",{},"Secondary graded quality"), el("th",{class:"num"},"unscored"),
       el("th",{class:"num"},"Cost"), el("th",{class:"num"},"Tokens"), el("th",{class:"num"},"concur avg/peak"))),
       el("tbody",{}, ...rows)));
   if (b.run.envFingerprint) wrap.append(el("h3",{},"Environment fingerprint"), jsonTree(b.run.envFingerprint,"env"));
