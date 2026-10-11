@@ -584,6 +584,16 @@ describe('captureImprovement — observation lane (turn-end-reflection-observati
     expect(d.created[0].payload).toMatchObject({ lane: 'observation' });
   });
 
+  it('keeps observations non-claimable when an assignee is supplied', async () => {
+    const d = deps();
+    await captureImprovement(
+      { title: 'observed friction', kind: 'change', lane: 'observation', assignee: 'su-filer' },
+      d,
+    );
+    expect(d.created[0]).not.toHaveProperty('assignee');
+    expect(d.created[0]).not.toHaveProperty('assignedBy');
+  });
+
   it('carries NO auto-implement lifecycle / paths (it is never dispatchable)', async () => {
     const d = deps();
     await captureImprovement({ title: 'x', kind: 'change', lane: 'observation', paths: ['libs/x/y.ts'] }, d);
