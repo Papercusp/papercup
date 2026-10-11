@@ -793,19 +793,19 @@ describe('writeSuCodexHome', () => {
     const fresh = writeSuCodexHome(opts);
     const freshToml = readFileSync(fresh.configPath, 'utf8');
     expect(freshToml).toMatch(
-      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 250000\n/,
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 200000\n/,
     );
     expect(freshToml).not.toContain('model_auto_compact_token_limit = 900000');
 
     writeFileSync(
       fresh.configPath,
-      freshToml.replace('model_auto_compact_token_limit = 250000', 'model_auto_compact_token_limit = 900000'),
+      freshToml.replace('model_auto_compact_token_limit = 200000', 'model_auto_compact_token_limit = 900000'),
     );
     const repaired = ensureSuCodexHomeConfig(opts);
     const repairedToml = readFileSync(repaired.configPath, 'utf8');
     expect(repaired.repaired).toBe(true);
     expect(repairedToml).toMatch(
-      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 250000\n/,
+      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 200000\n/,
     );
   });
 
