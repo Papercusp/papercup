@@ -66,6 +66,12 @@ vi.mock('../coordination/wake-mode', () => ({
   resolveWakeModeFrom: vi.fn(() => 'auto'),
 }));
 vi.mock('../../events/await/store', () => ({ listParkedAwaitsForSubscribers: vi.fn(async () => []) }));
+// The schedulerClaimState decoration reads claim concurrency from PG (WI-6554700010008335); keep it
+// off the real-PG rail exactly as assignments-bounded.test.ts does.
+vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/claim-spec-store')>()),
+  readClaimConcurrencyBatch: vi.fn(async () => new Map()),
+}));
 vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: vi.fn(async () => new Map()),
   fetchContextPressureReadings: vi.fn(async () => new Map()),
