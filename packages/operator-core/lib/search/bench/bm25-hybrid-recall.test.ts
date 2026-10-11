@@ -716,7 +716,26 @@ describe('R-18 tail attribution: wait events and scheduler time (D-030)', () => 
       // pid 4 exited (absent); pid 5 appeared mid-call.
       [5, { cpuNs: 999_000_000, runqNs: 999_000_000 }],
     ]);
-    expect(schedstatDeltaMs(before, after)).toEqual({ cpuMs: 300, runqMs: 700, pids: 2 });
+    expect(schedstatDeltaMs(before, after)).toEqual({ cpuMs: 300, runqMs: 700, pids: 2, implausible: 0 });
+  });
+
+  it('schedstatDeltaMs drops a pid whose CPU delta exceeds the window wall time (D-032)', () => {
+    // Run 12's defect: a long-lived pid baselined at zero reported minutes of CPU for a
+    // ~100 ms call. One backend cannot run longer than the window, so the bound drops it.
+    const before = new Map([
+      [1, { cpuNs: 0, runqNs: 0 }],
+      [2, { cpuNs: 10_000_000, runqNs: 0 }],
+    ]);
+    const after = new Map([
+      [1, { cpuNs: 120_000_000_000, runqNs: 5_000_000 }],
+      [2, { cpuNs: 90_000_000, runqNs: 3_000_000 }],
+    ]);
+    expect(schedstatDeltaMs(before, after, 105)).toEqual({ cpuMs: 80, runqMs: 3, pids: 1, implausible: 1 });
+    // A delta exactly at the bound is kept, one just over it is dropped; without a bound
+    // nothing is dropped.
+    expect(schedstatDeltaMs(before, after, 80)).toMatchObject({ cpuMs: 80, pids: 1, implausible: 1 });
+    expect(schedstatDeltaMs(before, after, 79.9)).toMatchObject({ cpuMs: 0, pids: 0, implausible: 2 });
+    expect(schedstatDeltaMs(before, after)).toMatchObject({ pids: 2, implausible: 0 });
   });
 
   it('summarizeAttribution sums schedstat and wait profiles only over calls that recorded them', () => {

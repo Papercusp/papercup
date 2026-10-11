@@ -167,18 +167,30 @@ function readSchedstats(pids: readonly (number | 'self')[]): Map<number, Schedst
  * returned stop function is called. Each poll awaits the previous one, so a slow poll delays the
  * next instead of stacking; a stalled sampler shows as a large `maxPollGapMs`.
  */
-function startWaitSampler(conn: Sql, intervalMs: number): () => Promise<WaitProfile | undefined> {
+function startWaitSampler(
+  conn: Sql,
+  intervalMs: number,
+  knownPids: ReadonlySet<number>,
+): () => Promise<{ waits: WaitProfile | undefined; firstSight: Map<number, Schedstat> }> {
   let stopped = false;
   let failed = false;
   const polls: WaitPoll[] = [];
+  // D-032: an active backend missing from the before-call pid list is baselined here, at first
+  // sighting, instead of being counted from zero (run 12: such pids were long-lived).
+  const firstSight = new Map<number, Schedstat>();
   const pattern = ownBackendPattern();
   const loop = (async () => {
     while (!stopped) {
       const atMs = performance.now();
       try {
-        const rows = await conn<{ t: string | null; e: string | null }[]>`
-          SELECT wait_event_type AS t, wait_event AS e FROM pg_stat_activity
+        const rows = await conn<{ pid: number; t: string | null; e: string | null }[]>`
+          SELECT pid, wait_event_type AS t, wait_event AS e FROM pg_stat_activity
            WHERE application_name LIKE ${pattern} AND state = 'active' AND pid <> pg_backend_pid()`;
+        for (const r of rows) {
+          if (knownPids.has(r.pid) || firstSight.has(r.pid)) continue;
+          const s = parseSchedstat(firstLine(`/proc/${r.pid}/schedstat`));
+          if (s) firstSight.set(r.pid, s);
+        }
         polls.push({ atMs, samples: rows.map((r) => ({ waitEventType: r.t, waitEvent: r.e })) });
       } catch {
         failed = true;
@@ -190,7 +202,7 @@ function startWaitSampler(conn: Sql, intervalMs: number): () => Promise<WaitProf
   return async () => {
     stopped = true;
     await loop;
-    return failed || polls.length === 0 ? undefined : summarizeWaitSamples(polls);
+    return { waits: failed || polls.length === 0 ? undefined : summarizeWaitSamples(polls), firstSight };
   };
 }
 
@@ -430,8 +442,9 @@ async function main(): Promise<number> {
     // D-030: this process's backends (pool connections persist across calls) and their
     // schedstat, read outside the timed window; then the wait sampler runs over the call.
     const backendPids = track && sampler ? await ownBackendPids(sampler).catch(() => [] as number[]) : [];
+    const schedT0 = performance.now();
     const schedBefore = track ? readSchedstats([...backendPids, 'self']) : null;
-    const stopSampler = track && sampler ? startWaitSampler(sampler, waitSampleMs) : null;
+    const stopSampler = track && sampler ? startWaitSampler(sampler, waitSampleMs, new Set(backendPids)) : null;
     const loop = track ? monitorEventLoopDelay({ resolution: 10 }) : null;
     loop?.enable();
     const cpu0 = process.cpuUsage();
@@ -453,24 +466,42 @@ async function main(): Promise<number> {
     const latencyMs = Math.round((performance.now() - t0) * 10) / 10;
     const cpu = process.cpuUsage(cpu0);
     loop?.disable();
-    const waits = stopSampler ? await stopSampler() : undefined;
-    let sched: Pick<CallAttribution, 'pgCpuMs' | 'pgRunqMs' | 'clientRunqMs' | 'pgBackendsBorn'> = {};
+    const sampled = stopSampler ? await stopSampler() : undefined;
+    const waits = sampled?.waits;
+    let sched: Pick<
+      CallAttribution,
+      'pgCpuMs' | 'pgRunqMs' | 'clientRunqMs' | 'pgBackendsUnseen' | 'pgBackendsLateBaselined' | 'pgPidsImplausible'
+    > = {};
     if (schedBefore) {
-      // The pool opens a connection when none is idle (measured on run 11: about half the
-      // calls), so the call's backend can be born mid-call. A pid in the after-list but not the
-      // before-list did not exist before the call, so its whole lifetime counts from zero.
+      // D-032: a pid in the after-list but not the before-list is NOT counted from zero (run 12:
+      // such pids were long-lived; why they were missing is not known). It counts from the wait
+      // sampler's first sighting when the sampler saw it, and is left out otherwise. Any per-pid
+      // CPU delta above the schedstat window's wall time is dropped as implausible.
       const pidsAfter = sampler ? await ownBackendPids(sampler).catch(() => backendPids) : backendPids;
-      const born = pidsAfter.filter((pid) => !backendPids.includes(pid));
-      const schedAfter = readSchedstats([...backendPids, ...born, 'self']);
+      const unseen = pidsAfter.filter((pid) => !backendPids.includes(pid));
+      const schedAfter = readSchedstats([...backendPids, ...unseen, 'self']);
+      const windowMs = performance.now() - schedT0;
       const self = new Map([...schedBefore].filter(([pid]) => pid === process.pid));
       const backends = new Map([...schedBefore].filter(([pid]) => pid !== process.pid));
-      for (const pid of born) backends.set(pid, { cpuNs: 0, runqNs: 0 });
-      const pgDelta = schedstatDeltaMs(backends, schedAfter);
+      let lateBaselined = 0;
+      for (const pid of unseen) {
+        const b = sampled?.firstSight.get(pid);
+        if (!b) continue;
+        backends.set(pid, b);
+        lateBaselined += 1;
+      }
+      const pgDelta = schedstatDeltaMs(backends, schedAfter, windowMs + 5);
       const selfDelta = schedstatDeltaMs(self, schedAfter);
       sched = {
         ...(pgDelta.pids > 0 ? { pgCpuMs: pgDelta.cpuMs, pgRunqMs: pgDelta.runqMs } : {}),
         ...(selfDelta.pids > 0 ? { clientRunqMs: selfDelta.runqMs } : {}),
-        ...(sampler ? { pgBackendsBorn: born.length } : {}),
+        ...(sampler
+          ? {
+              pgBackendsUnseen: unseen.length,
+              pgBackendsLateBaselined: lateBaselined,
+              pgPidsImplausible: pgDelta.implausible,
+            }
+          : {}),
       };
     }
     // Per-leg time from the engine's own instrument, so an R-18 tail can be attributed to
