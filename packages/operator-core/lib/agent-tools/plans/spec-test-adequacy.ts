@@ -559,22 +559,59 @@ export const LEDGER_PROOF_HINT =
 const DURABLE_WORK_ITEM_REF_RE =
   /^(?:[a-z][\w-]*\s*:{1,2}\s*)*(?:[a-z][\w-]*:[a-z][\w-]*\s+)?(?:[a-z][a-z-]*-)?(?:WI|EI|F)-\d+\b/i;
 /**
+ * Directories whose files another evaluator cannot find again: every plain
+ * directory the repo-root .gitignore ignores, plus nested scratch and temp
+ * roots. PINNED: spec-test-adequacy.test.ts fails when .gitignore ignores a
+ * plain directory missing from this list, so a new ignored root cannot
+ * silently grade durable. Shared by the relative and absolute file rules so one
+ * spelling of a path is never durable while the other is not.
+ */
+export const EPHEMERAL_EVIDENCE_ROOTS: readonly string[] = [
+  '.papercusp/scratch', 'var/tmp', 'tmp', 'node_modules', 'scratch', 'scratchpad', 'coverage', 'test-results',
+  'design-evidence-report', '.tmp', '.vitest-tmp', '.vitest-tmpdir', '.tsx-tmp', '.agent-tmp', '.tmp-claude',
+  '.content-fixer-tmp', '.papercusp-tmp', '.papercusp-pinned-deps', '.papercusp-smoke-snapshots', '.next',
+  '.next-prod', '.next-build-cache', '.source', '.astro', '.playwright-mcp', '.rig-sidecar-current', '.gitnexus',
+];
+/** .gitignore glob roots (`/scratch-*`, `coverage-*`) the literal list above cannot express. */
+const EPHEMERAL_GLOB_ROOTS = [String.raw`scratch-[^\/\s]*`, String.raw`coverage-[^\/\s]*`];
+const EPHEMERAL_FILE_ROOT = `(?:${[
+  ...EPHEMERAL_EVIDENCE_ROOTS.map((root) => root.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')),
+  ...EPHEMERAL_GLOB_ROOTS,
+].join('|')})\\/`;
+/**
+ * A repo-relative file path. Durability is DERIVED, not hand-listed
+ * (WI-6554700010008517): any relative path is a rerun anchor unless it sits
+ * under an ephemeral root, the same rule DURABLE_ABSOLUTE_FILE_REF_RE applies
+ * to absolute paths. The old allowlist (apps|packages|libs|scripts|src|lib|
+ * test|tests|bin|docs|rubrics) graded a committed `reports/…` or
+ * `papercusp-desktop/…` file 'unknown' while the same file spelled absolutely
+ * graded 'durable'. A leading all-digit segment is refused so `host:3170/x.json`
+ * is not read as a path.
+ */
+const REPO_RELATIVE_FILE = String.raw`(?:\.\.\/|\.\/)?(?!${EPHEMERAL_FILE_ROOT})(?!\d+\/)[a-z0-9_@.][\w.@-]*\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)`;
+/**
  * A repo file that LEADS the reference is a rerun anchor even when prose
  * follows it (`apps/…/x.test.ts — 21 passed @ b97d892c71`). DURABLE_FILE_REF_RE
  * already accepts a path followed by `#`/`:` and any text; this accepts the
  * same path followed by whitespace, `,` or `;`.
  */
-const DURABLE_LEADING_FILE_REF_RE =
-  /^(?:(?:file|path|repo-file):(?:\/\/)?)?(?:\.\.\/|\.\/)?(?:apps|packages|libs|scripts|src|lib|test|tests|bin|docs|rubrics)\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?=[\s,;#:]|$)/i;
+const DURABLE_LEADING_FILE_REF_RE = new RegExp(
+  String.raw`^(?:(?:file|path|repo-file):(?:\/\/)?)?${REPO_RELATIVE_FILE}(?=[\s,;#:]|$)`,
+  'i',
+);
 const DURABLE_ARTIFACT_REF_RE =
   /\b(?:artifact|artifact[-_ ]?ref|artifact[-_ ]?id)\s*(?:[:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
 const DURABLE_TEST_RUN_REF_RE =
   /\b(?:test[-_ ]?run|testing[-_ ]?run)(?:[-_ ]?id)?\s*(?:[-:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
 const DURABLE_COVERAGE_REF_RE = /\bcoverage(?:[-_ ]?(?:evidence|run))(?:[-_ ]?id)?\s*[:/#=]\s*\d+\b/i;
-const DURABLE_FILE_REF_RE =
-  /(?:^|[\s:(])(?:(?:file|path|repo-file):(?:\/\/)?|(?:\.\.\/|\.\/)?)(?:apps|packages|libs|scripts|src|lib|test|tests|bin|docs|rubrics)\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$/i;
-const DURABLE_ABSOLUTE_FILE_REF_RE =
-  /^(?!\/?(?:tmp|var\/tmp)(?:\/|$))\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$/i;
+const DURABLE_FILE_REF_RE = new RegExp(
+  String.raw`(?:^|[\s:(])(?:(?:file|path|repo-file):(?:\/\/)?)?${REPO_RELATIVE_FILE}(?:[#:].*)?$`,
+  'i',
+);
+const DURABLE_ABSOLUTE_FILE_REF_RE = new RegExp(
+  String.raw`^(?!\/?(?:tmp|var\/tmp)(?:\/|$))(?![^\s,;]*\/${EPHEMERAL_FILE_ROOT})\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$`,
+  'i',
+);
 
 function ephemeralEvidenceRefReason(evidenceRef: string): string | null {
   const normalized = evidenceRef.trim().replaceAll('\\', '/');
