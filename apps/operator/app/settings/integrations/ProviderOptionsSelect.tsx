@@ -20,6 +20,8 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { providerOptionSourceOf } from '@papercusp/plugin-sdk/provider';
 import type { ProviderOptionsGroup, ProviderOptionsResult } from '@papercusp/operator-core/lib/integrations/provider-options';
 import { Button } from '../../harness/Button';
+import { Checkbox } from '../../harness/Checkbox';
+import { Select, type SelectEntry } from '../../harness/Select';
 import { IntegrationRequestError, INTEGRATIONS_SETTINGS_HREF } from './ticket-integrations-client';
 
 export const PROVIDER_OPTIONS_API = '/api/user/integrations/options';
@@ -87,7 +89,32 @@ export function ProviderOptionsSelect({ id, label, property, value, onChange, di
   const groups = result.state === 'ready' ? result.groups : [];
   const listed = groups.flatMap((g) => g.options);
   const listedValues = new Set(listed.map((o) => o.value));
-  const unlisted = selected.filter((v) => !listedValues.has(v));
+  const unlisted = [...new Set(selected.filter((v) => !listedValues.has(v)))];
+  const choiceGroups = (() => {
+    const seen = new Set<string>();
+    return groups
+      .map((group) => ({
+        ...group,
+        options: group.options.filter((option) => {
+          if (!option.value || seen.has(option.value)) return false;
+          seen.add(option.value);
+          return true;
+        }),
+      }))
+      .filter((group) => group.options.length > 0);
+  })();
+  const selectOptions: SelectEntry[] = choiceGroups.map((group) => ({
+    kind: 'group',
+    label: groupLabel(group),
+    options: group.options.map((option) => ({ value: option.value, label: option.label })),
+  }));
+  if (unlisted.length > 0) {
+    selectOptions.push({
+      kind: 'group',
+      label: 'Saved values no longer listed',
+      options: unlisted.map((item) => ({ value: item, label: `${item} (no longer listed)` })),
+    });
+  }
   const failedGroups = groups.filter((g) => g.error);
   const truncated = groups.some((g) => g.truncated);
   const canPick = source !== null && result.state === 'ready' && listed.length > 0;
@@ -108,9 +135,7 @@ export function ProviderOptionsSelect({ id, label, property, value, onChange, di
 
   return (
     <div style={fieldStyle}>
-      <label htmlFor={id} style={labelText}>
-        {label}
-      </label>
+      {!(canPick && multiple) ? <label htmlFor={id} style={labelText}>{label}</label> : null}
       {description && <p style={hintText}>{description}</p>}
       {source && result.state === 'loading' && (
         <p role="status" style={hintText}>
@@ -118,40 +143,60 @@ export function ProviderOptionsSelect({ id, label, property, value, onChange, di
         </p>
       )}
       {canPick ? (
-        <select
-          id={id}
-          style={inputStyle}
-          multiple={multiple}
-          disabled={disabled}
-          value={multiple ? selected : (selected[0] ?? '')}
-          onChange={(e) => {
-            onChange(multiple ? Array.from(e.target.selectedOptions, (o) => o.value) : e.target.value);
-          }}
-        >
-          {!multiple && <option value="">Choose…</option>}
-          {groups.length > 1
-            ? groups
-                .filter((g) => g.options.length > 0)
-                .map((g) => (
-                  <optgroup key={g.sourceId} label={groupLabel(g)}>
-                    {g.options.map((o) => (
-                      <option key={`${g.sourceId}:${o.value}`} value={o.value} title={o.description}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))
-            : listed.map((o) => (
-                <option key={o.value} value={o.value} title={o.description}>
-                  {o.label}
-                </option>
-              ))}
-          {unlisted.map((v) => (
-            <option key={`unlisted:${v}`} value={v}>
-              {v} (no longer listed)
-            </option>
-          ))}
-        </select>
+        multiple ? (
+          <fieldset role="group" aria-label={label} style={choiceSetStyle}>
+            <legend style={labelText}>{label}</legend>
+            {choiceGroups.map((group) => (
+              <fieldset key={group.sourceId} style={choiceGroupStyle}>
+                <legend style={hintText}>{groupLabel(group)}</legend>
+                {group.options.map((option, index) => (
+                  <label key={`${group.sourceId}:${option.value}`} style={choiceLabelStyle}>
+                    <Checkbox
+                      id={`${id}-${group.sourceId}-${index}`}
+                      ariaLabel={`${label}: ${option.label}`}
+                      checked={selected.includes(option.value)}
+                      disabled={disabled}
+                      onChange={(checked) => onChange(checked
+                        ? (selected.includes(option.value) ? selected : [...selected, option.value])
+                        : selected.filter((item) => item !== option.value))}
+                    />
+                    <span title={option.description}>{option.label}</span>
+                  </label>
+                ))}
+              </fieldset>
+            ))}
+            {unlisted.length > 0 ? (
+              <fieldset style={choiceGroupStyle}>
+                <legend style={hintText}>Saved values no longer listed</legend>
+                {unlisted.map((item, index) => (
+                  <label key={item} style={choiceLabelStyle}>
+                    <Checkbox
+                      id={`${id}-unlisted-${index}`}
+                      ariaLabel={`${label}: ${item} (no longer listed)`}
+                      checked
+                      disabled={disabled}
+                      onChange={(checked) => onChange(checked
+                        ? selected
+                        : selected.filter((value) => value !== item))}
+                    />
+                    <span>{item} (no longer listed)</span>
+                  </label>
+                ))}
+              </fieldset>
+            ) : null}
+          </fieldset>
+        ) : (
+          <Select
+            id={id}
+            ariaLabel={label}
+            value={selected[0] ?? ''}
+            onChange={(next) => onChange(next)}
+            options={selectOptions}
+            placeholder="Choose…"
+            disabled={disabled}
+            triggerStyle={inputStyle}
+          />
+        )
       ) : (
         (!source || result.state !== 'loading') && typed
       )}
@@ -183,6 +228,9 @@ export function ProviderOptionsSelect({ id, label, property, value, onChange, di
 
 const fieldStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
 const labelText: CSSProperties = { fontSize: 13, color: 'var(--fg)' };
+const choiceSetStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8, margin: 0, padding: 8, border: '1px solid var(--border)', borderRadius: 4 };
+const choiceGroupStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6, margin: 0, padding: '4px 8px 8px', border: '1px solid var(--border)', borderRadius: 4 };
+const choiceLabelStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 };
 const hintText: CSSProperties = { color: 'var(--fg-mute)', fontSize: 12, margin: 0 };
 const errorText: CSSProperties = { color: 'var(--bad)', fontSize: 12, margin: '4px 0 0', overflowWrap: 'anywhere' };
 const actionRow: CSSProperties = { display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' };

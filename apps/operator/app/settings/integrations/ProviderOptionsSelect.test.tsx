@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 /**
  * A settings field whose choices come from a connected provider (cupboard-distributable-
- * integrations-2026-10-10 P-004, D-005; SPEC-R-2-P-004): the control asks for the option source
- * the package declared, renders the answers as a dropdown (grouped by account when several
- * sources answer), keeps a saved value the provider no longer lists, and falls back to typing the
- * value when nothing can answer or the read fails.
+ * integrations-2026-10-10 P-004, D-005; SPEC-R-2-P-004): the control asks for the declared option
+ * source, uses the registered Select for single choices, presents array choices as accessible
+ * checkboxes grouped by account, retains saved values providers no longer list, and falls back to
+ * typing when nothing can answer or the read fails.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -56,8 +56,6 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const optionTexts = (select: HTMLElement) => Array.from(select.querySelectorAll('option'), (o) => o.textContent);
-
 describe('ProviderOptionsSelect', () => {
   it('asks for the declared option source and offers the answers as a dropdown', async () => {
     answer([group()]);
@@ -65,14 +63,14 @@ describe('ProviderOptionsSelect', () => {
     render(<ProviderOptionsSelect id="channel" label="Bug channel" property={CHANNEL} value={undefined} onChange={onChange} />);
 
     expect(screen.getByRole('status').textContent).toContain('Asking connected providers');
-    const select = (await screen.findByRole('combobox', { name: 'Bug channel' })) as HTMLSelectElement;
+    const select = await screen.findByRole('combobox', { name: 'Bug channel' });
     expect(H.calls).toEqual([
       { method: 'POST', url: PROVIDER_OPTIONS_API, body: { capability: 'chat.channels', args: { types: 'public' } } },
     ]);
-    expect(optionTexts(select)).toEqual(['Choose…', '#bugs', '#general']);
     expect(screen.getByText('Where bug reports are posted.')).toBeTruthy();
 
-    fireEvent.change(select, { target: { value: 'C2' } });
+    fireEvent.click(select);
+    fireEvent.click(await screen.findByRole('option', { name: '#general' }));
     expect(onChange).toHaveBeenCalledWith('C2');
   });
 
@@ -83,30 +81,34 @@ describe('ProviderOptionsSelect', () => {
       group({ sourceId: 's3', accountLabel: 'Gamma', options: [], error: { code: 'provider_auth', message: 'token revoked' } }),
     ]);
     render(<ProviderOptionsSelect id="channel" label="Bug channel" property={CHANNEL} value="C1" onChange={vi.fn()} />);
-    const select = (await screen.findByRole('combobox', { name: 'Bug channel' })) as HTMLSelectElement;
-    expect(Array.from(select.querySelectorAll('optgroup'), (g) => g.label)).toEqual(['Fixture Chat · Acme', 'Fixture Chat · Beta']);
-    expect(select.value).toBe('C1');
+    const select = await screen.findByRole('combobox', { name: 'Bug channel' });
+    expect(select.textContent).toContain('#bugs');
+    fireEvent.click(select);
+    expect(await screen.findByText('Fixture Chat · Acme')).toBeTruthy();
+    expect(screen.getByText('Fixture Chat · Beta')).toBeTruthy();
+    expect(screen.getByRole('option', { name: '#triage' })).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toBe('Fixture Chat · Gamma: token revoked');
   });
 
   it('keeps a saved value the provider no longer lists', async () => {
     answer([group()]);
     render(<ProviderOptionsSelect id="channel" label="Bug channel" property={CHANNEL} value="C9" onChange={vi.fn()} />);
-    const select = (await screen.findByRole('combobox', { name: 'Bug channel' })) as HTMLSelectElement;
-    expect(optionTexts(select)).toContain('C9 (no longer listed)');
-    expect(select.value).toBe('C9');
+    const select = await screen.findByRole('combobox', { name: 'Bug channel' });
+    expect(select.textContent).toContain('C9 (no longer listed)');
   });
 
   it('is a multiple choice for an array property', async () => {
     answer([group()]);
     const onChange = vi.fn();
     render(<ProviderOptionsSelect id="channels" label="Channels" property={CHANNELS} value={['C1']} onChange={onChange} />);
-    const select = (await screen.findByRole('listbox', { name: 'Channels' })) as HTMLSelectElement;
-    expect(select.multiple).toBe(true);
-    expect(optionTexts(select)).toEqual(['#bugs', '#general']);
-    (select.options[1] as HTMLOptionElement).selected = true;
-    fireEvent.change(select);
+    const bugs = await screen.findByRole('checkbox', { name: 'Channels: #bugs' });
+    const general = screen.getByRole('checkbox', { name: 'Channels: #general' });
+    expect(bugs.getAttribute('aria-checked')).toBe('true');
+    expect(general.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(general);
     expect(onChange).toHaveBeenCalledWith(['C1', 'C2']);
+    fireEvent.click(general);
+    expect(onChange).toHaveBeenLastCalledWith(['C1']);
   });
 
   it('falls back to typing the value when nothing connected can answer', async () => {
