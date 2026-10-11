@@ -20,15 +20,25 @@ import { afterEach, beforeEach, vi } from 'vitest';
 import * as hivePolicyStore from '../../../hive-policy-store';
 import * as federatedPotScope from '../../../federated-pot-scope';
 
+/**
+ * Per-test form, for a file whose OTHER tests need the real policy read (e.g. ones that
+ * route the org pool to their own fixture). Call at the top of the test body and register
+ * the returned restore FIRST on the test's newest-first cleanup stack, so it runs after
+ * substrate teardown (which can still run a pass) — WI-6554700010008455.
+ */
+export function stubHivePolicyReadsForTest(): () => void {
+  const policyRead = vi.spyOn(hivePolicyStore, 'getHivePolicyCached').mockResolvedValue(null);
+  const rosterRead = vi.spyOn(federatedPotScope, 'listHiveMembersForLocalPot').mockResolvedValue([]);
+  return () => {
+    policyRead.mockRestore();
+    rosterRead.mockRestore();
+  };
+}
+
 export function stubHivePolicyReadsForSuite(): void {
   let restore: (() => void) | null = null;
   beforeEach(() => {
-    const policyRead = vi.spyOn(hivePolicyStore, 'getHivePolicyCached').mockResolvedValue(null);
-    const rosterRead = vi.spyOn(federatedPotScope, 'listHiveMembersForLocalPot').mockResolvedValue([]);
-    restore = () => {
-      policyRead.mockRestore();
-      rosterRead.mockRestore();
-    };
+    restore = stubHivePolicyReadsForTest();
   });
   afterEach(() => {
     restore?.();
