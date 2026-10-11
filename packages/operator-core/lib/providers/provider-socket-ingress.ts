@@ -32,7 +32,7 @@ import {
   type ProviderRegistry,
   type RegisteredProvider,
 } from '../integrations/provider-registry';
-import { providerSetupStoreKey, readProviderCredentialValue } from '../integrations/provider-credentials';
+import { isPastedCredentialSource, readProviderCredentialValue } from '../integrations/provider-credentials';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import {
   DEFAULT_SOURCE_TOKEN_HARNESS,
@@ -198,21 +198,6 @@ function harnessOf(source: ConnectorSourceRow): string {
 
 function key(source: Pick<ConnectorSourceRow, 'workspaceId' | 'id'>): string {
   return `${source.workspaceId}\0${source.id}`;
-}
-
-/**
- * Whether the provider's pasted credential connected this source (WI-6554700010008468).
- *
- * The socket credential is the provider's own setup credential, stored once per provider and
- * harness, and pasting it connects exactly one source whose credential ref is that store entry
- * (`syncProviderCredentialSource`). A source of the same kind connected any other way — the in-app
- * Slack OAuth/socket path writes `slack-socket:<field>`, an OAuth connect `<plugin>:<field>` — is
- * owned by that path. Claiming it would either mark it reconnect-required when no credential is
- * pasted (which takes it out of its owner's reconcile set) or open a second socket on the same app
- * and split the vendor's events between the two paths.
- */
-export function isPastedCredentialSource(source: Pick<ConnectorSourceRow, 'kind' | 'credentialRef'>): boolean {
-  return source.credentialRef === providerSetupStoreKey(source.kind);
 }
 
 export class ProviderSocketIngressManager {

@@ -29,6 +29,7 @@ import {
 import type { ExternalTriggerSink } from './ingestion';
 import { createChatAdmissionSink } from '../data-sources/chat-admission-sink';
 import { createSlackChatAdmissionAdapter } from '../data-sources/slack-org-connector';
+import { isPastedCredentialSource } from '../integrations/provider-credentials';
 
 const RECONCILE_MS = 15_000;
 const MAX_BACKOFF_MS = 60_000;
@@ -219,7 +220,10 @@ export class SlackSocketManager {
     if (this.stopped) return;
     const sql = this.sql();
     const workspaceId = (this.deps.workspaceId ?? activeWorkspaceId)();
-    const sources = await (this.deps.listSources ?? listPollableExternalTriggerSources)(sql, workspaceId, 'slack');
+    // A source connected by pasting the slack package's credentials belongs to the package socket
+    // ingress; this manager cannot read that store entry and would mark the source reconnect-required.
+    const listed = await (this.deps.listSources ?? listPollableExternalTriggerSources)(sql, workspaceId, 'slack');
+    const sources = listed.filter((source) => !isPastedCredentialSource(source));
     const live = new Set(sources.map(key));
     for (const [id, connection] of this.connections) {
       if (live.has(id)) continue;

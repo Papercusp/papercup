@@ -192,6 +192,61 @@ describe('SlackSocketManager', () => {
     manager.stop();
   });
 
+  it('leaves a source connected with the slack package credentials to the package ingress (WI-6554700010008468)', async () => {
+    // P-008 moves the owner's source onto the package path by pointing its credential ref at the
+    // provider setup store. This manager cannot read that entry: claiming the source would fail
+    // with slack_socket_credential_ref_invalid and mark it reconnect-required for both paths.
+    let current: ExternalTriggerSourceRow = { ...source };
+    const socket = new FakeSocket();
+    const createSocket = vi.fn(() => socket);
+    const resolveCredentials = vi.fn(async () => ({ appToken: 'xapp-token', botToken: 'xoxb-token' }));
+    const updateSource = vi.fn(async (_sql, _workspace, _id, input) => ({ ...current, status: input.status }));
+    const manager = new SlackSocketManager({
+      sql: {} as never,
+      workspaceId: () => 'papercusp-workspace',
+      listSources: vi.fn(async () => [current]),
+      resolveCredentials,
+      reconcileHistory: vi.fn(async (value) => value),
+      openUrl: vi.fn(async () => 'wss://slack.test/socket'),
+      createSocket,
+      updateSource,
+      log: () => {},
+    });
+    const close = vi.spyOn(socket, 'close');
+
+    try {
+      await manager.reconcile();
+      expect(createSocket).toHaveBeenCalledTimes(1);
+      updateSource.mockClear();
+
+      current = { ...current, credentialRef: 'provider-setup:slack', providerAccountId: 'provider-setup:slack' };
+      await manager.reconcile();
+      await manager.reconcile();
+
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(resolveCredentials).toHaveBeenCalledTimes(1);
+      expect(createSocket).toHaveBeenCalledTimes(1);
+      expect(updateSource).not.toHaveBeenCalled();
+
+      // A source connected on the package path from the start is never claimed either.
+      const fresh = new SlackSocketManager({
+        sql: {} as never,
+        workspaceId: () => 'papercusp-workspace',
+        listSources: vi.fn(async () => [{ ...source, credentialRef: 'provider-setup:slack' }]),
+        resolveCredentials,
+        createSocket,
+        updateSource,
+        log: () => {},
+      });
+      await fresh.reconcile();
+      expect(resolveCredentials).toHaveBeenCalledTimes(1);
+      expect(updateSource).not.toHaveBeenCalled();
+      fresh.stop();
+    } finally {
+      manager.stop();
+    }
+  });
+
   it('reuses one starter state across repeated module evaluation', async () => {
     const first = startSlackSocketManager({
       listSources: vi.fn(async () => []),

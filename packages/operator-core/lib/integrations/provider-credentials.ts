@@ -36,6 +36,21 @@ import { fetchProviderIdentity, type ProviderAccountIdentity } from './provider-
 const STORE_PREFIX = 'provider-setup:';
 const SAVED_AT_SUFFIX = '__saved_at';
 
+/**
+ * Whether the provider's pasted credentials connected this source (WI-6554700010008468).
+ *
+ * Pasting a provider's credentials connects exactly one source per owner whose credential ref is
+ * the provider's store entry (`syncProviderCredentialSource`). That ref is what tells the two
+ * ingress paths apart: the package socket ingress claims only these sources, and the in-app Slack
+ * socket manager claims every other Slack source. Each path skipping the other's sources is what
+ * keeps a source on exactly one socket. A second socket on the same app would split the vendor's
+ * events between them, and the in-app path cannot read the store entry, so it would mark the
+ * source reconnect-required and take it away from the package path too.
+ */
+export function isPastedCredentialSource(source: { kind: string; credentialRef: string | null }): boolean {
+  return source.credentialRef === providerSetupStoreKey(source.kind);
+}
+
 /** Token-store plugin key holding one provider's pasted credentials. */
 export function providerSetupStoreKey(providerId: string): string {
   return `${STORE_PREFIX}${providerId}`;
