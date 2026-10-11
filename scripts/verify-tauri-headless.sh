@@ -2543,7 +2543,8 @@ done
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
 [ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
 # Boot-only stop.sh owns the per-run source/dependency snapshot.
-[ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK" 2>/dev/null
+# Assertion teardown retains reports first and owns its own snapshot cleanup.
+[ "$ASSERTION_MODE" -eq 0 ] && [ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK" 2>/dev/null
 # EI-20191224828837149: the isolated verifier owns a disposable Tauri/WebKit
 # profile too. Remove it on the explicit --boot-only stop path as well as the
 # normal EXIT teardown; otherwise localStorage would outlive the run.
@@ -2604,14 +2605,41 @@ handle_signal() {
   trap - INT TERM HUP
   exit "$SIGNAL_EXIT_CODE"
 }
+
+# Playwright writes attachments into the disposable source, including on passing
+# tests. Retain its conventional outputs in the existing assert phase before
+# stop.sh or snapshot cleanup can remove them (EI-25695165283875278).
+retain_assertion_artifacts() {
+  [ "${ASSERTION_MODE:-0}" -eq 1 ] || return 0
+  [ -n "${OPERATOR_SOURCE_ROOT:-}" ] || return 0
+  local artifacts_dir="${VH_RUN_DIR:-$WORK}/phases/assert/artifacts"
+  local relative source
+  for relative in apps/operator/test-results apps/operator/playwright-report apps/operator/junit-e2e.xml; do
+    source="$OPERATOR_SOURCE_ROOT/$relative"
+    [ -e "$source" ] || continue
+    if ! mkdir -p -- "$artifacts_dir/$(dirname -- "$relative")" ||
+       ! cp -a -- "$source" "$artifacts_dir/$relative"; then
+      log "FATAL: assertion artifact retention failed: $relative; preserving source at $OPERATOR_SOURCE_ROOT"
+      return 1
+    fi
+    log "assertion artifacts retained: $artifacts_dir/$relative"
+  done
+}
+
 teardown() {
   local ec=$?
   [ "$SIGNAL_EXIT_CODE" -ne 0 ] && ec="$SIGNAL_EXIT_CODE"
-  vh_capture_phase_stop
-  vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
   # Cleanup can itself run commands which receive a signal. Disable all traps
   # before the first side effect so the EXIT path cannot run twice.
   trap - EXIT INT TERM HUP
+  local artifacts_retained=1
+  if ! retain_assertion_artifacts; then
+    artifacts_retained=0
+    [ "$ec" -ne 0 ] || ec=1
+    vh_step assertion-artifact-retention
+  fi
+  vh_capture_phase_stop
+  vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
   log "tearing down (exit=$ec)"
   write_stop_script
   "$WORK/stop.sh" >/dev/null 2>&1 || true
@@ -2648,7 +2676,11 @@ teardown() {
   # the husk after its TTL, and is also what catches runs that never reach this trap
   # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
   rm -rf "$WORK/spa" 2>/dev/null
-  cleanup_operator_source_snapshot
+  if [ "$artifacts_retained" -eq 1 ]; then
+    cleanup_operator_source_snapshot
+  else
+    release_verifier_disk_reservations
+  fi
   cleanup_assertion_script_snapshot
   cleanup_verifier_source_snapshot
   exit "$ec"
