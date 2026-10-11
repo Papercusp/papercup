@@ -48,6 +48,22 @@ prices distinct; unknown usage or billing remains unknown. Grader outages requir
 repair/regrade or an inconclusive result. A withheld, power-planned confirmation
 study is required for a superiority claim and has no implied authorization to spend.
 
+Freeze `sampling` before a current launch: `unit: "repository"`, a
+`taskRepositories` map covering every pilot and withheld confirmation task exactly,
+`ci` (0.90, 0.95 or 0.99), `bootstrapSeed` and `bootstrapIterations` (at least 1000).
+Use the tasks' actual repository identities. The maintained report collapses each
+task's assigned seeds, then draws whole paired repositories with replacement while
+retaining task weighting. It records the assigned seed/task denominators and the
+number of independent repositories; repeated seeds do not add independent tasks.
+Absent assignments and generation failures remain zero outcomes. Missing grades,
+fewer than two independent repositories or an older protocol without this policy
+produce no primary interval. Such an older protocol remains readable but cannot
+start a new current launch. Per-arm interval overlap is not a paired effect test;
+read `deltas[].accuracyDeltaCi` and `deltas[].uncertainty`. A comparison with absent
+attempts or incomplete usage retains its outcome difference while withholding cost
+efficiency. The pooled Wilson interval is a Bernoulli diagnostic, separate from
+repository inference.
+
 ### Current launch prerequisites and verification
 
 Current generation uses `run-launcher.ts` and the authenticated
