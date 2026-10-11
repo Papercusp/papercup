@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
-  "name": "P-005 live: a provider package and a trigger pack, neither known to the app, install through the Cupboard route and then appear on the generic Settings -> Integrations page: provider card with app registration and masked credentials (format refused, values never read back), and a pack section whose channel input is a picker filled by the provider, saved and armed",
+  "name": "P-005 live: an unknown provider package and trigger pack install through the Cupboard route and appear on the generic Settings -> Integrations page (card with app registration and masked credentials; pack section with a provider-filled channel picker, saved and armed)",
   "framework": "shell",
   "command": [
     "scripts/verify-tauri-headless.sh",
