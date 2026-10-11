@@ -7129,7 +7129,180 @@
      "summary": "plan lane voice-final-public-release-2026-10-01#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "voiceP003EvidenceQualification": {
+    "status": "current-live-clause-unbound-real-microphone-acceptance-unestablished",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004759",
+    "auditProofs": [
+     "WI-10005820#comment:1174361",
+     "WI-10005820#comment:1174376",
+     "WI-10005820#comment:1174379"
+    ],
+    "sourceAuthority": {
+     "plan": "voice-final-public-release-2026-10-01",
+     "version": 38,
+     "contentHash": "ce2eea820d85e77d5d53e6581daffb2d7eab2d314bdb58dea6c03ce3a9745496",
+     "planState": "ready",
+     "item": "P-003",
+     "storedStatus": "todo",
+     "effectiveStatus": "blocked",
+     "workItemState": "blocked",
+     "assignee": null,
+     "checkpoint": null,
+     "hasCompletionEvidence": false,
+     "dependency": "P-001 remains unresolved. The original version23 source fields are historical provenance; this qualification does not change the child claim, state or hold.",
+     "ownerProvenanceReuse": "Row42 voiceP001EvidenceQualification and proof1174322 retain D-005/D-006 real-microphone acceptance, D-007 local ElevenLabs TTS reinstatement and D-010 final two-tier P-009 release hold. This addition does not independently re-establish those owner decisions."
+    },
+    "specs": {
+     "specId": "AUTO-BAR-R-3-P-003",
+     "revision": 3,
+     "lifecycleStatus": "accepted",
+     "contentHash": "c7da504dc884d38a6b2b84739872d7cd9dc6080a7030a2dfa3b93af1bba447b6",
+     "rubric": "acceptance-voice-final-public-release-2026-10-01",
+     "rubricRevision": 2,
+     "barHash": "fa9ab34ed1c581b7b08a17a33cae214eba48023641281ac0c9f6025cf424453f",
+     "barSetHash": "f9142b477e9898d2d79f853a09b19f69f99063c202174da349cc31e2ef7f021f",
+     "evidencePlane": "live",
+     "requiredProof": "Supported desktop and TUI physical-microphone paths: PTT/session or wake/always-on, retained transcript and audible reply, mute/off/interruption/self-audio, actual session-mint provider capability recheck, prior engine preservation/restoration and explicit inherited owner/hardware acceptance.",
+     "ratingBoundary": "Synthetic controls and source reachability leave physical-microphone acceptance unknown. Dated capability errors and local destination absence do not establish a current provider or runtime failure."
+    },
+    "bindingQualification": {
+     "scope": "Preparation1174361 separately queried exact specIds=[AUTO-BAR-R-3-P-003] and workItemIds=[WI-10004759], each limit100/detail full.",
+     "clauseEvidence": [],
+     "workItemEvidence": [],
+     "clauseCount": 0,
+     "workItemCount": 0,
+     "truncatedByLimit": false,
+     "limitation": "Only the returned registered binding planes were observed. Empty bindings do not establish universal historical evidence absence or an executed malfunction."
+    },
+    "foundationQualification": {
+     "workItem": "WI-2146515",
+     "state": "blocked",
+     "assignee": null,
+     "checkpointContentHash": "437acf19ca2d",
+     "checkpointChars": 5823,
+     "checkpointCountCorrection": "Source proof1174376 initially reported6411 characters; independent correction1174379 records5823. The complete checkpoint, both blockers and sole thread post were read.",
+     "hasCompletionEvidence": false,
+     "sourcePlan": "pui-tui-next-wave-2026-09-05",
+     "sourceItem": "P-001",
+     "externalBlockers": [
+      {
+       "ref": "pui-tui-next-wave-2026-09-05#P-001",
+       "qualification": "The retained human/product-decision blocker is unresolved in the foundation read."
+      },
+      {
+       "ref": "elevenlabs-conv:convai_write",
+       "qualification": "September5 credential evidence, including request b8a4654703b2bcd0a0a2694152449bd6, is dated and separate from the October401."
+      }
+     ],
+     "retainedProviderObservation": {
+      "comment": "WI-2146515#comment:1153029",
+      "recordedAt": "2026-10-01",
+      "runtime": ":3170",
+      "outerHttpStatus": 200,
+      "ok": false,
+      "providerHttpStatus": 401,
+      "qualification": "A locally valid configured key shape did not establish provider capability. Preferences were unchanged. No current credential, session-mint result or hardware availability was measured by this audit."
+     },
+     "authorityLimit": "The foundation checkpoint's holder-session mechanical and flight-record warnings were retained. Trimmed unrelated prior-attempt history was not adopted as complete authority."
+    },
+    "guidanceQualification": {
+     "scope": "Complete guided-session.md and preflight-2026-10-06.md were read in source proof1174376.",
+     "physicalSession": "The guidance has Avi perform physical-microphone steps while the agent records build, engine, mode, transcript and audibility; preference restoration requires a re-read and diff.",
+     "retainedPaths": "Desktop A1-A9/A8w, TUI B1-B3, conditional portal/lesson paths and artifact recheck remain required. Unsupported does not mean pass.",
+     "datedPreflight": "The October6 preflight records successful local health/Kokoro, only output-monitor input sources and an unresolved reachable lesson location. It contains no capture; its unplugged-input inference is not a measured current hardware diagnosis.",
+     "matrixReconciliation": "The D-005 matrix/guided drop list retains dated EL-session/TTS exclusions while D-007 later reinstates local EL TTS. Reconcile the exact supported matrix before acceptance; neither source is treated as a waiver.",
+     "platformLimit": "The reviewed TUI transport is POSIX UnixStream. Native Windows and separate TUI wake engines are not claimed."
+    },
+    "sourceInspection": {
+     "scope": "Complete ws-init, session-deps and404-line voice_convai.rs; selected voice.rs1-170, app.rs15015-15056/15210-15272, main.rs3120-3158/3415-3475/7574-7643, client.rs3155-3225 and desktop voice-mode.ts ranges recorded in1174376. This is finite static review.",
+     "sharedHost": "Desktop full-agent and TUI session paths attach to the shared operator runtime. Host resolveConfig reads preferences/key and calls mintSignedUrlFromEL; provider HTTP and signed_url shape are checked, and the key stays server-side.",
+     "tuiControls": "The TUI sends HELLO/start and elected/unmuted MIC, renders elected response audio/transcripts, and shuts capture, playout and socket on detach. The reviewed keys provide local/shared-session PTT, session toggle, mute, mode and host controls; main also drives local capture to STT and shared converse.",
+     "desktopControls": "The selected desktop ranges expose output mute, mode/leader selection, shared session, capture-window echo/wake guards, capture/PTT/transcript and cancellation.",
+     "runtimeLimit": "Static control and guard reachability do not establish acoustic behavior, current session minting/provider capability or an audible journey. No complete client-source census or runtime execution is claimed.",
+     "files": [
+      {
+       "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-elevenlabs-ws-init.ts",
+       "bytes": 11068,
+       "sha256": "52321ba32b5c95ee22926b61861913c06f7b29055a16599fda7849a696c2b4ae"
+      },
+      {
+       "path": "packages/operator-core/lib/voice-node/operator-voice-session-deps.ts",
+       "bytes": 10640,
+       "sha256": "c964138dc1ea713fbfb64b6fb45758f5fa70755894cbac2e8cbe26f6e6fea95e"
+      },
+      {
+       "path": "apps/tui/src/voice_convai.rs",
+       "bytes": 16289,
+       "sha256": "0bee1a9c9d9badbade53080a66956f116efe3e0355a507783970547be0ad75db"
+      },
+      {
+       "path": "apps/tui/src/voice.rs",
+       "bytes": 39715,
+       "sha256": "1381b6751e35f4fff030b9e2468cd37cd7aaa4fe0b5ccd24f77a6feff8ceca1c"
+      },
+      {
+       "path": "apps/tui/src/app.rs",
+       "bytes": 1362106,
+       "sha256": "0afba081e2e6a86e543ce37816f8ed0891e289cbd0430dfece13ec68f538fc31"
+      },
+      {
+       "path": "apps/tui/src/main.rs",
+       "bytes": 411633,
+       "sha256": "71320068b65db1a14868346862522cca77dae02b150878b412f9fd66cb6544b5"
+      },
+      {
+       "path": "apps/tui/src/client.rs",
+       "bytes": 206145,
+       "sha256": "3d4b0378fc37532759f8382eabf093cd6b0653e2bdc543e105e45508007caccd"
+      },
+      {
+       "path": "apps/operator/app/_components/voice/voice-mode.ts",
+       "bytes": 145651,
+       "sha256": "2b6340fbe5e9ea65c9c29a3fa48f5ee0f45d9290054f203bf66a44cf3d41da29"
+      }
+     ]
+    },
+    "receiptQualification": {
+     "guidedSession": {
+      "path": "docs/evidence/voice-final-public-release-2026-10-01/guided-session.md",
+      "bytes": 9866,
+      "sha256": "e62806f50abf4f40b52c0d39eda9d1bda7eabc3a96cbc20ddce13b62fb4e44f0"
+     },
+     "preflight": {
+      "path": "docs/evidence/voice-final-public-release-2026-10-01/preflight-2026-10-06.md",
+      "bytes": 3080,
+      "sha256": "51c2ebb8cbbac63862a04cb5c239adabe85934e8c206c656b4bfbc63ac2bac23"
+     },
+     "syntheticR4": {
+      "path": "docs/evidence/voice-final-public-release-2026-10-01/r4-rig-run7-2026-10-11.json",
+      "bytes": 4869,
+      "sha256": "7c6cc8f88a3aa95490c62b6798585ce733417eb865ac5a4e2f048ed718124412",
+      "specId": "AUTO-BAR-R-4-P-004",
+      "sourceCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+      "recordedProof": "The isolated synthetic receipt records11/11 and preparation/boot/assertion PASS, with the same voice-mode source hash as the finite review.",
+      "limitation": "Its explicit disclosures exclude acoustic self-audio and hosted credential/tenant/spend isolation. Receipt read only; no rerun or independent runtime/ledger certification. R-4 does not satisfy R-3 physical-microphone, owner/platform or preference-restoration acceptance."
+     }
+    },
+    "sourceAndAcceptanceLimits": {
+     "localEvidenceDestination": "docs/evidence/voice-final-public-release-2026-10-01/desktop-tui/ was absent during preparation1174361. This bounded local observation does not prove a current runtime failure.",
+     "unmeasured": [
+      "Current physical-microphone capture, spoken input, retained transcript and audible reply across the exact supported desktop/TUI matrix",
+      "Real acoustic mute/off/interruption/self-audio and current owner/hardware/platform acceptance",
+      "Current ElevenLabs credential and shared-host session-mint capability",
+      "Executed preference preservation, restoration and re-read/diff",
+      "Independent current R-3 grading, final release hold fulfillment and exact shipment"
+     ],
+     "disposition": "Retain requires-further-qualification. Current relevant acceptance remains unresolved; no duplicate, obsolete, superseded, accepted or shipped disposition."
+    },
+    "auditBoundary": {
+     "historicalFields": "All172 prior rows, original version23 fields, existing qualifications, population and exclusions are preserved.",
+     "queueReconciliation": "Whole PERSONAL audit and200-versus172 reconciliation remain OPEN. Archive1160078, separate Phone9/R68 and repair WI-10005218 remain unresolved.",
+     "ownerWalls": "The residue-authority and private-preview questions were already asked; their last saved answers remain open/null and were not re-read for this addition.",
+     "actions": "Only this additive row44 qualification; no child claim/state/hold, product source/test, native/provider/Actions/LIVE_GATE_OPS, killed-goal revival or shipment changes."
+    }
+   }
   },
   {
    "id": "WI-10004760",
