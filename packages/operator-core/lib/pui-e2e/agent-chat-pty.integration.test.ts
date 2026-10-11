@@ -5624,6 +5624,22 @@ async function operatorSetupProbe(port: number) {
   return Promise.all(['/api/tui/identity', '/api/harness/projects/lite'].map(read));
 }
 
+/** Post-failure diagnostics only: a successful fresh probe cannot establish
+ * why an earlier startup request failed. Keep the installed client's full
+ * error chain alongside the server request timings without launching a model. */
+async function operatorFailureProbe(port: number) {
+  const probe = await operatorSetupProbe(port);
+  const doctor = await promisify(execFile)(bin, ['doctor'], {
+    timeout: 15_000, maxBuffer: 32_000,
+    env: { PATH: process.env.PATH, HOME: home, PUI_OPERATOR: `http://127.0.0.1:${port}` },
+  }).then(({ stdout, stderr }) => ({ output: redactSensitiveText(stdout + stderr) }))
+    .catch((doctorError) => ({
+      error: redactSensitiveText(cleanupErrorText(doctorError)),
+      output: redactSensitiveText(String(doctorError?.stdout ?? '') + String(doctorError?.stderr ?? '')),
+    }));
+  return { probe, doctor };
+}
+
 async function startOperatorProcess(port = 0) {
   const events: SuSessionEvent[] = [];
   const readiness: Array<Record<string, unknown>> = [];
@@ -7604,6 +7620,36 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
 });
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
+  test('operator OS cold startup verifies identity before native launch', async () => {
+    const first = await startOperatorProcess();
+    // No REST prewarming: exercise the installed client's own cold probe.
+    const pane = new PuiPane(bin, first.port, home, { cwd: journeyDir('cold-identity') });
+    let primaryFailure: { error: unknown } | null = null;
+    try {
+      await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      expect(first.descriptors.size).toBe(0);
+      expect(first.events).toEqual([]);
+      expect(first.responses).toEqual([]);
+      console.info('PUI_OPERATOR_COLD_IDENTITY_PREFLIGHT', JSON.stringify({
+        binarySha256, diagnostics: first.diagnostics, screen: pane.screen(), nativeLaunches: 0,
+      }));
+    } catch (error) {
+      primaryFailure = { error };
+      const diagnosis = await operatorFailureProbe(first.port);
+      console.info('PUI_OPERATOR_COLD_IDENTITY_FAILURE', JSON.stringify({
+        binarySha256, diagnostics: first.diagnostics, screen: pane.failureScreen(),
+        ...diagnosis, responses: first.responses, output: first.output(),
+      }));
+      throw error;
+    } finally {
+      await preservePrimaryFailureDuringCleanup(primaryFailure, [
+        { label: 'cold identity pane', run: () => pane.stop() },
+        { label: 'cold identity operator', run: () => first.stop() },
+      ]);
+    }
+  }, 300_000);
+
   test('operator OS process setup selects the seeded project before native launch', async () => {
     const first = await startOperatorProcess();
     const pane = new PuiPane(bin, first.port, home, { cwd: journeyDir('process-context') });
@@ -7642,21 +7688,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       }));
     } catch (error) {
       primaryFailure = { error };
-      const probe = await operatorSetupProbe(first.port);
-      // Use the installed client's own full rendezvous diagnostic; its footer
-      // intentionally omits the error chain. This is a fresh probe, not proof
-      // of the earlier failing request, and never launches an engine.
-      const doctor = await promisify(execFile)(bin, ['doctor'], {
-        timeout: 15_000, maxBuffer: 32_000,
-        env: { PATH: process.env.PATH, HOME: home, PUI_OPERATOR: `http://127.0.0.1:${first.port}` },
-      }).then(({ stdout, stderr }) => ({ output: redactSensitiveText(stdout + stderr) }))
-        .catch((doctorError) => ({
-          error: redactSensitiveText(cleanupErrorText(doctorError)),
-          output: redactSensitiveText(String(doctorError?.stdout ?? '') + String(doctorError?.stderr ?? '')),
-        }));
+      const diagnosis = await operatorFailureProbe(first.port);
       console.info('PUI_OPERATOR_CONTEXT_PREFLIGHT_FAILURE', JSON.stringify({
         diagnostics: first.diagnostics, screen: pane.failureScreen(),
-        frames, probe, doctor, responses: first.responses, output: first.output(),
+        frames, ...diagnosis, responses: first.responses, output: first.output(),
       }));
       throw error;
     } finally {
@@ -8007,10 +8042,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       }
       frames.beforeRestart = pane.screen();
     } catch (error) {
+      const diagnosis = await operatorFailureProbe(first.port);
       console.info(
         'PUI_OPERATOR_PROCESS_FAILURE',
         JSON.stringify({
           output: first.output(),
+          ...diagnosis,
           diagnostics: first.diagnostics,
           descriptors: [...first.descriptors.values()],
           events: first.events.slice(-30),
