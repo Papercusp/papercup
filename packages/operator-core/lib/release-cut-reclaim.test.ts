@@ -33,6 +33,7 @@ import {
   resolveReclaimTargets,
   scanProcHolders,
   type HolderScan,
+  type ReclaimPhaseTiming,
   type ReclaimPlanInput,
   type ReclaimWorktree,
   type RetentionLease,
@@ -400,6 +401,30 @@ describe('gather + execute against a real temporary repo', () => {
       scanHolders: () => ({ verified: true, holders: new Map() }),
       ...extra,
     });
+
+  it('emits phase timings for a read-only plan when diagnostics are requested', async () => {
+    const phases: ReclaimPhaseTiming[] = [];
+    await gather({
+      listWorktrees: () => [wt(repo, { detached: false })],
+      onPhase: (event) => phases.push(event),
+    });
+
+    const expected = [
+      'worktree-enumeration',
+      'tree-probes',
+      'retention-leases',
+      'release-records',
+      'holder-scan',
+      'cheap-plan',
+      'authored-work',
+      'final-plan',
+      'interrupted-receipt-scan',
+    ];
+    expect(phases.filter((phase) => phase.stage === 'start').map((phase) => phase.phase)).toEqual(expected);
+    const finished = phases.filter((phase) => phase.stage === 'finish');
+    expect(finished.map((phase) => phase.phase)).toEqual(expected);
+    expect(finished.every((phase) => Number.isFinite(phase.elapsedMs) && phase.outcome === 'fulfilled')).toBe(true);
+  });
 
   it('only runs the git-heavy authored read for trees that survive the cheap checks', async () => {
     g(repo, 'worktree', 'add', '-q', '--detach', path.join(tmp, 'relcut-a'));

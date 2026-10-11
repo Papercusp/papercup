@@ -11,7 +11,11 @@ import { readFileSync } from 'node:fs';
 import type { ExecFileOptions } from 'node:child_process';
 import type { PreflightResult, CutStatus, HandoffResult, ReleaseGate } from '../../release-cut-launch';
 
-const { auditSqlM } = vi.hoisted(() => ({ auditSqlM: vi.fn() }));
+const { auditSqlM, reclaimGatherM, reclaimRenderM } = vi.hoisted(() => ({
+  auditSqlM: vi.fn(),
+  reclaimGatherM: vi.fn(),
+  reclaimRenderM: vi.fn(),
+}));
 
 // Partial-mock: keep the REAL pure helpers the handler uses (isValidVersion, buildCutArgv,
 // desktopRoot, CHANNELS, CUT_UNIT, cutUnitFor, legsForPlatform, ...) and override only the
@@ -45,6 +49,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { unsafe: auditSqlM } }) as never,
 }));
+vi.mock('../../release-cut-reclaim', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release-cut-reclaim')>()),
+  gatherCutReclaimPlan: reclaimGatherM,
+  renderReclaimPlan: reclaimRenderM,
+}));
 vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
   activeWorkspaceId: () => 'test-ws',
@@ -71,6 +80,7 @@ import { markSpawned } from '../../task-manager/store';
 import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { execFile } from 'node:child_process';
+import { gatherCutReclaimPlan, renderReclaimPlan } from '../../release-cut-reclaim';
 const beginOpM = vi.mocked(beginCutOperation);
 const markSpawnedM = vi.mocked(markSpawned);
 const provenanceM = vi.mocked(resolveBashTaskProvenance);
@@ -82,6 +92,8 @@ const abortLegM = vi.mocked(abortLeg);
 const gateM = vi.mocked(readOrCreateGate);
 const registryM = vi.mocked(loadHarnessRegistry);
 const execFileM = vi.mocked(execFile);
+const reclaimGatherMock = vi.mocked(gatherCutReclaimPlan);
+const reclaimRenderMock = vi.mocked(renderReclaimPlan);
 
 /**
  * WI-10005193: cut.ts runs its children through callback-style execFile (runFileAsync) so the
@@ -183,6 +195,39 @@ beforeEach(() => {
   markSpawnedM.mockResolvedValue(undefined);
   provenanceM.mockResolvedValue({
     launchedBy: 'o', sessionId: 'o', harnessSlug: null, workItemId: null, planSlug: null, goalRef: null,
+  });
+});
+
+describe('release:cut reclaim timing diagnostics', () => {
+  it('correlates planner phases to the MCP request without logging target paths', async () => {
+    const privateTarget = '/tmp/private-release-cut-target';
+    reclaimGatherMock.mockImplementationOnce(async (options) => {
+      options.onPhase?.({ phase: 'release-records', stage: 'start' });
+      options.onPhase?.({ phase: 'release-records', stage: 'finish', elapsedMs: 65_000, outcome: 'fulfilled' });
+      return {} as never;
+    });
+    reclaimRenderMock.mockReturnValueOnce({ counts: { reclaimable: 0, namedOnly: 0, protected: 0 } } as never);
+    const log = vi.fn();
+
+    const response = await tool.handler(
+      { op: 'reclaim', targets: [privateTarget] } as never,
+      { role: 'operator', requestOrigin: { mcpRequestTraceId: 'mcp-reclaim-trace' }, log } as never,
+    );
+
+    expect(body(response)).toMatchObject({ ok: true, op: 'reclaim', dryRun: true });
+    const prefix = '[release:cut] reclaim timing ';
+    const entries = log.mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.startsWith(prefix))
+      .map((message) => JSON.parse(message.slice(prefix.length)) as Record<string, unknown>);
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'handler', stage: 'start' }),
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'release-records', stage: 'start' }),
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'release-records', stage: 'finish', elapsedMs: 65_000 }),
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'response-serialization', stage: 'finish' }),
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'handler', stage: 'finish' }),
+    ]));
+    expect(JSON.stringify(entries)).not.toContain(privateTarget);
   });
 });
 

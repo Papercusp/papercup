@@ -43,6 +43,7 @@ import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 import { mapWithConcurrency } from './gym/concurrency';
 import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
@@ -922,6 +923,79 @@ export interface GatherOptions {
   scanHolders?: (targets: HolderTarget[]) => HolderScan | Promise<HolderScan>;
   authoredWork?: (tree: string, canonicalRoot: string) => AuthoredWork | Promise<AuthoredWork>;
   readLeases?: (dir: string) => { leases: RetentionLease[]; errors: string[] };
+  /** Optional, path-free phase diagnostics for the live release:cut handler. */
+  onPhase?: (event: ReclaimPhaseTiming) => void;
+}
+
+export interface ReclaimPhaseTiming {
+  phase: string;
+  stage: 'start' | 'finish';
+  elapsedMs?: number;
+  outcome?: 'fulfilled' | 'rejected';
+}
+
+function emitReclaimPhase(onPhase: GatherOptions['onPhase'], event: ReclaimPhaseTiming): void {
+  try {
+    onPhase?.(event);
+  } catch {
+    // Diagnostics must never change the read-only plan or its failure behavior.
+  }
+}
+
+function measureReclaimPhaseSync<T>(
+  onPhase: GatherOptions['onPhase'],
+  phase: string,
+  operation: () => T,
+): T {
+  if (!onPhase) return operation();
+  emitReclaimPhase(onPhase, { phase, stage: 'start' });
+  const startedAt = performance.now();
+  try {
+    const value = operation();
+    emitReclaimPhase(onPhase, {
+      phase,
+      stage: 'finish',
+      elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
+      outcome: 'fulfilled',
+    });
+    return value;
+  } catch (error) {
+    emitReclaimPhase(onPhase, {
+      phase,
+      stage: 'finish',
+      elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
+      outcome: 'rejected',
+    });
+    throw error;
+  }
+}
+
+async function measureReclaimPhaseAsync<T>(
+  onPhase: GatherOptions['onPhase'],
+  phase: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!onPhase) return operation();
+  emitReclaimPhase(onPhase, { phase, stage: 'start' });
+  const startedAt = performance.now();
+  try {
+    const value = await operation();
+    emitReclaimPhase(onPhase, {
+      phase,
+      stage: 'finish',
+      elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
+      outcome: 'fulfilled',
+    });
+    return value;
+  } catch (error) {
+    emitReclaimPhase(onPhase, {
+      phase,
+      stage: 'finish',
+      elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
+      outcome: 'rejected',
+    });
+    throw error;
+  }
 }
 
 export function defaultRetentionDir(): string {
@@ -932,24 +1006,33 @@ export function defaultRetentionDir(): string {
  *  for the trees still standing. */
 export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<ReclaimPlan> {
   const nowMs = opts.nowMs ?? Date.now();
-  const worktrees = await (
-    opts.listWorktrees ?? (async (r: string) => parseWorktreePorcelain(await git(r, ['worktree', 'list', '--porcelain'], 10_000)))
-  )(opts.repoPath);
+  const worktrees = await measureReclaimPhaseAsync(opts.onPhase, 'worktree-enumeration', () =>
+    Promise.resolve(
+      (opts.listWorktrees ??
+        (async (r: string) => parseWorktreePorcelain(await git(r, ['worktree', 'list', '--porcelain'], 10_000))))(
+        opts.repoPath,
+      ),
+    ),
+  );
   const selected = opts.targets?.length ? new Set(opts.targets.map((p) => path.resolve(p))) : null;
   const includes = (p: string) => selected === null || selected.has(path.resolve(p));
-  let rootDev: number | null = null;
-  try {
-    rootDev = fs.statSync('/').dev;
-  } catch {
-    rootDev = null;
-  }
-  const probe = opts.probe ?? ((p: string) => probeTree(p, rootDev));
   const probes = new Map<string, TreeProbe>();
-  for (const w of worktrees.slice(1)) if (!w.prunable && includes(w.path)) probes.set(w.path, probe(w.path));
-  const { leases, errors } = (opts.readLeases ?? readRetentionLeases)(opts.retentionDir ?? defaultRetentionDir());
+  measureReclaimPhaseSync(opts.onPhase, 'tree-probes', () => {
+    let rootDev: number | null = null;
+    try {
+      rootDev = fs.statSync('/').dev;
+    } catch {
+      rootDev = null;
+    }
+    const probe = opts.probe ?? ((p: string) => probeTree(p, rootDev));
+    for (const w of worktrees.slice(1)) if (!w.prunable && includes(w.path)) probes.set(w.path, probe(w.path));
+  });
+  const { leases, errors } = measureReclaimPhaseSync(opts.onPhase, 'retention-leases', () =>
+    (opts.readLeases ?? readRetentionLeases)(opts.retentionDir ?? defaultRetentionDir()),
+  );
   let releases: ReleaseRecord[] | { error: string };
   try {
-    releases = await opts.loadReleases();
+    releases = await measureReclaimPhaseAsync(opts.onPhase, 'release-records', opts.loadReleases);
   } catch (e) {
     releases = { error: errText(e) };
   }
@@ -957,7 +1040,9 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
     key,
     prefixes: [key, ...(p.realPath && p.realPath !== key ? [p.realPath] : [])],
   }));
-  const holders = await (opts.scanHolders ?? scanProcHolders)(holderTargets);
+  const holders = await measureReclaimPhaseAsync(opts.onPhase, 'holder-scan', () =>
+    Promise.resolve((opts.scanHolders ?? scanProcHolders)(holderTargets)),
+  );
   const base = {
     nowMs,
     minIdleHours: opts.minIdleHours ?? DEFAULT_MIN_IDLE_HOURS,
@@ -969,38 +1054,43 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
     probes,
     holders,
   };
-  const cheap = planCutReclaim({ ...base, authored: new Map() });
+  const cheap = measureReclaimPhaseSync(opts.onPhase, 'cheap-plan', () => planCutReclaim({ ...base, authored: new Map() }));
   const canonicalRoot = cheap.canonicalRoot;
   const authored = new Map<string, AuthoredWork>();
   if (canonicalRoot) {
     const inspect =
       opts.authoredWork ?? ((tree: string, canon: string) => inspectAuthoredWork(tree, canon, opts.releaseVersionPaths));
-    const pending = cheap.verdicts
-      .filter((v) => includes(v.path) && v.reasons.length === 1 && v.reasons[0] === AUTHORED_UNCHECKED)
-      .map((v) => v.path);
-    const results = await mapWithConcurrency(
-      pending,
-      opts.authoredConcurrency ?? AUTHORED_TREE_CONCURRENCY,
-      async (tree) => inspect(tree, canonicalRoot),
-    );
+    const { pending, results } = await measureReclaimPhaseAsync(opts.onPhase, 'authored-work', async () => {
+      const pending = cheap.verdicts
+        .filter((v) => includes(v.path) && v.reasons.length === 1 && v.reasons[0] === AUTHORED_UNCHECKED)
+        .map((v) => v.path);
+      const results = await mapWithConcurrency(
+        pending,
+        opts.authoredConcurrency ?? AUTHORED_TREE_CONCURRENCY,
+        async (tree) => inspect(tree, canonicalRoot),
+      );
+      return { pending, results };
+    });
     pending.forEach((tree, i) => authored.set(tree, results[i] as AuthoredWork));
   }
-  const result = planCutReclaim({ ...base, authored });
+  const result = measureReclaimPhaseSync(opts.onPhase, 'final-plan', () => planCutReclaim({ ...base, authored }));
   if (canonicalRoot) {
-    const recovered = readInterruptedCutReclaims(
-      path.join(opts.retentionDir ?? defaultRetentionDir(), 'reclaim-archive'), canonicalRoot,
+    const recovered = measureReclaimPhaseSync(opts.onPhase, 'interrupted-receipt-scan', () =>
+      readInterruptedCutReclaims(path.join(opts.retentionDir ?? defaultRetentionDir(), 'reclaim-archive'), canonicalRoot),
     );
     result.interrupted = recovered.interrupted.filter((r) => includes(r.path) || includes(r.trash));
     result.failClosed.push(...recovered.errors.map((error) => `reclaim-receipt-unreadable:${error}`));
   }
   if (selected === null) return result;
-  const verdicts = result.verdicts.filter((v) => includes(v.path));
-  const found = new Set(verdicts.map((v) => path.resolve(v.path)));
-  return {
-    ...result,
-    verdicts,
-    failClosed: [...result.failClosed, ...[...selected].filter((p) => !found.has(p)).map((p) => `target-not-inspectable:${p}`)],
-  };
+  return measureReclaimPhaseSync(opts.onPhase, 'target-filter', () => {
+    const verdicts = result.verdicts.filter((v) => includes(v.path));
+    const found = new Set(verdicts.map((v) => path.resolve(v.path)));
+    return {
+      ...result,
+      verdicts,
+      failClosed: [...result.failClosed, ...[...selected].filter((p) => !found.has(p)).map((p) => `target-not-inspectable:${p}`)],
+    };
+  });
 }
 
 // ---------------------------------------------------------------- removal (effectful)

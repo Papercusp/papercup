@@ -46,6 +46,7 @@
 import { z } from 'zod';
 import { execFile, type ExecFileOptions } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -61,6 +62,7 @@ import {
   executeCutReclaim,
   gatherCutReclaimPlan,
   renderReclaimPlan,
+  type ReclaimPhaseTiming,
   type ReleaseRecord,
 } from '../../release-cut-reclaim';
 import {
@@ -1075,46 +1077,102 @@ export default defineTool({
   async handler(args, ctx) {
     // ── reclaim: list (dry-run) or remove stale cut worktrees (EI-23968726111761920) ──
     if (args.op === 'reclaim') {
-      if (args.confirm && !isOperatorConfigWriteRole(ctx.role)) {
-        return json({
-          ok: false,
-          op: 'reclaim',
-          refused: true,
-          reason: `role_forbidden — release:cut{op:reclaim,confirm:true} deletes worktrees and requires an operator-config write role (you are role:${ctx.role ?? 'unknown'}).`,
+      const handlerStartedAt = performance.now();
+      const suppliedTraceId = ctx.requestOrigin?.mcpRequestTraceId;
+      const traceId =
+        typeof suppliedTraceId === 'string' && suppliedTraceId.trim() && suppliedTraceId.length <= 128
+          ? suppliedTraceId
+          : null;
+      const logTiming = (event: ReclaimPhaseTiming) => {
+        try {
+          ctx.log?.(`[release:cut] reclaim timing ${JSON.stringify({
+            traceId,
+            targetCount: args.targets?.length ?? 0,
+            dryRun: !args.confirm,
+            ...event,
+          })}`);
+        } catch {
+          // Timing logs are diagnostic only; logger failure cannot change the reclaim result.
+        }
+      };
+      const measureHandlerPhase = <T>(phase: string, operation: () => T): T => {
+        logTiming({ phase, stage: 'start' });
+        const startedAt = performance.now();
+        try {
+          const value = operation();
+          logTiming({
+            phase,
+            stage: 'finish',
+            elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
+            outcome: 'fulfilled',
+          });
+          return value;
+        } catch (error) {
+          logTiming({
+            phase,
+            stage: 'finish',
+            elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
+            outcome: 'rejected',
+          });
+          throw error;
+        }
+      };
+      let handlerOutcome: ReclaimPhaseTiming['outcome'] = 'fulfilled';
+      logTiming({ phase: 'handler', stage: 'start' });
+      try {
+        if (args.confirm && !isOperatorConfigWriteRole(ctx.role)) {
+          return json({
+            ok: false,
+            op: 'reclaim',
+            refused: true,
+            reason: `role_forbidden — release:cut{op:reclaim,confirm:true} deletes worktrees and requires an operator-config write role (you are role:${ctx.role ?? 'unknown'}).`,
+          });
+        }
+        if (args.confirm && !args.targets?.length) {
+          return json({
+            ok: false,
+            op: 'reclaim',
+            refused: true,
+            reason:
+              'targets_required — confirm:true removes only paths named from a dry-run list; run without confirm first.',
+          });
+        }
+        const plan = await gatherCutReclaimPlan({
+          repoPath: integrationRoot(),
+          isAutoManaged: isAutoManagedCutWorktree,
+          releaseVersionPaths: RELEASE_RESUME_VERSION_PATHS,
+          loadReleases: loadReleaseRecords,
+          onPhase: logTiming,
+          ...(args.targets?.length ? { targets: args.targets } : {}),
+          ...(args.minIdleHours !== undefined ? { minIdleHours: args.minIdleHours } : {}),
+        });
+        if (!args.confirm) {
+          const rendered = measureHandlerPhase('plan-render', () => renderReclaimPlan(plan));
+          return measureHandlerPhase('response-serialization', () => json({
+            ok: true,
+            op: 'reclaim',
+            dryRun: true,
+            ...rendered,
+            note: 'DRY RUN — nothing removed. reclaimable = lease-identified cut, unprotected; namedOnly = no cut record, removed only if named. confirm:true + targets removes (diffs archived first).',
+          }));
+        }
+        const { ownerLabel } = readIdentity(ctx);
+        const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
+        await recordCutAudit('reclaim', actor, { phase: 'intent', targets: args.targets }, true);
+        const result = await executeCutReclaim(plan, args.targets ?? []);
+        await recordCutAudit('reclaim', actor, { phase: 'result', targets: args.targets, result });
+        return json({ op: 'reclaim', dryRun: false, ...result });
+      } catch (error) {
+        handlerOutcome = 'rejected';
+        throw error;
+      } finally {
+        logTiming({
+          phase: 'handler',
+          stage: 'finish',
+          elapsedMs: Math.round((performance.now() - handlerStartedAt) * 10) / 10,
+          outcome: handlerOutcome,
         });
       }
-      if (args.confirm && !args.targets?.length) {
-        return json({
-          ok: false,
-          op: 'reclaim',
-          refused: true,
-          reason:
-            'targets_required — confirm:true removes only paths named from a dry-run list; run without confirm first.',
-        });
-      }
-      const plan = await gatherCutReclaimPlan({
-        repoPath: integrationRoot(),
-        isAutoManaged: isAutoManagedCutWorktree,
-        releaseVersionPaths: RELEASE_RESUME_VERSION_PATHS,
-        loadReleases: loadReleaseRecords,
-        ...(args.targets?.length ? { targets: args.targets } : {}),
-        ...(args.minIdleHours !== undefined ? { minIdleHours: args.minIdleHours } : {}),
-      });
-      if (!args.confirm) {
-        return json({
-          ok: true,
-          op: 'reclaim',
-          dryRun: true,
-          ...renderReclaimPlan(plan),
-          note: 'DRY RUN — nothing removed. reclaimable = lease-identified cut, unprotected; namedOnly = no cut record, removed only if named. confirm:true + targets removes (diffs archived first).',
-        });
-      }
-      const { ownerLabel } = readIdentity(ctx);
-      const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
-      await recordCutAudit('reclaim', actor, { phase: 'intent', targets: args.targets }, true);
-      const result = await executeCutReclaim(plan, args.targets ?? []);
-      await recordCutAudit('reclaim', actor, { phase: 'result', targets: args.targets, result });
-      return json({ op: 'reclaim', dryRun: false, ...result });
     }
     // ── preflight: read-only go/no-go ──
     if (args.op === 'preflight') {
