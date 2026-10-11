@@ -161,6 +161,72 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(r.code).toBe(0);
       expect(r.out.trim()).toBe('');
     });
+
+    it('WI-41095 shares the full-depth tracked-repository boundary', () => {
+      const t = fixture();
+      const git = (args: string[]) => {
+        const r = spawnSync('git', ['-C', t, ...args], { encoding: 'utf8', timeout: 10_000 });
+        expect(r.status, r.stderr).toBe(0);
+      };
+      git(['init', '-q']);
+      for (const path of ['apps/foreign', 'libs/tracked']) {
+        mkdirSync(join(t, path), { recursive: true });
+        git(['init', '-q', path]);
+        write(join(t, path, 'node_modules/p/index.js'), 'package');
+      }
+      git(['update-index', '--add', '--cacheinfo', '160000', '1'.repeat(40), 'libs/tracked']);
+      write(join(t, 'packages/deep/one/two/three/node_modules/p/index.js'), 'deep');
+      const r = runLib(['trees', t]);
+      expect(r.code, r.err).toBe(0);
+      expect(r.out.trim().split('\n').sort()).toEqual([
+        'libs/tracked/node_modules', 'packages/deep/one/two/three/node_modules',
+      ]);
+    });
+  });
+
+  describe('WI-41095 donor and planned source closure preflight', () => {
+    it('refuses dangling .bin links before allocating a snapshot', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      mkdirSync(join(donor, 'node_modules/.bin'), { recursive: true });
+      symlinkSync('../vitest/vitest.mjs', join(donor, 'node_modules/.bin/vitest'));
+      const r = runLib(['snapshot', donor, out]);
+      expect(r.code).toBe(1); expect(r.err).toContain('dangling-pinned-dependency-link:node_modules/.bin/vitest');
+      expect(existsSync(out)).toBe(false);
+    });
+    it.each(['absolute', 'escape'])('refuses %s dependency links before allocation', kind => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      write(join(donor, 'node_modules/p/index.js'), 'valid'); write(join(t, 'external'), 'outside');
+      symlinkSync(kind === 'absolute' ? join(donor, 'node_modules/p/index.js') : '../../external',
+        join(donor, 'node_modules/link'));
+      const r = runLib(['snapshot', donor, out]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain(kind === 'absolute' ? 'absolute-pinned-dependency-link' : 'escaping-pinned-dependency-link');
+      expect(existsSync(out)).toBe(false);
+    });
+    it('requires workspace link targets in the declared source population', () => {
+      const t = fixture(); const donor = join(t, 'donor');
+      write(join(donor, 'libs/workspace/index.js'), 'workspace'); mkdirSync(join(donor, 'node_modules'));
+      symlinkSync('../libs/workspace', join(donor, 'node_modules/workspace'));
+      const population = join(t, 'population.json'); write(population, JSON.stringify([]));
+      expect(runLib(['preflight', donor, population]).err).toContain('unplanned-pinned-dependency-target');
+      write(population, JSON.stringify(['libs/workspace/index.js']));
+      const r = runLib(['preflight', donor, population]);
+      expect(r.code, r.err).toBe(0);
+    });
+    it('rechecks the donor after entering its install mutex', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      write(join(donor, 'node_modules/vitest/vitest.mjs'), 'healthy');
+      mkdirSync(join(donor, 'node_modules/.bin')); symlinkSync('../vitest/vitest.mjs', join(donor, 'node_modules/.bin/vitest'));
+      write(join(donor, 'scripts/npm-install-safe.mjs'), `import { unlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+unlinkSync(${JSON.stringify(join(donor, 'node_modules/vitest/vitest.mjs'))});
+const args = process.argv.slice(process.argv.indexOf('--') + 1);
+const result = spawnSync(args[0], args.slice(1), { stdio: 'inherit' });
+process.exit(result.status ?? 1);`);
+      const r = runLib(['snapshot-locked', donor, out]);
+      expect(r.code).toBe(1); expect(r.err).toContain('dangling-pinned-dependency-link');
+      expect(existsSync(out)).toBe(false);
+    });
   });
 
   describe('papercusp_pinned_deps_snapshot — the floor the overlay stands on', () => {
@@ -219,6 +285,7 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
     it('preserves relative symlink TEXT, so workspace packages resolve at the MOUNTPOINT', () => {
       const t = fixture();
       mkdirSync(join(t, 'donor', 'node_modules', '@papercusp'), { recursive: true });
+      write(join(t, 'donor', 'libs/generic/x/index.js'), 'workspace');
       symlinkSync('../../libs/generic/x', join(t, 'donor', 'node_modules', '@papercusp', 'x'));
       expect(runLib(['snapshot', join(t, 'donor'), join(t, 'snap')]).code).toBe(0);
       const r = spawnSync('readlink', [join(t, 'snap', 'node_modules', '@papercusp', 'x')], {

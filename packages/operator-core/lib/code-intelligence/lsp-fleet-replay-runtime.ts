@@ -689,7 +689,7 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     // WI-41095: share the maintained source boundary and check .bin too,
     // before headroom admission or allocating evidence. The locked copy rechecks.
     execFileSync('bash', [join(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'preflight', dependencyDonor, '-'],
-      { encoding: 'utf8', input: JSON.stringify(paths) });
+      { encoding: 'utf8', input: JSON.stringify(paths.filter(path => sources.has(outputSources.get(path) ?? resolve(donor, path)))) });
   }
   (options.checkSourceHeadroom ?? ((root, out, bytes) => {
     // Reuse the host copy lease and donor-scoped reserve policy. Check-only

@@ -663,7 +663,7 @@ describe('independent replay source materialization', () => {
     const f = fixture();
     for (const path of ['papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/release/dependency-generation.sh']) {
       mkdirSync(dirname(join(f.input.rootPath, path)), { recursive: true });
-      cpSync(join(process.cwd(), path), join(f.input.rootPath, path));
+      cpSync(new URL(`../../../../${path}`, import.meta.url), join(f.input.rootPath, path));
     }
     mkdirSync(join(f.input.rootPath, 'node_modules/.bin'), { recursive: true });
     if (kind === 'dangling-bin') symlinkSync('../vitest/vitest.mjs', join(f.input.rootPath, 'node_modules/.bin/vitest'));
