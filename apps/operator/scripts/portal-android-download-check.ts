@@ -4,16 +4,58 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export type PhaseReceipt = { phase: string; outcome: 'passed' | 'failed' };
-// The executable runs under tsx already. A second tsImport namespace corrupts
-// import.meta.url in the fixture's own tsImport calls (path?namespace=...).
+type CustodyFailure = { substep: string; reason: string; status: number | null; code: string | null };
+const oracleReasons = new Set(['no-build-id', 'unexpected-build-id', 'no-release', 'multiple-releases', 'build-id-mismatch', 'no-published-at', 'published-after-journey']);
+const safeCodes = new Set(['ENOENT', 'EACCES', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT']);
+function responseStatus(response: any): number | null {
+  const status = typeof response?.status === 'function' ? response.status() : response?.status;
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+class CustodyError extends Error {
+  constructor(readonly evidence: CustodyFailure) { super('artifact_custody_refused'); }
+}
+// Never persist exception messages, HTML, URLs, paths, cookies or arbitrary fields.
+function custodyError(substep: string, error: any, status: number | null): CustodyError {
+  const reason = oracleReasons.has(error?.reason) ? error.reason
+    : error?.message === 'artifact_changed' || error?.message === 'authenticated_artifact_changed' ? 'artifact-changed'
+    : error?.message === 'tutorial_served_source_missing' ? 'source-missing'
+    : typeof error?.message === 'string' && error.message.startsWith('tutorial_served_source_mismatch:') ? 'source-mismatch'
+    : 'unknown';
+  const code = [error?.code, error?.cause?.code].find(value => safeCodes.has(value)) ?? null;
+  return new CustodyError({ substep, reason, status, code });
+}
+// Launch via portal-android-download-launcher.mjs, which selects Portal's tsx.
+// Native import alone does not repair the operator loader's fixture ENOENT.
 export async function loadPortalModule(path: string) {
   const mod = await import(pathToFileURL(path).href);
   return { ...mod.default, ...mod };
 }
 export async function assertAuthenticatedArtifact(oracle: any, response: any, options: any, root: string, expectedRelease: string) {
-  const release = oracle.resolveServedRelease({ ...options, html: await response.text() });
-  if (release.release !== expectedRelease) throw new Error('authenticated_artifact_changed');
-  oracle.assertTutorialSourceCustody(release, root);
+  let substep = 'response-status';
+  let status: number | null = null;
+  try {
+    status = responseStatus(response);
+    if (status !== null && status !== 200) throw new CustodyError({ substep, reason: 'http-status', status, code: null });
+    substep = 'response-body';
+    const html = await response.text();
+    substep = 'served-release';
+    const release = oracle.resolveServedRelease({ ...options, html });
+    substep = 'release-equality';
+    if (release.release !== expectedRelease) throw new Error('artifact_changed');
+    substep = 'source-custody';
+    oracle.assertTutorialSourceCustody(release, root);
+  } catch (error) {
+    throw error instanceof CustodyError ? error : custodyError(substep, error, status);
+  }
+}
+export async function assertFetchedArtifact(fetchResponse: () => Promise<any>, oracle: any, options: () => any, root: string, expectedRelease: string) {
+  let response;
+  try { response = await fetchResponse(); } catch (error) { throw custodyError('fetch', error, null); }
+  let status: number | null = null;
+  try { status = responseStatus(response); } catch (error) { throw custodyError('response-status', error, null); }
+  let resolvedOptions;
+  try { resolvedOptions = options(); } catch (error) { throw custodyError('runtime-paths', error, status); }
+  await assertAuthenticatedArtifact(oracle, response, resolvedOptions, root, expectedRelease);
 }
 export async function enterSupportedAccountShell(page: any) {
   if (await page.getByRole('heading', { name: 'Welcome to Papercusp', exact: true }).isVisible()) {
@@ -27,11 +69,11 @@ export async function runDownloadPhases(
   cleanup: () => Promise<void>,
   observe: () => Promise<Record<string, boolean | number | null>>,
 ) {
-  const receipt: { phases: PhaseReceipt[]; failedPhase?: string; diagnostics?: Record<string, boolean | number | null>; cleanup: boolean; passed: boolean } = { phases: [], cleanup: false, passed: false };
+  const receipt: { phases: PhaseReceipt[]; failedPhase?: string; failure?: CustodyFailure; diagnostics?: Record<string, boolean | number | null>; cleanup: boolean; passed: boolean } = { phases: [], cleanup: false, passed: false };
   try {
     for (const step of steps) {
       try { await step.run(); receipt.phases.push({ phase: step.phase, outcome: 'passed' }); }
-      catch { receipt.failedPhase = step.phase; receipt.phases.push({ phase: step.phase, outcome: 'failed' }); break; }
+      catch (error) { if (error instanceof CustodyError) receipt.failure = error.evidence; receipt.failedPhase = step.phase; receipt.phases.push({ phase: step.phase, outcome: 'failed' }); break; }
     }
     if (receipt.failedPhase) receipt.diagnostics = await observe().catch(() => ({ observationFailed: true }));
   } finally {
@@ -66,9 +108,7 @@ export async function main() {
   let downloadedHash: string | undefined;
   const receipt = await runDownloadPhases([
     { phase: 'artifact-custody', run: async () => {
-      const release = oracle.resolveServedRelease({ html: await (await fetch(origin)).text(), releasesDir: runtime.standaloneRuntimePaths(root).releasesRoot, journeyStartedAt: new Date(), expectedBuildId: expectedRelease.split('-2026')[0] });
-      if (release.release !== expectedRelease) throw new Error('artifact_changed');
-      oracle.assertTutorialSourceCustody(release, root);
+      await assertFetchedArtifact(() => fetch(origin), oracle, () => ({ releasesDir: runtime.standaloneRuntimePaths(root).releasesRoot, journeyStartedAt: new Date(), expectedBuildId: expectedRelease.split('-2026')[0] }), root, expectedRelease);
     } },
     { phase: 'fixture-preflight', run: async () => { kit = await admission.loadHostedTestUserKit(root); } },
     { phase: 'test-admission', run: async () => {
