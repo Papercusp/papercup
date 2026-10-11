@@ -1,6 +1,7 @@
 /** ABI adapter only: no signer, private-key handling, broadcasting or custody. */
 import { createHash } from 'node:crypto';
-import { encodeDeployData, encodeFunctionData, getAddress, isAddress, type Abi, type AbiParameter, type Address, type Hex } from 'viem';
+import { encodeDeployData, encodeFunctionData, getAddress, isAddress } from 'viem/utils';
+import type { Abi, AbiParameter, Address, Hex } from 'viem';
 import artifactsJson from './artifacts.json';
 import type { EquityArtifacts, EquityContractName } from './compile';
 
