@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
 import { preparePortalBrowserSource, preparePrivateOperatorApiBundle, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
-import { buildPortalRosterBrowser, verifyPrivateHudReadPolicy } from '../../../test/portal-roster-browser-fixture';
+import { buildPortalRosterBrowser, verifyPrivateHudReadPolicy, verifyPrivateWorkspaceBrowserMount } from '../../../test/portal-roster-browser-fixture';
 import { verifyPrivateProjectHistorySeedStatus } from '../../../test/portal-project-history-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
@@ -22,6 +22,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     const graph = await buildPortalRosterBrowser({ portalSourceRoot: portalSource,
       selected: 'history-boundary-selected', neighbor: 'history-boundary-neighbor', projectHistory: true });
     expect(graph.originals.size).toBeGreaterThan(0);
+    expect(await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
+      selected: 'history-boundary-selected', neighbor: 'history-boundary-neighbor', projectHistory: true })).toMatchObject({ mounted: true });
   }, 180_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
@@ -30,7 +32,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     preparePrivateRosterSocketRoot();
     await verifyPrivateHudReadPolicy();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
-    await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'history-selected', neighbor: 'history-neighbor', projectHistory: true });
+    await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
+      selected: 'history-selected', neighbor: 'history-neighbor', projectHistory: true });
     let preparedApi: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-project-history-private.e2e.test.ts',
