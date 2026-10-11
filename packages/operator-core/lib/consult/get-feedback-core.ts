@@ -1594,7 +1594,16 @@ export async function getFeedbackCore(
     //     the next selectee. This is R-6 in the general case: a walled backend
     //     costs one expert, never the consult.
     let cascadeContinues = false;
-    if (queued === 0 && finalSelected.length > 1) {
+    // WI-6554700010008590: a single-seat menu still has a failover target when the
+    // routing pool holds candidates the menu never seated. advanceCascade's
+    // min-ANSWERS refill draws from exactly that untried remainder, so gating on
+    // `finalSelected.length > 1` alone stranded a bar-critique consult whose only
+    // seat was refused pre-launch (transcript not_archived) with seven untried
+    // candidates — two of them live — and ended it no_qualified_responder.
+    const seatedOwners = new Set(finalSelected.map((s) => s.candidate.ownerId));
+    const hasUntriedPool = minResponders > 0 &&
+      route.snapshot.candidates.some((c) => !seatedOwners.has(c.ownerId));
+    if (queued === 0 && (finalSelected.length > 1 || hasUntriedPool)) {
       const failedOwner = finalSelected[0]!.candidate.ownerId;
       let failoverReach: Awaited<ReturnType<GetFeedbackDeps['reach']>> | undefined;
       const advanced = await advanceCascade(
