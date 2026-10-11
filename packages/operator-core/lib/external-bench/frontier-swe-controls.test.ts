@@ -13,6 +13,7 @@ function v2Task(over: Record<string, unknown> = {}): BenchTask {
     problemStatement: 'x',
     graderMeta: {
       corpusVersion: 'v2',
+      networkMode: 'allowlist',
       upstreamCommit: 'da83f84f8fbcec3cbf0f2b17c98ebc811355c2df',
       dockerImage: `us-west1-docker.pkg.dev/p/spice@sha256:${'1'.repeat(64)}`,
       verifierDockerImage: `us-west1-docker.pkg.dev/p/spice@sha256:${'2'.repeat(64)}`,
@@ -42,13 +43,16 @@ OMP_NUM_THREADS = "4"
  * Fake docker: `run` → the arm container; `diff` → `diffLines`; `test`/`cat` read `files` (the verifier's reward);
  * the solve exec → `solveCode`; everything else → 0. Records every invocation.
  */
-function fakeDocker(opts: { files?: Record<string, string>; diffLines?: string[]; solveCode?: number; runCode?: number } = {}) {
+function fakeDocker(opts: { files?: Record<string, string>; diffLines?: string[]; solveCode?: number; runCode?: number;
+  networkMode?: string; inspectionCode?: number } = {}) {
   const files = opts.files ?? { '/logs/verifier/reward.txt': '0.97\n' };
   const calls: string[][] = [];
   const exec: ProcExec = async (_cmd, args) => {
     calls.push(args);
     const ok = (stdout = '') => ({ stdout, stderr: '', code: 0 });
     if (args[0] === 'run') return opts.runCode ? { stdout: '', stderr: 'boom', code: opts.runCode } : ok('armcid\n');
+    if (args[0] === 'inspect') return opts.inspectionCode
+      ? { stdout: '', stderr: 'inspection failed', code: opts.inspectionCode } : ok(`${opts.networkMode ?? 'none'}\n`);
     if (args[0] === 'diff') return ok((opts.diffLines ?? []).join('\n'));
     if (args[0] !== 'exec') return ok();
     const last = args[args.length - 1];
@@ -100,6 +104,7 @@ describe('runFrontierSweControl — gold', () => {
     expect(r.graderStatus).toBe('failed'); // 0.97 < 1: a real score, not resolved
     expect(r.score).toBe(0.97);
     expect(r.error).toBeUndefined();
+    expect(r.networkPolicy).toEqual({ declaredMode: 'allowlist', agentNetworkMode: 'none' });
 
     // contents-copy (`/.`): the entrypoint's oracle stage has already created /solution, and a plain dir copy
     // onto an existing directory would nest it as /solution/solution
@@ -121,6 +126,7 @@ describe('runFrontierSweControl — gold', () => {
 
     // the reference run happens BEFORE grading, and the arm container is torn down last
     expect(calls.indexOf(solve)).toBeLessThan(calls.indexOf(verify));
+    expect(calls.findIndex((c) => c[0] === 'inspect')).toBeLessThan(calls.indexOf(solve));
     expect(calls[calls.length - 1]).toEqual(['rm', '-f', 'armcid']);
     expect(events).toEqual(['release']);
     expect(r.oracle).toMatchObject({ user: 'agent', exitCode: 0, timedOut: false, timeoutSec: 72000, logTail: 'oracle: marker written\n' });
@@ -187,6 +193,35 @@ describe('runFrontierSweControl — empty', () => {
 });
 
 describe('runFrontierSweControl — refusals and infra failures', () => {
+  it.each(['bridge', 'host', ''])('refuses measured network %j before running the oracle or verifier', async (networkMode) => {
+    const { exec, calls } = fakeDocker({ networkMode });
+    const r = await runFrontierSweControl({ task: v2Task(), mode: 'gold', repoDir: REPO,
+      exec, readText: async () => TASK_TOML });
+    expect(r.graderStatus).toBe('error');
+    expect(r.score).toBeNull();
+    expect(r.networkPolicy).toEqual({ declaredMode: 'allowlist', agentNetworkMode: networkMode });
+    expect(calls.some((c) => c[0] === 'cp' || c.includes('vcid'))).toBe(false);
+    expect(calls[calls.length - 1]).toEqual(['rm', '-f', 'armcid']);
+  });
+
+  it('cannot claim network fidelity when Docker inspection fails', async () => {
+    const { exec, calls } = fakeDocker({ inspectionCode: 1 });
+    const r = await runFrontierSweControl({ task: v2Task(), mode: 'empty', repoDir: REPO, exec });
+    expect(r.error).toMatch(/inspect agent network/);
+    expect(r.score).toBeNull();
+    expect(r.networkPolicy).toBeUndefined();
+    expect(calls[calls.length - 1]).toEqual(['rm', '-f', 'armcid']);
+  });
+
+  it('refuses missing or unknown declared network modes before cloning', async () => {
+    for (const networkMode of [undefined, 'open']) {
+      const { exec, calls } = fakeDocker();
+      const r = await runFrontierSweControl({ task: v2Task({ networkMode }), mode: 'empty', repoDir: REPO, exec });
+      expect(r.error).toMatch(/no enforceable declared network mode/);
+      expect(calls).toEqual([]);
+    }
+  });
+
   it('refuses a v1 (shared-verifier) task', async () => {
     const { exec, calls } = fakeDocker();
     const r = await runFrontierSweControl({ task: v2Task({ verifierEnvironmentMode: undefined }), mode: 'empty', repoDir: REPO, exec });

@@ -88,6 +88,8 @@ export interface FrontierSweControlResult {
   resolved: boolean | null;
   detail?: unknown;
   oracle?: FrontierSweOracleRun;
+  /** Actual agent-container network inspected before any oracle or verifier execution. */
+  networkPolicy?: { declaredMode: string; agentNetworkMode: string };
   /** An infra failure before or around grading (clone, staging, solve exec) — never a silent score. */
   error?: string;
 }
@@ -119,10 +121,12 @@ export async function runFrontierSweControl(opts: RunFrontierSweControlOpts): Pr
   const now = opts.now ?? Date.now;
   const t0 = now();
   const meta = (task.graderMeta ?? {}) as Record<string, unknown>;
+  let networkPolicy: FrontierSweControlResult['networkPolicy'];
   const base = { instanceId: task.instanceId, mode, startedAt: new Date(t0).toISOString() };
   const finish = (r: Omit<FrontierSweControlResult, 'instanceId' | 'mode' | 'startedAt' | 'finishedAt' | 'durationMs'>) => {
     const t1 = now();
-    return { ...base, finishedAt: new Date(t1).toISOString(), durationMs: t1 - t0, ...r };
+    return { ...base, finishedAt: new Date(t1).toISOString(), durationMs: t1 - t0,
+      ...(networkPolicy ? { networkPolicy } : {}), ...r };
   };
   const infra = (error: string, extra: Partial<FrontierSweControlResult> = {}) =>
     finish({ graderStatus: 'error', score: null, resolved: null, error, ...extra });
@@ -133,6 +137,10 @@ export async function runFrontierSweControl(opts: RunFrontierSweControlOpts): Pr
   }
   if (mode === 'gold' && !meta['solutionCmd']) {
     return infra(`task ${task.instanceId} ships no reference solution — no gold control is possible`);
+  }
+  const declaredMode = typeof meta['networkMode'] === 'string' ? meta['networkMode'].trim() : '';
+  if (!['allowlist', 'no-network', 'none'].includes(declaredMode)) {
+    return infra(`task ${task.instanceId} has no enforceable declared network mode`);
   }
 
   let spec: FrontierSweSolutionSpec = { user: null, env: {} };
@@ -159,6 +167,14 @@ export async function runFrontierSweControl(opts: RunFrontierSweControlOpts): Pr
     return infra(`clone: ${e instanceof Error ? e.message : String(e)}`);
   }
   try {
+    // Controls have no model client in the container, so zero egress also satisfies allowlist.
+    // Inspect the running container rather than inferring fidelity from intended docker arguments.
+    const inspection = await exec('docker', ['inspect', '--format', '{{.HostConfig.NetworkMode}}', handle.containerId]);
+    if (inspection.code !== 0) return infra(`inspect agent network: exit ${inspection.code}`);
+    networkPolicy = { declaredMode, agentNetworkMode: inspection.stdout.trim() };
+    if (networkPolicy.agentNetworkMode !== 'none') {
+      return infra(`agent network is ${networkPolicy.agentNetworkMode || 'unknown'}, expected none for ${declaredMode}`);
+    }
     let oracle: FrontierSweOracleRun | undefined;
     if (mode === 'gold') {
       const cid = handle.containerId;
