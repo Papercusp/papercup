@@ -937,11 +937,13 @@ export default defineTool({
         //
         // Do NOT infer that every checkpoint means deferral: work_items:park deliberately
         // writes a checkpoint for a NORMAL resumable handoff. Surface the semantic delta at
-        // the decision point instead. A second release on the now-unassigned row can still
-        // apply claimHold:true, so this is actionable after the plain release rather than a
-        // dead-end warning. Explicit claimHold:false is the caller's deliberate "re-pool"
-        // signal and therefore suppresses the nudge. Forced reclaims carry mandatory audit
-        // reasons with unrelated semantics, so they are excluded too.
+        // the decision point instead. A follow-up release can still park the row if it remains
+        // unassigned, but the first release has returned it to the pool; a peer may claim it
+        // before that second call. Point future deferrals at claimHold:true on the original
+        // release, and make the after-the-fact path check current ownership. Explicit
+        // claimHold:false is the caller's deliberate "re-pool" signal and therefore suppresses
+        // the nudge. Forced reclaims carry mandatory audit reasons with unrelated semantics,
+        // so they are excluded too.
         const alreadyClaimHeld = isClaimHoldParked(workItem.payload);
         const claimHoldNudge =
           !force && claimHold === undefined && wasHeld && !alreadyClaimHeld && (releaseCheckpoint || reason)
@@ -949,10 +951,14 @@ export default defineTool({
                 claimHoldNudge:
                   `Plain release left '${it.id}' self-selectable by other agents immediately (only your own short ` +
                   `re-claim cooldown was applied). ${releaseCheckpoint ? 'Its checkpoint remains resume context, not a queue disposition.' : 'Its release reason was recorded, but does not change selectability.'} ` +
-                  `If this means "defer / not now / do not self-select", apply the durable disposition now with ` +
-                  `work_items:release { id:'${it.id}', claimHold:true, reason:'<unpark condition>', ` +
-                  `claimHoldRelease:{ condition:'<what changes>', trigger:'<exact event key>' } }; that follow-up ` +
-                  `works while the item is unassigned. If this is an ordinary handoff, no action is needed.`,
+                  `If this means "defer / not now / do not self-select", use this as the original ` +
+                  `work_items:release call: work_items:release { id:'${it.id}', claimHold:true, ` +
+                  `reason:'<why it is deferred>', claimHoldRelease:{ condition:'<what changes>', ` +
+                  `trigger:'<exact event key>' } }; it suppresses the broad claimable wake and avoids a ` +
+                  `separate post-release round trip. Since this release already happened, ` +
+                  `re-read work_items:get before following up. A peer may have claimed the item since the last ` +
+                  `check. A not_holder result means another agent currently holds it; coordinate with them ` +
+                  `instead of forcing. If this is an ordinary handoff, no action is needed.`,
               }
             : {};
         // EI-21352358541526229: the fully-blind release — no checkpoint AND no reason — was
@@ -966,7 +972,7 @@ export default defineTool({
         // also driven by paths with no disposition to give (stale-claim reaping, handoffs,
         // a release of work genuinely never started), and refusing those would block the queue
         // to buy a field that is often honestly empty. Nudge the human-ish path instead, and
-        // make the remedy a call that still works after the fact.
+        // make the after-the-fact remedy explicit about a possible peer re-claim.
         const blindReleaseNudge =
           !force && claimHold === undefined && wasHeld && !releaseCheckpoint && !reason
             ? {
@@ -974,11 +980,12 @@ export default defineTool({
                   `You released '${it.id}' with neither a checkpoint nor a reason, so it returns to the queue looking ` +
                   `UNSTARTED. The next claimant is told only that somebody held it and left nothing behind ` +
                   `(priorWork hasCheckpoint:false) and has to re-derive whatever you already know — measured at 6–10 ` +
-                  `tool calls of Postgres forensics and repo greps per item. If you built, landed, or SETTLED ` +
-                  `anything — a migration, a commit, a conclusion, even "this turned out to be already done" — record ` +
-                  `it now with work_items:release { id:'${it.id}', reason:'<one line: what exists, what is left>' }; ` +
-                  `that follow-up works while the item is unassigned and is stored as the next claimant's starting ` +
-                  `context. If you genuinely did nothing to this item, no action is needed.`,
+                  `tool calls of Postgres forensics and repo greps per item. For future releases, record any work ` +
+                  `in the original work_items:release call with a reason. Since this release already happened, ` +
+                  `re-read work_items:get before following up with work_items:release { id:'${it.id}', ` +
+                  `reason:'<one line: what exists, what is left>' }; a peer may have claimed the item since the ` +
+                  `last check. A not_holder result means another agent currently holds it; coordinate with them ` +
+                  `instead of forcing. If you genuinely did nothing to this item, no action is needed.`,
               }
             : {};
         if (claimHold === undefined) {
