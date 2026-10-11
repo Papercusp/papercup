@@ -32,6 +32,11 @@
 #                               interface churn from aborting Chromium loads with
 #                               net::ERR_NETWORK_CHANGED (WI-6554700010008480);
 #                               PAPERCUSP_E2E_NETNS=auto|required|off selects its mode.
+#   VERIFY_TAURI_SOURCE_REF     committed source ref; defaults to HEAD. Set it
+#                               explicitly empty to keep the guarded working-tree mode.
+#   VERIFY_TAURI_SOURCE_INPUTS[_FILE]
+#                               acceptance paths checked against the ref; when omitted,
+#                               the runner records the Playwright config and direct spec paths.
 #   The rig exports OPERATOR_SOURCE_ROOT at its assertion boundary; Vite and
 #   Playwright both execute from that frozen source. Legacy/test rigs without
 #   a source snapshot keep the caller checkout.
@@ -128,6 +133,95 @@ export PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIGNUP="${PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIG
 # A caller-level opt-out would make the whole run evidence-free; the runner exists to record.
 unset PAPERCUSP_DISABLE_TEST_RUNS_REPORTER
 RIG="${OPERATOR_E2E_RIG:-$ROOT/scripts/verify-tauri-headless.sh}"
+
+# The standing isolated runner verifies an immutable commit by default. The verifier's
+# working-tree mode intentionally refuses any active source lock because it copies the
+# whole repository; callers can explicitly set VERIFY_TAURI_SOURCE_REF empty to request
+# that mode when they need uncommitted source.
+if [ "${VERIFY_TAURI_SOURCE_REF+x}" != "x" ]; then
+  VERIFY_TAURI_SOURCE_REF="$(git -C "$ROOT" rev-parse --verify HEAD)" || {
+    echo "run-operator-e2e-isolated: could not resolve committed HEAD for the source snapshot" >&2
+    exit 2
+  }
+  [ -n "$VERIFY_TAURI_SOURCE_REF" ] || {
+    echo "run-operator-e2e-isolated: committed source ref resolved empty" >&2
+    exit 2
+  }
+  export VERIFY_TAURI_SOURCE_REF
+fi
+
+# Bind the pin to the suite config and any direct Playwright spec-file filters. The
+# committed archive still contains the full source tree; these paths are its checked
+# acceptance inputs. Keep them in the run evidence instead of a comma-delimited argv.
+if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -z "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
+  [ -n "${VH_RUN_DIR:-}" ] || {
+    echo "run-operator-e2e-isolated: verification harness did not provide a run directory for source inputs" >&2
+    exit 2
+  }
+  VERIFY_TAURI_SOURCE_INPUTS_FILE="$VH_RUN_DIR/operator-e2e-source-inputs.json"
+  export VERIFY_TAURI_SOURCE_INPUTS_FILE
+  node --input-type=module - "$ROOT" "$@" > "$VERIFY_TAURI_SOURCE_INPUTS_FILE" <<'NODE'
+import { existsSync, statSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+
+const repoRoot = resolve(process.argv[2]);
+const operatorRoot = resolve(repoRoot, 'apps/operator');
+const inputs = new Set(['apps/operator/playwright.config.ts']);
+const specPath = /\.(?:spec|test)\.[cm]?[jt]sx?$/i;
+const valueOptions = new Set([
+  '--grep', '-g', '--grep-invert', '--project', '-p', '--workers', '-j',
+  '--timeout', '--global-timeout', '--retries', '--repeat-each', '--output', '-o',
+  '--shard', '--test-dir', '--test-match', '--test-ignore', '--tsconfig',
+]);
+
+function addFile(raw, label) {
+  const path = raw.replace(/(?::\d+)+$/, '');
+  const absolute = isAbsolute(path)
+    ? resolve(path)
+    : path === 'apps/operator' || path.startsWith('apps/operator/')
+      ? resolve(repoRoot, path)
+      : resolve(operatorRoot, path);
+  const repoPath = relative(repoRoot, absolute).split(sep).join('/');
+  if (repoPath === '..' || repoPath.startsWith('../') || isAbsolute(repoPath)) {
+    console.error('run-operator-e2e-isolated: ' + label + ' must be inside the repository: ' + raw);
+    process.exit(2);
+  }
+  let isFile = false;
+  try { isFile = statSync(absolute).isFile(); } catch {}
+  if (!existsSync(absolute) || !isFile) {
+    console.error('run-operator-e2e-isolated: ' + label + ' is not a regular file: ' + raw);
+    process.exit(2);
+  }
+  inputs.add(repoPath);
+}
+
+const args = process.argv.slice(3);
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === '--config' || arg === '-c') {
+    if (args[i + 1]) addFile(args[++i], 'Playwright config');
+    continue;
+  }
+  if (arg.startsWith('--config=')) {
+    addFile(arg.slice('--config='.length), 'Playwright config');
+    continue;
+  }
+  if (valueOptions.has(arg)) {
+    i++;
+    continue;
+  }
+  if (arg.startsWith('-') || !specPath.test(arg.replace(/(?::\d+)+$/, ''))) continue;
+  addFile(arg, 'Playwright spec');
+}
+
+process.stdout.write(JSON.stringify([...inputs].sort()) + '\n');
+NODE
+  source_inputs_status=$?
+  if [ "$source_inputs_status" -ne 0 ]; then
+    rm -f -- "$VERIFY_TAURI_SOURCE_INPUTS_FILE"
+    exit "$source_inputs_status"
+  fi
+fi
 
 # Refuse stale acceptance inputs before the rig allocates native build slots or
 # runs platform preparation. Include the same mandatory tooling profile as the
