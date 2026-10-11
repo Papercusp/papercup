@@ -164,13 +164,24 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     const deps = { checkpoint: getWorkItemCheckpointWithMeta,
       freshness: async () => undefined, evidence: async () => [] };
     await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Acquire run.ts and implement the wiring.' }));
-    const added = 'Wiring is complete. Review the saved proof.';
+    // A plain-prose update is progress, not an action: the checkpoint's Next stands
+    // (EI-25513044826743664 — an appended insight used to be promoted to the next action).
+    const prose = 'Recorded the saved proof for the wiring review.';
+    await setWorkItemCheckpointWithPrior(ref, prose, {
+      latestUpdate: prose,
+      transform: prior => `${prior}\n\n---\n${prose}`,
+    });
+    expect((await readWorkItemResume(source, deps)).nextAction).toEqual({
+      status: 'available', text: 'Acquire run.ts and implement the wiring.', source: 'checkpoint',
+    });
+    // An appended update that names its own Next becomes the action.
+    const added = renderCarryNote({ next: 'Wiring is complete. Review the saved proof.' });
     await setWorkItemCheckpointWithPrior(ref, added, {
       latestUpdate: added,
       transform: prior => `${prior}\n\n---\n${added}`,
     });
-    expect((await readWorkItemResume(source, deps)).nextAction).toMatchObject({
-      status: 'available', text: added, source: 'latest-update',
+    expect((await readWorkItemResume(source, deps)).nextAction).toEqual({
+      status: 'available', text: 'Wiring is complete. Review the saved proof.', source: 'next-action',
     });
     const refreshed = renderCarryNote({ next: 'Run the independent acceptance check.' });
     await setWorkItemCheckpointWithPrior(ref, refreshed, {
