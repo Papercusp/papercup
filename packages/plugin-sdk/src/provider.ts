@@ -717,10 +717,11 @@ function appRegistrationIssues(registration: unknown): string[] {
   for (const forbidden of ['clientSecret', 'secret', 'token', 'signingSecret']) {
     if (forbidden in r) issues.push(`${at}.${forbidden} is not allowed: a descriptor never carries a credential value`);
   }
-  if (!isHttpsUrl(r.createUrl)) {
+  const createUrl = r.createUrl;
+  if (typeof createUrl !== 'string' || !isHttpsUrl(createUrl)) {
     issues.push(`${at}.createUrl must be an https URL`);
   } else {
-    const placeholders = r.createUrl.match(/\{[^}]*\}/g) ?? [];
+    const placeholders: string[] = createUrl.match(/\{[^}]*\}/g) ?? [];
     for (const placeholder of placeholders) {
       if (placeholder !== PROVIDER_APP_DEFINITION_PLACEHOLDER) {
         issues.push(`${at}.createUrl placeholder '${placeholder}' is unknown; only ${PROVIDER_APP_DEFINITION_PLACEHOLDER} is filled in`);
