@@ -307,6 +307,68 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     reviewHarness: 'papercusp',
   };
 
+  it.each(['end-user', 'chat'] as const)('enrolls a %s bug in verification before it can be implemented', async (reporterKind) => {
+    const d = deps();
+    d.createIssue = async (input) => {
+      d.created.push(input);
+      return existing({ id: 'EI-100', title: input.title, payload: input.payload });
+    };
+    const transitions: string[] = [];
+    d.setWorkItemStateWithAliasInfo = async (id, state) => {
+      transitions.push(state);
+      return { workItem: { id, state }, requestedState: state, appliedState: state };
+    };
+    d.enterAgentReview = vi.fn(async () => ({ entered: true, state: { status: 'pending' } }));
+
+    const result = await captureImprovement({
+      title: 'Checkout applies the wrong discount',
+      kind: 'bug',
+      reporterKind,
+      scope: 'harness:papercusp',
+      workspaceId: 'ws',
+      createdBy: 'system:connector',
+      severity: 'critical',
+      assignee: 'su-fixer',
+    }, d);
+
+    expect(d.created[0]).toMatchObject({ admission: 'pending', payload: {
+      implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' },
+    } });
+    expect(d.enterAgentReview).toHaveBeenCalledWith({
+      id: 'EI-100', submittedBy: 'system:connector', harnessSlug: 'papercusp', workspaceId: 'ws',
+    });
+    expect(transitions).toEqual(['blocked', 'open']);
+    expect(result).toMatchObject({ reviewRequired: true, reviewState: 'open' });
+  });
+
+  it('keeps a person bug fenced and records an enrollment failure', async () => {
+    const d = deps();
+    d.createIssue = async (input) => {
+      d.created.push(input);
+      return existing({ id: 'EI-100', title: input.title, payload: input.payload });
+    };
+    d.setWorkItemStateWithAliasInfo = async (id, state) => ({
+      workItem: { id, state }, requestedState: state, appliedState: state,
+    });
+    d.enterAgentReview = async () => { throw new Error('review enrollment unavailable'); };
+    d.mergeIssuePayload = vi.fn(async () => existing({ id: 'EI-100', title: 'bug' }));
+
+    const result = await captureImprovement({
+      title: 'Checkout applies the wrong discount', kind: 'bug', reporterKind: 'end-user',
+      scope: 'harness:papercusp', createdBy: 'system:connector',
+    }, d);
+
+    expect(d.created[0]).toMatchObject({ admission: 'pending', payload: {
+      implementationReadiness: { status: 'unknown' },
+    } });
+    expect(result).toMatchObject({ reviewState: 'blocked', agentReviewFailure: {
+      phase: 'enrollment', message: 'review enrollment unavailable',
+    } });
+    expect(d.mergeIssuePayload).toHaveBeenCalledWith('EI-100', expect.objectContaining({
+      agentReviewFailure: expect.objectContaining({ phase: 'enrollment' }),
+    }));
+  });
+
   it('creates with pending admission, then durably parks the row as blocked', async () => {
     const d = deps();
     const transitions: { id: string; state: string; opts?: Record<string, unknown> }[] = [];

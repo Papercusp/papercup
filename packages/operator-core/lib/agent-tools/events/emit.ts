@@ -77,7 +77,9 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('The fleet/plan/harness slug for announceScope (defaults from your presence when omitted).'),
+      .describe(
+        'Slug for the chosen fleet/plan/harness scope. When omitted, the matching fleet or plan slug comes from your presence when available. With explicit fleet or plan scope and no matching presence slug, pass this value; harness scope always requires an explicit slug. Global scope needs none.',
+      ),
     expiresSec: z
       .number()
       .int()

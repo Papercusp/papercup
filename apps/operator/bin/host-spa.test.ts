@@ -34,6 +34,10 @@ beforeAll(async () => {
   mkdirSync(join(distDir, 'assets'));
   writeFileSync(join(distDir, 'assets', 'entry-AbCd1234.js'), 'export const entry = 1;');
   writeFileSync(join(distDir, 'assets', 'runtime.js'), 'export const runtime = 1;');
+  mkdirSync(join(distDir, 'elevenlabs-runtime'));
+  for (const name of ['rawAudioProcessor.js', 'audioConcatProcessor.js', 'libsamplerate.worklet.js']) {
+    writeFileSync(join(distDir, 'elevenlabs-runtime', name), `// ${name}\nregisterProcessor("fixture", class {});`);
+  }
   process.env.PAPERCUSP_SPA_DIST = distDir;
   ({ spaRoutes, createSpaRoutes, IMMUTABLE_CACHE_CONTROL: immutableCacheControl } = await import('./host-spa'));
 });
@@ -48,6 +52,20 @@ afterAll(() => {
 });
 
 describe('SPA shell pre-hydration globals', () => {
+  it.each(['rawAudioProcessor.js', 'audioConcatProcessor.js', 'libsamplerate.worklet.js'])('serves tutorial audio asset %s from the packaged SPA', async name => {
+    const res = await spaRoutes.request(`/elevenlabs-runtime/${name}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/javascript/);
+    expect(await res.text()).toBe(`// ${name}\nregisterProcessor("fixture", class {});`);
+    expect(res.headers.get('cache-control')).toBeNull();
+  });
+
+  it('returns a real 404 for missing tutorial audio assets', async () => {
+    const res = await spaRoutes.request('/elevenlabs-runtime/missing.js');
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('Not found');
+  });
+
   it('injects the active workspace id global before the module bundle', async () => {
     const res = await spaRoutes.request('/');
     expect(res.status).toBe(200);
