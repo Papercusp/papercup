@@ -1014,6 +1014,7 @@ export interface PgWorkItemAdmissionQueueStoreOptions {
 /** PostgreSQL implementation backed solely by the canonical work_items table. */
 export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore {
   private readonly sql: SqlClient;
+  private readonly acquirePool: string | undefined;
   private readonly workspaceId: string;
   private readonly abandonAfterMs: number;
   private readonly resolveSessionStatesFn: ResolveSessionStates | undefined;
@@ -1022,6 +1023,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
   constructor(options: PgWorkItemAdmissionQueueStoreOptions = {}) {
     this.endedOwnerScans = new EndedLeaseOwnerScanCoalescer(options.endedLeaseOwnerReuseMs);
     this.sql = options.sql ?? getOrgPg().sql;
+    this.acquirePool = options.sql ? undefined : 'org-admin';
     this.workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
     this.abandonAfterMs =
       typeof options.abandonAfterMs === 'number' &&
@@ -1038,7 +1040,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     // contended governor write cannot strand scheduler/get_next behind an unbounded
     // postgres-js transaction. Passing the injected client preserves hermetic tests
     // and non-default backends; production callers still use getOrgPg() through this.sql.
-    return boundedOrgTxn(fn, { client: this.sql });
+    return boundedOrgTxn(fn, { client: this.sql, acquirePool: this.acquirePool });
   }
 
   private async lockKeys(tx: SqlClient, keys: readonly string[]): Promise<void> {
