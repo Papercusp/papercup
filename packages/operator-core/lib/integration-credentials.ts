@@ -20,7 +20,7 @@
  */
 import { readOperatorState, updateOperatorState } from './operator-state-pg';
 import { createHash } from 'node:crypto';
-import { captureElevenLabsCredentialReceipt, type ElevenLabsCredentialReceipt } from './voice-engines/elevenlabs-agent-sync';
+import { captureElevenLabsCredentialReceipt, provisionElevenLabsRestrictedCredential, type ElevenLabsCredentialReceipt } from './voice-engines/elevenlabs-agent-sync';
 
 export type IntegrationCredentials = Record<string, string>;
 
@@ -56,6 +56,25 @@ export async function writeIntegrationCredentials(
 // Outside setup:save_integration_key's SCREAMING_SNAKE_CASE namespace. Receipt
 // metadata is server-only, including its masked form.
 const TRUSTED_RECEIPT_PREFIX = '__papercusp_trusted_elevenlabs_receipt:';
+
+/** Server-only composition of authenticated provisioning and encrypted storage.
+ * Host policy supplies every restriction; this is not a browser receipt route.
+ * Failure may leave a remote key, so callers must reconcile before retrying. */
+export async function provisionElevenLabsIntegrationCredential(options: Omit<
+  Parameters<typeof provisionElevenLabsRestrictedCredential>[0], 'secretRef' | 'persist'
+> & { integrationName: string }): Promise<{ keyId: string } | null> {
+  const integrationName = options.integrationName;
+  if (!/^[A-Z][A-Z0-9_]{2,254}$/.test(integrationName)) return null;
+  return provisionElevenLabsRestrictedCredential({ ...options,
+    secretRef: `integration:${integrationName}`,
+    persist: async ({ apiKey, receipt }) => {
+      const stored = await storeElevenLabsCreatedCredential({ name: integrationName,
+        serviceAccountUserId: receipt.serviceAccountUserId,
+        createResponse: { 'xi-api-key': apiKey, key_id: receipt.keyId } });
+      if (!stored) throw new Error('Credential persistence refused');
+    },
+  });
+}
 
 /** Server-only persistence boundary. The provisioning host must authenticate
  * the create response itself; this function must never be exposed as a route
