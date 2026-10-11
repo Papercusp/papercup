@@ -846,9 +846,11 @@ export function nextRepair(
       + 'The required BAR amendment advances the rubric meaning revision and can invalidate an existing independent '
       + 'grading card and vetting attestation; batch this change before commissioning those artifacts, or expect to re-grade and re-vet.',
     bar_snapshot_proof_inadequate:
-      'Run plans:evaluate-spec-test-adequacy for the mapped outcome with current fingerprints; fix every fail/unknown proof obligation before ship. '
-      + 'A read-only shipReadiness probe supplies no current fingerprints, so freshness rates unknown and this code can persist however good the evidence is — '
-      + 'supply current fingerprints before concluding the evidence itself is at fault.',
+      'Run plans:evaluate-spec-test-adequacy for the mapped outcome and fix every fail/unknown proof obligation before ship. '
+      + 'You do not need to supply current fingerprints: the server re-measures each binding from its recorded measurement recipe. '
+      + 'If freshness still reads unknown, read the binding\'s unknownReasons in plans:get-spec-evidence: '
+      + 'server-measurement-unavailable:<reason> names why the server could not measure it, and *-current-fingerprint-not-supplied '
+      + 'means the binding carries no measurement recipe, so re-bind it with fromTestRun or a measurement.',
     bar_snapshot_evidence_plane_unmet: "Record current evidence on the BAR's declared evidence plane.",
     bar_snapshot_evidence_runtime_unmet:
       "Measure on the BAR's declared evidenceRuntime (dev:pipeline_position servingRuntimes names its build) and bind evidence with details.runtime set to it — green main is only required when that runtime IS release-operator.",

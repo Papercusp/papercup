@@ -691,6 +691,28 @@ describe('evaluatePlanAcceptanceGate', () => {
       },
     );
 
+    // plan-verification-friction-reduction-2026-10-11 P-002 / R-2 (D-001): a ship call that
+    // omits `current` must hand the lifecycle NO caller tuple. listSpecEvidence then
+    // re-measures every binding from its recorded recipe, so unchanged proof rates current
+    // on the server's own measurement (pinned in spec-evidence-store.test.ts). An empty or
+    // placeholder `current` here would replace that measurement with caller blame.
+    it('passes no caller fingerprints when the ship call omits current, so proof is server-measured (P-002)', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase, options) =>
+        verdict(phase, phase === 'ship'
+          ? ['bar_snapshot_grading_missing']
+          : options && 'current' in options ? ['bar_snapshot_proof_uncertain'] : []));
+
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+      expect(result).toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+      expect(mockBarLifecycle.mock.calls.length).toBeGreaterThanOrEqual(2);
+      for (const [, , options] of mockBarLifecycle.mock.calls) {
+        expect(options).not.toHaveProperty('current');
+      }
+    });
+
     it('keeps caller-measured stale proof blocking at pre-grading (WI-10007726)', async () => {
       const current = [{
         planSlug: 'some-plan-2026-08-11',

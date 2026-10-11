@@ -7,6 +7,7 @@ import {
   ACCEPTANCE_BAR_SNAPSHOT_PLAN_ITEM_LIMIT,
   ACCEPTANCE_BAR_SNAPSHOT_SCORECARD_LIMIT,
   diffAcceptanceBarContractSnapshots,
+  nextRepair,
   projectAcceptanceBarContractSnapshot,
   readAcceptanceBarContractSnapshot,
   type AcceptanceBarContractSnapshotInput,
@@ -2022,5 +2023,28 @@ describe('snapshot source codes (verification-system map)', () => {
     const author = input.scorecards.rows.find((card) => card.issueId === 'SC-AUTHOR')!;
     author.createdAt = '2026-09-04T00:00:00.000Z';
     expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_author_verdict_stale');
+  });
+});
+
+// plan-verification-friction-reduction-2026-10-11 P-002 (D-001): the server re-measures
+// bound proof when a caller omits current fingerprints, so the inadequate-proof repair must
+// not send agents to hand-supply them. It must instead name the two unknownReasons that
+// distinguish "the server could not measure" from "the binding has no recipe to measure".
+describe('bar_snapshot_proof_inadequate repair text (P-002)', () => {
+  const action = nextRepair(['bar_snapshot_proof_inadequate'], [
+    { barKey: 'R-2', readiness: { codes: ['bar_snapshot_proof_inadequate'] } },
+  ])?.action ?? '';
+
+  it('does not tell the caller to supply current fingerprints', () => {
+    expect(action).toContain('plans:evaluate-spec-test-adequacy');
+    expect(action).toMatch(/do not need to supply current fingerprints/i);
+    expect(action).not.toMatch(/\bsupply current fingerprints before\b/i);
+    expect(action).not.toMatch(/with current fingerprints/i);
+  });
+
+  it('names the reasons that separate a failed server measurement from a recipe-less binding', () => {
+    expect(action).toContain('server-measurement-unavailable:');
+    expect(action).toContain('-current-fingerprint-not-supplied');
+    expect(action).toContain('fromTestRun');
   });
 });
