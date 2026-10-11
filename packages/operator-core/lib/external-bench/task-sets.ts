@@ -32,6 +32,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { BenchTask } from './types';
+import { SWE_BENCH_PRO_V1_PIN } from './swe-bench-pro-pin';
 import { gaiaTaskToBenchTask, loadGaiaValidation } from './gaia/dataset';
 import { gdpvalPilotSubset, gdpvalTaskToBenchTask, loadGdpvalTasks } from './gdpval/dataset';
 import { isSwarmBenchTaskSet, swarmbenchScenarios, swarmScenarioToBenchTask } from './swarmbench-backlog';
@@ -1140,7 +1141,11 @@ export function knownTaskSets(): Array<{ id: string; label: string; count: numbe
       label: 'Difficulty-stratified 30 (10 easy / 10 medium / 10 hard)',
       count: stratifiedCount,
     },
-    { id: 'swe-bench-pro-full', label: 'Full SWE-bench Pro (~731)', count: 731 },
+    {
+      id: 'swe-bench-pro-full',
+      label: `Full SWE-bench Pro ${SWE_BENCH_PRO_V1_PIN.population} (${SWE_BENCH_PRO_V1_PIN.taskCount})`,
+      count: SWE_BENCH_PRO_V1_PIN.taskCount,
+    },
     { id: 'verified-pilot-10', label: 'SWE-bench Verified pilot (10, representative)', count: verifiedPilotCount },
     { id: 'swe-bench-verified', label: 'Full SWE-bench Verified (500)', count: verifiedCount },
     {

@@ -1,4 +1,5 @@
 import { knownTaskSets } from './task-sets';
+import { SWE_BENCH_PRO_V1_PIN } from './swe-bench-pro-pin';
 import { currentBenchmarkProtocolSchema } from './reproducibility/schema';
 import type { DbScope } from './reproducibility/db';
 
@@ -28,7 +29,8 @@ export function estimateBenchLaunch({
 }): BenchLaunchEstimate {
   const safeCap = Math.max(1, Number(cap) || 5);
   const set = knownTaskSets().find((s) => s.id === taskSetId);
-  const taskCount = set?.count ?? (taskSetId === 'swe-bench-pro-full' ? 731 : 11);
+  // The full-set count comes from the pinned population (WI-6554700010008394), never a literal.
+  const taskCount = set?.count ?? (taskSetId === 'swe-bench-pro-full' ? SWE_BENCH_PRO_V1_PIN.taskCount : 11);
   const estCostUsd = Math.round(taskCount * PER_TASK_USD * 100) / 100;
   // Parallel wall ≈ ceil(N/cap) waves × per-task wall (rough).
   const waves = Math.ceil(taskCount / safeCap);
