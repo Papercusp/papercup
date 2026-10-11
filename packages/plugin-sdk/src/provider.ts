@@ -124,10 +124,50 @@ export interface ProviderDescriptor {
   setup?: ProviderSetupDescriptor;
 }
 
-/** Owner-performed setup a provider declares (cupboard-distributable-integrations P-001). */
+/** Owner-performed setup a provider declares (cupboard-distributable-integrations P-001, P-002). */
 export interface ProviderSetupDescriptor {
   /** Secrets the owner pastes (e.g. a bot token). Shown as masked fields; never readable back. */
   credentials?: ProviderCredentialField[];
+  /** The vendor app the owner creates first, when the vendor needs one (P-002). */
+  appRegistration?: ProviderAppRegistration;
+}
+
+/**
+ * The app the owner registers in the vendor's console before connecting (P-002), e.g. a Slack app
+ * created from a manifest. The card offers a "Create app" link that opens `createUrl` with the
+ * definition filled in, plus a "Copy definition" fallback for vendors whose prefill is partial or
+ * undocumented. Pure data, published to the Cupboard: it never carries a credential.
+ */
+export interface ProviderAppRegistration {
+  /**
+   * https page in the vendor's console where the app is created. May contain the placeholder
+   * {@link PROVIDER_APP_DEFINITION_PLACEHOLDER}, which the host replaces with the URL-encoded JSON
+   * of `definition` (e.g. `https://api.slack.com/apps?new_app=1&manifest_json={definition}`).
+   */
+  createUrl: string;
+  /** The app definition the vendor accepts (e.g. a Slack app manifest); a JSON object. */
+  definition?: Record<string, unknown>;
+  /** https page documenting how to create the app. */
+  docsUrl?: string;
+  /** One line telling the owner what to do with a copied definition, e.g. "Create New App → From a manifest". */
+  copyHint?: string;
+}
+
+/** The one placeholder `createUrl` may contain. */
+export const PROVIDER_APP_DEFINITION_PLACEHOLDER = '{definition}';
+/** Longest serialized `definition` accepted; it travels in a URL. */
+export const PROVIDER_APP_DEFINITION_MAX_LENGTH = 16_384;
+
+/** The vendor page the "Create app" link opens, with the definition filled in where declared. */
+export function providerAppRegistrationUrl(registration: Pick<ProviderAppRegistration, 'createUrl' | 'definition'>): string {
+  if (!registration.createUrl.includes(PROVIDER_APP_DEFINITION_PLACEHOLDER)) return registration.createUrl;
+  const encoded = encodeURIComponent(JSON.stringify(registration.definition ?? {}));
+  return registration.createUrl.split(PROVIDER_APP_DEFINITION_PLACEHOLDER).join(encoded);
+}
+
+/** The definition as the owner pastes it into the vendor console (pretty JSON), or null when none is declared. */
+export function providerAppDefinitionText(registration: Pick<ProviderAppRegistration, 'definition'>): string | null {
+  return registration.definition === undefined ? null : JSON.stringify(registration.definition, null, 2);
 }
 
 /**
@@ -641,15 +681,62 @@ function pushDescriptorIssues(push: unknown, capabilities: string[]): string[] {
 function setupDescriptorIssues(setup: unknown, egress: string[], serviceHosts: string[]): string[] {
   if (!setup || typeof setup !== 'object' || Array.isArray(setup)) return ['provider.setup must be an object'];
   const s = setup as Partial<ProviderSetupDescriptor>;
-  if (s.credentials === undefined) return [];
-  if (!Array.isArray(s.credentials) || s.credentials.length === 0) {
+  return [
+    ...(s.appRegistration === undefined ? [] : appRegistrationIssues(s.appRegistration)),
+    ...(s.credentials === undefined ? [] : credentialFieldIssues(s.credentials, egress, serviceHosts)),
+  ];
+}
+
+function appRegistrationIssues(registration: unknown): string[] {
+  const at = 'provider.setup.appRegistration';
+  if (!registration || typeof registration !== 'object' || Array.isArray(registration)) return [`${at} must be an object`];
+  const r = registration as Partial<ProviderAppRegistration> & Record<string, unknown>;
+  const issues: string[] = [];
+  for (const forbidden of ['clientSecret', 'secret', 'token', 'signingSecret']) {
+    if (forbidden in r) issues.push(`${at}.${forbidden} is not allowed: a descriptor never carries a credential value`);
+  }
+  if (!isHttpsUrl(r.createUrl)) {
+    issues.push(`${at}.createUrl must be an https URL`);
+  } else {
+    const placeholders = r.createUrl.match(/\{[^}]*\}/g) ?? [];
+    for (const placeholder of placeholders) {
+      if (placeholder !== PROVIDER_APP_DEFINITION_PLACEHOLDER) {
+        issues.push(`${at}.createUrl placeholder '${placeholder}' is unknown; only ${PROVIDER_APP_DEFINITION_PLACEHOLDER} is filled in`);
+      }
+    }
+    if (placeholders.includes(PROVIDER_APP_DEFINITION_PLACEHOLDER) && r.definition === undefined) {
+      issues.push(`${at}.createUrl uses ${PROVIDER_APP_DEFINITION_PLACEHOLDER} but no definition is declared`);
+    }
+  }
+  if (r.definition !== undefined) {
+    if (!r.definition || typeof r.definition !== 'object' || Array.isArray(r.definition)) {
+      issues.push(`${at}.definition must be a JSON object`);
+    } else {
+      let text: string | undefined;
+      try {
+        text = JSON.stringify(r.definition);
+      } catch {
+        issues.push(`${at}.definition must be serializable as JSON`);
+      }
+      if (text !== undefined && text.length > PROVIDER_APP_DEFINITION_MAX_LENGTH) {
+        issues.push(`${at}.definition is longer than ${PROVIDER_APP_DEFINITION_MAX_LENGTH} characters as JSON`);
+      }
+    }
+  }
+  if (r.docsUrl !== undefined && !isHttpsUrl(r.docsUrl)) issues.push(`${at}.docsUrl must be an https URL`);
+  if (r.copyHint !== undefined && typeof r.copyHint !== 'string') issues.push(`${at}.copyHint must be a string`);
+  return issues;
+}
+
+function credentialFieldIssues(credentials: unknown, egress: string[], serviceHosts: string[]): string[] {
+  if (!Array.isArray(credentials) || credentials.length === 0) {
     return ['provider.setup.credentials must list at least one field'];
   }
   const issues: string[] = [];
   const keys: string[] = [];
   const claimedHosts = new Map<string, string>();
   for (const host of serviceHosts) claimedHosts.set(host.toLowerCase(), 'provider.serviceCredentials');
-  for (const [index, entry] of s.credentials.entries()) {
+  for (const [index, entry] of (credentials as unknown[]).entries()) {
     const at = `provider.setup.credentials[${index}]`;
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       issues.push(`${at} must be an object`);
