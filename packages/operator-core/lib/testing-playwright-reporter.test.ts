@@ -101,6 +101,12 @@ describe('portable Playwright ledger reporter', () => {
     expect(OperatorReporter).toBe(Reporter);
   });
 
+  it('refuses native tests before execution when source custody cannot be prepared', () => {
+    vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
+    vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', '');
+    expect(() => new Reporter().onBegin()).toThrow('native runtime requires the owned verifier');
+  });
+
   it('records exact Portal case identities, runtime scope and returned ledger custody', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'portal-reporter-'));
     const receipts = join(dir, 'receipts.jsonl');

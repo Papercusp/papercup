@@ -166,14 +166,28 @@ const killedCounterexample = (id: number): SpecEvidenceForAdequacy => {
 };
 
 describe('any-drags adequacy names the dragging binding (P-019)', () => {
-  it('keeps a green counterexample unknown when its declared case is absent from the measured run', () => {
-    const negative = counterexample(3);
-    negative.testRunExecution = { ...negative.testRunExecution!, passedCaseTitles: ['unrelated case'] };
+  it('keeps a killed counterexample unknown when its declared case is absent, but passes the matching control', () => {
+    const negative = killedCounterexample(3);
+    negative.testRunExecution = { ...negative.testRunExecution!, skipped: 1 };
+    negative.testRunProvenance = {
+      ...negative.testRunProvenance!,
+      mutationFailedCaseTitles: ['unrelated case'],
+    };
     const result = evaluateSpecTestAdequacy({
       clause: clause(), evidence: [row(2), negative], classRef: 'plan-class-feature-ship',
     });
     expect(result.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(result.draggingBindingIds['execution-integrity']).toEqual([3]);
     expect(result.verdict).not.toBe('pass');
+
+    // Only the measured failed title changes: the canonical mutant failed and skipped
+    // another case in both runs. Case scope must distinguish this control from the gap.
+    negative.testRunProvenance.mutationFailedCaseTitles = ['dragging binding control'];
+    const matching = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [row(2), negative], classRef: 'plan-class-feature-ship',
+    });
+    expect(matching.ratings['execution-integrity'].rating).toBe('pass');
+    expect(matching.verdict).toBe('pass');
   });
 
   it('names an older failing attempt as the row dragging execution-integrity, and the clause passes once it is withdrawn', () => {

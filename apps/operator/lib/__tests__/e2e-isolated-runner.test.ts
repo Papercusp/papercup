@@ -30,6 +30,8 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
   dirs.push(dir);
   const record = join(dir, 'record.json');
   const viteCwd = join(dir, 'vite-cwd.txt');
+  const sourceRefEvidence = join(dir, 'source-ref.txt');
+  const sourceInputsFileEvidence = join(dir, 'source-inputs-file.txt');
   const rig = join(dir, 'rig.sh');
   writeFileSync(
     rig,
@@ -43,6 +45,8 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       // The real rig also rebinds the workspace identity for the app under test.
       `export PAPERCUSP_WORKSPACE_ID='${ISOLATED_WS}' PAPERCUSP_WORKSPACE='${ISOLATED_WS}'`,
       'export VERIFY_TAURI_DEV_URL=http://127.0.0.1:1420',
+      'printf "%s" "${VERIFY_TAURI_SOURCE_REF-}" > "$E2E_FIXTURE_SOURCE_REF_EVIDENCE"',
+      'printf "%s" "${VERIFY_TAURI_SOURCE_INPUTS_FILE-}" > "$E2E_FIXTURE_SOURCE_INPUTS_FILE_EVIDENCE"',
       'if [ -n "${E2E_FIXTURE_SOURCE_ROOT:-}" ]; then export OPERATOR_SOURCE_ROOT="$E2E_FIXTURE_SOURCE_ROOT"; fi',
       'if [ -n "${E2E_FIXTURE_ASSERT_DIR:-}" ]; then export VH_PHASE_DIR="$E2E_FIXTURE_ASSERT_DIR"; fi',
       '"$@"',
@@ -126,11 +130,20 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
     'exit "$rc"',
   ].join('\n'));
   chmodSync(harnessTsx, 0o755);
-  return { dir, rig, pw, npm, record, viteCwd, netns, netnsRecord, harnessTiming, harnessTsx };
+  return { dir, rig, pw, npm, record, viteCwd, sourceRefEvidence, sourceInputsFileEvidence, netns, netnsRecord, harnessTiming, harnessTsx };
 }
 
-function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, string> = {}) {
-  const base: NodeJS.ProcessEnv = { ...process.env };
+function run(
+  f: ReturnType<typeof fixture>,
+  args: string[],
+  env: Record<string, string> = {},
+  options: { useDefaultSourceRef?: boolean } = {},
+) {
+  const base: NodeJS.ProcessEnv = {
+    ...process.env,
+    E2E_FIXTURE_SOURCE_REF_EVIDENCE: f.sourceRefEvidence,
+    E2E_FIXTURE_SOURCE_INPUTS_FILE_EVIDENCE: f.sourceInputsFileEvidence,
+  };
   for (const k of [
     'PAPERCUSP_TEST_RUNS_DB_URL',
     'PAPERCUSP_TEST_RUN_GROUP',
@@ -146,7 +159,13 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
     'VERIFY_TAURI_ISOLATED_SEED',
     'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE',
+    'VERIFY_TAURI_SOURCE_REF',
+    'VERIFY_TAURI_SOURCE_INPUTS',
+    'VERIFY_TAURI_SOURCE_INPUTS_FILE',
   ]) delete base[k];
+  if (!options.useDefaultSourceRef && env.VERIFY_TAURI_SOURCE_REF === undefined) {
+    base.VERIFY_TAURI_SOURCE_REF = '';
+  }
   const res = spawnSync('bash', [RUNNER, ...args], {
     env: {
       ...base,
@@ -167,6 +186,53 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it('pins committed HEAD and derives acceptance inputs from the selected Playwright spec by default', () => {
+    const f = fixture(0);
+    const sourceRoot = join(f.dir, 'committed snapshot');
+    mkdirSync(join(sourceRoot, 'apps/operator'), { recursive: true });
+    const previewScript = join(REPO_ROOT, 'scripts/source-preview.mjs');
+    const previewArgs = join(f.dir, 'source-preview-args.txt');
+    const fakeNode = join(f.dir, 'node');
+    writeFileSync(fakeNode, [
+      '#!/usr/bin/env bash',
+      'if [ "$1" = "$E2E_FIXTURE_SOURCE_PREVIEW" ]; then printf "%s\\n" "$@" > "$E2E_FIXTURE_SOURCE_PREVIEW_ARGS"; exit 0; fi',
+      'exec "$E2E_FIXTURE_NODE" "$@"',
+    ].join('\\n'));
+    chmodSync(fakeNode, 0o755);
+
+    const head = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' });
+    expect(head.status, head.stderr).toBe(0);
+    const result = run(f, ['e2e/ongoing-work-ui.spec.ts'], {
+      E2E_FIXTURE_SOURCE_PREVIEW: previewScript,
+      E2E_FIXTURE_SOURCE_PREVIEW_ARGS: previewArgs,
+      E2E_FIXTURE_NODE: process.execPath,
+      E2E_FIXTURE_SOURCE_ROOT: sourceRoot,
+      OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
+    }, { useDefaultSourceRef: true });
+
+    expect(result.status, result.out).toBe(0);
+    const sourceRef = readFileSync(f.sourceRefEvidence, 'utf8');
+    const sourceInputsFile = readFileSync(f.sourceInputsFileEvidence, 'utf8');
+    expect(sourceRef).toBe(head.stdout.trim());
+    expect(sourceInputsFile).toBeTruthy();
+    expect(JSON.parse(readFileSync(sourceInputsFile, 'utf8'))).toEqual([
+      'apps/operator/e2e/ongoing-work-ui.spec.ts',
+      'apps/operator/playwright.config.ts',
+    ]);
+    const args = readFileSync(previewArgs, 'utf8').trim().split('\\n');
+    expect(args[args.indexOf('--ref') + 1]).toBe(sourceRef);
+    expect(args[args.indexOf('--inputs-file') + 1]).toBe(sourceInputsFile);
+    expect(args).toContain('--tauri-inputs');
+  });
+
+  it('preserves an explicitly empty source ref for guarded working-tree verification', () => {
+    const f = fixture(0);
+    const result = run(f, [], { VERIFY_TAURI_SOURCE_REF: '' });
+    expect(result.status, result.out).toBe(0);
+    expect(readFileSync(f.sourceRefEvidence, 'utf8')).toBe('');
+    expect(readFileSync(f.sourceInputsFileEvidence, 'utf8')).toBe('');
+  });
+
   it.each([false, true])('checks mandatory native helper drift before spawning the rig (dirty: %s)', dirty => {
     const f = fixture(0);
     const repo = join(f.dir, 'source');
@@ -281,6 +347,11 @@ describe('run-operator-e2e-isolated.sh', () => {
       ].join('\n'));
       const child = spawn('bash', [RUNNER], { detached: wholeGroup, env: {
         ...process.env,
+        VERIFY_TAURI_SOURCE_REF: '',
+        VERIFY_TAURI_SOURCE_INPUTS: '',
+        VERIFY_TAURI_SOURCE_INPUTS_FILE: '',
+        E2E_FIXTURE_SOURCE_REF_EVIDENCE: f.sourceRefEvidence,
+        E2E_FIXTURE_SOURCE_INPUTS_FILE_EVIDENCE: f.sourceInputsFileEvidence,
         HARNESS_ADMIN_DATABASE_URL: SHARED,
         OPERATOR_E2E_RIG: f.rig,
         OPERATOR_E2E_PLAYWRIGHT: f.pw,
@@ -328,6 +399,11 @@ describe('run-operator-e2e-isolated.sh', () => {
     writeFileSync(f.rig, '#!/usr/bin/env bash\nkill -USR1 "$PPID"\nsleep 0.1\n');
     const res = spawnSync('bash', [RUNNER], { env: {
       ...process.env,
+      VERIFY_TAURI_SOURCE_REF: '',
+      VERIFY_TAURI_SOURCE_INPUTS: '',
+      VERIFY_TAURI_SOURCE_INPUTS_FILE: '',
+      E2E_FIXTURE_SOURCE_REF_EVIDENCE: f.sourceRefEvidence,
+      E2E_FIXTURE_SOURCE_INPUTS_FILE_EVIDENCE: f.sourceInputsFileEvidence,
       OPERATOR_E2E_RIG: f.rig,
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
       VH_TSX: f.harnessTsx,

@@ -323,13 +323,23 @@ describe.skipIf(!LIVE_REQUESTED)('LIVE: R-1 complete parked-agent census partiti
     const byPath = new Map(rows.map((row) => [row.rel_path, JSON.parse(row.content)]));
     const dispositions = byPath.get(paths[0]) as Dispositions;
     const audit = byPath.get(paths[1]) as WakeAudit;
-    const archive = byPath.get(paths[2]) as { send: { chunked: boolean; results: Array<{ msg_id: string; wake?: unknown }> } };
-    expect(archive.send.chunked, 'only a recorded chunked send establishes a non-waking message part').toBe(true);
-    expect(archive.send.results.at(-1)?.wake, 'the final part must carry the actual wake receipt').toBeDefined();
-    const nonWakingMessageIds = archive.send.results.slice(0, -1).map((result) => {
-      expect(result.wake).toBeUndefined();
-      return result.msg_id;
-    });
+    const archive = byPath.get(paths[2]) as {
+      send: {
+        chunked: Array<{ parts: number; msgIds: string[]; askMsgId: string }>;
+        results: Array<{ msg_id: string; wake?: unknown }>;
+      };
+    };
+    expect(archive.send.chunked).toHaveLength(1);
+    const group = archive.send.chunked[0];
+    expect(group.parts).toBe(group.msgIds.length);
+    expect(group.msgIds).toEqual(archive.send.results.map((result) => result.msg_id));
+    expect(group.askMsgId).toBe(group.msgIds.at(-1));
+    expect(archive.send.results.find((result) => result.msg_id === group.askMsgId)?.wake,
+      'the final part must carry the actual wake receipt').toBeDefined();
+    const nonWakingMessageIds = group.msgIds.filter((id) => id !== group.askMsgId);
+    for (const id of nonWakingMessageIds) {
+      expect(archive.send.results.find((result) => result.msg_id === id)?.wake).toBeUndefined();
+    }
     expect(dispositions.asOf).toBe(AS_OF);
     expect(audit.targets).toBe(113);
     expect(audit.requestCount).toBe(114);

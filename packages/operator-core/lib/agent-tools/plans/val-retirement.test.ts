@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -11,6 +12,7 @@ import {
   type ValRetirementRefusalCode,
 } from './val-retirement';
 import { VAL_BLOCK_HEADER_PG_PATTERN } from '../../verification-health';
+import { stripCommentsOnly } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const PLAN = [
   '# Plan',
@@ -46,15 +48,13 @@ describe('VAL_RETIREMENT_DOC names a doc marked retired (SPEC-P-003-DOC)', () =>
   });
 });
 
-describe('the retired done-without-test detector names its successor (SPEC-P-003-DETECTOR-SUCCESSOR)', () => {
+describe('retired VAL verification surfaces stay removed (SPEC-P-003-DETECTOR-SUCCESSOR)', () => {
   const read = (rel: string) => readFileSync(resolve(ROOT, rel), 'utf8');
 
   it('names spec-test-adequacy, and the named gate is live in work_items:complete', () => {
-    // If the owner deletes the detector (pending VAL-* residue deletion), this read throws:
-    // move the successor pointer into the verification-system map and repoint this case.
-    const detector = read('packages/operator-core/lib/harness/improvements/done-without-test-detect.ts');
-    expect(detector).toContain('SUCCESSOR SIGNAL: spec-test-adequacy');
-    expect(detector).toContain('specTestAdequacyCompletionGate');
+    const map = read('apps/operator-docs/src/content/docs/agent-insights/verification-system-map.mdx');
+    expect(map).toContain('SUCCESSOR SIGNAL: spec-test-adequacy');
+    expect(map).toContain('specTestAdequacyCompletionGate');
     // Control: the pointer must name a successor that exists and runs at the close, or it
     // would point at nothing.
     expect(read('packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts')).toMatch(
@@ -63,6 +63,46 @@ describe('the retired done-without-test detector names its successor (SPEC-P-003
     expect(read('packages/operator-core/lib/agent-tools/work_items/complete.ts')).toMatch(
       /await specTestAdequacyCompletionGate\(/,
     );
+  });
+
+  it.each([
+    'harness-test-gate.ts',
+    'harness-test-gate-provenance.test.ts',
+    'harness-test-rollup.ts',
+    'harness-test-rollup.test.ts',
+    '__tests__/harness-test-rollup.test.ts',
+    'harness/improvements/done-without-test-detect.ts',
+    'harness/improvements/done-without-test-detect.test.ts',
+    'harness/improvements/done-without-test-collect.integration.test.ts',
+  ])('keeps the retired module or suite %s absent', (path) => {
+    expect(existsSync(resolve(ROOT, 'packages/operator-core/lib', path))).toBe(false);
+  });
+
+  it('keeps the old completion gate and collector unregistered', () => {
+    const completePath = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
+    const complete = stripCommentsOnly(read(completePath), completePath);
+    expect(complete).toContain('specTestAdequacyCompletionGate');
+    expect(complete).not.toContain('itemTestGate');
+    expect(complete).not.toContain('harness-test-gate');
+    const watchdogPath = 'packages/operator-core/lib/harness/improvements/watchdog.ts';
+    const watchdog = stripCommentsOnly(read(watchdogPath), watchdogPath);
+    expect(watchdog).toContain("name: 'papercusp-zero-promotion'");
+    expect(watchdog).not.toContain("'papercusp-done-without-test'");
+    expect(watchdog).not.toContain('collectDoneWithoutTestSignals');
+  });
+
+  it('rejects legacy-gate references in live source while allowing historical comments', () => {
+    const pattern = '\\bitemTestGate\\b|harness-test-gate|harness-test-rollup|done-without-test-detect';
+    const candidates = execFileSync('git', [
+      'grep', '-l', '-I', '-E', pattern, '--', '*.ts', '*.tsx', '*.mts', '*.cts', '*.js', '*.mjs', '*.cjs',
+    ], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+      .split('\n').filter(Boolean)
+      .filter((path) => !/(\.(test|spec)\.[cm]?[jt]sx?$)|(\/__tests__\/)|(\/__fixtures__\/)/.test(path));
+    expect(candidates).toContain('packages/operator-core/lib/plan-item-provenance.ts');
+    const retired = new RegExp(pattern);
+    expect(candidates.filter((path) => retired.test(stripCommentsOnly(read(path), path)))).toEqual([]);
+    expect(retired.test(stripCommentsOnly("import { itemTestGate } from './harness-test-gate';", 'x.ts'))).toBe(true);
+    expect(retired.test(stripCommentsOnly('// harness-test-gate used itemTestGate\nexport {};', 'x.ts'))).toBe(false);
   });
 });
 

@@ -554,13 +554,20 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const receipt = await prepareVerifierSource({ ...options, dest });
     expect(receipt.testedInputs.map(row => row.path)).toEqual(checked.paths);
 
-    const helper = 'apps/operator/bin/release/dependency-generation.sh';
-    writeFileSync(join(fixture.repo, helper), 'changed native tooling after commit');
-    const refused = join(tmp, 'verifier-tauri-inputs-refused');
-    await expect(validateVerifierInputs(options)).rejects.toThrow(`dirty tested-input mismatch: ${helper}`);
-    await expect(prepareVerifierSource({ ...options, dest: refused }))
-      .rejects.toThrow(`dirty tested-input mismatch: ${helper}`);
-    expect(existsSync(refused)).toBe(false);
+    for (const [index, helper] of [
+      'apps/operator/bin/release/dependency-generation.sh',
+      'packages/operator-core/lib/testing-native-runtime.ts',
+      'packages/operator-core/lib/testing-playwright-reporter.ts',
+      'scripts/lib/run-in-isolated-netns.sh',
+    ].entries()) {
+      writeFileSync(join(fixture.repo, helper), 'changed native tooling after commit');
+      const refused = join(tmp, `verifier-tauri-inputs-refused-${index}`);
+      await expect(validateVerifierInputs(options)).rejects.toThrow(`dirty tested-input mismatch: ${helper}`);
+      await expect(prepareVerifierSource({ ...options, dest: refused }))
+        .rejects.toThrow(`dirty tested-input mismatch: ${helper}`);
+      expect(existsSync(refused)).toBe(false);
+      writeFileSync(join(fixture.repo, helper), `// ${helper}\n`);
+    }
     await expect(validateVerifierInputs({ repo: fixture.repo, ref, tauriInputs: true }))
       .rejects.toThrow('verification export needs explicit tested inputs');
   });

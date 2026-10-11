@@ -17,8 +17,11 @@ documents:
   - "packages/operator-core/lib/agent-tools/plans/start.ts"
   - "packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts"
   - "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts"
+  - "packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts"
+  - "packages/operator-core/lib/agent-tools/plans/val-retirement.test.ts"
 plans:
   - "verification-system-improvements-2026-10-10"
+  - "verification-postship-followups-2026-10-11"
 ---
 
 A plan's **requirement contract** is the set of things it promises and how each promise is proven. This page maps every part of the system that enforces that contract, in one place: the doors that refuse, the order the layers run in, every refusal code those doors return, the tables behind them, the tools you call, and the kinds of evidence that count.
@@ -312,3 +315,8 @@ Rubrics and scorecards are reached only through the `rubrics:*` and `scorecards:
 ## Keeping this page true
 
 Add a new contract refusal code to an exported typed union, and register the union in `CONTRACT_GATE_CODE_TYPES`. Then add the code to the table above and a test that asserts on it. The doc-claims test fails until all three exist. A door module that returns a refusal literal outside every registered union also fails that test, unless the literal is classified in `OPERATIONAL_DOOR_CODES` as an operational (not contract) refusal.
+
+
+## Retired VAL verification surfaces
+
+The legacy `harness-test-gate`, `harness-test-rollup` and `done-without-test-detect` modules have been removed. Inline VAL-* assertions and the `harness_tests` join no longer decide completion. SUCCESSOR SIGNAL: spec-test-adequacy — `specTestAdequacyCompletionGate` in `packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts` enforces the requirement contract at `work_items:complete`. Plan-item provenance remains in `plan-item-provenance.ts`; cross-layer usage and stale acceptance are reported by `verification.health`. The surviving `agent-tools/plans/val-retirement.test.ts` suite checks that the removed surfaces remain absent, the old gate and collector are not registered, and the successor still runs at completion.

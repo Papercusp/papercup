@@ -16,9 +16,54 @@ import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/op
 import { Hono } from 'hono';
 import { chromium } from 'playwright-core';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
+import { activeWorkspaceId } from './workspace-registry';
+import { preflightPrivateStats } from '../test/portal-stats-fixture';
 import { privateDocsNavButton, retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport, verifyPrivateTestingReadScopes } from '../test/portal-roster-browser-fixture';
 
 const testingPots = { selected: 'testing-selected', neighbor: 'testing-neighbor', foreign: 'testing-foreign' };
+it('preflights Stats workspace selection through real middleware with a cookie-only negative control', async () => {
+  const evidence = mkdtempSync(join(tmpdir(), 'stats-request-contract-'));
+  const workspace = 'test-runtime-stats-contract';
+  const previousRoot = process.env.PAPERCUSP_WORKSPACES_ROOT;
+  const previousPin = process.env.PAPERCUSP_WORKSPACE_ID;
+  writeFileSync(join(evidence, 'registry.json'), JSON.stringify({ current: workspace, workspaces: [
+    { id: workspace, name: 'Own', createdAt: 1 },
+    { id: workspace + '-foreign', name: 'Foreign', createdAt: 2 },
+  ] }));
+  process.env.PAPERCUSP_WORKSPACES_ROOT = evidence;
+  process.env.PAPERCUSP_WORKSPACE_ID = workspace;
+  const readonlyRepo = resolve(import.meta.dirname, '../../..');
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: readonlyRepo, encoding: 'utf8' }).trim();
+  const requests: Array<{ slug: string; workspace: string; cookie: string | undefined; header: string | undefined }> = [];
+  const app = new Hono();
+  app.use('*', workspaceContextMiddleware);
+  app.get('/api/harness/:slug/git/stats', c => {
+    const slug = c.req.param('slug');
+    const scope = activeWorkspaceId();
+    requests.push({ slug, workspace: scope, cookie: c.req.header('cookie'), header: c.req.header('x-papercusp-workspace') });
+    if (slug === 'foreign' && scope !== workspace + '-foreign') return c.json({ error: 'unknown project' }, 404);
+    return c.json(slug === 'neighbor' ? { notAGitRepo: true, stats: null }
+      : { stats: { repository: { head }, footprint: { trackedFiles: 1 } } });
+  });
+  const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => app.request(String(url), init));
+  try {
+    await preflightPrivateStats({ workspace, selected: 'selected', neighbor: 'neighbor', foreign: 'foreign', readonlyRepo },
+      'http://127.0.0.1', 'own-cookie', 'foreign-cookie', evidence);
+    expect(requests.filter(request => request.slug === 'foreign')).toEqual([
+      { slug: 'foreign', workspace, cookie: 'own-cookie', header: undefined },
+      { slug: 'foreign', workspace: workspace + '-foreign', cookie: 'foreign-cookie', header: workspace + '-foreign' },
+      { slug: 'foreign', workspace, cookie: 'foreign-cookie', header: undefined },
+    ]);
+  } finally {
+    fetch.mockRestore();
+    if (previousRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+    else process.env.PAPERCUSP_WORKSPACES_ROOT = previousRoot;
+    if (previousPin === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+    else process.env.PAPERCUSP_WORKSPACE_ID = previousPin;
+    rmSync(evidence, { recursive: true, force: true });
+  }
+});
+
 function testingScopeReads() {
   const read = (slug: string, endpoint: string, status: number, body: object) => ({
     url: `http://127.0.0.1/api/harness/${slug}/testing/${endpoint}`, status, body: JSON.stringify(body),

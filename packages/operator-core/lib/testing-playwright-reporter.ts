@@ -40,9 +40,8 @@ import {
   reporterWriteBudget,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { posix, relative } from 'node:path';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { readProcessIdentity, linuxProcStateFromStat } from './process-identity';
+import { prepareNativeRuntimeReader } from './testing-native-runtime';
+export { prepareNativeRuntimeReader } from './testing-native-runtime';
 import {
   isRecordedCaseTitle,
   MAX_RECORDED_FAILED_CASES,
@@ -56,42 +55,6 @@ import {
 
 type RuntimeCapture = { status: RuntimeEnvironmentCaptureStatus; witness?: RecordedRuntimeEnvironment };
 type RuntimeReader = () => RecordedRuntimeEnvironment | null;
-
-/** Playwright does not await onBegin: observe kernel custody synchronously before tests. */
-export function prepareNativeRuntimeReader(root: string, commit: string | null): RuntimeReader | undefined {
-  if (!process.env.VERIFY_TAURI_PID) return undefined;
-  if (process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1') throw new Error('native runtime requires the owned verifier');
-  const pid = Number(process.env.VERIFY_TAURI_PID);
-  const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
-  if (!Number.isSafeInteger(pid) || pid <= 0 || !commit || !/^[a-f0-9]{40,64}$/.test(commit)
-    || receipt.schemaVersion !== 'verifier-source-v1' || receipt.sourceCommit !== commit
-    || receipt.sourceCommit !== process.env.VERIFY_TAURI_SOURCE_REF
-    || !process.env.OPERATOR_SOURCE_ROOT
-    || realpathSync(root) !== realpathSync(process.env.OPERATOR_SOURCE_ROOT)) throw new Error('native runtime source receipt mismatch');
-  const units = [`verify-tauri-headless:${pid}`];
-  const processIdentity = readProcessIdentity(pid);
-  if (!processIdentity || process.platform !== 'linux') throw new Error('native kernel identity unavailable');
-  const executable = `/proc/${pid}/exe`;
-  const executableStat = () => {
-    const stat = statSync(executable, { bigint: true });
-    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
-  };
-  const originalStat = executableStat();
-  const digest = createHash('sha256').update(readFileSync(executable)).digest('hex');
-  const fingerprint = createHash('sha256').update(JSON.stringify([
-    units[0], pid, processIdentity, originalStat, digest, commit,
-  ])).digest('hex');
-  const read = (): RecordedRuntimeEnvironment | null => {
-    try {
-      const state = linuxProcStateFromStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
-      if (!state || ['Z', 'X', 'x'].includes(state) || readProcessIdentity(pid) !== processIdentity
-        || executableStat() !== originalStat || readProcessIdentity(pid) !== processIdentity) return null;
-      return { schemaVersion: 1, units, fingerprint, observedAt: new Date().toISOString() };
-    } catch { return null; }
-  };
-  if (!read()) throw new Error('native process changed while measuring executable');
-  return read;
-}
 
 function captureRuntimeEnvironment(read?: RuntimeReader, preparationFailed = false): RuntimeCapture {
   if (preparationFailed) return { status: 'error' };
@@ -359,8 +322,13 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
     try {
       this.runtimeReader ??= prepareNativeRuntimeReader(this.runRoot, this.worktreeBefore?.commit ?? null);
-    } catch { this.runtimePreparationFailed = true; }
+    } catch (error) {
+      this.runtimePreparationFailed = true;
+      if (process.env.VERIFY_TAURI_PID) throw new Error(`Native runtime witness preparation failed: ${String(error)}`);
+    }
     this.runtimeBefore = captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
+    if (process.env.VERIFY_TAURI_PID && this.runtimeBefore.status !== 'captured')
+      throw new Error(`Native runtime witness unavailable before tests: ${this.runtimeBefore.status}`);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
