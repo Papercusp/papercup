@@ -64,8 +64,15 @@ work=""
 bwrap_pid=""
 child_pid=""
 pasta_pid=""
+native_observer_pid=""
 
 teardown() {
+  if [ -n "$native_observer_pid" ]; then
+    kill "$native_observer_pid" 2>/dev/null || true
+    wait "$native_observer_pid" 2>/dev/null || true
+  fi
+  native_observer_pid=""
+  unset PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET
   if [ -n "$pasta_pid" ]; then kill "$pasta_pid" 2>/dev/null || true; fi
   pasta_pid=""
   if [ -n "$work" ]; then rm -rf -- "$work"; fi
@@ -108,6 +115,26 @@ done
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/run-in-isolated-netns.XXXXXX")" || fallback mktemp-failed
 mkfifo "$work/info" "$work/block" || fallback mkfifo-failed
+
+# The user namespace cannot dereference a host process's /proc/<pid>/exe.
+# Preserve the reporter's original custody checks in an observer outside it.
+# Preparation is a hard native precondition, before browser/test execution.
+if [ -n "${VERIFY_TAURI_PID:-}" ]; then
+  export PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET="$work/native-runtime.sock"
+  node --import tsx "$OPERATOR_SOURCE_ROOT/packages/operator-core/lib/testing-native-runtime.ts" \
+    --observe-native "$PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET" >"$work/native-runtime.log" 2>&1 &
+  native_observer_pid=$!
+  observer_deadline=$((SECONDS + 30))
+  while [ ! -S "$PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET" ]; do
+    if ! kill -0 "$native_observer_pid" 2>/dev/null || [ "$SECONDS" -ge "$observer_deadline" ]; then
+      cat "$work/native-runtime.log" >&2
+      echo "run-in-isolated-netns: native runtime witness preparation failed" >&2
+      teardown
+      exit 98
+    fi
+    sleep 0.1
+  done
+fi
 
 # Runs INSIDE the namespace once the block fd is released. Waits until pasta's interface
 # carries an IPv4 address, no address is still tentative, and two consecutive reads of
