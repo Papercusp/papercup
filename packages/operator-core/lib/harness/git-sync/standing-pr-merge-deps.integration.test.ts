@@ -17,6 +17,7 @@ import {
   createDefaultStandingPrMergeDeps,
   isStandingPrMergeRunActive,
   makeWorktreeSuiteRunner,
+  MERGE_TEST_FAILURE_OUTPUT_LIMIT,
   STANDING_PR_MERGE_TESTS_META_KEY,
   type RunSuite,
 } from './standing-pr-merge-deps';
@@ -201,6 +202,32 @@ describe('createDefaultStandingPrMergeDeps (real git)', () => {
     const rec: MergeTestRecord = { mergeSha: 'z'.repeat(40), prHeadSha: 'h'.repeat(40), targetTipSha: 't'.repeat(40), result: 'running' };
     await d.saveTest(PR_NUMBER, rec);
     expect(await d.loadLastTest(PR_NUMBER)).toBeNull();
+  });
+
+  it('reports a store that kept the fail verdict but dropped its diagnostics', async () => {
+    const store = memStore();
+    const errors: unknown[] = [];
+    const d = createDefaultStandingPrMergeDeps({
+      repoDir: deps_repo, installSlug: INSTALL, prNumber: PR_NUMBER,
+      store: {
+        ...store,
+        async patchMeta(slug, patch) {
+          const copied = JSON.parse(JSON.stringify(patch));
+          const saved = copied[STANDING_PR_MERGE_TESTS_META_KEY]?.[String(PR_NUMBER)];
+          if (saved) delete saved.failure;
+          await store.patchMeta(slug, copied);
+        },
+      },
+      runSuite: async () => ({ passed: false, failure: { phase: 'suite', exitCode: 2, output: 'must survive' } }),
+      onError: (e) => errors.push(e),
+    });
+    const rec: MergeTestRecord = { mergeSha: 'v'.repeat(40), prHeadSha: 'h'.repeat(40), targetTipSha: 't'.repeat(40), result: 'running' };
+    await d.saveTest(PR_NUMBER, rec);
+    await d.startTests(PR_NUMBER, rec);
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, rec.mergeSha));
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toContain('was not saved');
+    expect((await d.loadLastTest(PR_NUMBER))?.result).toBe('fail');
   });
 
   it('the record survives the daemon writing its own pr_poll keys (shallow merge)', async () => {
@@ -397,15 +424,61 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
 });
 
 describe('makeWorktreeSuiteRunner (real git)', () => {
+  it('persists both failed-suite streams before cleanup and still refuses the exact merge', async () => {
+    const head = makePrHead();
+    const before = git(bare, 'rev-parse', 'main');
+    const store = memStore();
+    const deps = makeDeps(store, makeWorktreeSuiteRunner("printf 'assertion failed on stdout'; printf 'suite stderr detail' >&2; exit 7"));
+    const merge = (await deps.buildMergeResult(head, before))!;
+    const rec: MergeTestRecord = { mergeSha: merge, prHeadSha: head, targetTipSha: before, result: 'running' };
+    await deps.saveTest(PR_NUMBER, rec);
+    await deps.startTests(PR_NUMBER, rec);
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, merge));
+    // Reload through new deps: the evidence is durable metadata, not process state.
+    const saved = await makeDeps(store).loadLastTest(PR_NUMBER);
+    expect(saved).toMatchObject({ ...rec, result: 'fail', failure: { phase: 'suite', exitCode: 7 } });
+    expect(saved?.failure?.output).toContain('assertion failed on stdout');
+    expect(saved?.failure?.output).toContain('suite stderr detail');
+    expect(git(deps_repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
+    const decision = await stepStandingPrMerge({
+      pr: { ref: { number: PR_NUMBER }, head_ref: STANDING_PR_BRANCH, base_ref: 'main', head_sha: head, review_decision: 'approved', checks_state: 'success' } as Pr,
+      policy: 'auto', promotedSha: head, authorRevoked: false,
+    }, deps);
+    expect(decision).toMatchObject({ action: 'refused', reason: 'merge-result-failed' });
+    expect(git(bare, 'rev-parse', 'main')).toBe(before);
+  });
+
+  it('distinguishes failed installation from a suite that never started', async () => {
+    const head = makePrHead('package.json', JSON.stringify({ scripts: { preinstall: "node -e \"console.error('install lifecycle failed'); process.exit(9)\"" }, dependencies: { fixture: 'file:./missing-package' } }));
+    git(deps_repo, 'fetch', '-q', 'origin', `refs/pull/${PR_NUMBER}/head`);
+    const result = await makeWorktreeSuiteRunner("printf 'suite must not run'")({ repoDir: deps_repo, sha: head });
+    expect(result).toMatchObject({ passed: false, failure: { phase: 'install', exitCode: expect.any(Number) } });
+    if (!result.passed) {
+      expect(result.failure.output).toContain('install lifecycle failed');
+      expect(result.failure.output).not.toContain('suite must not run');
+    }
+  });
+
+  it('bounds persisted diagnostics while retaining the end of each output stream', async () => {
+    const tip = git(bare, 'rev-parse', 'main');
+    const result = await makeWorktreeSuiteRunner("node -e \"process.stdout.write('x'.repeat(20000)+'STDOUT_END'); process.stderr.write('y'.repeat(20000)+'STDERR_END'); process.exitCode=4\"")({ repoDir: deps_repo, sha: tip });
+    expect(result).toMatchObject({ passed: false, failure: { phase: 'suite', exitCode: 4 } });
+    if (!result.passed) {
+      expect(result.failure.output.length).toBeLessThanOrEqual(MERGE_TEST_FAILURE_OUTPUT_LIMIT);
+      expect(result.failure.output).toContain('STDOUT_END');
+      expect(result.failure.output).toContain('STDERR_END');
+    }
+  });
+
   it('runs the command in a checkout of exactly the given sha: exit 0 = pass, non-zero = fail', async () => {
     const head = makePrHead('only-in-pr.txt');
     const tip = git(bare, 'rev-parse', 'main');
     const d = makeDeps(memStore());
     const merge = await d.buildMergeResult(head, tip);
     const run = makeWorktreeSuiteRunner('test -f only-in-pr.txt && test -f a.txt');
-    expect(await run({ repoDir: deps_repo, sha: merge! })).toBe(true);
+    expect(await run({ repoDir: deps_repo, sha: merge! })).toEqual({ passed: true });
     // The upstream tip lacks the PR's file, so the same suite fails there.
-    expect(await run({ repoDir: deps_repo, sha: tip })).toBe(false);
+    expect(await run({ repoDir: deps_repo, sha: tip })).toMatchObject({ passed: false, failure: { phase: 'suite', exitCode: 1 } });
   });
 
   it('removes its worktree afterwards, pass or fail', async () => {
@@ -424,7 +497,7 @@ describe('makeWorktreeSuiteRunner (real git)', () => {
     writeFileSync(join(deps_repo, 'package.json'), '{"devDependencies":{"x":"1"}}');
     writeFileSync(join(deps_repo, 'package-lock.json'), 'not json');
     git(deps_repo, 'fetch', '-q', 'origin', `refs/pull/${PR_NUMBER}/head`);
-    expect(await makeWorktreeSuiteRunner('test -f package.json && test ! -f package-lock.json')({ repoDir: deps_repo, sha: head })).toBe(true);
+    expect(await makeWorktreeSuiteRunner('test -f package.json && test ! -f package-lock.json')({ repoDir: deps_repo, sha: head })).toEqual({ passed: true });
   });
 
   it('a suite that cannot finish (timeout) throws instead of reporting a fail', async () => {

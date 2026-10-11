@@ -25,6 +25,13 @@
 
 export type MergeTestResult = 'running' | 'pass' | 'fail';
 
+/** Bounded evidence from the failed command, retained after its worktree is removed. */
+export interface MergeTestFailure {
+  phase: 'install' | 'suite';
+  exitCode: number;
+  output: string;
+}
+
 /** The latest recorded test of a built merge result. */
 export interface MergeTestRecord {
   /** The merge commit that was built and tested. */
@@ -34,6 +41,7 @@ export interface MergeTestRecord {
   /** The target tip the merge commit was built onto. */
   targetTipSha: string;
   result: MergeTestResult;
+  failure?: MergeTestFailure;
 }
 
 export interface MergeGateInput {

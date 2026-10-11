@@ -31,7 +31,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { pinModuleState } from '@papercusp/module-singleton';
-import type { MergeTestRecord } from './decide-merge-gate';
+import type { MergeTestFailure, MergeTestRecord } from './decide-merge-gate';
 import type { AdvanceTargetResult, StandingPrMergeDeps } from './standing-pr-merge';
 
 let execFilePMemo: typeof execFile.__promisify__ | null = null;
@@ -52,8 +52,12 @@ export interface StandingPrMergeMetaStore {
   ensureRecordRow?(installSlug: string, workspaceId: string): Promise<void>;
 }
 
-/** Run the suite on `sha`. true = passed, false = ran and failed; throws when it could not run. */
-export type RunSuite = (args: { repoDir: string; sha: string }) => Promise<boolean>;
+export const MERGE_TEST_FAILURE_OUTPUT_LIMIT = 12_000;
+
+export type SuiteRunResult = { passed: true } | { passed: false; failure: MergeTestFailure };
+
+/** Legacy boolean runners remain supported; detailed runners retain failure evidence. */
+export type RunSuite = (args: { repoDir: string; sha: string }) => Promise<boolean | SuiteRunResult>;
 
 export interface DefaultStandingPrMergeDepsArgs {
   /** Local checkout of the upstream repo the standing PR targets. */
@@ -117,7 +121,10 @@ export function createDefaultStandingPrMergeDeps(args: DefaultStandingPrMergeDep
     // error must fail here. Otherwise every merge re-tests forever (WI-10006418).
     const saved = (await readAll())[String(n)];
     const kept = rec
-      ? isMergeTestRecord(saved) && saved.mergeSha === rec.mergeSha && saved.result === rec.result
+      ? isMergeTestRecord(saved) && saved.mergeSha === rec.mergeSha && saved.result === rec.result &&
+        saved.prHeadSha === rec.prHeadSha && saved.targetTipSha === rec.targetTipSha &&
+        saved.failure?.phase === rec.failure?.phase && saved.failure?.exitCode === rec.failure?.exitCode &&
+        saved.failure?.output === rec.failure?.output
       : saved === undefined;
     if (!kept) {
       throw new Error(`The merge-test record for PR #${n} on ${installSlug} was not saved, so the merge cannot go ahead.`);
@@ -183,15 +190,21 @@ export function createDefaultStandingPrMergeDeps(args: DefaultStandingPrMergeDep
       runs.active.add(key);
       void (async () => {
         try {
-          let passed: boolean;
+          let outcome: boolean | SuiteRunResult;
           try {
-            passed = await runSuite({ repoDir, sha: rec.mergeSha });
+            outcome = await runSuite({ repoDir, sha: rec.mergeSha });
           } catch (err) {
             onError?.(err);
             await writeRecord(n, null); // could not run: rebuild + retest next poll
             return;
           }
-          await writeRecord(n, { ...rec, result: passed ? 'pass' : 'fail' });
+          const passed = typeof outcome === 'boolean' ? outcome : outcome.passed;
+          // Never carry old failure evidence into a rerun's pass or legacy result.
+          const { failure: _oldFailure, ...identity } = rec;
+          const failure = typeof outcome === 'object' && !outcome.passed
+            ? { ...outcome.failure, output: outcome.failure.output.slice(-MERGE_TEST_FAILURE_OUTPUT_LIMIT) }
+            : undefined;
+          await writeRecord(n, { ...identity, result: passed ? 'pass' : 'fail', ...(failure ? { failure } : {}) });
         } catch (err) {
           onError?.(err);
         } finally {
@@ -270,7 +283,7 @@ export async function nodeInstallCommandFor(dir: string): Promise<string | null>
  * timeout throws (could not run). `command` is the pot's suite alone (e.g.
  * `npm test`) — the install is not part of it.
  */
-export function makeWorktreeSuiteRunner(command: string, opts: { timeoutMs?: number } = {}): RunSuite {
+export function makeWorktreeSuiteRunner(command: string, opts: { timeoutMs?: number } = {}): (args: { repoDir: string; sha: string }) => Promise<SuiteRunResult> {
   const timeout = opts.timeoutMs ?? 2 * 60 * 60 * 1000;
   return async ({ repoDir, sha }) => {
     const dir = await mkdtemp(join(tmpdir(), 'standing-pr-merge-'));
@@ -281,15 +294,24 @@ export function makeWorktreeSuiteRunner(command: string, opts: { timeoutMs?: num
       }
       // Decided from the merge result itself, so a lockfile the PR adds or removes counts.
       const install = await nodeInstallCommandFor(dir);
-      const script = install ? `${install} && ${command}` : command;
-      try {
-        await execFileP('bash', ['-c', script], { cwd: dir, timeout, maxBuffer: 64 * 1024 * 1024 });
-        return true;
-      } catch (err) {
-        const e = err as { code?: unknown; killed?: boolean };
-        if (typeof e.code === 'number' && !e.killed) return false;
-        throw err;
+      for (const [phase, script] of [
+        ...(install ? [['install', install] as const] : []),
+        ['suite', command] as const,
+      ]) {
+        try {
+          await execFileP('bash', ['-c', script], { cwd: dir, timeout, maxBuffer: 64 * 1024 * 1024 });
+        } catch (err) {
+          const e = err as { code?: unknown; killed?: boolean; stdout?: unknown; stderr?: unknown };
+          if (typeof e.code !== 'number' || e.killed) throw err;
+          // Each stream gets space: a long stderr must not erase stdout's assertion.
+          const headers = 'stdout:\n\nstderr:\n';
+          const streamLimit = Math.floor((MERGE_TEST_FAILURE_OUTPUT_LIMIT - headers.length) / 2);
+          const stdout = typeof e.stdout === 'string' ? e.stdout.slice(-streamLimit) : '';
+          const stderr = typeof e.stderr === 'string' ? e.stderr.slice(-streamLimit) : '';
+          return { passed: false, failure: { phase, exitCode: e.code, output: `stdout:\n${stdout}\nstderr:\n${stderr}` } };
+        }
       }
+      return { passed: true };
     } finally {
       await git(repoDir, ['worktree', 'remove', '--force', dir]).catch(() => undefined);
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
