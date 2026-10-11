@@ -418,6 +418,9 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // personally arms it. Owner-authority does not consume a parking-watermark
   // slot. Count 34 → 35.
   "papercusp-standing-goal-boot-arm",
+  // P-011 / directive #1489: shared tutorial credential issuance stays held.
+  // Owner-authority security/spend flag; parking watermark is unchanged.
+  "papercusp-tutorial-voice-issuance",
   // 2026-10-01 (stripe-subscription-signup-2026-10-01 P-005, WI-10004478) —
   // deliberate owner-authority dark flag: with it OFF the hosted billing runtime
   // refuses an sk_live_/rk_live_ key (`live_mode_not_allowed`), so no composition
@@ -815,7 +818,7 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // (enterprise-data-sources-2026-10-01 D-029) and the owner approved it (#1417).
     // case was 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK
     // both stay 12. Count 36 → 35.
-    expect(offCount).toBe(35);
+    expect(offCount).toBe(36);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {

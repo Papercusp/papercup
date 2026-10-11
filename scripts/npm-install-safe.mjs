@@ -586,7 +586,6 @@ export async function verifyDepsExtracted({
     deps,
   });
   const inspect = async () => {
-    const brokenBinLinks = findBrokenBinLinks(repoRoot, { workspaceDirs });
     const declared = await findUnextractedDepsWithRetry({
       repoRoot,
       workspaceDirs,
@@ -619,7 +618,7 @@ export async function verifyDepsExtracted({
         invalidVersions: packageVersions.invalid,
         unsatisfiedRanges: unsatisfiedRanges.invalid,
         runtimeFailures: [],
-        brokenBinLinks,
+        brokenBinLinks: findBrokenBinLinks(repoRoot, { workspaceDirs }),
       };
     const runtime = await findUnusableRuntimeDepsWithRetry({
       repoRoot,
@@ -632,7 +631,7 @@ export async function verifyDepsExtracted({
       invalidVersions: [],
       unsatisfiedRanges: [],
       runtimeFailures: runtime.failures,
-      brokenBinLinks,
+      brokenBinLinks: findBrokenBinLinks(repoRoot, { workspaceDirs }),
     };
   };
 
@@ -687,14 +686,21 @@ export async function verifyDepsExtracted({
       throw new Error(`refusing executable-link repair outside repo root: ${target}`);
     return target;
   });
+  const binPackageFindings = first.brokenBinLinks
+    .filter((finding) => finding.package)
+    .map((finding) => ({ workspace: finding.workspace === '<root>' ? '.' : finding.workspace, package: finding.package }));
+  // A scoped package's parent can itself be a symlink. Validate the physical
+  // parent before recursive removal, as well as the .bin parent before unlink.
+  for (const target of packageLocalRepairTargets({ repoRoot, findings: binPackageFindings })) {
+    if (!isStrictlyWithin(realpathSync(repoRoot), realpathSync(dirname(target))))
+      throw new Error(`refusing executable-package repair outside repo root: ${target}`);
+  }
   for (const target of binTargets) {
     if (lstatSync(target).isSymbolicLink() && !existsSync(target)) unlinkSync(target);
   }
   const removedTargets = removePackageLocalRepairTargets({
     repoRoot,
-    findings: [...first.incomplete, ...first.invalidVersions, ...first.brokenBinLinks
-      .filter((finding) => finding.package)
-      .map((finding) => ({ workspace: finding.workspace === '<root>' ? '.' : finding.workspace, package: finding.package }))],
+    findings: [...first.incomplete, ...first.invalidVersions, ...binPackageFindings],
     deps,
   });
   const removedLockEntries = removePackageLocalRepairLockEntries({

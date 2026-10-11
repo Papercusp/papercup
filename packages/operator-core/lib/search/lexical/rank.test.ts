@@ -39,8 +39,8 @@ describe('mergeExactAndBm25 (R-13, D-016)', () => {
     expect(mergeExactAndBm25([], bm25, id, 0)).toEqual([]);
   });
 
-  it('caps the exact list at a population that admits every measured R-13 loss (largest AND set 1,656)', () => {
-    expect(EXACT_LIST_MAX_AND_ROWS).toBeGreaterThanOrEqual(1656);
+  it('caps the exact list at a population that admits every measured R-13 loss (largest AND set 3,925)', () => {
+    expect(EXACT_LIST_MAX_AND_ROWS).toBeGreaterThanOrEqual(3925);
   });
 });
 

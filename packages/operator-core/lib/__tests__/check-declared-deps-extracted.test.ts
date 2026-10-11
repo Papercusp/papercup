@@ -579,6 +579,59 @@ describe('runtime-content probes catch partial packages that directory checks ca
 });
 
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
+  it('retains a local executable that becomes healthy during asynchronous runtime verification', async () => {
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: { 'libs/tooling': ['tool'] } });
+    const nm = join(root, 'libs/tooling/node_modules');
+    writeFileSync(join(nm, 'tool/package.json'), JSON.stringify({ name: 'tool', version: '1.0.0' }));
+    mkdirSync(join(nm, '.bin'));
+    symlinkSync('../tool/cli.js', join(nm, '.bin/tool'));
+    const repair = vi.fn(() => 0);
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: ['hono'], runNpm: repair, deps: {
+      sleep: async () => {},
+      probeRuntimeImport: () => {
+        writeFileSync(join(nm, 'tool/cli.js'), 'settled');
+        return { ok: true };
+      },
+    } });
+    expect(status).toBe(0);
+    expect(repair).not.toHaveBeenCalled();
+    expect(readFileSync(join(nm, '.bin/tool'), 'utf8')).toBe('settled');
+  });
+
+  it('refuses an external .bin directory before changing its dangling link', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
+    const external = fixture({ packages: {}, extracted: {} });
+    const bin = join(external, 'bins');
+    mkdirSync(bin);
+    symlinkSync('../missing/cli.js', join(bin, 'tool'));
+    const nm = join(root, 'libs/tooling/node_modules');
+    mkdirSync(nm, { recursive: true });
+    symlinkSync(bin, join(nm, '.bin'));
+    const repair = vi.fn(() => 0);
+    await expect(verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: repair, deps: { sleep: async () => {} } }))
+      .rejects.toThrow(/executable-link repair outside repo root/);
+    expect(() => symlinkSync('../missing/cli.js', join(bin, 'tool'))).toThrow();
+    expect(repair).not.toHaveBeenCalled();
+  });
+
+  it('refuses a scoped package whose physical parent is outside the repo before any unlink or removal', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
+    const external = fixture({ packages: {}, extracted: { '': ['tool'] } });
+    writeFileSync(join(external, 'node_modules/tool/package.json'), JSON.stringify({ name: 'tool', version: '1.0.0' }));
+    const nm = join(root, 'libs/tooling/node_modules');
+    mkdirSync(join(nm, '.bin'), { recursive: true });
+    symlinkSync(join(external, 'node_modules'), join(nm, '@scope'));
+    symlinkSync('../@scope/tool/cli.js', join(nm, '.bin/tool'));
+    const repair = vi.fn(() => 0);
+    await expect(verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: repair, deps: { sleep: async () => {} } }))
+      .rejects.toThrow(/executable-package repair outside repo root/);
+    expect(existsSync(join(external, 'node_modules/tool/package.json'))).toBe(true);
+    expect(() => symlinkSync('../@scope/tool/cli.js', join(nm, '.bin/tool'))).toThrow();
+    expect(repair).not.toHaveBeenCalled();
+  });
+
   it('repairs an orphan workspace bin that a real offline hoisted npm install leaves untouched', async () => {
     silenceConsole();
     const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
