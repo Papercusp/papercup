@@ -45,6 +45,7 @@ import {
   runGovernedTestProcess,
 } from './lib/governed-test-process.mjs';
 import {
+  consumePreemptMarkerEnv,
   createPreemptMarkerExclusive,
   reapPreemptMarkerDebris,
 } from './lib/preempt-markers.mjs';
@@ -2835,6 +2836,10 @@ export async function main(
     restrictedHoldPreflightImpl = runRestrictedHoldPreflight,
   } = {},
 ) {
+  // EI-25671809770924720: pc-heavy addresses these two marker paths to THIS router alone. Take
+  // them before anything is spawned: every child below receives `process.env`, so leaving them
+  // there handed the parent's unique barrier to any test that spawns a nested router.
+  const preemptMarkerPaths = consumePreemptMarkerEnv(process.env);
   let cleanupPreemptReadyMarker = null;
   let cleanupPreemptFinalizationMarker = null;
   const cleanupPreemptMarkers = () => {
@@ -2872,7 +2877,7 @@ export async function main(
   const ensurePreemptReady = () => {
     if (cleanupPreemptReadyMarker) return true;
     try {
-      cleanupPreemptReadyMarker = publishPreemptReadyMarker();
+      cleanupPreemptReadyMarker = publishPreemptReadyMarker(preemptMarkerPaths.readyFile);
       return true;
     } catch (error) {
       console.error(
@@ -2891,7 +2896,9 @@ export async function main(
   const finalizationCallbacks = () => ({
     onAllFilesComplete: () => {
       cleanupPreemptFinalizationMarker?.();
-      cleanupPreemptFinalizationMarker = publishPreemptFinalizationMarker();
+      cleanupPreemptFinalizationMarker = publishPreemptFinalizationMarker(
+        preemptMarkerPaths.finalizationFile,
+      );
     },
   });
   try {

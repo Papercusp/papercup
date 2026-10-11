@@ -1686,6 +1686,106 @@ describe('main() — failed assertion details survive private report cleanup (EI
   });
 });
 
+// EI-25671809770924720: pc-heavy addresses its two marker paths to the router it launched. Every
+// child the router spawns receives `process.env`, so a router that left them there handed the
+// parent's unique barrier to any test that spawns a nested router — which then refused with
+// EEXIST against its live parent before running a single assertion.
+describe('main() — the pc-heavy marker addresses stop at this router (EI-25671809770924720)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let markerDir: string;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    markerDir = mkdtempSync(join(tmpdir(), 'test-files-marker-consume-'));
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    stdoutSpy.mockRestore();
+    rmSync(markerDir, { recursive: true, force: true });
+  });
+
+  it('publishes its own barriers from the consumed paths and spawns children without them', async () => {
+    const readyFile = join(markerDir, 'ready.AbC123');
+    const finalizationFile = join(markerDir, 'finalization.XyZ789');
+    const owner = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8').trim() : null);
+    const seen: Array<{
+      childReady: string | undefined;
+      childFinalization: string | undefined;
+      readyOwner: string | null;
+      finalizationOwner: string | null;
+    }> = [];
+    const runCapturedTestProcessMock = vi.fn(
+      async (
+        _command: string,
+        args: string[],
+        options: { env?: NodeJS.ProcessEnv; onAllFilesComplete?: () => void },
+      ) => {
+        // What a nested router spawned by a test in this child would inherit.
+        const childEnv = options.env ?? {};
+        options.onAllFilesComplete?.();
+        seen.push({
+          childReady: childEnv.PC_HEAVY_PREEMPT_READY_FILE,
+          childFinalization: childEnv.PC_HEAVY_PSI_FINALIZATION_FILE,
+          readyOwner: owner(readyFile),
+          finalizationOwner: owner(finalizationFile),
+        });
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='));
+        if (outputArg) {
+          writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({
+            testResults: [{
+              name: '/repo/lib/ok.test.ts',
+              status: 'passed',
+              assertionResults: [{ status: 'passed', fullName: 'router > passes' }],
+            }],
+          }));
+        }
+        return { status: 0, signal: null, stdout: '', stderr: '', timedOut: false };
+      },
+    );
+
+    const savedReady = process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    const savedFinalization = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    process.env.PC_HEAVY_PREEMPT_READY_FILE = readyFile;
+    process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationFile;
+    let leftInProcessEnv: { ready: string | undefined; finalization: string | undefined };
+    try {
+      await main(
+        ['packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+        { runCapturedTestProcessImpl: runCapturedTestProcessMock },
+      );
+    } finally {
+      leftInProcessEnv = {
+        ready: process.env.PC_HEAVY_PREEMPT_READY_FILE,
+        finalization: process.env.PC_HEAVY_PSI_FINALIZATION_FILE,
+      };
+      if (savedReady === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+      else process.env.PC_HEAVY_PREEMPT_READY_FILE = savedReady;
+      if (savedFinalization === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = savedFinalization;
+    }
+
+    expect(runCapturedTestProcessMock).toHaveBeenCalled();
+    for (const child of seen) {
+      // The child sees neither address...
+      expect(child.childReady).toBeUndefined();
+      expect(child.childFinalization).toBeUndefined();
+      // ...while THIS router still published both barriers at the paths pc-heavy gave it.
+      expect(child.readyOwner).toBe(String(process.pid));
+      expect(child.finalizationOwner).toBe(String(process.pid));
+    }
+    expect(leftInProcessEnv).toEqual({ ready: undefined, finalization: undefined });
+    // main()'s finally still removes the barriers it published.
+    expect(existsSync(readyFile)).toBe(false);
+    expect(existsSync(finalizationFile)).toBe(false);
+  });
+});
+
 describe('suppressInjectedJsonReportNotice', () => {
   it('removes only the notice for the disposable injected path', () => {
     const reportPath = '/dev/shm/pcv/papercusp-test-files-report-example/group-0.json';
