@@ -38,7 +38,7 @@
 // package leaves it inferred for the same reason.
 
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
-import { budgetSpendScope } from '../goal-launch-settings';
+import { budgetSpendScope, type GoalPortfolioBrief } from '../goal-launch-settings';
 // P-001 — goal-live-holder-guarantee-2026-08-18: ROW PRESENCE IS NOT LIVENESS.
 // A goal-mode row outlives the session that wrote it, so both surfaces below
 // (the board and the popup) reported goals dark for days as staffed. The
@@ -1308,6 +1308,20 @@ export async function resolveGoalDetail(args: {
   } & Record<string, unknown>;
   if (!shaped.goal) return detail;
 
+  // The optional agenda may time out without cancelling its portfolio read.
+  // Keep that promise for the collection fallback instead of starting a second
+  // copy. Each declared property still owns its independent saved policy.
+  const portfolioReads = new Map<string, Promise<GoalPortfolioBrief | null>>();
+  const readPortfolio = (property: string): Promise<GoalPortfolioBrief | null> => {
+    let read = portfolioReads.get(property);
+    if (!read) {
+      read = import('../goal-launch-settings').then(({ readGoalPortfolioBrief }) =>
+        readGoalPortfolioBrief({ workspaceId, goalId, sql, collectionProperty: property,
+          claimability: 'skip', rubricStewardship: 'skip' }));
+      portfolioReads.set(property, read);
+    }
+    return read;
+  };
   const { readAgentGoalModeState } = await import('../agent-obligation-reader');
   const goalModeState = await readAgentGoalModeState({
     workspaceId,
@@ -1318,6 +1332,7 @@ export async function resolveGoalDetail(args: {
     // coordination fault leaves two stamps visible.
     ownerId: shaped.agents?.[0]?.ownerId ?? null,
     planSlugs: [...new Set((shaped.plans ?? []).map((plan) => plan.planSlug).filter(Boolean))],
+    deps: { goalPortfolio: () => readPortfolio('worklist') },
   });
   const { readTypedPropertyCollection, TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
   const rawData = shaped.goalData as { propertySchema: unknown; properties: unknown };
@@ -1336,9 +1351,7 @@ export async function resolveGoalDetail(args: {
           return;
         }
         try {
-          const { readGoalPortfolioBrief } = await import('../goal-launch-settings');
-          const portfolio = await readGoalPortfolioBrief({ workspaceId, goalId,
-            collectionProperty: property, claimability: 'skip' });
+          const portfolio = await readPortfolio(property);
           if (portfolio) portfolios.set(property, portfolio);
         } catch { collectionReadErrors.set(property, 'Active workspace plans could not be read.'); }
       }));
