@@ -32,9 +32,13 @@ function readMigration(file: string, marker: string): string {
 }
 
 const MIGRATION_1443 = readMigration('1443-merge-same-workspace-work-item-twins.sql', 'twin_1443');
+// The REAL endpoint-delete guard: a hand-rolled fixture without it let 1443's
+// first armed revision pass here and then abort on live data.
+const MIGRATION_988 = readFileSync(resolve(SQL_DIR, '988-work-item-dependency-delete-guard.sql'), 'utf8');
 
 const WS = 'papercusp-workspace';
 const BAK_TABLES = [
+  'bak_20261011_work_item_twin_deps_1443',
   'bak_20261011_work_item_twins_1443',
   'bak_20261011_work_item_twin_manifest_1443',
   'bak_20261011_work_item_twin_edges_1443',
@@ -134,7 +138,18 @@ beforeAll(async () => {
     DROP TRIGGER IF EXISTS test_capture_outbox_del_trg ON harness_shared.work_items;
     CREATE TRIGGER test_capture_outbox_del_trg AFTER DELETE ON harness_shared.work_items
       FOR EACH ROW EXECUTE FUNCTION harness_shared.test_capture_outbox();
+    CREATE TABLE IF NOT EXISTS harness_shared.work_item_deps (
+      id bigint PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',
+      blocked_kind text NOT NULL, blocked_ref text NOT NULL,
+      blocker_kind text NOT NULL, blocker_ref text NOT NULL,
+      dep_type text NOT NULL DEFAULT 'blocks', created_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      satisfaction text NOT NULL DEFAULT 'settled',
+      CONSTRAINT work_item_deps_no_self CHECK (NOT (blocked_kind = blocker_kind AND blocked_ref = blocker_ref)));
+    CREATE UNIQUE INDEX IF NOT EXISTS work_item_deps_edge_uniq ON harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type);
   `).simple();
+  await db.sql.unsafe(MIGRATION_988).simple();
 });
 
 afterAll(async () => db?.cleanup());
@@ -144,7 +159,8 @@ beforeEach(async () => {
     DROP TABLE IF EXISTS ${BAK_TABLES.map((t) => `harness_shared.${t}`).join(', ')};
     TRUNCATE harness_shared.work_item_spec_revision_edges, harness_shared.carry_notes,
       harness_shared.coord_links, harness_shared.work_item_claims, harness_shared.feature_claims,
-      harness_shared.claim_audit, harness_shared.test_outbox, harness_shared.harness_plans;
+      harness_shared.claim_audit, harness_shared.test_outbox, harness_shared.harness_plans,
+      harness_shared.work_item_deps;
     DELETE FROM harness_shared.work_items;
     TRUNCATE harness_shared.test_outbox;
   `).simple();
@@ -234,6 +250,45 @@ describe('migration 1443: same-workspace work-item twins', () => {
     const notes = await db.sql<Array<{ scope: string; note: string }>>`
       SELECT scope, note FROM harness_shared.carry_notes WHERE workspace_id = ${WS}`;
     expect(notes).toEqual([{ scope: 'workitem:sidestage:WI-300', note: '## State\nhalf way' }]);
+  });
+
+  it('lifts dependency edges past the delete guard and re-points them at the row that carries on', async () => {
+    // Fixture chain (the live shape that aborted 1443's first armed revision).
+    await insert({ harness: 'heval-a', id: 'w1', title: 'step 1' });
+    await insert({ harness: 'heval-b', id: 'w1', title: 'step 1' });
+    await insert({ harness: 'heval-a', id: 'w2', title: 'step 2' });
+    await insert({ harness: 'heval-b', id: 'w2', title: 'step 2' });
+    // One item recorded twice: papercusp survives.
+    await insert({ harness: 'papercup', id: 'WI-701', title: 'Same' });
+    await insert({ harness: 'papercusp', id: 'WI-701', title: 'Same' });
+    // A divergent collision: the local pot row is renamed.
+    await insert({ harness: 'pot', id: 'WI-702', title: 'A' });
+    await insert({ harness: 'papercusp', id: 'WI-702', title: 'B', origin: 'remote' });
+    await insert({ harness: 'other', id: 'X1', title: 'downstream' });
+    await db.sql.unsafe(`
+      INSERT INTO harness_shared.work_item_deps (id, workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref) VALUES
+        (1, '${WS}', 'feature', 'heval-a#w2', 'feature', 'heval-a#w1'),
+        (2, '${WS}', 'feature', 'papercup#WI-701', 'issue', 'EI-9'),
+        (3, 'default', 'feature', 'papercup#WI-701', 'issue', 'EI-10'),
+        (4, '${WS}', 'feature', 'other#X1', 'feature', 'pot#WI-702'),
+        (5, '${WS}', 'feature', 'papercup#WI-701', 'feature', 'papercusp#WI-701');
+    `).simple();
+
+    await applyMigration();
+
+    const newId = await renamed('pot', 'WI-702');
+    const deps = await db.sql<Array<{ id: number; workspace_id: string; blocked_ref: string; blocker_ref: string }>>`
+      SELECT id, workspace_id, blocked_ref, blocker_ref FROM harness_shared.work_item_deps ORDER BY id`;
+    expect(deps).toEqual([
+      { id: 2, workspace_id: WS, blocked_ref: 'papercusp#WI-701', blocker_ref: 'EI-9' },
+      // Another workspace: the ref is not a twin there, so the edge is untouched.
+      { id: 3, workspace_id: 'default', blocked_ref: 'papercup#WI-701', blocker_ref: 'EI-10' },
+      { id: 4, workspace_id: WS, blocked_ref: 'other#X1', blocker_ref: `pot#${newId}` },
+    ]);
+    // Fixture edge (1) and the source->survivor edge that would become a self-loop (5) are dropped.
+    const bak = await db.sql`SELECT id FROM harness_shared.bak_20261011_work_item_twin_deps_1443 ORDER BY id`;
+    expect(bak.map((r) => Number(r.id))).toEqual([1, 2, 3, 4, 5]);
+    expect((await rows('w1')).length + (await rows('w2')).length).toBe(0);
   });
 
   it('merges into a survivor that is itself renamed because it collided with a different item', async () => {
