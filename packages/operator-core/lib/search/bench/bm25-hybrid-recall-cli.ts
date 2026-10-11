@@ -21,12 +21,14 @@
  * query and reused, so the cosine leg is identical. Fused recall is read before any
  * rerank (R-13 is about fusion, not the cross-encoder).
  *
- * R-18 (D-019, D-020, D-024, D-025). Per source the candidates split into three disjoint
- * samples: P (paired), W (warm-up), S (steady). The paired alternating pass over P gives
- * R-13 and D-019's relative bound. Then, per source, an untimed BM25-only warm-up over W and
- * a timed BM25-only pass over S, whose queries no earlier pass has run: the absolute
- * ceilings judge that steady pass. pg_stat_statements deltas around the timed passes say how
- * much of each lexical statement's time was block reads.
+ * R-18 (D-019, D-020, D-024, D-025, D-028). Per source the candidates split into three
+ * disjoint samples: P (paired), W (warm-up), S (steady). The paired alternating pass over P
+ * gives R-13 and D-019's relative bound. Then the warm-repeat pass over P (D-028): per query,
+ * the BM25-arm call once untimed (it loads the call's pages) and once timed; the absolute
+ * ceilings judge that pass's p95. Then, per source, an untimed BM25-only warm-up over W and a
+ * timed BM25-only pass over S, whose queries no earlier pass has run (reported only, D-026).
+ * pg_stat_statements deltas around the timed passes say how much of each lexical statement's
+ * time was block reads.
  *
  * READ-ONLY against PG. Writes the JSON artifact and a Markdown summary beside it.
  * Exit 0 = pass, 1 = fail or invalid, 2 = could not run.
@@ -401,6 +403,10 @@ async function main(): Promise<number> {
   const steadyHost: Record<string, { beforeWarmup: HostSnapshot; afterSteady: HostSnapshot }> = {};
   const steadyStatements: Record<string, StatementDelta[] | string> = {};
   let warmupCalls = 0;
+  // D-028: the warm-repeat pass over P, BM25 arm only. Each entry carries the timed repeat.
+  const warmPairs: PairResult[] = [];
+  let warmStatements: StatementDelta[] | string = 'not measured';
+  let warmHost: { before: HostSnapshot; after: HostSnapshot } | null = null;
   try {
     for (const [i, p] of pairs.entries()) {
       for (const arm of armOrder(i)) p.arms[arm] = await measure(p, arm);
@@ -408,6 +414,20 @@ async function main(): Promise<number> {
     }
     stmtAfterPaired = await statementSnapshot(pg);
     hostAtEnd = await hostSnapshot(pg);
+
+    // ---- Warm-repeat pass over P (D-028): per query, the BM25-arm call once untimed, which
+    // loads the call's pages, then once timed. The D-020 ceilings judge this pass's p95: the
+    // path's own work, without the host's per-block read latency.
+    const warmBefore = await hostSnapshot(pg);
+    const stmtBeforeWarm = await statementSnapshot(pg);
+    setLexicalIds(stmtBeforeWarm);
+    for (const [i, p] of pairs.entries()) {
+      await measure(p, 'bm25', false);
+      warmPairs.push({ source: p.source, targetId: p.targetId, style: p.style, query: p.query, arms: { bm25: await measure(p, 'bm25') } });
+      if ((i + 1) % 20 === 0) console.log(`[r18] ${i + 1}/${pairs.length} warm repeats measured`);
+    }
+    warmStatements = snapshotDelta(stmtBeforeWarm, await statementSnapshot(pg));
+    warmHost = { before: warmBefore, after: await hostSnapshot(pg) };
 
     // ---- Steady pass (D-024/D-025), per source: untimed warm-up over W, then a timed
     // BM25-only pass over S, whose queries no earlier pass has run.
@@ -434,7 +454,7 @@ async function main(): Promise<number> {
   const pairedStatements = snapshotDelta(stmtBeforePaired, stmtAfterPaired);
 
   const minPairs = Math.min(MIN_PAIRS_PER_SOURCE, perSource);
-  const summaries = sourceNames.map((s) => summarizeSource(s, pairs, minPairs, steadyPairs));
+  const summaries = sourceNames.map((s) => summarizeSource(s, pairs, minPairs, steadyPairs, warmPairs));
   const verdict = overallVerdict(summaries);
   const latencyVerdict = overallLatencyVerdict(summaries);
   let commit: string | null = null;
@@ -446,6 +466,7 @@ async function main(): Promise<number> {
   // Queries are sampled from live rows; scrub box identity before writing a tracked file.
   const written = redactPairsForArtifact(pairs);
   const writtenSteady = redactPairsForArtifact(steadyPairs);
+  const writtenWarm = redactPairsForArtifact(warmPairs);
   const perSourceCount = (list: PairResult[]) =>
     Object.fromEntries(sourceNames.map((s) => [s, list.filter((p) => p.source === s).length]));
   const artifact = {
@@ -467,18 +488,28 @@ async function main(): Promise<number> {
     sameProcess: true,
     sources: summaries,
     verdict,
-    // R-18, on the paired pass: the BM25 arm's end-to-end p95 against the legacy arm's (D-019)
-    // and under the per-source ceiling (D-020). The ceiling is judged only when no paired call
-    // of the source met a full-database dump (sources[].dumpOverlap === false, D-027).
+    // R-18: the paired BM25 arm's end-to-end p95 against the legacy arm's (D-019), and the
+    // warm-repeat pass's BM25 p95 (sources[].warmRepeat.latencyP95Ms) under the per-source
+    // ceiling (D-020, D-028). The cold paired p95 is reported against the ceiling, not judged;
+    // sources[].dumpOverlap stays recorded (D-027).
     latencyRequirement: 'R-18',
-    latencyDecisions: ['D-019', 'D-020', 'D-021', 'D-026', 'D-027'],
+    latencyDecisions: ['D-019', 'D-020', 'D-021', 'D-026', 'D-027', 'D-028'],
     latencyCeilingsMs: LATENCY_P95_CEILING_MS,
-    // D-024/D-025: after the paired pass over P, per source an untimed BM25-only warm-up over
-    // W and a timed BM25-only pass over S. P, W and S are disjoint by target id and query.
-    // sources[].arms.bm25.latencyP95Ms is the cold paired p95, which the ceiling judges;
+    // D-028: right after the paired pass, per query of P, the BM25-arm call untimed then timed.
+    warmRepeatPass: {
+      perSource: perSourceCount(warmPairs),
+      host: warmHost,
+      statementStats: warmStatements,
+    },
+    // D-024/D-025: after the warm-repeat pass, per source an untimed BM25-only warm-up over W
+    // and a timed BM25-only pass over S. P, W and S are disjoint by target id and query.
     // sources[].steady.latencyP95Ms is reported data only (D-026).
     steadyPass: {
-      order: ['paired over P', 'per source: untimed warm-up over W, then timed BM25-only over S'],
+      order: [
+        'paired over P',
+        'warm-repeat over P: BM25 arm untimed, then timed (D-028)',
+        'per source: untimed warm-up over W, then timed BM25-only over S',
+      ],
       pairedPerSource: perSourceCount(pairs),
       warmupPerSource: perSourceCount(warmupPairs),
       steadyPerSource: perSourceCount(steadyPairs),
@@ -500,6 +531,7 @@ async function main(): Promise<number> {
       pairedBm25: summarizeAttribution(pairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
       pairedLegacy: summarizeAttribution(pairs.filter((p) => p.source === s).flatMap((p) => (p.arms.legacy ? [p.arms.legacy] : []))),
       steady: summarizeAttribution(steadyPairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
+      warmRepeat: summarizeAttribution(warmPairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
     }])),
     // D-021: every query was embedded before any arm was timed, so neither arm's latency
     // carries the (shared, unchanged-by-this-plan) embedding cost.
@@ -509,8 +541,9 @@ async function main(): Promise<number> {
     // cause by itself: attribute a tail with sources[].arms[].legP95Ms / pairs[].arms[].legMs.
     host: { atStart: hostAtStart, atEnd: hostAtEnd },
     latencyVerdict,
-    redactedQueries: written.redactedQueries + writtenSteady.redactedQueries,
+    redactedQueries: written.redactedQueries + writtenSteady.redactedQueries + writtenWarm.redactedQueries,
     pairs: written.pairs,
+    warmPairs: writtenWarm.pairs,
     steadyPairs: writtenSteady.pairs,
   };
   fs.mkdirSync(path.dirname(out), { recursive: true });
@@ -522,7 +555,8 @@ async function main(): Promise<number> {
     console.log(
       `[r13] ${s.source}: legacy ${l.hitsAtK}/${l.scored} (MRR ${l.mrrAtK.toFixed(3)}) vs bm25 ${b.hitsAtK}/${b.scored} ` +
         `(MRR ${b.mrrAtK.toFixed(3)}) -> ${s.verdict}: ${s.reasons.join('; ')}; ` +
-        `cold paired BM25 p95 ${b.latencyP95Ms ?? '-'} ms, steady p95 ${s.steady?.latencyP95Ms ?? '-'} ms (reported only); ` +
+        `cold paired BM25 p95 ${b.latencyP95Ms ?? '-'} ms, warm-repeat p95 ${s.warmRepeat?.latencyP95Ms ?? '-'} ms ` +
+        `(repeats with block reads: ${s.warmRepeatReadCalls ?? 'unknown'}), steady p95 ${s.steady?.latencyP95Ms ?? '-'} ms (reported only); ` +
         `dump overlap ${s.dumpOverlap === undefined ? 'unchecked' : String(s.dumpOverlap)}; ` +
         `latency ${s.latency.verdict}: ${s.latency.reason}`,
     );
@@ -545,7 +579,7 @@ function renderMarkdown(a: {
 }): string {
   const steadyRows = a.sources.map((s) => {
     const ceiling = LATENCY_P95_CEILING_MS[s.source];
-    return `| ${s.source} | ${a.steadyPass.warmupPerSource[s.source] ?? 0} | ${s.steady?.scored ?? 0} | ${s.steady?.latencyP50Ms ?? '-'} | ${s.steady?.latencyP95Ms ?? '-'} | ${ceiling ?? '-'} | ${s.arms.bm25.latencyP95Ms ?? '-'} | ${s.latency.verdict} |`;
+    return `| ${s.source} | ${s.warmRepeat?.scored ?? 0} | ${s.warmRepeat?.latencyP50Ms ?? '-'} | ${s.warmRepeat?.latencyP95Ms ?? '-'} | ${s.warmRepeatReadCalls ?? '?'} | ${ceiling ?? '-'} | ${s.arms.bm25.latencyP95Ms ?? '-'} | ${s.steady?.latencyP95Ms ?? '-'} | ${s.latency.verdict} |`;
   });
   const stmtRows = (label: string, d: StatementDelta[] | string) =>
     typeof d === 'string'
@@ -575,11 +609,11 @@ function renderMarkdown(a: {
     `Plan ${PLAN}, requirement R-13. Generated ${a.generatedAt} at commit ${a.commit ?? 'unknown'}.`,
     `Both arms ran in one process on the identical sample (fingerprint \`${a.sampleFingerprint}\`).`,
     `Recall is fused (RRF) recall@${a.recallK} before any rerank. Verdict: **${a.verdict}**.`,
-    `Latency (R-18; D-019, D-020, D-021, D-024, D-025) is the p95 of the whole hybrid call with every timed query embedded before timing. ` +
-      `On the paired cold pass the BM25 arm must not exceed legacy; the steady pass (untimed warm-up on a disjoint sample, then BM25-only ` +
-      `over a third disjoint sample of novel queries) must stay under its source ceiling ` +
-      `(${Object.entries(LATENCY_P95_CEILING_MS).map(([s, ms]) => `${s} ${ms} ms`).join(', ')}). ` +
-      `Verdict: **${a.latencyVerdict}**.`,
+    `Latency (R-18; D-019, D-020, D-021, D-028) is the p95 of the whole hybrid call with every timed query embedded before timing. ` +
+      `On the paired cold pass the BM25 arm must not exceed legacy; the warm-repeat pass (each paired query's BM25-arm call run ` +
+      `untimed, then timed) must stay under its source ceiling ` +
+      `(${Object.entries(LATENCY_P95_CEILING_MS).map(([s, ms]) => `${s} ${ms} ms`).join(', ')}). The cold paired p95 and the ` +
+      `steady pass (D-024, D-025: novel queries on a disjoint sample) are reported, not judged. Verdict: **${a.latencyVerdict}**.`,
     ``,
     `| source | arm | recall@${a.recallK} | MRR@${a.recallK} | zero-hit | p50 ms | p95 ms | engine |`,
     `|---|---|---|---|---|---|---|---|`,
@@ -591,10 +625,12 @@ function renderMarkdown(a: {
     ``,
     ...a.sources.map((s) => `- ${s.source}: ${s.reasons.join('; ')}; latency ${s.latency.verdict}: ${s.latency.reason}`),
     ``,
-    `## Steady pass (D-024, D-025)`,
+    `## Warm-repeat pass (D-028) and the reported passes`,
     ``,
-    `| source | warm-up calls | steady calls | steady p50 ms | steady p95 ms | ceiling ms | cold paired BM25 p95 ms | R-18 |`,
-    `|---|---|---|---|---|---|---|---|`,
+    `Repeats with block reads is an upper bound from pg_stat_statements deltas (peers running the same statement also count).`,
+    ``,
+    `| source | warm repeats | warm p50 ms | warm p95 ms | repeats with block reads | ceiling ms | cold paired BM25 p95 ms | steady p95 ms | R-18 |`,
+    `|---|---|---|---|---|---|---|---|---|`,
     ...steadyRows,
     ``,
     ...Object.entries(a.steadyPass.host).flatMap(([s, h]) => [

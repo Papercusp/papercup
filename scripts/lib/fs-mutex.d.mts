@@ -42,7 +42,7 @@ export function resolveFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
  * the lock itself. Reader-mode and explicitly disabled locks have no check.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, intent?: Record<string, string | number | boolean> }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean> }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutex<T>(name: string, fn: (context?: {
@@ -59,6 +59,7 @@ export function withFsMutex<T>(name: string, fn: (context?: {
     waitingNoticeIntervalMs?: number;
     onAcquired?: (info: {
         waitedMs: number;
+        admissionSubphaseTimingsMs?: Record<string, number>;
     }) => void;
     intent?: Record<string, string | number | boolean>;
 }): Promise<T>;

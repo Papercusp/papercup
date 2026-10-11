@@ -117,6 +117,7 @@ function withScratchWorkspaceMutex<T>(
     waitedMs: number;
     localWaitMs: number;
     fsMutexAdmissionMs: number;
+    admissionSubphaseTimingsMs?: Record<string, number>;
   }) => void,
   requestTraceId?: string,
 ): Promise<T> {
@@ -196,6 +197,7 @@ function withScratchWorkspaceMutex<T>(
               waitedMs: localWaitMs + filesystemWaitMs,
               localWaitMs,
               fsMutexAdmissionMs: info.waitedMs,
+              admissionSubphaseTimingsMs: info.admissionSubphaseTimingsMs,
             });
           }
           : undefined,
@@ -1897,10 +1899,15 @@ export async function writeWithScratchQuota(
         }
         throw error;
       }
-    }, onMutexWaiting, ({ waitedMs, localWaitMs, fsMutexAdmissionMs }) => {
+    }, onMutexWaiting, ({ waitedMs, localWaitMs, fsMutexAdmissionMs, admissionSubphaseTimingsMs }) => {
       if (opts.captureSubphaseTimings) {
         timings.localMutexWaitMs = localWaitMs;
         timings.fsMutexAdmissionMs = fsMutexAdmissionMs;
+        const subphases = timings.awaitSubphaseTimingsMs ??= {};
+        for (const [name, elapsedMs] of Object.entries(admissionSubphaseTimingsMs ?? {})) {
+          const key = `fs-mutex-admission.${name}`;
+          subphases[key] = (subphases[key] ?? 0) + elapsedMs;
+        }
       }
       if (refreshWaitOwner) timings.refreshWaitMs += waitedMs;
       else timings.quotaWaitMs += waitedMs;

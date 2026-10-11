@@ -23,7 +23,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { stripCommentsOnly } from "./strip-comments-and-strings.mjs";
+import { stripCommentsAndStrings, stripCommentsOnly } from "./strip-comments-and-strings.mjs";
 import { listFilesIncludingUntracked } from "./tracked-files.mjs";
 
 // ── WIDENING THRESHOLD (plan gate-latency-selection-and-retry-policy-2026-09-06, P-001) ──
@@ -110,10 +110,27 @@ const SKIP_DIRS = new Set([
 
 /** `import x from 's'` / `export … from 's'` / `import('s')` / `import 's'` / `require('s')`. */
 const SPECIFIER_RE =
-  /(?:\bimport\b|\bexport\b)[^;]*?\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]|\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  /(?:\bimport\b|\bexport\b)[^;]*?\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]|\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/dg;
 /** Runtime-loaded files named relative to the current module rather than imported. */
 const MODULE_RUNTIME_PATH_RE =
-  /\b(?:resolve|join)\s*\(\s*__dirname\s*,\s*['"]([^'"]+)['"]\s*\)|\bnew\s+URL\s*\(\s*['"]([^'"]+)['"]\s*,\s*import\.meta\.url\s*\)/g;
+  /\b(?:resolve|join)\s*\(\s*__dirname\s*,\s*['"]([^'"]+)['"]\s*\)|\bnew\s+URL\s*\(\s*['"]([^'"]+)['"]\s*,\s*import\.meta\.url\s*\)/dg;
+
+/**
+ * Match executable tokens on the canonical offset-preserving AST mask, then recover
+ * their literal operands from the original source. Child-program strings, comments and
+ * regex bodies cannot mint parent imports; real template expressions remain executable.
+ */
+function moduleDependencyEdges(source, file) {
+  const code = stripCommentsAndStrings(source, file);
+  const operands = (pattern) => [...code.matchAll(pattern)].map((match) => {
+    const range = match.indices.slice(1).find(Boolean);
+    return range ? source.slice(range[0], range[1]) : null;
+  }).filter(Boolean);
+  return {
+    specifiers: operands(SPECIFIER_RE),
+    runtimePaths: operands(MODULE_RUNTIME_PATH_RE),
+  };
+}
 
 export function isTestFile(file) {
   return TEST_RE.test(file);
@@ -453,16 +470,15 @@ export function staticImportClosure({
       continue;
     }
     visited.add(file);
-    let graphSource;
+    let edges;
     try {
-      graphSource = stripCommentsOnly(source, file);
+      edges = moduleDependencyEdges(source, file);
     } catch {
       unresolved.add(`${file}:comment-strip-failed`);
       continue;
     }
 
-    for (const match of graphSource.matchAll(SPECIFIER_RE)) {
-      const spec = match[1] ?? match[2] ?? match[3] ?? match[4];
+    for (const spec of edges.specifiers) {
       if (!spec) continue;
       const kind = classifySpecifier(spec);
       if (kind === "bare") continue;
@@ -484,8 +500,7 @@ export function staticImportClosure({
       }
       pending.push(path.resolve(target));
     }
-    for (const match of graphSource.matchAll(MODULE_RUNTIME_PATH_RE)) {
-      const spec = match[1] ?? match[2];
+    for (const spec of edges.runtimePaths) {
       if (!spec) continue;
       // Directory anchors such as `resolve(__dirname, '../..')` configure search roots; they are
       // not loaded modules. Only source-shaped runtime paths join the module proof here.
@@ -581,16 +596,22 @@ export function buildIndex({ rootDir, aliases = [], fs = defaultFs() } = {}) {
       deps.set(f, new Set());
       continue;
     }
+    let edges;
+    try {
+      edges = moduleDependencyEdges(src, f);
+    } catch {
+      unresolved.add(f);
+      deps.set(f, new Set());
+      continue;
+    }
     const set = new Set();
-    for (const m of src.matchAll(SPECIFIER_RE)) {
-      const spec = m[1] ?? m[2] ?? m[3] ?? m[4];
+    for (const spec of edges.specifiers) {
       if (!spec) continue;
       const r = resolve(f, spec);
       if (r.target) set.add(r.target);
       else if (r.unresolvable) unresolved.add(f);
     }
-    for (const match of src.matchAll(MODULE_RUNTIME_PATH_RE)) {
-      const spec = match[1] ?? match[2];
+    for (const spec of edges.runtimePaths) {
       if (!spec || !RUNTIME_DEPENDENCY_RE.test(spec)) continue;
       const target = candidatesFor(path.resolve(path.dirname(f), spec)).find(
         (candidate) => fileSet.has(candidate) || fs.exists(candidate),

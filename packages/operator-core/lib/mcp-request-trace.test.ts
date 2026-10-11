@@ -6,7 +6,34 @@ import {
   mcpTraceIdFromExtra,
   MCP_DATA_PLANE_DEGRADED_AT_HEADER,
   MCP_REQUEST_TRACE_HEADER,
+  resolveMcpRequestTraceId,
 } from './mcp-request-trace';
+
+describe('resolveMcpRequestTraceId (WI-6554700010008586)', () => {
+  it('returns the proxy-minted header when present', () => {
+    const valid = '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4';
+    expect(resolveMcpRequestTraceId({ requestInfo: { headers: { [MCP_REQUEST_TRACE_HEADER]: valid } } })).toBe(valid);
+  });
+
+  it('gives every reader of one direct (proxy-less) request the SAME minted id', () => {
+    // The recorder (requestOrigin) and the settlement backfill read the same
+    // request separately; two independent fallbacks made their ids differ, so
+    // the settlement could never find its invocation row.
+    const request = { requestInfo: { headers: {} } };
+    const recorded = resolveMcpRequestTraceId(request);
+    const settled = resolveMcpRequestTraceId(request);
+
+    expect(recorded).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(settled).toBe(recorded);
+    expect(mcpTraceIdFromExtra(request)).toBeNull();
+  });
+
+  it('mints a distinct id for a distinct request', () => {
+    expect(resolveMcpRequestTraceId({ requestInfo: { headers: {} } })).not.toBe(
+      resolveMcpRequestTraceId({ requestInfo: { headers: {} } }),
+    );
+  });
+});
 
 describe('buildMcpSessionSurfaceTraceEvent', () => {
   it('distinguishes a new MCP transport session while retaining the native-session correlation', () => {

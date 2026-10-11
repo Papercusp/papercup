@@ -262,7 +262,6 @@ beforeAll(async () => {
     '860-agent-review-claim-floor.sql',
     '863-owner-action-claim-floor.sql',
     '864-migrate-legacy-human-parks-to-agent-review.sql',
-    '920-draft-paused-plan-claim-floor.sql',
     '1070-plan-item-sibling-claim-floor.sql',
     '1072-plan-assignment-claim-floor.sql',
     '1081-plan-route-decision-claim-floor.sql',

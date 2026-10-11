@@ -6,6 +6,7 @@ import { createAdaptorServer } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import type { SuSessionHost } from '../su-session-host';
 
 // These workspace TypeScript entrypoints are CommonJS under tsx. Resolve
@@ -34,6 +35,10 @@ const instanceId = randomUUID();
 const send = (message: unknown) => {
   if (process.connected) process.send!(message);
 };
+// Record actual event-loop stalls at the private HTTP boundary. Request wall
+// time alone cannot distinguish an awaited database read from a blocked loop.
+const requestLoopDelay = monitorEventLoopDelay({ resolution: 10 });
+requestLoopDelay.enable();
 const sendAndFlush = async (message: unknown): Promise<void> => {
   if (!process.connected) return;
   await new Promise<void>((resolve, reject) => {
@@ -89,7 +94,7 @@ const server = createAdaptorServer({
         ? 'credentials-status'
         : runTool?.name === 'config:tiers-get'
           ? 'tiers-get'
-          : null;
+          : pathname.startsWith('/api/') ? 'operator-api' : null;
     const configStartedAt = Date.now();
     if (configStep) {
       send({
@@ -156,6 +161,7 @@ const server = createAdaptorServer({
           pathname,
           status: response.status,
           durationMs: Date.now() - configStartedAt,
+          eventLoopDelayMaxMsSinceReady: requestLoopDelay.max / 1e6,
           at: new Date().toISOString(),
         }],
       });

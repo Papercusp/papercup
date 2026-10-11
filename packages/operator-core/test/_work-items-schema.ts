@@ -556,6 +556,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     op_started_at timestamptz,
     op_updated_at timestamptz,
     items jsonb,
+    decisions jsonb,
     template_slug text,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug)
   );
@@ -572,6 +573,11 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   -- the migration itself fail to apply with 'column "items" does not exist', which reads like a
   -- broken migration rather than a stale fixture.
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS items jsonb;
+  -- WI-6554700010008623: writePlanIndexRows (agent-tools/plans/plan-index-rows.ts) updates the
+  -- items AND decisions jsonb copies together, so a fixture without "decisions" fails every
+  -- plan-index write with 'column "decisions" does not exist'. Production has had it since
+  -- 128-harness-plans-normalize.
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS decisions jsonb;
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS template_slug text;
   -- Migration 675 normalizes the canonical plan content into these derived indexes. The
   -- reserved-plan-lane claim floor reads plan_items on every issue-family preview/claim path,

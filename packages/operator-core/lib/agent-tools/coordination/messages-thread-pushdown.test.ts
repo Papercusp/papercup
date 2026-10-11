@@ -96,6 +96,7 @@ describe('readThread — PG graph pushdown', () => {
       client: sqlMock,
       timeoutMs: THREAD_READ_STATEMENT_TIMEOUT_MS,
       acquireTimeoutMs: THREAD_READ_ACQUIRE_TIMEOUT_MS,
+      acquirePool: 'org-admin',
     });
     expect(sqlMock).toHaveBeenCalledTimes(2);
     expect(coordSqlMock).toHaveBeenCalledTimes(1);

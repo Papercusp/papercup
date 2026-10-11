@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import childProcess from 'node:child_process';
@@ -91,9 +91,10 @@ describe('native DAO viewport launch contract', () => {
   function verifier(exitCode = 0) {
     const dir = mkdtempSync(join(tmpdir(), 'dao-native-launch-'));
     const script = join(dir, 'verifier.sh'), log = join(dir, 'boots.log');
-    writeFileSync(script, '#!/usr/bin/env bash\nset -eu\nprintf "%s|%s|%s|%s|%s\\n" "$VERIFY_TAURI_WINDOW" "$DAO_WORKBENCH_VIEWPORT" "$VERIFY_TAURI_ISOLATED_DB" "$VERIFY_TAURI_ISOLATED_SEED" "$*" >> "$DAO_NATIVE_BOOT_LOG"\nexit ' + exitCode + '\n', { mode: 0o700 });
+    writeFileSync(script, '#!/usr/bin/env bash\nset -eu\nprintf "%s|%s|%s|%s|%s|%s|%s\\n" "$VERIFY_TAURI_WINDOW" "$DAO_WORKBENCH_VIEWPORT" "$VERIFY_TAURI_ISOLATED_DB" "$VERIFY_TAURI_ISOLATED_SEED" "$*" "$PAPERCUSP_TEST_RUN_WORKSPACE" "$PAPERCUSP_TEST_RUN_HARNESS" >> "$DAO_NATIVE_BOOT_LOG"\nexit ' + exitCode + '\n', { mode: 0o700 });
     cleanup = () => rmSync(dir, { recursive: true, force: true });
-    return { log, env: { ...process.env, TAURI_SURFACE_VERIFY_SUITE_VERIFIER: script, DAO_NATIVE_BOOT_LOG: log } };
+    return { log, env: { ...process.env, TAURI_SURFACE_VERIFY_SUITE_VERIFIER: script, DAO_NATIVE_BOOT_LOG: log,
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'dao-native-ledger-fixture', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' } };
   }
   it('boots separate isolated desktop and narrow windows through the maintained verifier', async () => {
     const fixture = verifier();
@@ -102,13 +103,27 @@ describe('native DAO viewport launch contract', () => {
     expect(boots).toHaveLength(2);
     expect(boots[0]).toMatch(/^1440x1000\|1440x1000\|1\|ready\|/);
     expect(boots[0]).not.toContain('--viewport-only');
+    expect(boots[0]).toContain('--e2e');
+    expect(boots[0]).toContain('|dao-native-ledger-fixture|papercusp');
     expect(boots[1]).toMatch(/^390x844\|390x844\|1\|ready\|/);
     expect(boots[1]).toContain('--viewport-only');
+    expect(boots[1]).toContain('--e2e');
+    expect(boots[1]).toContain('|dao-native-ledger-fixture|papercusp');
   }, 50_000);
   it('stops before the narrow boot when desktop acceptance fails', async () => {
     const fixture = verifier(17);
     await expect(exec('bash', ['scripts/tauri-surface-verify-dao-workbench.sh'], { cwd: root, env: fixture.env, timeout: 45_000 }))
       .rejects.toMatchObject({ code: 17 });
     expect(readFileSync(fixture.log, 'utf8').trim().split('\n')).toHaveLength(1);
+  }, 50_000);
+  it('refuses an unscoped result ledger before booting a native window', async () => {
+    const fixture = verifier();
+    const env = { ...fixture.env } as NodeJS.ProcessEnv;
+    delete env.PAPERCUSP_TEST_RUN_WORKSPACE;
+    delete env.PAPERCUSP_WORKSPACE_ID;
+    delete env.PAPERCUSP_WORKSPACE;
+    await expect(exec('bash', ['scripts/tauri-surface-verify-dao-workbench.sh'], { cwd: root, env, timeout: 45_000 }))
+      .rejects.toMatchObject({ code: 2 });
+    expect(existsSync(fixture.log)).toBe(false);
   }, 50_000);
 });

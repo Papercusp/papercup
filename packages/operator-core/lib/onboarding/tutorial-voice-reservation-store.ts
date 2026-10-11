@@ -247,37 +247,6 @@ export class PostgresTutorialVoiceReservationStore {
     });
   }
 
-  /** Commit before mint I/O. A lost response retains exposure and forbids a
-   * second attempt; reconciliation must establish provider finality first. */
-  async beginIssuance(reservationId: string): Promise<string | null> {
-    if (!/^[0-9a-f-]{36}$/i.test(reservationId)) throw new Error('invalid issuance reservation');
-    return (this.options.run ?? withHostedServiceContext)(async sql => {
-      await fence(sql);
-      const attemptId = randomUUID();
-      const rows = await sql`UPDATE papercusp_auth.tutorial_voice_reservations
-        SET issuance_attempt_id = ${attemptId}::uuid
-        WHERE id = ${reservationId}::uuid AND issuance_attempt_id IS NULL
-          AND provider_final_ref IS NULL RETURNING id`;
-      return rows.length === 1 ? attemptId : null;
-    });
-  }
-
-  /** Bind a trusted provider receipt to its attempt. No URL/token is stored.
-   * Identical receipt retries are safe; conflicting identities cannot replace it. */
-  async recordProviderConversation(reservationId: string, attemptId: string, conversationId: string): Promise<boolean> {
-    if (![reservationId, attemptId].every(id => /^[0-9a-f-]{36}$/i.test(id))
-      || !identifier(conversationId)) throw new Error('invalid provider conversation');
-    return (this.options.run ?? withHostedServiceContext)(async sql => {
-      await fence(sql);
-      const rows = await sql`UPDATE papercusp_auth.tutorial_voice_reservations
-        SET provider_conversation_id = ${conversationId}
-        WHERE id = ${reservationId}::uuid AND issuance_attempt_id = ${attemptId}::uuid
-          AND provider_final_ref IS NULL
-          AND (provider_conversation_id IS NULL OR provider_conversation_id = ${conversationId}) RETURNING id`;
-      return rows.length === 1;
-    });
-  }
-
   /** Only a server verifier may establish finality, including token expiry/replay
    * liability. Browser cancellation cannot release this. No seconds are refunded. */
   async recordProviderFinal(reservationId: string, evidenceRef: string): Promise<boolean> {

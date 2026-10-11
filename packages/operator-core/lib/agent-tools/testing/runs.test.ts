@@ -18,6 +18,7 @@ import { PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import {
   defaultRollupSource,
   isSaturationSuspect,
+  MUTANT_DIFF_INLINE_CHARS,
   normalizeRunGroupFilter,
   shapeTestingRuns,
   toPathPattern,
@@ -654,6 +655,47 @@ describe('testing:runs payload-tier shape', () => {
       failedCaseTitlesOmitted: 0, fieldsOmitted: expect.arrayContaining(['root', 'filePath']) });
     expect(JSON.stringify(shaped).length).toBeLessThan(1_400);
     expect(executionDetails.passedCaseTitles).toHaveLength(2);
+  });
+
+  // Plan mutation-probe-evidence-value-2026-10-11 R-1: the mutation descriptor is what
+  // makes a probe row auditable, so a bounded row keeps it inline instead of listing it
+  // in fieldsOmitted, and clips only the mutant diff body (flagged).
+  it('keeps execution_details.mutation inline on a bounded row and clips only the mutant diff', () => {
+    const mutation = {
+      schemaVersion: 1,
+      probeInvocationId: 'probe-7f3c',
+      leg: 'mutant',
+      mode: 'copy-out',
+      subjectPath: 'scripts/example-guard.sh',
+      mutationExpression: 's/^guard_on=1$/guard_on=0/',
+      subjectBeforeSha256: 'a'.repeat(64),
+      subjectAfterSha256: 'b'.repeat(64),
+      mutantDiff: `--- a\n+++ b\n${'-guard_on=1\n+guard_on=0\n'.repeat(100)}`,
+      testFileSha256: 'c'.repeat(64),
+    };
+    const executionDetails = {
+      schemaVersion: 1, root: '/tmp', filePath: 'measured.test.ts', runGroupId: 'measured',
+      workspaceId: null, harnessSlug: null, passed: 0, failed: 1, skipped: 0,
+      collectionFailed: false, testNamePattern: null, mutationPhase: 'mutant', commitSha: null,
+      worktreeDirty: false, failedCaseTitles: ['guard refuses when disabled'], mutation,
+    };
+    expect(JSON.stringify(executionDetails).length).toBeGreaterThan(1_400);
+    const shaped = shapeTestingRuns({ runs: [{ id: 43, executionDetails }] }, 'trimmed') as {
+      runs: Array<{ executionDetails: Record<string, unknown>; executionDetailsBounded: { fieldsOmitted: string[] } }>;
+    };
+    const row = shaped.runs[0]!;
+    const inline = row.executionDetails.mutation as Record<string, unknown>;
+    const { mutantDiff, ...identity } = mutation;
+    expect(inline).toMatchObject(identity);
+    expect(inline.mutantDiff).toBe(mutantDiff.slice(0, MUTANT_DIFF_INLINE_CHARS));
+    expect(inline.mutantDiffTruncated).toBe(true);
+    expect(row.executionDetailsBounded.fieldsOmitted).not.toContain('mutation');
+    // A diff within budget is carried verbatim with no truncation flag.
+    const small = shapeTestingRuns({ runs: [{ id: 44, executionDetails: { ...executionDetails,
+      passedCaseTitles: ['x'.repeat(2_048)], mutation: { ...mutation, mutantDiff: '-a\n+b\n' } } }] }, 'trimmed') as {
+      runs: Array<{ executionDetails: Record<string, unknown> }>;
+    };
+    expect(small.runs[0]!.executionDetails.mutation).toEqual({ ...mutation, mutantDiff: '-a\n+b\n' });
   });
 
   it('preserves the required fields and announces row/tail bounds in the shaper output', () => {

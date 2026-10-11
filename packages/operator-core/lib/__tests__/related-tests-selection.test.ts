@@ -396,6 +396,47 @@ describe('buildIndex', () => {
   });
 });
 
+describe('dependency edges distinguish executable code from child-program text', () => {
+  const source = [
+    `const child = "import ghost from './missing-child.ts'; require('./missing-require.ts');";`,
+    "const template = `export { ghost } from './missing-template.ts';`;",
+    `export const words = "export { ghost } from './missing-export.ts';";`,
+    `// import './missing-comment.ts';`,
+    `import { real } from './real.ts';`,
+    `export { exported } from './exported.ts';`,
+    `const required = require('./required.ts');`,
+    "const output = `text ${import('./dynamic.ts')}`;",
+    `const runtime = new URL('./runtime.ts', import.meta.url);`,
+  ].join('\n');
+  const dependencies = ['real', 'exported', 'required', 'dynamic', 'runtime']
+    .map(name => `${ROOT}/${name}.ts`).sort();
+  const files = Object.fromEntries([
+    [`${ROOT}/entry.ts`, source],
+    ...dependencies.map(file => [file, 'export const value = 1;']),
+  ]);
+
+  it('keeps real imports and template expressions without phantom closure edges', () => {
+    const result = staticImportClosure({ rootDir: ROOT, entryFiles: [`${ROOT}/entry.ts`], fs: vfs(files) });
+    expect(result.unresolved).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.files).toEqual([`${ROOT}/entry.ts`, ...dependencies].sort());
+  });
+
+  it('uses the same executable edges in related-test selection', () => {
+    const result = buildIndex({ rootDir: ROOT, fs: vfs(files) });
+    expect([...result.unresolved]).toEqual([]);
+    expect([...result.deps.get(`${ROOT}/entry.ts`)!].sort()).toEqual(dependencies);
+  });
+
+  it('still fails closed on a real missing dependency beside quoted imports', () => {
+    const missing = vfs({ ...files, [`${ROOT}/entry.ts`]: source + "\nimport './genuinely-missing.ts';" });
+    const closure = staticImportClosure({ rootDir: ROOT, entryFiles: [`${ROOT}/entry.ts`], fs: missing });
+    expect(closure.ok).toBe(false);
+    expect(closure.unresolved).toEqual([`${ROOT}/entry.ts:./genuinely-missing.ts`]);
+    expect(buildIndex({ rootDir: ROOT, fs: missing }).unresolved.has(`${ROOT}/entry.ts`)).toBe(true);
+  });
+});
+
 /**
  * WI-10007002: tsconfig `paths` resolve the way TypeScript resolves them — an EXACT key by
  * equality only, otherwise the LONGEST wildcard prefix — independent of declaration order. The

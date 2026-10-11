@@ -66,7 +66,8 @@ vi.mock('../plans/spec-evidence-store', async (original) => ({
   listSpecEvidence: (...args: unknown[]) => listSpecEvidence(...args),
 }));
 
-import get, { WORK_ITEMS_GET_BUDGET_MS, WORK_ITEMS_GET_MAX_CONCURRENCY } from './get';
+import get, { WORK_ITEMS_GET_BUDGET_MS, WORK_ITEMS_GET_MAX_CONCURRENCY, workItemsGetSourceReadOptions } from './get';
+import { projectWorkItemOperationalBrief } from '../../operational-brief/work-item-brief';
 
 type Out = { data: { results: Array<Record<string, unknown>> } };
 const ctx = { uiClientId: 'su-deadline-test', workspaceId: 'default' };
@@ -375,6 +376,62 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
           value: { ref: `${row.id}#completion`, summary: 'focused regression guard' },
         },
       });
+    }
+    expect(getWorkItem.mock.calls.every(([, , options]) => options === undefined)).toBe(true);
+    expect(getWorkItemsByIds).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['blocker-only', ['results[].operationalBrief.blockers']],
+    ['identity-and-brief', ['results[].id', 'results[].workItem.state', 'results[].operationalBrief']],
+  ])('keeps operationalBrief active blocker reasons under %s projections for one and many ids', async (_label, pick) => {
+    const ids = ['WI-runtime-blocker-1', 'WI-runtime-blocker-2', 'WI-runtime-blocker-3'];
+    const blocker = {
+      kind: 'runtime',
+      capability: 'live-dependency',
+      capabilitySource: 'explicit',
+      ref: 'authoring-peer:goal-attribution',
+      summary: 'The authoring peer must apply the goal attribution update.',
+      evidence: 'The guarded update refused a remote-authored row.',
+      nextVerb: 'On the authoring peer, validate ownership then work_items:update {id,goal}.',
+      status: 'active',
+      createdAt: '2026-10-11T04:40:24.219Z',
+      createdBy: 'su-reporter',
+      updatedAt: '2026-10-11T04:40:24.219Z',
+    };
+    const makeWorkItem = (id: string, options?: { payloadProjection?: string }) => ({
+      id, kind: 'feature', family: 'feature', harness: 'papercup', state: 'blocked', title: id,
+      // The source reader's narrowed path returns NULL payload. Preserve that
+      // behavior here so the old handler recipe cannot pass on a rich fixture.
+      payload: options === undefined ? {
+        externalBlockers: [blocker, { ...blocker, ref: 'cleared-history', status: 'cleared' }],
+      } : null,
+    });
+    const expected = [`runtime blocker ${blocker.ref}: ${blocker.summary} (next: ${blocker.nextVerb})`];
+    const projectedCtx = { ...ctx, sourceProjection: { pick } };
+
+    // Permanent wrong control: before 42ead3e6b0 the handler applied this
+    // narrowing recipe even when the brief required the complete payload.
+    // Calibrate the same projector on both inputs to distinguish source loss
+    // from a parser that rejects the reporter's valid runtime blocker.
+    const oldOptions = workItemsGetSourceReadOptions(projectedCtx.sourceProjection, false);
+    expect(oldOptions).toEqual({ includeBody: false, payloadProjection: 'none' });
+    const project = (options?: { payloadProjection?: string }) => projectWorkItemOperationalBrief(
+      { id: ids[0], workItem: makeWorkItem(ids[0]!, options) }, { linksRead: false },
+    );
+    expect(project(oldOptions).blockers).toMatchObject({
+      status: 'known', value: ['state is blocked but no blocker reason is recorded'],
+    });
+    expect(project().blockers).toMatchObject({ status: 'known', value: expected });
+
+    getWorkItem.mockImplementation(async (id: string, _harness?: string, options?: { payloadProjection?: string }) => makeWorkItem(id, options));
+    const single = await get.handler({ id: ids[0], operationalBrief: true } as never, projectedCtx as never) as Out;
+    const batch = await get.handler({ ids, operationalBrief: true } as never, projectedCtx as never) as Out;
+
+    expect(single.data.results).toHaveLength(1);
+    expect(batch.data.results).toHaveLength(ids.length);
+    for (const row of [...single.data.results, ...batch.data.results]) {
+      expect(row.operationalBrief).toMatchObject({ blockers: { status: 'known', value: expected } });
     }
     expect(getWorkItem.mock.calls.every(([, , options]) => options === undefined)).toBe(true);
     expect(getWorkItemsByIds).not.toHaveBeenCalled();

@@ -24,7 +24,7 @@ const M = vi.hoisted(() => {
       prose: '## Now\nbody\n',
       raw: `slug: ${slug}\n`,
       frontmatter: { slug },
-      now: { state: 's', next: 'n' },
+      now: { state: 's', next: 'n', raw: 's\nn', lineNumber: 1 },
       decisions: [
         {
           id: 'D-001',
@@ -256,6 +256,50 @@ afterEach(async () => {
 });
 
 describe('plans:get — cache wiring', () => {
+  it.each([
+    { mode: 'meta' },
+    { mode: 'sections' },
+    { mode: 'full' },
+    { heading: 'Now' },
+  ])('discloses State narration that went stale after an item completed: %j', async (selection) => {
+    const read = M.readPlanBySlug.getMockImplementation()!;
+    M.readPlanBySlug.mockImplementationOnce(async (slug) => {
+      const fixture = (await read(slug))!;
+      fixture.parsed.now.state = 'P-001 remains open; P-009 reconciliation remains open.';
+      fixture.parsed.now.next = 'Read the existing source checkpoint.';
+      fixture.parsed.now.raw = '**State:** ' + fixture.parsed.now.state + '\n\n**Next:** ' + fixture.parsed.now.next;
+      fixture.parsed.prose = '## Now\n\n' + fixture.parsed.now.raw + '\n';
+      fixture.parsed.items[0].storedStatus = 'done';
+      return fixture;
+    });
+
+    const result = (await run({ slug: 'stale-state', ...selection, includeEnrichments: false })).results[0];
+    if ('heading' in selection) {
+      expect(result.section).toMatchObject({ body: expect.stringContaining('P-001 [done]') });
+      expect((result.section as { body: string }).body).toContain('Stored State');
+      expect((result.section as { body: string }).body).toContain('P-009 reconciliation remains open.');
+      expect(result).not.toHaveProperty('now');
+    } else {
+      expect(result.now).toMatchObject({
+        state: expect.stringContaining('P-001 [done]'),
+        stateDerivation: { contradictions: [expect.objectContaining({ id: 'P-001', status: 'done' })] },
+        next: 'Read the existing source checkpoint.',
+        raw: expect.stringContaining('P-001 remains open; P-009 reconciliation remains open.'),
+      });
+    }
+  });
+
+  it('CONTROL: preserves the same State narration while the named item is open', async () => {
+    const read = M.readPlanBySlug.getMockImplementation()!;
+    M.readPlanBySlug.mockImplementationOnce(async (slug) => {
+      const fixture = (await read(slug))!;
+      fixture.parsed.now.state = 'P-001 remains open; P-009 reconciliation remains open.';
+      return fixture;
+    });
+    const result = (await run({ slug: 'live-state', mode: 'meta', includeEnrichments: false })).results[0];
+    expect(result.now).toMatchObject({ state: 'P-001 remains open; P-009 reconciliation remains open.' });
+  });
+
   it('delivers fresh child history outside the cached plan and resolves the exact recovery read', async () => {
     const first = await run({ slug: 'alpha', mode: 'full' });
     expect(JSON.stringify(first)).toContain('child lesson survives');

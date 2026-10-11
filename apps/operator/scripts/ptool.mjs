@@ -1743,6 +1743,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // the ordinary 30s client cutoff hides both. timeoutForTool also unwraps
   // tools:invoke, so deferred and direct graph queries share this contract.
   ['graph:query', 100_000],
+  // EI-25627406535388321: lsp:query declares a 90s handler timeout and MCP
+  // allows 5s beyond it. Keep direct and tools:invoke-wrapped diagnostics
+  // calls alive long enough to return their structured result instead of
+  // turning a healthy long read into an opaque ptool -32001 at 30s.
+  ['lsp:query', 100_000],
   ['documents:read', PTOOL_CONTENT_SUMMARY_TIMEOUT_MS],
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],

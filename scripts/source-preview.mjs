@@ -501,6 +501,9 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
   if (tauriInputs) inputs = [...inputs, ...TAURI_VERIFIER_INPUTS];
   const paths = [...new Set(inputs)].sort();
   for (const path of paths) {
+    if (path === 'apps/operator/dist-verify' || path.startsWith('apps/operator/dist-verify/')) {
+      throw new PreviewError(`generated verifier runtime output cannot be a tested source input: ${path}`, 2);
+    }
     if (typeof path !== 'string' || !path || isAbsolute(path) || path.includes('\0')
       || path.split('/').some((p) => p === '..' || p === '.' || !p)) {
       throw new PreviewError(`invalid tested input: ${path}`, 2);
@@ -551,6 +554,19 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
         }
       }(repo, sha)]
       : materializeCommit({ repo, sha, dest, allow });
+    // The verifier rebuilds this private runtime with the maintained bundler.
+    // Older commits may contain generated output despite today's gitignore.
+    // Never record those mutable artifacts as immutable source in an archive.
+    // A Git checkout must retain its tracked population, so refuse that route
+    // rather than removing tracked files or weakening its source attestation.
+    const runtimeOutput = join(dest, 'apps/operator/dist-verify');
+    if (gitCheckout && (await fs.readdir(runtimeOutput).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    })).length) {
+      throw new PreviewError('committed verifier runtime output requires archive export, not Git checkout', 2);
+    }
+    if (!gitCheckout) await fs.rm(runtimeOutput, { recursive: true, force: true });
     const testedInputs = [];
     for (const path of paths) {
       const archived = join(dest, path);

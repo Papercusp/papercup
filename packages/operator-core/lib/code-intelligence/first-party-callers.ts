@@ -429,7 +429,8 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
   };
   const reference = (node: TsModule.Node | undefined, kind: string) => {
     if (!node) return null;
-    let symbol = checker.getSymbolAtLocation(node);
+    let symbol = ts.isShorthandPropertyAssignment(node.parent)
+      ? checker.getShorthandAssignmentValueSymbol(node.parent) : checker.getSymbolAtLocation(node);
     if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
     return site(symbol?.declarations?.[0] ?? node, kind);
   };
@@ -437,7 +438,7 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
     // Inspect the bound import before unaliasing. Same-spelled local factories
     // are candidates only; they are never evidence of platform registration.
     const bound = checker.getSymbolAtLocation(expression);
-    let imported = bound?.declarations?.find(ts.isImportSpecifier);
+    const imported = bound?.declarations?.find(ts.isImportSpecifier);
     let declaration: TsModule.ImportDeclaration | undefined;
     if (imported && (imported.propertyName ?? imported.name).text === 'defineTool')
       declaration = imported.parent.parent.parent;
@@ -487,7 +488,7 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
           registrations.push({ name: literal('name'), kind, method: kind === 'route' ? literal('method') : null,
             path: kind === 'route' ? literal('path') : null, ...factory,
             site: site(node, `static-${kind}-registration`)!, implementation: reference(props.get('handler'), `${kind}-implementation`),
-            requestValidator: reference(props.get('args') ?? props.get('input'), 'request-validator'),
+            requestValidator: reference(kind === 'route' ? props.get('input') : props.get('args') ?? props.get('input'), 'request-validator'),
             // Tool result/output are executable validators. returns is prose.
             responseValidator: kind === 'tool' ? reference(props.get('result') ?? props.get('output'), 'response-validator') : null,
             documentation: reference(props.get('publicDoc') ?? props.get('description') ?? props.get('guidance'), 'contract-documentation'), runtimeRegistered: 'unmeasured' });

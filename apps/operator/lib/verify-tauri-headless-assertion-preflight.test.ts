@@ -135,9 +135,9 @@ function runManifestPreflight(actual: string, claimed: string, claimedRoot?: str
 }
 
 describe('EI-21974634479405756 — assertion command preflight', () => {
-  it('rejects a missing native Reports ledger before cargo, bridge or resource allocation', () => {
+  it.each(['reports', 'dao-workbench'])('rejects a missing native %s ledger before cargo, bridge or resource allocation', driver => {
     const { dir, invocations, result } = runAssertion('', false,
-      [process.execPath, '--import', 'tsx', resolve(ROOT, 'scripts/tauri-surface-verify-reports.mts'), '--e2e'],
+      [process.execPath, '--import', 'tsx', resolve(ROOT, 'scripts/tauri-surface-verify-' + driver + '.mts'), '--e2e'],
       { PAPERCUSP_TEST_RUNS_DB_URL: '' });
     try {
       expect(result.status, result.stderr).toBe(2);
@@ -162,17 +162,28 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it('accepts the configured Reports command without starting its assertion or exposing credentials', () => {
+  it.each(['reports', 'dao-workbench'])('rejects a missing %s caller workspace before native preparation', driver => {
+    const { dir, invocations, result } = runAssertion('', false,
+      [process.execPath, '--import', 'tsx', resolve(ROOT, 'scripts/tauri-surface-verify-' + driver + '.mts'), '--e2e'],
+      { PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://synthetic:fixture@ledger/db', PAPERCUSP_TEST_RUN_WORKSPACE: '' });
+    try {
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('PAPERCUSP_TEST_RUN_WORKSPACE is required before verifier preparation');
+      expect(readFileSync(invocations, 'utf8')).toBe('');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['reports', 'dao-workbench'])('accepts configured %s without starting its assertion or exposing credentials', driver => {
     const start = src.indexOf('validate_assertion_command_preflight() {');
     const end = src.indexOf('\n\nvalidate_assertion_command_preflight || exit $?', start);
     const result = spawnSync('bash', ['-c', [src.slice(start, end),
       'ASSERTION_MODE=1',
-      'ASSERTION_ARGS=(node --import tsx "$REPO_DIR/scripts/tauri-surface-verify-reports.mts" --e2e)',
+      'ASSERTION_ARGS=(node --import tsx "$REPO_DIR/scripts/tauri-surface-verify-' + driver + '.mts" --e2e)',
       'validate_assertion_command_preflight',
     ].join('\n')], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: { ...process.env, REPO_DIR: ROOT,
-      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db' } });
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://user:fixture-secret@ledger/db', PAPERCUSP_TEST_RUN_WORKSPACE: 'native-owner-fixture' } });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('1 prerequisite(s)');
+    expect(result.stdout).toContain('2 prerequisite(s)');
     expect(`${result.stdout}${result.stderr}`).not.toContain('fixture-secret');
   });
 

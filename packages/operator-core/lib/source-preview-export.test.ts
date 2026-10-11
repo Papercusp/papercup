@@ -404,6 +404,27 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('tampered verification source archive');
   });
 
+  it('rebuilds committed verifier output separately while still rejecting source tampering', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-committed-bundle-fixture'));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const output = 'apps/operator/dist-verify/hono-host.mjs';
+    write(fixture.repo, output, 'old generated host');
+    git(fixture.repo, ['add', output]);
+    git(fixture.repo, ['commit', '-qm', 'record generated host']);
+    const dest = join(tmp, 'verifier-committed-bundle-export');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest, inputs: [input] });
+    expect(receipt.files.some(file => file.path.startsWith('apps/operator/dist-verify/'))).toBe(false);
+    expect(existsSync(join(dest, output))).toBe(false);
+    write(dest, output, 'rebuilt private host');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    writeFileSync(join(dest, input), 'tampered source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest: join(tmp, 'refused-runtime-input'), inputs: [output] }))
+      .rejects.toThrow('generated verifier runtime output cannot be a tested source input');
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest: join(tmp, 'refused-runtime-checkout'), inputs: [input], gitCheckout: true }))
+      .rejects.toThrow('committed verifier runtime output requires archive export');
+  });
+
   it('rejects a symlink posing as an independent runtime directory', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-runtime-link-fixture'));
     const dest = join(tmp, 'verifier-runtime-link-export');

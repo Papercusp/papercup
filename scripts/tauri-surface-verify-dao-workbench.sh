@@ -8,6 +8,15 @@ vh_phase desktop preflight
 vh_phase mobile desktop
 vh_init dao-workbench "${DAO_WORKBENCH_HARNESS_EVIDENCE_ROOT:-/tmp/pcv/dao-workbench}"
 vh_begin preflight
+# Pin the shared result ledger and caller identity before the rig rebinds the
+# app to its disposable database/workspace. Reuse the existing ledger resolver.
+export PAPERCUSP_TEST_RUNS_DB_URL="$(node --input-type=module -e 'import { resolveExecutedMapPgUrl } from "./scripts/lib/executed-source-map.mjs"; process.stdout.write(resolveExecutedMapPgUrl().url)')"
+export PAPERCUSP_TEST_RUN_HARNESS="${PAPERCUSP_TEST_RUN_HARNESS:-${PAPERCUSP_HARNESS_SLUG:-papercusp}}"
+export PAPERCUSP_TEST_RUN_WORKSPACE="${PAPERCUSP_TEST_RUN_WORKSPACE:-${PAPERCUSP_WORKSPACE_ID:-${PAPERCUSP_WORKSPACE:-}}}"
+if [ -z "$PAPERCUSP_TEST_RUN_WORKSPACE" ]; then
+  echo 'DAO native acceptance requires an explicit caller workspace for its shared test ledger' >&2
+  exit 2
+fi
 FIXTURE_DIR="$(mktemp -d /tmp/dao-workbench-identity.XXXXXX)"
 trap 'rm -rf -- "$FIXTURE_DIR"' EXIT
 vh_bracket_trap
@@ -17,7 +26,7 @@ node --import tsx "$ROOT/scripts/tauri-surface-verify-dao-workbench.mts" --check
 # Each viewport owns a fresh isolated boot; no runtime window permissions needed.
 for viewport in 1440x1000 390x844; do
   if [ "$viewport" = 1440x1000 ]; then vh_begin desktop; else vh_begin mobile; fi
-  assertion_args=()
+  assertion_args=(--e2e)
   if [ "$viewport" = 390x844 ]; then assertion_args+=(--viewport-only); fi
   VERIFY_TAURI_WINDOW="$viewport" DAO_WORKBENCH_VIEWPORT="$viewport" \
   VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready \

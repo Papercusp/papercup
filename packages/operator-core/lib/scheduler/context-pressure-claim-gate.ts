@@ -48,6 +48,7 @@
 
 import type {
   ContextPressureBucket,
+  ContextPressureReading,
   ContextPressureRecoveryResolution,
 } from '../agent-tools/coordination/context-pressure';
 // VALUE import (not just types): the headroom predicate below re-derives the SAME bucket this
@@ -93,6 +94,11 @@ export type ContextPressureGateDecision =
          * that cannot. Machine-readable so a caller can act without parsing the prose.
          */
         suggestedLimit: number | null;
+        /** Timestamp and age of the cached reading that produced this refusal. */
+        contextEstimate: {
+          estimatedAt: string | null;
+          ageSec: number | null;
+        };
       };
     };
 
@@ -263,6 +269,8 @@ function contextCriticalRefusalMessage(
  */
 export function decideContextPressureGate(input: {
   bucket: ContextPressureBucket | null | undefined;
+  /** Provenance from the same cached presence row as the bucket. */
+  reading?: ContextPressureReading | null;
   /** Caller asserts its live gauge contradicts the cached bucket. */
   override?: boolean;
   /** Kill-switch (flag). Default true — finished work does not ship dark. */
@@ -303,6 +311,10 @@ export function decideContextPressureGate(input: {
       overrideArg,
       recoveryPath: input.recovery?.path ?? null,
       suggestedLimit: remedy.suggestedLimit,
+      contextEstimate: {
+        estimatedAt: input.reading?.estimatedAt ?? null,
+        ageSec: input.reading?.ageSec ?? null,
+      },
     },
   };
 }

@@ -3591,6 +3591,116 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     expect(nuqsState.rsel).toBeNull();
   });
 
+  describe("retained memory mutation responses", () => {
+    let memoryFetch: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      nuqsState.lview = "learnings";
+      nuqsState.rsel = "memory:mutation-selected";
+      retainFeedResult = {
+        data: [{ rows: [{ kind: "memory", id: "mutation-selected", title: "Selected learning",
+          ts: "2026-08-15T12:00:00.000Z", status: null, shipped: false, meta: {} }],
+          counts: null, nextCursor: null, degraded: [], generatedAt: "2026-08-16T00:00:00.000Z" }],
+        loading: false, fetching: false, error: null, invalidate: vi.fn(),
+      };
+      retainDetailResult = {
+        data: [{ kind: "memory", id: "mutation-selected", title: "Selected learning", status: null,
+          ts: "2026-08-15T12:00:00.000Z", body: "Original selected learning body.",
+          bodyTruncated: false, code: null, listItems: [], fields: [], editable: true }],
+        loading: false, fetching: false, error: null, invalidate: vi.fn(),
+      };
+      memoryFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      vi.stubGlobal("fetch", memoryFetch);
+    });
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    const invalidators = () => [retainDetailResult, retainFeedResult, retainSummaryResult, retainCountsResult]
+      .map(result => result.invalidate);
+
+    async function submitMemoryAction(method: "PATCH" | "DELETE", cancel = false) {
+      fireEvent.click(screen.getByRole("button", { name: method === "PATCH" ? "edit" : "remove" }));
+      if (method === "PATCH") {
+        fireEvent.change(screen.getByLabelText("Learning text"), { target: { value: "Updated selected learning body." } });
+      }
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: cancel ? "Cancel" : method === "PATCH" ? "Save" : "Remove" }));
+      });
+    }
+
+    it.each([
+      ["PATCH", 403], ["PATCH", 500], ["DELETE", 403], ["DELETE", 500],
+    ] as const)("keeps selected memory and reports rejected %s HTTP %s without success refresh", async (method, status) => {
+      memoryFetch.mockResolvedValue(new Response(JSON.stringify({ error: "Memory change denied" }), { status }));
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction(method);
+      expect(memoryFetch).toHaveBeenCalledTimes(1);
+      expect(memoryFetch.mock.calls[0][1]).toMatchObject({ method });
+      expect(nuqsState.rsel).toBe("memory:mutation-selected");
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toContain(`HTTP ${status}`);
+      expect(alert.textContent).toContain("Memory change denied");
+      expect(screen.getByText("Original selected learning body.")).toBeTruthy();
+      for (const invalidate of invalidators()) expect(invalidate).not.toHaveBeenCalled();
+
+      // The same selected item can be retried; the successful receipt clears the error.
+      memoryFetch.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      await submitMemoryAction(method);
+      expect(memoryFetch).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(nuqsState.rsel).toBe(method === "PATCH" ? "memory:mutation-selected" : null);
+      for (const invalidate of invalidators()) expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["PATCH", "DELETE"] as const)("refreshes the selected memory only after a successful %s receipt", async method => {
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction(method);
+      expect(memoryFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = memoryFetch.mock.calls[0];
+      expect(url).toBe(method === "PATCH" ? "/api/user/memory" : "/api/user/memory?id=mutation-selected");
+      expect(init.method).toBe(method);
+      if (method === "PATCH") expect(JSON.parse(init.body)).toEqual({ id: "mutation-selected", text: "Updated selected learning body." });
+      expect(nuqsState.rsel).toBe(method === "PATCH" ? "memory:mutation-selected" : null);
+      expect(screen.queryByRole("alert")).toBeNull();
+      for (const invalidate of invalidators()) expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["PATCH", "DELETE"] as const)("preserves the memory and reports a %s network failure", async method => {
+      memoryFetch.mockRejectedValue(new TypeError("Network request failed"));
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction(method);
+      expect((await screen.findByRole("alert")).textContent).toContain("Network request failed");
+      expect(nuqsState.rsel).toBe("memory:mutation-selected");
+      expect(screen.getByText("Original selected learning body.")).toBeTruthy();
+      for (const invalidate of invalidators()) expect(invalidate).not.toHaveBeenCalled();
+    });
+
+    it("keeps a newer selection when an earlier successful delete finishes", async () => {
+      let finish!: (response: Response) => void;
+      memoryFetch.mockImplementation(() => new Promise<Response>(resolve => { finish = resolve; }));
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction("DELETE");
+      expect(memoryFetch).toHaveBeenCalledTimes(1);
+      nuqsState.rsel = "memory:neighbor-selected";
+      await act(async () => { finish(new Response(null, { status: 204 })); });
+      expect(nuqsState.rsel).toBe("memory:neighbor-selected");
+      for (const invalidate of invalidators()) expect(invalidate).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["PATCH", "DELETE"] as const)("cancels %s without a memory write or refresh", async method => {
+      render(<LearningTab />);
+      await screen.findByText("Original selected learning body.");
+      await submitMemoryAction(method, true);
+      expect(memoryFetch).not.toHaveBeenCalled();
+      expect(nuqsState.rsel).toBe("memory:mutation-selected");
+      for (const invalidate of invalidators()) expect(invalidate).not.toHaveBeenCalled();
+    });
+  });
+
   it("pins a deep-linked ?rsel selection into the detail aside on first render", () => {
     nuqsState.lview = "learnings";
     nuqsState.rsel = "memory:learning-8";

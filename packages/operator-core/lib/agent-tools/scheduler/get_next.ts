@@ -78,7 +78,7 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
 import {
-  fetchContextPressure,
+  fetchContextPressureReadings,
   resolveContextPressureRecoveryPath,
   resolveContextPressureHeadroom,
 } from '../coordination/context-pressure';
@@ -1503,11 +1503,12 @@ export default defineTool({
         beginPreflightStep('context-pressure-flag');
         const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(() => true);
         beginPreflightStep('context-pressure-read');
-        const contextBucket = gateEnabled
-          ? await fetchContextPressure([ident.ownerId])
+        const contextReading = gateEnabled
+          ? await fetchContextPressureReadings([ident.ownerId])
               .then((m) => m.get(ident.ownerId) ?? null)
               .catch(() => null)
           : null;
+        const contextBucket = contextReading?.bucket ?? null;
         // EI-23744538757758407: headroom answers what `recovery` cannot — whether this caller's
         // soft limit is SATISFIABLE at all. A session whose fixed per-turn baseline already
         // exceeds it can never clear the band by compacting (a fresh context boots at the same
@@ -1526,6 +1527,7 @@ export default defineTool({
             : [null, null];
         const contextGate = decideContextPressureGate({
           bucket: contextBucket,
+          reading: contextReading,
           override: rawArgs.ignoreContextPressure === true,
           enabled: gateEnabled,
           overrideArg: 'ignoreContextPressure',

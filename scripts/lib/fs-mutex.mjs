@@ -365,7 +365,7 @@ async function waitForReaders(
  * the lock itself. Reader-mode and explicitly disabled locks have no check.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, intent?: Record<string, string | number | boolean> }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean> }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -384,6 +384,18 @@ export async function withFsMutex(name, fn, opts = {}) {
   const retryMs =
     opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
   const startedAt = Date.now();
+  const admissionSubphaseTimingsMs = typeof opts.onAcquired === "function" ? {} : undefined;
+  const measureAdmissionSubphase = admissionSubphaseTimingsMs
+    ? async (name, operation) => {
+      const phaseStartedAt = performance.now();
+      try {
+        return await operation();
+      } finally {
+        admissionSubphaseTimingsMs[name] =
+          (admissionSubphaseTimingsMs[name] ?? 0) + Math.max(0, performance.now() - phaseStartedAt);
+      }
+    }
+    : (_name, operation) => operation();
   // Nested under its own key rather than merged: a caller can then never shadow `pid` /
   // `host` / `startedAt`, which are the fields the reclaim path and every waiter trust.
   const intent = sanitizeIntent(opts.intent);
@@ -396,7 +408,7 @@ export async function withFsMutex(name, fn, opts = {}) {
     ...(intent ? { intent } : {}),
   };
 
-  await mkdir(root, { recursive: true });
+  await measureAdmissionSubphase("root-mkdir", () => mkdir(root, { recursive: true }));
 
   // EI-21915677034576963: register a FIFO ticket BEFORE racing for the write lock, so a
   // caller that has been waiting longest is never overtaken by a newer one that simply
@@ -411,12 +423,12 @@ export async function withFsMutex(name, fn, opts = {}) {
   let ticketRegistered = false;
   let writerOwner;
   try {
-    await mkdir(ticketsDir, { recursive: true });
-    await mkdir(myTicketDir);
-    await writeFile(
+    await measureAdmissionSubphase("queue-root-mkdir", () => mkdir(ticketsDir, { recursive: true }));
+    await measureAdmissionSubphase("ticket-mkdir", () => mkdir(myTicketDir));
+    await measureAdmissionSubphase("ticket-owner-write", () => writeFile(
       join(myTicketDir, "owner.json"),
-      `${JSON.stringify(owner, null, 2)}\n`,
-    );
+      JSON.stringify(owner, null, 2) + "\n",
+    ));
     ticketRegistered = true;
   } catch {
     ticketRegistered = false;
@@ -449,24 +461,27 @@ export async function withFsMutex(name, fn, opts = {}) {
   try {
     for (;;) {
       if (ticketRegistered) {
-        const oldest = await oldestTicketDir(ticketsDir, staleMs);
+        const oldest = await measureAdmissionSubphase(
+          "ticket-scan",
+          () => oldestTicketDir(ticketsDir, staleMs),
+        );
         if (oldest != null && oldest !== myTicketDir) {
           // Someone else registered first — don't even attempt the mkdir race this
           // cycle; let them go before us.
           const elapsed = Date.now() - startedAt;
-          await announceWaiting(elapsed);
+          await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
           if (elapsed > timeoutMs) {
             const currentOwner = await readOwner(lockDir);
             throw new Error(
               `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
             );
           }
-          await sleep(retryMs);
+          await measureAdmissionSubphase("backoff-sleep", () => sleep(retryMs));
           continue;
         }
       }
       try {
-        await mkdir(lockDir);
+        await measureAdmissionSubphase("writer-lock-mkdir", () => mkdir(lockDir));
         // WI-1490656: `startedAt` is when this caller began TRYING, so it includes its own
         // queue wait and cannot answer "how long has the lock been HELD" — the one question a
         // triager staring at a stalled pipeline actually asks. Reading it as a hold duration
@@ -474,30 +489,36 @@ export async function withFsMutex(name, fn, opts = {}) {
         // The mkdir above IS the grant, so stamp the grant instant here and make it
         // answerable instead of inviting the same misreading again.
         writerOwner = { ...owner, acquiredAt: new Date().toISOString(), phase: "draining-readers" };
-        await writeFile(
+        await measureAdmissionSubphase("writer-owner-write", () => writeFile(
           join(lockDir, "owner.json"),
-          `${JSON.stringify(writerOwner, null, 2)}\n`,
-        );
+          JSON.stringify(writerOwner, null, 2) + "\n",
+        ));
         break;
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
 
         const elapsed = Date.now() - startedAt;
-        await announceWaiting(elapsed);
-        if (await reclaimAbandonedLock(lockDir, staleMs)) continue;
+        await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
+        if (await measureAdmissionSubphase(
+          "abandoned-lock-reclaim",
+          () => reclaimAbandonedLock(lockDir, staleMs),
+        )) continue;
         if (elapsed > timeoutMs) {
           const currentOwner = await readOwner(lockDir);
           throw new Error(
             `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
           );
         }
-        await sleep(retryMs);
+        await measureAdmissionSubphase("backoff-sleep", () => sleep(retryMs));
       }
     }
   } finally {
     if (ticketRegistered) {
       try {
-        await rm(myTicketDir, { recursive: true, force: true });
+        await measureAdmissionSubphase(
+          "ticket-cleanup",
+          () => rm(myTicketDir, { recursive: true, force: true }),
+        );
       } catch {
         // best-effort — a missing/already-cleaned ticket is not an error
       }
@@ -505,20 +526,25 @@ export async function withFsMutex(name, fn, opts = {}) {
   }
 
   try {
-    await waitForReaders(readersDir, {
+    await measureAdmissionSubphase("reader-drain", () => waitForReaders(readersDir, {
       timeoutMs,
       staleMs,
       retryMs,
       startedAt,
       onWaiting: opts.onWaiting,
       waitingNoticeIntervalMs,
-    });
+    }));
     // WI-1490656: report how long admission actually QUEUED. A caller that re-acquires
     // the same lock across many short sub-invocations (one affected-tests shard after
     // another) otherwise has no way to bound its TOTAL queue time — each call's
     // `timeoutMs` restarts from zero, so an N-shard run's real worst case is N × timeoutMs.
     // Fires inside the try so a throwing callback still releases the lock.
-    if (opts.onAcquired) opts.onAcquired({ waitedMs: Date.now() - startedAt });
+    if (opts.onAcquired) opts.onAcquired({
+      waitedMs: Date.now() - startedAt,
+      ...(admissionSubphaseTimingsMs
+        ? { admissionSubphaseTimingsMs: { ...admissionSubphaseTimingsMs } }
+        : {}),
+    });
     // A reserved writer can spend its entire wait draining existing readers.
     // Publish the callback phase only after that drain, atomically so a peek
     // cannot mistake a partially rewritten owner record for an absent lock.

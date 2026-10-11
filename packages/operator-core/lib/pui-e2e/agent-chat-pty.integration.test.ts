@@ -7620,25 +7620,31 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
 });
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
-  test('operator OS cold startup verifies identity before native launch', async () => {
+  test.for([
+    { name: 'without observer reads', verifyViewState: false },
+    { name: 'with observer view-state read', verifyViewState: true },
+  ])('operator OS cold startup verifies identity before native launch $name', async ({ verifyViewState }) => {
     const first = await startOperatorProcess();
     // No REST prewarming: exercise the installed client's own cold probe.
     const pane = new PuiPane(bin, first.port, home, { cwd: journeyDir('cold-identity') });
     let primaryFailure: { error: unknown } | null = null;
     try {
+      // The restart fixture verifies the seeded state concurrently with PUI's
+      // initial probe. Keep an isolated control for that observer interaction.
+      if (verifyViewState) await verifyOperatorProcessViewState(first.port);
       await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
       await pane.waitFor('Plans (', { timeoutMs: 40_000 });
       expect(first.descriptors.size).toBe(0);
       expect(first.events).toEqual([]);
       expect(first.responses).toEqual([]);
       console.info('PUI_OPERATOR_COLD_IDENTITY_PREFLIGHT', JSON.stringify({
-        binarySha256, diagnostics: first.diagnostics, screen: pane.screen(), nativeLaunches: 0,
+        binarySha256, verifyViewState, diagnostics: first.diagnostics, screen: pane.screen(), nativeLaunches: 0,
       }));
     } catch (error) {
       primaryFailure = { error };
       const diagnosis = await operatorFailureProbe(first.port);
       console.info('PUI_OPERATOR_COLD_IDENTITY_FAILURE', JSON.stringify({
-        binarySha256, diagnostics: first.diagnostics, screen: pane.failureScreen(),
+        binarySha256, verifyViewState, diagnostics: first.diagnostics, screen: pane.failureScreen(),
         ...diagnosis, responses: first.responses, output: first.output(),
       }));
       throw error;

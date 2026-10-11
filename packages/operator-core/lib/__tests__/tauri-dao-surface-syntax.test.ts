@@ -19,7 +19,7 @@ function screenshotTargets(source: string, name: string) {
       && node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === 'screenshot') {
       captures++;
       const targeted = node.arguments.some((arg, index) => ts.isStringLiteral(arg)
-        && ['--selector', '--title', '--window-id'].includes(arg.text)
+        && ['--title', '--window-id'].includes(arg.text)
         && node.arguments[index + 1] !== undefined
         && (!ts.isStringLiteral(node.arguments[index + 1]) || node.arguments[index + 1].text.length > 0));
       if (!targeted) missing.push(`${name}:${parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1}`);
@@ -120,9 +120,26 @@ describe('maintained DAO native assertion syntax preflight', () => {
     const path = resolve(repo, 'scripts/tauri-surface-verify-dao-workbench.mts');
     const source = readFileSync(path, 'utf8');
     expect(screenshotTargets(source, path).missing).toEqual([]);
-    const mutant = source.replace("native('screenshot', '--selector', 'html',", "native('screenshot',");
+    const mutant = source.replace("native('screenshot', '--selector', 'html', '--title', '^Papercusp$',", "native('screenshot',");
     expect(mutant).not.toBe(source);
     expect(screenshotTargets(mutant, path).missing).toHaveLength(1);
+  });
+
+  it('detects a selector-only capture that confuses page and native window titles', () => {
+    const path = resolve(repo, 'scripts/tauri-surface-verify-dao-workbench.mts');
+    const source = readFileSync(path, 'utf8');
+    const mutant = source.replace("'--title', '^Papercusp$', ", '');
+    expect(mutant).not.toBe(source);
+    expect(screenshotTargets(mutant, path).missing).toHaveLength(1);
+    const rig = readFileSync(resolve(repo, 'scripts/verify-tauri-headless.sh'), 'utf8');
+    expect(rig).toContain(String.raw`\"title\":\"Papercusp\"`);
+  });
+
+  it('tries an actual capture before the isolated native fixture makes writes', () => {
+    const source = readFileSync(resolve(repo, 'scripts/tauri-surface-verify-dao-workbench.mts'), 'utf8');
+    const preflight = source.indexOf("capture('capture-preflight')");
+    expect(preflight).toBeGreaterThan(0);
+    expect(preflight).toBeLessThan(source.indexOf('await insertHiveIfAbsent('));
   });
 
   it('preflights every generated poll with the real helper and fuses both legal close guards', () => {

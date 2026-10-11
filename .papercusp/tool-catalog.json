@@ -18171,7 +18171,7 @@
           "POST"
         ]
       },
-      "description": "Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Path-only selection is caller-owned and grouped by lock_id before release. Absolute home/XDG-runtime paths in paths are normalized to the canonical external lock key; use lock_id for absolute managed-repository files. Many: pass lock_ids:[…]. A named-resource UUID is rejected with guidance to use locks:release_resource. Fires the classic file-lock grant cascade for waiting agents.",
+      "description": "Release held classic file-lock or granular intention-lock sets. Select one with lock_id, several with lock_ids, caller-owned classic locks with paths (across coordination domains), or all your locks with all_mine=true. Use locks:release_resource for named resources. Releasing a classic lock grants waiting agents.",
       "capabilities": [
         "locks:write"
       ],

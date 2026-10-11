@@ -16,6 +16,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const identity = vi.hoisted(() => ({ ownerId: 'su-me', workspaceId: 'ws-1' }));
 const pressure = vi.hoisted(() => ({
   value: null as 'ok' | 'high' | 'critical' | null,
+  estimatedAt: '2026-10-11T16:55:00.000Z',
+  ageSec: 90,
   throws: false,
 }));
 
@@ -36,10 +38,16 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 // THE SEAM UNDER TEST. Mocked so the bucket is an input rather than whatever the live
 // coord_presence row happens to say — the same reason the gate takes it as a parameter.
 vi.mock('../coordination/context-pressure', () => ({
-  fetchContextPressure: vi.fn(async (ownerIds: string[]) => {
+  fetchContextPressureReadings: vi.fn(async (ownerIds: string[]) => {
     if (pressure.throws) throw new Error('presence read failed');
-    const m = new Map<string, 'ok' | 'high' | 'critical'>();
-    if (pressure.value != null) m.set(ownerIds[0]!, pressure.value);
+    const m = new Map<string, { bucket: 'ok' | 'high' | 'critical'; estimatedAt: string; ageSec: number }>();
+    if (pressure.value != null) {
+      m.set(ownerIds[0]!, {
+        bucket: pressure.value,
+        estimatedAt: pressure.estimatedAt,
+        ageSec: pressure.ageSec,
+      });
+    }
     return m;
   }),
   resolveContextPressureRecoveryPath: vi.fn(async () => null),
@@ -123,6 +131,8 @@ beforeEach(() => {
   identity.ownerId = 'su-me';
   identity.workspaceId = 'ws-1';
   pressure.value = null;
+  pressure.estimatedAt = '2026-10-11T16:55:00.000Z';
+  pressure.ageSec = 90;
   pressure.throws = false;
   getNextForBeeM.mockResolvedValue(null);
   // The serve-path cases deliberately end in a MISS (getNextForBee -> null): what they assert is
@@ -144,6 +154,9 @@ describe('work_items:claim_next context-pressure gate (WI-5940)', () => {
     expect(res.ok).toBe(false);
     expect(res.code).toBe('claim_refused_context_critical');
     expect(res.error).toMatch(/compact/i);
+    expect(res.diagnosis).toMatchObject({
+      contextEstimate: { estimatedAt: pressure.estimatedAt, ageSec: pressure.ageSec },
+    });
     // The acceptance criterion, asserted as a fact about the seam rather than the prose.
     expect(claimWasAttempted()).toBe(false);
   });

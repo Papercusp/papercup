@@ -1,10 +1,13 @@
 // @vitest-environment node
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { composeCompanionSummary } from '@papercusp/facets';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+// Load registry dependencies before installing per-request seams; mocks below
+// replace request-time PG access without hiding unrelated module exports.
+import { resolveNamedQueryV2 } from './index';
 import {
   normalizeRetainFeedArgs,
   readRetainExtras,
@@ -168,6 +171,53 @@ describe('learning.retain banked plans — migrated Postgres schema', () => {
   afterAll(async () => {
     await orgDb?.cleanup();
   }, 300_000);
+
+  it.each(['mem0', 'hybrid-pg'])('provider-free canonical detail prerequisite on %s preserves the real migrated corpus', async choice => {
+    await orgDb.adminSql.begin(async tx => {
+      const scope = 'hive:retain-provider-free';
+      const records = [
+        { label: 'selected', payload: { data: 'old selected memory', user_id: scope }, state: 'active', expired: false },
+        { label: 'newer', payload: { data: 'newer neighbor memory', user_id: scope }, state: 'active', expired: false },
+        { label: 'foreign', payload: { data: 'other pool', user_id: scope + '-foreign' }, state: 'active', expired: false },
+        { label: 'entity', payload: { data: 'entity fragment', entityType: 'person', user_id: scope }, state: 'active', expired: false },
+        { label: 'archived', payload: { data: 'archived memory', user_id: scope }, state: 'archived', expired: false },
+        { label: 'expired', payload: { data: 'expired memory', user_id: scope }, state: 'active', expired: true },
+      ];
+      const ids = new Map<string, string>();
+      for (const record of records) {
+        // Production generated columns are derived from base payload only.
+        const [row] = await tx`
+          INSERT INTO harness_shared.memory_canonical (payload, state, created_at, updated_at, invalid_at)
+          VALUES (${tx.json(record.payload)}, ${record.state},
+            now() - ${record.label === 'selected' ? '30 days' : '1 hour'}::interval,
+            now() - ${record.label === 'selected' ? '30 days' : '1 hour'}::interval,
+            ${record.expired ? tx`now() - interval '1 day'` : null})
+          RETURNING id::text AS id, row_kind, user_id`;
+        expect(row.row_kind).toBe(record.label === 'entity' ? 'entity' : 'memory');
+        expect(row.user_id).toBe(record.payload.user_id);
+        ids.set(record.label, row.id);
+      }
+      const backend = vi.fn(() => { throw new Error('provider client must not initialize for a canonical detail read'); });
+      vi.doMock('../memory/backend-selection', () => ({ currentMemoryBackendChoice: () => choice }));
+      vi.doMock('../memory/backend', () => ({ getMemoryBackend: backend }));
+      vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: tx }) }));
+      vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'retain-provider-free-workspace' }));
+      try {
+        const detail = (id: string) => resolveNamedQueryV2('learning.retainDetail', {
+          kind: 'memory', hive: 'retain-provider-free', id,
+        });
+        expect(await detail(ids.get('selected')!)).toEqual([expect.objectContaining({
+          id: ids.get('selected'), body: 'old selected memory', fields: expect.arrayContaining([{ label: 'Pool', value: scope }]),
+        })]);
+        expect(await detail(ids.get('newer')!)).toEqual([expect.objectContaining({ body: 'newer neighbor memory' })]);
+        for (const label of ['foreign', 'entity', 'archived', 'expired']) expect(await detail(ids.get(label)!)).toEqual([]);
+        expect(await detail('not-a-uuid')).toEqual([]);
+        expect(backend).not.toHaveBeenCalled();
+      } finally {
+        for (const module of ['../memory/backend-selection', '../memory/backend', '@papercusp/db-org', '../workspace-registry']) vi.doUnmock(module);
+      }
+    });
+  });
 
   it('counts typed creation timestamps within seven days and preserves workspace/member scope', async () => {
     // The transaction freezes now() so the exact seven-day boundary is deterministic.

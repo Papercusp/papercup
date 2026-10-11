@@ -280,6 +280,96 @@ describe('R-18 ceiling precondition: no full-database dump during the paired cal
   });
 });
 
+describe('R-18 warm-repeat pass: the ceiling judges it; the cold paired p95 is reported (D-028)', () => {
+  /** `steadyCalls` builds BM25-only calls; as a warm-repeat pass they are the timed repeats. */
+  const warm = steadyCalls;
+  const withReads = (pairs: PairResult[], readAt: number[]): PairResult[] =>
+    pairs.map((p, i) => ({
+      ...p,
+      arms: { bm25: { ...p.arms.bm25!, attrib: { pgExecMs: 5, pgReadMs: 0, pgBlksRead: readAt.includes(i) ? 40 : 0, pgCalls: 2 } } },
+    }));
+
+  it('judges the ceiling on the warm-repeat p95, not the cold paired p95', () => {
+    // Run 8's shape: cold paired p95 over the ceiling, legacy far slower, the warm repeat fast.
+    const s = summarizeSource('session_turn', turnsTimed(30, 8000, 600), 20, null, warm(30, 250));
+    expect(s.warmRepeat?.latencyP95Ms).toBe(250);
+    expect(s.arms.bm25.latencyP95Ms).toBe(600);
+    expect(s.latency).toEqual({
+      verdict: 'pass',
+      reason: 'BM25-arm p95 600 ms <= legacy p95 8000 ms; warm-repeat BM25 p95 250 ms <= the 400 ms ceiling; cold paired p95 600 ms reported, not judged (D-028)',
+    });
+  });
+
+  it('fails when the warm-repeat p95 exceeds the source ceiling, even with a fast cold pass', () => {
+    const s = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, warm(30, 401));
+    expect(s.latency).toEqual({
+      verdict: 'fail',
+      reason: 'BM25-arm p95 100 ms <= legacy p95 4000 ms, but the warm-repeat BM25 p95 401 ms exceeds the 400 ms ceiling; cold paired p95 100 ms reported, not judged (D-028)',
+    });
+    expect(summarizeSource('work_item', timed(30, 4000, 100), 20, null, warm(30, 201, 'work_item')).latency.verdict).toBe('fail');
+    expect(summarizeSource('work_item', timed(30, 4000, 100), 20, null, warm(30, 200, 'work_item')).latency.verdict).toBe('pass');
+  });
+
+  it('keeps the D-019 relative bound on the cold paired pass, and names a warm ceiling breach beside it', () => {
+    const fast = summarizeSource('work_item', timed(30, 150, 151), 20, null, warm(30, 50, 'work_item'));
+    expect(fast.latency).toEqual({ verdict: 'fail', reason: 'BM25-arm p95 151 ms exceeds legacy p95 150 ms' });
+    const slow = summarizeSource('work_item', timed(30, 150, 151), 20, null, warm(30, 300, 'work_item'));
+    expect(slow.latency).toEqual({
+      verdict: 'fail',
+      reason: 'BM25-arm p95 151 ms exceeds legacy p95 150 ms; the warm-repeat p95 300 ms also exceeds the 200 ms ceiling',
+    });
+  });
+
+  it('does not gate the ceiling on a dump overlap when a warm-repeat pass exists, and still reports the overlap', () => {
+    const s = summarizeSource('session_turn', dumped(turnsTimed(30, 4000, 500), true), 20, null, warm(30, 100));
+    expect(s.dumpOverlap).toBe(true);
+    expect(s.latency.verdict).toBe('pass');
+  });
+
+  it('reads an unsound warm-repeat pass as invalid for the ceiling, never a pass', () => {
+    const tooFew = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, warm(5, 10));
+    expect(tooFew.warmRepeatProblems).toEqual(['only 5 warm-repeat call(s); at least 20 are needed']);
+    expect(tooFew.latency).toEqual({
+      verdict: 'invalid',
+      reason: 'BM25-arm p95 100 ms <= legacy p95 4000 ms; the 400 ms ceiling is not judged: the warm-repeat pass is unsound: only 5 warm-repeat call(s); at least 20 are needed (D-028)',
+    });
+    const legacyEngine = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, warm(30, 10, 'session_turn', 'legacy'));
+    expect(legacyEngine.latency.verdict).toBe('invalid');
+    expect(legacyEngine.latency.reason).toContain('warm-repeat calls ran engine(s) [legacy], expected [bm25]');
+    const empty = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, []);
+    expect(empty.latency.verdict).toBe('invalid');
+    expect(empty.warmRepeatProblems).toEqual(['only 0 warm-repeat call(s); at least 20 are needed']);
+  });
+
+  it('uses only its own source warm repeats', () => {
+    const both = [...warm(30, 900, 'work_item'), ...warm(30, 120, 'session_turn')];
+    expect(summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, both).warmRepeat?.latencyP95Ms).toBe(120);
+    expect(summarizeSource('work_item', timed(30, 4000, 100), 20, null, both).latency.verdict).toBe('fail');
+  });
+
+  it('counts repeats whose statements read blocks as an upper bound, reported only; null when unrecorded', () => {
+    expect(summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, warm(30, 100)).warmRepeatReadCalls).toBeNull();
+    const read = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, withReads(warm(30, 100), [2, 9]));
+    expect(read.warmRepeatReadCalls).toBe(2);
+    expect(read.latency.verdict).toBe('pass');
+  });
+
+  it('judges a run with no warm-repeat pass as before D-028: the ceiling on the paired p95', () => {
+    const s = summarizeSource('session_turn', dumped(turnsTimed(30, 4000, 401), false));
+    expect(s.warmRepeat).toBeNull();
+    expect(s.warmRepeatProblems).toEqual([]);
+    expect(s.warmRepeatReadCalls).toBeNull();
+    expect(s.latency.verdict).toBe('fail');
+  });
+
+  it('judgeLatency reads the warm-repeat pass it is given', () => {
+    const arms = summarizeSource('session_turn', turnsTimed(30, 4000, 900)).arms;
+    expect(judgeLatency(arms, 400, true, { summary: summarizeArm(warm(30, 401), 'bm25'), problems: [] }).verdict).toBe('fail');
+    expect(judgeLatency(arms, 400, true, { summary: summarizeArm(warm(30, 399), 'bm25'), problems: [] }).verdict).toBe('pass');
+    expect(judgeLatency(arms, null, true, { summary: summarizeArm(warm(30, 999), 'bm25'), problems: [] }).verdict).toBe('pass');
+  });
+});
+
 describe('R-18 steady pass: reported data only, it judges nothing (D-026, D-027)', () => {
   it('judges the ceiling on the cold paired p95; the steady p95 is only reported', () => {
     // Cold paired BM25 p95 1100 ms is under legacy 4000 ms but over 400; a fast steady pass does not rescue it.

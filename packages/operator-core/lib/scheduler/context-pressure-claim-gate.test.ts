@@ -15,11 +15,13 @@ import {
 
 describe('decideContextPressureGate', () => {
   it('REFUSES at critical, with a typed code and no lane claim', () => {
-    const d = decideContextPressureGate({ bucket: 'critical' });
+    const reading = { bucket: 'critical' as const, estimatedAt: '2026-10-11T15:00:00.000Z', ageSec: 90 };
+    const d = decideContextPressureGate({ bucket: 'critical', reading });
     expect(d.refuse).toBe(true);
     if (!d.refuse) throw new Error('unreachable');
     expect(d.code).toBe(CONTEXT_CRITICAL_REFUSAL_CODE);
     expect(d.diagnosis.contextPressureBlocked).toBe(true);
+    expect(d.diagnosis.contextEstimate).toEqual({ estimatedAt: reading.estimatedAt, ageSec: reading.ageSec });
     // The filing's point 2: a VERDICT, not silence — and explicitly not a drain claim.
     expect(d.diagnosis.laneEvaluated).toBe(false);
     expect(d.error).toMatch(/NOT evaluated/i);

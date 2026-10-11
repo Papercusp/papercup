@@ -6758,11 +6758,19 @@ function buildRetainColumns(opts: {
 /** WI-39534: one ledger row's expanded detail, ONE aside for every kind —
  *  prose body, recipe code, rubric criteria, provenance fields; memory rows
  *  keep the standalone pool's edit/remove (WI-39535). */
+async function checkMemoryMutationResponse(response: Response) {
+  if (response.ok) return;
+  const body = await response.json().catch(() => null);
+  const message = typeof body?.error === "string" ? body.error : body?.error?.message ?? body?.message;
+  throw new Error(`HTTP ${response.status}${typeof message === "string" ? ` — ${message}` : ""}`);
+}
+
 function RetainDetailAside({
   sel,
   detail,
   loading,
   error,
+  mutationError,
   onClose,
   onEdit,
   onRemove,
@@ -6771,6 +6779,7 @@ function RetainDetailAside({
   detail: RetainDetail | null;
   loading: boolean;
   error: string | null;
+  mutationError: string | null;
   onClose: () => void;
   onEdit: () => void;
   onRemove: () => void;
@@ -6794,6 +6803,7 @@ function RetainDetailAside({
           <XCircle size={14} aria-hidden />
         </button>
       </header>
+      {mutationError ? <p role="alert">{mutationError}</p> : null}
       {detail ? (
         <>
           <strong className="pc-learning__retaindetailtitle">
@@ -6893,6 +6903,11 @@ function RetainedLedgerCard({
   // WI-39534: the selected row (`<kind>:<id>`) — nuqs so agents and shared
   // links see the same selection (CLAUDE.md: user-meaningful state → URL).
   const [rsel, setRsel] = useQueryState("rsel", parseAsString);
+  const [memoryMutationError, setMemoryMutationError] = useState<{
+    selection: string;
+    hive: string;
+    message: string;
+  } | null>(null);
   const [search, setSearch] = useQueryState(
     "rq",
     parseAsString.withDefault(""),
@@ -7074,19 +7089,23 @@ function RetainedLedgerCard({
       validate: (value) => (value.trim() ? null : "Learning text is required."),
     });
     if (next == null || !next.trim() || next === detail.body) return;
+    setMemoryMutationError(null);
     try {
-      await fetch("/api/user/memory", {
+      const response = await fetch("/api/user/memory", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: sel.id, text: next.trim() }),
       });
-    } finally {
+      await checkMemoryMutationResponse(response);
       detailQ.invalidate();
       feed.invalidate();
       summaryQ.invalidate();
       countsQ.invalidate();
+    } catch (error) {
+      setMemoryMutationError({ selection: `memory:${sel.id}`, hive: hive ?? "",
+        message: `Could not save this learning: ${error instanceof Error ? error.message : String(error)}` });
     }
-  }, [sel, detail, askPrompt, detailQ, feed, summaryQ, countsQ]);
+  }, [sel, detail, hive, askPrompt, detailQ, feed, summaryQ, countsQ]);
   const removeMemory = useCallback(async () => {
     if (!sel || !detail || detail.kind !== "memory") return;
     const ok = await askConfirm({
@@ -7096,18 +7115,22 @@ function RetainedLedgerCard({
       destructive: true,
     });
     if (!ok) return;
+    setMemoryMutationError(null);
     try {
-      await fetch(`/api/user/memory?id=${encodeURIComponent(sel.id)}`, {
+      const response = await fetch(`/api/user/memory?id=${encodeURIComponent(sel.id)}`, {
         method: "DELETE",
       });
-    } finally {
-      void setRsel(null);
+      await checkMemoryMutationResponse(response);
+      void setRsel(current => current === `memory:${sel.id}` ? null : current);
       detailQ.invalidate();
       feed.invalidate();
       summaryQ.invalidate();
       countsQ.invalidate();
+    } catch (error) {
+      setMemoryMutationError({ selection: `memory:${sel.id}`, hive: hive ?? "",
+        message: `Could not remove this learning: ${error instanceof Error ? error.message : String(error)}` });
     }
-  }, [sel, detail, askConfirm, setRsel, detailQ, feed, summaryQ, countsQ]);
+  }, [sel, detail, hive, askConfirm, setRsel, detailQ, feed, summaryQ, countsQ]);
 
   const onTogglePlan = useCallback(
     (slug: string) => void setRplanOpen((cur) => (cur === slug ? null : slug)),
@@ -7420,6 +7443,8 @@ function RetainedLedgerCard({
               detail={detail}
               loading={detailQ.loading}
               error={detailQ.error ? String(detailQ.error) : null}
+              mutationError={memoryMutationError?.selection === rsel && memoryMutationError.hive === (hive ?? "")
+                ? memoryMutationError.message : null}
               onClose={() => void setRsel(null)}
               onEdit={editMemory}
               onRemove={removeMemory}

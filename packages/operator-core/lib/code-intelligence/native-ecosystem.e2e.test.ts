@@ -10,6 +10,39 @@ import { nativeCliCall, nativeCliTestTimeout } from './native-cli.fixture';
 const baseUrl = process.env.OPERATOR_BASE_URL;
 const taskBriefItem = process.env.NATIVE_TASK_BRIEF_ITEM;
 
+describe.runIf(Boolean(baseUrl))('native P014 required BAR real CLI interface change report', () => {
+  it('exposes the changed response field and its incompatible registered fixture client, then clears the mismatch after the client adapts', () => {
+    const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/code-intelligence/first-party-callers.ts',
+      testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
+    expect(route.currentBuildTestRoute.readiness).toBe('ready');
+    expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
+      row.runtime === 'staging-operator' && row.containsChange === true)).toBe(true);
+    const project = mkdtempSync(join(tmpdir(), 'native-interface-cli-'));
+    const args = { op: 'diff', include: ['*.ts'], rootPath: project,
+      explain: { symbol: 'readApi', file: 'target.ts', paths: ['.'], phase: 'pre-edit' },
+      projection: { pick: ['answer.error', 'report.interfaces', 'report.sourceFingerprint', 'report.freshness'] } };
+    try {
+      writeFileSync(join(project, 'target.ts'), 'export interface Response { value: string; }\nexport function readApi(): Response { return { value: "ok" }; }\n');
+      writeFileSync(join(project, 'client.ts'), 'import { readApi } from "./target";\nexport function client() { return readApi().value.length; }\n');
+      writeFileSync(join(project, 'contract.ts'), 'import { defineTool } from "@papercusp/agent-mcp";\nimport { z } from "zod";\nimport { readApi } from "./target";\nconst request = z.object({}); const result = z.object({ value: z.string() });\nexport const tool = defineTool({ name: "native-p014-fixture:read", args: request, result, handler: readApi });\n');
+      const before = call('code:pack', args);
+      expect(before.answer.error).toBeNull();
+      expect(before.report.interfaces.status).toBe('measured');
+      expect(before.report.interfaces.mismatchedConsumers).toEqual([]);
+      expect(before.report.interfaces.registrations).toContainEqual(expect.objectContaining({ name: 'native-p014-fixture:read',
+        factoryAuthority: 'maintained-import', responseValidator: expect.objectContaining({ path: 'contract.ts' }), runtimeRegistered: 'unmeasured' }));
+      writeFileSync(join(project, 'target.ts'), 'export interface Response { label: string; }\nexport function readApi(): Response { return { label: "ok" }; }\n');
+      const after = call('code:pack', { ...args, explain: { ...args.explain, previousFingerprint: before.report.sourceFingerprint } });
+      expect(after.report.freshness).toBe('changed');
+      expect(after.report.interfaces.diagnostics).toContainEqual(expect.objectContaining({ code: 2339,
+        site: expect.objectContaining({ path: 'client.ts', line1: 2 }), message: expect.stringContaining("'value'") }));
+      expect(after.report.interfaces.mismatchedConsumers).toContainEqual(expect.objectContaining({ path: 'client.ts', line1: 2 }));
+      writeFileSync(join(project, 'client.ts'), 'import { readApi } from "./target";\nexport function client() { return readApi().label.length; }\n');
+      expect(call('code:pack', args).report.interfaces.mismatchedConsumers).toEqual([]);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  }, nativeCliTestTimeout(['dev:pipeline_position', 'code:pack', 'code:pack', 'code:pack']) + 60_000);
+});
+
 describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real CLI claim and resume', () => {
   it('attributes claim/resume source to the held task and registered repository', () => {
     const identity = call('coord:whoami', {});

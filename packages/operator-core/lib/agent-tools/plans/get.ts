@@ -35,7 +35,7 @@ import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { cachedRead, type CachedReadCtx } from '../../cache';
 import { shapePlansGet } from './get-shape';
 import { decoratePlanNowBlock } from './liveness-decoration';
-import { reconcileNowNext } from './now-next-derivation';
+import { reconcileNowNext, reconcileNowState, type NowStateReconciliation } from './now-next-derivation';
 import { derivePlanLifecycleForRead, normalizeActivityTimestamp } from './plan-lifecycle-derivation';
 import { markGrindingItems, readGrindingItems } from '../../verification-attempts/plan-grinding';
 import { readIterationMetrics } from '../../verification-attempts/plan-iteration-metrics';
@@ -432,7 +432,14 @@ export function narrowHeadingPayload(
     out[key] = value;
   }
   out.heading = heading;
-  out.section = sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null;
+  // A heading read omits `now`, so its raw Now section would otherwise bypass
+  // the same current-item warning that protects the structured read. Preserve
+  // the requested section verbatim beneath the warning and keep CAS unchanged.
+  const now = base.now as { stateDerivation?: Omit<NowStateReconciliation, 'state'> } | null | undefined;
+  const warning = sec?.heading.toLowerCase() === 'now' ? now?.stateDerivation?.warning : null;
+  out.section = sec
+    ? { heading: sec.heading, level: sec.level, body: warning ? `${warning}\n\n${sec.body}` : sec.body }
+    : null;
   return out;
 }
 
@@ -1093,10 +1100,17 @@ export default defineTool({
             // that jurisdiction rule is narrow. `now.raw` still carries the
             // stored bytes verbatim, and nothing here mutates the plan.
             const nowNext = decoratedNow ? reconcileNowNext(decoratedNow.next, parsed.items, row.planSlug) : null;
+            const nowState = decoratedNow ? reconcileNowState(decoratedNow.state, parsed.items, row.planSlug) : null;
             const nowWithDerivedNext =
-              decoratedNow && nowNext
+              decoratedNow && nowNext && nowState
                 ? {
                     ...decoratedNow,
+                    state: nowState.state,
+                    stateDerivation: {
+                      storedState: nowState.storedState,
+                      contradictions: nowState.contradictions,
+                      warning: nowState.warning,
+                    },
                     next: nowNext.next,
                     nextDerivation: {
                       disposition: nowNext.disposition,

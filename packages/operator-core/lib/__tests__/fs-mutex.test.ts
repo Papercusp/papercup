@@ -179,6 +179,62 @@ describe('withFsMutexRead wait observations', () => {
 });
 
 describe('withFsMutex', () => {
+  it('reports filesystem admission subphases, including time queued behind a writer', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-admission-timing-'));
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    let releaseHolder!: () => void;
+    let startHolder!: () => void;
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const holderStarted = new Promise<void>((resolve) => { startHolder = resolve; });
+    const holder = withFsMutex('admission-timing', async () => {
+      startHolder();
+      await holderGate;
+    }, { timeoutMs: 2_000, retryMs: 5 });
+    let signalWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => { signalWaiting = resolve; });
+    let admission!: { waitedMs: number; admissionSubphaseTimingsMs?: Record<string, number> };
+    let waiter: Promise<string> | undefined;
+    try {
+      await holderStarted;
+      waiter = withFsMutex('admission-timing', async () => 'done', {
+        timeoutMs: 2_000,
+        retryMs: 5,
+        onWaiting: () => signalWaiting(),
+        onAcquired: (info) => { admission = info; },
+      });
+      await waiting;
+      releaseHolder();
+      await holder;
+      expect(await waiter).toBe('done');
+      expect(admission.waitedMs).toBeGreaterThan(0);
+      expect(admission.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'root-mkdir': expect.any(Number),
+        'queue-root-mkdir': expect.any(Number),
+        'ticket-mkdir': expect.any(Number),
+        'ticket-owner-write': expect.any(Number),
+        'ticket-scan': expect.any(Number),
+        'writer-lock-mkdir': expect.any(Number),
+        'writer-owner-write': expect.any(Number),
+        'waiting-notice': expect.any(Number),
+        'backoff-sleep': expect.any(Number),
+        'ticket-cleanup': expect.any(Number),
+        'reader-drain': expect.any(Number),
+      }));
+      expect(admission.admissionSubphaseTimingsMs?.['backoff-sleep']).toBeGreaterThan(0);
+      for (const elapsedMs of Object.values(admission.admissionSubphaseTimingsMs ?? {})) {
+        expect(Number.isFinite(elapsedMs)).toBe(true);
+        expect(elapsedMs).toBeGreaterThanOrEqual(0);
+      }
+    } finally {
+      releaseHolder();
+      await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not publish tentative reader markers while a writer has reserved admission', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-reservation-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

@@ -29,6 +29,63 @@ import { produceSnapshotFromSource, writeSnapshotAtomic } from '../../../../scri
 import { computeGraphSuggestions, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
 import { refreshDependencySnapshot } from '../harness/routines/gitnexus-reindex-action';
 import { createHash } from 'node:crypto';
+import { defineTool, lookupByMcpName, projectedToolCallContract } from '@papercusp/agent-mcp';
+import { z } from 'zod';
+
+describe('native P014 required BAR registered interface consumer mismatch', () => {
+  it('joins the real compiler report to a registered result contract and exposes a removed field to its typed and runtime client', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-interface-contract-'));
+    const logs: string[] = [];
+    let response: Record<string, string> = { value: 'ok' };
+    const name = 'native-p014-fixture:read';
+    const outputValidation = process.env.PAPERCUSP_VALIDATE_TOOL_OUTPUT;
+    const request = z.object({});
+    const result = z.object({ value: z.string() });
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', args: request, result,
+      description: 'Isolated P014 interface contract fixture', handler: async () => ({ data: response }) });
+    const ctx = { workspaceId: 'native-p014', runId: 'fixture', signal: new AbortController().signal,
+      log: (line: string) => logs.push(line), progress: () => {}, emit: () => {} };
+    const report = async () => (await codePack.handler(codePack.args.parse({ op: 'diff', rootPath: project,
+      include: ['*.ts'], explain: { symbol: 'readApi', file: 'target.ts', paths: ['.'], phase: 'pre-edit' } }),
+    { projectDir: project } as never) as { data: { report: NativeChangeReport } }).data.report;
+    try {
+      process.env.PAPERCUSP_VALIDATE_TOOL_OUTPUT = '1';
+      writeFileSync(join(project, 'target.ts'), 'export interface Response { value: string; }\nexport function readApi(): Response { return { value: "ok" }; }\n');
+      writeFileSync(join(project, 'client.ts'), 'import { readApi } from "./target";\nexport function client() { return readApi().value.length; }\n');
+      writeFileSync(join(project, 'contract.ts'), 'import { defineTool } from "@papercusp/agent-mcp";\nimport { z } from "zod";\nimport { readApi } from "./target";\nconst request = z.object({}); const result = z.object({ value: z.string() });\nexport const tool = defineTool({ name: "native-p014-fixture:read", args: request, result, handler: readApi, description: "fixture contract" });\n');
+      const registered = lookupByMcpName(name)!;
+      expect(registered).toBeDefined();
+      expect(projectedToolCallContract(name)).toMatchObject({ returns: { source: 'registered-output-schema',
+        outputJsonSchema: { required: ['value'], properties: { value: { type: 'string' } } } } });
+      await registered.fn(request.parse({}), ctx);
+      expect(logs.join(' ')).not.toContain('[output-schema]');
+      const before = await report();
+      expect(before.interfaces.status).toBe('measured');
+      expect(before.interfaces.mismatchedConsumers).toEqual([]);
+      expect(before.interfaces.registrations).toContainEqual(expect.objectContaining({ name, factoryAuthority: 'maintained-import',
+        responseValidator: expect.objectContaining({ path: 'contract.ts', line1: 4 }),
+        implementation: expect.objectContaining({ path: 'target.ts', line1: 2 }), runtimeRegistered: 'unmeasured' }));
+      writeFileSync(join(project, 'target.ts'), 'export interface Response { label: string; }\nexport function readApi(): Response { return { label: "ok" }; }\n');
+      response = { label: 'ok' };
+      await registered.fn(request.parse({}), ctx);
+      // The maintained runtime validator logs mismatches rather than rejecting
+      // the whole call. Assert its actual policy, not an invented rejection.
+      expect(logs.join(' ')).toMatch(/\[output-schema\].*native-p014-fixture:read.*value/);
+      expect(result.safeParse(response).success).toBe(false);
+      const after = await report();
+      expect(after.sourceFingerprint).not.toBe(before.sourceFingerprint);
+      expect(after.interfaces.diagnostics).toContainEqual(expect.objectContaining({ code: 2339,
+        site: expect.objectContaining({ path: 'client.ts', line1: 2 }), message: expect.stringContaining("'value'") }));
+      expect(after.interfaces.mismatchedConsumers).toContainEqual(expect.objectContaining({ path: 'client.ts', line1: 2 }));
+      writeFileSync(join(project, 'client.ts'), 'import { readApi } from "./target";\nexport function client() { return readApi().label.length; }\n');
+      expect((await report()).interfaces.mismatchedConsumers).toEqual([]);
+    } finally {
+      if (outputValidation === undefined) delete process.env.PAPERCUSP_VALIDATE_TOOL_OUTPUT;
+      else process.env.PAPERCUSP_VALIDATE_TOOL_OUTPUT = outputValidation;
+      rmSync(project, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
 
 describe('native P012 required BAR scoped claim and canonical resume integration', () => {
   it('uses the real safe packer/compiler and replaces stale excerpts without widening task scope', async () => {

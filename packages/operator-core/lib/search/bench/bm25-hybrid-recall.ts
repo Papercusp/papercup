@@ -203,14 +203,17 @@ export const LATENCY_P95_CEILING_MS: Readonly<Record<string, number>> = {
 
 /**
  * R-18's judgment, separate from R-13's recall verdict. Both bounds time the whole
- * `runHybridSearch` call (the BM25 list, the D-016 exact list and the fusion), on the paired
- * cold pass:
- * - D-019: the BM25 arm's p95 may not exceed the legacy arm's p95 on the same pairs. Judged on
- *   every run: both arms meet the same host conditions.
- * - D-020: the source's absolute ceiling in `LATENCY_P95_CEILING_MS` bounds the paired BM25 p95.
- *   D-027: it is judged only when no full-database dump (application `pcbackup`) was in progress
- *   during the source's paired calls. A run that overlapped one is `invalid` for the ceiling, not
- *   a pass or a fail: a 19 GB full-table read on the same disk is not the BM25 path's latency.
+ * `runHybridSearch` call (the BM25 list, the D-016 exact list and the fusion):
+ * - D-019: on the paired cold pass, the BM25 arm's p95 may not exceed the legacy arm's p95 on
+ *   the same pairs. Judged on every run: both arms meet the same host conditions.
+ * - D-020: the source's absolute ceiling in `LATENCY_P95_CEILING_MS`. D-028: it bounds the
+ *   warm-repeat pass's p95, the timed repeat of each paired query's BM25-arm call after an
+ *   untimed one loaded its pages. That measures the path's own work (CPU and buffer hits) and
+ *   not the host's per-block read latency, which run 8 showed swings the cold p95 3.4x with
+ *   unchanged code. The cold paired p95 is reported against the ceiling, not judged.
+ * - Before D-028 (no warm-repeat pass in the run) the ceiling bounds the paired p95, judged only
+ *   when no full-database dump overlapped the paired calls (D-027): such artifacts are judged
+ *   as they were then.
  * The steady pass (D-024/D-025) is reported data only; D-026 retracted the premise that it
  * isolates the path's own cost, so it judges nothing.
  */
@@ -236,7 +239,21 @@ export interface SourceSummary {
   steadyProblems: string[];
   /** D-027: whether a full-database dump overlapped this source's paired calls (see {@link dumpOverlapOf}). */
   dumpOverlap: boolean | null | undefined;
-  /** R-18: the paired relative bound (D-019) and the absolute ceiling (D-020, D-027). */
+  /**
+   * D-028: the warm-repeat pass, the timed second BM25-arm call of each paired query (the
+   * untimed first one loaded its pages). The D-020 ceiling judges its p95. Null when the run
+   * had no warm-repeat pass (an artifact written before D-028).
+   */
+  warmRepeat: ArmSummary | null;
+  /** Why the warm-repeat pass cannot carry the ceiling (see {@link bm25PassProblems}); empty when sound or absent. */
+  warmRepeatProblems: string[];
+  /**
+   * D-028: timed warm repeats whose lexical statements read blocks not in shared buffers, by
+   * the pg_stat_statements delta. An upper bound (the delta also counts peers running the
+   * same statement), so it is reported, not judged; null when no repeat recorded attribution.
+   */
+  warmRepeatReadCalls: number | null;
+  /** R-18: the paired relative bound (D-019) and the absolute ceiling (D-020; D-027, D-028). */
   latency: LatencyJudgment;
 }
 
@@ -298,10 +315,16 @@ export function summarizeSource(
   pairs: readonly PairResult[],
   minPairs: number = MIN_PAIRS_PER_SOURCE,
   steadyPairs: readonly PairResult[] | null = null,
+  warmPairs: readonly PairResult[] | null = null,
 ): SourceSummary {
   const mine = pairs.filter((p) => p.source === source);
   const steadyMine = steadyPairs?.filter((p) => p.source === source) ?? null;
   const steady = steadyMine ? summarizeArm(steadyMine, 'bm25') : null;
+  const warmMine = warmPairs?.filter((p) => p.source === source) ?? null;
+  const warmRepeat = warmMine ? summarizeArm(warmMine, 'bm25') : null;
+  const warmRepeatProblems = warmMine ? bm25PassProblems(warmMine, minPairs, 'warm-repeat') : [];
+  const warmObs = (warmMine ?? []).flatMap((p) => (p.arms.bm25?.attrib ? [p.arms.bm25.attrib] : []));
+  const warmRepeatReadCalls = warmObs.length ? warmObs.filter((a) => a.pgBlksRead > 0).length : null;
   const arms = { legacy: summarizeArm(mine, 'legacy'), bm25: summarizeArm(mine, 'bm25') };
   const reasons: string[] = [];
   const incomplete = mine.filter((p) => !p.arms.legacy || !p.arms.bm25).length;
@@ -325,51 +348,101 @@ export function summarizeSource(
   const dumpOverlap = dumpOverlapOf(mine);
   const latency: LatencyJudgment = verdict === 'invalid'
     ? { verdict: 'invalid', reason: 'the comparison is invalid (see reasons), so latency is not judged' }
-    : judgeLatency(arms, LATENCY_P95_CEILING_MS[source] ?? null, dumpOverlap);
+    : judgeLatency(
+        arms,
+        LATENCY_P95_CEILING_MS[source] ?? null,
+        dumpOverlap,
+        warmRepeat ? { summary: warmRepeat, problems: warmRepeatProblems } : null,
+      );
   const steadyProblems = steadyMine ? steadyPassProblems(steadyMine, minPairs) : [];
-  return { source, scored: mine.length, arms, paired: pairedCounts(mine), verdict, reasons, steady, steadyProblems, dumpOverlap, latency };
+  return {
+    source,
+    scored: mine.length,
+    arms,
+    paired: pairedCounts(mine),
+    verdict,
+    reasons,
+    steady,
+    steadyProblems,
+    dumpOverlap,
+    warmRepeat,
+    warmRepeatProblems,
+    warmRepeatReadCalls,
+    latency,
+  };
 }
 
 /**
- * Why a source's steady pass (D-024/D-025) cannot carry the ceiling judgment: too few calls,
- * a call that did not record the BM25 arm, or a call whose seam ran another engine (the flag
- * did not reach it). Empty when the pass is usable.
+ * Why a BM25-only pass cannot carry a judgment: too few calls, a call that did not record the
+ * BM25 arm, or a call whose seam ran another engine (the flag did not reach it). `label` names
+ * the pass in the messages. Empty when the pass is usable.
  */
-export function steadyPassProblems(steadyPairs: readonly PairResult[], minPairs: number = MIN_PAIRS_PER_SOURCE): string[] {
+export function bm25PassProblems(passPairs: readonly PairResult[], minPairs: number = MIN_PAIRS_PER_SOURCE, label = 'steady'): string[] {
   const problems: string[] = [];
-  const missing = steadyPairs.filter((p) => !p.arms.bm25).length;
-  if (missing > 0) problems.push(`${missing} steady call(s) recorded no BM25 observation`);
-  const scored = steadyPairs.length - missing;
-  if (scored < minPairs) problems.push(`only ${scored} steady call(s); at least ${minPairs} are needed`);
-  const engines = [...new Set(steadyPairs.flatMap((p) => (p.arms.bm25 ? [p.arms.bm25.engine] : [])))].sort();
-  if (scored > 0 && engines.join() !== 'bm25') problems.push(`steady calls ran engine(s) [${engines.join(', ')}], expected [bm25]`);
+  const missing = passPairs.filter((p) => !p.arms.bm25).length;
+  if (missing > 0) problems.push(`${missing} ${label} call(s) recorded no BM25 observation`);
+  const scored = passPairs.length - missing;
+  if (scored < minPairs) problems.push(`only ${scored} ${label} call(s); at least ${minPairs} are needed`);
+  const engines = [...new Set(passPairs.flatMap((p) => (p.arms.bm25 ? [p.arms.bm25.engine] : [])))].sort();
+  if (scored > 0 && engines.join() !== 'bm25') problems.push(`${label} calls ran engine(s) [${engines.join(', ')}], expected [bm25]`);
   return problems;
 }
 
+/** The steady pass's problems (D-024/D-025); reported only since D-026. See {@link bm25PassProblems}. */
+export function steadyPassProblems(steadyPairs: readonly PairResult[], minPairs: number = MIN_PAIRS_PER_SOURCE): string[] {
+  return bm25PassProblems(steadyPairs, minPairs, 'steady');
+}
+
+/** D-028: the warm-repeat pass as {@link judgeLatency} reads it. */
+export interface WarmRepeatPass {
+  summary: ArmSummary;
+  problems: string[];
+}
+
 /**
- * R-18 on the paired pass: `fail` when the BM25 p95 exceeds the legacy arm's (D-019, judged on
- * every run), or exceeds `ceilingMs` (D-020). The ceiling is judged only when `dumpOverlap` is
- * `false`, or `undefined` (an artifact written before D-027, judged as it was then); with a dump
- * overlapping (`true`) or unchecked (`null`) the result is `invalid` for the ceiling unless the
- * relative bound already failed (D-027). `invalid` with no samples. `ceilingMs: null` judges
- * against legacy only.
+ * R-18: `fail` when the paired BM25 p95 exceeds the legacy arm's (D-019, judged on every run),
+ * or when the ceiling-judged p95 exceeds `ceilingMs` (D-020). `invalid` with no samples;
+ * `ceilingMs: null` judges against legacy only.
+ *
+ * With a warm-repeat pass (`warm`, D-028) the ceiling judges `warm.summary.latencyP95Ms`; a
+ * warm-repeat pass with problems is `invalid` for the ceiling unless the relative bound already
+ * failed. The dump overlap is not a precondition then: the repeat's pages are already cached.
+ *
+ * Without one (`warm` null: an artifact written before D-028) the ceiling judges the paired p95
+ * as D-027 did: only when `dumpOverlap` is `false`, or `undefined` (an artifact written before
+ * D-027); with a dump overlapping (`true`) or unchecked (`null`) the ceiling is `invalid`.
  */
 export function judgeLatency(
   arms: Record<Arm, ArmSummary>,
   ceilingMs: number | null = null,
   dumpOverlap: boolean | null | undefined = undefined,
+  warm: WarmRepeatPass | null = null,
 ): LatencyJudgment {
   const bm25 = arms.bm25.latencyP95Ms;
   const legacy = arms.legacy.latencyP95Ms;
   if (bm25 == null || legacy == null) {
     return { verdict: 'invalid', reason: 'an arm has no latency samples' };
   }
+  const warmP95 = warm?.summary.latencyP95Ms ?? null;
   if (bm25 > legacy) {
-    const ceiling = ceilingMs != null && bm25 > ceilingMs ? `; it also exceeds the ${ceilingMs} ms ceiling` : '';
+    const judged = warm ? warmP95 : bm25;
+    const what = warm ? `the warm-repeat p95 ${warmP95} ms also exceeds` : 'it also exceeds';
+    const ceiling = ceilingMs != null && judged != null && judged > ceilingMs ? `; ${what} the ${ceilingMs} ms ceiling` : '';
     return { verdict: 'fail', reason: `BM25-arm p95 ${bm25} ms exceeds legacy p95 ${legacy} ms${ceiling}` };
   }
   const relative = `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms`;
   if (ceilingMs == null) return { verdict: 'pass', reason: `${relative} (no absolute ceiling for this source)` };
+  if (warm) {
+    if (warm.problems.length > 0 || warmP95 == null) {
+      const why = warm.problems.length ? warm.problems.join('; ') : 'it has no latency samples';
+      return { verdict: 'invalid', reason: `${relative}; the ${ceilingMs} ms ceiling is not judged: the warm-repeat pass is unsound: ${why} (D-028)` };
+    }
+    const cold = `cold paired p95 ${bm25} ms reported, not judged (D-028)`;
+    if (warmP95 > ceilingMs) {
+      return { verdict: 'fail', reason: `${relative}, but the warm-repeat BM25 p95 ${warmP95} ms exceeds the ${ceilingMs} ms ceiling; ${cold}` };
+    }
+    return { verdict: 'pass', reason: `${relative}; warm-repeat BM25 p95 ${warmP95} ms <= the ${ceilingMs} ms ceiling; ${cold}` };
+  }
   if (dumpOverlap === true || dumpOverlap === null) {
     const why = dumpOverlap
       ? 'a full-database dump (pcbackup) was in progress during the paired calls'

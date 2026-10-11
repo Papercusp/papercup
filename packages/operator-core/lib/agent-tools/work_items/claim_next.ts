@@ -33,7 +33,7 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 import {
-  fetchContextPressure,
+  fetchContextPressureReadings,
   resolveContextPressureRecoveryPath,
   resolveContextPressureHeadroom,
 } from '../coordination/context-pressure';
@@ -149,11 +149,12 @@ export default defineTool({
     // ungated here (work_items:claim, the by-id surface, is likewise deliberately not gated).
     if (assignee === ident.ownerId) {
       const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(() => true);
-      const bucket = gateEnabled
-        ? await fetchContextPressure([ident.ownerId])
+      const reading = gateEnabled
+        ? await fetchContextPressureReadings([ident.ownerId])
             .then((m) => m.get(ident.ownerId) ?? null)
             .catch(() => null)
         : null;
+      const bucket = reading?.bucket ?? null;
       // EI-23744538757758407: both remedy reads fire ONLY on the refusal path, and in PARALLEL.
       // Headroom answers a question `recovery` cannot — whether this caller's limit is even
       // SATISFIABLE — so that a session whose fixed baseline already exceeds its soft limit is
@@ -167,6 +168,7 @@ export default defineTool({
         : [null, null];
       const gate = decideContextPressureGate({
         bucket,
+        reading,
         override: args.ignoreContextPressure === true,
         enabled: gateEnabled,
         overrideArg: 'ignoreContextPressure',

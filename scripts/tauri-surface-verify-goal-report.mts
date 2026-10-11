@@ -47,7 +47,7 @@ async function runGoalReportNative(evidenceDir: string) {
       body: document.body.innerText,
       alerts: Array.from(document.querySelectorAll('[role="alert"]')).map(n => n.textContent)
     })`)));
-    native('screenshot', '--selector', 'html', '--output', join(out, `${name}.png`));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(out, `${name}.png`));
   };
   const poll = (expression: string, require: string) => {
     try {
@@ -152,7 +152,7 @@ async function runGoalReportNative(evidenceDir: string) {
       assert.ok(measured.clientHeight > 0, 'Expanded body has no visible viewport');
       for (const line of measured.visible) covered.add(line);
       const screenshot = join(out, `${phase}-page-${page}.png`);
-      native('screenshot', '--selector', 'html', '--output', screenshot);
+      native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', screenshot);
       pages.push({ ...measured, screenshot });
       if (measured.atEnd) break;
       native('eval', `(()=>{const p=document.querySelector(${JSON.stringify(selector)});p.scrollTop+=p.clientHeight*0.65;return p.scrollTop})()`);
@@ -275,7 +275,7 @@ async function runGoalReportNative(evidenceDir: string) {
     await captureBrowserFeed('after-navigation', envelope.msg_id, envelope.report);
     const card = '[data-component="report-block"]';
     poll(`Array.from(document.querySelectorAll('${card} button')).some(b=>b.textContent==='Expand full report')`, card);
-    native('screenshot', '--selector', 'html', '--output', join(out, 'notification.png'));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(out, 'notification.png'));
     native('check', '--eval', `(()=>{const b=Array.from(document.querySelectorAll('${card} button')).find(b=>b.textContent==='Expand full report');if(!b)return false;b.click();return true})()`, '--json');
     const expectedBody = serializeGoalOwnerReportSnapshot(snapshot);
     assert.ok(expectedBody.length > 600);
@@ -306,7 +306,7 @@ async function runGoalReportNative(evidenceDir: string) {
       visibleOwnerActions: snapshot.ownerWalls.map(w => w.exactAction), observedFieldCoverage: fields, explicitUnknownLabels: unknowns, result: 'pass' });
     await captureVisibleBody(bodySelector, expectedBody, 'original');
     observe('REPORT-PINNED-DETAIL-P003 original exact notification expansion');
-    native('screenshot', '--selector', 'html', '--output', join(out, 'expanded.png'));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(out, 'expanded.png'));
     save('captured-card.json', JSON.parse(native('eval', `JSON.stringify({body:document.querySelector(${JSON.stringify(bodySelector)})?.textContent,
       label:document.querySelector('.report-block-goal-as-of')?.textContent,url:location.href})`)));
     // The successor changes actual body and lineage, never the original pin.
@@ -322,7 +322,7 @@ async function runGoalReportNative(evidenceDir: string) {
       !document.querySelector(${JSON.stringify(bodySelector)})?.textContent.includes('SUCCESSOR ONLY')`, bodySelector);
     await captureVisibleBody(bodySelector, expectedBody, 'after-successor');
     observe('REPORT-PINNED-DETAIL-P003 successor/latest-lineage control');
-    native('screenshot', '--selector', 'html', '--output', join(out, 'pinned-after-successor.png'));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(out, 'pinned-after-successor.png'));
     save('successor-control.json', { successorId: successor.reportId, successorBodySha256: successor.bodySha256, pinnedOriginal: original });
     await stopRecording();
     const recordingProbe = JSON.parse((await execFileViaSidecar('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v:0',

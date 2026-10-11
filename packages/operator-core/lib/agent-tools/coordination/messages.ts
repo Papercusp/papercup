@@ -1933,5 +1933,9 @@ export async function readThreadFromRef(ref: string): Promise<{
     client: coordSql(),
     timeoutMs: THREAD_READ_STATEMENT_TIMEOUT_MS,
     acquireTimeoutMs: THREAD_READ_ACQUIRE_TIMEOUT_MS,
+    // The production PgCoordLog client is getOrgPg().sql. Identify its pool
+    // even though it is injected, so acquisition failures carry local pressure
+    // measurements and the bounded-read seam can retry proven queue pressure.
+    acquirePool: 'org-admin',
   });
 }

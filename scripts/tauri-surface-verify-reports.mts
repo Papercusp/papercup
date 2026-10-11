@@ -1,5 +1,5 @@
 /** Reports Library: real publish tool -> SSE list -> exact native Markdown/Mermaid reader. */
-// VERIFY_TAURI_ASSERTION_REQUIRED_ENV=PAPERCUSP_TEST_RUNS_DB_URL
+// VERIFY_TAURI_ASSERTION_REQUIRED_ENV=PAPERCUSP_TEST_RUNS_DB_URL,PAPERCUSP_TEST_RUN_WORKSPACE
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -12,9 +12,10 @@ import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
 import { verifyVerifierSourceSync } from '../packages/operator-core/lib/verifier-source';
 
 /** Run with --e2e inside verify-tauri-headless, before Vitest relocates TMPDIR. */
-export async function runNativeE2e(testFiles = ['packages/operator-core/lib/reports-library-native.e2e.test.ts']) {
-  assert.ok(testFiles.length > 0 && testFiles.every(file => /^packages\/operator-core\/lib\/(?:[\w-]+\/)*[\w-]+(?:\.[\w-]+)*\.e2e\.test\.ts$/.test(file)),
-    'Use maintained operator-core native E2E test files');
+export async function runNativeE2e(testFiles = ['packages/operator-core/lib/reports-library-native.e2e.test.ts'],
+  options: { runtimeUnit?: string } = {}) {
+  assert.ok(testFiles.length > 0 && testFiles.every(file => /^packages\/operator-core\/lib\/(?:[\w-]+\/)*[\w-]+(?:\.[\w-]+)*\.(?:e2e|integration)\.test\.ts$/.test(file)),
+    'Use maintained operator-core native E2E or integration test files');
   assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier');
   assert.ok(process.env.PAPERCUSP_TEST_RUNS_DB_URL, 'Keep native results in the shared test ledger');
   const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
@@ -35,17 +36,29 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
 
   // Reuse the kernel-measured runtime ledger. The recorder captures this
   // executable's identity before and after the entire native test execution.
-  const { reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } =
-    await import('../packages/operator-core/lib/runtime-vintage');
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const runtimeUnits = ['reports-library-native-desktop'];
-  try {
-    const digest = createHash('sha256').update(readFileSync(`/proc/${tauriPID}/exe`)).digest('hex');
-    await reportRuntimeVintage({ unit: runtimeUnits[0], pid: tauriPID,
-      treeSha: receipt.sourceCommit, bundleVersion: `executable-sha256:${digest}` });
-    assert.ok(measureRuntimeVintageEnvironment(await listRuntimeVintage(), runtimeUnits),
-      'Native executable must have a current kernel-verified runtime identity');
-  } finally { await getOrgPg().sql.end({ timeout: 5 }); }
+  const runtimeUnits = [options.runtimeUnit ?? 'reports-library-native-desktop'];
+  assert.ok(process.env.PAPERCUSP_TEST_RUN_WORKSPACE, 'Pin the caller workspace before isolated boot');
+  const digest = createHash('sha256').update(readFileSync(`/proc/${tauriPID}/exe`)).digest('hex');
+  // The app uses disposable PG; the recorder observes the shared ledger.
+  // Publish the kernel witness through the existing reporter in a child with
+  // that ledger route, leaving this process's app database/identity intact.
+  execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+    const { reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } =
+      await import('./packages/operator-core/lib/runtime-vintage.ts');
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const input = JSON.parse(process.argv[1]);
+    try {
+      await reportRuntimeVintage(input);
+      if (!measureRuntimeVintageEnvironment(await listRuntimeVintage(input.workspaceId), [input.unit]))
+        throw new Error('Native executable has no current kernel-verified runtime identity');
+    } finally { await getOrgPg().sql.end({ timeout: 5 }); }
+  `, JSON.stringify({ workspaceId: process.env.PAPERCUSP_TEST_RUN_WORKSPACE,
+    unit: runtimeUnits[0], pid: tauriPID, treeSha: receipt.sourceCommit,
+    bundleVersion: 'executable-sha256:' + digest })], {
+    cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: { ...process.env,
+      HARNESS_ADMIN_DATABASE_URL: process.env.PAPERCUSP_TEST_RUNS_DB_URL,
+      DATABASE_URL: process.env.PAPERCUSP_TEST_RUNS_DB_URL },
+  });
 
   const profileDir = mkdtempSync(join(nativeTmpDir, 'reports-native-profile-'));
   const profilePath = join(profileDir, 'profile.json');
@@ -159,7 +172,7 @@ async function verifyReports(evidenceDir: string) {
     poll(`new URL(location.href).searchParams.get('sel') === ${JSON.stringify(missingReportId)}
       && document.querySelector('.reports-reader')?.textContent.includes('This report is unavailable.')
       && !document.querySelector('.reports-reader h2')`);
-    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-unknown-citation.png'));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(evidenceDir, 'reports-unknown-citation.png'));
     native('navigate', `${original.path}&ws=${encodeURIComponent(workspace)}`, '--json');
     poll(`new URL(location.href).searchParams.get('sel') === ${JSON.stringify(original.report_id)}
       && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}`);
@@ -242,9 +255,9 @@ async function verifyReports(evidenceDir: string) {
     // The desktop's other panels can narrow Reports even on a wide viewport.
     poll(`document.querySelector('.reports-reader').getBoundingClientRect().width >= 300`);
     native('eval', `document.querySelector('.reports-reader').scrollIntoView({block:'start'})`);
-    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-reader.png'));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(evidenceDir, 'reports-reader.png'));
     native('eval', `document.querySelector('.reports-reader svg').scrollIntoView({block:'center'})`);
-    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-diagram.png'));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(evidenceDir, 'reports-diagram.png'));
     const selectRetiring = runTool('ui:dispatch', { client_id: clientId, intent: 'set_url',
       args: { params: { sel: correction.report_id, hist: null } }, timeout_ms: 30_000 });
     assert.equal(selectRetiring.status, 'done');
@@ -269,7 +282,7 @@ async function verifyReports(evidenceDir: string) {
     assert.equal(retiredReadback.results?.[0]?.ok, true);
     assert.equal(retiredReadback.results?.[0]?.report?.body_md, body + '\nA correction.\n');
     assert.ok(retiredReadback.results?.[0]?.report?.retired_at, 'The exact retired citation remains readable');
-    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-retired-citation.png'));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(evidenceDir, 'reports-retired-citation.png'));
     // This is a separate author in the verifier's private database. The UI must
     // exercise the human-owner read path rather than pass by being the author.
     const { getOrgPg } = await import('@papercusp/db-org');
@@ -285,7 +298,7 @@ async function verifyReports(evidenceDir: string) {
     poll(`document.querySelector('.reports-reader h2')?.textContent === 'Private peer audit'
       && document.querySelector('.reports-metadata')?.textContent.includes('reports-native-foreign-author')
       && document.querySelector('.reports-metadata')?.textContent.includes('owner')`);
-    native('screenshot', '--selector', 'html', '--output', join(evidenceDir, 'reports-owner-private.png'));
+    native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(evidenceDir, 'reports-owner-private.png'));
     const after = fingerprints();
     assert.deepEqual(after, before, 'Relevant source changed during the verification window');
     save('manifest.json', { result: 'pass', original: original.report_id, correction: correction.report_id,

@@ -414,9 +414,6 @@ beforeAll(async () => {
   // P-006/migration 864 retires the ambiguous legacy payload.needsHuman floor while retaining
   // the stable public claim-floor signature through its subtractive v16 wrapper.
   await db.sql.unsafe(readMigration('864-migrate-legacy-human-parks-to-agent-review.sql')).simple();
-  // EI-21268387863408600: ordinary draft/paused lifecycle plans are also reserved, while ready
-  // and done controls remain free and per-run instance lifecycle rows stay exempt.
-  await db.sql.unsafe(readMigration('920-draft-paused-plan-claim-floor.sql.DRAFT')).simple();
   // EI-22040898205841125: an already-claimed work-item implementing the same canonical
   // plan-item is a pre-claim exclusion, not an invisible claim/clear miss. Apply the real
   // migration so the queryable SSOT and the TypeScript selector stay bound.

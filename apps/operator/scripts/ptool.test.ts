@@ -745,6 +745,17 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('ordinary:read')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
+  it('lets lsp:query reach its declared handler deadline on direct and deferred calls', () => {
+    const args = { op: 'diagnostics', file: 'packages/operator-core/example.ts' };
+    const direct = timeoutForTool('lsp:query', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'lsp:query', args });
+
+    // The handler owns 90s and MCP adds 5s; retain 5s of client-side margin.
+    expect(direct).toBe(100_000);
+    expect(direct).toBeGreaterThan(95_000);
+    expect(deferred).toBe(direct);
+  });
+
   it('lets logs:read return its structured journal timeout on both call routes', () => {
     expect(timeoutForTool('logs:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {

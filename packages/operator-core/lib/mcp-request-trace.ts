@@ -1,5 +1,6 @@
 /** Shared, bounded correlation contract for the local MCP proxy → operator hop. */
 import { createHash } from 'node:crypto';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { headersFromExtra, urlFromExtra } from '@papercusp/tooldef-mcp';
 import type { ScratchWriteProgress, ScratchWriteTimings } from './scratch-gc';
 
@@ -132,6 +133,33 @@ export function mcpTraceIdFromExtra(extra: unknown): string | null {
   const value = headersFromExtra(extra).get(MCP_REQUEST_TRACE_HEADER)?.trim() ?? '';
   if (value.length > MAX_MCP_REQUEST_TRACE_ID_CHARS) return null;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) ? value : null;
+}
+
+// One server-minted fallback per request object. Pinned so a split module
+// record cannot hand two readers of the same request different ids.
+const mintedTraceIds = pinModuleState('@papercusp/operator-core.mcp-request-trace.minted', () => ({
+  byRequest: new WeakMap<object, string>(),
+}));
+
+/**
+ * The request's trace id: the proxy-minted header when present, otherwise ONE
+ * server-minted UUID per request `extra` (direct callers such as
+ * `scripts/mcp-call.mjs` against :3170 bypass the proxy). Every reader of the
+ * same request — the recorded `requestOrigin`, the settlement backfill keyed on
+ * it, deadline and trace logs — must use this, never an independent
+ * `mcpTraceIdFromExtra(extra) ?? randomUUID()`: two derivations gave a direct
+ * call two different ids, so its settlement could never find its invocation
+ * row (WI-6554700010008586).
+ */
+export function resolveMcpRequestTraceId(extra: unknown): string {
+  const supplied = mcpTraceIdFromExtra(extra);
+  if (supplied) return supplied;
+  if (extra === null || typeof extra !== 'object') return globalThis.crypto.randomUUID();
+  const existing = mintedTraceIds.byRequest.get(extra);
+  if (existing) return existing;
+  const minted = globalThis.crypto.randomUUID();
+  mintedTraceIds.byRequest.set(extra, minted);
+  return minted;
 }
 
 /** Accept only a bounded integer millisecond timestamp minted by the local proxy. */
