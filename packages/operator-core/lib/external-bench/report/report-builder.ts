@@ -170,6 +170,7 @@ export function bundleFromRollouts(input: {
       attempts: outcome.attempts,
       absentAttempts: outcome.absentAttempts,
       missingMeasurements: outcome.missingMeasurements,
+      outcomes: outcome.outcomes,
       measurementComplete: outcome.measurementComplete,
       primaryResolvedPct: outcome.primaryResolvedPct,
       primaryMeanScore: outcome.primaryMeanScore,

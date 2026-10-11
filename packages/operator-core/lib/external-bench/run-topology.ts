@@ -144,7 +144,11 @@ export interface TopologyRunResult {
   skippedTaskIds: string[];
 }
 
-const GRADER_STATUSES: readonly GraderStatus[] = ['passed', 'failed', 'error', 'timeout'];
+// `satisfies Record<GraderStatus, true>` forces this list to grow with the union: a canonical status
+// missing here would coerce to 'error' and lose its meaning (e.g. 'invalid' — D-008 of plan
+// benchmark-coverage-frontierswe-v2-2026-10-10 — would persist indistinguishable from a grader fault).
+const GRADER_STATUS_SET = { passed: true, failed: true, error: true, timeout: true, invalid: true } satisfies Record<GraderStatus, true>;
+const GRADER_STATUSES = Object.keys(GRADER_STATUS_SET) as readonly GraderStatus[];
 function coerceGraderStatus(s: string): GraderStatus {
   return (GRADER_STATUSES as readonly string[]).includes(s) ? (s as GraderStatus) : 'error';
 }

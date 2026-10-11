@@ -80,7 +80,10 @@ export {
 export { accountTokens, verifyIsoBudget, budgetExceeded, isScored, type IsoBudgetCheck, type IsoBudgetCap } from './cost';
 
 // Report builder — the importable aggregation surface for the Evaluation UI (P-020).
-export { aggregateArm, buildSuiteReport, summarizeAssignedOutcomes, type AggregateOpts } from './aggregate';
+export {
+  aggregateArm, buildSuiteReport, classifyAttemptOutcome, summarizeAssignedOutcomes,
+  type AggregateOpts, type AssignedOutcomeRow, type AttemptOutcome, type AttemptOutcomeCounts,
+} from './aggregate';
 
 // Per-capability attribution + cross-suite roll-up (capability-injection redesign / P-011).
 export {

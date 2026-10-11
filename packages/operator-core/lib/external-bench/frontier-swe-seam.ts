@@ -22,6 +22,7 @@ import type { GraderFs, ProcExec } from './grader/swe-bench-pro';
 import { liveProcExec } from './grader/index';
 import { liveBuildVerifierCommand, livePrepareSeparateVerifier, liveReadReward } from './grader/frontier-swe-live';
 import { makeFrontierSweGrader, type FrontierSweGraderConfig } from './grader/frontier-swe';
+import { checkContainerEvidenceIntegrity, FRONTIER_SWE_PROTECTED_PATHS, type EvidenceIntegrity } from './evidence-integrity';
 
 /** The opaque environment handle for a FrontierSWE task — a live Docker container the arm operated. */
 export interface FrontierSweEnvHandle {
@@ -67,6 +68,19 @@ const NO_HOST_FS: GraderFs = {
   rm: async () => undefined,
 };
 
+/**
+ * The protected set for one task: {@link FRONTIER_SWE_PROTECTED_PATHS} plus the task's optional
+ * `graderMeta.protectedPaths` (verifier fixtures under /app; /app itself is the submission and cannot be
+ * protected wholesale). A malformed declaration is `unverifiable`, never silently ignored.
+ */
+export async function checkFrontierSweIntegrity(exec: ProcExec, task: BenchTask, containerId: string): Promise<EvidenceIntegrity> {
+  const declared = task.graderMeta?.['protectedPaths'];
+  if (declared !== undefined && !(Array.isArray(declared) && declared.every((p) => typeof p === 'string'))) {
+    return { verdict: 'unverifiable', protectedPaths: [...FRONTIER_SWE_PROTECTED_PATHS], error: 'graderMeta.protectedPaths must be an array of strings' };
+  }
+  return checkContainerEvidenceIntegrity(exec, containerId, [...FRONTIER_SWE_PROTECTED_PATHS, ...((declared as string[] | undefined) ?? [])]);
+}
+
 /** Build FrontierSWE's CloneGradeSeam — supplied once to the shared topology runtime; every arm uses it identically. */
 export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): CloneGradeSeam<FrontierSweEnvHandle> {
   const exec = cfg.exec ?? liveProcExec;
@@ -101,6 +115,11 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
     },
 
     async grade(task: BenchTask, handle: FrontierSweEnvHandle) {
+      // Pre-grade evidence integrity (P-020 / D-008) — FIRST, before v1 staging legitimately writes /tests and
+      // /solution into this container. Tampering → 'invalid' (terminal, disclosed); an unreadable diff → 'error'.
+      const integrity = await checkFrontierSweIntegrity(exec, task, handle.containerId);
+      if (integrity.verdict === 'tampered') return { resolved: null, score: null, graderStatus: 'invalid', detail: { integrity } };
+      if (integrity.verdict === 'unverifiable') return { resolved: null, score: null, graderStatus: 'error', detail: { integrity } };
       const separate = task.graderMeta?.['verifierEnvironmentMode'] === 'separate';
       // v1 only: stage the hidden tests INTO the arm container at GRADE time (post-agent) — the v1 image bakes only
       // /app; Harbor uploads tests/ at verify time. Doing it here (not in clone) keeps /tests away from the agent.
@@ -110,7 +129,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
           await exec('docker', ['cp', `${repoDir}/tasks/${handle.instanceId}/tests`, `${handle.containerId}:/tests`]);
           if (cfg.oracle) await exec('docker', ['cp', `${repoDir}/tasks/${handle.instanceId}/solution`, `${handle.containerId}:/solution`]);
         } catch (e) {
-          return { resolved: null, score: null, graderStatus: 'error', detail: { stageTestsError: e instanceof Error ? e.message : String(e) } };
+          return { resolved: null, score: null, graderStatus: 'error', detail: { stageTestsError: e instanceof Error ? e.message : String(e), integrity } };
         }
       }
 
@@ -124,7 +143,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
           resolved: null,
           score: null,
           graderStatus: 'error',
-          detail: { graderError: g?.graderError ?? 'no grade row', graderVersion: g?.graderVersion ?? null, raw: g?.rawGraderOutput ?? null },
+          detail: { graderError: g?.graderError ?? 'no grade row', graderVersion: g?.graderVersion ?? null, raw: g?.rawGraderOutput ?? null, integrity },
         };
       }
       // A genuine capability outcome (incl. score 0). resolved = (score === 1) is degenerate for FrontierSWE.
@@ -132,7 +151,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
         resolved: g.resolved,
         score: g.score,
         graderStatus: g.resolved ? 'passed' : 'failed',
-        detail: { ...(g.rawGraderOutput as object), graderVersion: g.graderVersion },
+        detail: { ...(g.rawGraderOutput as object), graderVersion: g.graderVersion, integrity },
       };
     },
 

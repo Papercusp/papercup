@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateArm, buildSuiteReport, summarizeAssignedOutcomes } from './aggregate';
+import { aggregateArm, buildSuiteReport, classifyAttemptOutcome, summarizeAssignedOutcomes } from './aggregate';
 import type { TaskRunResult, ArmId, GraderStatus } from './schema';
 
 let seq = 0;
@@ -70,6 +70,51 @@ describe('shared assigned outcome projection', () => {
   it.each([NaN, Infinity, -0.1, 1.1])('refuses an invalid partial-credit measurement %s', score => {
     expect(summarizeAssignedOutcomes([mk({ seed: 0, resolved: true, score })]))
       .toMatchObject({ primaryMeanScore: null, measurementComplete: false, missingMeasurements: 1 });
+  });
+});
+
+// Plan benchmark-coverage-frontierswe-v2-2026-10-10 D-008 (P-020): the four-way outcome rides the SAME
+// primary denominator — budget_exhausted is a measured outcome, invalid and grader_error are missing.
+describe('four-way attempt outcome', () => {
+  it.each([
+    [{ graderStatus: 'passed', resolved: true, score: 1 }, 'scored'],
+    [{ graderStatus: 'failed', resolved: false, score: 0 }, 'scored'],
+    [{ graderStatus: 'failed', resolved: false, score: 0.4, capped: true }, 'budget_exhausted'],
+    [{ graderStatus: 'invalid', resolved: null, score: null }, 'invalid'],
+    // An integrity verdict wins even if a stray resolved/score rode along with it.
+    [{ graderStatus: 'invalid', resolved: true, score: 1, capped: true }, 'invalid'],
+    [{ graderStatus: 'error', resolved: null, score: null, capped: true }, 'grader_error'],
+    [{ graderStatus: 'timeout', resolved: null, score: null }, 'grader_error'],
+    [{ graderStatus: 'failed', resolved: false, score: 1.5 }, 'grader_error'],
+    [{ generationStatus: 'error', graderStatus: 'error', resolved: null }, 'generation_failed'],
+    [{ generationStatus: 'timeout', graderStatus: 'error', resolved: null }, 'generation_failed'],
+  ] as const)('%o → %s', (over, expected) => {
+    expect(classifyAttemptOutcome(mk({ seed: 0, ...over } as Partial<TaskRunResult>))).toBe(expected);
+  });
+
+  it('counts every outcome and keeps budget_exhausted in the primary score while invalid nulls it', () => {
+    const assignedTaskIds = ['t1', 't2', 't3', 't4', 't5'];
+    const rows = [
+      mk({ taskId: 't1', seed: 0, resolved: true, graderStatus: 'passed', score: 1 }),
+      mk({ taskId: 't2', seed: 0, resolved: false, graderStatus: 'failed', score: 0.5, capped: true }),
+      mk({ taskId: 't3', seed: 0, resolved: null, graderStatus: 'error', score: null }),
+      mk({ taskId: 't4', seed: 0, resolved: null, graderStatus: 'invalid', score: null }),
+      mk({ taskId: 't5', seed: 0, resolved: null, graderStatus: 'error', generationStatus: 'error', generationError: 'crash' }),
+    ];
+    const s = summarizeAssignedOutcomes(rows, { assignedTaskIds, assignedSeeds: [0] });
+    expect(s.outcomes).toEqual({ scored: 1, budgetExhausted: 1, invalid: 1, graderError: 1, generationFailed: 1 });
+    expect(s).toMatchObject({ missingMeasurements: 2, measurementComplete: false, primaryMeanScore: null,
+      gradedAttempts: 2, conditionalMeanScore: 0.75 });
+    // Without the two missing measurements the budget-capped 0.5 counts and the crash counts as 0.
+    const measured = summarizeAssignedOutcomes(rows.filter(r => r.taskId !== 't3' && r.taskId !== 't4'),
+      { assignedTaskIds: ['t1', 't2', 't5'], assignedSeeds: [0] });
+    expect(measured.primaryMeanScore).toBeCloseTo((1 + 0.5 + 0) / 3);
+    expect(measured.outcomes).toEqual({ scored: 1, budgetExhausted: 1, invalid: 0, graderError: 0, generationFailed: 1 });
+  });
+
+  it('does not let an invalid attempt carrying a verdict reach the measured population', () => {
+    const s = summarizeAssignedOutcomes([mk({ seed: 0, resolved: true, graderStatus: 'invalid', score: 1 })]);
+    expect(s).toMatchObject({ missingMeasurements: 1, gradedAttempts: 0, resolved: 0, primaryResolvedPct: null });
   });
 });
 

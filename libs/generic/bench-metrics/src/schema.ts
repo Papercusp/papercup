@@ -102,9 +102,14 @@ export type GraderModality = 'diff' | 'in-container' | 'qa' | 'interactive' | 'd
 /**
  * Normalized grader outcome. `error`/`timeout` are INFRA failures, distinct
  * from a genuine `failed` — they are excluded from accuracy and surfaced
- * separately (METR elicitation discipline; P-001 §5).
+ * separately (METR elicitation discipline; P-001 §5). `invalid` means a
+ * pre-grade evidence-integrity check found the attempt's protected
+ * verifier/scorer/fixture paths changed, so the grader refused to score it.
+ * Like `error`, it is a missing measurement (never a silent 0), but it is
+ * disclosed as its own count and is TERMINAL: a resume must not re-run it.
+ * Plan benchmark-coverage-frontierswe-v2-2026-10-10 D-008.
  */
-export type GraderStatus = 'passed' | 'failed' | 'error' | 'timeout';
+export type GraderStatus = 'passed' | 'failed' | 'error' | 'timeout' | 'invalid';
 
 /**
  * Outcome of the GENERATION half (parallel to GraderStatus, distinct surface —

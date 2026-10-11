@@ -82,11 +82,52 @@ function pairedInterval(a: number[], b: number[], taskIds: readonly string[], sa
     clusterIds: sampling.repositoryByTask ? taskIds.map(id => sampling.repositoryByTask![id]) : undefined }).delta;
 }
 
-/** Shared outcome-only projection; no pricing or statistical resampling is needed for exports. */
-export function summarizeAssignedOutcomes(rows: readonly {
+/** The persisted row fields the outcome projection reads (a {@link TaskRunResult} satisfies it). */
+export interface AssignedOutcomeRow {
   taskId: string; seed: number; resolved: boolean | null; score?: number | null;
   generationStatus?: string; generationError?: string | null; graderStatus: string;
-}[], opts: Pick<AggregateOpts, 'assignedTaskIds' | 'assignedSeeds'> = {}) {
+  /** Generation stopped at its iso-budget ceiling but still produced a graded end state. */
+  capped?: boolean;
+}
+
+/**
+ * The four-way outcome of one attempt (plan benchmark-coverage-frontierswe-v2-2026-10-10 D-008), beside the
+ * pre-existing generation-failure class. `scored` and `budget_exhausted` are MEASURED outcomes (a budget-capped
+ * attempt is graded on its end state and counts with that score); `invalid` (integrity check found protected
+ * paths changed) and `grader_error` are MISSING measurements, disclosed as separate counts; `generation_failed`
+ * produced no submission and stays in the primary denominator as 0. {@link summarizeAssignedOutcomes} counts
+ * through this function, so the classification and the denominator cannot drift apart.
+ */
+export type AttemptOutcome = 'scored' | 'budget_exhausted' | 'invalid' | 'grader_error' | 'generation_failed';
+
+const isValidScore = (score: number | null | undefined): score is number =>
+  typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 1;
+
+export function classifyAttemptOutcome(row: AssignedOutcomeRow): AttemptOutcome {
+  if (row.generationStatus === 'error' || row.generationStatus === 'timeout' || !!row.generationError) {
+    return 'generation_failed';
+  }
+  if (row.graderStatus === 'invalid') return 'invalid';
+  const scoreValid = isValidScore(row.score);
+  const gradeMissing = row.graderStatus === 'error' || row.graderStatus === 'timeout' ||
+    (row.resolved == null && !scoreValid) || (row.score != null && !scoreValid);
+  if (gradeMissing) return 'grader_error';
+  return row.capped ? 'budget_exhausted' : 'scored';
+}
+
+/** Per-arm disclosure of {@link AttemptOutcome} counts over the OBSERVED attempts (absent ones are not attempts). */
+export interface AttemptOutcomeCounts {
+  scored: number; budgetExhausted: number; invalid: number; graderError: number; generationFailed: number;
+}
+
+const OUTCOME_COUNT_KEY = {
+  scored: 'scored', budget_exhausted: 'budgetExhausted', invalid: 'invalid',
+  grader_error: 'graderError', generation_failed: 'generationFailed',
+} as const satisfies Record<AttemptOutcome, keyof AttemptOutcomeCounts>;
+
+/** Shared outcome-only projection; no pricing or statistical resampling is needed for exports. */
+export function summarizeAssignedOutcomes(rows: readonly AssignedOutcomeRow[],
+  opts: Pick<AggregateOpts, 'assignedTaskIds' | 'assignedSeeds'> = {}) {
   const assignedIds = [...new Set(opts.assignedTaskIds ?? rows.map(row => row.taskId))];
   const assignedSeeds = opts.assignedSeeds ? new Set(opts.assignedSeeds) : null;
   if (opts.assignedTaskIds && (assignedIds.length !== opts.assignedTaskIds.length ||
@@ -100,6 +141,7 @@ export function summarizeAssignedOutcomes(rows: readonly {
   const byTask = new Map(assignedIds.map(id => [id, { n: assignedSeeds?.size ?? 0, c: 0, scoreSum: 0, observed: 0 }]));
   const conditional = new Map<string, { n: number; c: number; scoreSum: number }>();
   let missingMeasurements = 0;
+  const outcomes: AttemptOutcomeCounts = { scored: 0, budgetExhausted: 0, invalid: 0, graderError: 0, generationFailed: 0 };
   const seen = new Set<string>();
   for (const row of rows) {
     const identity = JSON.stringify([row.taskId, row.seed]);
@@ -108,14 +150,12 @@ export function summarizeAssignedOutcomes(rows: readonly {
     const task = byTask.get(row.taskId)!;
     task.observed += 1;
     if (!assignedSeeds) task.n += 1;
-    const generationFailed = row.generationStatus === 'error' || row.generationStatus === 'timeout' || !!row.generationError;
-    if (generationFailed) continue;
-    const scoreValid = typeof row.score === 'number' && Number.isFinite(row.score) && row.score >= 0 && row.score <= 1;
-    const gradeMissing = row.graderStatus === 'error' || row.graderStatus === 'timeout' ||
-      (row.resolved == null && !scoreValid) || (row.score != null && !scoreValid);
-    if (gradeMissing) { missingMeasurements += 1; continue; }
+    const outcome = classifyAttemptOutcome(row);
+    outcomes[OUTCOME_COUNT_KEY[outcome]] += 1;
+    if (outcome === 'generation_failed') continue;
+    if (outcome === 'invalid' || outcome === 'grader_error') { missingMeasurements += 1; continue; }
     const c = row.resolved === true ? 1 : 0;
-    const score = scoreValid ? row.score! : c;
+    const score = isValidScore(row.score) ? row.score : c;
     task.c += c;
     task.scoreSum += score;
     const measured = conditional.get(row.taskId) ?? { n: 0, c: 0, scoreSum: 0 };
@@ -130,7 +170,7 @@ export function summarizeAssignedOutcomes(rows: readonly {
     attempts: rows.length, absentAttempts: assignedAttempts - rows.length,
     absentTasks: counts.filter(task => !task.observed).length,
     gradedAttempts: conditionalCounts.reduce((sum, task) => sum + task.n, 0),
-    resolved: counts.reduce((sum, task) => sum + task.c, 0), missingMeasurements,
+    resolved: counts.reduce((sum, task) => sum + task.c, 0), missingMeasurements, outcomes,
     measurementComplete: missingMeasurements === 0,
     primaryResolvedPct: missingMeasurements ? null : mean(counts.map(task => task.c / task.n)),
     primaryMeanScore: missingMeasurements ? null : mean(counts.map(task => task.scoreSum / task.n)),

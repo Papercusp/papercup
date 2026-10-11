@@ -26,6 +26,7 @@
  */
 
 import type { ArmContamination } from '../contamination';
+import type { AttemptOutcomeCounts } from '@papercusp/bench-metrics';
 
 /** A monotonic schema version so an old viewer can refuse / a new viewer can branch. */
 export const BENCH_REPORT_SCHEMA_VERSION = 1;
@@ -140,6 +141,10 @@ export interface BenchReportArmSummary {
   attempts?: number;
   absentAttempts?: number;
   missingMeasurements?: number;
+  /** Four-way outcome disclosure over observed attempts (plan benchmark-coverage-frontierswe-v2-2026-10-10
+   *  D-008): invalid + graderError are the missing measurements, broken out so tampering is never hidden
+   *  inside a generic grader-fault count. */
+  outcomes?: AttemptOutcomeCounts;
   measurementComplete?: boolean;
   /** Task-weighted mean over assigned seeds, including failures and absent attempts. */
   primaryResolvedPct?: number | null;
