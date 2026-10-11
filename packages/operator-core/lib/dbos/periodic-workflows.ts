@@ -1929,8 +1929,20 @@ async function dbIndexBloatReindexTick(): Promise<void> {
         const { runIndexBloatReindexOnce } = await import('../db-index-bloat-reindex');
         const { sql } = getOrgPg();
         const r = await runIndexBloatReindexOnce(sql);
+        // Orphan cleanup runs before the skip guards, so report it on EVERY run: a leftover
+        // that cannot be dropped keeps taking writes, and a silent failure is how eight of
+        // them accumulated (WI-6554700010008628).
+        if (r.orphanDropFailures.length > 0) {
+          console.warn(
+            `[db-index-bloat-reindex] could not drop ${r.orphanDropFailures.length} orphan index(es): ` +
+              r.orphanDropFailures.map((f) => `${f.index} (${f.error})`).join('; '),
+          );
+        }
         if (r.skipped) {
-          console.log(`[db-index-bloat-reindex] skipped: ${r.skipped}`);
+          console.log(
+            `[db-index-bloat-reindex] skipped: ${r.skipped}` +
+              `${r.orphansDropped.length > 0 ? ` (dropped ${r.orphansDropped.length} orphan(s) first)` : ''}`,
+          );
           return;
         }
         const okCount = r.reindexed.filter((x) => !x.error).length;
