@@ -3,7 +3,7 @@
  * sync converges on the definition, creates the agent when the stored id is
  * missing or gone, never duplicates tools, and never leaks the key.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ASK_PAPERCUP_TOOL_NAME, VOICE_BRAIN_TIMEOUT_MS } from '@papercusp/chat-protocol';
 import {
   ASK_PAPERCUP_TOOL,
@@ -11,10 +11,63 @@ import {
   PAPERCUP_FRONT_AGENT,
   buildAgentConfig,
   syncElevenLabsAgent,
+  readElevenLabsAgentDuration,
   type ElevenLabsAgentSyncDeps,
 } from './elevenlabs-agent-sync';
 
 const KEY = 'sk_test_secret_key_value_1234';
+
+describe('provider duration evidence for tutorial admission', () => {
+  const valid = () => ({ agent_id: 'tutorial', conversation_config: { conversation: { max_duration_seconds: 60 } },
+    platform_settings: { auth: { enable_auth: true, allowlist: [], shareable_token: null } } });
+  const read = (fetchImpl: typeof fetch, signal = new AbortController().signal, maximum = 180) =>
+    readElevenLabsAgentDuration({ maxDurationSeconds: maximum }, { apiKey: KEY, agentId: 'tutorial', fetch: fetchImpl, signal });
+
+  it('reads the current bound with the issuance key, no redirects, and no cache', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(valid()))
+      .mockResolvedValueOnce(Response.json({ ...valid(), conversation_config: { conversation: { max_duration_seconds: 600 } } }));
+    expect(await read(fetchImpl)).toEqual({ agentId: 'tutorial', maximumSeconds: 60 });
+    expect(await read(fetchImpl)).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://api.elevenlabs.io/v1/convai/agents/tutorial');
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ headers: { 'xi-api-key': KEY }, redirect: 'error' });
+  });
+
+  it.each([0, -1, 1.5, 181, '60', null])('refuses an unverified provider duration %s', async duration => {
+    const body = valid();
+    const response = { ...body, conversation_config: { conversation: { max_duration_seconds: duration } } };
+    expect(await read(vi.fn<typeof fetch>().mockResolvedValue(Response.json(response)))).toBeNull();
+  });
+
+  it.each([
+    { enable_auth: false, allowlist: [] }, { enable_auth: true },
+    { enable_auth: true, allowlist: [{ hostname: 'example.com' }] },
+    { enable_auth: true, allowlist: [], shareable_token: 'public-token' },
+  ])('refuses public or conflicting authentication %#', async auth => {
+    expect(await read(vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ...valid(), platform_settings: { auth } })))).toBeNull();
+  });
+
+  it('refuses another agent, malformed JSON and unsuccessful or leaking transport responses', async () => {
+    for (const response of [Response.json({ ...valid(), agent_id: 'other' }),
+      new Response('{'), Response.json({ detail: KEY }, { status: 403 })]) {
+      expect(await read(vi.fn<typeof fetch>().mockResolvedValue(response))).toBeNull();
+    }
+    expect(await read(vi.fn<typeof fetch>().mockRejectedValue(new Error(KEY)))).toBeNull();
+  });
+
+  it('refuses cancellation before and during the read, and invalid configured bounds', async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json(valid()));
+    expect(await read(fetchImpl, abort.signal)).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(await read(fetchImpl, undefined, 0)).toBeNull();
+    const during = new AbortController();
+    expect(await read(vi.fn<typeof fetch>().mockImplementation(async () => {
+      during.abort(); return Response.json(valid());
+    }), during.signal)).toBeNull();
+  });
+});
 
 interface FakeOpts { failToolCreate?: boolean; failAgentPatch?: number }
 

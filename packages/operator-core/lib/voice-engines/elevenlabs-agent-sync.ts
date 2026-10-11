@@ -169,6 +169,40 @@ export interface ElevenLabsAgentSyncResult {
   toolIds: Record<string, string>;
 }
 
+/** Read the provider-enforced duration with the issuance credential. This is
+ * only duration/authentication evidence, NOT restricted-key attestation or
+ * permission to issue a tutorial token. Callers still need both. No cache:
+ * dashboard edits must invalidate the next admission.
+ * https://elevenlabs.io/docs/eleven-agents/api-reference/agents/get
+ * https://elevenlabs.io/docs/eleven-agents/customization/authentication
+ */
+export async function readElevenLabsAgentDuration(def: Pick<ElevenLabsAgentDefinition, 'maxDurationSeconds'>,
+  deps: { apiKey: string; agentId: string; fetch: typeof fetch; signal: AbortSignal }):
+  Promise<{ agentId: string; maximumSeconds: number } | null> {
+  if (!deps.apiKey || !deps.agentId.trim() || deps.signal.aborted
+    || !Number.isSafeInteger(def.maxDurationSeconds) || def.maxDurationSeconds <= 0) return null;
+  try {
+    const response = await deps.fetch(`${EL_API}/agents/${encodeURIComponent(deps.agentId)}`, {
+      headers: { 'xi-api-key': deps.apiKey }, signal: deps.signal, redirect: 'error',
+    });
+    if (!response.ok || deps.signal.aborted) return null;
+    const body = await response.json();
+    const duration = body?.conversation_config?.conversation?.max_duration_seconds;
+    const auth = body?.platform_settings?.auth;
+    // Signed authentication is required. The provider docs forbid combining
+    // it with allowlists; a public/shareable alternate path is not admissible.
+    if (deps.signal.aborted || body?.agent_id !== deps.agentId
+      || !Number.isSafeInteger(duration) || duration <= 0 || duration > def.maxDurationSeconds
+      || auth?.enable_auth !== true || !Array.isArray(auth.allowlist) || auth.allowlist.length !== 0
+      || (auth.shareable_token !== null && auth.shareable_token !== undefined && auth.shareable_token !== '')) return null;
+    return { agentId: deps.agentId, maximumSeconds: duration };
+  } catch {
+    // Provider bodies and transport errors may contain secrets. Fail closed
+    // without relaying them to routes, logs, or stored reservation evidence.
+    return null;
+  }
+}
+
 export class ElevenLabsAgentSyncError extends Error {
   constructor(readonly step: string, readonly status: number, detail: string) {
     super(`ElevenLabs agent sync failed at ${step} (HTTP ${status}): ${detail.slice(0, 300)}`);
