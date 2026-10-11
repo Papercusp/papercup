@@ -81,6 +81,18 @@ export interface FirstPartyCallersAttribution {
 
 export interface FirstPartyCallersAnswer extends CodeIntelAnswer {
   readonly attribution: FirstPartyCallersAttribution | null;
+  readonly interfaces?: CompilerInterfaceEvidence;
+}
+
+export interface CompilerInterfaceEvidence {
+  readonly status: 'measured' | 'unknown';
+  readonly diagnostics: readonly { site: SymbolSite; code: number; message: string }[];
+  readonly registrations: readonly { name: string | null; site: SymbolSite; implementation: SymbolSite | null;
+    requestValidator: SymbolSite | null; responseValidator: SymbolSite | null; documentation: SymbolSite | null;
+    runtimeRegistered: 'unmeasured' }[];
+  readonly sources: readonly CodeIntelSourceFile[];
+  readonly truncated: boolean;
+  readonly limitations: readonly string[];
 }
 
 export interface FirstPartyCallersQuery {
@@ -102,6 +114,8 @@ export interface FirstPartyCallersQuery {
   readonly maxDepth?: number;
   readonly maxPaths?: number;
   readonly limit?: number;
+  /** Reuse this worker's typed program for bounded interface diagnostics and static tool links. */
+  readonly includeInterfaces?: boolean;
   /**
    * Repository-relative files or directories to search (WI-10006543). Default: the
    * whole repository. A grep over `packages/x/lib apps/y/bin` asks about those roots
@@ -398,6 +412,63 @@ function classify(
   return { reason: 'other-in-repo', detail: `unattributed: resolves to ${rel}:${line1}, which the call hierarchy did not report` };
 }
 
+function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: string, limit: number): CompilerInterfaceEvidence {
+  const checker = program.getTypeChecker();
+  const diagnostics: { site: SymbolSite; code: number; message: string }[] = [];
+  const registrations: Array<CompilerInterfaceEvidence['registrations'][number]> = [];
+  const sources = new Map<string, CodeIntelSourceFile>();
+  let truncated = false;
+  const site = (node: TsModule.Node, kind: string): SymbolSite | null => {
+    const sf = node.getSourceFile(), path = posix(relative(root, sf.fileName));
+    if (isExternalPath(path) || program.isSourceFileDefaultLibrary(sf)) return null;
+    sources.set(path, { path, contentHash: createHash('sha256').update(sf.text).digest('hex'),
+      language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript', representation: 'full-source' });
+    return { path, line1: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1, kind, detail: null };
+  };
+  const reference = (node: TsModule.Expression | undefined, kind: string) => {
+    if (!node) return null;
+    let symbol = checker.getSymbolAtLocation(node);
+    if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+    return site(symbol?.declarations?.[0] ?? node, kind);
+  };
+  for (const sf of program.getSourceFiles()) {
+    const path = posix(relative(root, sf.fileName));
+    if (isExternalPath(path) || program.isSourceFileDefaultLibrary(sf)) continue;
+    for (const diagnostic of program.getSemanticDiagnostics(sf)) {
+      if (diagnostic.category !== ts.DiagnosticCategory.Error || diagnostic.start === undefined) continue;
+      if (diagnostics.length >= limit) { truncated = true; continue; }
+      sources.set(path, { path, contentHash: createHash('sha256').update(sf.text).digest('hex'),
+        language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript', representation: 'full-source' });
+      diagnostics.push({ site: { path, line1: sf.getLineAndCharacterOfPosition(diagnostic.start).line + 1,
+        kind: 'compiler-diagnostic', detail: null }, code: diagnostic.code,
+        message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n').slice(0, 600) });
+    }
+    const visit = (node: TsModule.Node): void => {
+      if (ts.isCallExpression(node)) {
+        let factory = checker.getSymbolAtLocation(node.expression);
+        if (factory && factory.flags & ts.SymbolFlags.Alias) factory = checker.getAliasedSymbol(factory);
+        const named = factory?.getName() === 'defineTool' || (ts.isIdentifier(node.expression) && node.expression.text === 'defineTool');
+        if (named && node.arguments[0] && ts.isObjectLiteralExpression(node.arguments[0])) {
+          if (registrations.length >= limit) { truncated = true; return; }
+          const props = new Map(node.arguments[0].properties.filter(ts.isPropertyAssignment)
+            .map(prop => [prop.name.getText(sf).replace(/^['"]|['"]$/g, ''), prop.initializer]));
+          const name = props.get('name');
+          registrations.push({ name: name && ts.isStringLiteralLike(name) ? name.text : null,
+            site: site(node, 'static-tool-registration')!, implementation: reference(props.get('handler'), 'tool-implementation'),
+            requestValidator: reference(props.get('args'), 'request-validator'), responseValidator: reference(props.get('returns'), 'response-validator'),
+            documentation: reference(props.get('publicDoc') ?? props.get('description'), 'contract-documentation'), runtimeRegistered: 'unmeasured' });
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  return { status: 'measured', diagnostics, registrations, sources: [...sources.values()].sort((a, b) => a.path.localeCompare(b.path)), truncated,
+    limitations: ['Diagnostics describe the captured TypeScript program, not executed runtime failures.',
+      'Only static defineTool object registrations in captured source are linked; dynamic names, registrations and runtime validation remain unmeasured.',
+      'Untyped or any-valued clients can escape compiler diagnostics; this is not registry or client completeness proof.'] };
+}
+
 function buildAnswer(
   name: string,
   started: number,
@@ -518,7 +589,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   }
   // Transitive callers may never spell the initial name. Traverse a full scoped
   // source program, instead of treating the single-name candidate set as a graph.
-  const search = op === 'impact' || op === 'trace' ? traversalSourceFiles(q.root, rgPath, scope.paths)
+  const search = op === 'impact' || op === 'trace' || q.includeInterfaces ? traversalSourceFiles(q.root, rgPath, scope.paths)
     : findCandidateFiles(q.root, q.name, rgPath, scope.paths);
   if (search.error) return answer(q.name, started, now, { error: search.error });
   const partial = [
@@ -546,22 +617,31 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   // dependency body turns a single declaration lookup into a whole-project
   // checker (EI-25679714152389108). Outgoing/context queries still need the
   // actual reached declarations and retain their full compiler snapshots.
-  const declarationScope = op === 'callers' || op === 'symbol';
+  const declarationScope = (op === 'callers' || op === 'symbol') && !q.includeInterfaces;
   const tree = openScopedTsTree(q.ts, q.root, search.files,
     declarationScope ? undefined : (_ts, _file, text) => text);
   try {
     const program = tree.service.getProgram();
     if (!program) return answer(q.name, started, now, { error: 'TypeScript produced no program for the candidate files' });
+    const withInterfaces = (result: FirstPartyCallersAnswer): FirstPartyCallersAnswer => {
+      if (!q.includeInterfaces) return result;
+      const interfaces = compilerInterfaceEvidence(q.ts, program, q.root, limit);
+      if (!result.evidence || result.error) return { ...result, interfaces: { ...interfaces, status: 'unknown' } };
+      const supporting = new Map(result.evidence.sourceScope.supportingFiles.map(file => [file.path, file]));
+      for (const source of interfaces.sources) supporting.set(source.path, source);
+      return { ...result, interfaces, evidence: { ...result.evidence, sourceScope: { ...result.evidence.sourceScope,
+        supportingFiles: [...supporting.values()].sort((a, b) => a.path.localeCompare(b.path)) } } };
+    };
     const decls = tsDeclarations(tree, program, q.name).filter(d => op === 'callers' ||
       (tree.rootFiles.has(d.file) && (!definingPath || d.site.path === definingPath) &&
        (q.line1 === undefined || d.site.line1 === q.line1) &&
        (!q.kind || d.site.kind?.toLowerCase() === q.kind.toLowerCase())));
     if (op === 'impact' || op === 'trace') {
       const result = compilerTraversal(q, tree, program, decls, scope.paths, partial, started, now);
-      return { ...result, attribution: { resolved: result.sites.length,
+      return withInterfaces({ ...result, attribution: { resolved: result.sites.length,
         unattributed: { external: 0, 'other-in-repo': 0, unresolved: 0 },
         declarations: decls.slice(0, 50).map(d => d.site), declarationCount: decls.length,
-        candidateFiles: search.files.length, stubbedFiles: tree.stubbedFiles() } };
+        candidateFiles: search.files.length, stubbedFiles: tree.stubbedFiles() } });
     }
     const nativeOutgoing: SymbolSite[] = [];
     const nativeRelations = new Map<SymbolSite, SourceRelationship>();
@@ -656,7 +736,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
         } } : {}),
       })),
     };
-    return answer(q.name, started, now, {
+    return withInterfaces(answer(q.name, started, now, {
       sites: reported,
       evidence,
       error: nativeError,
@@ -673,7 +753,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
         candidateFiles: search.files.length,
         stubbedFiles: tree.stubbedFiles(),
       },
-    });
+    }));
   } catch (err) {
     return answer(q.name, started, now, { error: `TypeScript failed: ${err instanceof Error ? err.message : String(err)}` });
   } finally {
