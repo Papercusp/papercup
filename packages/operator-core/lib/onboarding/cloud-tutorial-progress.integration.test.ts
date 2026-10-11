@@ -58,6 +58,48 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
       return fn(tx as unknown as Sql);
     }) as T;
   }
+  it('requires persisted Cloud enrollment for paid admission in the exact workspace and version', async () => {
+    const selected = { ...scope, userId: randomUUID() };
+    const paidRead = (version: 1 | 2 = 2, target = selected) => withScope(target,
+      tx => readTutorialProgress(tx, target, version, { lock: true, requirePersisted: true }));
+    await expect(paidRead()).rejects.toThrow('tutorial_not_enrolled');
+    expect(await withScope(selected, tx => readTutorialProgress(tx, selected, 2))).toMatchObject({ revision: 0 });
+    await withScope(selected, tx => updateTutorialProgress(tx, selected,
+      change({ version: 2, disposition: 'active' }, selected)));
+    expect(await paidRead()).toMatchObject({ revision: 1, progress: { disposition: 'active', version: 2 } });
+    await expect(paidRead(1)).rejects.toThrow('tutorial_not_enrolled');
+    await expect(paidRead(2, { ...selected, workspaceId: 'unenrolled-workspace' })).rejects.toThrow('tutorial_not_enrolled');
+  });
+  it('holds the persisted account lesson against concurrent updates until admission commits', async () => {
+    const account = { tenantId: tenantA, userId: randomUUID() };
+    await withAccount(account, tx => enrollAccountTutorial(tx, account));
+    let locked!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const reader = withAccount(account, async tx => {
+      const record = await readAccountTutorialProgress(tx, account, { lock: true });
+      locked();
+      await gate;
+      return record;
+    });
+    await acquired;
+    try {
+      // A bounded database lock timeout proves the writer reached the same row
+      // lock; no timing guess or sleep is used to infer a blocked writer.
+      await expect(withAccount(account, async tx => {
+        await tx`SET LOCAL lock_timeout = '100ms'`;
+        return updateAccountTutorialProgress(tx, account, { expectedScope: account,
+          expectedRevision: 0, mutationId: randomUUID(), version: 3,
+          disposition: 'closed', currentLessonId: 'welcome', reviewedLessonIds: [] });
+      })).rejects.toMatchObject({ code: '55P03' });
+    } finally { release(); }
+    expect(await reader).toMatchObject({ disposition: 'active', currentLessonId: 'welcome' });
+    const saved = await withAccount(account, tx => updateAccountTutorialProgress(tx, account, {
+      expectedScope: account, expectedRevision: 0, mutationId: randomUUID(), version: 3,
+      disposition: 'closed', currentLessonId: 'welcome', reviewedLessonIds: [] }));
+    expect(saved.disposition).toBe('closed');
+  });
   it('enrolls account orientation without a workspace and keeps replay from resetting completed progress', async () => {
     const account = { tenantId: tenantA, userId: randomUUID() };
     expect(await withAccount(account, tx => readAccountTutorialProgress(tx, account))).toBeNull();
