@@ -7,20 +7,29 @@
  *
  * `force:{reason}` waives the code-truth family (unfinished items, audit, spec proof) so
  * the evaluation reaches the independent-verification door. That door is NOT
- * force-waivable. No acceptance rubric is seeded, so a plan that clears the door stops at
- * `acceptance_rubric_missing` — a non-recruiting refusal (acceptance_ungraded would
- * recruit a real grader), which also proves the door was passed rather than skipped.
+ * force-waivable.
+ *
+ * The rubric-completion flag is switched OFF through its env override for this file. A
+ * BAR-derived clause makes the BAR lifecycle applicable, and that lifecycle refuses
+ * before the door unless a complete adopted contract (epoch, cohort seed, BAR rubric,
+ * vetting, proof, author verdict) is seeded, and no fixture builds one. The door is not
+ * gated by that flag, so it still runs, and a plan that clears it really SHIPS (ok:true):
+ * a stronger positive control than a later refusal. The BAR-adopted ordering (door
+ * before grader recruitment when only grading is missing) is pinned by the unit suite
+ * plan-acceptance-gate-independent-evidence.test.ts.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 
 import setPlanStatusTool from './agent-tools/plans/set-plan-status';
 import { DEFAULT_WORKSPACE_ID } from './workspace-registry';
+import { runWithWorkspace } from './workspace-als';
 import { setupPlanPgFixture, cleanupPlans, seedPlan, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 import {
   evaluateIndependentVerificationGate,
   INDEPENDENT_VERIFICATION_REQUIRED_AFTER,
 } from './independent-verification-gate';
+import { bindSpecEvidence, type BindSpecEvidenceInput } from './agent-tools/plans/spec-evidence-store';
 
 // A fresh harness per seed: plan_spec_clause_revisions is append-only (an immutability
 // trigger refuses DELETE), so rows cannot be cleaned between tests and must never collide.
@@ -77,15 +86,24 @@ function makeCtx() {
 }
 
 async function ship(): Promise<{ ok?: boolean; error?: string; message?: string }> {
-  const res = (await setPlanStatusTool.handler({
+  // The MCP transport wraps every tool call in the caller's workspace ALS
+  // (runWithWorkspaceIfConcrete); the gate reads activeWorkspaceId(), not ctx.workspaceId.
+  // Without the same scope it would resolve the process-global workspace and never
+  // find the fixture plan.
+  const res = (await runWithWorkspace(WS, () => setPlanStatusTool.handler({
     harness: HARNESS,
     slug: SLUG,
     status: 'shipped',
     force: { reason: 'R-8 fixture: waive code-truth so the independent-verification door is reached.' },
-  } as never, makeCtx())) as { data: { results: Record<string, unknown>[] } };
-  // TEMP-DIAG: read the BAR lifecycle codes (vitest truncates toMatchObject diffs).
-  console.log('IVDIAG', JSON.stringify(res.data.results[0]).slice(0, 4000));
+  } as never, makeCtx()))) as { data: { results: Record<string, unknown>[] } };
   return res.data.results[0] as { ok?: boolean; error?: string; message?: string };
+}
+
+async function planStatus(): Promise<string | null> {
+  const [row] = await admin<{ status: string | null }[]>`
+    SELECT status FROM harness_shared.harness_plans
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+  return row?.status ?? null;
 }
 
 let fx: PlanPgFixture;
@@ -160,7 +178,12 @@ async function bind(opts: {
   return Number(row!.id);
 }
 
+const RUBRIC_GATE_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_ACCEPTANCE_RUBRIC_COMPLETION_GATE';
+let prevRubricGateEnv: string | undefined;
+
 beforeAll(async () => {
+  prevRubricGateEnv = process.env[RUBRIC_GATE_ENV];
+  process.env[RUBRIC_GATE_ENV] = '0';
   fx = await setupPlanPgFixture();
   admin = fx.admin;
 }, 60_000);
@@ -168,6 +191,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await cleanup().catch(() => {});
   await fx?.dispose();
+  if (prevRubricGateEnv === undefined) delete process.env[RUBRIC_GATE_ENV];
+  else process.env[RUBRIC_GATE_ENV] = prevRubricGateEnv;
 });
 
 beforeEach(async () => {
@@ -220,9 +245,9 @@ describe('plans:set-plan-status → shipped refuses unverified live/deployed bar
 
     const res = await ship();
 
-    expect(res.error).not.toBe('independent_verification_missing');
-    // Passed the door; stopped at the next (non-recruiting) refusal.
-    expect(res).toMatchObject({ error: 'acceptance_rubric_missing' });
+    expect(res.error).toBeUndefined();
+    expect(res.ok).toBe(true);
+    expect(await planStatus()).toBe('shipped');
   });
 
   it('cohort: a live bar revised before the door existed is not in scope', async () => {
@@ -231,7 +256,8 @@ describe('plans:set-plan-status → shipped refuses unverified live/deployed bar
 
     const res = await ship();
 
-    expect(res).toMatchObject({ error: 'acceptance_rubric_missing' });
+    expect(res.error).toBeUndefined();
+    expect(res.ok).toBe(true);
   });
 
   it('a tree-plane bar needs no independent re-observation', async () => {
@@ -240,7 +266,84 @@ describe('plans:set-plan-status → shipped refuses unverified live/deployed bar
 
     const res = await ship();
 
-    expect(res).toMatchObject({ error: 'acceptance_rubric_missing' });
+    expect(res.error).toBeUndefined();
+    expect(res.ok).toBe(true);
+  });
+
+  it('a refused plan is left unshipped', async () => {
+    await bind({ kind: 'operational', createdBy: IMPLEMENTER, tag: 'impl-unshipped' });
+
+    await ship();
+
+    expect(await planStatus()).not.toBe('shipped');
+  });
+});
+
+// SPEC-P-008-INDEPENDENT-EVIDENCE r3: the STORE refuses a malformed independent-verification
+// binding at bind time, so the ship door never has to judge one. Lineage is judged only at
+// the door (D-023); the store judges citation shape and fingerprint equality.
+describe('bindSpecEvidence: independent-verification bindings cite the implementer row they re-observed', () => {
+  const ivInput = (over: Partial<BindSpecEvidenceInput> = {}) => ({
+    harnessSlug: HARNESS,
+    planSlug: SLUG,
+    workItemId: WORK_ITEM,
+    specId: SPEC,
+    evidenceKind: 'independent-verification',
+    evidenceRef: 'receipt:outsider-reobserved-live',
+    sourceFingerprint: SOURCE_FP,
+    environmentFingerprint: ENV_FP,
+    actorId: OUTSIDER,
+    ...over,
+  }) as BindSpecEvidenceInput;
+  const store = (over: Partial<BindSpecEvidenceInput> = {}) =>
+    runWithWorkspace(WS, () => bindSpecEvidence(ivInput(over)));
+
+  let implementerBinding = 0;
+  beforeEach(async () => {
+    await seedBase('live', AFTER_CUTOFF());
+    implementerBinding = await bind({ kind: 'operational', createdBy: IMPLEMENTER, tag: 'store-impl' });
+  });
+
+  it('refuses an independent-verification row that cites nothing (verified_binding_required)', async () => {
+    expect(await store()).toMatchObject({ status: 'verified_binding_required' });
+  });
+
+  it('refuses a citation on any other evidence kind (verified_binding_not_allowed)', async () => {
+    expect(await store({ evidenceKind: 'operational', verifiesBindingId: implementerBinding }))
+      .toMatchObject({ status: 'verified_binding_not_allowed' });
+  });
+
+  it('refuses a citation of a missing row or of another independent-verification row (verified_binding_not_found)', async () => {
+    expect(await store({ verifiesBindingId: 999_999_999 }))
+      .toMatchObject({ status: 'verified_binding_not_found', verifiesBindingId: 999_999_999 });
+    const ivRow = await bind({
+      kind: 'independent-verification', createdBy: OUTSIDER, verifies: implementerBinding, tag: 'store-iv',
+    });
+    expect(await store({ verifiesBindingId: ivRow }))
+      .toMatchObject({ status: 'verified_binding_not_found', verifiesBindingId: ivRow });
+  });
+
+  it.each([
+    ['source', { sourceFingerprint: 'src-fp-a-different-build' }],
+    ['environment', { environmentFingerprint: 'env-fp-staging-3170' }],
+  ] as const)('refuses a re-observation whose %s fingerprint differs from the cited binding', async (which, over) => {
+    expect(await store({ verifiesBindingId: implementerBinding, ...over })).toMatchObject({
+      status: 'independent_fingerprint_mismatch', verifiesBindingId: implementerBinding, mismatched: [which],
+    });
+  });
+
+  it('persists a matching re-observation with its citation (positive control)', async () => {
+    const res = await store({ verifiesBindingId: implementerBinding });
+    expect(res).toMatchObject({ status: 'created' });
+    const id = (res as { id: number }).id;
+    const [row] = await admin<{ verifies_binding_id: string | null; created_by: string }[]>`
+      SELECT verifies_binding_id, created_by FROM harness_shared.spec_evidence_bindings WHERE id = ${id}`;
+    expect(row).toMatchObject({ created_by: OUTSIDER });
+    expect(Number(row!.verifies_binding_id)).toBe(implementerBinding);
+  });
+
+  it('the table itself refuses an uncited independent-verification row written around the store', async () => {
+    await expect(bind({ kind: 'independent-verification', createdBy: OUTSIDER, tag: 'raw-uncited' })).rejects.toThrow();
   });
 });
 
