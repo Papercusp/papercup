@@ -523,6 +523,29 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it("tools:invoke wrapping plans:get-spec-evidence is replay-safe", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "plans:get-spec-evidence",
+            args: { harness: "papercusp", slug: "example-plan", detail: "full" },
+          },
+        },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("readonly");
+    expect(r.body).toBe(body);
+    expect(postConnectRetryable(r.klass, 0, 1, 100, 5_000)).toBe(true);
+  });
   it.each([
     ["direct", { name: "release:cut", arguments: { op: "status" } }],
     [

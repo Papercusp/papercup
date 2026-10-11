@@ -1226,6 +1226,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "scorecards:evaluate",
   "plans:get",
   "plans:get-specs",
+  "plans:get-spec-evidence",
   "plans:list",
   "plans:items",
   "plans:search",
