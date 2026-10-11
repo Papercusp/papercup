@@ -70,6 +70,12 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     await expect(paidRead(1)).rejects.toThrow('tutorial_not_enrolled');
     await expect(paidRead(2, { ...selected, workspaceId: 'unenrolled-workspace' })).rejects.toThrow('tutorial_not_enrolled');
   });
+  it('refuses pooled locked reads before accepting tenant scope as admission authority', async () => {
+    await expect(readTutorialProgress(db.adminSql, scope, 2, { lock: true, requirePersisted: true }))
+      .rejects.toThrow('tutorial_lock_requires_transaction');
+    await expect(readAccountTutorialProgress(db.adminSql, scope, { lock: true }))
+      .rejects.toThrow('tutorial_lock_requires_transaction');
+  });
   it('holds the persisted account lesson against concurrent updates until admission commits', async () => {
     const account = { tenantId: tenantA, userId: randomUUID() };
     await withAccount(account, tx => enrollAccountTutorial(tx, account));

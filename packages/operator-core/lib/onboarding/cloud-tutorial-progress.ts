@@ -26,6 +26,13 @@ function progressKey(scope: TutorialScope, version: TutorialVersion): string {
 function empty(scope: TutorialScope, version: TutorialVersion): TutorialProgressRecord {
   return { revision: 0, mutationId: null, progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version, disposition: 'active' } };
 }
+function assertLockTransaction(tx: Sql, lock: boolean | undefined): void {
+  // A pool's FOR UPDATE commits before returning; its lock cannot protect
+  // the subsequent voice reservation. Match the hosted identity readers.
+  if (lock && typeof (tx as { begin?: unknown }).begin === 'function') {
+    throw new Error('tutorial_lock_requires_transaction');
+  }
+}
 /** Never use the ambient workspace or an admin connection. A verified hosted
  * tenant transaction supplies these GUCs and the hosted_app RLS role. */
 async function assertTransactionScope(tx: Sql, scope: TutorialScope): Promise<void> {
@@ -51,6 +58,7 @@ function decode(scope: TutorialScope, value: unknown, version: TutorialVersion):
   return parsed.data;
 }
 export async function readTutorialProgress(tx: Sql, scope: TutorialScope, version: TutorialVersion = CLOUD_TUTORIAL_VERSION, options: { lock?: boolean; requirePersisted?: boolean } = {}): Promise<TutorialProgressRecord> {
+  assertLockTransaction(tx, options.lock);
   await assertTransactionScope(tx, scope);
   const [row] = await tx<{ record: unknown }[]>`
     SELECT profile #> ARRAY['cloudTutorial', ${progressKey(scope, version)}]::text[] AS record
@@ -159,6 +167,7 @@ export async function enrollAccountTutorial(tx: Sql, scope: AccountTutorialScope
 /** Admission may lock an existing preference row through commit. Missing rows
  * remain unenrolled; this read never creates paid-voice authority. */
 export async function readAccountTutorialProgress(tx: Sql, scope: AccountTutorialScope, options: { lock?: boolean } = {}): Promise<AccountTutorialProgressRecord | null> {
+  assertLockTransaction(tx, options.lock);
   await assertAccountTransactionScope(tx, scope);
   const [row] = await tx<{ record: unknown }[]>`
     SELECT profile #> ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[] AS record
