@@ -112,6 +112,34 @@ describe('current launcher owns its assignment runtime', () => {
     expect(io.completion).toHaveBeenCalled(); expect(stop).toHaveBeenCalledTimes(2);
     expect(io.legacyRun).not.toHaveBeenCalled(); expect(io.legacyBind).not.toHaveBeenCalled();
   });
+  it('allocates the host with the actual clone and stops it before checkout cleanup', async () => {
+    const order: string[] = [];
+    const generation = { clone: async (t: BenchTask) => {
+      order.push(`clone:${t.instanceId}`);
+      return { dir: `/allocated/${t.instanceId}`, repo: 'fixture', baseCommit: 'a'.repeat(40),
+        cleanup: async () => { order.push(`cleanup:${t.instanceId}`); } };
+    }, extractDiff: async () => 'diff' };
+    const currentTask = vi.fn(async (i: CurrentTaskInput) => {
+      expect(i.checkout.dir).toBe(`/allocated/${i.task.instanceId}`);
+      expect(i.hostRunId).toMatch(/^current-/);
+      order.push(`host:${i.task.instanceId}`);
+      return { driver, stop: async () => { order.push(`stop:${i.task.instanceId}`); } };
+    });
+    await (await launchBenchRun(input, { ...deps(), currentGeneration: generation, currentTask })).done;
+    expect(order).toEqual(['clone:t1', 'host:t1', 'stop:t1', 'cleanup:t1',
+      'clone:t2', 'host:t2', 'stop:t2', 'cleanup:t2']);
+  });
+  it('creates no gateway when cloning fails and retires a host whose driver fails', async () => {
+    const currentTask = vi.fn(async () => ({ driver: { spinRunAndCost: async () => { throw new Error('driver fault'); } },
+      stop: vi.fn(async () => {}) }));
+    await (await launchBenchRun(input, { ...deps(), currentTask,
+      currentGeneration: { ...deps().currentGeneration, clone: async () => { throw new Error('clone fault'); } } })).done;
+    expect(currentTask).not.toHaveBeenCalled();
+    _resetActiveRunsForTests();
+    await (await launchBenchRun(input, { ...deps(), currentTask })).done;
+    expect(currentTask).toHaveBeenCalledTimes(2);
+    for (const result of currentTask.mock.results) expect((await result.value).stop).toHaveBeenCalledOnce();
+  });
   it('rejects missing authentication and uncommitted protocols before creating a run or gateway', async () => {
     const currentTask = vi.fn();
     await expect(launchBenchRun(input, { ...deps(), currentContext: undefined, currentTask })).rejects.toThrow(/authenticated/);

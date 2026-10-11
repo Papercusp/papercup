@@ -16,6 +16,7 @@ import {
   measureContractTriage,
   recordContractTriageDisposition,
   validateContractTriageDisposition,
+  type PlanScopeProbe,
 } from '../contract-triage';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './_pg-tool-fixture';
 
@@ -25,6 +26,8 @@ const PLAN = (suffix: string) => `zzz-ctriage-plan-${suffix}-${Math.random().toS
 const NOW = new Date('2026-10-10T12:00:00.000Z');
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
+/** The fixture harness is not a registered Hive home, so the real scope probe is replaced (D-030). */
+const REACHABLE: PlanScopeProbe = async () => 'reachable';
 
 /** The armed migration that creates the ledger — applied idempotently to the test DB. */
 const MIGRATION = new URL(
@@ -117,8 +120,11 @@ describe('P-004 measureContractTriage', () => {
       VALUES (${workspaceId}, ${HARNESS}, ${bulkB}, 'closed', ${`  Stale   PLAN ${RUN} `}, 'su-test')
     `;
 
-    const m = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: NOW });
+    const m = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: NOW, planScope: REACHABLE });
     expect(m).toEqual({
+      // The harness has a Hive plan scope, so nothing is unreachable (D-030).
+      unreachablePlans: 0,
+      unreachablePlanRefs: [],
       // Active plans examined: uncovered, contracted, exempt, young.
       activePlansConsidered: 4,
       // uncovered + young; young is inside its grace window.
@@ -134,17 +140,55 @@ describe('P-004 measureContractTriage', () => {
   it('starts counting a plan the moment its grace window closes', async () => {
     const slug = PLAN('edge');
     await seed(slug, { ageMs: CONTRACT_TRIAGE_GRACE_HOURS * HOUR - HOUR });
-    const inside = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: NOW });
+    const inside = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: NOW, planScope: REACHABLE });
     expect(inside).toMatchObject({ uncoveredActivePlans: 0, uncoveredActivePlansRaw: 1 });
 
     const after = new Date(NOW.getTime() + 2 * HOUR);
-    const past = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: after });
+    const past = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: after, planScope: REACHABLE });
     expect(past).toMatchObject({ uncoveredActivePlans: 1, triageGaps: 1 });
   });
 
+  it('D-030: reports uncovered plans in a harness with no Hive plan scope as unreachable, never as gaps', async () => {
+    const old = PLAN('orphan-old');
+    const young = PLAN('orphan-young');
+    const contracted = PLAN('orphan-contract');
+    await seed(old, { ageMs: 30 * DAY });
+    await seed(young, { ageMs: 2 * HOUR });
+    await seed(contracted, { ageMs: 30 * DAY, contract: true });
+    const asked: string[] = [];
+    const noScope: PlanScopeProbe = async (ws, harness) => {
+      asked.push(`${ws}:${harness}`);
+      return 'no-plan-scope';
+    };
+
+    const m = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: NOW, planScope: noScope });
+    expect(m).toMatchObject({
+      // The denominator still counts every active plan examined (D-019).
+      activePlansConsidered: 3,
+      uncoveredActivePlans: 0,
+      uncoveredActivePlansRaw: 0,
+      triageGaps: 0,
+      // Both uncovered plans, regardless of grace; the contracted one is not uncovered.
+      unreachablePlans: 2,
+      unreachablePlanRefs: [`${HARNESS}/${old}`, `${HARNESS}/${young}`].sort(),
+    });
+    // One probe per harness, scoped to the measured workspace.
+    expect(asked).toEqual([`${workspaceId}:${HARNESS}`]);
+  });
+
+  it('D-030: a scope-probe fault fails the measurement instead of hiding the plans', async () => {
+    await seed(PLAN('fault'), { ageMs: 30 * DAY });
+    const fault: PlanScopeProbe = async () => {
+      throw new Error('registry read unavailable');
+    };
+    await expect(
+      measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: NOW, planScope: fault }),
+    ).rejects.toThrow(/registry read unavailable/);
+  });
+
   it('reads an empty scope as zero plans considered, distinguishable from a clean scope', async () => {
-    const m = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: NOW });
-    expect(m).toMatchObject({ activePlansConsidered: 0, triageGaps: 0 });
+    const m = await measureContractTriage(admin, { workspaceId, harnessSlug: HARNESS, now: NOW, planScope: REACHABLE });
+    expect(m).toMatchObject({ activePlansConsidered: 0, triageGaps: 0, unreachablePlans: 0 });
   });
 });
 

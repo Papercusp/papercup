@@ -1,6 +1,7 @@
 /** Read-only, repeatable-read evidence capture for plan shared-vector-search-libraries P-008 R-11. */
 import { createHash } from 'node:crypto';
-import { isAbsolute, join } from 'node:path';
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { executeGovernedByteProcess } from '../../../../scripts/lib/governed-test-process.mjs';
 import type { getOrgPg } from '@papercusp/db-org';
 import {
@@ -17,6 +18,49 @@ import { resolveProseProfileSelection } from './prose-vector-dims';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 type Profile = Parameters<typeof resolveProseProfileSelection>[1];
+
+/** Key recovery bytes by the full frozen path, so separate windows cannot collide. */
+export function r11RecoveryPath(path: string, recoveryRoot: string): string {
+  if (!isAbsolute(path) || !isAbsolute(recoveryRoot)) throw new Error('Snapshot paths must be absolute');
+  const recovery = join(recoveryRoot, createHash('sha256').update(resolve(path)).digest('hex'));
+  if (resolve(path) === recovery) throw new Error('Recovery copy must be independent');
+  return recovery;
+}
+
+function publishImmutableBytes(path: string, bytes: Buffer): void {
+  const temp = `${path}.tmp-${process.pid}`;
+  const fd = openSync(temp, 'wx', 0o600);
+  try {
+    try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
+    linkSync(temp, path);
+    const directory = openSync(dirname(path), 'r');
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  } finally { unlinkSync(temp); }
+}
+
+/** A successful capture requires independent, durable bytes before primary publication. */
+export function publishR11SnapshotBytes(path: string, bytes: Buffer, recoveryRoot: string): string {
+  const recovery = r11RecoveryPath(path, recoveryRoot);
+  mkdirSync(recoveryRoot, { recursive: true, mode: 0o700 });
+  publishImmutableBytes(recovery, bytes);
+  publishImmutableBytes(path, bytes);
+  return recovery;
+}
+
+/** Only a missing primary permits recovery; conflicting or corrupt bytes are never hidden. */
+export function readR11SnapshotBytes(path: string, recoveryRoot: string): Buffer {
+  const recovery = r11RecoveryPath(path, recoveryRoot);
+  try {
+    const primary = readFileSync(path);
+    if (existsSync(recovery) && !primary.equals(readFileSync(recovery))) {
+      throw new Error('Primary and recovery snapshot bytes disagree');
+    }
+    return primary;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return readFileSync(recovery);
+  }
+}
 export type R11Stage = 'preflight' | 'T0' | 'Tcut' | 'T1';
 export interface R11Row { key: string; stale: boolean; recency: string | null }
 export interface R11TargetSnapshot {
@@ -42,6 +86,20 @@ export interface R11TimerSpec {
 
 /** Bound each evidence file even if a frozen snapshot fails or its owner exits. */
 export const R11_JOURNAL_MAX_BYTES = 8 * 1024 ** 3;
+
+/** Journal streams must survive deletion of the primary snapshot directory. */
+export function r11JournalDirectory(primaryDirectory: string, preservationRoot: string): string {
+  if (![primaryDirectory, preservationRoot].every(isAbsolute)) {
+    throw new Error('Journal directories must be absolute');
+  }
+  const primary = resolve(primaryDirectory);
+  const root = resolve(preservationRoot);
+  const withinPrimary = relative(primary, root);
+  if (!withinPrimary || (!withinPrimary.startsWith('../') && withinPrimary !== '..')) {
+    throw new Error('Journal preservation must be outside the primary directory');
+  }
+  return join(root, createHash('sha256').update(primary).digest('hex'));
+}
 
 export interface R11CaptureRuntime {
   repoRoot: string;

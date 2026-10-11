@@ -13,7 +13,10 @@ import path from 'node:path';
 import postgres, { type Sql } from 'postgres';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { bm25Health, bm25Leg, lexicalEngine, lexicalLeg, resetBm25Availability, rrfTerm } from './rank';
+import { probePgReachable } from '@papercusp/test-config';
+import {
+  BM25_LATENCY_CANARY_QUERIES, bm25Health, bm25Leg, lexicalEngine, lexicalLeg, measureBm25Latency, resetBm25Availability, rrfTerm,
+} from './rank';
 import { bm25Corpus } from './corpora';
 import type { SearchSourceParams } from '@papercusp/search';
 import { createPlanSearchSource } from '../../agent-tools/search/knowledge-sources';
@@ -28,26 +31,54 @@ function migration1447(): string {
 }
 
 let container: StartedTestContainer;
+let admin: Sql | undefined;
 let sql: Sql;
+
+// The pg_textsearch container is reused across runs (see beforeAll), so every run works in its
+// own database and its own role. The name encodes the creation time so a later run can drop
+// databases that a killed run never cleaned up.
+const RUN_TAG = `bm25_${Date.now().toString(36)}_${process.pid}`;
+const NOSU_ROLE = `${RUN_TAG}_nosu`;
+const STALE_RUN_MS = 2 * 60 * 60 * 1000;
+
+function runTagAgeMs(datname: string): number | null {
+  const m = /^bm25_([0-9a-z]+)_\d+$/.exec(datname);
+  if (!m) return null;
+  const created = parseInt(m[1]!, 36);
+  return Number.isFinite(created) ? Date.now() - created : null;
+}
 
 // Topic words appear in exactly one item each; "routine" appears in every item.
 const TOPICS = ['quokka', 'marmoset', 'axolotl', 'pangolin', 'narwhal', 'okapi', 'tapir', 'wombat'];
 
 beforeAll(async () => {
   const built = await GenericContainer.fromDockerfile(path.join(__dirname, 'test-pg')).build(IMAGE, { deleteOnExit: false });
+  // One long-lived container, reused across runs like the shared test PG. A fresh container per
+  // run failed four times on 2026-10-11 with zero tests run: under host IO pressure dockerd took
+  // more than the 120s Docker client deadline to answer the create request (measured
+  // 05:58:20 -> 06:00:20, EI-25658543783887821), while the reused shared containers were ready
+  // in under two seconds in the same run. The port wait plus a real SELECT 1 replaces the
+  // log-message wait, which cannot be relied on for a container that is already running.
   container = await built
     .withEnvironment({ POSTGRES_HOST_AUTH_METHOD: 'trust' })
     .withExposedPorts(5432)
-    .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2))
-    // TEMPORARY MITIGATION: under host IO pressure initdb plus the restart took longer than
-    // testcontainers' default 60s (measured 2026-10-11). Root cause (slow dockerd and IO
-    // starvation) is tracked on EI-25658543783887821; the hook's own budget is 600s.
+    .withWaitStrategy(Wait.forListeningPorts())
     .withStartupTimeout(300_000)
+    .withReuse()
     .start();
-  sql = postgres({
-    host: container.getHost(), port: container.getMappedPort(5432),
-    user: 'postgres', database: 'postgres', max: 2, onnotice: () => {},
-  });
+  const conn = { host: container.getHost(), port: container.getMappedPort(5432), user: 'postgres', onnotice: () => {} };
+  const ready = await probePgReachable(`postgres://postgres@${conn.host}:${conn.port}/postgres`, 120_000);
+  if (!ready.ok) throw new Error(`pg_textsearch test container never answered SELECT 1 within ${ready.elapsedMs}ms: ${ready.lastError}`);
+  admin = postgres({ ...conn, database: 'postgres', max: 1 });
+  const leftovers = await admin<{ datname: string }[]>`SELECT datname FROM pg_database WHERE datname LIKE 'bm25\\_%'`;
+  for (const { datname } of leftovers) {
+    const age = runTagAgeMs(datname);
+    if (age === null || age < STALE_RUN_MS) continue;
+    await admin.unsafe(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
+    await admin.unsafe(`DROP ROLE IF EXISTS "${datname}_nosu"`);
+  }
+  await admin.unsafe(`CREATE DATABASE "${RUN_TAG}"`);
+  sql = postgres({ ...conn, database: RUN_TAG, max: 2 });
   await sql.unsafe(`
     CREATE SCHEMA harness_shared;
     CREATE TABLE harness_shared.work_items (id int PRIMARY KEY, ws text, title text, summary text, notes text);
@@ -78,7 +109,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await sql?.end({ timeout: 5 });
-  await container?.stop();
+  // The container stays up for the next run; only this run's database and role go.
+  if (admin) {
+    await admin.unsafe(`DROP DATABASE IF EXISTS "${RUN_TAG}" WITH (FORCE)`);
+    await admin.unsafe(`DROP ROLE IF EXISTS "${NOSU_ROLE}"`);
+    await admin.end({ timeout: 5 });
+  }
 });
 
 describe('migration 1447', () => {
@@ -92,9 +128,9 @@ describe('migration 1447', () => {
   });
 
   it('detects the library through a GUC every role may read', async () => {
-    await sql.unsafe(`CREATE ROLE bm25_nosu LOGIN; GRANT USAGE ON SCHEMA harness_shared TO bm25_nosu;`);
+    await sql.unsafe(`CREATE ROLE "${NOSU_ROLE}" LOGIN; GRANT USAGE ON SCHEMA harness_shared TO "${NOSU_ROLE}";`);
     const [r] = await sql.begin(async tx => {
-      await tx.unsafe('SET LOCAL ROLE bm25_nosu');
+      await tx.unsafe(`SET LOCAL ROLE "${NOSU_ROLE}"`);
       return tx<{ loaded: boolean }[]>`SELECT harness_shared.bm25_library_preloaded() AS loaded`;
     });
     expect(r?.loaded).toBe(true);
@@ -221,6 +257,26 @@ describe('websearch operator syntax under BM25 (plan D-007)', () => {
   });
 });
 
+describe('BM25 leg over a materialized CTE (personal-vault/store.ts shape, P-005)', () => {
+  // searchPersonalDocuments filters documents into a CTE that three later CTEs read, so
+  // Postgres materializes it and the BM25 operator scores rows outside any index scan.
+  it('ranks the CTE rows exactly as a direct scan of the indexed table does', async () => {
+    resetBm25Availability();
+    const leg = await lexicalLeg(sql, {
+      table: 'work_items', query: 'routine quokka',
+      legacy: { score: sql`0::float8`, match: sql`false` },
+    });
+    expect(leg.engine).toBe('bm25');
+    const rows = await sql<{ id: number; lexical_rank: string }[]>`
+      WITH filtered AS MATERIALIZED (SELECT * FROM harness_shared.work_items WHERE ws = 'w1')
+      SELECT id, row_number() OVER (ORDER BY ${leg.order}, id) AS lexical_rank
+        FROM filtered WHERE ${leg.match} ORDER BY ${leg.order}, id LIMIT 10`;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.map(r => r.id)).toEqual(await rankIds('routine quokka', 'w1'));
+    expect(rows.map(r => Number(r.lexical_rank))).toEqual(rows.map((_, i) => i + 1));
+  });
+});
+
 describe('rank fusion with a BM25 leg (plan D-004)', () => {
   // BM25 matches items 1 (quokka) and 2 (marmoset) only; the stand-in second leg matches
   // items 2 and 3, best = 3. The OR in WHERE keeps the planner off the BM25 index scan, so
@@ -255,7 +311,19 @@ describe('fallback and health', () => {
   it('is ok while every present corpus has its index', async () => {
     const health = await bm25Health(sql);
     expect(health).toMatchObject({ status: 'ok', libraryLoaded: true, extensionInstalled: true, missingIndexes: [] });
-    expect(health.presentIndexes.sort()).toEqual(['code_recipes_bm25', 'work_items_bm25']);
+    expect(health.presentIndexes.sort()).toEqual(['code_recipes_bm25', 'harness_plans_bm25', 'work_items_bm25']);
+  });
+
+  it('times the canary queries on the work-item index and judges p95 against the budget (P-004)', async () => {
+    const latency = await measureBm25Latency(sql);
+    expect(latency?.corpusIndex).toBe('work_items_bm25');
+    expect(latency?.samplesMs).toHaveLength(BM25_LATENCY_CANARY_QUERIES.length);
+    expect(latency!.p95Ms).toBeGreaterThanOrEqual(latency!.p50Ms);
+    expect((await bm25Health(sql, { latency })).latency).toEqual(latency);
+    const slow = { ...latency!, p95Ms: latency!.budgetMs + 1 };
+    const verdict = await bm25Health(sql, { latency: slow });
+    expect(verdict.status).toBe('degraded');
+    expect(verdict.reason).toContain('exceeds the 50ms budget');
   });
 
   it('falls back to the legacy ranking and reports degraded when an index is missing', async () => {

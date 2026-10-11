@@ -1755,6 +1755,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // docs:get has no shorter tool-owned deadline; leave room for the MCP
   // transport's 55s request cap and for proxy admission before it starts.
   ['docs:get', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-25418694735375487: coord:feed has no handler-level timeout, so the MCP
+  // transport's 55s cap is its server-side ceiling. Keep ptool beyond that cap
+  // on direct and tools:invoke routes instead of preempting its result at 30s.
+  ['coord:feed', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // logs:read gives journalctl a 30s server-side timeout. The ordinary ptool
   // deadline is also 30s, which can preempt the handler's structured timeout
   // result; leave settlement room on both direct and tools:invoke routes.

@@ -633,6 +633,41 @@ describe('describeReferencedTableColumns (P-005a — the 42703 column hint)', ()
     ]);
   });
 
+  it('bounds a hung schema lookup used to enrich a 42703 error', async () => {
+    vi.useFakeTimers();
+    try {
+      let schemaLookupStarted = false;
+      const never = new Promise<unknown[]>(() => {});
+      const query = async (strings: TemplateStringsArray) => {
+        const text = strings.join('');
+        if (text.includes("set_config('statement_timeout'")) return [];
+        if (text.includes('information_schema.columns')) {
+          schemaLookupStarted = true;
+          return never;
+        }
+        return [];
+      };
+      const tx = Object.assign(query, { unsafe: async () => [] });
+      // Keep the client callable too: without boundedAdvisoryRead, the old code
+      // issued this tagged query directly and stayed pending forever.
+      const client = Object.assign(query, {
+        begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+        unsafe: async () => [],
+      });
+
+      const pending = describeReferencedTableColumns(
+        'SELECT missing_column FROM harness_shared.work_items',
+        { client: client as never },
+      );
+      const assertion = expect(pending).rejects.toBeInstanceOf(PgReadQueryTimeoutError);
+      await vi.advanceTimersByTimeAsync(5_001);
+      await assertion;
+      expect(schemaLookupStarted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('resolves a bare name matched in many schemas to the preferred one (harness_shared first)', async () => {
     const { sql } = stubClient([
       { table_schema: 'harness_zzz_clone', table_name: 'messages', column_name: 'clone_col', data_type: 'text' },

@@ -825,6 +825,7 @@ const reportArg = () =>
                 id: z.string().optional(),
                 text: z.string().optional(),
                 status: z.string().optional(),
+                ref: z.string().optional(),
               }),
             )
             .optional(),

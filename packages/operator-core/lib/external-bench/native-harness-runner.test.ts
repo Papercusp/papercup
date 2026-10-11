@@ -17,7 +17,9 @@ import {
   HARBOR_BLUEPRINT_ID,
   parseHarborResult,
   runNativeHarnessTerminalBench,
+  TERMINAL_BENCH_DATASET_ID,
   type HarborResult,
+  type HarborRunSpec,
 } from './native-harness-terminal-bench';
 import { liveNativeHarnessPorts } from './native-harness-live';
 import { cloneTaskRepo, extractDiff } from './clone';
@@ -260,6 +262,29 @@ describe('runNativeHarnessTerminalBench — M2 (Harbor built-in claude-code) sca
     expect(res.attempt.generationError).toContain('docker daemon down');
     expect(res.grade.graderError).toContain('docker daemon down');
     expect(res.grade.resolved).toBe(false);
+  });
+
+  const fakeHarbor = () =>
+    vi.fn(async (spec: HarborRunSpec): Promise<HarborResult> => ({ resolved: true, harborVersion: `${spec.datasetId}+harbor1.3`, raw: {} }));
+
+  it('runs the one pinned dataset by default and records exactly that pin', async () => {
+    expect(TERMINAL_BENCH_DATASET_ID).toBe('terminal-bench@2.0');
+    const runHarbor = fakeHarbor();
+    const res = await runNativeHarnessTerminalBench(tbTask(), '0', {}, { runHarbor });
+    expect(runHarbor.mock.calls[0]?.[0].datasetId).toBe(TERMINAL_BENCH_DATASET_ID);
+    expect(res.grade.graderVersion).toBe(TERMINAL_BENCH_DATASET_ID);
+    expect(res.harnessVersion).toBe(TERMINAL_BENCH_DATASET_ID);
+  });
+
+  it('records the dataset a task actually ran, not the default, when the task names its own', async () => {
+    const runHarbor = fakeHarbor();
+    const own = task({ ...tbTask(), graderMeta: { datasetId: 'terminal-bench-pro@1.0' } });
+    const res = await runNativeHarnessTerminalBench(own, '0', {}, { runHarbor });
+    expect(runHarbor.mock.calls[0]?.[0].datasetId).toBe('terminal-bench-pro@1.0');
+    expect(res.grade.graderVersion).toBe('terminal-bench-pro@1.0');
+    // A caller-supplied fuller version string still wins.
+    const pinned = await runNativeHarnessTerminalBench(own, '0', {}, { runHarbor, harborVersion: 'terminal-bench-pro@1.0+harbor1.3' });
+    expect(pinned.grade.graderVersion).toBe('terminal-bench-pro@1.0+harbor1.3');
   });
 });
 

@@ -39,10 +39,9 @@ export function applyEnvLocal({ root, env }?: {
  * connection error naming a real host — not as an "unset variable" error naming a
  * variable this repo does not set.
  *
- * ⚠ `env` governs steps 1-3 only. The delegated legs (4-6) read `process.env` directly,
- * because that is what `getHarnessAdminUrlWithSource()` reads — so passing a synthetic
- * `env` object exercises the isolation/`.env.local` decisions, not the whole chain. Unit
- * tests should drive {@link applyEnvLocal} (pure) rather than faking the delegation.
+ * `env` governs explicit pins, isolation and operator-file pins (steps 1-4). If it
+ * contains no URL pin, the configured discovery/fallback helper reads ambient
+ * `process.env`; a copied environment with a pin never reaches that delegation.
  *
  * @param {{ root?: string, env?: Record<string, string | undefined> }} [opts]
  * @returns {{ url: string, source: string, via?: string, envLocal: ReturnType<typeof applyEnvLocal> }}

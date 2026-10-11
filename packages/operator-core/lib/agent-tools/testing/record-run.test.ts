@@ -481,6 +481,17 @@ describe('testing:record-run', () => {
     expect(operationalExecution({ ...ARTIFACT, exitCode: 2, assertions: [ok] }))
       .toMatchObject({ passed: 1, failed: 1, failedCaseTitles: ['nonzero-exit-2'] });
     expect(operationalExecution({ ...ARTIFACT, exitCode: 0, assertions: [ok] })).not.toHaveProperty('failedCaseTitles');
+
+    const capped = operationalExecution({
+      ...ARTIFACT,
+      assertions: Array.from({ length: 65 }, (_, index) => ({
+        id: 'passed check ' + index,
+        passed: true,
+        evidence: 'measured pass',
+      })),
+    });
+    expect(capped).toMatchObject({ passed: 65, failed: 0, passedCaseTitlesTruncated: true });
+    expect(capped.passedCaseTitles).toHaveLength(64);
   });
 
   it('is idempotent when the artifact hash already has a scoped row', async () => {

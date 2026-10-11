@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -34,6 +34,14 @@ describe('unit census executable exit contract', () => {
       mkdirSync(join(directory, 'registry', 'fixture', '.papercusp', 'legacy', 'hyperbee'), { recursive: true });
       writeFileSync(join(directory, 'unknown'), 'fixture');
       const root = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
+      const cloneWriter = readFileSync(join(root, 'packages/operator-core/lib/harness/clone-github.ts'), 'utf8');
+      expect(cloneWriter).toContain("join(workspacesRoot(), 'clones')");
+      const clone = join(directory, 'registry', 'clones', 'owned');
+      const cloned = spawnSync('git', ['clone', '--shared', '--no-checkout', '--', root, clone], { encoding: 'utf8' });
+      expect(cloned.status, cloned.stderr).toBe(0);
+      writeFileSync(join(clone, 'uncommitted-state'), 'preserve');
+      mkdirSync(join(directory, 'registry', 'clones', 'unowned'));
+      writeFileSync(join(directory, 'registry', 'clones', 'unowned', 'unknown'), 'fixture');
       const result = spawnSync(process.execPath,
         ['--import', 'tsx', 'scripts/state-census-roots.mts'], {
           cwd: root, encoding: 'utf8', timeout: 30_000,
@@ -57,6 +65,11 @@ describe('unit census executable exit contract', () => {
       expect(report.representedSubtrees.some((entry: { name: string }) => entry.name === 'checkpoint-history')).toBe(true);
       expect(report.inventory.find((entry: { name: string }) => entry.name.endsWith('.next-build-123-456-abcd')).classification).toBe('cache');
       expect(report.residue.some((entry: { name: string }) => entry.name === 'unknown')).toBe(true);
+      expect(report.representedGit.some((entry: { name: string }) => entry.name === 'registry/clones/owned')).toBe(true);
+      expect(report.inventory.find((entry: { name: string }) => entry.name === 'registry/clones').classification).toBe('state');
+      expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/clones/owned/uncommitted-state')).toBe(false);
+      expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/clones/unowned')).toBe(true);
+      expect(report.representedUnknown.some((entry: { name: string }) => entry.name === 'registry/clones/unowned')).toBe(true);
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
   it.runIf(process.platform === 'linux')('returns drift exit1 for an unknown installed unit', () => {

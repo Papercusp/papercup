@@ -23,6 +23,10 @@
  *   - `uncoveredActivePlansRaw` — the same without the grace window;
  *   - `closureReasonMissing` — triage closures whose reason is not the plan's own;
  *   - `triageGaps` — the sum, the R-4 probe value;
+ *   - `unreachablePlans` — uncovered plans whose harness has no Hive plan scope (D-030):
+ *     no plans:* verb can address them, so they are reported here instead of as gaps.
+ *     Only a confirmed `isUnknownPlanScopeError` moves a plan here; a registry fault
+ *     fails the measurement;
  *   - `activePlansConsidered` — the active plans examined. The verification-health cell
  *     reports `triageGaps` as null when this is 0, so an empty population or a wrong
  *     workspace filter cannot pass an `eq 0` probe.
@@ -111,8 +115,61 @@ export interface ContractTriageMeasurement {
   triageGaps: number;
   /** Active plans examined (D-019 denominator). */
   activePlansConsidered: number;
+  /**
+   * Uncovered active plans whose harness has no Hive plan scope (D-030), regardless of
+   * age. No plans:* verb can close, supersede, archive or exempt them, so they are
+   * reported here and never counted in `uncoveredActivePlans*` or `triageGaps`.
+   */
+  unreachablePlans: number;
+  /** `<harness>/<plan>` for the first {@link UNREACHABLE_PLAN_REFS_CAP} unreachable plans. */
+  unreachablePlanRefs: string[];
   thresholds: { graceHours: number };
 }
+
+/** Bound on `unreachablePlanRefs`; `unreachablePlans` stays the authoritative count. */
+export const UNREACHABLE_PLAN_REFS_CAP = 50;
+
+/**
+ * Can the plans:* verbs address plans keyed by (workspace, harness)? `'no-plan-scope'` ONLY
+ * for a confirmed refusal (the resolver's own "no plan scope" error) or a resolution to a
+ * different workspace; a registry fault must throw, so the measurement fails (D-019) instead
+ * of hiding the plans as unreachable (D-030, D-031).
+ */
+export type PlanScopeReach = 'reachable' | 'no-plan-scope';
+export type PlanScopeProbe = (workspaceId: string, harnessSlug: string) => Promise<PlanScopeReach>;
+
+/**
+ * Build a {@link PlanScopeProbe} from a scope resolver and the classifier for its
+ * "no Hive plan scope" error. Exported so the classification is testable without a DB.
+ *
+ * The resolver is called exactly as the plans:* verbs call it, `{ harnessSlug }` with NO
+ * workspace (verification-system-improvements-2026-10-10#D-031). Passing the measured
+ * workspace would skip the registry lookup the verbs depend on: a harness missing from
+ * `harness_registry`/`projects` then resolves here while every verb refuses it. A harness
+ * that resolves to a DIFFERENT workspace is also unreachable, because the verbs would address
+ * that workspace's plan rows, not the ones being measured.
+ */
+export function planScopeProbeFrom(
+  resolve: (opts: { harnessSlug: string }) => Promise<{ workspaceId: string }>,
+  isUnknownScope: (error: unknown) => boolean,
+): PlanScopeProbe {
+  return async (workspaceId, harnessSlug) => {
+    let resolved: { workspaceId: string };
+    try {
+      resolved = await resolve({ harnessSlug });
+    } catch (error) {
+      if (isUnknownScope(error)) return 'no-plan-scope';
+      throw error;
+    }
+    return resolved.workspaceId === workspaceId ? 'reachable' : 'no-plan-scope';
+  };
+}
+
+/** The production probe: the same resolver and classifier every plans:* verb goes through. */
+export const defaultPlanScopeProbe: PlanScopeProbe = async (workspaceId, harnessSlug) => {
+  const { resolvePlanScope, isUnknownPlanScopeError } = await import('./source');
+  return planScopeProbeFrom(resolvePlanScope, isUnknownPlanScopeError)(workspaceId, harnessSlug);
+};
 
 /**
  * Measure the contract triage (D-013 definitions). Scope: non-archived, non-rubric plans in
@@ -121,7 +178,7 @@ export interface ContractTriageMeasurement {
  */
 export async function measureContractTriage(
   sql: Sql,
-  opts: { workspaceId: string; harnessSlug?: string | null; now?: Date },
+  opts: { workspaceId: string; harnessSlug?: string | null; now?: Date; planScope?: PlanScopeProbe },
 ): Promise<ContractTriageMeasurement> {
   const now = (opts.now ?? new Date()).toISOString();
   const harness = opts.harnessSlug ?? null;
@@ -151,7 +208,7 @@ export async function measureContractTriage(
         FROM harness_shared.plan_contract_triage t
        WHERE t.workspace_id = ${opts.workspaceId}
     ), uncovered AS (
-      SELECT p.active_since
+      SELECT p.harness_slug, p.plan_slug, p.active_since
         FROM plans p
         LEFT JOIN triage t
           ON t.workspace_id = p.workspace_id AND t.harness_slug = p.harness_slug
@@ -160,31 +217,65 @@ export async function measureContractTriage(
     )
     SELECT
       (SELECT count(*) FROM plans WHERE status = 'active')::int AS considered,
-      (SELECT count(*) FROM uncovered)::int AS uncovered_raw,
-      (SELECT count(*) FROM uncovered
-        WHERE active_since IS NULL
-           OR active_since < ${now}::timestamptz - make_interval(hours => ${CONTRACT_TRIAGE_GRACE_HOURS}))::int
-        AS uncovered,
+      (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                 'harness', h.harness_slug, 'raw', h.raw, 'past', h.past, 'plans', h.plans)), '[]'::jsonb)
+         FROM (SELECT u.harness_slug,
+                      count(*)::int AS raw,
+                      (count(*) FILTER (
+                         WHERE u.active_since IS NULL
+                            OR u.active_since < ${now}::timestamptz
+                                                - make_interval(hours => ${CONTRACT_TRIAGE_GRACE_HOURS})))::int AS past,
+                      array_agg(u.plan_slug ORDER BY u.plan_slug) AS plans
+                 FROM uncovered u
+                GROUP BY u.harness_slug) h) AS uncovered_by_harness,
       (SELECT count(*) FROM closures c
          JOIN plans p ON p.workspace_id = c.workspace_id AND p.harness_slug = c.harness_slug
                      AND p.plan_slug = c.plan_slug
         WHERE p.status <> 'active' AND c.reason_uses > 1)::int AS closure_reason_missing
   `) as Array<{
     considered: number | null;
-    uncovered_raw: number | null;
-    uncovered: number | null;
+    uncovered_by_harness: unknown;
     closure_reason_missing: number | null;
   }>;
   const r = rows[0];
   if (!r) throw new Error('measureContractTriage: the measurement query returned no row');
-  const uncovered = Number(r.uncovered ?? 0);
+  const raw = r.uncovered_by_harness;
+  const groups = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Array<{
+    harness: string;
+    raw: number;
+    past: number;
+    plans: string[];
+  }>;
+  if (!Array.isArray(groups)) {
+    throw new Error('measureContractTriage: uncovered_by_harness is not an array');
+  }
+  // D-030: one scope probe per harness. A fault propagates (the caller reports the metric
+  // as unmeasured, D-019); only a confirmed "no Hive plan scope" moves plans out of the gaps.
+  const probe = opts.planScope ?? defaultPlanScopeProbe;
+  let uncovered = 0;
+  let uncoveredRaw = 0;
+  let unreachablePlans = 0;
+  const unreachablePlanRefs: string[] = [];
+  for (const g of groups) {
+    if ((await probe(opts.workspaceId, g.harness)) === 'no-plan-scope') {
+      unreachablePlans += Number(g.raw);
+      for (const plan of g.plans) {
+        if (unreachablePlanRefs.length < UNREACHABLE_PLAN_REFS_CAP) unreachablePlanRefs.push(`${g.harness}/${plan}`);
+      }
+    } else {
+      uncovered += Number(g.past);
+      uncoveredRaw += Number(g.raw);
+    }
+  }
   const closureReasonMissing = Number(r.closure_reason_missing ?? 0);
   return {
     uncoveredActivePlans: uncovered,
-    uncoveredActivePlansRaw: Number(r.uncovered_raw ?? 0),
+    uncoveredActivePlansRaw: uncoveredRaw,
     closureReasonMissing,
     triageGaps: uncovered + closureReasonMissing,
     activePlansConsidered: Number(r.considered ?? 0),
+    unreachablePlans,
+    unreachablePlanRefs,
     thresholds: { graceHours: CONTRACT_TRIAGE_GRACE_HOURS },
   };
 }

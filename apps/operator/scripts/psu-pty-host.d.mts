@@ -1204,6 +1204,27 @@ export function metaPathFor(ownerId: any): string;
  *  orders. A FILE, not an env var: the successor is spawned by the shim's bash
  *  loop, not by us, so we cannot put anything in its environment. Pure. */
 export function handoffPathFor(ownerId: any): string;
+/**
+ * WI-6554700010008431: the ONE predicate for "is this psu-pty directory entry a host
+ * discovery record" (`metaPathFor` → `<key>.json`). Every lister and every sweeper of the
+ * directory must use it, never a bare `endsWith('.json')`.
+ *
+ * Measured 2026-10-11: `pruneDead()` (run at EVERY host start) took a just-written
+ * `<owner>.handoff.json` for a discovery record, found no `pid` in it, judged the "host"
+ * dead and unlinked it. When another host started inside the ~1s between a predecessor
+ * writing its handoff and the re-exec'd launcher reading it, the successor found no
+ * orders, logged nothing, and cold-booted without its carry (11 of 211 adoptions,
+ * clustered in adoption batches, where host starts are densest). The operator-side janitor
+ * (psu-pty-discovery.ts isDiscoveryRecordFileName) mirrors this; keep the two in lockstep —
+ * psu-pty-dir-async-sweeps.test.ts pins the mirror against `handoffPathFor`.
+ * @param {string} name a directory entry name (not a path)
+ */
+export function isDiscoveryRecordFileName(name: string): boolean;
+/** WI-6554700010008431: second rail — a parsed record is a discovery record only if it
+ *  carries the discovery fields (`pid` / `sock`). Any other JSON that lands in the
+ *  directory (a future sidecar nobody added to the name predicate) is then left alone
+ *  instead of being "pruned" as a dead host. */
+export function looksLikeDiscoveryRecord(rec: any): boolean;
 export function writeHostHandoff(ownerId: any, record: any): string | null;
 /**
  * WI-38292: read AND consume (unlink) this owner's handoff. Single-shot by
@@ -1327,9 +1348,10 @@ export function hostIdleMs(meta: {
     startedAt?: number;
 }, now?: number): number | null;
 /** Read every discovery file; annotate each with `alive`. Skips unreadable. */
-export function listHosts(): any[];
-/** Remove discovery files + sockets whose host process is gone. */
-export function pruneDead(): void;
+export function listHosts(dir?: string): any[];
+/** Remove discovery files + sockets whose host process is gone. Only ever touches
+ *  what listHosts admits as a discovery record (WI-6554700010008431). */
+export function pruneDead(dir?: string): void;
 export function reportOwnerHumanTurn(now?: number): void;
 /**
  * Read the effective per-agent wake mode through the loopback admin coord
@@ -4696,6 +4718,10 @@ export const LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX: 1;
  *  fail-soft. Mirrors IDENTITY_ACTIVATION_REFUSED_REASON in
  *  packages/operator-core/lib/cupboard/identity-activation-restart.ts. */
 export const IDENTITY_ACTIVATION_REFUSED_REASON: "identity-activation-refused";
+/** WI-6554700010008431: the handoff's file suffix. It ALSO ends in `.json`, so it
+ *  shares the directory with the `<key>.json` discovery records — see
+ *  isDiscoveryRecordFileName for why that matters. */
+export const HOST_HANDOFF_FILE_SUFFIX: ".handoff.json";
 /**
  * WI-38292: persist the successor's marching orders — the child argv this host
  * had already minted (rotated native session id + the carry's

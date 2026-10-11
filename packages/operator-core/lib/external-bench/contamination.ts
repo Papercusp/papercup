@@ -26,10 +26,21 @@ export type ContaminationLabel = 'post-cutoff' | 'contamination-exposed' | 'cont
 /** Where one task falls relative to one model's training-data cutoff. */
 export type TaskExposure = 'post-cutoff' | 'exposed' | 'unknown';
 
-/** A vendor-published training-data cutoff for one concrete model id. */
+/**
+ * The vendor's own label for a published cutoff. Anthropic publishes a "training data cutoff" and a narrower
+ * "reliable knowledge cutoff"; we record the training data cutoff. OpenAI publishes only a "knowledge cutoff"
+ * and does not define it on the model page, so it is recorded verbatim under that label. If OpenAI's training
+ * data runs past it, a 'knowledge cutoff' row can under-report exposure, so a reader weighing a post-cutoff
+ * headline should check this label.
+ */
+export type CutoffTerm = 'training data cutoff' | 'knowledge cutoff';
+
+/** A vendor-published cutoff for one concrete model id. */
 export interface TrainingCutoffFact {
-  /** `YYYY-MM` (vendor month precision) or `YYYY-MM-DD`. The broader "training data cutoff", not the narrower "reliable knowledge cutoff". */
+  /** `YYYY-MM` (vendor month precision) or `YYYY-MM-DD` (vendor day precision). Never the narrower "reliable knowledge cutoff". */
   trainingDataCutoff: string;
+  /** The vendor's label for {@link trainingDataCutoff}, as printed on {@link source}. */
+  vendorTerm: CutoffTerm;
   /** The page the value was read from. */
   source: string;
   /** When it was read (`YYYY-MM-DD`). */
@@ -38,27 +49,53 @@ export interface TrainingCutoffFact {
 
 const ANTHROPIC_MODELS_OVERVIEW = 'https://platform.claude.com/docs/en/models/overview';
 const anthropicModelPage = (slug: string) => `https://platform.claude.com/docs/en/models/${slug}/overview`;
+const openaiModelPage = (id: string) => `https://developers.openai.com/api/docs/models/${id}`;
 const RETRIEVED = '2026-10-11';
+
+const anthropic = (trainingDataCutoff: string, source: string): TrainingCutoffFact =>
+  ({ trainingDataCutoff, vendorTerm: 'training data cutoff', source, retrievedAt: RETRIEVED });
+const openai = (id: string, knowledgeCutoff: string): TrainingCutoffFact =>
+  ({ trainingDataCutoff: knowledgeCutoff, vendorTerm: 'knowledge cutoff', source: openaiModelPage(id), retrievedAt: RETRIEVED });
 
 /**
  * Curated (derived-truth ladder rung 4): a training cutoff is a vendor statement about training data, which
  * no code in this repo can derive, pin or attest. Every row cites the page it was read from. A model with
  * no row here has an UNKNOWN cutoff, and its reports are labelled `contamination-unknown` — add a row (with
- * its source) rather than guessing. Ids are bare concrete ids, as {@link normalizeModelId} produces.
+ * its source) rather than guessing. Ids are bare concrete ids, as {@link normalizeModelId} produces. Lookup is
+ * exact: a dated snapshot id the vendor page does not name stays unknown rather than inheriting its alias's row.
+ *
+ * Priced ids with no row, deliberately: claude-opus-4-1, claude-opus-4-0 and claude-sonnet-4-0 are retired
+ * (platform.claude.com model-deprecations) and no longer have a vendor model page to cite.
  */
 export const MODEL_TRAINING_CUTOFFS: Readonly<Record<string, TrainingCutoffFact>> = Object.freeze({
-  'claude-fable-5-1': { trainingDataCutoff: '2026-06', source: ANTHROPIC_MODELS_OVERVIEW, retrievedAt: RETRIEVED },
-  'claude-opus-5-5': { trainingDataCutoff: '2026-06', source: ANTHROPIC_MODELS_OVERVIEW, retrievedAt: RETRIEVED },
-  'claude-sonnet-5-5': { trainingDataCutoff: '2026-06', source: ANTHROPIC_MODELS_OVERVIEW, retrievedAt: RETRIEVED },
-  'claude-haiku-5-5': { trainingDataCutoff: '2026-06', source: ANTHROPIC_MODELS_OVERVIEW, retrievedAt: RETRIEVED },
-  'claude-opus-5': { trainingDataCutoff: '2026-05', source: anthropicModelPage('opus-5'), retrievedAt: RETRIEVED },
-  'claude-fable-5': { trainingDataCutoff: '2026-01', source: anthropicModelPage('fable-5'), retrievedAt: RETRIEVED },
-  'claude-sonnet-5': { trainingDataCutoff: '2026-01', source: anthropicModelPage('sonnet-5'), retrievedAt: RETRIEVED },
-  'claude-opus-4-8': { trainingDataCutoff: '2026-01', source: anthropicModelPage('opus-4-8'), retrievedAt: RETRIEVED },
-  'claude-opus-4-7': { trainingDataCutoff: '2026-01', source: anthropicModelPage('opus-4-7'), retrievedAt: RETRIEVED },
-  'claude-sonnet-4-6': { trainingDataCutoff: '2026-01', source: anthropicModelPage('sonnet-4-6'), retrievedAt: RETRIEVED },
-  'claude-opus-4-6': { trainingDataCutoff: '2025-08', source: anthropicModelPage('opus-4-6'), retrievedAt: RETRIEVED },
-  'claude-haiku-4-5': { trainingDataCutoff: '2025-07', source: anthropicModelPage('haiku-4-5'), retrievedAt: RETRIEVED },
+  'claude-fable-5-1': anthropic('2026-06', ANTHROPIC_MODELS_OVERVIEW),
+  'claude-opus-5-5': anthropic('2026-06', ANTHROPIC_MODELS_OVERVIEW),
+  'claude-sonnet-5-5': anthropic('2026-06', ANTHROPIC_MODELS_OVERVIEW),
+  'claude-haiku-5-5': anthropic('2026-06', ANTHROPIC_MODELS_OVERVIEW),
+  'claude-opus-5': anthropic('2026-05', anthropicModelPage('opus-5')),
+  'claude-fable-5': anthropic('2026-01', anthropicModelPage('fable-5')),
+  'claude-sonnet-5': anthropic('2026-01', anthropicModelPage('sonnet-5')),
+  'claude-opus-4-8': anthropic('2026-01', anthropicModelPage('opus-4-8')),
+  'claude-opus-4-7': anthropic('2026-01', anthropicModelPage('opus-4-7')),
+  'claude-sonnet-4-6': anthropic('2026-01', anthropicModelPage('sonnet-4-6')),
+  'claude-opus-4-6': anthropic('2025-08', anthropicModelPage('opus-4-6')),
+  'claude-opus-4-5': anthropic('2025-08', anthropicModelPage('opus-4-5')),
+  'claude-sonnet-4-5': anthropic('2025-07', anthropicModelPage('sonnet-4-5')),
+  'claude-haiku-4-5': anthropic('2025-07', anthropicModelPage('haiku-4-5')),
+  'gpt-6.1-sol': openai('gpt-6.1-sol', '2026-04-30'),
+  'gpt-6-luna': openai('gpt-6-luna', '2026-05-18'),
+  'gpt-6-astra': openai('gpt-6-astra', '2026-04-30'),
+  'gpt-6-sol': openai('gpt-6-sol', '2026-04-20'),
+  'gpt-5.6': openai('gpt-5.6', '2026-02-16'),
+  'gpt-5.6-sol': openai('gpt-5.6-sol', '2026-02-16'),
+  'gpt-5.6-luna': openai('gpt-5.6-luna', '2026-02-16'),
+  'gpt-5.6-terra': openai('gpt-5.6-terra', '2026-02-16'),
+  'gpt-5.5': openai('gpt-5.5', '2025-12-01'),
+  'gpt-5.4': openai('gpt-5.4', '2025-08-31'),
+  'gpt-5.4-mini': openai('gpt-5.4-mini', '2025-08-31'),
+  'gpt-5': openai('gpt-5', '2024-09-30'),
+  'gpt-4o': openai('gpt-4o', '2023-10-01'),
+  'gpt-4o-mini': openai('gpt-4o-mini', '2023-10-01'),
 });
 
 const CUTOFF_RE = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/;
@@ -115,6 +152,8 @@ export interface ArmContamination {
   trainingDataCutoff: string | null;
   /** Where the cutoff came from: a {@link MODEL_TRAINING_CUTOFFS} source URL, `caller-supplied`, or null when unknown. */
   cutoffSource: string | null;
+  /** The vendor's label for {@link trainingDataCutoff} ({@link CutoffTerm}); null when unknown or caller-supplied. */
+  cutoffTerm: CutoffTerm | null;
   postCutoff: ContaminationSubset;
   exposed: ContaminationSubset;
   unknown: ContaminationSubset;
@@ -158,6 +197,7 @@ export function armContamination(input: {
     modelId: input.modelId,
     trainingDataCutoff: cutoff,
     cutoffSource,
+    cutoffTerm: fact?.vendorTerm ?? null,
     postCutoff: subset(byExposure['post-cutoff']),
     exposed: subset(byExposure.exposed),
     unknown: subset(byExposure.unknown),

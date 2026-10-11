@@ -231,6 +231,58 @@ describe('testing:runs runGroupId compatibility alias', () => {
 });
 
 describe('testing:runs evidence identity', () => {
+  const cappedDetails = {
+    schemaVersion: 1, root: '/checkouts/papercusp', filePath: 'same.test.ts',
+    runGroupId: null, workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+    testNamePattern: null, testLayer: 'integration', passed: 80, failed: 0, skipped: 0,
+    collectionFailed: false, mutationPhase: null, commitSha: 'abc123', worktreeDirty: true,
+    passedCaseTitles: Array.from({ length: 64 }, (_, index) => `suite > case ${index}`),
+    passedCaseTitlesTruncated: true,
+  };
+
+  async function readDetails(executionDetails: unknown) {
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      if (!call.strings.some(part => part.includes('WITH filtered'))) return call;
+      return Promise.resolve([{
+        id: '17692433', workspace_id: 'workspace-a', harness_slug: 'harness-a',
+        execution_details: executionDetails, file_path: 'same.test.ts',
+        status: 'pass', framework: 'vitest', started_at: '2026-09-08T09:43:05Z',
+        finished_at: '2026-09-08T09:43:06Z', duration_ms: '1000', output_tail: null,
+        run_group_id: null, source: 'local', branch: 'staging', commit_sha: 'abc123',
+        loop_lag_p95_ms: null, rss_mb: null, worktree_dirty: true,
+        is_scratch_config: false, total: '1',
+      }]);
+    });
+    const result = await runsTool.handler({ testRunIds: [17692433], limit: 1 } as never, {} as never) as {
+      data?: { runs: Array<Record<string, unknown>> };
+      content?: Array<{ text: string }>;
+    };
+    return (result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}')).runs[0];
+  }
+
+  it.each([
+    { name: 'missing column', stored: undefined, reason: 'not-recorded' },
+    { name: 'SQL NULL', stored: null, reason: 'not-recorded' },
+    { name: 'malformed JSON', stored: '{', reason: 'invalid-or-unsupported' },
+    { name: 'incomplete object', stored: { root: '/untrusted' }, reason: 'invalid-or-unsupported' },
+    { name: 'unsupported extension', stored: { ...cappedDetails, futureField: true }, reason: 'invalid-or-unsupported' },
+    { name: 'different file', stored: { ...cappedDetails, filePath: 'other.test.ts' }, reason: 'row-mismatch' },
+    { name: 'different group', stored: { ...cappedDetails, runGroupId: 'other-run' }, reason: 'row-mismatch' },
+  ])('explains execution-details availability for $name without granting identity', async ({ stored, reason }) => {
+    const row = await readDetails(stored);
+    expect(row).toMatchObject({ root: null, executionDetails: null, executionDetailsUnavailableReason: reason });
+    expect(shapeTestingRuns({ runs: [row] }, 'trimmed')).toMatchObject({
+      runs: [{ executionDetailsUnavailableReason: reason }],
+    });
+  });
+
+  it.each([false, true])('retains capped integration counts and root with serialized=%s', async serialized => {
+    const row = await readDetails(serialized ? JSON.stringify(cappedDetails) : cappedDetails);
+    expect(row).toMatchObject({ root: cappedDetails.root, executionDetails: cappedDetails });
+    expect(row).not.toHaveProperty('executionDetailsUnavailableReason');
+  });
+
   it('preserves receipt roots with measured passing cases, including an unscoped receipt', async () => {
     let selectedSql = '';
     const row = {
@@ -242,11 +294,12 @@ describe('testing:runs evidence identity', () => {
         workspaceId: 'workspace-a',
         harnessSlug: 'harness-a',
         testNamePattern: null,
-        passed: 1,
+        passed: 65,
         failed: 0,
         skipped: 0,
         collectionFailed: false,
         passedCaseTitles: ['suite > passed case'],
+        passedCaseTitlesTruncated: true,
         mutationPhase: null,
         commitSha: null,
         worktreeDirty: false,
@@ -589,12 +642,14 @@ describe('testing:runs payload-tier shape', () => {
       collectionFailed: false, testNamePattern: 'selected assertion',
       mutationPhase: null, commitSha: null, worktreeDirty: false,
       passedCaseTitles: ['exact short case', 'x'.repeat(2_048)],
+      passedCaseTitlesTruncated: true,
     };
     const shaped = shapeTestingRuns({ runs: [{ id: 42, executionDetails }] }, 'trimmed') as {
       runs: Array<{ executionDetails: Record<string, unknown>; executionDetailsBounded: unknown }>;
     };
     expect(shaped.runs[0]?.executionDetails).toMatchObject({ passed: 7, failed: 0, skipped: 118,
       collectionFailed: false, testNamePattern: 'selected assertion', passedCaseTitles: ['exact short case'] });
+    expect(shaped.runs[0]?.executionDetails.passedCaseTitlesTruncated).toBe(true);
     expect(shaped.runs[0]?.executionDetailsBounded).toMatchObject({ passedCaseTitlesOmitted: 1,
       failedCaseTitlesOmitted: 0, fieldsOmitted: expect.arrayContaining(['root', 'filePath']) });
     expect(JSON.stringify(shaped).length).toBeLessThan(1_400);

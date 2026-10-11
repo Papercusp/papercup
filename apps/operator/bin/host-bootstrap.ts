@@ -2096,6 +2096,16 @@ export function runBootstrap(): void {
         console.warn('[slack-socket] boot-start failed (non-fatal):', e instanceof Error ? e.message : e);
       });
 
+  // cupboard-distributable-integrations-2026-10-10 P-003 / D-009: the generic
+  // socket ingress for installed provider packages that declare `ingress.socket`.
+  // Same owner-process rule as above; its managed timer is the inventory row.
+  if (backgroundWorkers && cluster.isPrimary)
+    void import('@papercusp/operator-core/lib/providers/provider-socket-ingress')
+      .then(({ startProviderSocketIngress }) => startProviderSocketIngress())
+      .catch((e) => {
+        console.warn('[provider-socket-ingress] boot-start failed (non-fatal):', e instanceof Error ? e.message : e);
+      });
+
   // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).
   // Gated by BOTH backgroundWorkersEnabled() and PAPERCUSP_DBOS_ENABLE=1; both
   // are required before this process can register DBOS routines. The routines

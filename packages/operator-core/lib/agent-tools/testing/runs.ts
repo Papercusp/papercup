@@ -88,6 +88,7 @@ const testingRunResultSchema = z
       passedCaseTitlesTruncated: z.literal(true).optional(),
       failedCaseTitles: z.array(z.string()).optional(),
     }).passthrough().nullable(),
+    executionDetailsUnavailableReason: z.enum(['not-recorded', 'invalid-or-unsupported', 'row-mismatch']).optional(),
     executionDetailsBounded: z.object({
       passedCaseTitlesOmitted: z.number().int().nonnegative(),
       failedCaseTitlesOmitted: z.number().int().nonnegative(),
@@ -332,7 +333,7 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      'Each row: { id, workspaceId, harnessSlug, root, executionDetails, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. executionDetails returns validated measured case counts, selector and saved case titles; null means unavailable, not zero executed cases. Bounded responses may omit titles and report executionDetailsBounded; payloadTier:"full" preserves complete saved details. outputTail is populated only for fail/error rows and is truncated.',
+      'Each row: { id, workspaceId, harnessSlug, root, executionDetails, executionDetailsUnavailableReason?, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. executionDetails returns validated measured case counts, selector and saved case titles; null means unavailable, not zero executed cases. When unavailable, executionDetailsUnavailableReason distinguishes not-recorded (SQL NULL/missing), invalid-or-unsupported (stored metadata rejected by this reader), and row-mismatch (valid metadata names a different file or run group). Bounded responses may omit titles and report executionDetailsBounded; payloadTier:"full" preserves complete saved details. outputTail is populated only for fail/error rows and is truncated.',
       '`runGroup` is the canonical exact run_group_id input selector; `runGroupId` is accepted as a compatibility alias because output rows expose the same value as runGroupId. If both are supplied, runGroup wins.',
       '`testRunIds` is an exact primary-key selector for evidence-lineage lookups; when supplied without an explicit `latestPerFile`, it defaults to `latestPerFile:false` so every requested receipt remains visible, including multiple attempts for one file. Set `latestPerFile:true` only when intentionally collapsing the selected IDs.',
       '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',
@@ -699,12 +700,15 @@ export default defineTool({
           const parsedDetails = parseStoredExecutionDetails(r.execution_details);
           const executionDetails = parsedDetails?.filePath === r.file_path && parsedDetails.runGroupId === r.run_group_id
             ? parsedDetails : null;
+          const executionDetailsUnavailableReason = r.execution_details == null
+            ? 'not-recorded' : !parsedDetails ? 'invalid-or-unsupported' : 'row-mismatch';
           return {
           id: Number(r.id),
           workspaceId: r.workspace_id,
           harnessSlug: r.harness_slug,
           root: executionDetails?.root ?? null,
           executionDetails,
+          ...(executionDetails ? {} : { executionDetailsUnavailableReason }),
           filePath: r.file_path,
           status: r.status,
           framework: r.framework,

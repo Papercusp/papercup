@@ -477,12 +477,14 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542): this is a disposable isolated Tauri Reports Library acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a concrete native PID and polling helper. Two of its three execFileSync sites invoke the native bridge and DOM poll helper with 60s/90s deadlines. The third is one awaited `npm run lint:as-committed -- test:file --any --ref=<source receipt commit>` run of the native e2e test files; its test child is admitted upstream, because test:file enters scripts/test-files.mjs, which runs each file under runGovernedTestProcess. Each child is awaited to exit before the next call. The script creates no detached worker or resident queue and exits after the bounded verification phase, so it adds no independently managed application capacity for Governor.admit to meter.",
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542): this is a disposable isolated Tauri Reports Library acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a concrete native PID and polling helper. Two of its three execFileSync sites invoke the native bridge and DOM poll helper with 60s/90s deadlines. The third is one awaited `npm run test:file -- <native e2e test files>` run inside the verifier source snapshot (cwd OPERATOR_SOURCE_ROOT), which verifyVerifierSourceSync first checks against the source receipt (EI-25545705752593070 replaced the earlier `lint:as-committed --ref=<receipt commit>` form, which needs Git inside the archive). Its test child is admitted upstream, because test:file enters scripts/test-files.mjs, which runs each file under runGovernedTestProcess. Each child is awaited to exit before the next call. The script creates no detached worker or resident queue and exits after the bounded verification phase, so it adds no independently managed application capacity for Governor.admit to meter.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       return resourceStartCallCount(source) === 3 &&
         [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 3 &&
-        source.includes("execFileSync('npm', ['run', 'lint:as-committed', '--', 'test:file', '--any',") &&
+        source.includes("execFileSync('npm', ['run', 'test:file', '--', ...testFiles],") &&
+        source.includes("verifyVerifierSourceSync(sourceRoot, receipt") &&
+        source.includes("{ cwd: sourceRoot, stdio: 'inherit',") &&
         // One isolation assert per phase: the native-operation phase that launches the
         // committed test run, and the Reports fixture phase. Dropping either re-flags.
         source.split("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'").length - 1 === 2 &&

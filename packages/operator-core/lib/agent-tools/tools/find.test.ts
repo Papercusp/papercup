@@ -471,7 +471,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const out = await callHandler({ query: 'work_items:get', limit: 1 });
     const hit = out.hits.find((entry) => entry.tool === 'work_items:get');
     expect(hit?.argSchema).toContain(
-      'constraint:$ (resume requires one item and cannot be combined with detail, checksOnly, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments',
+      'constraint:$ (resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments',
     );
   });
 

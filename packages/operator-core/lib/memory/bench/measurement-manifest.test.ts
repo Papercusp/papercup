@@ -155,11 +155,17 @@ describe('generated loader object to retained file joins', () => {
     if(failure==='foreign-detail') rows[1]=rows[1].replace('123:','999:');
     expect(()=>bindNativeLoaderMappedObjects(log(...rows),[window],event)).toThrow('native loader');
   });
+  // WI-6554700010008342 — TIMING BUDGET, do not re-tighten. These timeouts only guard against
+  // a hung child; they assert nothing about speed. The python child hashes every mapped
+  // library with LD_DEBUG=files on, and in green-checkpoint run 3ff293fb (2026-10-11) the old
+  // 10s cap killed it under gate load (status null, the stderr dump was the message), while
+  // the file passed alone at the same sha.
+  const NATIVE_CHILD_HANG_GUARD_MS = 120_000;
   it.runIf(process.platform === 'linux')('joins real glibc object addresses to hashed pre-Run file maps', () => {
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-loader-namespace-'));roots.push(root);
     const library=path.join(root,'same-object.so');
     const compiled=spawnSync('/usr/bin/cc',['-x','c','-shared','-fPIC','-nostdlib','-o',library,'-'],
-      {input:'int pc_loader_fixture(void) { return 7; }',encoding:'utf8',timeout:10000});
+      {input:'int pc_loader_fixture(void) { return 7; }',encoding:'utf8',timeout:NATIVE_CHILD_HANG_GUARD_MS});
     expect(compiled.status,compiled.stderr).toBe(0);
     const program = `import os,json,time,hashlib,ctypes,struct
 libc=ctypes.CDLL('libc.so.6')
@@ -215,7 +221,7 @@ def marker(phase):
 start=marker('start'); end=marker('end')
 print(json.dumps(dict(window=dict(runTag='real',processId=os.getpid(),nativeThreadId=os.getpid(),startMonotonicNs=start,endMonotonicNs=end),runtime=dict(platform='linux',clock='node-hrtime',beforeNs=before,afterNs=after,libraries=libraries,gpuMemory=dict(status='not-applicable'),loaderProcess=loaderProcess))))`;
     const env: NodeJS.ProcessEnv={...process.env,LD_DEBUG:'files'};delete env.LD_DEBUG_OUTPUT;
-    const child=spawnSync('/usr/bin/python3',['-I','-S','-c',program],{env,encoding:'utf8',timeout:10000,maxBuffer:2*1024*1024});
+    const child=spawnSync('/usr/bin/python3',['-I','-S','-c',program],{env,encoding:'utf8',timeout:NATIVE_CHILD_HANG_GUARD_MS,maxBuffer:2*1024*1024});
     expect(child.status,child.stderr).toBe(0);
     const observed=JSON.parse(child.stdout), event={...sample(),...observed.window,runTag:'real',
       monotonicNs:observed.window.startMonotonicNs,runtime:observed.runtime};
@@ -239,7 +245,7 @@ print(json.dumps(dict(window=dict(runTag='real',processId=os.getpid(),nativeThre
     expect(closure.interpreter.path).toContain('ld-linux');
     expect(closure.initializationJoins.some(join=>join.file===closure.interpreter)).toBe(true);
     expect(closure.vdso.origin).toBe('kernel-auxv-AT_SYSINFO_EHDR');
-  });
+  }, 2 * NATIVE_CHILD_HANG_GUARD_MS + 30_000);
 });
 describe('complete native loader capture qualification', () => {
   const window={runTag:'closure',processId:123,nativeThreadId:456,startMonotonicNs:'100',endMonotonicNs:'200'};

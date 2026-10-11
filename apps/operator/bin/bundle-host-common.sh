@@ -78,6 +78,7 @@ HOST_WORKER_OUTPUTS=(
   admission-jobs.worker.mjs
   precision-bench-worker.mjs
   first-party-callers.worker.mjs
+  role-codex-home.worker.mjs
 )
 
 # Dependency-free on-disk scripts that the bundled host resolves as SIBLINGS of
@@ -219,7 +220,8 @@ bundle_host_workers() {
     "$repo_root/packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.worker.ts" \
     "$repo_root/packages/operator-core/lib/release/admission-jobs.worker.ts" \
     "$repo_root/packages/operator-core/lib/memory/bench/precision-bench-worker.ts" \
-    "$repo_root/packages/operator-core/lib/code-intelligence/first-party-callers.worker.ts"; do
+    "$repo_root/packages/operator-core/lib/code-intelligence/first-party-callers.worker.ts" \
+    "$repo_root/packages/operator-core/lib/role-codex-home.worker.ts"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
     BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
     BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"

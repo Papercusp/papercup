@@ -59,11 +59,13 @@ vi.mock('node:fs', async (importActual) => {
 let fakeHome = '';
 const RESOLVED_CODEX_DEFAULT = 'gpt-5.6-sol:xhigh';
 const savedCodexSqliteHomes = process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
+const savedSuCodexHomes = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
 
 beforeEach(() => {
   ownerSidSyncCalls.length = 0;
   fakeHome = mkdtempSync(join(tmpdir(), 'role-codex-home-test-'));
   homeHolder.home = fakeHome;
+  process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(fakeHome, '.papercusp', 'su-codex-homes');
   process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'codex-sqlite-homes');
   vi.resetModules();
 });
@@ -72,6 +74,8 @@ afterEach(() => {
   if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
   if (savedCodexSqliteHomes === undefined) delete process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
   else process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = savedCodexSqliteHomes;
+  if (savedSuCodexHomes === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+  else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = savedSuCodexHomes;
 });
 
 function withResolvedDefault<T extends (opts: any) => any>(fn: T): T {
@@ -119,7 +123,7 @@ function installStaleExtendedWindowRecord(model: string) {
 
 /** Drop stub CC lock-hook scripts under the fake home so writeCodexLockHooks
  *  has something to point at (it no-ops when they're absent). */
-async function installFakeHooks() {
+async function installFakeHooks(options: { turnJournal?: boolean } = {}) {
   const { mkdirSync } = await import('node:fs');
   const dir = join(fakeHome, '.papercusp', 'hooks', 'cc');
   mkdirSync(dir, { recursive: true });
@@ -127,6 +131,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-activity-report.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'lifecycle-report.sh'), '#!/bin/sh\n');
+  if (options.turnJournal) writeFileSync(join(dir, 'stop-turn-journal.sh'), '#!/usr/bin/env bash\n');
   writeFileSync(join(dir, 'precompact-managed-carry.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-write-byte-integrity-guard.mjs'), '#!/usr/bin/env node\n');
@@ -1801,7 +1806,7 @@ describe('writeSuCodexHome', () => {
   });
 
   it('uses async filesystem access for owner-sid reads and stamps during repair', async () => {
-    await installFakeHooks();
+    await installFakeHooks({ turnJournal: true });
     const { readFile, writeFile } = await import('node:fs/promises');
     const { writeSuCodexHome } = await loadMod();
     const opts = {

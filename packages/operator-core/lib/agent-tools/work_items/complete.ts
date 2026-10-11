@@ -230,6 +230,7 @@ import {
   authorityForCompletion,
   countsTowardBurnDown,
   insufficientEvidenceReason,
+  isAbandonmentCloseState,
   reconcileStampedAuthority,
   type CompletionAuthorityFrom,
   type CompletionEvidenceFindings,
@@ -3598,8 +3599,7 @@ async function completeOne(
   // settled in the queue, so the caller-facing burn-down result must use the shared
   // abandoned/drop exception even when completion authority remains `proposed`.
   const isAbandonedClose =
-    duplicateCloseCoverageException ||
-    ['closed', 'deprecated', 'dropped'].includes(String(effectiveState ?? '').trim().toLowerCase());
+    duplicateCloseCoverageException || isAbandonmentCloseState(effectiveState);
   const completionHasChangedOrDeletedPaths =
     (completionEvidenceForGate?.filesChanged?.length ?? 0) > 0 ||
     (completionEvidenceForGate?.filesDeleted?.length ?? 0) > 0;

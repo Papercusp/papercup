@@ -10,6 +10,7 @@ import {
   proseProfilePredicateSql,
   resolveCurrentProseProfileSelection,
 } from '../search/prose-vector-dims';
+import { lexicalLeg } from '../search/lexical/rank';
 
 const SOURCE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -543,6 +544,18 @@ export async function searchPersonalDocuments(
               AND ${proseProfilePredicateSql(sql, personalSelection, 'embedding_profile', 'embedding_mode')}
            ORDER BY embedding <=> ${vector}::vector LIMIT ${Math.max(limit * 4, 20)}`
     : sql`SELECT id, NULL::bigint AS vector_rank FROM filtered WHERE false`;
+  // Lexical leg through the shared seam: BM25 over harness_shared.documents when its index
+  // is live, else the legacy ts_rank_cd ranking. `filtered` is SELECT d.* from documents,
+  // so the unqualified columns resolve. Websearch syntax keeps filtering under BM25 (plan
+  // bm25-lexical-search-evoke-adoption-2026-10-10 P-005, D-007). Only the ORDER feeds
+  // fusion, by position, so the engines' different score scales never meet (D-004).
+  const tsq = sql`websearch_to_tsquery('english', ${input.query})`;
+  const leg = await lexicalLeg(sql, {
+    table: 'documents',
+    query: input.query,
+    querySyntax: 'websearch',
+    legacy: { score: sql`ts_rank_cd(text_tsv, ${tsq})`, match: sql`text_tsv @@ ${tsq}` },
+  });
 
   const rows = await sql<Array<{
     id: string; source: string; scope_key: string; source_id: string | null;
@@ -559,12 +572,10 @@ export async function searchPersonalDocuments(
          ${participantFilter} ${fromFilter} ${toFilter}
     ), lexical AS (
       SELECT id,
-             row_number() OVER (
-               ORDER BY ts_rank_cd(text_tsv, websearch_to_tsquery('english', ${input.query})) DESC
-             ) AS lexical_rank
+             row_number() OVER (ORDER BY ${leg.order}) AS lexical_rank
         FROM filtered
-       WHERE text_tsv @@ websearch_to_tsquery('english', ${input.query})
-       ORDER BY ts_rank_cd(text_tsv, websearch_to_tsquery('english', ${input.query})) DESC
+       WHERE ${leg.match}
+       ORDER BY ${leg.order}
        LIMIT ${Math.max(limit * 4, 20)}
     ), vector AS (${vectorCte}), ranked AS (
       SELECT COALESCE(l.id, v.id) AS id,

@@ -12,7 +12,14 @@
  * machine's real workspace: the guard has to keep holding on a box where `sidestage`
  * does not exist.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+
+// These fixtures exercise real Git repositories, not the shared host's sidecar.
+// Keep ambient operator routing from spawning background services in this suite.
+vi.mock('./fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./fleet/git-via-sidecar')>()),
+  gitSidecarEnabled: () => false,
+}));
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';

@@ -15,6 +15,8 @@ import {
   withNamedQueryDiagnosticContext,
   withNamedQueryDiagnosticLeg,
   recordNamedQueryResponse,
+  traceNamedQueryStage,
+  namedQueryStageTimings,
 } from './db-diagnostic-correlation-wiring';
 
 afterEach(() => {
@@ -23,6 +25,30 @@ afterEach(() => {
 });
 
 describe('db diagnostic correlation wiring', () => {
+  it('retains a pending goal stage at the deadline and isolates overlapping requests', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    await withNamedQueryDiagnosticContext('goals.detail', async (requestId) => {
+      const read = traceNamedQueryStage('goal-portfolio', () => pending);
+      expect(namedQueryStageTimings()).toMatchObject({ requestId, stages: [
+        { stage: 'goal-portfolio', outcome: 'pending', elapsedMs: expect.any(Number) },
+      ] });
+      await withNamedQueryDiagnosticContext('goals.detail', async () => {
+        expect(namedQueryStageTimings()).toBeNull();
+        await traceNamedQueryStage('goal-detail-sql', async () => 42);
+        expect(namedQueryStageTimings()?.stages.map(stage => stage.stage)).toEqual(['goal-detail-sql']);
+      });
+      expect(namedQueryStageTimings()?.stages[0].outcome).toBe('pending');
+      release();
+      await read;
+      expect(namedQueryStageTimings()?.stages[0].outcome).toBe('fulfilled');
+      const failure = new Error('read failed');
+      await expect(traceNamedQueryStage('goal-stewardship', async () => { throw failure; })).rejects.toBe(failure);
+      expect(namedQueryStageTimings()?.stages[1].outcome).toBe('rejected');
+    });
+    expect(namedQueryStageTimings()).toBeNull();
+  });
+
   it('isolates overlapping named requests and captures context before out-of-order completion', async () => {
     installDbDiagnosticCorrelationWiring();
     const hooks = createPgDiagnosticHooks('org-app');

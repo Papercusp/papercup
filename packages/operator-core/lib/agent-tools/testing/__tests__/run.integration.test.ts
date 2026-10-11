@@ -277,7 +277,9 @@ afterAll(async () => {
 });
 
 describe('scratch checkout custody census (WI-10007684)', () => {
-  const activeWindowSql = (async () => [{ since: new Date(0), restricted: ['fixture-restricted'] }]) as
+  // This fixture implements only the tagged query used by the hold census,
+  // rather than the connection methods carried by the full Db interface.
+  const activeWindowSql = (async () => [{ since: new Date(0), restricted: ['fixture-restricted'] }]) as unknown as
     NonNullable<Parameters<typeof readRestrictedWindowHoldings>[0]['sql']>;
   const holdings = (root: string) => readRestrictedWindowHoldings({
     sql: activeWindowSql,
@@ -508,7 +510,16 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
     }
     const siblingFile = join(sibling, 'sibling.test.ts');
 
-    const phaseTimings: TestingRunPhaseTimings = {};
+    const phaseTimings: TestingRunPhaseTimings = {
+      preflightMs: null,
+      provenanceMs: null,
+      preparationMs: null,
+      admissionWaitMs: null,
+      routerExecutionMs: null,
+      ledgerIdReadbackMs: null,
+      finalizationMs: null,
+      totalHandlerMs: null,
+    };
     const out = await runTestFilesCore({
       root: ambient,
       files: ['ambient.test.ts', siblingFile],
@@ -527,7 +538,7 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
     } finally {
       // A failed success-path assertion can still have started timeout recovery.
       // Settle that owned process before the next fixture starts creating files.
-      if (out.detachedRunId) await cancelFixtureRecovery(out.detachedRunId);
+      if ('detachedRunId' in out && out.detachedRunId) await cancelFixtureRecovery(out.detachedRunId);
     }
   }, 120_000);
 
@@ -621,7 +632,7 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
       expect(out.completedGroups?.[0]?.result.failuresTruncated).toBe(false);
       expect(typeof out.detachedRunId).toBe('string');
     } finally {
-      if (out.detachedRunId) await cancelFixtureRecovery(out.detachedRunId);
+      if ('detachedRunId' in out && out.detachedRunId) await cancelFixtureRecovery(out.detachedRunId);
     }
   }, 30_000);
 });
@@ -2022,6 +2033,7 @@ describe('testing:run (integration)', () => {
       expect('timedOut' in raced, 'host shutdown should release the request before the guard').toBe(false);
       expect(elapsedMs).toBeLessThan(4_000);
       expect(out.error).toBe('aborted');
+      if (out.error !== 'aborted') return;
       expect(out.hint).toContain('confined router continues under systemd ownership');
       expect(survivingPids.length).toBeGreaterThan(0);
     } finally {

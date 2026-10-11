@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { teardownTestPg } from '@papercusp/test-config/pg';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import type { FilterNode } from '../../scheduler/claim-spec';
 
@@ -261,5 +262,46 @@ describe('P-007 Phase C a proposed completion is verified before its dependents 
     });
     expect(await spawnFor(lone.id, harness_slug)).toEqual({ outcome: 'no-dependents' });
     expect(await tasksFor(lone.id)).toEqual([]);
+  });
+
+  // WI-6554700010008447: feature-family edges name the dependent harness-QUALIFIED (D-009), so a
+  // bare `feature_id = blocked_ref` join never matched them and such dependents went ungated.
+  it('liveDependents finds a feature-family dependent through its qualified edge and skips a terminal one', async () => {
+    const t = tag();
+    const subject = await createIssue({
+      kind: 'task',
+      title: `publish the rotated key fingerprint ${t}`,
+      body: `downstream verifiers pin the export key fingerprint ${t}`,
+      scope: 'harness:papercusp',
+      createdBy: CLOSER,
+    });
+    const issueDependent = await createIssue({
+      kind: 'task',
+      title: `update the pinned fingerprint in the verifier ${t}`,
+      body: `the verifier pins the old fingerprint ${t}`,
+      scope: 'harness:papercusp',
+      createdBy: WORKER,
+    });
+    await linkIssue(subject.id, issueRef(issueDependent.id), 'blocks', 'fixture', 'success');
+    const { harness_slug } = await row(subject.id);
+    const liveFeature = `WI-CVF-${t}`;
+    const doneFeature = `WI-CVF-DONE-${t}`;
+    for (const [featureId, status] of [[liveFeature, 'open'], [doneFeature, 'done']] as const) {
+      await db.adminSql`
+        INSERT INTO harness_shared.work_items
+          (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts, payload, origin, title, summary, admission)
+        SELECT harness_slug, ${featureId}, 'feature', ${status}, workspace_id, created_ts, updated_ts, '{}'::jsonb,
+               origin, ${`ship the fingerprint rollout ${featureId}`}, summary, admission
+          FROM harness_shared.work_items WHERE feature_id = ${subject.id}`;
+      await db.adminSql`
+        INSERT INTO harness_shared.work_item_deps
+          (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+        VALUES (${DEFAULT_COORD_WORKSPACE}, 'feature', ${`${harness_slug}#${featureId}`}, 'issue', ${subject.id},
+                'blocks', 'success', 'fixture')`;
+    }
+
+    const found = await store.liveDependents(subject.id);
+    expect(found.map((d) => d.ref).sort()).toEqual([issueDependent.id, `${harness_slug}#${liveFeature}`].sort());
+    expect(found.find((d) => d.ref === `${harness_slug}#${liveFeature}`)?.kind).toBe('feature');
   });
 });

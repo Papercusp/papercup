@@ -138,7 +138,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: ownerRowsSqlMock }),
 }));
-vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
+vi.mock('../../role-codex-home', () => ({ writeRoleCodexHomeAsync: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
 // Keep this unit suite off the live flag store. Without this mock the first
 // request waits on getFlag's production datastore timeout (~7s), exceeding
 // Vitest's 5s test budget before any route assertion can run.

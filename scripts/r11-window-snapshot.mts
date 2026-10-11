@@ -1,19 +1,20 @@
 #!/usr/bin/env tsx
 /** One-shot R-11 evidence capture. Example: npx tsx scripts/r11-window-snapshot.mts T0 /absolute/output.json */
 import { createHash } from 'node:crypto';
-import { openSync, closeSync, writeFileSync, linkSync, unlinkSync, readFileSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveBackfillEmbedder } from '../packages/operator-core/lib/search/embed-backfill.ts';
-import { buildR11TimerSpecs, captureR11Snapshot, evaluateR11Snapshots, scheduleR11Timers, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
+import { buildR11TimerSpecs, captureR11Snapshot, evaluateR11Snapshots, publishR11SnapshotBytes, readR11SnapshotBytes, r11JournalDirectory, scheduleR11Timers, type R11Snapshot, type R11Stage } from '../packages/operator-core/lib/search/r11-window-snapshot.ts';
 
 const [stage, path, arg3, arg4, arg5] = process.argv.slice(2);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const recoveryRoot = resolve(repoRoot, '.papercusp/evidence/r11-recovery');
 const sha256 = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
 const load = (file: string): R11Snapshot => {
-  const bytes = readFileSync(file);
+  const bytes = readR11SnapshotBytes(file, recoveryRoot);
   return JSON.parse((file.endsWith('.gz') ? gunzipSync(bytes) : bytes).toString('utf8')) as R11Snapshot;
 };
 let exitCode = 0;
@@ -37,9 +38,11 @@ try {
     }
     const script = fileURLToPath(import.meta.url);
     const tsx = resolve(repoRoot, 'node_modules/.bin/tsx');
+    const journalDirectory = r11JournalDirectory(dirname(path), resolve(repoRoot, '.papercusp/evidence/r11-journals'));
+    if (arg5 !== '--dry-run') mkdirSync(journalDirectory, { recursive: true, mode: 0o700 });
     const timers = await scheduleR11Timers(specs, { t0: path, cut: arg3, t1: arg4 },
-      { repoRoot, tsx, script, journalDirectory: dirname(path) }, arg5 === '--dry-run');
-    const t0Bytes = readFileSync(path);
+      { repoRoot, tsx, script, journalDirectory }, arg5 === '--dry-run');
+    const t0Bytes = readR11SnapshotBytes(path, recoveryRoot);
     process.stdout.write(`${JSON.stringify({ t0: { path, capturedAt: t0.capturedAt,
       bytes: t0Bytes.length, sha256: sha256(t0Bytes) }, timers, dryRun: arg5 === '--dry-run' })}\n`);
   } else if (stage === 'evaluate') {
@@ -61,13 +64,9 @@ try {
     const snapshot = await captureR11Snapshot(getOrgPg().sql, stage as R11Stage, resolved, prior);
     const data = JSON.stringify(snapshot);
     const bytes = path.endsWith('.gz') ? gzipSync(data) : Buffer.from(data);
-    // Hard-link publication is no-clobber: a duplicate timer fire cannot replace evidence.
-    const temp = `${path}.tmp-${process.pid}`;
-    const fd = openSync(temp, 'wx', 0o600);
-    try { writeFileSync(fd, bytes); } finally { closeSync(fd); }
-    try { linkSync(temp, path); } finally { unlinkSync(temp); }
+    const recoveryPath = publishR11SnapshotBytes(path, bytes, recoveryRoot);
     process.stdout.write(`${JSON.stringify({ stage, path, capturedAt: snapshot.capturedAt,
-      targetCount: snapshot.targets.length, bytes: bytes.length, uncompressedBytes: Buffer.byteLength(data), sha256: sha256(bytes),
+      recoveryPath, targetCount: snapshot.targets.length, bytes: bytes.length, uncompressedBytes: Buffer.byteLength(data), sha256: sha256(bytes),
       staleByTarget: snapshot.targets.map((target) => ({ table: target.table,
         stale: target.rows.filter((row) => row.stale).length })) })}\n`);
   }

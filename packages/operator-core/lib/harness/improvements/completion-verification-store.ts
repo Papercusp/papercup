@@ -5,6 +5,7 @@
  */
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
+import { readWorkItemDependenciesForRefs } from '../../dbos/work-item-deps-store';
 import { createIssue, issueRef, linkIssue } from '../../issues-engineer';
 import { claimWorkItem, commentWorkItem, setWorkItemState, TERMINAL_WORK_ITEM_STATES } from '../../work-items';
 import {
@@ -19,18 +20,50 @@ import {
 
 const terminalStates = () => [...TERMINAL_WORK_ITEM_STATES].map((s) => s.toLowerCase());
 
-async function liveDependents(subjectId: string): Promise<LiveDependent[]> {
+/**
+ * The live dependents of a just-closed subject. Edges come from the canonical edge reader
+ * (readWorkItemDependenciesForRefs), not a private blocking predicate, so this enumeration
+ * cannot drift from the dependency store (blocking-floor-single-source guard, WI-6554700010008447).
+ *
+ * Both endpoint families are covered (D-009): an issue-family endpoint is a BARE ref and a
+ * feature-family endpoint a harness-QUALIFIED `<harness>#<id>`, on either side of an edge.
+ * The earlier inline join (`feature_id = blocked_ref`) could never match a qualified
+ * dependent, so feature-family dependents were silently left ungated. Liveness is judged per
+ * form: a bare ref against `feature_id`, a qualified ref against `(harness_slug, feature_id)`.
+ */
+export async function liveDependents(subjectId: string): Promise<LiveDependent[]> {
   const sql = getOrgPg().sql;
-  const rows = await sql<{ kind: string; ref: string }[]>`
-    SELECT DISTINCT d.blocked_kind AS kind, d.blocked_ref AS ref
-      FROM harness_shared.work_item_deps d
-      JOIN harness_shared.work_items w ON w.feature_id = d.blocked_ref
-     WHERE d.workspace_id = ${DEFAULT_COORD_WORKSPACE}
-       AND d.dep_type = 'blocks'
-       AND d.blocker_ref = ${subjectId}
+  const harnesses = await sql<{ harness_slug: string }[]>`
+    SELECT DISTINCT harness_slug FROM harness_shared.work_items
+     WHERE feature_id = ${subjectId} AND harness_slug IS NOT NULL`;
+  const subjectRefs = new Set([subjectId, ...harnesses.map((r) => `${r.harness_slug}#${subjectId}`)]);
+  const edges = (await readWorkItemDependenciesForRefs(sql, {
+    workspaceId: DEFAULT_COORD_WORKSPACE,
+    refs: [...subjectRefs],
+  })).filter((edge) => subjectRefs.has(edge.blocker_ref));
+  if (edges.length === 0) return [];
+  const blockedRefs = [...new Set(edges.map((edge) => edge.blocked_ref))];
+  const bare = blockedRefs.filter((ref) => !ref.includes('#'));
+  const qualified = blockedRefs.filter((ref) => ref.includes('#'));
+  const qualifiedIds = qualified.map((ref) => ref.slice(ref.indexOf('#') + 1));
+  const live = await sql<{ ref: string }[]>`
+    SELECT w.feature_id AS ref
+      FROM harness_shared.work_items w
+     WHERE w.feature_id = ANY(${bare}::text[])
        AND lower(COALESCE(w.status, '')) <> ALL(${terminalStates()}::text[])
-     ORDER BY d.blocked_ref`;
-  return rows.map((r: { kind: string; ref: string }) => ({ kind: r.kind, ref: r.ref }));
+    UNION
+    SELECT w.harness_slug || '#' || w.feature_id AS ref
+      FROM harness_shared.work_items w
+     WHERE w.feature_id = ANY(${qualifiedIds}::text[])
+       AND (w.harness_slug || '#' || w.feature_id) = ANY(${qualified}::text[])
+       AND lower(COALESCE(w.status, '')) <> ALL(${terminalStates()}::text[])`;
+  const liveRefs = new Set(live.map((r: { ref: string }) => r.ref));
+  const dependents = new Map<string, LiveDependent>();
+  for (const edge of edges) {
+    if (!liveRefs.has(edge.blocked_ref)) continue;
+    dependents.set(`${edge.blocked_kind}\u0000${edge.blocked_ref}`, { kind: edge.blocked_kind, ref: edge.blocked_ref });
+  }
+  return [...dependents.values()].sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
 }
 
 async function findOpenTask(subjectId: string): Promise<{ id: string } | null> {

@@ -36,6 +36,8 @@ import { shortCarryHash, computeWorkItemSubjectFingerprint } from '../carry-note
 import { canonicalJson } from './reproducibility/canonical-json';
 import { emitRollout, rolloutIdFor } from './reproducibility/emit';
 import { computePreregHash } from './reproducibility/prereg';
+import { currentBenchTaskProviderCapture, freezeCurrentBenchTaskProviderReservation,
+  currentBenchTaskProviderInputReader, type CurrentTaskInput } from './run-launcher';
 
 vi.mock('../sync-sse', async importOriginal => ({ ...await importOriginal<typeof import('../sync-sse')>(),
   notifySyncInvalidate: vi.fn().mockResolvedValue(undefined) }));
@@ -170,6 +172,8 @@ beforeAll(async () => {
   }
   await sql.unsafe('ALTER TABLE harness_shared.learning_governor_loops ADD COLUMN pot_slug text');
   await sql.unsafe('ALTER TABLE harness_shared.learning_spend_events ADD COLUMN pot_slug text');
+  await sql.unsafe(readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/296-bench-run-operational-store.sql', import.meta.url), 'utf8')
+    .split('\n').filter(line => !/^GRANT /.test(line)).join('\n'));
   // Canonical lifecycle fields from migration 696. Fail setup immediately if
   // this reduced private fixture cannot exercise the production timing read.
   await sql`SELECT started_at, ended_at FROM harness_shared.task_ledger LIMIT 0`;
@@ -180,6 +184,7 @@ beforeEach(async () => {
   operationAttestation.mockReset().mockResolvedValue(undefined);
   vi.clearAllMocks();
   hostHome.byId.clear();
+  await sql`TRUNCATE harness_shared.bench_runs CASCADE`;
   await sql`TRUNCATE harness_shared.coord_event_log, harness_shared.carry_notes, harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.benchmark_rollout, harness_shared.work_items,
     harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage,
     harness_shared.interactive_usage_files, harness_shared.agent_usage_samples,
@@ -1087,6 +1092,91 @@ describe('private workload provider input authority', () => {
       reservationNoteSha256: createHash('sha256').update(note).digest('hex') };
     return { ...f, body, native, receipt, options: { ...f.options, receipts: [receipt] } };
   }
+  async function composedFixture<F extends Awaited<ReturnType<typeof fixture>> | Awaited<ReturnType<typeof toolFixture>>>(f: F, freeze = true) {
+    const protocol = currentProtocolFixture(binding.runId);
+    for (const arm of protocol.arms) arm.account = f.identity.accountId;
+    const input: CurrentTaskInput = { options: { workspaceId, runId: binding.runId, armId: 'papercusp', seed: 1,
+      agent: 'codex', model: f.body.model, effort: 'high', account: f.identity.accountId,
+      preregistration: { preregHash: f.host.preregHash, config: protocol } }, protocol,
+      task: { benchmark: 'swe-bench-pro', instanceId: 't1', repo: 'fixture', baseCommit: 'a'.repeat(40),
+        problemStatement: 'Private receipt composition', graderMeta: { dockerhub_tag: 't1', FAIL_TO_PASS: [], PASS_TO_PASS: [], testFiles: [] } },
+      scope: { sql, workspaceId }, context: { workspaceId, principal: { slug: 'private-host' } } as CurrentTaskInput['context'],
+      resources: { requestsPerArm: 2 } as CurrentTaskInput['resources'], loopId: f.host.loopId,
+      hostRunId: 'private-composition-host', checkout: { dir: f.captureOptions.candidateCheckoutRoot,
+        repo: 'fixture', baseCommit: 'a'.repeat(40), cleanup: async () => {} },
+      observation: { runtimeWorkspaceId: 'private-runtime', workerUnit: 'worker', gatewayUnit: 'gateway' } };
+    const config = { current: { preregHash: f.host.preregHash }, protocol, loopId: f.host.loopId };
+    await sql`INSERT INTO harness_shared.bench_runs (id, workspace_id, arm, task_set_id, model, status, config)
+      VALUES (${input.hostRunId}, ${workspaceId}, 'papercusp', 'custom', ${input.options.model!}, 'running',
+        ${JSON.stringify(config)}::text::jsonb)`;
+    const host = await currentBenchTaskProviderCapture(input); roots.push(host.captureRoot);
+    const body = JSON.stringify(f.body);
+    await host.captureProviderInput({ ...f.attempt, body, bodySha256: createHash('sha256').update(body).digest('hex') });
+    expect((await settleLearningSpend(sql, { workspaceId, reservationId: f.receipt.reservationId,
+      disposition: 'used', usedUsd: 0.002 })).ok).toBe(true);
+    if (freeze) await freezeCurrentBenchTaskProviderReservation(input, f.receipt.reservationId);
+    const allocation = { harnessSlug: f.options.harnessSlug, trialBindingHash: binding.trialBindingHash,
+      notBefore: f.options.notBefore, receipts: [f.receipt] };
+    return { ...f, input, host, allocation };
+  }
+  it('host provider composition binds closed native input to settled host pins after checkout removal without writing', async () => {
+    const f = await composedFixture(await fixture());
+    await sql`UPDATE harness_shared.bench_runs SET status = 'done' WHERE id = ${f.input.hostRunId}`;
+    rmSync(f.input.checkout.dir, { recursive: true });
+    const [before] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    const reader = await currentBenchTaskProviderInputReader(f.input, f.allocation);
+    const rows = await reader(f.receipt.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ kind: 'input', content: f.text,
+      metadata: { nativeInputSource: { nativeSessionId: f.receipt.nativeSessionId },
+        providerInputSource: { reservationId: f.receipt.reservationId, bodyRef: f.host.readCapture(f.receipt.reservationId)!.bodyRef } } });
+    expect((await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`)[0]).toEqual(before);
+    expect((await sql`SELECT status FROM harness_shared.learning_spend_reservations WHERE id = ${f.receipt.reservationId}`)[0].status).toBe('settled');
+    expect(await reader('foreign', binding)).toBeNull();
+    expect(await reader(f.receipt.receiptRef, { ...binding, runId: 'foreign' })).toBeNull();
+  });
+  it.each(['function', 'custom'] as const)('host provider composition preserves exact %s tool consumption without claiming lock authority', async kind => {
+    const f = await composedFixture(await toolFixture(kind));
+    const rows = await (await currentBenchTaskProviderInputReader(f.input, f.allocation))(f.receipt.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ kind: 'input', content: f.receipt.nativeSource === 'tool-result' ? f.native.output : '',
+      metadata: { nativeToolSource: { callId: f.receipt.callId }, providerInputSource: { callId: f.receipt.callId } } });
+    expect(rows?.[0].metadata).not.toHaveProperty('durableTransition');
+  });
+  it('host provider composition refuses an unfrozen final note without implicitly finalizing it', async () => {
+    const f = await composedFixture(await fixture(), false);
+    await expect(currentBenchTaskProviderInputReader(f.input, f.allocation)).rejects.toThrow(/explicitly frozen/);
+    const [row] = await sql`SELECT config FROM harness_shared.bench_runs WHERE id = ${f.input.hostRunId}`;
+    expect(row.config.providerInputCaptures[f.host.allocation.accountingBinding.assignmentId]).not.toHaveProperty('settledProviderInputs');
+  });
+  it('host provider composition derives provider fields from host pins rather than caller replacements', async () => {
+    const f = await composedFixture(await fixture());
+    Object.assign(f.allocation.receipts[0], { bodyPath: '../foreign', bodyRef: 'foreign', accountId: 'foreign',
+      model: 'foreign', effort: 'low', reservationNoteSha256: 'e'.repeat(64), settledAt: 'invalid', maxBytes: 1 });
+    const rows = await (await currentBenchTaskProviderInputReader(f.input, f.allocation))(f.receipt.receiptRef, binding);
+    expect(rows?.[0].content).toBe(f.text);
+  });
+  it.each(['status', 'settled-at', 'note', 'native-source', 'native-turn', 'frozen-body', 'missing-pin', 'missing-settlement-time'])
+  ('host provider composition refuses %s authority drift', async fault => {
+    const f = await composedFixture(await fixture()), reader = await currentBenchTaskProviderInputReader(f.input, f.allocation);
+    if (fault === 'status') await sql`UPDATE harness_shared.learning_spend_reservations SET status = 'open'`;
+    if (fault === 'settled-at') await sql`UPDATE harness_shared.learning_spend_reservations SET settled_at = settled_at + interval '1 second'`;
+    if (fault === 'note') await sql`UPDATE harness_shared.learning_spend_reservations SET note = note || ' '`;
+    if (fault === 'native-source') await sql`TRUNCATE harness_shared.interactive_usage_files`;
+    if (fault === 'native-turn') {
+      f.allocation.receipts[0].nativeTurnId = randomUUID();
+      await expect(currentBenchTaskProviderInputReader(f.input, f.allocation)).rejects.toThrow(/native host request/); return;
+    }
+    if (fault === 'frozen-body' || fault === 'missing-pin' || fault === 'missing-settlement-time') {
+      const path = ['providerInputCaptures', f.host.allocation.accountingBinding.assignmentId, 'settledProviderInputs', f.receipt.reservationId];
+      const replacement = fault === 'missing-pin' ? null : fault === 'missing-settlement-time' ? f.host.readCapture(f.receipt.reservationId) :
+        { ...f.host.readCapture(f.receipt.reservationId), bodyPath: '../foreign' };
+      await sql`UPDATE harness_shared.bench_runs SET config = jsonb_set(config, ${path}::text[],
+        ${JSON.stringify(replacement)}::text::jsonb)`;
+      await expect(currentBenchTaskProviderInputReader(f.input, f.allocation)).rejects.toThrow(); return;
+    }
+    expect(await reader(f.receipt.receiptRef, binding)).toBeNull();
+  });
   it.each(['function', 'custom'] as const)('binds exact %s call/result consumption with completed provider identity', async kind => {
     const f = await toolFixture(kind), reader = currentBenchWorkloadProviderInputReader(f.options);
     const rows = await reader(f.receipt.receiptRef, binding);

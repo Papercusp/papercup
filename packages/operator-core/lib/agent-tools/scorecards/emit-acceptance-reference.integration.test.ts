@@ -272,7 +272,9 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
       });
 
       const replay = await emitScorecard(args as never, producer as never);
-      expect(replay, JSON.stringify(replay)).toMatchObject({ ok: true, created: false, issueId });
+      expect(replay, JSON.stringify(replay)).toMatchObject({
+        ok: true, created: false, reason: 'unchanged-evidence', previousIssueId: issueId,
+      });
       await drainDetached();
       const retried = await db.adminSql<Array<{ report_id: string }>>`
         SELECT report_id FROM harness_shared.report_library

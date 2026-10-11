@@ -57,6 +57,11 @@ export interface ContractTriageMeasure {
   uncoveredActivePlansRaw: number;
   closureReasonMissing: number;
   triageGaps: number;
+  /**
+   * D-030/D-033: uncovered active plans whose harness has no Hive plan scope. They are moved
+   * OUT of triageGaps, so the cell must carry them or they vanish from the one-read surface.
+   */
+  unreachablePlans: number;
   activePlansConsidered?: number;
 }
 

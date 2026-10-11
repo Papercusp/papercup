@@ -2787,6 +2787,7 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       ...executionDetails,
       passed: 65,
       passedCaseTitles: Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
+      passedCaseTitlesTruncated: true,
     };
     await db.sql`UPDATE harness_shared.test_runs
       SET execution_details = ${db.sql.json(incompleteDetails)}
@@ -2795,6 +2796,18 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case omitted from title cap'] },
     });
     expect(incomplete).toMatchObject({ ok: true, status: 'created' });
+    const incompleteEvidence = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-102'],
+      evidenceRefs: [DERIVE_TEST],
+    });
+    expect(incompleteEvidence).toHaveLength(1);
+    expect(incompleteEvidence[0]?.testRunExecution).toMatchObject({
+      passed: 65,
+      passedCaseTitlesIncomplete: true,
+    });
+    expect(incompleteEvidence[0]?.testRunExecution?.passedCaseTitles).toHaveLength(64);
   });
 
   it('binds a mutation-probe copy-out row using its JSON execution root and canonical test path', async () => {

@@ -38,6 +38,7 @@
 // package leaves it inferred for the same reason.
 
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 import { budgetSpendScope, type GoalPortfolioBrief } from '../goal-launch-settings';
 // P-001 — goal-live-holder-guarantee-2026-08-18: ROW PRESENCE IS NOT LIVENESS.
 // A goal-mode row outlives the session that wrote it, so both surfaces below
@@ -822,15 +823,14 @@ export async function resolveGoalDetail(args: {
   // Dynamic like its neighbour above, and for the same reason: this module is
   // imported by callers that must not pay for the store's server dependencies at
   // module load. The TYPE it validates into is imported statically (erased).
-  const { parseGoalLaunchSettings, LAUNCH_PROFILE_OPTIONS, GOAL_LAUNCH_DEFAULTS } = await import(
-    '../goal-launch-settings'
-  );
+  const { parseGoalLaunchSettings, LAUNCH_PROFILE_OPTIONS, GOAL_LAUNCH_DEFAULTS } =
+    await traceNamedQueryStage('goal-detail-dependencies', () => import('../goal-launch-settings'));
   const { sql } = getOrgPg();
   const { workspaceId, goalId, activityLimit = 40 } = args;
   // Same cut as resolveGoalsList — see the note there.
   const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
 
-  const rawDetail = await sql.begin(async (tx) => {
+  const rawDetail = await traceNamedQueryStage('goal-detail-sql', () => sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
 
     const [goalRow] = (await tx`
@@ -1088,7 +1088,7 @@ export async function resolveGoalDetail(args: {
 
     return { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, completedByDay,
       childRows, parentRow };
-  });
+  }));
   if (!rawDetail) return { goal: null };
   const { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, completedByDay,
     childRows, parentRow } = rawDetail;
@@ -1122,7 +1122,7 @@ export async function resolveGoalDetail(args: {
     goalId,
     workspaceId,
     detailHolderRows,
-    await resolveHolderLiveness(detailHolderRows.map((r) => r.ownerId)),
+    await traceNamedQueryStage('goal-holder-liveness', () => resolveHolderLiveness(detailHolderRows.map((r) => r.ownerId))),
   );
   /* PER-GOAL LAUNCH SETTINGS (P-005), read through the SAME schema that
      validates the write. Parsed here rather than handed over raw so the panel
@@ -1315,15 +1315,16 @@ export async function resolveGoalDetail(args: {
   const readPortfolio = (property: string): Promise<GoalPortfolioBrief | null> => {
     let read = portfolioReads.get(property);
     if (!read) {
-      read = import('../goal-launch-settings').then(({ readGoalPortfolioBrief }) =>
+      read = traceNamedQueryStage('goal-portfolio', () => import('../goal-launch-settings').then(({ readGoalPortfolioBrief }) =>
         readGoalPortfolioBrief({ workspaceId, goalId, sql, collectionProperty: property,
-          claimability: 'skip', rubricStewardship: 'skip' }));
+          claimability: 'skip', rubricStewardship: 'skip' })));
       portfolioReads.set(property, read);
     }
     return read;
   };
-  const { readAgentGoalModeState } = await import('../agent-obligation-reader');
-  const goalModeState = await readAgentGoalModeState({
+  const goalModeState = await traceNamedQueryStage('goal-mode-state', async () => {
+    const { readAgentGoalModeState } = await import('../agent-obligation-reader');
+    return readAgentGoalModeState({
     workspaceId,
     goalId,
     // The popup and its conversation already define “the agent” as the most
@@ -1333,6 +1334,7 @@ export async function resolveGoalDetail(args: {
     ownerId: shaped.agents?.[0]?.ownerId ?? null,
     planSlugs: [...new Set((shaped.plans ?? []).map((plan) => plan.planSlug).filter(Boolean))],
     deps: { goalPortfolio: () => readPortfolio('worklist') },
+    });
   });
   const { readTypedPropertyCollection, TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
   const rawData = shaped.goalData as { propertySchema: unknown; properties: unknown };
@@ -1391,14 +1393,18 @@ export async function resolveGoalDetail(args: {
       legacyWorklist.collection?.source === 'active-workspace-plans' &&
       legacyWorklist.collection.policy === 'worklist_policy' && legacyWorklist.collection.selectable);
   if (workOnEverything) {
-    const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
-    rubricStewardship = await readGoalRubricStewardship({ workspaceId, goalId }, { sql });
+    rubricStewardship = await traceNamedQueryStage('goal-stewardship', async () => {
+      const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
+      return readGoalRubricStewardship({ workspaceId, goalId }, { sql });
+    });
     try {
-      const [{ readPlanEvents }, { projectWorklistHistory }] = await Promise.all([
-        import('../agent-tools/coordination/plan-events'), import('../goals/worklist-console'),
-      ]);
-      worklistHistory = projectWorklistHistory(await readPlanEvents({ planSlugs: [goalId],
-        events: ['property_changed'], limit: 40 }));
+      worklistHistory = await traceNamedQueryStage('goal-worklist-history', async () => {
+        const [{ readPlanEvents }, { projectWorklistHistory }] = await Promise.all([
+          import('../agent-tools/coordination/plan-events'), import('../goals/worklist-console'),
+        ]);
+        return projectWorklistHistory(await readPlanEvents({ planSlugs: [goalId],
+          events: ['property_changed'], limit: 40 }));
+      });
     } catch { historyError = 'Worklist change history could not be read.'; }
   }
   return { ...shaped, goalModeState, rubricStewardship, goalData: { ...rawData, collections, worklistHistory, historyError,

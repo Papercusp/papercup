@@ -19,9 +19,21 @@ import { randomUUID } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { currentStageDiagnosticContext } from '../sync/hyperbee/stage-stall-log';
 
+/** Source-owned boundaries, never goal ids, query text, or caller payloads. */
+type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-holder-liveness' |
+  'goal-mode-state' | 'goal-portfolio' | 'goal-stewardship' | 'goal-worklist-history' |
+  'stewardship-dependencies' | 'stewardship-scorecards' | 'stewardship-rubrics' |
+  'stewardship-repairs' | 'stewardship-lineage';
+interface NamedQueryStageTiming {
+  stage: NamedQueryStage;
+  startedAt: number;
+  elapsedMs: number | null;
+  outcome: 'pending' | 'fulfilled' | 'rejected';
+}
+
 const REQUEST_CONTEXT = pinModuleState(
   'operator-core.db-diagnostic-correlation.request-context',
-  () => new AsyncLocalStorage<PgResultDiagnosticCorrelation>(),
+  () => new AsyncLocalStorage<PgResultDiagnosticCorrelation & { stages: NamedQueryStageTiming[] }>(),
 );
 
 /** The route passes only a registry-confirmed name, or null for an unknown operation. */
@@ -44,6 +56,7 @@ export function withNamedQueryDiagnosticContext<T>(
     stage: null,
     boundary: null,
     requestId,
+    stages: [],
     ...(operation ? { operation } : {}),
   }), () => fn(requestId));
 }
@@ -53,6 +66,38 @@ export function withNamedQueryDiagnosticLeg<T>(queryLeg: PgDiagnosticQueryLeg, f
   const request = REQUEST_CONTEXT.getStore();
   if (!request) return fn();
   return REQUEST_CONTEXT.run(Object.freeze({ ...request, queryLeg }), fn);
+}
+
+/** Retain pending boundaries too: a timeout must name work that never settled. */
+export async function traceNamedQueryStage<T>(stage: NamedQueryStage, run: () => PromiseLike<T>): Promise<T> {
+  const context = REQUEST_CONTEXT.getStore();
+  if (!context || context.stages.length >= 32) return await run();
+  const timing: NamedQueryStageTiming = { stage, startedAt: performance.now(), elapsedMs: null, outcome: 'pending' };
+  context.stages.push(timing);
+  try {
+    const value = await run();
+    timing.outcome = 'fulfilled';
+    return value;
+  } catch (error) {
+    timing.outcome = 'rejected';
+    throw error;
+  } finally {
+    timing.elapsedMs = Math.max(0, performance.now() - timing.startedAt);
+  }
+}
+
+/** Snapshot the current request only; overlapping stages are not additive. */
+export function namedQueryStageTimings(): {
+  requestId: string | undefined;
+  stages: Array<{ stage: NamedQueryStage; elapsedMs: number; outcome: NamedQueryStageTiming['outcome'] }>;
+} | null {
+  const context = REQUEST_CONTEXT.getStore();
+  if (!context?.stages.length) return null;
+  return { requestId: context.requestId, stages: context.stages.map(timing => ({
+    stage: timing.stage,
+    elapsedMs: Math.round(timing.elapsedMs ?? Math.max(0, performance.now() - timing.startedAt)),
+    outcome: timing.outcome,
+  })) };
 }
 
 /** Record the exact main-process objects, never a serializer-worker clone. */

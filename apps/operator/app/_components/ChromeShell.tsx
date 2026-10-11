@@ -24,6 +24,7 @@ import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import RouteLink from './RouteLink';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { PuiLauncherButton } from './PuiLauncherButton';
 import { PLAN_DASHBOARD_PARAM } from './plans/PlanDashboardHost';
 // ConsoleLauncherButton is intentionally NOT imported: the global "+" terminal
@@ -309,12 +310,14 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               <span className="pc-header-cta-label">OPS</span>
             </span>
           ) : (
-            <RouteLink href={onAdv ? '/adv' : operationsHref} className="pc-header-cta pc-header-cta--mission" aria-label="Ops" title="Papercusp operations" {...mainNavJumpGateProps}>
-              <span className="pc-header-cta-orb" aria-hidden="true">
-                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
-              </span>
-              <span className="pc-header-cta-label">OPS</span>
-            </RouteLink>
+            <Tooltip label="Papercusp operations">
+              <RouteLink href={onAdv ? '/adv' : operationsHref} className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
+                <span className="pc-header-cta-orb" aria-hidden="true">
+                  <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
+                </span>
+                <span className="pc-header-cta-label">OPS</span>
+              </RouteLink>
+            </Tooltip>
           )}
           {onDao ? (
             <span className="pc-header-cta pc-header-cta--mission is-current" aria-label="DAO Management (current page)" aria-current="page">

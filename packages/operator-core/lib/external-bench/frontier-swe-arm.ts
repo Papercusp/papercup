@@ -22,6 +22,9 @@ import type { ProcExec } from './grader/swe-bench-pro';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
 import { loadFrontierSweTaskSet } from './task-sets';
 import { appendRunResult, missingTrials, readRunResults } from './frontier-swe-resume';
+import {
+  buildCampaignBundle, campaignEntriesFromFrontierSweResults, writeCampaignBundle, type CampaignMissing,
+} from './reproducibility/campaign-bundle';
 
 const GRADER_FAMILY = 'frontier-swe';
 const SUITE = 'frontier-swe';
@@ -101,6 +104,20 @@ export interface FrontierSweResilientDeps extends Omit<FrontierSweArmDeps, 'seed
   runIdBase: string;
   /** Optional extra per-row hook (the durable append is automatic). */
   onResult?: (r: TaskRunResult) => void | Promise<void>;
+  /** P-022 / D-010: where each completed campaign pass writes its dated bundle
+   *  (`<bundleDir>/benchmarks/campaigns/<UTC date>-<campaignId>/`). */
+  bundleDir: string;
+  /** Bundle campaign id (default `runIdBase`). */
+  campaignId?: string;
+}
+
+/** The dated bundle a campaign pass wrote, with its completeness verdict (D-009 item 3). */
+export interface FrontierSweCampaignBundleResult {
+  root: string;
+  complete: boolean;
+  missing: CampaignMissing[];
+  /** Repo-relative paths written under `bundleDir`. */
+  written: string[];
 }
 
 /**
@@ -111,7 +128,7 @@ export interface FrontierSweResilientDeps extends Omit<FrontierSweArmDeps, 'seed
  */
 export async function runFrontierSweResilient(
   deps: FrontierSweResilientDeps,
-): Promise<{ perSeed: TopologyRunResult[]; rows: TaskRunResult[]; alreadyComplete: boolean }> {
+): Promise<{ perSeed: TopologyRunResult[]; rows: TaskRunResult[]; alreadyComplete: boolean; bundle: FrontierSweCampaignBundleResult }> {
   const backlog = loadFrontierSweTaskSet(deps.taskSetId ?? 'frontier-swe-cpu', deps.taskIds);
   const allIds = backlog.map((t) => t.instanceId);
   const arm = deps.spec.arm;
@@ -154,6 +171,7 @@ export async function runFrontierSweResilient(
           resolved: r.resolved,
           graderStatus: r.graderStatus,
           ...(r.graderDetail !== undefined ? { graderDetail: r.graderDetail } : {}),
+          ...(r.traceRefs && r.traceRefs.length > 0 ? { traceRefs: r.traceRefs } : {}),
         });
         rows.push(r);
         await deps.onResult?.(r);
@@ -161,5 +179,16 @@ export async function runFrontierSweResilient(
     });
     perSeed.push(res);
   }
-  return { perSeed, rows, alreadyComplete: perSeed.length === 0 };
+
+  // P-022 / D-010: the campaign pass is complete — write its dated bundle from the FULL durable record (latest row
+  // per attempt, so a resumed campaign's earlier trials are included). Gaps stay visible in the manifest.
+  const entries = campaignEntriesFromFrontierSweResults(readRunResults(deps.resultsPath), SUITE, arm);
+  const built = buildCampaignBundle({
+    campaignId: deps.campaignId ?? deps.runIdBase,
+    completedAt: new Date((deps.now ?? Date.now)()),
+    entries,
+  });
+  const written = writeCampaignBundle(built, deps.bundleDir);
+  const bundle = { root: built.root, complete: built.manifest.complete, missing: built.manifest.missing, written };
+  return { perSeed, rows, alreadyComplete: perSeed.length === 0, bundle };
 }

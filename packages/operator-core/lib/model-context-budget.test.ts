@@ -424,6 +424,14 @@ describe('codex extended-window launch config', () => {
       autoCompactLimit: 784_800,
       source: 'codex-model-cache-max',
     });
+    expect(codexContextWindowConfig(model, { home: noRegistry, compactionLimit: 200_000 })).toMatchObject({
+      window: 1_000_000,
+      autoCompactLimit: 160_000,
+    });
+    expect(codexContextWindowConfig(model, { codexHome: sessionHome, compactionLimit: 200_000 })).toMatchObject({
+      window: 872_000,
+      autoCompactLimit: 160_000,
+    });
   });
 
   it('preserves registry-derived sub-1M extended-window behavior for unrecognised models', () => {

@@ -111,7 +111,12 @@ describe('portable Playwright ledger reporter', () => {
       sql.mockReset().mockResolvedValue([{ id: '12345' }]);
       const reporter = new Reporter();
       reporter.onBegin({ rootDir: '/portal/e2e' });
-      for (const [title, status] of [['new account', 'passed'], ['stale curriculum', 'failed']] as const) {
+      const cases = [
+        ['new account', 'passed'] as const,
+        ...Array.from({ length: 64 }, (_, index) => ['passed case ' + index, 'passed'] as const),
+        ['stale curriculum', 'failed'] as const,
+      ];
+      for (const [title, status] of cases) {
         reporter.onTestEnd({
           title, titlePath: () => ['', '', 'portal-product-tutorial.spec.ts', 'account-first', title],
           location: { file: '/portal/e2e/portal-product-tutorial.spec.ts' },
@@ -130,10 +135,13 @@ describe('portable Playwright ledger reporter', () => {
       expect(details).toMatchObject({
         root: '/portal', testLayer: 'e2e', harnessSlug: 'portal',
         workspaceId: 'papercusp-workspace', runGroupId: 'portal-e2e-proof',
-        passed: 1, failed: 1, skipped: 0, worktreeDirty: false,
-        passedCaseTitles: ['account-first > new account'],
+        passed: 65, failed: 1, skipped: 0, worktreeDirty: false,
+        passedCaseTitlesTruncated: true,
         failedCaseTitles: ['account-first > stale curriculum'],
       });
+      expect((details as { passedCaseTitles: string[] }).passedCaseTitles).toHaveLength(64);
+      expect((details as { passedCaseTitles: string[] }).passedCaseTitles[0])
+        .toBe('account-first > new account');
       expect(parseTestRunExecutionDetails(details)).toEqual(details);
       expect(JSON.parse(readFileSync(receipts, 'utf8').trim())).toEqual({
         filePath: 'e2e/portal-product-tutorial.spec.ts', status: 'fail', outcome: 'inserted', id: '12345',

@@ -48,6 +48,10 @@ function docIdsForSlugs(slugs: readonly string[]): string[] {
   for (const raw of slugs) {
     const slug = slugFromDocId(raw.trim());
     if (!slug) continue;
+    // Search accepts legacy authored rows whose doc_id is already a slug, while
+    // current filesystem docs use an extension. Query both identities so a
+    // search hit remains readable through this targeted adapter.
+    docIds.add(slug);
     docIds.add(`${slug}.mdx`);
     docIds.add(`${slug}.md`);
   }

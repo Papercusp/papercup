@@ -242,6 +242,10 @@ describe('P-007: the four verdict cells', () => {
       // population is 0. One cell could not state both truths.
       'testing.census.population',
       'testing.coverage.floor',
+      // verification-system-improvements-2026-10-10 P-002: the requirement-contract health
+      // read (contract coverage by cohort, evidence-bound share, triage gaps, stale
+      // acceptance, VAL-* residue), resolved through plans:verification-health.
+      'verification.health',
       // workspace-work-scope-policy-2026-09-04 / WI-2145092: "is this workspace confined to
       // an allow-list of harnesses?" — the D-003 residue, resolved through the read-only
       // lens workspace:work_scope_status (the control tool is write-capable, which the cell

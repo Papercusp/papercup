@@ -203,11 +203,23 @@ function withScratchWorkspaceMutex<T>(
   })();
 }
 
-async function readSharedScratchQuotaState(workspaceId: string): Promise<SharedScratchQuotaState | null> {
+type ScratchWriteObservedAwaitPhase = 'quota-state-read' | 'quota-state-publish' | 'marker-probe';
+type ScratchWriteAwaitObserver = <T>(
+  phase: ScratchWriteObservedAwaitPhase,
+  subphase: string,
+  operation: () => Promise<T>,
+) => Promise<T>;
+
+async function readSharedScratchQuotaState(
+  workspaceId: string,
+  observeAwait?: ScratchWriteAwaitObserver,
+): Promise<SharedScratchQuotaState | null> {
   const path = sharedScratchQuotaStatePath(workspaceId);
   let body: string;
   try {
-    body = await readFileAsync(path, 'utf8');
+    body = await (observeAwait
+      ? observeAwait('quota-state-read', 'read-file', () => readFileAsync(path, 'utf8'))
+      : readFileAsync(path, 'utf8'));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
@@ -235,11 +247,15 @@ async function writeSharedScratchQuotaState(
   workspaceId: string,
   bytes: number,
   measuredAt: number,
+  observeAwait?: ScratchWriteAwaitObserver,
 ): Promise<number> {
   const path = sharedScratchQuotaStatePath(workspaceId);
   const parent = dirname(path);
-  await mkdirAsync(parent, { recursive: true, mode: 0o700 });
-  const existing = await readSharedScratchQuotaState(workspaceId);
+  const publishAwait = <T>(subphase: string, operation: () => Promise<T>) => observeAwait
+    ? observeAwait('quota-state-publish', subphase, operation)
+    : operation();
+  await publishAwait('ensure-parent', () => mkdirAsync(parent, { recursive: true, mode: 0o700 }));
+  const existing = await readSharedScratchQuotaState(workspaceId, observeAwait);
   const entry = usageState.byWorkspace.get(workspaceId);
   // updatedAt is also the shared-state revision fence. Advance it monotonically so two
   // writes in the same millisecond cannot make a remote mutation look like our own snapshot.
@@ -256,11 +272,12 @@ async function writeSharedScratchQuotaState(
     updatedAt,
   };
   const temporary = path + '.' + process.pid + '.' + randomUUID() + '.tmp';
-  await writeFileAsync(temporary, JSON.stringify(record) + '\n', { mode: 0o600 });
+  await publishAwait('write-temporary-file', () =>
+    writeFileAsync(temporary, JSON.stringify(record) + '\n', { mode: 0o600 }));
   try {
-    await renameAsync(temporary, path);
+    await publishAwait('rename-temporary-file', () => renameAsync(temporary, path));
   } catch (error) {
-    await rmAsync(temporary, { force: true }).catch(() => {});
+    await publishAwait('remove-temporary-file', () => rmAsync(temporary, { force: true })).catch(() => {});
     throw error;
   }
   if (entry) entry.sharedUpdatedAt = updatedAt;
@@ -284,6 +301,7 @@ function invalidateLocalScratchUsage(workspaceId: string): void {
 async function measureAndAdoptSharedScratchUsage(
   workspaceId: string,
   cachedState?: SharedScratchQuotaState | null,
+  observeAwait?: ScratchWriteAwaitObserver,
 ): Promise<{
   bytes: number;
   measuredAt: number;
@@ -291,7 +309,7 @@ async function measureAndAdoptSharedScratchUsage(
   updatedAt: number;
 }> {
   const existing = cachedState === undefined
-    ? await readSharedScratchQuotaState(workspaceId)
+    ? await readSharedScratchQuotaState(workspaceId, observeAwait)
     : cachedState;
   const now = Date.now();
   if (existing && now - existing.updatedAt <= USAGE_REFRESH_MS) {
@@ -310,7 +328,7 @@ async function measureAndAdoptSharedScratchUsage(
     throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics);
   }
   const measuredAt = Date.now();
-  const updatedAt = await writeSharedScratchQuotaState(workspaceId, bytes, measuredAt);
+  const updatedAt = await writeSharedScratchQuotaState(workspaceId, bytes, measuredAt, observeAwait);
   return { bytes, measuredAt, measured: true, updatedAt };
 }
 
@@ -1376,6 +1394,12 @@ export interface ScratchWriteTimings {
   quotaWaitMs: number;
   refreshWaitMs: number;
   quotaRecoveryMs: number;
+  /** Awaited shared quota-state file reads, including the revision read before publication. */
+  quotaStateReadMs?: number;
+  /** Awaited publication I/O (parent mkdir, temp write, rename, and failed-temp cleanup). */
+  quotaStatePublishMs?: number;
+  /** Awaited workspace marker lstat probes used by the write path. */
+  markerProbeMs?: number;
   writeMs: number;
   totalMs: number;
   /** Present when this write initiated an actual request-time quota-recovery scan. */
@@ -1528,7 +1552,13 @@ function snapshotScratchQuotaRecoveryDiagnostics(
 }
 
 export interface ScratchWriteProgress {
-  phase: 'quota-wait' | 'usage-refresh-wait' | 'quota-recovery' | 'file-write';
+  phase:
+    | 'quota-wait'
+    | 'usage-refresh-wait'
+    | 'quota-recovery'
+    | 'file-write'
+    | ScratchWriteObservedAwaitPhase;
+  subphase?: string;
   phaseElapsedMs: number;
   totalElapsedMs: number;
   bytes: number;
@@ -1595,7 +1625,14 @@ export async function writeWithScratchQuota(
   entry.writes.set(token, pending);
   const startedAt = performance.now();
   const timings: ScratchWriteTimings = {
-    quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 0,
+    quotaWaitMs: 0,
+    refreshWaitMs: 0,
+    quotaRecoveryMs: 0,
+    quotaStateReadMs: 0,
+    quotaStatePublishMs: 0,
+    markerProbeMs: 0,
+    writeMs: 0,
+    totalMs: 0,
   };
   let activeRecoveryDiagnostics: ScratchQuotaRecoveryDiagnostics | undefined;
   let sharedMeasuredAt = Date.now();
@@ -1684,10 +1721,48 @@ export async function writeWithScratchQuota(
     mutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);
     emitLockWaitProgress();
   } : undefined;
+  const observeAwait: ScratchWriteAwaitObserver = async (phase, subphase, operation) => {
+    const start = performance.now();
+    const timingField = phase === 'quota-state-read'
+      ? 'quotaStateReadMs'
+      : phase === 'quota-state-publish'
+        ? 'quotaStatePublishMs'
+        : 'markerProbeMs';
+    const emitProgress = () => {
+      try {
+        opts.onTiming?.({
+          ...timings,
+          progress: {
+            phase,
+            subphase,
+            phaseElapsedMs: Math.max(0, performance.now() - start),
+            totalElapsedMs: Math.max(0, performance.now() - startedAt),
+            bytes: opts.bytes,
+            pendingWrites: entry.writes.size,
+            recoveryActive: Boolean(entry.recovering),
+            refreshActive: Boolean(entry.refreshing),
+            ...(mutexWaitOwner ? { mutexWaitOwner } : {}),
+          },
+        });
+      } catch {
+        // Diagnostic callbacks must never replace a write failure or invalidate a cursor.
+      }
+    };
+    const progressTimeout = opts.onTiming
+      ? setTimeout(emitProgress, SCRATCH_WRITE_PROGRESS_AFTER_MS)
+      : undefined;
+    (progressTimeout as { unref?: () => void } | undefined)?.unref?.();
+    try {
+      return await operation();
+    } finally {
+      if (progressTimeout) clearTimeout(progressTimeout);
+      timings[timingField] = (timings[timingField] ?? 0) + Math.max(0, performance.now() - start);
+    }
+  };
   try {
     await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
       let shared: { bytes: number; measuredAt: number; measured: boolean; updatedAt: number } | undefined;
-      const cachedState = await readSharedScratchQuotaState(opts.workspaceId);
+      const cachedState = await readSharedScratchQuotaState(opts.workspaceId, observeAwait);
       if (cachedState && Date.now() - cachedState.updatedAt <= USAGE_REFRESH_MS) {
         shared = {
           bytes: cachedState.bytes,
@@ -1697,7 +1772,7 @@ export async function writeWithScratchQuota(
         };
       } else {
         await timed('refreshWaitMs', async () => {
-          shared = await measureAndAdoptSharedScratchUsage(opts.workspaceId, cachedState);
+          shared = await measureAndAdoptSharedScratchUsage(opts.workspaceId, cachedState, observeAwait);
         });
       }
       if (!shared) throw new Error('Shared scratch quota state was not loaded');
@@ -1710,7 +1785,7 @@ export async function writeWithScratchQuota(
       const markerPath = join(scratchRootForWorkspace(opts.workspaceId), WORKSPACE_SCRATCH_MARKER);
       if (scratchRunDirForFile(opts.workspaceId, opts.filePath)) {
         try {
-          await lstatAsync(markerPath);
+          await observeAwait('marker-probe', 'before-reservation', () => lstatAsync(markerPath));
         } catch {
           markerBytes = Buffer.byteLength(workspaceScratchMarkerBody(opts.workspaceId));
         }
@@ -1743,7 +1818,9 @@ export async function writeWithScratchQuota(
                   WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES -
                   [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)),
                 true, diagnostics);
-                await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, entry.measuredAt);
+                await writeSharedScratchQuotaState(
+                  opts.workspaceId, entry.bytes, entry.measuredAt, observeAwait,
+                );
                 sharedMeasuredAt = entry.measuredAt;
               } finally {
                 timings.quotaRecoveryDiagnostics = snapshotScratchQuotaRecoveryDiagnostics(diagnostics);
@@ -1765,19 +1842,21 @@ export async function writeWithScratchQuota(
       try {
         // Publish the reservation before touching the payload. A process crash can leave a
         // conservative over-count, but never an under-count that admits another process past quota.
-        await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt);
+        await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt, observeAwait);
         reservedStatePersisted = true;
         await timed('writeMs', write);
         succeeded = true;
 
         if (markerBytes > 0) {
           try {
-            await lstatAsync(markerPath);
+            await observeAwait('marker-probe', 'after-write', () => lstatAsync(markerPath));
           } catch {
             entry.bytes = Math.max(0, entry.bytes - markerBytes);
             pending.bytes -= markerBytes;
             adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -markerBytes);
-            await writeSharedScratchQuotaState(opts.workspaceId, entry.bytes, sharedMeasuredAt).catch(() => {});
+            await writeSharedScratchQuotaState(
+              opts.workspaceId, entry.bytes, sharedMeasuredAt, observeAwait,
+            ).catch(() => {});
           }
         }
       } catch (error) {

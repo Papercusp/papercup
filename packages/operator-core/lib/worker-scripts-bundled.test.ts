@@ -91,6 +91,11 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
     source: 'packages/operator-core/lib/code-intelligence/first-party-callers.worker.ts',
     output: 'first-party-callers.worker.mjs',
   },
+  {
+    // WI-10005186: keep Codex-home filesystem materialization off request loops.
+    source: 'packages/operator-core/lib/role-codex-home.worker.ts',
+    output: 'role-codex-home.worker.mjs',
+  },
 ];
 
 /**

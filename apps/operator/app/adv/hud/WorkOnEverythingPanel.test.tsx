@@ -113,7 +113,7 @@ describe('Work on everything: progress table (WI-10007603)', () => {
     if (status !== 'verified') expect(within(table).queryByText('Improvement verified')).toBeNull();
   });
 
-  it('renders supplied criterion evidence and opens its canonical scorecard references', () => {
+  it('renders measured criterion ratings and opens canonical scorecard references', () => {
     const data = fixture();
     data.rubricStewardship = {
       measuredAt: '2026-10-09T12:00:00Z', windowStart: '2026-10-02T12:00:00Z',
@@ -131,9 +131,11 @@ describe('Work on everything: progress table (WI-10007603)', () => {
     expect(within(quality).getByText('unknown')).toBeTruthy();
     expect(within(quality).getByText('partial')).toBeTruthy();
     expect(within(quality).getByText(/limited recent page/)).toBeTruthy();
-    for (const [evidence, ref] of [['Coverage measured', 'EI-coverage'], ['Quality not exercised', 'EI-quality'],
-      ['Repair still open', 'EI-correction']]) {
-      fireEvent.click(within(quality).getByTitle(evidence));
+    const evidenceButtons = within(quality).getAllByRole('button', { name: 'View evidence' });
+    const refs = ['EI-coverage', 'EI-quality', 'EI-correction'];
+    expect(evidenceButtons).toHaveLength(refs.length);
+    for (const [index, ref] of refs.entries()) {
+      fireEvent.click(evidenceButtons[index]);
       expect(open).toHaveBeenLastCalledWith(ref);
     }
     expect(within(quality).queryByText('Improvement verified')).toBeNull();

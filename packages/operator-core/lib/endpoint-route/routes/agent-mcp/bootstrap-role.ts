@@ -56,7 +56,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { assembleSpawnHydration } from '../../../fleet/spawn-hydration';
 import { productionSpawnHydrationDeps } from '../../../fleet/spawn-hydration-deps';
-import { writeRoleCodexHome } from '../../../role-codex-home';
+import { writeRoleCodexHomeAsync } from '../../../role-codex-home';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import {
   materializeCodexPrompts,
@@ -792,7 +792,7 @@ const post = defineTool({
 
     if (agent === 'codex') {
       try {
-        const ch = writeRoleCodexHome({
+        const ch = await writeRoleCodexHomeAsync({
           sessionKey,
           mcpUrl: spec.mcpUrl,
           promptText: spec.promptText,

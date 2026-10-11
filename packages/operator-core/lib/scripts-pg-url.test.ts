@@ -193,7 +193,31 @@ describe('resolveScriptPgUrl', () => {
       root: mkdtempSync(join(tmpdir(), 'pg-url-iso2-')),
       env: { HARNESS_ADMIN_DATABASE_URL: 'postgres://explicit/db', PAPERCUSP_PG_PORT: '19532' },
     });
-    expect(r.source).not.toBe('isolated-pg-port');
+    expect(r.url).toBe('postgres://explicit/db');
+    expect(r.source).toBe('env');
+    expect(r.via).toBe('HARNESS_ADMIN_DATABASE_URL');
+  });
+
+  it('resolves a copied environment operator pin without reading or changing the ambient pin', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pg-url-copied-env-'));
+    const operatorUrl = 'postgresql://operator:fixture@127.0.0.1:22223/copied-operator-store';
+    const ambientUrl = 'postgresql://ambient:fixture@127.0.0.1:22224/ambient-store';
+    writeFileSync(join(root, '.env.local'), `DATABASE_URL=${operatorUrl}\n`);
+    for (const name of [...PG_URL_ENV_VARS, ...PG_ISOLATION_ENV_VARS]) vi.stubEnv(name, undefined);
+    vi.stubEnv('DATABASE_URL', ambientUrl);
+    _resetHarnessAdminUrlCacheForTests();
+    const env: Record<string, string | undefined> = {};
+    try {
+      const resolved = resolveScriptPgUrl({ root, env });
+      expect(resolved.url).toBe(operatorUrl);
+      expect(resolved.source).toBe('env');
+      expect(resolved.via).toBe('DATABASE_URL');
+      expect(env.DATABASE_URL).toBe(operatorUrl);
+      expect(process.env.DATABASE_URL).toBe(ambientUrl);
+    } finally {
+      vi.unstubAllEnvs();
+      _resetHarnessAdminUrlCacheForTests();
+    }
   });
 });
 

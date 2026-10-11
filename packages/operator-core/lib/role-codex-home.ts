@@ -78,6 +78,7 @@ import {
   codexModelConfigToml,
   resolveCodexModel,
 } from './model-context-budget.mjs';
+import { runCodexHomeMaterializerJob, type CodexHomeMaterializerJob } from './role-codex-home-offload';
 
 import { dirname as __esmDirname } from 'node:path';
 import { fileURLToPath as __esmFileURLToPath } from 'node:url';
@@ -1259,7 +1260,7 @@ function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerd
  * recreated fresh each launch so a re-launch can't inherit a stale prompt
  * or url.
  */
-export function writeRoleCodexHome(opts: {
+export type WriteRoleCodexHomeOptions = {
   sessionKey: string | number;
   /** Repair managed files in place without removing the native resume history. */
   preserveExisting?: boolean;
@@ -1290,7 +1291,9 @@ export function writeRoleCodexHome(opts: {
    *  as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME does
    *  not block at codex's "Do you trust this directory?" boot prompt. */
   trustDir?: string | null;
-}): RoleCodexHome {
+};
+
+export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHome {
   // ONE shared codex-home key (unify-launch-mechanics P-004): both role and su
   // codex sessions live under the SAME root the wake-executor resume leg reads
   // (`codexHomeForAdvSession` → `codexHomeForSessionKey`). Previously the role
@@ -1380,6 +1383,18 @@ export function writeRoleCodexHome(opts: {
   });
 
   return { codexHome, sqliteHome, agentsPath, configPath, instructionLint };
+}
+
+/** The production request paths use the bounded worker queue so Codex-home
+ *  materialization never performs synchronous filesystem writes on the host
+ *  event loop. The synchronous form remains for isolated scripts and tests. */
+export async function writeRoleCodexHomeAsync(
+  opts: WriteRoleCodexHomeOptions,
+): Promise<RoleCodexHome> {
+  const codexHome = codexHomeForSessionKey(opts.sessionKey);
+  return withCodexHomeAsyncWriteLock(codexHome, () =>
+    runCodexHomeMaterializerJob<RoleCodexHome>({ operation: 'role-write', options: opts }),
+  );
 }
 
 export interface SuCodexHome {
@@ -1724,7 +1739,9 @@ export async function ensureSuCodexHomeConfigAsync(
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
   return withCodexHomeAsyncWriteLock(codexHome, async () => {
     const priorSid = await existingCodexHomeOwnerSidAsync(codexHome);
-    const result = ensureSuCodexHomeConfigImpl(opts, { priorSid, skipStamp: true });
+    const result = await runCodexHomeMaterializerJob<ReturnType<typeof ensureSuCodexHomeConfigImpl>>({
+      operation: 'su-ensure-config', options: opts, priorSid,
+    });
     if (result.identityRepaired) await stampCodexHomeOwnerSidAsync(codexHome, opts.sid);
     return result;
   });
@@ -1876,10 +1893,31 @@ export async function writeSuCodexHomeAsync(
       );
     }
     const { isOwnerLive: _isOwnerLive, ...writeOpts } = opts;
-    const result = writeSuCodexHomeImpl(writeOpts, { priorSid, skipStamp: true });
+    const result = await runCodexHomeMaterializerJob<SuCodexHome>({
+      operation: 'su-write', options: writeOpts, priorSid,
+    });
     await stampCodexHomeOwnerSidAsync(result.codexHome, opts.sid);
     return result;
   });
+}
+
+/** Worker entry dispatch. Keep the synchronous implementations here so their
+ *  existing filesystem and identity semantics remain the single source of truth. */
+export function executeCodexHomeMaterializerJob(job: CodexHomeMaterializerJob): unknown {
+  switch (job.operation) {
+    case 'role-write':
+      return writeRoleCodexHome(job.options as WriteRoleCodexHomeOptions);
+    case 'su-write':
+      return writeSuCodexHomeImpl(job.options as WriteSuCodexHomeOptions, {
+        priorSid: job.priorSid ?? null,
+        skipStamp: true,
+      });
+    case 'su-ensure-config':
+      return ensureSuCodexHomeConfigImpl(job.options as EnsureSuCodexHomeConfigOptions, {
+        priorSid: job.priorSid ?? null,
+        skipStamp: true,
+      });
+  }
 }
 
 const PAPERCUSP_SU_TABLE_RE = /^mcp_servers\.(?:papercusp-su|"papercusp-su")(?:\.|$)/;

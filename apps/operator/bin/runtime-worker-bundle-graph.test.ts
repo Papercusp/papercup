@@ -117,6 +117,7 @@ describe('bg-host runtime worker bundles stay small and buildable', () => {
     // Positive control: a parser that matched nothing would make every case below vacuous.
     expect(workers).toContain('packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts');
     expect(workers).toContain('packages/operator-core/lib/memory/bench/precision-bench-worker.ts');
+    expect(workers).toContain('packages/operator-core/lib/role-codex-home.worker.ts');
     expect(workers.length).toBeGreaterThanOrEqual(2);
   });
 

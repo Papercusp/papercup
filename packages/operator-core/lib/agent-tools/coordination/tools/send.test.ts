@@ -3076,6 +3076,15 @@ describe('coord:send `expects` gate (P-017 b#1 — required-with-explicit-none, 
 });
 
 describe('report card payload (agent-report-cards-2026-07-17 P-001)', () => {
+  it('accepts and preserves canonical actionable item refs in both public send forms', () => {
+    const report = { plans: [{ title: 'Measured plan', items: [
+      { id: 'P-012', text: 'Verified report', status: 'done', ref: 'wi:papercusp#WI-123' },
+    ] }] };
+    const message = { to: ['human'], expects: 'none' as const, summary: 'Measured status', report };
+    expect(tool.args.parse(message).report).toEqual(report);
+    expect(tool.args.parse({ items: [message] }).items?.[0].report).toEqual(report);
+  });
+
   it('advertises the ReportBlock shape inline for both send forms', () => {
     type JsonSchemaNode = {
       $ref?: string;

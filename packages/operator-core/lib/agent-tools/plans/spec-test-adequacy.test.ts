@@ -2612,6 +2612,22 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(uncorroborated.ratings['correct-layer'].evidence).not.toContain('different passing case');
     expect(uncorroborated.ratings['correct-layer'].suggestion).toContain('exact passedCaseTitles');
 
+    const incompleteTitleLedger = successfulTestBinding('test/reconnect.integration.test.ts', {
+      testCases: ['declared binding case'],
+    });
+    incompleteTitleLedger.testRunExecution!.passedCaseTitles = ['different passing case'];
+    incompleteTitleLedger.testRunExecution!.passedCaseTitlesIncomplete = true;
+    const unknownBecauseCapped = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [incompleteTitleLedger],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(unknownBecauseCapped.ratings['correct-layer'].rating).toBe('unknown');
+    expect(unknownBecauseCapped.ratings['correct-layer'].evidence).toContain('"passedCaseTitlesIncomplete":true');
+    expect(unknownBecauseCapped.ratings['correct-layer'].evidence).toContain('"missing":[]');
+    expect(unknownBecauseCapped.ratings['correct-layer'].evidence)
+      .toContain('"unknown":["declared binding case"]');
+
     const contradictoryLayer = successfulTestBinding('test/reconnect.unit.test.ts', {
       layer: 'unit',
       testCases: ['unit binding reaches its real path'],
@@ -2825,7 +2841,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(21);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(22);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
@@ -3822,6 +3838,49 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     });
     expect(result.ratings['disclosed-gap'].rating).toBe('fail');
     expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
+  it.each([
+    'Recipe pins only the three actual captured expiry source files and the calibrated seeded test/fixture.',
+    'The input inventory contains only production sources and test/expiry.integration.test.ts.',
+    'The input inventory contains only production sources and test\\fixture.ts.',
+    'The input inventory contains only production sources and test.ts.',
+  ])('does not turn a qualified test noun in an input inventory into a proof gap: %s', (scope) => {
+    const row = successfulTestBinding('expiry.integration.test.ts');
+    row.details.observations = { scope };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+    expect(supersedeEligibilityGaps(row)).toEqual([]);
+  });
+
+  it.each([
+    'The proof only tests the expiry transition.',
+    'We only test the expiry transition.',
+    'Recipe pins only sources and test/fixture. The proof only tests the expiry transition.',
+    'Recipe pins only sources and test/fixture; reply transitions are not covered.',
+  ])('retains a real proof gap beside input inventory wording: %s', (scope) => {
+    const row = successfulTestBinding('expiry.integration.test.ts');
+    row.details.observations = { scope };
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(supersedeEligibilityGaps(row)).toContain('an author-disclosed gap is recorded');
+  });
+
+  it('retains an explicit gap even when its text is a qualified test noun', () => {
+    const row = successfulTestBinding('expiry.integration.test.ts');
+    row.details.adequacy = { ...row.details.adequacy as Record<string, unknown>, disclosedGap: 'test/fixture' };
+    expect(supersedeEligibilityGaps(row)).toContain('an author-disclosed gap is recorded');
   });
 
   it.each([

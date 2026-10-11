@@ -10,6 +10,67 @@ const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real private ADV Testing scopes registry and files across pot changes, Host denial recovery and reload', async context => {
+    preparePrivateRosterSocketRoot();
+    await verifyPrivateHudReadPolicy();
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor', testing: true });
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+        'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/endpoint-route/routes/harness/testing.ts',
+        'packages/operator-core/lib/harness-registry.ts', 'packages/operator-core/lib/testing-domain-glob.ts',
+        'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx', 'apps/operator/app/adv/harnesses/HarnessTestsView.tsx',
+        'apps/operator/app/adv/harnesses/harness-testing-data-source.ts', 'libs/testing-shell/src/TestingShell.tsx',
+        'libs/testing-shell/src/DomainTestPanel.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      execute: async (observe, evidenceDir) => {
+        await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1',
+          ROSTER_TESTING_BROWSER_PROOF: '1' };
+        for (const key of Object.keys(env)) if ((key.startsWith('ROSTER_') && key.endsWith('_BROWSER_PROOF')
+          && !['ROSTER_COORD_BROWSER_PROOF', 'ROSTER_TESTING_BROWSER_PROOF'].includes(key))
+          || ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION'].includes(key)) delete env[key];
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+          '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256],
+        { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
+          if (line.startsWith('ROSTER_STOP_HTTP_PHASE ')) console.info(line); });
+        let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+        try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+        finally { await rm(join(evidenceDir, 'node_modules')); }
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
+          exitWaitTimedOut: false, stdioDrainTimedOut: false, code: 0 });
+        expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
+        const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_BROWSER_RECEIPT '));
+        expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+        expect(JSON.parse(line!.slice('ROSTER_COORD_BROWSER_RECEIPT '.length))).toMatchObject({
+          workspace: expect.stringMatching(/^test-runtime-/), authMethod: 'private-loopback-testing-with-cookie',
+          scopedFiles: true, keyboardNavigation: true, deepLinkReload: true, oldRegistryDiscarded: true,
+          deniedRegistryRecovery: true, foreignExcluded: true, shellQueryPreserved: true, writes: [] });
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ROSTER_TESTING_BROWSER_PROOF_RUN ' + runId);
+  }, options.testTimeoutMs);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real Portal Insights panel recovers overview and token reads with exact pot query continuity using explicit component fixtures', async () => {
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    const result = await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
+      selected: 'preflight-selected', neighbor: 'preflight-neighbor', insights: true }, { insightsRead: true });
+    expect(result).toMatchObject({ mounted: true, insightsRead: true, keyboardTabs: true, tokensReload: true,
+      coldRetry: true, warmRetry: true, tokenRetry: true, subjectPreserved: true, neighborDistinct: true,
+      noOutwardWrites: true, providerUsed: false });
+  }, 180_000);
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal PR panel filters and reloads exact details with read failure recovery using explicit component fixtures', async () => {
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     const result = await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
@@ -24,6 +85,63 @@ it('retains a browser response rejection while an earlier UI action is still run
   await new Promise(done => setTimeout(done, 20));
   await expect(pending).rejects.toBe(failure);
 });
+
+it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+  'real private Portal Insights reads scoped PG overview and tokens and recovers actual Host denials across reload', async context => {
+    preparePrivateRosterSocketRoot();
+    await verifyPrivateHudReadPolicy();
+    const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
+    await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'insights-selected', neighbor: 'insights-neighbor', insights: true });
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
+    const runId = await recordIsolatedIntegrationProof({ root,
+      filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+        'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/test/private-coord-receipt.ts',
+        'packages/operator-core/lib/harness-insights/load-all.ts',
+        'packages/operator-core/lib/harness-insights/load-spend.ts', 'packages/operator-core/lib/harness-insights/load-tokens.ts',
+        'packages/operator-core/lib/harness-insights/github-facts.ts', 'packages/operator-core/lib/endpoint-route/routes/harness/insights.ts',
+        'packages/operator-core/lib/sync-resolver/index.ts', 'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx',
+        'apps/operator/app/harness/insights/InsightsTab.tsx', 'apps/operator/app/harness/insights/TokensView.tsx',
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts', 'apps/operator/bin/bundle-host.sh',
+        'apps/operator/bin/bundle-host-common.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      execute: async (observe, evidenceDir) => {
+        await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1',
+          ROSTER_INSIGHTS_BROWSER_PROOF: '1' };
+        for (const key of ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION',
+          'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
+          'ROSTER_SETTINGS_BROWSER_PROOF', 'ROSTER_PROMPTS_BROWSER_PROOF', 'ROSTER_INBOX_BROWSER_PROOF',
+          'ROSTER_PLANS_BROWSER_PROOF', 'ROSTER_DOCS_BROWSER_PROOF', 'ROSTER_HUD_BROWSER_PROOF',
+          'ROSTER_WORK_BROWSER_PROOF', 'ROSTER_HEALTH_BROWSER_PROOF', 'ROSTER_BRAINSTORM_BROWSER_PROOF']) delete env[key];
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+          '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256],
+        { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
+          if (line.startsWith('ROSTER_STOP_HTTP_PHASE ')) console.info(line); });
+        let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+        try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+        finally { await rm(join(evidenceDir, 'node_modules')); }
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ signal: null, timedOut: false,
+          exitWaitTimedOut: false, stdioDrainTimedOut: false, code: 0 });
+        expect(result.output).toContain('"childrenStopped":true,"apiStopped":true');
+        const line = result.output.split('\n').find(value => value.startsWith('ROSTER_COORD_BROWSER_RECEIPT '));
+        expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+        expect(JSON.parse(line!.slice('ROSTER_COORD_BROWSER_RECEIPT '.length))).toMatchObject({
+          workspace: expect.stringMatching(/^test-runtime-/), authMethod: 'private-loopback-insights-with-cookie',
+          overviewPgAgreement: true, tokensPgAgreement: true, keyboardTabs: true, tokensReload: true,
+          coldRetry: true, warmRetry: true, tokenRetry: true, shellQueryPreserved: true, neighborDistinct: true,
+          foreignExcluded: true, hostDenials: expect.any(Number),
+          denialControls: ['cold-overview', 'token-refresh', 'warm-overview'], providerUsed: false });
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('ROSTER_INSIGHTS_BROWSER_PROOF_RUN ' + runId);
+  }, options.testTimeoutMs);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   'real Portal Brainstorm panel mounts and compiles its editor graph through the maintained standalone boundary', async () => {
@@ -280,7 +398,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
   }, 180_000);
 
 it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
-  'real private ADV Docs selects by keyboard, retains a denied article and persists its exact anchored verification retry', async context => {
+  'real private ADV Docs recovers cold and cached reads from Host denials and persists exact manual verification retry', async context => {
     preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     const prepared = await preparePrivateDocsBrowserDocuments(root);
@@ -288,6 +406,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
       docs: { harness: 'preflight-docs', ...prepared.selection },
       markdownPreflight: { value: prepared.bodies[prepared.selection.selectedDoc], heading: prepared.selection.selectedHeading } });
     await verifyPrivateProfileOriginControl();
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -298,7 +417,9 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/lib/harness-registry.ts', 'packages/operator-core/lib/harness/workspace-for-harness.ts',
         'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx', 'apps/operator/app/adv/harnesses/AdvDocsTab.tsx',
         ...prepared.sourcePaths,
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -306,9 +427,12 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           ROSTER_DOCS_BROWSER_PROOF: '1' };
         for (const key of ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION',
           'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
-          'ROSTER_SETTINGS_BROWSER_PROOF', 'ROSTER_PROMPTS_BROWSER_PROOF', 'ROSTER_INBOX_BROWSER_PROOF', 'ROSTER_PLANS_BROWSER_PROOF']) delete env[key];
+          'ROSTER_SETTINGS_BROWSER_PROOF', 'ROSTER_PROMPTS_BROWSER_PROOF', 'ROSTER_INBOX_BROWSER_PROOF', 'ROSTER_PLANS_BROWSER_PROOF',
+          'ROSTER_INSIGHTS_BROWSER_PROOF', 'ROSTER_HUD_BROWSER_PROOF', 'ROSTER_WORK_BROWSER_PROOF',
+          'ROSTER_HEALTH_BROWSER_PROOF', 'ROSTER_BRAINSTORM_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+          '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -325,7 +449,15 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
           authMethod: 'private-loopback-docs-with-cookie', keyboardSelection: true, deepLinkReload: true,
           shellQueryPreserved: true, denialStatus: 403, articleRetained: true, deniedWriteIsolated: true,
-          retryPersisted: true, neighborIsolated: true, denialTransport: 'real-upstream-response-forwarded' });
+          retryPersisted: true, neighborIsolated: true, denialTransport: 'real-upstream-response-forwarded',
+          coldReadRetry: true, warmReadRetry: true, cachedArticleRetained: true, deniedReadNoWrite: true,
+          readDenialControls: ['cold-read', 'warm-refresh'] });
+        for (const control of receipt.readDenialControls) {
+          const denials = receipt.readDenials.filter((row: { control: string }) => row.control === control);
+          expect(denials.length).toBeGreaterThan(0);
+          for (const denial of denials) expect(denial).toMatchObject({ status: 403,
+            url: expect.stringContaining('/api/harness/' + receipt.harness + '/docs?') });
+        }
         expect(receipt.writes.map((write: { status: number }) => write.status)).toEqual([403, 200]);
         expect(receipt.writes.map((write: { target: string }) => write.target)).toEqual([receipt.selectedDoc, receipt.selectedDoc]);
       },

@@ -120,7 +120,7 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       test.skip(true, 'PAPERCUSP_FAKE_LLM=1 not set on dev server; skipping');
     }
 
-    const slug = freshSlug();
+    let slug = freshSlug();
 
     // ── 1. Author the plan. plans:new emits a real revision spine
     //      entry (seq 1) — the origin per D-006.
@@ -132,10 +132,16 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
     });
     expect(created.status, `plans:new should succeed: ${JSON.stringify(created.json)}`).toBe(200);
     expect((created.json as { ok?: boolean }).ok ?? false).toBe(true);
+    // plans:new canonicalizes the slug (including its date suffix). Follow the
+    // returned identity for every later read and CAS write.
+    const createdSlug = (created.json as { slug?: string }).slug;
+    expect(createdSlug, 'plans:new should return the persisted slug').toBeTruthy();
+    slug = createdSlug!;
 
     // Fetch to get the current contentHash for the CAS write.
     const initialGet = await adminGet(request, 'get', { slug });
     expect(initialGet.status).toBe(200);
+    expect((initialGet.json as { ok?: boolean }).ok, JSON.stringify(initialGet.json)).toBe(true);
     const hash1 = (initialGet.json as { contentHash?: string }).contentHash;
     expect(hash1, 'plans:get should include contentHash').toBeTruthy();
 

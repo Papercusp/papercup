@@ -9,6 +9,7 @@ vi.mock('../scratch-uri', () => ({ scratchRoot: () => '/relocated/cache/spills' 
 vi.mock('../oauth/providers', () => ({ googleOAuthClientPath: () => '/fixture/config/papercusp/google-oauth-client.json' }));
 vi.mock('../identity/keychain', () => ({ identityDir: () => '/fixture/sensitive/identity' }));
 vi.mock('../cupboard/ledger-anchor-eas', () => ({ anchorKeyFilePath: () => '/fixture/sensitive/anchor-key' }));
+vi.mock('../papercusp-root', () => ({ papercuspRoot: () => '/relocated/workspaces/registered-project/.papercusp' }));
 import { databaseCensusEntries, physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots, postgresStorageDeclaration, gitStorageDeclaration } from './state-census-producers';
 import { mkdtemp, writeFile, rm, symlink, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,11 +19,52 @@ import type { Sql } from 'postgres';
 import { templateDatabaseCensusDeclarations } from './state-census-producers';
 import { hostedConfigurationCensusProducers, configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations } from './state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations } from './state-census-producers';
-import { identityKeychainCensusProducer, anchorSecretCensusProducer } from './state-census-producers';
-import { peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, stripRangeCacheCensusProducer, virtualenvCacheDeclaration } from './state-census-producers';
+import { identityKeychainCensusProducer, anchorSecretCensusProducer, runtimeRetainedCensusProducer } from './state-census-producers';
+import { peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, stripRangeCacheCensusProducer, virtualenvCacheDeclaration, affectedTestCacheCensusProducer } from './state-census-producers';
 
 afterEach(() => vi.clearAllMocks());
 describe('secret census producer adapters', () => {
+  it('recognizes exact affected-test cache writers without claiming unrelated files or symlinks', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'affected-cache-census-'));
+    try {
+      const directory = join(home, '.papercusp', 'cache');
+      await mkdir(directory, { recursive: true });
+      const ordinary = 'papercusp-affected-passing-verdicts-v2-0123456789abcdef.json';
+      const committed = 'papercusp-affected-passing-verdicts-v2-committed-fedcba9876543210.json';
+      await writeFile(join(directory, ordinary), '{}');
+      await writeFile(join(directory, committed), '{}');
+      await writeFile(join(directory, 'unknown.json'), '{}');
+      await symlink(join(directory, 'unknown.json'), join(directory, 'papercusp-affected-passing-verdicts-v2-aaaaaaaaaaaaaaaa.json'));
+      vi.stubEnv('AFFECTED_TASK_HISTORY_PATH', join(home, 'history', 'custom.json'));
+      vi.stubEnv('AFFECTED_TASK_VERDICT_CACHE_PATH', join(home, 'verdict', 'custom.json'));
+      const result = await affectedTestCacheCensusProducer(home);
+      expect(result.declarations.map(entry => entry.name).sort()).toEqual(['custom.json', 'custom.json', ordinary, committed].sort());
+      expect(result.declarations.every(entry => entry.classification === 'cache' && !entry.descendants && !entry.prune)).toBe(true);
+      expect(result.roots.map(root => root.path)).toContain(join(home, 'history'));
+      const writer = await readFile(new URL('../../../../scripts/affected-tests.mjs', import.meta.url), 'utf8');
+      expect(writer).toContain('papercusp-affected-task-durations-v1.json');
+      expect(writer).toContain('papercusp-affected-passing-verdicts-v2-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json');
+      const committedWriter = await readFile(new URL('../../../../scripts/lint-as-committed.mjs', import.meta.url), 'utf8');
+      expect(committedWriter).toContain('papercusp-affected-passing-verdicts-v2-committed-${scope}.json');
+    } finally { vi.unstubAllEnvs(); await rm(home, { recursive: true, force: true }); }
+  });
+  it('retains runtime writer directories under the relocated active workspace without pruning credentials or diagnostics', async () => {
+    const result = runtimeRetainedCensusProducer();
+    expect(result.roots).toEqual([{ id: 'runtime-retained', path: '/relocated/workspaces/registered-project/.papercusp' }]);
+    expect(result.declarations.map(entry => [entry.name, entry.classification, entry.prune])).toEqual([
+      ['deploy-credentials', 'secret', undefined], ['crash-reports', 'state', undefined], ['snapshot-fold-checkpoints', 'state', undefined],
+    ]);
+    const writers = [
+      ['../deployment/account-link-cli.ts', "papercuspPath('deploy-credentials'"],
+      ['../process-supervision/fatal-diagnostics.ts', "papercuspPath('crash-reports')"],
+      ['../sync/hyperbee/boot.ts', "'snapshot-fold-checkpoints'"],
+    ];
+    for (const [path, marker] of writers) expect(await readFile(new URL(path, import.meta.url), 'utf8')).toContain(marker);
+    const installed = installedRootCensusProducers();
+    expect(installed.declarations.find(entry => entry.producer === 'deployment-account-link')).toMatchObject({
+      root: 'install-root-0', name: 'registered-project/.papercusp/deploy-credentials', classification: 'secret', descendants: true,
+    });
+  });
   it('uses the anchor producer path without resolving a backend or reading private key bytes', () => {
     expect(anchorSecretCensusProducer()).toEqual({ roots: [{ id: 'anchor-key-parent', path: '/fixture/sensitive' }],
       declarations: [{ kind: 'path', root: 'anchor-key-parent', name: 'anchor-key', classification: 'secret', producer: 'ledger-anchor-key' }] });
@@ -55,6 +97,24 @@ describe('secret census producer adapters', () => {
       await writeFile(join(path, 'runtime.env'), 'APP_DATABASE_URL=postgresql://user:private@localhost:5432/app\n');
       await writeFile(join(path, 'app.service'), `[Service]\nEnvironmentFile=${join(path, 'runtime.env')}\nEnvironmentFile=-${join(path, 'missing.env')}\n`);
       expect(await unitDatabaseCensusDeclarations(units, databases, 'postgresql://localhost/operator')).toHaveLength(1);
+    } finally { await rm(path, { recursive: true, force: true }); }
+  });
+  it('continues inspecting surviving units when a discovered transient definition disappears', async () => {
+    const path = await mkdtemp(join(tmpdir(), 'unit-db-disappeared-'));
+    try {
+      const definition = '[Service]\nEnvironment=APP_DATABASE_URL=postgresql://localhost:5432/app\n';
+      await writeFile(join(path, 'gone.service'), definition);
+      await writeFile(join(path, 'live.service'), definition);
+      const units = await unitCensusDeclarations(path, 'user');
+      await rm(join(path, 'gone.service'));
+      const result = await unitDatabaseCensusDeclarations(units,
+        [{ kind: 'database', root: 'postgres-cluster:123', name: 'app' }], 'postgresql://localhost/operator');
+      expect(result).toHaveLength(1);
+      expect(result[0].producer).toContain('live.service');
+      // Unexpected inspection errors still fail closed.
+      await writeFile(join(path, 'live.service'), 'x'.repeat(65_537));
+      await expect(unitDatabaseCensusDeclarations(units, [], 'postgresql://localhost/operator'))
+        .rejects.toThrow('Service database config bound exceeded');
     } finally { await rm(path, { recursive: true, force: true }); }
   });
   it('derives hosted config paths from writer overrides and keeps credentials secret', async () => {

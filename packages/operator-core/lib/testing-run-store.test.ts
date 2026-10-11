@@ -376,11 +376,17 @@ describe('task lifecycle handlers', () => {
               status: 'failed',
               startTime: 1_700_000_000_000,
               endTime: 1_700_000_000_025,
-              assertionResults: [{
-                status: 'failed',
-                fullName: 'suite > works',
-                failureMessages: ['expected a structured diff'],
-              }],
+              assertionResults: [
+                ...Array.from({ length: 65 }, (_, index) => ({
+                  status: 'passed',
+                  fullName: 'suite > passed case ' + index,
+                })),
+                {
+                  status: 'failed',
+                  fullName: 'suite > works',
+                  failureMessages: ['expected a structured diff'],
+                },
+              ],
             },
           ],
         }),
@@ -450,13 +456,17 @@ describe('task lifecycle handlers', () => {
         workspaceId: 'papercusp-workspace',
         harnessSlug: 'papercusp',
         testNamePattern: 'suite > works',
-        passed: 0,
+        passed: 65,
         failed: 1,
         skipped: 0,
         collectionFailed: false,
+        passedCaseTitlesTruncated: true,
         commitSha: 'detached-sha',
         worktreeDirty: false,
       });
+      expect((executionDetails as { passedCaseTitles: string[] }).passedCaseTitles).toHaveLength(64);
+      expect((executionDetails as { passedCaseTitles: string[] }).passedCaseTitles[0])
+        .toBe('suite > passed case 0');
       const snapshotCalls = persistSqlMock.mock.calls.filter((call) =>
         call[0]?.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots'),
       );

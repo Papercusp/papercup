@@ -17,10 +17,11 @@ import { parseUnitEnvironment } from '../provisioner/unit-drift';
 import ts from 'typescript';
 import { identityDir } from '../identity/keychain';
 import { anchorKeyFilePath } from '../cupboard/ledger-anchor-eas';
+import { papercuspRoot } from '../papercusp-root';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
-  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), identityKeychainCensusProducer(), anchorSecretCensusProducer(), hostedConfigurationCensusProducers(), scratchCensusProducer(), stripRangeCacheCensusProducer()];
+  const producers = [workspaceRegistryCensusProducer(), secretCensusProducers(), identityKeychainCensusProducer(), anchorSecretCensusProducer(), hostedConfigurationCensusProducers(), scratchCensusProducer(), stripRangeCacheCensusProducer(), runtimeRetainedCensusProducer()];
   const roots: CensusRoot[] = [];
   const declarations: CensusDeclaration[] = [];
   for (const producer of producers) {
@@ -37,6 +38,17 @@ export function installedRootCensusProducers() {
     }
   }
   return mergeNestedCensusRoots({ roots, declarations });
+}
+
+/** Active workspace writers; historical workspace copies still require their own evidence. */
+export function runtimeRetainedCensusProducer() {
+  const root: CensusRoot = { id: 'runtime-retained', path: papercuspRoot() };
+  const declarations: CensusDeclaration[] = [
+    { kind: 'path', root: root.id, name: 'deploy-credentials', classification: 'secret', producer: 'deployment-account-link', descendants: true },
+    { kind: 'path', root: root.id, name: 'crash-reports', classification: 'state', producer: 'fatal-diagnostics', descendants: true },
+    { kind: 'path', root: root.id, name: 'snapshot-fold-checkpoints', classification: 'state', producer: 'hyperbee-own-compaction', descendants: true },
+  ];
+  return { roots: [root], declarations };
 }
 
 /** Parent roots already walk descendants; preserve child ownership by prefixing names. */
@@ -77,6 +89,32 @@ export function stripRangeCacheCensusProducer() {
     kind: 'path' as const, root: 'strip-range-cache-parent', name: basename(path),
     classification: 'cache' as const, producer: 'strip-comments-and-strings', descendants: true, prune: true,
   }] };
+}
+
+/** Exact affected-test writer files; unrelated cache contents remain residue. */
+export async function affectedTestCacheCensusProducer(home = homedir()) {
+  const directory = join(home, '.papercusp', 'cache');
+  const paths = [{ path: process.env.AFFECTED_TASK_HISTORY_PATH ?? join(directory, 'papercusp-affected-task-durations-v1.json'), producer: 'affected-tests-duration-history' }];
+  if (process.env.AFFECTED_TASK_VERDICT_CACHE_PATH) {
+    paths.push({ path: process.env.AFFECTED_TASK_VERDICT_CACHE_PATH, producer: 'affected-tests-passing-verdict' });
+  }
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  for (const entry of entries ?? []) {
+    if (entry.isFile() && /^papercusp-affected-passing-verdicts-v2-(?:committed-)?[0-9a-f]{16}\.json$/.test(entry.name)) {
+      paths.push({ path: join(directory, entry.name), producer: 'affected-tests-passing-verdict' });
+    }
+  }
+  const roots: CensusRoot[] = [];
+  const declarations: CensusDeclaration[] = [];
+  for (const entry of paths) {
+    const directory = dirname(resolve(entry.path));
+    let root = roots.find(root => root.path === directory);
+    if (!root) { root = { id: `affected-test-cache-${roots.length}`, path: directory }; roots.push(root); }
+    declarations.push({ kind: 'path', root: root.id, name: basename(entry.path), classification: 'cache', producer: entry.producer });
+  }
+  return { roots, declarations };
 }
 
 /** Registry producer's real relocated root, not the operator's remapped HOME. */
@@ -171,8 +209,16 @@ export async function unitDatabaseCensusDeclarations(units: readonly CensusDecla
   for (const unit of units) {
     if (unit.kind !== 'unit' || !unit.name.endsWith('.service') || unit.name.includes('/') || !unit.producer.startsWith('unit-definition:')) continue;
     const path = join(unit.producer.slice('unit-definition:'.length), unit.name);
-    if (!(await lstat(path)).isFile()) continue;
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let handle;
+    try {
+      if (!(await lstat(path)).isFile()) continue;
+      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      // Transient units can disappear after catalogue discovery or lstat.
+      // No surviving definition means no database ownership evidence.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
     let text: string;
     try {
       if ((await handle.stat()).size > 65_536) throw new Error('Service database config bound exceeded');

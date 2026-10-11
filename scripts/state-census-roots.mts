@@ -7,17 +7,19 @@ import { join, relative, dirname, basename } from 'node:path';
 import { createRequire } from 'node:module';
 const { releaseConfig } = createRequire(import.meta.url)('../apps/operator/lib/release/release-config.ts');
 import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
+import { defaultClonesDir } from '../packages/operator-core/lib/harness/clone-github';
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
 import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, templateDatabaseCensusDeclarations, unitCensusEntries, installedUnitCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import type { CensusEntry } from '../packages/backup/src/state-census';
-import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
+import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 
 const installed = installedRootCensusProducers();
+const affectedCache = await affectedTestCacheCensusProducer();
 const checkpointLogDir = releaseConfig().checkpointLogDir;
-const producers = mergeNestedCensusRoots({ roots: [...installed.roots,
-  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, {
+const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots,
+  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',
   producer: 'green-checkpoint-log-writer', descendants: true,
   retainedSubtree: { evidenceRef: 'release-config:checkpointLogDir' },
@@ -78,14 +80,26 @@ for (const root of producers.roots) {
       declarations.push(await virtualenvCacheDeclaration(root, name));
     }
   }
-  for (const directory of topLevel.filter(entry => entry.isDirectory())) {
+  const repositoryNames = topLevel.filter(entry => entry.isDirectory()).map(entry => entry.name);
+  // Follow the clone writer's container, never arbitrary nested directory names.
+  const clonePrefix = relative(root.path, defaultClonesDir());
+  if (clonePrefix && clonePrefix !== '..' && !clonePrefix.startsWith('../') && !clonePrefix.startsWith('/')) {
+    let clones;
+    try { clones = await readdir(defaultClonesDir(), { withFileTypes: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (clones) {
+      declarations.push({ kind: 'path', root: root.id, name: clonePrefix, classification: 'state', producer: 'clone-github-container' });
+      repositoryNames.push(...clones.filter(entry => entry.isDirectory()).map(entry => `${clonePrefix}/${entry.name}`));
+    }
+  }
+  for (const repositoryName of repositoryNames) {
     let metadata;
-    try { metadata = await lstat(join(root.path, directory.name, '.git')); }
+    try { metadata = await lstat(join(root.path, repositoryName, '.git')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
     // External worktree pointers do not own their referenced Git metadata.
     // Leave them visible for cross-root qualification rather than following.
     if (!metadata.isDirectory()) continue;
-    declarations.push(await gitStorageDeclaration(root, directory.name, true));
+    declarations.push(await gitStorageDeclaration(root, repositoryName, true));
   }
   // Only the producer's exact per-workspace layout; scoped stores stay distinct.
   const workspacePrefix = relative(root.path, workspacesRoot());

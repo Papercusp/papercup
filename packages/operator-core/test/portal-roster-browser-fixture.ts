@@ -125,6 +125,8 @@ type PortalRosterBrowserInput = {
   brainstorm?: boolean;
   prs?: boolean;
   insights?: boolean;
+  testing?: boolean;
+  testingHarnesses?: { selected: string; neighbor: string; foreign: string };
   insightsHarnesses?: { selected: string; neighbor: string; foreign: string };
   brainstormHarnesses?: { selected: string; neighbor: string; foreign: string };
   harnesses?: { hive: string; selected: string; neighbor: string; foreign: string };
@@ -144,7 +146,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -232,27 +234,30 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
         React.createElement(React.Fragment, null, React.createElement(HarnessesWorkspace), React.createElement(Toaster)))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
-  ` : input.docs || input.brainstorm || input.prs || input.insights ? `
+  ` : input.docs || input.brainstorm || input.prs || input.insights || input.testing ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { parseAsString, useQueryState } from 'nuqs';
     import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
     import { SyncProvider } from '@papercusp/sync';
     import { Toaster } from 'sonner';
     import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
     import { MarkdownPreview } from ${JSON.stringify(join(operatorRoot, 'app/_components/MarkdownEditor.tsx'))};
     const panel = React.createElement(React.Fragment, null,
-      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.insights ? 'insights' : input.prs ? 'prs' : input.brainstorm ? 'brainstorm' : 'docs')} }),
+      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.testing ? 'testing' : input.insights ? 'insights' : input.prs ? 'prs' : input.brainstorm ? 'brainstorm' : 'docs')} }),
       ${input.brainstorm || input.prs ? 'React.createElement(Toaster)' : 'null'},
       ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'});
     function Fixture() {
       const [open, setOpen] = React.useState(true);
+      const [, setSlug] = useQueryState('slug', parseAsString);
       return React.createElement(React.Fragment, null,
+        ${input.testing ? `React.createElement('button', { 'data-testid': 'testing-switch-pot', onClick: () => setSlug(new URL(location.href).searchParams.get('nextPot')) }, 'Switch test pot'),` : ''}
         ${input.insights ? "React.createElement('button', { onClick: () => setOpen(!open) }, open ? 'Close Insights' : 'Open Insights')," : ''}
         open ? panel : null);
     }
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
-      ${input.brainstorm || input.prs || input.insights ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(Fixture))" : 'panel'}) });
+      ${input.brainstorm || input.prs || input.insights || input.testing ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(Fixture))" : 'panel'}) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.plans ? `
@@ -398,7 +403,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.brainstorm
     ? '/apps/operator/app/harness/brainstorm/BrainstormFull.tsx' : input.prs
     ? '/apps/operator/app/harness/PrsTab.tsx' : input.insights
-    ? '/apps/operator/app/harness/insights/InsightsTab.tsx' : input.docs
+    ? '/apps/operator/app/harness/insights/InsightsTab.tsx' : input.testing
+    ? '/apps/operator/app/adv/harnesses/HarnessTestsView.tsx' : input.docs
     ? '/apps/operator/app/adv/harnesses/AdvDocsTab.tsx' : input.plans
     ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
@@ -1026,6 +1032,7 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
     const url = new URL(input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
+      : input.testing ? '/?app=testing&q=retained-shell-search'
       : input.harnesses ? '/?app=work&scope=all&q=retained-shell-search'
       : input.brainstorm ? '/?app=brainstorm&q=retained-shell-search'
       : input.insights ? '/?app=insights&q=retained-shell-search'
@@ -1040,6 +1047,11 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
     if (input.insightsHarnesses) url.searchParams.set('slug', input.insightsHarnesses.selected);
+    if (input.testing) {
+      const receipt = await runPrivateTestingPage(page, context, input, url);
+      assert.deepEqual(pageErrors, [], 'actual Testing registry and domain controls must stay browser-safe');
+      return receipt;
+    }
     if (input.insights) {
       const receipt = await runPrivateInsightsPage(page, context, input, url);
       assert.deepEqual(pageErrors, [], 'real Insights controls must stay browser-safe');
@@ -1610,6 +1622,89 @@ async function runPrivateHealthPage(page: Page, context: BrowserContext, input: 
 }
 
 /** Preserve the complete grouped-nav identity when filenames repeat. */
+async function runPrivateTestingPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
+  const pots = input.testingHarnesses;
+  assert.ok(pots, 'Testing journey requires exact private harness identities');
+  const selectedId = 'private-selected-tests';
+  const neighborId = 'private-neighbor-tests';
+  const reads: Array<{ url: string; status: number; body: string }> = [];
+  const captures = new Set<Promise<void>>();
+  const writes: string[] = [];
+  page.on('request', request => {
+    if (request.url().includes('/testing/') && request.method() !== 'GET') writes.push(request.url());
+  });
+  page.on('response', response => {
+    if (!response.url().includes('/testing/')) return;
+    const capture = response.text().then(body => { reads.push({ url: response.url(), status: response.status(), body }); });
+    captures.add(capture); void capture.catch(() => {});
+    void capture.then(() => captures.delete(capture), () => captures.delete(capture));
+  });
+  const denials: Array<{ url: string; status: number; body: string }> = [];
+  let denyNeighbor = true;
+  const deniedPath = `/api/harness/${encodeURIComponent(pots.neighbor)}/testing/domains`;
+  await page.route('**' + deniedPath + '?*', async route => {
+    if (!denyNeighbor) return route.continue();
+    const upstream = await context.request.get(route.request().url(), { headers: { host: 'foreign-testing.invalid' } });
+    const body = await upstream.text();
+    // Save the actual refusal before either validation or UI assertions.
+    denials.push({ url: route.request().url(), status: upstream.status(), body });
+    writeFileSync(join(input.evidence, 'portal-testing-denials.json'), JSON.stringify(denials, null, 2));
+    verifyPrivateHudHostDenial(upstream.status(), body);
+    await route.fulfill({ response: upstream, body });
+  });
+  url.searchParams.set('slug', pots.selected);
+  url.searchParams.set('nextPot', pots.neighbor);
+  url.searchParams.set('testsTab', selectedId);
+  const domain = page.locator('.pc-dtp');
+  const nav = page.getByRole('navigation', { name: 'Tests tabs' });
+  await page.goto(url.href);
+  await nav.getByRole('button', { name: 'Selected private tests', exact: false }).waitFor();
+  await domain.getByRole('heading', { name: 'Selected private tests', exact: true }).waitFor();
+  assert.ok((await domain.innerText()).includes('selected/selected.test.ts'), 'selected registry must glob its own worktree');
+  assert.ok(!(await domain.innerText()).includes('neighbor/neighbor.test.ts'), 'selected file population excludes neighbor');
+  const changedPotDenial = retainPortalResponse(page.waitForResponse(response =>
+    new URL(response.url()).pathname === deniedPath && response.status() === 403));
+  await page.getByTestId('testing-switch-pot').focus(); await page.keyboard.press('Enter');
+  await changedPotDenial;
+  await page.waitForFunction(() => !document.querySelector('.pc-test-left')?.textContent?.includes('Selected private tests'));
+  assert.ok(!(await nav.innerText()).includes('Selected private tier'), 'denied changed-pot read must discard old tier labels');
+  assert.equal(await nav.getByRole('button', { name: 'Neighbor private tests', exact: false }).count(), 0);
+  denyNeighbor = false;
+  const neighborUrl = new URL(page.url()); neighborUrl.searchParams.set('testsTab', neighborId);
+  await page.goto(neighborUrl.href);
+  const neighborButton = nav.getByRole('button', { name: 'Neighbor private tests', exact: false });
+  await neighborButton.waitFor(); await neighborButton.focus(); await page.keyboard.press('Enter');
+  await domain.getByRole('heading', { name: 'Neighbor private tests', exact: true }).waitFor();
+  assert.ok((await domain.innerText()).includes('neighbor/neighbor.test.ts'));
+  assert.ok(!(await domain.innerText()).includes('selected/selected.test.ts'));
+  await page.reload();
+  await domain.getByRole('heading', { name: 'Neighbor private tests', exact: true }).waitFor();
+  const after = new URL(page.url());
+  assert.equal(after.searchParams.get('slug'), pots.neighbor);
+  assert.equal(after.searchParams.get('testsTab'), neighborId);
+  assert.equal(after.searchParams.get('q'), 'retained-shell-search');
+  assert.equal(after.searchParams.get('ws'), input.workspace);
+  const foreign = await context.request.get(new URL(`/api/harness/${encodeURIComponent(pots.foreign)}/testing/domains?phase=staging`, input.base).href);
+  assert.equal(foreign.status(), 404, 'foreign-workspace-only harness must not resolve in the private workspace');
+  await Promise.all([...captures]);
+  for (const [slug, id, file] of [[pots.selected, selectedId, 'selected/selected.test.ts'], [pots.neighbor, neighborId, 'neighbor/neighbor.test.ts']]) {
+    const read = reads.find(row => row.status === 200 && new URL(row.url).pathname === `/api/harness/${slug}/testing/domain-detail`
+      && new URL(row.url).searchParams.get('domainId') === id);
+    assert.ok(read, 'each pot requires an actual successful scoped domain-detail response');
+    const detail = JSON.parse(read.body);
+    assert.equal(detail.totalFiles, 1);
+    assert.deepEqual(detail.sections.flatMap((section: { files: Array<{ path: string }> }) => section.files.map(value => value.path)), [file]);
+  }
+  assert.ok(denials.length > 0, 'changed-pot denial must come from the actual host');
+  assert.deepEqual(writes, [], 'registry/file acceptance must execute no test runners or mutations');
+  const receipt = { workspace: input.workspace, pots, authMethod: 'private-loopback-testing-with-cookie',
+    scopedFiles: true, keyboardNavigation: true, deepLinkReload: true, oldRegistryDiscarded: true,
+    deniedRegistryRecovery: true, foreignExcluded: true, shellQueryPreserved: true, writes, denials, reads,
+    scope: 'Actual ADV Testing wrapper and shared TestingShell with private registry/worktree reads; outer pot-switch control is fixture geometry, no runner execution, hosted authorization, provider or shipment acceptance' };
+  writeFileSync(join(input.evidence, 'portal-testing-read-receipt.json'), JSON.stringify(receipt, null, 2));
+  return receipt;
+}
+
 export function privateDocsNavButton(page: Page, docPath: string) {
   const slash = docPath.lastIndexOf('/');
   const dir = slash < 0 ? '/' : docPath.slice(0, slash);
