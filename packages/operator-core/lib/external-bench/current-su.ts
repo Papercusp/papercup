@@ -1373,6 +1373,119 @@ export function currentBenchWorkloadTransitionReader(options: DbScope & {
   };
 }
 
+/** Capture a queued ticket's live grant from the private lock side-store and
+ * its exact bridge fire. Historical tickets and overwritten fires cannot prove
+ * a held grant. This establishes the queued-to-granted edge only; acquire-call
+ * identity, denial, release and provider consumption require separate sources. */
+export function currentBenchWorkloadLockGrantReader(options: DbScope & {
+  locksSql?: import('postgres').Sql;
+  workspaceId: string; harnessSlug: string; runId: string; trialBindingHash: string;
+  coordinationDomain: string; notBefore: string;
+  receipts: Array<{ receiptRef: string; subjectId: string; transitionId: string; index: number;
+    ticketId: string; lockId: string; ownerId: string; ownerLabel: string; intent: string;
+    paths: string[]; queuedAt: string }>;
+}): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, locksSql: suppliedLocksSql, ...allocation } = options;
+  const frozen = structuredClone(allocation), workspaceId = resolveBenchWorkspace(frozen.workspaceId);
+  const start = Date.parse(frozen.notBefore);
+  const present = (value: string) => typeof value === 'string' && !!value.trim();
+  const uuid = (value: string) => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+  const pathsValid = (paths: string[]) => Array.isArray(paths) && paths.length > 0 && paths.length <= 50 &&
+    paths.every(path => present(path) && path.length <= 4096 && !path.includes('\\') &&
+      path.split('/').every(part => part !== '' && part !== '.' && part !== '..')) && new Set(paths).size === paths.length;
+  if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId, frozen.coordinationDomain].every(present) ||
+      !/^[a-f0-9]{64}$/.test(frozen.trialBindingHash) || !Number.isFinite(start) || !frozen.receipts.length ||
+      frozen.receipts.some(row => ![row.receiptRef, row.subjectId, row.transitionId, row.ownerId, row.ownerLabel, row.intent].every(present) ||
+        !uuid(row.ticketId) || !uuid(row.lockId) || !pathsValid(row.paths) ||
+        !Number.isSafeInteger(row.index) || row.index < 0 || !Number.isFinite(Date.parse(row.queuedAt)) || Date.parse(row.queuedAt) < start) ||
+      new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.ticketId)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
+    throw new Error('Workload lock-grant reader requires a private allocation and unique exact tickets and paths.');
+  const root = lstatSync(frozen.coordinationDomain, { bigint: true });
+  if (!root.isDirectory() || realpathSync(frozen.coordinationDomain) !== frozen.coordinationDomain ||
+      frozen.coordinationDomain === realpathSync(REPO_ROOT))
+    throw new Error('Workload lock-grant reader requires a canonical private coordination domain.');
+  const unchangedRoot = () => {
+    const current = lstatSync(frozen.coordinationDomain, { bigint: true });
+    return current.isDirectory() && current.dev === root.dev && current.ino === root.ino &&
+      realpathSync(frozen.coordinationDomain) === frozen.coordinationDomain;
+  };
+  const samePaths = (actual: string[], expected: string[]) => Array.isArray(actual) &&
+    canonicalJson([...actual].sort()) === canonicalJson([...expected].sort());
+  const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
+  return async (ref, binding) => {
+    const receipt = allowed.get(ref);
+    if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const [{ resolveDb }, { getTxPool, readWaiterStatus }, { keyFireId }, { lockGrantKey }] = await Promise.all([
+      import('./reproducibility/db'), import('../agent-tools/locks/su-lock-store'),
+      import('../events/await/store'), import('../agent-tools/locks/lock-grant-key'),
+    ]);
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
+    const eventKey = lockGrantKey(receipt.ticketId);
+    try {
+      if (!unchangedRoot()) return null;
+      return await (suppliedLocksSql ?? getTxPool()).begin(async tx => {
+        await tx`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`;
+        const waiters = await tx<{ owner: string; owner_label: string; intent: string; goal_ref: string;
+          coordination_domain: string; paths: string[]; queued_ts: Date }[]>`
+          SELECT owner, owner_label, intent, goal_ref, coordination_domain, paths, queued_ts
+            FROM agent_lock_waiters WHERE ticket_id = ${receipt.ticketId}::uuid
+        `;
+        const waiter = waiters[0];
+        if (waiters.length !== 1 || waiter.coordination_domain !== frozen.coordinationDomain ||
+            waiter.owner !== receipt.ownerId || waiter.owner_label !== receipt.ownerLabel ||
+            waiter.intent !== receipt.intent || waiter.goal_ref !== receipt.subjectId ||
+            !samePaths(waiter.paths, receipt.paths) || !(waiter.queued_ts instanceof Date) ||
+            waiter.queued_ts.toISOString() !== new Date(receipt.queuedAt).toISOString()) return null;
+        const status = await readWaiterStatus(tx as unknown as import('postgres').Sql, receipt.ticketId);
+        if (status.status !== 'granted' || status.granted_lock_id !== receipt.lockId ||
+            !(status.granted_expires_ts instanceof Date) || !samePaths(status.paths ?? [], receipt.paths)) return null;
+        const locks = await tx<{ path: string; owner: string; owner_label: string; intent: string; goal_ref: string;
+          acquired_ts: Date; expires_ts: Date }[]>`
+          SELECT path, owner, owner_label, intent, goal_ref, acquired_ts, expires_ts FROM agent_file_locks
+           WHERE coordination_domain = ${frozen.coordinationDomain} AND lock_id = ${receipt.lockId}::uuid
+        `;
+        if (!samePaths(locks.map(row => row.path), receipt.paths) || locks.some(row =>
+          row.owner !== receipt.ownerId || row.owner_label !== receipt.ownerLabel || row.intent !== receipt.intent ||
+          row.goal_ref !== receipt.subjectId || !(row.acquired_ts instanceof Date) ||
+          row.acquired_ts < waiter.queued_ts || !(row.expires_ts instanceof Date) ||
+          row.expires_ts.getTime() !== status.granted_expires_ts!.getTime())) return null;
+        const fires = await sql<{ first_us: string; fire_count: number; last_fired_at: Date;
+          last_fired_by: string; last_payload: Record<string, unknown> }[]>`
+          SELECT floor(extract(epoch FROM fire.first_fired_at) * 1000000)::bigint::text AS first_us,
+                 fire.fire_count, fire.last_fired_at, fire.last_fired_by, fire.last_payload
+            FROM harness_shared.event_key_fires fire
+           WHERE fire.workspace_id = ${workspaceId} AND fire.event_key = ${eventKey}
+             AND (SELECT count(*) FROM harness_shared.work_items item
+                   WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
+                     AND item.feature_id = ${receipt.subjectId}) = 1
+        `;
+        const fire = fires[0], count = Number(fire?.fire_count), payload = fire?.last_payload;
+        const at = fire?.last_fired_at instanceof Date ? fire.last_fired_at.getTime() : NaN;
+        if (fires.length !== 1 || !/^\d+$/.test(fire.first_us) || !Number.isSafeInteger(count) || count < 1 ||
+            keyFireId(eventKey, { firstFiredAtUs: fire.first_us, count }) !== ref ||
+            fire.last_fired_by !== 'lock-grant-bridge' || !Number.isFinite(at) || at < start ||
+            at < waiter.queued_ts.getTime() || at >= status.granted_expires_ts.getTime() ||
+            locks.some(row => row.acquired_ts.getTime() > at) || payload?.granted !== true ||
+            payload.ticket_id !== receipt.ticketId || payload.lock_id !== receipt.lockId ||
+            payload.expires_ts !== status.granted_expires_ts.toISOString() ||
+            !samePaths(payload.paths as string[], receipt.paths)) return null;
+        const stillHeld = await readWaiterStatus(tx as unknown as import('postgres').Sql, receipt.ticketId);
+        if (stillHeld.status !== 'granted' || !unchangedRoot()) return null;
+        return [{ index: receipt.index, kind: 'tool-result' as const, name: 'lock:grant',
+          at: new Date(at).toISOString(), content: canonicalJson(payload),
+          metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
+            durableTransition: { id: receipt.transitionId,
+              subjectRef: `file-lock:${frozen.coordinationDomain}:${receipt.ticketId}`, from: 'waiting', to: 'granted' },
+            lockGrantSource: { basis: 'live-private-lock-side-store-and-bridge', coordinationDomain: frozen.coordinationDomain,
+              ticketId: receipt.ticketId, lockId: receipt.lockId, ownerId: receipt.ownerId, ownerLabel: receipt.ownerLabel,
+              paths: receipt.paths, queuedAt: waiter.queued_ts.toISOString(), expiresAt: status.granted_expires_ts.toISOString() } } }];
+      });
+    } catch { return null; }
+  };
+}
+
 /** The execution host allocates refs and paths before candidate generation.
  * A candidate ref cannot select a filesystem path, workspace or subject. Byte
  * integrity is checked by replayResolvedWorkloadEvidence, separately from this
@@ -1610,6 +1723,73 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
         nativeInputSource: { basis: 'closed-native-recorded-input', nativeSessionId: observed.nativeSessionId,
           nativeTurnId: observed.nativeTurnId, recordIndex: observed.recordIndex, contentIndex: observed.contentIndex,
           sourceSha256: observed.sourceSha256 } } }];
+  };
+}
+
+/** Source-defined native tool results under a closed, host-allocated task.
+ * This preserves wrapper names and error observations; it does not turn a
+ * recorded result into a platform transition or a provider-consumption claim. */
+export function currentBenchWorkloadToolResultReader(options:
+  Omit<Parameters<typeof currentBenchWorkloadContextReader>[0], 'receipts'> & {
+    receipts: Array<{ receiptRef: string; subjectId: string; taskId: string; ownerId: string; label: string;
+      codexHome: string; nativeSessionId: string; nativeTurnId: string; callRecordIndex: number; resultRecordIndex: number;
+      callId: string; toolName: string; sourceSha256: string; argumentsSha256: string; outputSha256: string; index: number }>;
+  },
+): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, ...allocation } = options;
+  const frozen = structuredClone(allocation);
+  const workspaceId = resolveBenchWorkspace(frozen.workspaceId), start = Date.parse(frozen.notBefore);
+  const present = (value: string) => typeof value === 'string' && !!value.trim();
+  const digest = (value: string) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  if (![frozen.workspaceId, frozen.harnessSlug, frozen.runId].every(present) || !digest(frozen.trialBindingHash) ||
+      !Number.isFinite(start) || !frozen.receipts.length || frozen.receipts.some(row =>
+        ![row.receiptRef, row.subjectId, row.taskId, row.ownerId, row.label, row.codexHome,
+          row.nativeSessionId, row.nativeTurnId, row.callId, row.toolName].every(present) ||
+        ![row.sourceSha256, row.argumentsSha256, row.outputSha256].every(digest) ||
+        ![row.index, row.callRecordIndex, row.resultRecordIndex].every(n => Number.isSafeInteger(n) && n >= 0) ||
+        row.callRecordIndex >= row.resultRecordIndex) ||
+      new Set(frozen.receipts.map(row => row.receiptRef)).size !== frozen.receipts.length ||
+      new Set(frozen.receipts.map(row => row.index)).size !== frozen.receipts.length)
+    throw new Error('Workload tool-result reader requires a private allocation and unique pinned native call/result receipts.');
+  const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
+  return async (ref, binding) => {
+    const receipt = allowed.get(ref);
+    if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const [{ resolveDb }, { codexHomeForSessionKey }, { readClosedCodexTurnToolResult }] = await Promise.all([
+      import('./reproducibility/db'), import('@papercusp/orchestrator/session-launch-dirs'), import('../session-transcript-resolvers'),
+    ]);
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId });
+    const rows = await sql<{ adv_id: number; started_at: Date; ended_at: Date; native_started_at: Date }[]>`
+      SELECT a.id AS adv_id, t.started_at, t.ended_at, a.started_at AS native_started_at
+        FROM harness_shared.task_ledger t JOIN harness_shared.adv_sessions a
+          ON a.workspace_id = t.workspace_id AND a.coord_owner_id = t.detail->>'coordOwnerId'
+       WHERE t.workspace_id = ${workspaceId} AND t.task_id = ${receipt.taskId}
+         AND t.class = 'agent-session' AND t.state IN ('exited', 'killed', 'timed_out')
+         AND t.detail->>'coordOwnerId' = ${receipt.ownerId} AND t.detail->>'label' = ${receipt.label}
+         AND a.session_id = ${receipt.nativeSessionId} AND a.agent = 'codex'
+         AND EXISTS (SELECT 1 FROM harness_shared.work_items item
+                      WHERE item.workspace_id = ${workspaceId} AND item.harness_slug = ${frozen.harnessSlug}
+                        AND item.feature_id = ${receipt.subjectId})
+    `;
+    if (rows.length !== 1 || codexHomeForSessionKey(rows[0].adv_id) !== receipt.codexHome) return null;
+    const observed = await readClosedCodexTurnToolResult(sql, { workspaceId, codexHome: receipt.codexHome,
+      nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId,
+      callRecordIndex: receipt.callRecordIndex, resultRecordIndex: receipt.resultRecordIndex });
+    if (!observed) return null;
+    const content = typeof observed.output === 'string' ? observed.output : canonicalJson(observed.output);
+    const calledAt = Date.parse(observed.calledAt), at = Date.parse(observed.at), row = rows[0];
+    const times = [row.started_at, row.ended_at, row.native_started_at].map(value => value instanceof Date ? value.getTime() : NaN);
+    if (!times.every(Number.isFinite) || calledAt < start || calledAt < times[0] || calledAt < times[2] || at > times[1] ||
+        observed.callId !== receipt.callId || observed.name !== receipt.toolName || observed.sourceSha256 !== receipt.sourceSha256 ||
+        createHash('sha256').update(observed.arguments).digest('hex') !== receipt.argumentsSha256 ||
+        createHash('sha256').update(content).digest('hex') !== receipt.outputSha256) return null;
+    return [{ index: receipt.index, kind: 'tool-result', name: observed.name, at: observed.at, content,
+      metadata: { runId: frozen.runId, trialBindingHash: frozen.trialBindingHash, receiptRef: ref,
+        nativeToolSource: { basis: 'closed-native-recorded-tool-result', nativeSessionId: observed.nativeSessionId,
+          nativeTurnId: observed.nativeTurnId, callRecordIndex: observed.callRecordIndex, resultRecordIndex: observed.resultRecordIndex,
+          callId: observed.callId, sourceSha256: observed.sourceSha256, arguments: observed.arguments,
+          argumentsSha256: receipt.argumentsSha256, outputSha256: receipt.outputSha256,
+          calledAt: observed.calledAt, isError: observed.isError } } }];
   };
 }
 

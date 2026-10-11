@@ -14,6 +14,7 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchWorkloadTransitionReader, currentBenchWorkloadArtifactReader, currentBenchWorkloadContextReader,
   currentBenchWorkloadCheckpointReader, currentBenchWorkloadHandoffReader, currentBenchWorkloadProviderInputReader,
+  currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   currentBenchProviderAuthenticator, currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
@@ -175,6 +176,115 @@ beforeEach(async () => {
 });
 
 let hostGateway: ReturnType<typeof createInferenceGateway> | undefined;
+
+describe('private workload lock-grant authority', () => {
+  const binding = { runId: 'private-lock-run', trialBindingHash: 'a'.repeat(64) };
+  // This is a separate private side-store schema, never the host's live locks DB.
+  beforeAll(async () => {
+    await sql.unsafe(`CREATE TABLE agent_lock_waiters (ticket_id uuid PRIMARY KEY, coordination_domain text,
+      owner text, owner_label text, paths text[], intent text, goal_ref text, queued_ts timestamptz,
+      status text, granted_lock_id uuid, granted_expires_ts timestamptz);
+      CREATE TABLE agent_file_locks (coordination_domain text, path text, owner text, owner_label text,
+      intent text, goal_ref text, lock_id uuid, acquired_ts timestamptz, expires_ts timestamptz,
+      PRIMARY KEY (coordination_domain, path));`);
+  });
+  beforeEach(async () => { await sql`TRUNCATE agent_lock_waiters, agent_file_locks`; });
+  async function fixture() {
+    const ticketId = randomUUID(), lockId = randomUUID(), ownerId = `private-lock-owner:${randomUUID()}`;
+    const subjectId = 'private-lock-subject', ownerLabel = 'Private lock worker', intent = 'Private workload edit';
+    const queued = new Date(Date.now() - 3000), acquired = new Date(queued.getTime() + 1000);
+    const fired = new Date(queued.getTime() + 2000), expires = new Date(Date.now() + 60_000);
+    const paths = ['src/a.ts', 'src/b.ts'], eventKey = `lock:grant:${ticketId}`;
+    const receiptRef = `${eventKey}@${BigInt(queued.getTime()) * 1000n}#1`;
+    const receipt = { receiptRef, subjectId, ticketId, lockId, ownerId, ownerLabel, intent,
+      paths, queuedAt: queued.toISOString(), transitionId: 'private-lock-grant', index: 3 };
+    const payload = { granted: true, ticket_id: ticketId, lock_id: lockId, paths, expires_ts: expires.toISOString() };
+    await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, 'private-lock-harness', ${subjectId}, 'wip')`;
+    await sql`INSERT INTO agent_lock_waiters VALUES (${ticketId}::uuid, ${repoRoot}, ${ownerId}, ${ownerLabel},
+      ${paths}, ${intent}, ${subjectId}, ${queued}, 'granted', ${lockId}::uuid, ${expires})`;
+    for (const path of paths) await sql`INSERT INTO agent_file_locks VALUES (${repoRoot}, ${path}, ${ownerId},
+      ${ownerLabel}, ${intent}, ${subjectId}, ${lockId}::uuid, ${acquired}, ${expires})`;
+    await sql`INSERT INTO harness_shared.event_key_fires VALUES (${workspaceId}, ${eventKey}, ${queued}, ${fired},
+      'lock-grant-bridge', ${sql.json(payload)}, 1)`;
+    return { receipt, payload, eventKey, options: { sql, locksSql: sql, workspaceId, harnessSlug: 'private-lock-harness',
+      ...binding, coordinationDomain: repoRoot, notBefore: queued.toISOString(), receipts: [receipt] } };
+  }
+  it('binds the exact live full lock set, queued ticket and bridge fire without fabricating an invocation', async () => {
+    const f = await fixture(), reader = currentBenchWorkloadLockGrantReader(f.options);
+    const rows = await reader(f.receipt.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ kind: 'tool-result', name: 'lock:grant', content: canonicalJson(f.payload),
+      metadata: { ...binding, receiptRef: f.receipt.receiptRef,
+        durableTransition: { id: 'private-lock-grant', from: 'waiting', to: 'granted' },
+        lockGrantSource: { basis: 'live-private-lock-side-store-and-bridge', ownerId: f.receipt.ownerId,
+          ticketId: f.receipt.ticketId, lockId: f.receipt.lockId, paths: f.receipt.paths } } });
+    expect(rows?.[0].metadata).not.toHaveProperty('nativeToolSource');
+    f.receipt.ownerId = 'candidate-owner'; f.receipt.paths.push('candidate.ts');
+    expect(await reader(f.receipt.receiptRef, binding)).toEqual(rows);
+    expect(await reader('candidate-ref', binding)).toBeNull();
+    expect(await reader(f.receipt.receiptRef, { ...binding, runId: 'foreign' })).toBeNull();
+    expect(await reader(f.receipt.receiptRef, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
+  });
+  it.each(['workspace', 'harness', 'subject', 'duplicate-subject', 'owner', 'label', 'domain', 'intent', 'goal',
+    'queue-time', 'ticket-paths', 'ticket-status', 'ticket-lock', 'partial-release', 'full-release', 'expired',
+    'lock-owner', 'lock-label', 'lock-intent', 'lock-goal', 'lock-extra-path', 'lock-expiry', 'late-acquire',
+    'no-fire', 'fire-source', 'fire-count', 'fire-generation', 'fire-before-queue', 'payload-ticket',
+    'payload-lock', 'payload-paths', 'payload-expiry', 'terminal-payload', 'replaced-root'])
+  ('refuses %s substitution or stale grant', async fault => {
+    const f = await fixture(), reader = currentBenchWorkloadLockGrantReader(f.options);
+    if (fault === 'workspace') await sql`UPDATE harness_shared.work_items SET workspace_id = 'foreign'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign'`;
+    if (fault === 'subject') await sql`UPDATE harness_shared.work_items SET feature_id = 'foreign'`;
+    if (fault === 'duplicate-subject') await sql`INSERT INTO harness_shared.work_items SELECT * FROM harness_shared.work_items`;
+    if (fault === 'owner') await sql`UPDATE agent_lock_waiters SET owner = 'foreign'`;
+    if (fault === 'label') await sql`UPDATE agent_lock_waiters SET owner_label = 'foreign'`;
+    if (fault === 'domain') await sql`UPDATE agent_lock_waiters SET coordination_domain = '/foreign'`;
+    if (fault === 'intent') await sql`UPDATE agent_lock_waiters SET intent = 'foreign'`;
+    if (fault === 'goal') await sql`UPDATE agent_lock_waiters SET goal_ref = 'foreign'`;
+    if (fault === 'queue-time') await sql`UPDATE agent_lock_waiters SET queued_ts = queued_ts - interval '1 second'`;
+    if (fault === 'ticket-paths') await sql`UPDATE agent_lock_waiters SET paths = ARRAY['foreign.ts']`;
+    if (fault === 'ticket-status') await sql`UPDATE agent_lock_waiters SET status = 'waiting'`;
+    if (fault === 'ticket-lock') await sql`UPDATE agent_lock_waiters SET granted_lock_id = ${randomUUID()}::uuid`;
+    if (fault === 'partial-release') await sql`DELETE FROM agent_file_locks WHERE path = 'src/a.ts'`;
+    if (fault === 'full-release') await sql`DELETE FROM agent_file_locks`;
+    if (fault === 'expired') await sql`UPDATE agent_lock_waiters SET granted_expires_ts = clock_timestamp() - interval '1 second'`;
+    if (fault === 'lock-owner') await sql`UPDATE agent_file_locks SET owner = 'foreign'`;
+    if (fault === 'lock-label') await sql`UPDATE agent_file_locks SET owner_label = 'foreign'`;
+    if (fault === 'lock-intent') await sql`UPDATE agent_file_locks SET intent = 'foreign'`;
+    if (fault === 'lock-goal') await sql`UPDATE agent_file_locks SET goal_ref = 'foreign'`;
+    if (fault === 'lock-extra-path') await sql`INSERT INTO agent_file_locks
+      SELECT coordination_domain, 'src/extra.ts', owner, owner_label, intent, goal_ref, lock_id, acquired_ts, expires_ts
+        FROM agent_file_locks LIMIT 1`;
+    if (fault === 'lock-expiry') await sql`UPDATE agent_file_locks SET expires_ts = expires_ts + interval '1 second'`;
+    if (fault === 'late-acquire') await sql`UPDATE agent_file_locks SET acquired_ts = clock_timestamp() + interval '10 seconds'`;
+    if (fault === 'no-fire') await sql`TRUNCATE harness_shared.event_key_fires`;
+    if (fault === 'fire-source') await sql`UPDATE harness_shared.event_key_fires SET last_fired_by = 'candidate'`;
+    if (fault === 'fire-count') await sql`UPDATE harness_shared.event_key_fires SET fire_count = 2`;
+    if (fault === 'fire-generation') await sql`UPDATE harness_shared.event_key_fires SET first_fired_at = first_fired_at + interval '1 second'`;
+    if (fault === 'fire-before-queue') await sql`UPDATE harness_shared.event_key_fires SET last_fired_at = first_fired_at - interval '1 second'`;
+    if (fault.startsWith('payload-') || fault === 'terminal-payload') {
+      const payload = { ...f.payload };
+      if (fault === 'payload-ticket') payload.ticket_id = randomUUID();
+      if (fault === 'payload-lock') payload.lock_id = randomUUID();
+      if (fault === 'payload-paths') payload.paths = ['src/foreign.ts'];
+      if (fault === 'payload-expiry') payload.expires_ts = new Date(Date.now() + 120_000).toISOString();
+      if (fault === 'terminal-payload') payload.granted = false;
+      await sql`UPDATE harness_shared.event_key_fires SET last_payload = ${sql.json(payload)}`;
+    }
+    if (fault === 'replaced-root') {
+      renameSync(repoRoot, `${repoRoot}-old`); roots.push(`${repoRoot}-old`); mkdirSync(repoRoot);
+    }
+    expect(await reader(f.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('refuses duplicate or unsafe host allocations and a symlink coordination domain', async () => {
+    const f = await fixture();
+    expect(() => currentBenchWorkloadLockGrantReader({ ...f.options, workspaceId: 'papercusp-workspace' })).toThrow(/PRODUCTION/);
+    expect(() => currentBenchWorkloadLockGrantReader({ ...f.options, receipts: [f.receipt, f.receipt] })).toThrow(/unique exact/);
+    expect(() => currentBenchWorkloadLockGrantReader({ ...f.options, receipts: [{ ...f.receipt, paths: ['../escape'] }] })).toThrow(/unique exact/);
+    const linked = `${repoRoot}-link`; symlinkSync(repoRoot, linked); roots.push(linked);
+    expect(() => currentBenchWorkloadLockGrantReader({ ...f.options, coordinationDomain: linked })).toThrow(/canonical private/);
+  });
+});
 
 describe('private workload status authority', () => {
   const eventKey = 'work-item:status:private-dependency';
@@ -527,6 +637,68 @@ describe('private workload context authority', () => {
     expect(await reader(f.receipt.receiptRef, { ...binding, runId: 'foreign-run' })).toBeNull();
     expect(await reader(f.receipt.receiptRef, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
     expect(await reader('candidate-chosen-ref', binding)).toBeNull();
+  });
+});
+
+describe('private workload native tool-result authority', () => {
+  const binding = { runId: 'private-tool-result-run', trialBindingHash: 'a'.repeat(64) };
+  async function fixture() {
+    const f = await workloadContextFixture(binding);
+    const argumentsText = '{"paths":["private/task.txt"],"intent":"exact π"}', output = '{"ok":false,"busy":["private/task.txt"]}';
+    const records = f.transcript.trimEnd().split('\n').map(line => JSON.parse(line));
+    records[2] = { timestamp: '2026-10-11T00:00:00.500Z', type: 'response_item', payload: { type: 'function_call',
+      call_id: 'private-tool-call', namespace: 'mcp', name: 'locks_acquire', arguments: argumentsText } };
+    records.splice(3, 0, { timestamp: '2026-10-11T00:00:01Z', type: 'response_item',
+      payload: { type: 'function_call_output', call_id: 'private-tool-call', output } });
+    const transcript = records.map(row => JSON.stringify(row) + '\n').join('');
+    const [source] = await sql`SELECT file_path FROM harness_shared.interactive_usage_files`;
+    writeFileSync(source.file_path, transcript);
+    await sql`UPDATE harness_shared.interactive_usage_files SET byte_offset = ${Buffer.byteLength(transcript)}`;
+    const receipt = { ...f.receipt, receiptRef: 'native-tool:private-context', callRecordIndex: 2, resultRecordIndex: 3,
+      callId: 'private-tool-call', toolName: 'mcp.locks_acquire', sourceSha256: createHash('sha256').update(transcript).digest('hex'),
+      argumentsSha256: createHash('sha256').update(argumentsText).digest('hex'), outputSha256: createHash('sha256').update(output).digest('hex') };
+    return { ...f, transcript, argumentsText, output, receipt, options: { ...f.options, receipts: [receipt] } };
+  }
+  it('binds exact call/result source bytes to the private task without inventing a durable transition', async () => {
+    const f = await fixture();
+    expect(await currentBenchWorkloadToolResultReader(f.options)(f.receipt.receiptRef, binding)).toEqual([
+      { index: 3, kind: 'tool-result', name: 'mcp.locks_acquire', at: '2026-10-11T00:00:01.000Z', content: f.output,
+        metadata: { ...binding, receiptRef: f.receipt.receiptRef, nativeToolSource: { basis: 'closed-native-recorded-tool-result',
+          nativeSessionId: f.receipt.nativeSessionId, nativeTurnId: f.receipt.nativeTurnId, callRecordIndex: 2, resultRecordIndex: 3,
+          callId: f.receipt.callId, sourceSha256: f.receipt.sourceSha256, arguments: f.argumentsText,
+          argumentsSha256: f.receipt.argumentsSha256, outputSha256: f.receipt.outputSha256,
+          calledAt: '2026-10-11T00:00:00.500Z', isError: null } } },
+    ]);
+  });
+  it.each(['workspace', 'harness', 'owner', 'label', 'native-session', 'native-home', 'live-task', 'missing-end',
+    'before-launch', 'after-end', 'old', 'sourceSha256', 'argumentsSha256', 'outputSha256', 'callId', 'toolName'])
+  ('refuses %s native tool-result borrowing', async fault => {
+    const f = await fixture();
+    if (fault === 'workspace') await sql`UPDATE harness_shared.task_ledger SET workspace_id = 'foreign-workspace'`;
+    if (fault === 'harness') await sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign-harness'`;
+    if (fault === 'owner') await sql`UPDATE harness_shared.adv_sessions SET coord_owner_id = 'foreign-owner'`;
+    if (fault === 'label') await sql`UPDATE harness_shared.task_ledger SET detail = ${sql.json({ coordOwnerId: f.receipt.ownerId, label: 'foreign-label' })}`;
+    if (fault === 'native-session') await sql`UPDATE harness_shared.adv_sessions SET session_id = ${randomUUID()}`;
+    if (fault === 'native-home') hostHome.byId.clear();
+    if (fault === 'live-task') await sql`UPDATE harness_shared.task_ledger SET state = 'running'`;
+    if (fault === 'missing-end') await sql`UPDATE harness_shared.task_ledger SET ended_at = NULL`;
+    if (fault === 'before-launch') await sql`UPDATE harness_shared.adv_sessions SET started_at = '2026-10-11T00:00:01Z'`;
+    if (fault === 'after-end') await sql`UPDATE harness_shared.task_ledger SET ended_at = '2026-10-11T00:00:00Z'`;
+    if (fault === 'old') f.options.notBefore = '2026-10-11T00:00:01Z';
+    if (fault === 'sourceSha256' || fault === 'argumentsSha256' || fault === 'outputSha256') f.receipt[fault] = 'b'.repeat(64);
+    if (fault === 'callId') f.receipt.callId = 'foreign-call';
+    if (fault === 'toolName') f.receipt.toolName = 'locks:acquire';
+    expect(await currentBenchWorkloadToolResultReader(f.options)(f.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('freezes host receipt pins and refuses candidate-selected refs, foreign bindings and duplicate allocations', async () => {
+    const f = await fixture(), reader = currentBenchWorkloadToolResultReader(f.options);
+    f.receipt.toolName = 'candidate-wrapper'; f.receipt.outputSha256 = 'c'.repeat(64);
+    expect((await reader(f.receipt.receiptRef, binding))?.[0].name).toBe('mcp.locks_acquire');
+    expect(await reader('candidate-ref', binding)).toBeNull();
+    expect(await reader(f.receipt.receiptRef, { ...binding, runId: 'foreign-run' })).toBeNull();
+    expect(await reader(f.receipt.receiptRef, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
+    f.options.receipts.push({ ...f.receipt });
+    expect(() => currentBenchWorkloadToolResultReader(f.options)).toThrow(/unique pinned/);
   });
 });
 
