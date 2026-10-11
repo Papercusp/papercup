@@ -322,7 +322,11 @@ const NAIVE_LINE_RE = String.raw`\/\/.*$`;
 // (`const t = loadTypescript(); t.createSourceFile(...)`) parses an AST just as surely as one
 // spelled `ts.`, and the module-name string it required is blanked by the masking itself.
 // check-no-unenrolled-detached-spawn.mjs read as 'unmasked' on exactly that alias (2026-09-28).
-const PARSES_AST = /from\s*['"]typescript['"]|\.createSourceFile\s*\(|@babel\/parser|\bacorn\b|ts-morph/;
+// `@typescript-eslint/typescript-estree` / `/parser` are parsers too: check-bundle-free-refs.mjs
+// walks an ESTree + scope-manager AST and its `.test(` calls read identifier NAMES, never raw
+// source, yet read as 'unmasked' because only the four parsers above were named (EI-25706078725120945).
+const PARSES_AST =
+  /from\s*['"]typescript['"]|\.createSourceFile\s*\(|@babel\/parser|@typescript-eslint\/(?:typescript-estree|parser)['"]|\bacorn\b|ts-morph/;
 const SCANS_CODE_FILES = /\.tsx?['"`]|\.mjs['"`]|\.jsx['"`]|\.cts['"`]|\.mts['"`]/;
 const TEXT_MATCHES = /\.test\s*\(|\.match(All)?\s*\(|\.includes\s*\(|\.exec\s*\(/;
 const READS_FILES = /readFileSync|execFileSync\s*\(\s*['"](rg|grep)['"]/;
@@ -834,6 +838,12 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // basename check, and by `.test(` / `.includes(` over license ids, lockfile keys and relative
     // PATHS. Masking would change nothing it analyses, so this is the "exposure considered" kind.
     'check-licenses.mjs',
+    // ⚠ KNOWN FALSE POSITIVE, not debt — remove this entry when EI-20077125623815751 lands.
+    // Reads package.json / package-lock.json as JSON and `.includes(` over lockfile ROW paths; it
+    // never reads JS/TS source. Its only quoted-extension evidence is its import specifier
+    // (`from './lib/test-runner-classes.mjs'`, added 2026-10-08), the same shape as
+    // check-tracked-src-entry-dist.mjs below (EI-25706078725120945).
+    'check-lockfile-census.mjs',
     // check-migration-fixture-drift.mjs was REMOVED here on 2026-08-10 (WI-37717). It scans
     // TWO surfaces and both are now masked: migration .sql text via stripSqlComments (inside
     // extractIntroducedColumns — the input is definitionally SQL, so no extension dispatch is
@@ -916,6 +926,12 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     //   INSERT INTO t VALUES ('a--b'), (workspace_id ... DEFAULT 'default')
     // reported NOTHING. The SQL path it needed did not exist until this WI added it — the
     // shared stripper was a TypeScript parser that returned SQL completely unmasked.
+    // ⚠ KNOWN FALSE POSITIVE, not debt — remove this entry when EI-20077125623815751 lands.
+    // Runs lints against a committed snapshot; reads only JSON owner markers, and its `.test(` /
+    // `.includes(` calls run over argv, SHAs and workspace names. Its only quoted-extension
+    // evidence is an import specifier (`'../libs/test-config/src/tmpdir-guard.ts'`, added
+    // 2026-10-10) — the check-tracked-src-entry-dist.mjs shape (EI-25706078725120945).
+    'lint-as-committed.mjs',
     'lint-tsc-workspaces.mjs',
   ]);
 

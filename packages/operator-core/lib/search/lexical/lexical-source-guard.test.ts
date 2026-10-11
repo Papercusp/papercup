@@ -21,6 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { stripCommentsOnly } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../../..');
 
@@ -40,14 +41,12 @@ const NOT_PRODUCTION = /(\.test\.|\.spec\.|\/bench\/|\/e2e\/|\/dist\/|\/test\/|\
 const TS_RANK_CALL = /\bts_rank(_cd)?\s*\(/;
 const SEAM_IMPORT = /from\s+['"][^'"]*search\/lexical\/rank['"]|from\s+['"]\.\/rank['"]/;
 
-/** Drops comment-only lines and block comments; leaves code and every literal intact. */
-function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
-    .split('\n')
-    .map(line => (/^\s*\/\//.test(line) ? '' : line))
-    .join('\n');
-}
+/*
+ * Comments only, through the shared parser-backed stripper (EI-25706078725120945): the SQL that
+ * calls ts_rank lives inside template literals and SEAM_IMPORT reads the import-path string, so
+ * the strings variant would blind both. A private regex stripper here was the phantom-offender
+ * class guard-string-literal-blindness ratchets against (a `//` inside a string read as a comment).
+ */
 
 interface SourceFile { path: string; text: string }
 
@@ -60,7 +59,7 @@ function findLexicalSeamViolations(
     .filter(f => PRODUCTION_SOURCE.test(f.path) && !NOT_PRODUCTION.test(f.path) && f.path !== SEAM)
     .filter(f => !allow.has(f.path))
     .filter(f => {
-      const code = stripComments(f.text);
+      const code = stripCommentsOnly(f.text, f.path);
       if (!TS_RANK_CALL.test(code)) return false;
       const sameDirSeam = f.path.startsWith('packages/operator-core/lib/search/lexical/');
       const imports = SEAM_IMPORT.test(code) && (sameDirSeam || /search\/lexical\/rank/.test(code));
@@ -145,7 +144,7 @@ describe('lexical seam source guard (R-9)', () => {
         expect(reason.length).toBeGreaterThan(20);
         const f = files.find(x => x.path === p);
         expect(f, `${p} no longer calls ts_rank; drop it from LEXICAL_SEAM_ALLOWLIST`).toBeDefined();
-        expect(TS_RANK_CALL.test(stripComments(f!.text))).toBe(true);
+        expect(TS_RANK_CALL.test(stripCommentsOnly(f!.text, f!.path))).toBe(true);
       }
     });
   });

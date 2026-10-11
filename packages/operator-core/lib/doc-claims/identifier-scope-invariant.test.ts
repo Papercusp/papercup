@@ -26,6 +26,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { stripCommentsAndStrings, stripSqlComments } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const REPO = new URL('../../../../', import.meta.url);
 const readRepo = (rel: string): string => readFileSync(new URL(rel, REPO), 'utf8');
@@ -56,13 +57,12 @@ interface CodeFacts {
   recurrenceGuardShipped: boolean;
 }
 
-function stripSqlComments(sql: string): string {
-  return sql.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-}
-
-function stripTsComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
-}
+/*
+ * Masking goes through the shared parser-backed strippers (EI-25706078725120945). The TS facts
+ * are CODE tokens (a `throw new …(` and a call), so comments AND strings are blanked; the SQL
+ * fact is DDL that may sit inside a `DO $$ … $$` body, so SQL is comments-only.
+ */
+const codeOf = (src: string, fileName: string): string => stripCommentsAndStrings(src, fileName);
 
 /** True when an ARMED migration (`*.sql`; a `.DRAFT` is invisible to every runner) creates the key. */
 function workspaceUniqueArmed(sqlDir: URL): boolean {
@@ -74,8 +74,8 @@ function workspaceUniqueArmed(sqlDir: URL): boolean {
 function measureCode(): CodeFacts {
   return {
     workspaceUniqueArmed: workspaceUniqueArmed(SQL_DIR),
-    rubricRefusesAmbiguousRef: RUBRIC_REFUSAL.test(stripTsComments(readRepo(RUBRICS))),
-    getIssueRefusesSeveralWorkspaces: WORKSPACE_REFUSAL_CALL.test(stripTsComments(readRepo(ISSUES_ENGINEER))),
+    rubricRefusesAmbiguousRef: RUBRIC_REFUSAL.test(codeOf(readRepo(RUBRICS), RUBRICS)),
+    getIssueRefusesSeveralWorkspaces: WORKSPACE_REFUSAL_CALL.test(codeOf(readRepo(ISSUES_ENGINEER), ISSUES_ENGINEER)),
     recurrenceGuardShipped: existsInRepo(GUARD),
   };
 }
@@ -197,10 +197,12 @@ describe('identifier-scope-invariant checker — controls', () => {
   });
 
   it('measures facts from code only: commented-out refusals and DDL do not count', () => {
-    expect(RUBRIC_REFUSAL.test(stripTsComments('// throw new RubricRefAmbiguousError(id, hs);'))).toBe(false);
-    expect(RUBRIC_REFUSAL.test(stripTsComments('if (x) throw new RubricRefAmbiguousError(id, hs);'))).toBe(true);
-    expect(WORKSPACE_REFUSAL_CALL.test(stripTsComments('import { assertWorkspaceChoice } from "./x";'))).toBe(false);
-    expect(WORKSPACE_REFUSAL_CALL.test(stripTsComments('/* assertWorkspaceChoice(a, b, c, d); */'))).toBe(false);
+    expect(RUBRIC_REFUSAL.test(codeOf('// throw new RubricRefAmbiguousError(id, hs);', 'x.ts'))).toBe(false);
+    expect(RUBRIC_REFUSAL.test(codeOf('if (x) throw new RubricRefAmbiguousError(id, hs);', 'x.ts'))).toBe(true);
+    expect(WORKSPACE_REFUSAL_CALL.test(codeOf('import { assertWorkspaceChoice } from "./x";', 'x.ts'))).toBe(false);
+    expect(WORKSPACE_REFUSAL_CALL.test(codeOf('/* assertWorkspaceChoice(a, b, c, d); */', 'x.ts'))).toBe(false);
+    // A quoted call is not a call: the prior regex stripper left string contents in place.
+    expect(WORKSPACE_REFUSAL_CALL.test(codeOf('const msg = "assertWorkspaceChoice(a)";', 'x.ts'))).toBe(false);
     const ddl = 'CREATE UNIQUE INDEX work_items_ws_uq ON harness_shared.work_items (workspace_id, feature_id);';
     expect(WORKSPACE_UNIQUE_DDL.test(stripSqlComments(ddl))).toBe(true);
     expect(WORKSPACE_UNIQUE_DDL.test(stripSqlComments(`-- ${ddl}`))).toBe(false);
