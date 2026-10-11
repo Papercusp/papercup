@@ -535,6 +535,10 @@ export const limitsSchema = z
 export const CLAIM_SPEC_LANES = ['implementation', 'verification'] as const;
 export type ClaimSpecLane = (typeof CLAIM_SPEC_LANES)[number];
 
+/** D-011 B of `bug-queue-legitimacy-and-actionable-validation-2026-10-10`: when a member adopts orphaned revisions. */
+export const CLAIM_SPEC_REVISION_ADOPTION_MODES = ['first'] as const;
+export type ClaimSpecRevisionAdoptionMode = (typeof CLAIM_SPEC_REVISION_ADOPTION_MODES)[number];
+
 export const claimableStatesSchema = z
   .array(z.enum(CLAIM_STATES_ALLOWLIST as unknown as [string, ...string[]]))
   .max(20);
@@ -562,6 +566,15 @@ export const claimSpecSchema = z
      * implementation work. Reporters and implementers are refused by the D-021 rule.
      */
     lane: z.enum(CLAIM_SPEC_LANES).optional(),
+    /**
+     * Plan `bug-queue-legitimacy-and-actionable-validation-2026-10-10`, D-011 ruling B: an
+     * implementation-lane member adopts an ORPHANED content revision (a revision-requested
+     * report whose submitter is provably gone, D-008) BEFORE its ordinary claim. Absent = off.
+     * 'first' rather than "on an empty lane", because measured 2026-10-11 the ordinary bug
+     * pool held 560 claimable rows, so an empty-lane leg would never fire. Authorization is
+     * unchanged: only the orphan proof admits an adoption, scoped by this spec's view.filter.
+     */
+    revisionAdoption: z.enum(CLAIM_SPEC_REVISION_ADOPTION_MODES).optional(),
   })
   .strict();
 
@@ -895,6 +908,17 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
   if (!(SUPPORTED_SPEC_VERSIONS as readonly string[]).includes(spec.specVersion)) {
     errors.push(
       `specVersion: unsupported spec version "${spec.specVersion}" (supported: ${SUPPORTED_SPEC_VERSIONS.join(', ')})`,
+    );
+  }
+
+  // (2b) D-011 B: revision adoption is report revision done by an IMPLEMENTATION member. A
+  // verifier-lane spec never pulls implementation work (D-027), and getNextForBee serves it
+  // before the adoption leg is reached, so the field would be silently inert there. Refuse
+  // it instead of storing a setting that does nothing.
+  if (spec.revisionAdoption !== undefined && spec.lane === 'verification') {
+    errors.push(
+      "revisionAdoption: applies only to an implementation-lane spec; a lane:'verification' spec is " +
+        'served reviews and verification tasks and never adopts revisions. Remove one of the two fields.',
     );
   }
 

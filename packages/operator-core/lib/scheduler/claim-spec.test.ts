@@ -389,6 +389,42 @@ describe('validateClaimSpec — lane (P-007 Phase B / D-027)', () => {
   });
 });
 
+describe('validateClaimSpec — revisionAdoption (bug-queue-legitimacy D-011 B)', () => {
+  const base = {
+    specVersion: '1.0',
+    specId: 'drain-lane',
+    revision: 0,
+    view: {},
+    rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  };
+
+  it.each([
+    ['no lane', {}],
+    ["lane 'implementation'", { lane: 'implementation' }],
+  ])("accepts revisionAdoption:'first' with %s and keeps it on the parsed spec", (_label, extra) => {
+    const r = validateClaimSpec({ ...base, ...extra, revisionAdoption: 'first' });
+    expect(r.errors).toEqual([]);
+    expect(r.spec?.revisionAdoption).toBe('first');
+  });
+
+  it('is absent (off) by default, including on the default spec', () => {
+    expect(validateClaimSpec(base).spec?.revisionAdoption).toBeUndefined();
+    expect(DEFAULT_CLAIM_SPEC.revisionAdoption).toBeUndefined();
+  });
+
+  it('rejects an unknown mode with a field-named error', () => {
+    const r = validateClaimSpec({ ...base, revisionAdoption: 'fallback' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.startsWith('revisionAdoption'))).toBe(true);
+  });
+
+  it('refuses it on a verifier-lane spec, where it would be silently inert', () => {
+    const r = validateClaimSpec({ ...base, lane: 'verification', revisionAdoption: 'first' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.startsWith('revisionAdoption') && e.includes('implementation-lane'))).toBe(true);
+  });
+});
+
 describe('validateClaimSpec — invalid: version + structure', () => {
   it('rejects an unsupported spec version', () => {
     const r = validateClaimSpec({

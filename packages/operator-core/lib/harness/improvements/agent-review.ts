@@ -901,18 +901,48 @@ export interface AdoptNextAgentReviewResult extends AdoptAgentReviewResult {
   refusals: Partial<Record<AdoptAgentReviewReason, number>>;
 }
 
+/** Payload key recording a STABLE adoption refusal for one review round (D-011 C). */
+export const AGENT_REVIEW_ADOPTION_PROBE_KEY = 'agentReviewAdoptionProbe';
+
+/** How long a stable refusal keeps a row out of the adopt-next window before it is re-probed. */
+export const AGENT_REVIEW_ADOPTION_PROBE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Refusals that cannot change while the review round stays the same, so re-measuring them on
+ * every scan only re-proves the answer (D-011 C). `authority-unknown` is a synthetic submitter
+ * with no recoverable reporter; `liveness-unknown` is a submitter the oracle has no signal for.
+ * The 24h TTL bounds the second: an oracle that later learns the submitter re-qualifies the row.
+ * Every OTHER refusal (a live submitter, a third-party holder, a lost CAS, a drifted snapshot)
+ * is transient and records nothing.
+ */
+const STABLE_ADOPTION_REFUSALS: ReadonlySet<AdoptAgentReviewReason> = new Set([
+  'not-submitter:authority-unknown',
+  'not-submitter:liveness-unknown',
+]);
+
 /**
  * Queue-order discovery for {@link adoptAgentReviewRevision}: oldest adoptable content
  * revision first, in one concrete harness, bounded to 25 candidates per call. Submitter
  * liveness is an oracle verdict, not a SQL fact, so it is measured per candidate here
  * rather than approximated in the query (an age proxy is exactly what D-008 forbids).
+ *
+ * `filter` scopes discovery to a claim spec's `view.filter` (D-011 B: the scheduler's
+ * `revisionAdoption:'first'` leg), compiled into the SQL and re-checked on the fetched row,
+ * the verifier lane's pattern. CONVERGENCE (D-011 C): the window is the 25 OLDEST candidates,
+ * so a run of rows that can never be adopted at the head of the queue would pin it forever
+ * and stop all adoption once the adoptable head was consumed. A stable refusal therefore
+ * stamps the row, and the query skips a row stamped for the SAME round within the TTL.
  */
 export async function adoptNextAgentReviewRevision(
-  input: { adopter: string; harnessSlug: string; workspaceId?: string },
+  input: { adopter: string; harnessSlug: string; workspaceId?: string; filter?: FilterNode; signal?: AbortSignal },
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<AdoptNextAgentReviewResult> {
+  input.signal?.throwIfAborted();
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
+  // ISO-8601 from toISOString() sorts lexicographically, so the cutoff compares as TEXT. A
+  // timestamptz cast would throw on a malformed stamp and take the whole scan down with it.
+  const probeCutoff = new Date(Date.now() - AGENT_REVIEW_ADOPTION_PROBE_TTL_MS).toISOString();
   const rows = await sql<{ feature_id: string }[]>`
     SELECT feature_id
       FROM harness_shared.work_items wi
@@ -925,20 +955,58 @@ export async function adoptNextAgentReviewRevision(
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${input.adopter}
+       -- COALESCE(..., false): an absent probe yields NULL, and NOT NULL would drop the row.
+       AND NOT COALESCE((
+         COALESCE(payload, '{}'::jsonb) -> ${AGENT_REVIEW_ADOPTION_PROBE_KEY} ->> 'round'
+           = COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'round'
+         AND COALESCE(payload, '{}'::jsonb) -> ${AGENT_REVIEW_ADOPTION_PROBE_KEY} ->> 'at' >= ${probeCutoff}
+       ), false)
+       AND ${compileFilter(sql, input.filter)}
      ORDER BY created_ts ASC
      LIMIT 25`;
   const refusals: Partial<Record<AdoptAgentReviewReason, number>> = {};
   let scanned = 0;
   for (const row of rows) {
+    input.signal?.throwIfAborted();
     scanned += 1;
+    if (input.filter) {
+      const found = await deps.getWorkItem(row.feature_id, input.harnessSlug);
+      if (!found || !matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(found), input.filter)) continue;
+    }
     const result = await adoptAgentReviewRevision(
       { id: row.feature_id, adopter: input.adopter, harnessSlug: input.harnessSlug },
       deps,
     );
     if (result.adopted) return { ...result, scanned, refusals };
     if (result.reason) refusals[result.reason] = (refusals[result.reason] ?? 0) + 1;
+    if (result.reason && STABLE_ADOPTION_REFUSALS.has(result.reason) && result.state) {
+      await recordAdoptionProbe(row.feature_id, input.harnessSlug, result.reason, result.state.round, deps);
+    }
   }
   return { adopted: false, workItem: null, scanned, refusals };
+}
+
+/**
+ * Stamp a stable refusal so the next scan's window moves past this row (D-011 C).
+ * Best-effort by design: a failed stamp costs one wasted re-probe on the next scan, never the
+ * scan itself, so it must not turn a refusal into an error for the caller.
+ */
+async function recordAdoptionProbe(
+  id: string,
+  harnessSlug: string,
+  reason: AdoptAgentReviewReason,
+  round: number,
+  deps: AgentReviewDeps,
+): Promise<void> {
+  try {
+    await deps.mergeWorkItemPayload(
+      id,
+      { [AGENT_REVIEW_ADOPTION_PROBE_KEY]: { reason, round, at: new Date().toISOString() } },
+      { harness: harnessSlug },
+    );
+  } catch {
+    /* best-effort: the row is re-probed on the next scan */
+  }
 }
 
 export async function resubmitAgentReview(

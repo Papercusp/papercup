@@ -198,4 +198,92 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
     expect(adopted.agentReview).toMatchObject({ status: 'revision-requested', submittedBy: 'su-adopter', round: 2 });
     expect(adopted.agentReviewAdoption).toMatchObject({ from: 'su-gone', sessionState: 'ended', adoptedBy: 'su-adopter' });
   });
+
+  /**
+   * bug-queue-legitimacy D-011 C (SPEC-BQL-P-009-CONVERGENCE): the window is the 25 OLDEST
+   * candidates, so rows that can never be adopted at the head of the queue would pin it
+   * forever. A STABLE refusal stamps the row and later scans move past it; a transient one
+   * stamps nothing; a new review round or an expired stamp re-qualifies. D-011 B: the spec's
+   * view.filter scopes discovery.
+   */
+  it('adopt-next stamps STABLE refusals so the window converges, and honours the spec filter (D-011 B/C)', async () => {
+    const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+    const revision = async (
+      id: string, index: number, submittedBy: string,
+      extra: { plan?: string; probe?: Record<string, unknown> } = {},
+    ) => {
+      const payload = {
+        agentReview: { status: 'revision-requested', ledgerIdeaId: id, round: 2, revisionKind: 'content', submittedBy },
+        ...(extra.probe ? { agentReviewAdoptionProbe: extra.probe } : {}),
+      };
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, item_kind, status, payload, source_plan_slug, created_ts, feature_order)
+        VALUES (${WS}, ${HARNESS}, ${id}, 'Neutral queue item', 'Current fixture', 'bug',
+          'open', ${JSON.stringify(payload)}::text::jsonb, ${extra.plan ?? null}, ${index}, ${index})`;
+    };
+    await revision('WI-SYNTH', 0, 'system:stranded-tool-failure-sweep');
+    await revision('WI-UNMEASURED', 1, 'su-ghost');
+    await revision('WI-LIVE', 2, 'su-live');
+    await revision('WI-STALE-PROBE', 3, 'su-ghost', { probe: { reason: 'not-submitter:liveness-unknown', round: 2, at: at(25 * 3_600_000) } });
+    await revision('WI-OLD-ROUND', 4, 'su-ghost', { probe: { reason: 'not-submitter:liveness-unknown', round: 1, at: at(60_000) } });
+    const freshAt = at(60_000);
+    await revision('WI-FRESH-PROBE', 5, 'su-gone', { probe: { reason: 'not-submitter:liveness-unknown', round: 2, at: freshAt } });
+    await revision('WI-P2P', 6, 'su-gone', { plan: 'p2p-release' });
+    await revision('WI-ORPHAN', 7, 'su-gone');
+
+    const { deps } = writer();
+    const adoptDeps = {
+      ...deps,
+      claimWorkItem: vi.fn(async (id: string, assignee: string, opts: { expectedAssignee?: string } = {}) => {
+        const rows = await db.adminSql`UPDATE harness_shared.work_items SET taken_by=${assignee}
+          WHERE workspace_id=${WS} AND feature_id=${id}
+            AND (taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? ''}) RETURNING feature_id`;
+        return rows.length ? deps.getWorkItem(id) : null;
+      }),
+      mergeWorkItemPayload: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+        await db.adminSql`UPDATE harness_shared.work_items
+          SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb
+          WHERE workspace_id=${WS} AND feature_id=${id}`;
+        return deps.getWorkItem(id);
+      }),
+      getWorkItemDetail: vi.fn(async () => ({ posts: [] })),
+      commentWorkItem: vi.fn(async () => ({})),
+      // su-ghost has no oracle signal (liveness-unknown); su-live is live; su-gone has ended.
+      resolveSubmitterLiveness: vi.fn(async (ownerId: string) =>
+        ownerId === 'su-live' ? { sessionState: 'live' } : ownerId === 'su-gone' ? { sessionState: 'ended' } : null),
+      resolveVerifiedSubmitterAlias: vi.fn(async () => null),
+    };
+    const scope = { adopter: 'su-adopter', harnessSlug: HARNESS, workspaceId: WS };
+    const payloadOf = async (id: string) => {
+      const [row] = await db.adminSql`SELECT taken_by, payload FROM harness_shared.work_items
+        WHERE workspace_id=${WS} AND feature_id=${id}`;
+      return row as { taken_by: string | null; payload: Record<string, Record<string, unknown>> };
+    };
+
+    // Scan 1: the fresh same-round stamp is skipped by SQL, the p2p row by the filter.
+    const first = await adoptNextAgentReviewRevision({ ...scope, filter: buildP2pLaneFence() }, adoptDeps as never);
+    expect(first).toMatchObject({
+      adopted: true, workItem: { id: 'WI-ORPHAN' }, scanned: 6,
+      refusals: { 'not-submitter:authority-unknown': 1, 'not-submitter:liveness-unknown': 3, 'not-submitter': 1 },
+    });
+    expect((await payloadOf('WI-SYNTH')).payload.agentReviewAdoptionProbe)
+      .toMatchObject({ reason: 'not-submitter:authority-unknown', round: 2 });
+    for (const id of ['WI-UNMEASURED', 'WI-STALE-PROBE', 'WI-OLD-ROUND']) {
+      const probe = (await payloadOf(id)).payload.agentReviewAdoptionProbe;
+      expect(probe).toMatchObject({ reason: 'not-submitter:liveness-unknown', round: 2 });
+      expect(Date.parse(String(probe?.at))).toBeGreaterThan(Date.now() - 60_000);
+    }
+    // A live submitter is TRANSIENT: nothing is stamped, so the row keeps being re-checked.
+    expect((await payloadOf('WI-LIVE')).payload.agentReviewAdoptionProbe).toBeUndefined();
+    expect((await payloadOf('WI-FRESH-PROBE')).payload.agentReviewAdoptionProbe?.at).toBe(freshAt);
+    expect((await payloadOf('WI-P2P')).taken_by).toBeNull();
+
+    // Scan 2: the stamped head no longer occupies the window; only the transient row remains.
+    const second = await adoptNextAgentReviewRevision({ ...scope, filter: buildP2pLaneFence() }, adoptDeps as never);
+    expect(second).toMatchObject({ adopted: false, scanned: 1, refusals: { 'not-submitter': 1 } });
+
+    // FALSIFIABILITY CONTROL for the filter: unscoped, the p2p orphan IS adoptable.
+    const unscoped = await adoptNextAgentReviewRevision(scope, adoptDeps as never);
+    expect(unscoped).toMatchObject({ adopted: true, workItem: { id: 'WI-P2P' }, scanned: 2 });
+  });
 });
