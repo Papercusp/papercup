@@ -56,10 +56,10 @@ interface WakeAudit {
       ownerId: string;
       msgId: string;
       at: string;
-      receipt: { pickupConfirmed?: boolean };
+      receipt?: { pickupConfirmed?: boolean };
     }>;
     deliveries: Array<{
-      id: string;
+      id: string | null;
       owner_id: string;
       msg_id: string;
       first_agent_call: string | null;
@@ -112,7 +112,7 @@ export function auditPopulationViolations(census: Census, dispositions: Disposit
 }
 
 /** R-2 records request outcomes; activity after a request does not establish causation. */
-export function auditWakeOutcomeViolations(dispositions: Dispositions, audit: WakeAudit): string[] {
+export function auditWakeOutcomeViolations(dispositions: Dispositions, audit: WakeAudit, nonWakingMessageIds: string[] = []): string[] {
   const errors: string[] = [];
   const candidates = dispositions.decisions.filter((row) => row.decision === 'resume-candidate').map((row) => row.ownerId);
   const owners = audit.rows.map((row) => row.ownerId);
@@ -125,30 +125,38 @@ export function auditWakeOutcomeViolations(dispositions: Dispositions, audit: Wa
   const requests = audit.rows.flatMap((row) => row.requests);
   if (requests.length !== audit.requestCount) errors.push('request-count-mismatch');
   if (duplicates(requests.map((row) => row.msgId)).length) errors.push('duplicate-request-id');
-  if (duplicates(audit.rows.flatMap((row) => row.deliveries.map((delivery) => delivery.id))).length) {
+  if (duplicates(audit.rows.flatMap((row) => row.deliveries.flatMap((delivery) => delivery.id ? [delivery.id] : []))).length) {
     errors.push('duplicate-delivery-id');
   }
   for (const row of audit.rows) {
-    if (!row.requests.length) errors.push(`missing-request:${row.ownerId}`);
+    if (!row.requests.some((request) => request.receipt)) errors.push(`missing-request:${row.ownerId}`);
     for (const request of row.requests) {
       if (request.ownerId !== row.ownerId || !request.msgId || !Number.isFinite(Date.parse(request.at))) {
         errors.push(`invalid-request:${row.ownerId}`);
       }
       if (request.receipt?.pickupConfirmed === true) errors.push(`enqueue-claims-pickup:${row.ownerId}`);
-      if (!row.deliveries.some((delivery) => delivery.owner_id === row.ownerId && delivery.msg_id === request.msgId)) {
+      if (!request.receipt) {
+        if (!nonWakingMessageIds.includes(request.msgId)) errors.push(`unverified-nonwake:${row.ownerId}:${request.msgId}`);
+        continue;
+      }
+      if (nonWakingMessageIds.includes(request.msgId)) errors.push(`wake-labelled-nonwake:${row.ownerId}:${request.msgId}`);
+      if (!row.deliveries.some((delivery) => delivery.id && delivery.owner_id === row.ownerId && delivery.msg_id === request.msgId)) {
         errors.push(`missing-delivery:${row.ownerId}:${request.msgId}`);
       }
     }
     for (const delivery of row.deliveries) {
-      if (!delivery.id || delivery.owner_id !== row.ownerId || !row.requests.some((request) => request.msgId === delivery.msg_id)) {
+      if (delivery.owner_id !== row.ownerId || !row.requests.some((request) => request.msgId === delivery.msg_id)) {
         errors.push(`foreign-delivery:${row.ownerId}`);
+      }
+      if (!delivery.id && (!nonWakingMessageIds.includes(delivery.msg_id) || delivery.first_agent_call !== null)) {
+        errors.push(`unverified-null-delivery:${row.ownerId}:${delivery.msg_id}`);
       }
     }
     const activityObserved = row.deliveries.some((delivery) => {
       const request = row.requests.find((request) => request.msgId === delivery.msg_id);
       const callAt = delivery.first_agent_call ? Date.parse(delivery.first_agent_call) : NaN;
       const requestAt = request ? Date.parse(request.at) : NaN;
-      return Number.isFinite(callAt) && callAt >= requestAt && callAt <= requestAt + 600_000;
+      return Boolean(delivery.id && request?.receipt) && Number.isFinite(callAt) && callAt >= requestAt && callAt <= requestAt + 600_000;
     });
     const expected = activityObserved ? 'turn-observed-after-wake' : 'delivery-recorded-pickup-unconfirmed';
     if (row.outcome !== expected) errors.push(`unsupported-outcome:${row.ownerId}`);
@@ -258,6 +266,16 @@ describe('conditional wake outcome oracle controls', () => {
     audit.rows[0].deliveries[0].first_agent_call = new Date(Date.parse(AS_OF) + 1000).toISOString();
     expect(auditWakeOutcomeViolations(dispositions, audit)).toEqual([]);
   });
+  it('permits an explicitly verified non-waking message part without fabricating a delivery', () => {
+    const [dispositions, audit] = wakeFixture();
+    audit.rows[0].requests.push({ ownerId: 'a', msgId: 'msg-part', at: AS_OF });
+    audit.rows[0].deliveries.push({ id: null, owner_id: 'a', msg_id: 'msg-part', first_agent_call: null });
+    audit.requestCount = 2;
+    expect(auditWakeOutcomeViolations(dispositions, audit)).toContain('unverified-nonwake:a:msg-part');
+    expect(auditWakeOutcomeViolations(dispositions, audit, ['msg-part'])).toEqual([]);
+    audit.rows[0].requests[0].receipt = undefined;
+    expect(auditWakeOutcomeViolations(dispositions, audit, ['msg-part', 'msg-a'])).toContain('missing-request:a');
+  });
 });
 
 const LIVE_REQUESTED = process.env.PAPERCUSP_PARKED_AUDIT_LIVE === '1';
@@ -295,7 +313,7 @@ describe.skipIf(!LIVE_REQUESTED)('LIVE: R-1 complete parked-agent census partiti
 
   it('every frozen resume candidate has exact request/delivery joins and an honest recorded outcome', async () => {
     const prefix = 'audits/parked-agent-resumption-2026-10-09/';
-    const paths = [prefix + 'dispositions.json', prefix + 'wake-outcomes-2026-10-11-verified.json'];
+    const paths = [prefix + 'dispositions.json', prefix + 'wake-outcomes-2026-10-11-verified.json', prefix + 'wakes/ce4-capacity.json'];
     const rows = await sql<Array<{ rel_path: string; content: string }>>`
       SELECT rel_path, content FROM harness_shared.harness_text_artifacts
        WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'
@@ -305,11 +323,20 @@ describe.skipIf(!LIVE_REQUESTED)('LIVE: R-1 complete parked-agent census partiti
     const byPath = new Map(rows.map((row) => [row.rel_path, JSON.parse(row.content)]));
     const dispositions = byPath.get(paths[0]) as Dispositions;
     const audit = byPath.get(paths[1]) as WakeAudit;
+    const archive = byPath.get(paths[2]) as { send: { chunked: boolean; results: Array<{ msg_id: string; wake?: unknown }> } };
+    expect(archive.send.chunked, 'only a recorded chunked send establishes a non-waking message part').toBe(true);
+    expect(archive.send.results.at(-1)?.wake, 'the final part must carry the actual wake receipt').toBeDefined();
+    const nonWakingMessageIds = archive.send.results.slice(0, -1).map((result) => {
+      expect(result.wake).toBeUndefined();
+      return result.msg_id;
+    });
     expect(dispositions.asOf).toBe(AS_OF);
     expect(audit.targets).toBe(113);
     expect(audit.requestCount).toBe(114);
-    const errors = auditWakeOutcomeViolations(dispositions, audit);
-    process.stdout.write(`PARKED_AUDIT_R2 ${JSON.stringify({ observedAt: audit.observedAt, targets: audit.targets, requests: audit.requestCount, errors })}\n`);
+    const wakeRequests = audit.rows.flatMap((row) => row.requests).filter((request) => request.receipt).length;
+    expect(wakeRequests).toBe(113);
+    const errors = auditWakeOutcomeViolations(dispositions, audit, nonWakingMessageIds);
+    process.stdout.write(`PARKED_AUDIT_R2 ${JSON.stringify({ observedAt: audit.observedAt, targets: audit.targets, messageParts: audit.requestCount, wakeRequests, nonWakingMessageIds, errors })}\n`);
     expect(errors).toEqual([]);
   });
 });
