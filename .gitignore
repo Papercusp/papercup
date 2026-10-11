@@ -368,6 +368,9 @@ apps/operator/dist-host/
 # Private proof hosts use named siblings of the default generated bundle.
 apps/operator/dist-host-*/
 apps/operator/dist-hosted-control-plane/
+# Per-run bundle written by scripts/verify-tauri-headless.sh. Swept into 79e67ad983 (228 files,
+# ~2M lines) because it was missing here, which reds the VAL census on bundled code.
+apps/operator/dist-verify/
 # Sibling of dist-host: the esbuild-bundled DESKTOP SIDECAR (embed-sidecar.mjs, ~51MB) + the
 # blueprint copies the embed build stages beside it. Generated output, never source — it was
 # swept into git by accident (2026-07-11) and every tree-scanning guard (no-raw-harness-sentinel,
