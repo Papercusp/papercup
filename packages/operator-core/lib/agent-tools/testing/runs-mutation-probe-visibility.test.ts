@@ -96,6 +96,8 @@ describe('testing:runs mutation-probe visibility (R-2)', () => {
     expect(data.count).toBe(0);
     expect(data.omittedBySourceFilter).toBe(3);
     expect(data.sourceFilterHint).toContain('source:"mutation-probe"');
+    // BAR R-9: the hint names BOTH arguments that return the hidden rows.
+    expect(data.sourceFilterHint).toContain('testRunIds');
     expect(data.sourceFilterHint).toContain('3 matching row(s)');
     expect(data).not.toHaveProperty('notRecorded');
   });
