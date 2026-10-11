@@ -8851,7 +8851,311 @@
      "summary": "plan lane android-public-release-2026-10-01#P-005 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "androidP005EvidenceQualification": {
+    "status": "retained-current-acceptance-unestablished",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004772",
+    "auditProofs": [
+     "WI-10005820#comment:1174890",
+     "WI-10005820#comment:1174907"
+    ],
+    "proofQualification": {
+     "sourcePostChars": 6394,
+     "sourcePostSha256": "4246229066f0db13fc583c17dd6078ccc59f7f1e5dff2839e62f07a91356dd57",
+     "readback": "The complete durable source post by this session equals the submitted body; default-tier clipped mutation receipt was not used as proof."
+    },
+    "sourceAuthority": {
+     "plan": "android-public-release-2026-10-01",
+     "version": 94,
+     "contentHash": "d4177567ac7433db054f39d74460b1175bd6ca6be78e870508a3c0b4074734e5",
+     "planState": "ready",
+     "item": "P-005",
+     "storedStatus": "todo",
+     "effectiveStatus": "todo",
+     "dependencies": [
+      "P-001",
+      "P-002"
+     ],
+     "unresolvedBlockers": [],
+     "workItemState": "open",
+     "assignee": null,
+     "completionAuthority": null,
+     "hasCompletionEvidence": false,
+     "statusScope": "The complete preparation reads are dated2026-10-11. The cleared historical plan-lane blocker and current TODO/open status qualify the frozen blocked row without changing it.",
+     "provenanceLimit": "This PERSONAL audit does not claim the child, revise dependencies, change its state or confer acceptance authority."
+    },
+    "specificationQualification": {
+     "scope": "Two registered specs in the complete finite P-005 read.",
+     "specs": [
+      {
+       "specId": "ANDROID-P-005-OUTCOME",
+       "currentRevision": 2,
+       "contentHash": "eacb6b7b8e93b8d5142121b7354985a35c6f16073b8a071c870a9b5e650680d0",
+       "behavior": "A cancelled mobile voice session releases every audio resource it acquired.",
+       "lifecycleStatus": "active",
+       "requiredEvidence": [
+        "live"
+       ],
+       "requiredTestLayers": [
+        "e2e"
+       ],
+       "acceptedBy": "su-c9cbdca9-7cd0-4b58-a69c-7645de562968",
+       "acceptedAt": "2026-10-06T19:28:10.490Z",
+       "acceptanceRef": "session_turn:codex:01a0f6a2-0749-7f00-b7ed-d3e1f5880f3c:12",
+       "sourceBar": null
+      },
+      {
+       "specId": "AUTO-BAR-R-5-P-005",
+       "currentRevision": 6,
+       "contentHash": "1e7b3293582708f3343cc534e813c83d4a8f12eef6c0def4fbe5886234ec2e68",
+       "behavior": "Each declared voice or push journey meets its documented acceptance contract.",
+       "lifecycleStatus": "active",
+       "requiredEvidence": [
+        "live"
+       ],
+       "requiredTestLayers": [],
+       "acceptedBy": "su-c9cbdca9-7cd0-4b58-a69c-7645de562968",
+       "acceptedAt": "2026-10-06T20:59:38.017Z",
+       "acceptanceRef": "acceptance-android-public-release-2026-10-01@5:R-5",
+       "sourceBar": {
+        "barKey": "R-5",
+        "barHash": "82ab888fc79130e885f6ac12b950520b79ed316f192f2bc4b3ea1bd59ea8fe2c",
+        "barSetHash": "777d1b468793e6ab9908eafbd0da1c0de02cb17b6b17b5ad6698177a5efd231e",
+        "rubricSlug": "acceptance-android-public-release-2026-10-01",
+        "rubricRevision": 5,
+        "evidencePlane": "live"
+       }
+      }
+     ]
+    },
+    "rubricQualification": {
+     "rubricRef": "acceptance-android-public-release-2026-10-01",
+     "revision": 7,
+     "criteriaHash": "2fd1083a85896b1b4c127b5536bae4c87e1bdde9ac387eb2b83a3c4351d7df15",
+     "barSetHash": "777d1b468793e6ab9908eafbd0da1c0de02cb17b6b17b5ad6698177a5efd231e",
+     "criterion": "r-5",
+     "mandatory": true,
+     "evidencePlane": "live",
+     "passRatings": [
+      "healthy"
+     ],
+     "check": {
+      "kind": "instrument",
+      "instrumentKey": "none"
+     },
+     "methodRef": "agent-insights/mobile-apps-monitoring-first",
+     "methodRefLimit": "The separate monitoring-first procedure was not independently re-audited in this unit.",
+     "vetting": {
+      "satisfied": true,
+      "state": "vetted",
+      "reason": "current",
+      "currentRevision": 7,
+      "attestedRevision": 5,
+      "attestationIssueId": "EI-25266987060747297"
+     },
+     "vettingLimit": "This is the server verdict; no independent attestation regrade or signed-candidate acceptance follows.",
+     "methodFloor": "Actual desktop-local and consented cloud turns with transcript/playback/cancel/background cleanup and revoke; actual FCM registration/delivery/deep links in foreground/background/terminated states; microphone and notification denial; accurate wake-word disclosure. Retain signed APK hash and source/spec/runtime identities. Tree checks do not replace promised phone observations."
+    },
+    "governingDecisions": {
+     "references": [
+      "android-public-release-2026-10-01#D-001",
+      "android-public-release-2026-10-01#D-003",
+      "android-public-release-2026-10-01#D-004",
+      "android-public-release-2026-10-01#D-005",
+      "android-public-release-2026-10-01#D-008",
+      "android-public-release-2026-10-01#D-013",
+      "android-public-release-2026-10-01#D-016",
+      "android-public-release-2026-10-01#D-022",
+      "android-public-release-2026-10-01#D-023"
+     ],
+     "qualification": "Reuse existing native app; source compliance does not imply candidate compliance; preserve BYOC/cloud and phone floors. D022 replaces the Actions acceptance route; D023 allows direct signed APK delivery before the store milestone. Neither enlarges this audit into runtime or publication execution."
+    },
+    "finiteBindingQualification": {
+     "workItemScope": "WI-10004772",
+     "specScope": [
+      "ANDROID-P-005-OUTCOME",
+      "AUTO-BAR-R-5-P-005"
+     ],
+     "workItemResult": {
+      "count": 0,
+      "limit": 1000,
+      "truncatedByLimit": false
+     },
+     "specResult": {
+      "count": 0,
+      "limit": 1000,
+      "truncatedByLimit": false
+     },
+     "scopeLimit": "Both preparation queries returned empty evidence arrays. This is absence in these declared finite scopes, not a universal claim about all mobile evidence."
+    },
+    "maintainedSourceQualification": {
+     "repository": "../papercup-rust-mobile",
+     "ownHead": "3c11a340f9eb857ede22b52a793876793e665e29",
+     "sourcePins": [
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/VoiceManager.kt",
+       "sha256": "a74a9209804f9a0449768972930e5be16da837e2c0618bcb71ac552291d0309f",
+       "bytes": 39188,
+       "lines": 813,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/DesktopVoiceSession.kt",
+       "sha256": "cee15e090a44f01748aabe20ed1537943add74b212afc0b6da69658545594e1d",
+       "bytes": 25705,
+       "lines": 596,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PushService.kt",
+       "sha256": "c5a788bab901284bb508285aa71d910aeea0a548cc2145b2803863f80d405328",
+       "bytes": 6242,
+       "lines": 148,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/MainActivity.kt",
+       "sha256": "be77625561f08f57d4aaba2e88974a1c2c6fe097288070a0d878acb0c9fbb34c",
+       "bytes": 67260,
+       "lines": 1633,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/SettingsScreen.kt",
+       "sha256": "c30d6121d91412ff0d224c2dde3a5905eeb3771a96d6b8c983824c0f6d17a5b3",
+       "bytes": 16762,
+       "lines": 434,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/VoiceSettingsScreen.kt",
+       "sha256": "3097c4d954906c5a057d5c0add97eb1c34d3e3db41f2665b556527a459391a92",
+       "bytes": 24639,
+       "lines": 589,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/VoicePrivacyConsent.kt",
+       "sha256": "9523a2fe5925fe935fa646d305aed0045a265c8e035f31a463c97126b75029e2",
+       "bytes": 1397,
+       "lines": 30,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/WakeWordEngine.kt",
+       "sha256": "49f4f9d0131250b5f2e547300d42cb2ac95109cc9c6204eec3b3b370a7e37214",
+       "bytes": 5037,
+       "lines": 122,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/WakeWordService.kt",
+       "sha256": "923237f9f9a4bfe8d767fb9f2e2513223fcfb80b109ec7debff70eb4532357d0",
+       "bytes": 6356,
+       "lines": 146,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PapercupApplication.kt",
+       "sha256": "64d99440c8c918d82ca528d4454bd650c21c3eb0232c7153d0d5b78cf44e95ab",
+       "bytes": 990,
+       "lines": 23,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/AndroidManifest.xml",
+       "sha256": "f2156e5cd114b6c1f21e9fee92505d1b8671f9d5395eba1d5b8167e6e58caaa0",
+       "bytes": 4222,
+       "lines": 81,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/build.gradle.kts",
+       "sha256": "2b64d88b15509b6ffce6545632363403d08771d0d83e83e8becce8abaf82875c",
+       "bytes": 16132,
+       "lines": 343,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/main/assets/README.md",
+       "sha256": "d7f6de83cac1360f67c909d8478a85e7c95168e38353684dc3bd973d85a7af65",
+       "bytes": 653,
+       "lines": 18,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/VoicePrivacyConsentTest.kt",
+       "sha256": "7f31015b1c86427153c9dd8e5e0bde5b0722a8362d3b4b9ac7b0a097cc2b9d7e",
+       "bytes": 1618,
+       "lines": 43,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/VoiceMicDenialTest.kt",
+       "sha256": "666c52edf011c862a526131d0b9ae5da23ec3f73e9185ff1543c0f171080ebb5",
+       "bytes": 2306,
+       "lines": 56,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "tools/tests/android-privacy-permissions-test.sh",
+       "sha256": "70493f25428bc4341a11098d5893647b8a9a6bc659183d17bb28e012bc5020ce",
+       "bytes": 6105,
+       "lines": 140,
+       "matchesOwnHead": true
+      },
+      {
+       "path": "tools/run-android-checks.sh",
+       "sha256": "b1e3f4e6370ad50db75bf28570256094394f53a26b0abb341b6f8647129e08d5",
+       "bytes": 79349,
+       "lines": 1376,
+       "matchesOwnHead": true
+      }
+     ],
+     "readScope": {
+      "complete": [
+       "VoiceManager.kt",
+       "DesktopVoiceSession.kt",
+       "PushService.kt",
+       "VoicePrivacyConsent.kt",
+       "WakeWordEngine.kt",
+       "WakeWordService.kt",
+       "PapercupApplication.kt",
+       "AndroidManifest.xml",
+       "assets/README.md",
+       "VoicePrivacyConsentTest.kt",
+       "VoiceMicDenialTest.kt",
+       "tools/tests/android-privacy-permissions-test.sh"
+      ],
+      "selected": {
+       "MainActivity.kt": "Activity notification extras, deep-link effects, startup FCM registration, voice ownership/disposal and ON_STOP, intent/wake wiring, consent dialog, microphone FAB.",
+       "SettingsScreen.kt": "Cloud sharing grant status and revoke action.",
+       "VoiceSettingsScreen.kt": "Editable wake-word control and restart copy.",
+       "android/app/build.gradle.kts": "Compiled engine configuration, voice/FCM dependencies and JUnit registration.",
+       "tools/run-android-checks.sh": "Existing host/native execution sections1310-1376."
+      },
+      "limit": "Pins cover full file bytes; selected surrounding UI/build/runner files were not reviewed in full. Backend producers and live provider/phone traces were not qualified."
+     },
+     "consentAndLifecycle": "Cloud construction follows the persisted consent predicate after session-init. Grant/revoke controls are wired. Desktop-local capture finally stops/releases AudioRecord, active turn cancellation cancels HTTP and pauses/flushes audio, playback finally releases AudioTrack. MainActivity ON_STOP stops states other than Idle/Failed; disposal calls stop. Cloud teardown calls SDK endSession explicitly only for user. These structures do not prove runtime resource release or pending-start revoke/timer/error interleavings.",
+     "push": "Rotation and startup register existing FCM tokens through the existing client. Payload supports slug/harness and attention kind; immutable PendingIntent carries native extras consumed on create/new-intent. Invalidation-only push calls heartbeat rather than refetch. Notification permission callback ignores the result. Delivery, denial recovery, deep-link precedence/accessibility and all required app states remain unobserved.",
+     "wakeWord": "Default configuration is dormant. Engine uses fixed hey-papercup asset or JARVIS fallback; OWW is explicitly a no-op scaffold. The selected settings editor accepts a saved phrase with restart guidance, while selected detector wiring does not consume that phrase. Actual candidate flags/asset and accurate runtime disclosure remain unqualified.",
+     "regressionCoverage": "Maintained JUnit files exercise consent predicate/disclosure and mic-denial copy. Existing merged-manifest guard validates advertising removals, disabled collection, HTTPS and microphone service declarations with rejecting controls. Existing host runner includes debug/release unit suites, lint and that guard; connected native verification is separate. None establishes an actual P005 audio or FCM journey here.",
+     "verificationLimits": [
+      "No new test executed or canonical test-result ledger qualified.",
+      "No signed APK or exact loaded runtime identity qualified for P005.",
+      "No actual voice turn, audio release, pending consent revoke, background or failed-state cleanup observed.",
+      "No FCM send/delivery, terminated-state journey or notification-denial recovery observed.",
+      "No candidate wake-word behavior or disclosure observed."
+     ]
+    },
+    "dispositionQualification": {
+     "decision": "Retain P005 as current; no duplicate/supersession/combination disposition is justified by the reviewed evidence.",
+     "acceptance": "Unestablished against the mandatory live R5 and cancellation OUTCOME contracts. Static gaps remain P005 responsibilities, not diagnosed runtime failures.",
+     "historicalPreservation": "Original blocked row, dependency conditions, every prior qualification, root fields, population, exclusions, peer claims, archive and separate unresolved Phone9 evidence remain intact.",
+     "scope": "Only this evidence qualification is added. No child/product/source/test/native/provider/Actions/LIVE_GATE_OPS/killed-goal/shipment/delegation action."
+    }
+   }
   },
   {
    "id": "WI-10004775",
