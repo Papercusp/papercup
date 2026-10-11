@@ -1,4 +1,5 @@
 /** Real native create/read/reload and signed governance, registered in the surface suite. */
+// VERIFY_TAURI_ASSERTION_REQUIRED_ENV=PAPERCUSP_TEST_RUNS_DB_URL,PAPERCUSP_TEST_RUN_WORKSPACE
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -24,6 +25,14 @@ if (process.argv.includes('--check-imports')) {
   console.log('DAO_WORKBENCH_IMPORTS_OK'); process.exit(0);
 }
 const viewportOnly = process.argv.includes('--viewport-only');
+if (process.argv.includes('--e2e')) {
+  const { runNativeE2e } = await import('./tauri-surface-verify-reports.mts');
+  await runNativeE2e([
+    'packages/operator-core/lib/dao-workbench-native.e2e.test.ts',
+    ...(!viewportOnly ? ['packages/operator-core/lib/dao-workbench-native-signature.integration.test.ts'] : []),
+  ], { runtimeUnit: viewportOnly ? 'dao-workbench-native-narrow' : 'dao-workbench-native-desktop' });
+  process.exit(0);
+}
 const harnessName = viewportOnly ? 'dao-workbench-viewport-tauri' : 'dao-workbench-tauri';
 const selection = parseSelectionArgs(process.argv.slice(2).filter(arg => arg !== '--viewport-only'));
 const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 'native',
@@ -50,7 +59,7 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
     };
     const capture = (name: string) => {
       writeFileSync(join(ctx.evidenceDir, name + '.json'), ev('JSON.stringify({url:location.href,text:document.body.innerText})'));
-      native('screenshot', '--selector', 'html', '--output', join(ctx.evidenceDir, name + '.png'));
+      native('screenshot', '--selector', 'html', '--title', '^Papercusp$', '--output', join(ctx.evidenceDir, name + '.png'));
     };
     const workControlLayout = () => {
       const controls = JSON.parse(ev(`JSON.stringify([...document.querySelectorAll('.dao-execution label')].map(label=>{
@@ -83,6 +92,8 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       const { origin, health } = await readNativeHostHealth();
       writeFileSync(join(ctx.evidenceDir, 'host-source-identity.json'), JSON.stringify({ sourceCommit: receipt.sourceCommit, origin, health }, null, 2));
       assert.equal(health.sha, receipt.sourceCommit.slice(0, 12), 'Frozen host must report the validated archive commit');
+      ctx.markStep('native-capture-preflight');
+      capture('capture-preflight');
       ctx.markStep('isolated-owner-policy-and-member-fixture');
       const slug = 'workbench-native';
       const home = join(process.env.PAPERCUSP_HOME!, slug); mkdirSync(home, { recursive: true });
