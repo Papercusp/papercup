@@ -676,7 +676,7 @@ function disclosedGapList(value: unknown): string[] {
 }
 
 const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
-  /\b(?:leg|portion|part|subset|subsection|path|scenario)\b[^.;]{0,60}\b(?:only|just)\b/i,
+  /\b(?:leg|portion|part|subset|subsection|path|scenario)\b[^.;]{0,60}(?<!\b(?:read|write|append|ledger)-)\b(?:only|just)\b/i,
   // A mutation can change only the coverage result/field without limiting the
   // proof. Keep the noun "coverage" restrictive when it describes the proof,
   // while leaving separate omitted-behavior statements and explicit gap fields
@@ -684,7 +684,10 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
   // Qualified test nouns (test/fixture, test\\fixture, test.ts) in an input
   // inventory are not testing verbs. Real coverage statements beside them
   // still match, and explicit disclosedGap fields bypass this heuristic.
-  /\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed)?|test(?:s|ed|ing)?(?![/\\]|\.[A-Za-z])|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage(?!\s+(?:result|field|flag|value|record|metadata)\b))\b/i,
+  // Technical modifiers such as read-only and ledger-only describe the mechanism,
+  // not an outstanding proof limitation. Separate scope claims in the same prose
+  // and explicit gap fields must still be enforced (EI-25719594988320201).
+  /(?<!\b(?:read|write|append|ledger)-)\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed)?|test(?:s|ed|ing)?(?![/\\]|\.[A-Za-z])|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage(?!\s+(?:result|field|flag|value|record|metadata)\b))\b/i,
   /\b(?:does not|doesn't|did not|didn't|has not|hasn't|is not|isn't|are not|aren't)\b[^.;]{0,60}\b(?:cover|test|exercise|verify|validate|address|include)\b/i,
   /\b(?:outside|out of)\s+(?:the\s+)?(?:scope|coverage)\b|\bnot\s+(?:covered|tested|exercised|verified|validated|addressed)\b/i,
   /\b(?:remains?|is|are)\s+(?:a\s+)?separate\s+(?:requirement|integration|validation|work|proof)\b/i,
@@ -1089,6 +1092,32 @@ function bindingNotesSummary(rows: SpecEvidenceForAdequacy[]): string {
 
 function evidenceWithBindings(statement: string, rows: SpecEvidenceForAdequacy[]): string {
   return `${statement} Bound evidence: ${bindingSummary(rows)}.`;
+}
+
+/** Card prose points into one shared binding table; evaluator diagnostics stay detailed. */
+function scorecardBindingEvidence(
+  ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
+  rows: SpecEvidenceForAdequacy[],
+): { ratings: typeof ratings; table: string } {
+  const entries = [...new Map(rows.map((row) => [bindingDescription(row), row])).entries()]
+    .sort(([a], [b]) => a.localeCompare(b));
+  const references = entries.map(([description, row], index) => ({
+    description,
+    ref: Number.isSafeInteger(row.id) ? `id=${row.id}, binding=B${index + 1}` : `binding=B${index + 1}`,
+  }));
+  return {
+    ratings: Object.fromEntries(Object.entries(ratings).map(([criterion, rating]) => [criterion, {
+      ...rating,
+      evidence: references.reduce(
+        (text, binding) => text.replaceAll(binding.description, binding.ref),
+        rating.evidence,
+      ),
+    }])) as typeof ratings,
+    table: references.length > 0
+      ? '\n\nShared binding evidence (criterion references B1, B2, ... resolve here):\n' +
+        references.map((binding) => `${binding.ref}: ${binding.description}`).join('\n')
+      : '',
+  };
 }
 
 type CorrectLayerEvidencePart = {
@@ -2020,8 +2049,9 @@ function appendRatingRerunProbes(
  *  22 — qualified test nouns in input inventories do not imply a coverage limitation.
  *  23 — descriptor-bearing catches require invocation-linked calibration and named failures;
  *       grader evidence exposes the descriptor, linkage and ledger-only re-aim coverage.
+ *  24 — technical compound modifiers do not turn negative-control observations into proof gaps.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 23;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 24;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -3250,6 +3280,7 @@ export function evaluateSpecTestAdequacy(input: {
   const rawRefs = evidenceRefs.join(', ') || '(none)';
   const bodyRefs =
     rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
+  const cardEvidence = scorecardBindingEvidence(ratings, exactEvidence);
   return {
     planSlug: clause.planSlug,
     specId: clause.specId,
@@ -3268,8 +3299,8 @@ export function evaluateSpecTestAdequacy(input: {
       rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
       subject: { kind: 'plan', ref: subjectRef },
       title: `${clause.specId}@${clause.revision} test adequacy`,
-      body: `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.`,
-      ratings,
+      body: `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.${cardEvidence.table}`,
+      ratings: cardEvidence.ratings,
       rerunRecipe,
       terminal: true,
     },
