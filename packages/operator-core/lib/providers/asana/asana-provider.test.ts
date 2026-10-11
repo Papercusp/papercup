@@ -235,7 +235,7 @@ describe('the Asana package declares an Asana ticket provider', () => {
   it('offers a personal access token as an alternative to OAuth, sent only to Asana’s API host', async () => {
     const descriptor = await adapter.describe();
     expect(descriptor.setup?.credentials).toEqual([
-      expect.objectContaining({ key: 'personalAccessToken', label: 'Personal access token', hosts: ['app.asana.com'] }),
+      expect.objectContaining({ key: 'personal_access_token', label: 'Personal access token', hosts: ['app.asana.com'] }),
     ]);
     for (const field of descriptor.setup?.credentials ?? []) {
       for (const host of field.hosts ?? []) expect(descriptor.egressHosts).toContain(host);

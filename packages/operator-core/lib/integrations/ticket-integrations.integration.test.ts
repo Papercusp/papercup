@@ -507,6 +507,42 @@ describe('every read and write is scoped to the signed-in owner', () => {
     expect(await refusal(setTicketSourceConfig(sql, { ...ALICE(), sourceId, patch: {} }, { registry })))
       .toEqual({ code: 'ticket_provider_not_registered', status: 409 });
   });
+
+  // P-005 attempt 9 (cupboard-distributable-integrations-2026-10-10): the overview listed only
+  // ticket providers' accounts, so the account a credentials-only provider's saved token created
+  // never appeared on its card. Its own registry keeps the offered-provider list above exact.
+  it('a credentials-only provider’s connected account is listed, but is not a ticket source this page configures', async () => {
+    const CREDS_ONLY = 'chat-credentials-fixture';
+    const credsDescriptor = {
+      id: CREDS_ONLY,
+      contractVersion: 1,
+      displayName: 'Fixture Chat',
+      datatypes: ['chat-message'],
+      capabilities: ['chat.send'],
+      egressHosts: ['chat.example.com'],
+      setup: { credentials: [{ key: 'bot_token', label: 'Bot token' }] },
+    } as ProviderDescriptor;
+    const credsAdapter: ProviderAdapter = {
+      describe: () => credsDescriptor,
+      syncPage: async () => ({ records: [], nextCursor: null, hasMore: false }),
+      invoke: async () => ({}),
+    };
+    const credsRegistry = createProviderRegistry();
+    await credsRegistry.register({ descriptor: credsDescriptor, adapter: credsAdapter, pluginName: CREDS_ONLY, runtime: 'js' } as never);
+    await credsRegistry.register({ descriptor: noOAuthDescriptor, adapter: noOAuthAdapter, pluginName: NO_OAUTH, runtime: 'js' } as never);
+    const sourceId = await createSource(CREDS_ONLY, alice, {});
+    await createSource(NO_OAUTH, alice, {});
+
+    const overview = await ticketIntegrationsOverview(sql, ALICE(), { registry: credsRegistry });
+    expect(overview.providers.map((p) => p.id)).toEqual([CREDS_ONLY]);
+    // Listed with its account; no ticket scope, so no config to report or demand.
+    expect(overview.sources).toHaveLength(1);
+    expect(overview.sources[0]).toMatchObject({
+      id: sourceId, provider: CREDS_ONLY, config: {}, missingConfig: [], mirrored: 0, admitted: 0, rules: [],
+    });
+    expect(await refusal(setTicketSourceConfig(sql, { ...ALICE(), sourceId, patch: {} }, { registry: credsRegistry })))
+      .toEqual({ code: 'ticket_provider_not_registered', status: 409 });
+  });
 });
 
 describe('bad input is refused before anything is written', () => {

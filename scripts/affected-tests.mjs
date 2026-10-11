@@ -1787,6 +1787,18 @@ const NON_WORKSPACE_PATH_ROUTES = [
   // the same "unreachable from the change they guard" shape the WI-37840 row above fixes,
   // one workspace over.
   { prefix: "templates/", workspace: "@papercusp/template-kit" },
+  // WI-6554700010008507. `libs/papercusp/plugins/` holds the BUNDLED first-party plugins,
+  // most of them manifest + script directories with no package.json. Two suites load them
+  // as data: plugin-loader's manifest-validate.test.ts ("every bundled first-party plugin
+  // manifest validates", the WI-10006546 guard) and operator-core's provider-package tests
+  // (asana-provider, slack-package, github-issues, ticket-integrations), which read the real
+  // manifests. MEASURED before adding it (2026-10-11): testing:run { changedPaths:
+  // ['libs/papercusp/plugins/asana/papercusp.json'] } derived workspaces=0 (seven lint
+  // guards only), so a manifest edit declaring setup.credentials key "personalAccessToken" —
+  // refused by the schema pattern, which makes the loader drop the WHOLE Asana package —
+  // passed scoped verification while the guard written for exactly that defect never ran.
+  { prefix: "libs/papercusp/plugins/", workspace: "@papercusp/plugin-loader" },
+  { prefix: "libs/papercusp/plugins/", workspace: "@papercusp/operator-core" },
 ];
 
 // EI-19388389386110890 — REPO-WIDE INVARIANTS ENFORCED FROM ONE WORKSPACE.
