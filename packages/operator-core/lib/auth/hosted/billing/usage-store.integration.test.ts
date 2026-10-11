@@ -11,6 +11,7 @@ import { buildHostedUsageStatement, type HostedUsageRecord, type HostedUsageScop
 import { PostgresHostedUsageStore, type OpenRouterGenerationBinding } from './usage-store';
 import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
 import { createHostedUsageSource } from './usage-service';
+import { settleHostedReservation } from './budget-policy';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { PostgresHostedBudgetStore, createLockedHostedStripeFundingReader, readLockedHostedBudgetPopulation,
   readLockedHostedStripeFundingPopulation, evaluateLockedHostedPrepaidFunding,
@@ -480,6 +481,102 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
   const captureOptions = (scope: OpenRouterGenerationBinding['scope']) => ({ budget: budgetStore(),
     request: captureRequest(scope), context: captureContext(), credentialRef: 'env:FIXTURE_OPENROUTER_KEY',
     isByok: false, evidenceRef: 'execution:paused-native-capture', now: () => T });
+
+  async function budgetReportFixture() {
+    const scope = await tenant(); const options = captureOptions(scope);
+    const generationId = 'gen-' + randomUUID();
+    const capture = store().createOpenRouterRequestCapture(options);
+    await capture(intent); await capture({ ...intent, response: { id: generationId } });
+    const [binding] = await bindings(scope);
+    if (!binding) throw new Error('missing fixture generation binding');
+    const report = (cost: number | null) => openRouterUsageRecord(binding, { data: {
+      id: generationId, is_byok: false, total_cost: cost, final: true, status: 'completed',
+    } });
+    const history = () => runService(async sql => {
+      await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
+      return (await readLockedHostedBudgetPopulation(sql)).history
+        .filter(r => r.reservationId === options.request.reservationId);
+    });
+    return { scope, options, binding, report, history };
+  }
+
+  it('joins an authenticated fractional OpenRouter report to its persisted budget without metadata finality', async () => {
+    const f = await budgetReportFixture();
+    const collector = new OpenRouterHostedUsageCollector({ readBinding: async () => f.binding,
+      readCredential: async () => 'execution-key',
+      fetch: async () => new Response('{"data":{"id":"' + f.binding.generationId
+        + '","is_byok":false,"total_cost":0.00000025,"final":true,"status":"completed"}}'),
+      append: r => store().append(r, { observeOpenRouterBudget: true }) });
+    const input = { scope: f.scope, generationId: f.binding.generationId };
+    const result = await collector.collect(input);
+    expect(result.outcome).toBe('recorded');
+    expect(await f.history()).toMatchObject([{ revision: 0 }, { revision: f.binding.revision,
+      costSource: 'provider-reported', costMicros: 0, costMicrosExact: '0.25', providerFinal: false }]);
+    expect((await collector.collect(input)).outcome).toBe('duplicate');
+    expect(await f.history()).toHaveLength(2);
+    expect(JSON.stringify(result)).not.toMatch(/budgetGrant|reservationId|credential|execution-key/);
+    const correction = openRouterUsageRecord({ ...f.binding, revision: 3, observedAtMs: T + 1500 }, { data: {
+      id: f.binding.generationId, is_byok: false, total_cost: 0.0000005,
+    } });
+    expect(await store().append(correction, { observeOpenRouterBudget: true })).toBe('recorded');
+    const corrected = (await f.history()).at(-1)!;
+    expect(corrected).toMatchObject({ revision: 3, costMicrosExact: '0.5', maximumCostMicros: 100_000,
+      reservationId: f.options.request.reservationId, providerFinal: false });
+    expect(settleHostedReservation({ reservedMicros: corrected.maximumCostMicros,
+      observedCostMicros: corrected.costMicros, observedCostMicrosExact: corrected.costMicrosExact,
+      costSource: corrected.costSource, providerFinal: corrected.providerFinal, evidenceRef: corrected.evidenceRef }))
+      .toMatchObject({ state: 'pending', chargedMicros: 0, heldMicros: 100_000, releasedMicros: 0 });
+  });
+
+  it.each([null, 0.10000025])('keeps unpriced or overrun OpenRouter report %s non-final', async cost => {
+    const f = await budgetReportFixture();
+    expect(await store().append(f.report(cost), { observeOpenRouterBudget: true })).toBe('recorded');
+    const last = (await f.history()).at(-1);
+    expect(last).toMatchObject({ providerFinal: false,
+      costSource: cost === null ? 'unpriced' : 'provider-reported', costMicros: cost === null ? null : 100_000 });
+    if (cost !== null) expect(last?.costMicrosExact).toBe('100000.25');
+    expect(settleHostedReservation({ reservedMicros: last!.maximumCostMicros,
+      observedCostMicros: last!.costMicros, observedCostMicrosExact: last!.costMicrosExact,
+      costSource: last!.costSource, providerFinal: last!.providerFinal, evidenceRef: last!.evidenceRef }))
+      .toMatchObject({ state: 'pending', chargedMicros: 0, heldMicros: 100_000, releasedMicros: 0,
+        suspend: cost !== null, ...(cost === null ? {} : { overrunMicrosExact: '0.25' }) });
+    // Metadata final/completed labels never produce a provider-billed receipt.
+    expect((await f.history()).every(r => r.costSource !== 'provider-billed')).toBe(true);
+  });
+
+  it('rolls back the budget observation when the usage receipt conflicts', async () => {
+    const f = await budgetReportFixture();
+    expect(await store().append(f.report(0.000001))).toBe('recorded');
+    expect(await store().append(f.report(0.000002), { observeOpenRouterBudget: true })).toBe('revision-conflict');
+    expect(await f.history()).toMatchObject([{ revision: 0 }]);
+    expect(await f.history()).toHaveLength(1);
+    const records = await read(f.scope);
+    expect(records.find(r => r.revision === f.binding.revision)?.costMicros).toBe(1);
+  });
+
+  it('rolls back usage when the bound reservation already has a conflicting observation', async () => {
+    const f = await budgetReportFixture(); const r = f.report(0.000001);
+    await f.options.budget.observe({ scope: f.scope, reservationId: f.options.request.reservationId,
+      eventId: 'fixture:competing-observation', revision: r.revision, observedAtMs: r.observedAtMs,
+      costSource: 'provider-reported', costMicros: 9, providerFinal: false, evidenceRef: 'fixture:competing-cost' });
+    expect(await store().append(r, { observeOpenRouterBudget: true })).toBe('replay-mismatch');
+    expect(await read(f.scope)).toHaveLength(1);
+    expect(await f.history()).toMatchObject([{ revision: 0 }, { costMicros: 9 }]);
+  });
+
+  it('refuses an unbound or foreign report and refuses invoice finality on the report composition', async () => {
+    const f = await budgetReportFixture();
+    const foreign = await tenant();
+    expect(await store().append({ ...f.report(0.000001), ...foreign }, { observeOpenRouterBudget: true }))
+      .toBe('replay-mismatch');
+    const unbound = { ...f.binding, generationId: 'gen-' + randomUUID() };
+    expect(await store().append(openRouterUsageRecord(unbound, { data: {
+      id: unbound.generationId, is_byok: false, total_cost: 0.000001,
+    } }), { observeOpenRouterBudget: true })).toBe('replay-mismatch');
+    await expect(store().append({ ...f.report(0.000001), costSource: 'provider-billed' },
+      { observeOpenRouterBudget: true })).rejects.toThrow('invalid OpenRouter budget report');
+    expect(await read(f.scope)).toHaveLength(1); expect(await f.history()).toHaveLength(1);
+  });
 
   // Join the PRIVATE channel reader and real runtime/store composition. Only
   // the session, provider and funding authority are fixtures; no production

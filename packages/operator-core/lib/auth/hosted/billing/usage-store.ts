@@ -10,7 +10,7 @@ import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering';
 import { splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
-import type { HostedBudgetExecutionGrant, HostedBudgetRequest, PostgresHostedBudgetStore } from './budget-store';
+import { PostgresHostedBudgetStore, type HostedBudgetExecutionGrant, type HostedBudgetRequest } from './budget-store';
 // From the no-import leaf, never agent-loop/provider-router: that module's
 // credential/gateway graph would ride into every hosted consumer's typecheck
 // (WI-10006711 — it broke the portal build).
@@ -230,8 +230,58 @@ export class PostgresHostedUsageStore {
     return Object.freeze({ records: Object.freeze(records), openRouterBindings: Object.freeze(openRouterBindings) });
   }
 
-  async append(record: HostedUsageRecord): Promise<HostedUsageAppendResult> {
+  async append(record: HostedUsageRecord, options?: { readonly observeOpenRouterBudget?: boolean }): Promise<HostedUsageAppendResult> {
+    if (options?.observeOpenRouterBudget) return this.appendOpenRouterBudgetReport(record);
     return this.appendBound(record);
+  }
+
+  /** Explicit SERVER composition on the existing receipt rail. The immutable
+   * execution binding supplies the grant; report metadata cannot choose a
+   * reservation or certify a final invoice. Both ledgers commit or roll back
+   * together. Default runtime installation remains a separate authority step. */
+  private async appendOpenRouterBudgetReport(record: HostedUsageRecord): Promise<HostedUsageAppendResult> {
+    validateHostedUsageRecord(record);
+    if (record.provider !== 'openrouter' || record.category !== 'inference-fees' || record.payer !== 'consumption'
+        || !['provider-reported', 'unpriced'].includes(record.costSource)) {
+      throw new Error('invalid OpenRouter budget report');
+    }
+    record = Object.freeze({ ...record });
+    // Only our own refusal escapes as an append outcome. Database failures and
+    // invalid observations remain visible and roll back the outer transaction.
+    let refusal: HostedUsageAppendResult = 'replay-mismatch';
+    const rollback = new Error('OpenRouter budget report refused');
+    try {
+      return await this.run(async sql => {
+        // Take the write-capable population fence BEFORE any organization,
+        // generation or usage locks. Reuse budget.observe's writer ordering.
+        await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
+        const rows = await sql<ReceiptRow[]>`SELECT * FROM papercusp_auth.hosted_usage_receipts
+          WHERE provider = 'openrouter' AND usage_id = ${record.usageId}
+            AND openrouter_credential_ref IS NOT NULL`;
+        const bound = rows[0];
+        if (!bound?.openrouter_budget_grant || rows.some(row => !sameTenant(row, record)
+            || row.payer !== record.payer || Number(row.occurred_at_ms) !== record.occurredAtMs)) throw rollback;
+        const grant = snapshotGrant(bound.openrouter_budget_grant);
+        if (grant.scope.controlWorkspaceId !== record.controlWorkspaceId
+            || grant.scope.organizationId !== record.organizationId
+            || grant.scope.customerWorkspaceId !== record.customerWorkspaceId) throw rollback;
+        const sameTransaction: HostedServiceContextRunner = async fn => fn(sql);
+        const observation = await new PostgresHostedBudgetStore({ run: sameTransaction }).observe({
+          scope: grant.scope, reservationId: grant.reservationId, eventId: record.recordId,
+          revision: record.revision, observedAtMs: record.observedAtMs,
+          costSource: record.costSource, costMicros: record.costMicros,
+          ...(record.costMicrosExact === undefined ? {} : { costMicrosExact: record.costMicrosExact }),
+          providerFinal: false, evidenceRef: record.sourceRef,
+        });
+        if (observation.outcome !== 'recorded' && observation.outcome !== 'duplicate') throw rollback;
+        const outcome = await new PostgresHostedUsageStore(sameTransaction).append(record);
+        if (outcome !== 'recorded' && outcome !== 'duplicate') { refusal = outcome; throw rollback; }
+        return outcome;
+      });
+    } catch (error) {
+      if (error === rollback) return refusal;
+      throw error;
+    }
   }
 
   /** Trusted execution composition captures the generation and actual key
