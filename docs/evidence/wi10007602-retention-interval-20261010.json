@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "workItem": "WI-10007602",
   "plan": "durable-disk-and-checkpoint-recovery-2026-10-09",
-  "edition": "2026-10-11T01:14:24.741Z",
+  "edition": "2026-10-11T02:52:16.124Z",
   "verdict": "OPEN",
   "scope": "Observed capacity, reservation, recorder, SQLite and retention receipts; no full-interval or shipment claim.",
   "reservationRepair": {
@@ -1416,6 +1416,755 @@
       ]
     },
     "comparisonBoundary": "Demand belongs to this exact source candidate's maintained selector. It is distinct from earlier26,031,611,904B recorded generation demand and from native Cargo demand."
+  },
+  "nativeRuntimeAndHeadroom": {
+    "taskId": "0mv37bt6o17rms8rxfc",
+    "logPath": ".papercusp/scratch/bash-7608dd5f-01d.log",
+    "terminalExit": 0,
+    "candidateSha": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+    "receipt": {
+      "kind": "r5-current-runtime-and-headroom",
+      "at": "2026-10-11T02:26:21.850Z",
+      "pid": 1508753,
+      "cwd": "~/papercupai-workspace/papercusp/apps/operator",
+      "integration": "~/papercupai-workspace/papercusp",
+      "script": "~/papercupai-workspace/papercusp/apps/operator/bin/release/dependency-generation.sh",
+      "scriptBlob": "7aff14b2795edb600c618fc9351f3d83a7eaec2b",
+      "candidateBlob": "7aff14b2795edb600c618fc9351f3d83a7eaec2b",
+      "matchesCandidate": true,
+      "scriptSha256": "5b492c7b39cae658cea95cede714d43eaba6bfe20f44ce2f7b24b75c2069ed9d",
+      "policy": {
+        "freePctMin": 0.1,
+        "freeBytesMin": 107374182400,
+        "freeInodesPctMin": 0.05,
+        "criticalFreePctMin": 0.02,
+        "criticalFreeBytesMin": 2147483648,
+        "criticalFreeBytesCap": 68719476736
+      },
+      "rows": [
+        {
+          "path": "/",
+          "dev": 66307,
+          "key": "dev-66307",
+          "totalBytes": 2013991550976,
+          "availableBytes": 85727096832,
+          "reservedBytes": 0,
+          "usableAfterReservationsBytes": 85727096832,
+          "criticalFloorBytes": 40279831019.520004,
+          "meetsFloor": true
+        },
+        {
+          "path": "/mnt/data",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 241630388224,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 228745486336,
+          "criticalFloorBytes": 68719476736,
+          "meetsFloor": true
+        },
+        {
+          "path": "/tmp/pcv",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 241630277632,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 228745375744,
+          "criticalFloorBytes": 68719476736,
+          "meetsFloor": true
+        }
+      ],
+      "limits": [
+        "Source path derived from actual native process cwd/whitelisted integration override and maintained resolver rule.",
+        "The retention actor execs this script per run; this read does not prove a prior invocation opened these bytes.",
+        "Endpoint floors do not continuously sample an interval."
+      ]
+    }
+  },
+  "latestPruningProof": {
+    "candidateSha": "bbbf6cc363aeaefa0eede5571eaf180e044ca95a",
+    "scratchGcBlob": "c578e75604d9e53bd5e06474800af69ba2023430",
+    "pruneBlob": "1b5bb4fa567d8b08d640e098422afbf546903157",
+    "categoriesBlob": "5c85f9db8831dc3e3bea53c5ce684ae355dbaf67",
+    "testBlob": "78a95433395b4eb53162903663941b1edb33c20a",
+    "taskId": "0mv37xutd582n1p10wz",
+    "logPath": ".papercusp/scratch/bash-e8964868-c05.log",
+    "terminalExit": 0,
+    "testRunId": 21024727,
+    "worktreeDirty": false,
+    "passed": 22,
+    "skipped": 0,
+    "bindingId": 35940,
+    "supersededBindingIds": [35921, 35936],
+    "sourceBoundary": "Maintained lint:as-committed pinned to the named commit; execution/layer facts derived from the native test run.",
+    "targetedAttestation": "AUTO-BAR-R-2-P-002",
+    "currentR2Assessment": {
+      "observedAtMinute": "2026-10-11T02:49Z",
+      "evaluatorBuild": { "sha": "497b7ae1a9", "version": "0.0.0" },
+      "specId": "AUTO-BAR-R-2-P-002",
+      "specRevision": 3,
+      "specFingerprint": "67f33f83a13478955ec53d539c3da3ed1eb307d070e757ac73f704ae7d8b5c92",
+      "verdict": "pass",
+      "wouldBlock": [],
+      "passedDimensions": ["traceability", "fixture-calibration", "falsifiability", "correct-layer", "oracle-independence", "execution-integrity", "freshness", "plan-class-risk-floor"],
+      "disclosedGap": "not-applicable"
+    },
+    "limits": [
+      "The earlier helper assessment at02:16 is historical and superseded by this current-source R2 assessment.",
+      "This does not discharge live R5 or independent final R4 proof.",
+      "The separate timing residual remains on EI-25331441758055569; this pruning suite does not close that lane."
+    ]
+  },
+  "native0250Window": {
+    "preTaskId": "0mv37xkl6mazudw19d2",
+    "preLogPath": ".papercusp/scratch/bash-9984519e-adc.log",
+    "preTerminalExit": 0,
+    "runtimeResolution": {
+      "unit": "papercusp-bg-host.service",
+      "serviceMainPid": 3205236,
+      "serviceStart": "2026-10-11T02:27:55Z",
+      "identityTaskId": "0mv37uf3x1ycr3kd1ki",
+      "identityLogPath": ".papercusp/scratch/bash-50eac058-097.log",
+      "supersededCapturedPid": 1508753,
+      "failedPreflightTaskId": "0mv37td89w276ggbjgt",
+      "failedPreflightLogPath": ".papercusp/scratch/bash-f7569004-14c.log"
+    },
+    "pre": {
+      "kind": "r5-native-pre-0250",
+      "at": "2026-10-11T02:43:18.599Z",
+      "workflowId": "sched-.sessionDirGc-2026-10-11T02:50:00.000Z",
+      "nativePid": 3205236,
+      "cwd": "~/papercupai-workspace/papercusp/apps/operator",
+      "integration": "~/papercupai-workspace/papercusp",
+      "script": "~/papercupai-workspace/papercusp/apps/operator/bin/release/dependency-generation.sh",
+      "scriptBlob": "7aff14b2795edb600c618fc9351f3d83a7eaec2b",
+      "scriptSha256": "5b492c7b39cae658cea95cede714d43eaba6bfe20f44ce2f7b24b75c2069ed9d",
+      "nativeEnv": {
+        "PAPERCUSP_DISK_ALARM_FREE_GB": "100"
+      },
+      "policy": {
+        "freePctMin": 0.1,
+        "freeBytesMin": 107374182400,
+        "freeInodesPctMin": 0.05,
+        "criticalFreePctMin": 0.02,
+        "criticalFreeBytesMin": 2147483648,
+        "criticalFreeBytesCap": 68719476736
+      },
+      "reservationLedger": "/tmp/papercusp-disk-reservations",
+      "snapshots": [
+        {
+          "path": "/",
+          "dev": 66307,
+          "key": "dev-66307",
+          "totalBytes": 2013991550976,
+          "availableBytes": 87559102464,
+          "reservedBytes": 0,
+          "usableAfterReservationsBytes": 87559102464,
+          "criticalFloorBytes": 40279831019.520004,
+          "meetsCriticalFloor": true
+        },
+        {
+          "path": "/mnt/data",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 230997508096,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 218112606208,
+          "criticalFloorBytes": 68719476736,
+          "meetsCriticalFloor": true
+        },
+        {
+          "path": "/tmp/pcv",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 230997241856,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 218112339968,
+          "criticalFloorBytes": 68719476736,
+          "meetsCriticalFloor": true
+        }
+      ],
+      "stores": [
+        {
+          "path": "/mnt/data/papercusp-dependency-generations",
+          "physical": "/mnt/data/papercusp-dependency-generations",
+          "device": 66304,
+          "generations": {
+            "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1": {
+              "device": 66304,
+              "inode": 2418438880,
+              "markerInode": 2418441858,
+              "markerSha256": "4f3b952845b5584285dae9bc0cc8f4cdf425b628d54c8473da97bf3cfe244b2a"
+            },
+            "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c": {
+              "device": 66304,
+              "inode": 1549392526,
+              "markerInode": 2416566183,
+              "markerSha256": "b3b3cdb76c617174a87c53390c1c11546793aeb3249848270c0a2238da9d7476"
+            },
+            "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249": {
+              "device": 66304,
+              "inode": 5913877200,
+              "markerInode": 5913877206,
+              "markerSha256": "17919f2da23b7fdda775b1dbfa2f3b1b1291dbf3078f1775106af9611b152dfa"
+            },
+            "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645": {
+              "device": 66304,
+              "inode": 7537544033,
+              "markerInode": 7537544031,
+              "markerSha256": "413d5250e784e153b197453296d65d3faf1b21fead7a89348c0a78f09e9d15d1"
+            },
+            "v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b": {
+              "device": 66304,
+              "inode": 15032387626,
+              "markerInode": 15032749319,
+              "markerSha256": "4b73a594bf525cbaf0cbfcc3f4de698ce245adef7afb07fef7401b6787666d84"
+            },
+            "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0": {
+              "device": 66304,
+              "inode": 9126884355,
+              "markerInode": 9158387524,
+              "markerSha256": "f0c98c3bfba01acac6b4239a07be93fb018463e661cae6c4b26df7dc067846ca"
+            },
+            "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41": {
+              "device": 66304,
+              "inode": 4294977544,
+              "markerInode": 4382929692,
+              "markerSha256": "f252f4c82d099861bc8119b71b76d4b74a05bf6bc8c3c5719c2c2c3b96712425"
+            },
+            "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673": {
+              "device": 66304,
+              "inode": 2506218259,
+              "markerInode": 6198630492,
+              "markerSha256": "cb854b671a94178f417e3b1e9aa21151b792158d947a44eb0ac3e70207bca535"
+            },
+            "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703": {
+              "device": 66304,
+              "inode": 3278127850,
+              "markerInode": 3270734824,
+              "markerSha256": "65e693fe0a164108e2e211e94c8f901c7f8c73f859aea26739ab875c323ec685"
+            },
+            "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0": {
+              "device": 66304,
+              "inode": 16134055834,
+              "markerInode": 16134472097,
+              "markerSha256": "550f59e8e5ae78effc51f0d9ef4a317dfe40808eef3f6caa862acfb913ad6f4e"
+            }
+          },
+          "unqualified": [],
+          "pins": [
+            {
+              "name": "checkout-286816a1be8bffc4a0c00df220e6b32ecadf0d3d91b3bb068c75bf049a35933b",
+              "sha256": "f2846428d393f08a568d60fed9e5d6643135da2ae198938bcf8eeea9c7556358",
+              "identity": "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+              "checkout": "~/papercupai-workspace/papercusp-checkpoint-admission-precheck"
+            },
+            {
+              "name": "checkout-37a7b9e3778689655a9cab242a4d29eef9b8ea4bb42f7aae2f5f6a8f0001ab6b",
+              "sha256": "50d1ec95659ea7642236ce012847b92af1fedb23108a89eaa4e615153ff31532",
+              "identity": "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+              "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercusp-nightly-release"
+            },
+            {
+              "name": "checkout-3e3f043d8f7a63193b528b315202e06132da5c91cf4cc615f721039c52e1a1d4",
+              "sha256": "66a95ff889054bdef94076f7ad7f8006ce728e5ba35d4c9f3f2d3eaf577e8a14",
+              "identity": "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+              "checkout": "~/.papercusp-workspaces/clones/hello-world-3-checkpoint"
+            },
+            {
+              "name": "checkout-53ddc01e5218db398064fb991e2147532d422087456bcb0314242253a24903f0",
+              "sha256": "5e2272d5b89163e49d7a2af652a138cad8e69c16589a0766475b95c468a264ef",
+              "identity": "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+              "checkout": "/mnt/data/papercusp-dependency-generations/.worktrees/slack-asana-bug-drill-checkpoint-admission-precheck"
+            },
+            {
+              "name": "checkout-6cbe9d031b725091cfad82a628df70e0e7d0547e5e92290c532a97a4058a5b6b",
+              "sha256": "997a8620e53d061f4f2643fe9c08d49701f0f9371511f4bcd4d312819be5f7de",
+              "identity": "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0",
+              "checkout": "/mnt/data/offload/papercusp-relcut-0028-r2"
+            },
+            {
+              "name": "checkout-7f0358da6db3ffa18900666fd47e82435e8b25bbd9232d742ef4298f4c627641",
+              "sha256": "311f223b098e9ff36da1d3461370af09f0c3b816026d81d6d9a23730a5819915",
+              "identity": "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+              "checkout": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill-checkpoint"
+            },
+            {
+              "name": "checkout-8141b4633bbf7c430c7181b1a1184c206301123fb4d48f9d2379c73cf1aede9d",
+              "sha256": "3426aea58d51ecb96a4665428dbec1c5ff3e648363b26fa997cc4406522f624d",
+              "identity": "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+              "checkout": "~/papercupai-workspace/calendar-checkpoint"
+            },
+            {
+              "name": "checkout-9e1223d9f74a8b8ff2b8dcaebc532f74e69004a4d753591553730db8aa5c17fc",
+              "sha256": "62c6effb9e27b59f9403f6880fc73bce2b36d1f2c125cdc58f7ff493e3b79600",
+              "identity": "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+              "checkout": "~/.papercusp-workspaces/clones/oddsmith-checkpoint"
+            },
+            {
+              "name": "checkout-c88b0c59829dace377bc2d3a1dd370394430b9d2258679ec4559650cb28f593d",
+              "sha256": "f4ca5fb5514b7eb9bf0b38ff52b3839ddcbaa787d008195d8166c020941e1c6d",
+              "identity": "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+              "checkout": "~/papercupai-workspace/papercusp-checkpoint"
+            }
+          ],
+          "leases": [],
+          "quarantines": []
+        },
+        {
+          "path": "/mnt/data/dependency-generations/papercusp",
+          "physical": "/mnt/data/dependency-generations/papercusp",
+          "device": 66304,
+          "generations": {
+            "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95": {
+              "device": 66304,
+              "inode": 14496208966,
+              "markerInode": 14542120109,
+              "markerSha256": "3351c34f4418f2a1717b3b946c5a2569fd7db6c446c195b8d4a296fc76a76c00"
+            },
+            "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb": {
+              "device": 66304,
+              "inode": 15579104355,
+              "markerInode": 15695234339,
+              "markerSha256": "8fc48bbf81e0a400b112ef4c2696685e5657efd43c6040382cb8f42dcd4b1239"
+            }
+          },
+          "unqualified": [],
+          "pins": [
+            {
+              "name": "checkout-2807f21ae14cfcc122ae4101e544784c544dd221f80fe7447be27669d16d61c0",
+              "sha256": "d72e1359a6378d927bfcb1278fa8735cf8bc68deedfd843982f0f0a1114c0090",
+              "identity": "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb",
+              "checkout": "~/papercupai-workspace/papercusp-relcut-0022-green"
+            },
+            {
+              "name": "checkout-709e38c8022dfe5aa5162235fa897b2b72265355958192bff28477b0c70ce32d",
+              "sha256": "4045862f52d830480a027452d04f29c5c3380b6896b1e5bda03aec3786f3786b",
+              "identity": "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+              "checkout": "~/papercupai-workspace/papercup-checkpoint"
+            },
+            {
+              "name": "checkout-877c2268628ba98915c113d4d357ef4cb9d9a913273c608f7b7bd2c50c7c479c",
+              "sha256": "6f031d1db1d8a61cc78ebd8eb8a9412b442a4de8304543f6157055067c7ded29",
+              "identity": "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb",
+              "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercusp-relcut-0022-green"
+            },
+            {
+              "name": "checkout-f6ead3f886faa15a4a5578e3e2af90bbccabb3553214eabc72773ea2c0af1259",
+              "sha256": "bc33dd378449eebd58de99cfc4e2dc656b8a97f84e3e7204cbbc26afd3ffd0c2",
+              "identity": "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+              "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercup-checkpoint"
+            }
+          ],
+          "leases": [],
+          "quarantines": []
+        }
+      ],
+      "limits": [
+        "Pre-retention endpoint only; registered02:50 outcome pending.",
+        "Metadata identities are a protected-population baseline, not allocated-block totals.",
+        "Hash changes in refreshed pins need interpretation from their maintained writer; no deletion inference.",
+        "No final native candidate demand or LIVE_GATE_OPS measurement."
+      ]
+    },
+      "registeredStep": {
+        "workflow_uuid": "sched-.sessionDirGc-2026-10-11T02:50:00.000Z",
+        "function_id": 2,
+        "function_name": "dependency-generation-retention",
+        "started_at_epoch_ms": "1791687011902",
+        "completed_at_epoch_ms": "1791687021800",
+        "error": null,
+        "receipt": {
+          "schemaVersion": 1,
+          "status": "complete",
+          "skippedIntegrations": [
+            {
+              "root": "/tmp/devboard-smoke",
+              "reason": "integration is absent or not a directory"
+            },
+            {
+              "root": "/tmp/devboard",
+              "reason": "integration is absent or not a directory"
+            },
+            {
+              "root": "/tmp/gym",
+              "reason": "integration is absent or not a directory"
+            },
+            {
+              "root": "/tmp/e2e-imp-projects/e2e-imp-j1",
+              "reason": "integration is absent or not a directory"
+            },
+            {
+              "root": "/tmp/create-atomic-c-JGQpM7",
+              "reason": "integration is absent or not a directory"
+            },
+            {
+              "root": "/tmp/wi3467-smoke-test",
+              "reason": "integration is absent or not a directory"
+            },
+            {
+              "root": "/tmp/ei669-repro-su-b621d",
+              "reason": "integration is absent or not a directory"
+            },
+            {
+              "root": "/tmp/papercusp-mobile-greenfield-20260821/stonebrook-android-20260821",
+              "reason": "integration is absent or not a directory"
+            },
+            {
+              "root": "/tmp/papercusp-mobile-greenfield-20260821/thornbury-iphone-20260821",
+              "reason": "integration is absent or not a directory"
+            }
+          ],
+          "stores": [
+            {
+              "integrationRoot": "~/papercusp-test-harnesses/pot-verify",
+              "generationRoot": "/mnt/data/papercusp-dependency-generations",
+              "retired": false,
+              "status": "pruned",
+              "stdout": "",
+              "stderr": "",
+              "stdoutTruncated": false,
+              "stderrTruncated": false
+            },
+            {
+              "integrationRoot": "~/papercupai-workspace/papercusp",
+              "generationRoot": "/mnt/data/dependency-generations/papercusp",
+              "retired": true,
+              "status": "pruned",
+              "stdout": "",
+              "stderr": "",
+              "stdoutTruncated": false,
+              "stderrTruncated": false
+            }
+          ],
+          "errors": []
+        }
+      },
+      "afterTaskId": "0mv38947b1nvteq4w1c",
+      "afterLogPath": ".papercusp/scratch/bash-95191863-bfc.log",
+      "afterTerminalExit": 0,
+      "after": {
+        "kind": "r5-native-after-0250",
+        "at": "2026-10-11T02:52:16.124Z",
+        "workflowId": "sched-.sessionDirGc-2026-10-11T02:50:00.000Z",
+        "nativePid": 3205236,
+        "cwd": "~/papercupai-workspace/papercusp/apps/operator",
+        "integration": "~/papercupai-workspace/papercusp",
+        "script": "~/papercupai-workspace/papercusp/apps/operator/bin/release/dependency-generation.sh",
+        "scriptBlob": "7aff14b2795edb600c618fc9351f3d83a7eaec2b",
+        "scriptSha256": "5b492c7b39cae658cea95cede714d43eaba6bfe20f44ce2f7b24b75c2069ed9d",
+        "nativeEnv": {
+          "PAPERCUSP_DISK_ALARM_FREE_GB": "100"
+        },
+        "policy": {
+          "freePctMin": 0.1,
+          "freeBytesMin": 107374182400,
+          "freeInodesPctMin": 0.05,
+          "criticalFreePctMin": 0.02,
+          "criticalFreeBytesMin": 2147483648,
+          "criticalFreeBytesCap": 68719476736
+        },
+        "reservationLedger": "/tmp/papercusp-disk-reservations",
+        "snapshots": [
+          {
+            "path": "/",
+            "dev": 66307,
+            "key": "dev-66307",
+            "totalBytes": 2013991550976,
+            "availableBytes": 87289982976,
+            "reservedBytes": 0,
+            "usableAfterReservationsBytes": 87289982976,
+            "criticalFloorBytes": 40279831019.520004,
+            "meetsCriticalFloor": true
+          },
+          {
+            "path": "/mnt/data",
+            "dev": 66304,
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 231236292608,
+            "reservedBytes": 12884901888,
+            "usableAfterReservationsBytes": 218351390720,
+            "criticalFloorBytes": 68719476736,
+            "meetsCriticalFloor": true
+          },
+          {
+            "path": "/tmp/pcv",
+            "dev": 66304,
+            "key": "dev-66304",
+            "totalBytes": 7999426224128,
+            "availableBytes": 231236059136,
+            "reservedBytes": 12884901888,
+            "usableAfterReservationsBytes": 218351157248,
+            "criticalFloorBytes": 68719476736,
+            "meetsCriticalFloor": true
+          }
+        ],
+        "stores": [
+          {
+            "path": "/mnt/data/papercusp-dependency-generations",
+            "physical": "/mnt/data/papercusp-dependency-generations",
+            "device": 66304,
+            "generations": {
+              "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1": {
+                "device": 66304,
+                "inode": 2418438880,
+                "markerInode": 2418441858,
+                "markerSha256": "4f3b952845b5584285dae9bc0cc8f4cdf425b628d54c8473da97bf3cfe244b2a"
+              },
+              "v1-2f9c1648ec8be307c47504c139e10b34ad6900a9905f5431bc4f3f2b2ae371bd": {
+                "device": 66304,
+                "inode": 13963516185,
+                "markerInode": 13963794200,
+                "markerSha256": "6c53ddf416702ed0f23919535fe47a256c520032fcdef49d4d71b34635ac6995"
+              },
+              "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c": {
+                "device": 66304,
+                "inode": 1549392526,
+                "markerInode": 2416566183,
+                "markerSha256": "b3b3cdb76c617174a87c53390c1c11546793aeb3249848270c0a2238da9d7476"
+              },
+              "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249": {
+                "device": 66304,
+                "inode": 5913877200,
+                "markerInode": 5913877206,
+                "markerSha256": "17919f2da23b7fdda775b1dbfa2f3b1b1291dbf3078f1775106af9611b152dfa"
+              },
+              "v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b": {
+                "device": 66304,
+                "inode": 4925358744,
+                "markerInode": 4925785537,
+                "markerSha256": "947dc3774cd5ecf105baee14eb080e6be876fc978e1164d25dd740faee2a89ea"
+              },
+              "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0": {
+                "device": 66304,
+                "inode": 9126884355,
+                "markerInode": 9158387524,
+                "markerSha256": "f0c98c3bfba01acac6b4239a07be93fb018463e661cae6c4b26df7dc067846ca"
+              },
+              "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41": {
+                "device": 66304,
+                "inode": 4294977544,
+                "markerInode": 4382929692,
+                "markerSha256": "f252f4c82d099861bc8119b71b76d4b74a05bf6bc8c3c5719c2c2c3b96712425"
+              },
+              "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673": {
+                "device": 66304,
+                "inode": 2506218259,
+                "markerInode": 6198630492,
+                "markerSha256": "cb854b671a94178f417e3b1e9aa21151b792158d947a44eb0ac3e70207bca535"
+              },
+              "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703": {
+                "device": 66304,
+                "inode": 3278127850,
+                "markerInode": 3270734824,
+                "markerSha256": "65e693fe0a164108e2e211e94c8f901c7f8c73f859aea26739ab875c323ec685"
+              },
+              "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0": {
+                "device": 66304,
+                "inode": 16134055834,
+                "markerInode": 16134472097,
+                "markerSha256": "550f59e8e5ae78effc51f0d9ef4a317dfe40808eef3f6caa862acfb913ad6f4e"
+              }
+            },
+            "unqualified": [],
+            "pins": [
+              {
+                "name": "checkout-286816a1be8bffc4a0c00df220e6b32ecadf0d3d91b3bb068c75bf049a35933b",
+                "sha256": "678673bacb0992c218993b69630817f682c9930095b353d6ae65b9e1481ae3e2",
+                "identity": "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+                "checkout": "~/papercupai-workspace/papercusp-checkpoint-admission-precheck"
+              },
+              {
+                "name": "checkout-37a7b9e3778689655a9cab242a4d29eef9b8ea4bb42f7aae2f5f6a8f0001ab6b",
+                "sha256": "1307cb7cdd38269c44121928d9049c026dcd3d2a672ed7dab4724c4d59292252",
+                "identity": "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+                "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercusp-nightly-release"
+              },
+              {
+                "name": "checkout-3e3f043d8f7a63193b528b315202e06132da5c91cf4cc615f721039c52e1a1d4",
+                "sha256": "c8b29a36c3b4dc1f9c47228f961752e03637012cdb949f2b4667401c6d7de993",
+                "identity": "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+                "checkout": "~/.papercusp-workspaces/clones/hello-world-3-checkpoint"
+              },
+              {
+                "name": "checkout-53ddc01e5218db398064fb991e2147532d422087456bcb0314242253a24903f0",
+                "sha256": "5e2272d5b89163e49d7a2af652a138cad8e69c16589a0766475b95c468a264ef",
+                "identity": "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+                "checkout": "/mnt/data/papercusp-dependency-generations/.worktrees/slack-asana-bug-drill-checkpoint-admission-precheck"
+              },
+              {
+                "name": "checkout-6cbe9d031b725091cfad82a628df70e0e7d0547e5e92290c532a97a4058a5b6b",
+                "sha256": "997a8620e53d061f4f2643fe9c08d49701f0f9371511f4bcd4d312819be5f7de",
+                "identity": "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0",
+                "checkout": "/mnt/data/offload/papercusp-relcut-0028-r2"
+              },
+              {
+                "name": "checkout-7f0358da6db3ffa18900666fd47e82435e8b25bbd9232d742ef4298f4c627641",
+                "sha256": "311f223b098e9ff36da1d3461370af09f0c3b816026d81d6d9a23730a5819915",
+                "identity": "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+                "checkout": "~/papercupai-workspace/papercusp/apps/slack-asana-bug-drill-checkpoint"
+              },
+              {
+                "name": "checkout-8141b4633bbf7c430c7181b1a1184c206301123fb4d48f9d2379c73cf1aede9d",
+                "sha256": "770ca4a3076d86e660912c13b504be7afe20ed1c6cd3f9224cace815d7988024",
+                "identity": "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+                "checkout": "~/papercupai-workspace/calendar-checkpoint"
+              },
+              {
+                "name": "checkout-9e1223d9f74a8b8ff2b8dcaebc532f74e69004a4d753591553730db8aa5c17fc",
+                "sha256": "3e110bab695e32098495e5aef9b9b147e9aa2c810b9cd4be7dacf054c077fb42",
+                "identity": "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+                "checkout": "~/.papercusp-workspaces/clones/oddsmith-checkpoint"
+              },
+              {
+                "name": "checkout-c88b0c59829dace377bc2d3a1dd370394430b9d2258679ec4559650cb28f593d",
+                "sha256": "00992f97cb1d664835faf6ea75bc6638849cdbd4090c7cddbe9ec9f87b4a7c29",
+                "identity": "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+                "checkout": "~/papercupai-workspace/papercusp-checkpoint"
+              }
+            ],
+            "leases": [],
+            "quarantines": []
+          },
+          {
+            "path": "/mnt/data/dependency-generations/papercusp",
+            "physical": "/mnt/data/dependency-generations/papercusp",
+            "device": 66304,
+            "generations": {
+              "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95": {
+                "device": 66304,
+                "inode": 14496208966,
+                "markerInode": 14542120109,
+                "markerSha256": "3351c34f4418f2a1717b3b946c5a2569fd7db6c446c195b8d4a296fc76a76c00"
+              },
+              "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb": {
+                "device": 66304,
+                "inode": 15579104355,
+                "markerInode": 15695234339,
+                "markerSha256": "8fc48bbf81e0a400b112ef4c2696685e5657efd43c6040382cb8f42dcd4b1239"
+              }
+            },
+            "unqualified": [],
+            "pins": [
+              {
+                "name": "checkout-2807f21ae14cfcc122ae4101e544784c544dd221f80fe7447be27669d16d61c0",
+                "sha256": "d72e1359a6378d927bfcb1278fa8735cf8bc68deedfd843982f0f0a1114c0090",
+                "identity": "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb",
+                "checkout": "~/papercupai-workspace/papercusp-relcut-0022-green"
+              },
+              {
+                "name": "checkout-709e38c8022dfe5aa5162235fa897b2b72265355958192bff28477b0c70ce32d",
+                "sha256": "4045862f52d830480a027452d04f29c5c3380b6896b1e5bda03aec3786f3786b",
+                "identity": "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+                "checkout": "~/papercupai-workspace/papercup-checkpoint"
+              },
+              {
+                "name": "checkout-877c2268628ba98915c113d4d357ef4cb9d9a913273c608f7b7bd2c50c7c479c",
+                "sha256": "807fe45ca875d9aab7b4f5067f83a555d50327f38c460d0d0c3a3bdba1fc1c70",
+                "identity": "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb",
+                "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercusp-relcut-0022-green"
+              },
+              {
+                "name": "checkout-f6ead3f886faa15a4a5578e3e2af90bbccabb3553214eabc72773ea2c0af1259",
+                "sha256": "44838912cdf979b1d429d698ca45afe15a8bb3bce569345c36638bb93c61c7ca",
+                "identity": "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+                "checkout": "/mnt/data/offload/root-disk~/papercupai-workspace/papercup-checkpoint"
+              }
+            ],
+            "leases": [],
+            "quarantines": []
+          }
+        ],
+        "limits": [
+          "Pre-retention endpoint only; registered02:50 outcome pending.",
+          "Metadata identities are a protected-population baseline, not allocated-block totals.",
+          "Hash changes in refreshed pins need interpretation from their maintained writer; no deletion inference.",
+          "No final native candidate demand or LIVE_GATE_OPS measurement."
+        ]
+      },
+      "comparison": {
+        "beforeAt": "2026-10-11T02:43:18.599Z",
+        "afterAt": "2026-10-11T02:52:16.124Z",
+        "sameNativePid": true,
+        "sameScriptBlob": true,
+        "stores": [
+          {
+            "root": "/mnt/data/papercusp-dependency-generations",
+            "samePhysicalStore": true,
+            "sameDevice": true,
+            "beforePinIdentities": [
+              "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+              "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+              "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+              "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+              "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+              "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+              "v1-e660446232bf7a0337327cdfa35696aad9aceeb11c3a878bb91b3c6ef2f12703",
+              "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+            ],
+            "missingPinnedGenerationAfter": [],
+            "changedPinnedGenerationCustody": [],
+            "removedPins": [],
+            "changedPinIdentityOrCheckout": [],
+            "changedPinHashes": [
+              "checkout-286816a1be8bffc4a0c00df220e6b32ecadf0d3d91b3bb068c75bf049a35933b",
+              "checkout-37a7b9e3778689655a9cab242a4d29eef9b8ea4bb42f7aae2f5f6a8f0001ab6b",
+              "checkout-3e3f043d8f7a63193b528b315202e06132da5c91cf4cc615f721039c52e1a1d4",
+              "checkout-8141b4633bbf7c430c7181b1a1184c206301123fb4d48f9d2379c73cf1aede9d",
+              "checkout-9e1223d9f74a8b8ff2b8dcaebc532f74e69004a4d753591553730db8aa5c17fc",
+              "checkout-c88b0c59829dace377bc2d3a1dd370394430b9d2258679ec4559650cb28f593d"
+            ],
+            "removedUnpinnedGenerationNames": [
+              "v1-4fee0b16d2dccc18e8ca2c1280b836e5edecabf7c6ea372ebc30451444f18645"
+            ],
+            "newGenerationNames": [
+              "v1-2f9c1648ec8be307c47504c139e10b34ad6900a9905f5431bc4f3f2b2ae371bd"
+            ],
+            "changedUnpinnedGenerationCustody": [
+              "v1-93ece031d19ff89f5ec55e5a661e7f82aaf95a6b1532f24c6082c43b86d93a8b"
+            ],
+            "leasesBefore": [],
+            "leasesAfter": [],
+            "quarantinesAfter": []
+          },
+          {
+            "root": "/mnt/data/dependency-generations/papercusp",
+            "samePhysicalStore": true,
+            "sameDevice": true,
+            "beforePinIdentities": [
+              "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+              "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb"
+            ],
+            "missingPinnedGenerationAfter": [],
+            "changedPinnedGenerationCustody": [],
+            "removedPins": [],
+            "changedPinIdentityOrCheckout": [],
+            "changedPinHashes": [
+              "checkout-877c2268628ba98915c113d4d357ef4cb9d9a913273c608f7b7bd2c50c7c479c",
+              "checkout-f6ead3f886faa15a4a5578e3e2af90bbccabb3553214eabc72773ea2c0af1259"
+            ],
+            "removedUnpinnedGenerationNames": [],
+            "newGenerationNames": [],
+            "changedUnpinnedGenerationCustody": [],
+            "leasesBefore": [],
+            "leasesAfter": [],
+            "quarantinesAfter": []
+          }
+        ],
+        "nativePerStoreUnlinkOutput": [],
+        "interpretation": [
+          "Exact registered step complete with errors[]; both per-store stdout/stderr empty and untruncated.",
+          "Every pre-snapshot pin identity remains marker-qualified with unchanged generation device/inode/marker fingerprint; pin identity and checkout fields are unchanged.",
+          "Pin file hashes can change on native refresh: maintained write_pin_locked writes updated=date+%s and mv; raw hash changes alone are not pin loss.",
+          "Unpinned population changes between endpoints are not attributed to this native sweep; empty native unlink output does not prove exclusive deletion causality."
+        ]
+      },
+      "verdict": "OPEN: native step and endpoint/pinned-custody proof recorded; R5 candidate demand and allocation coverage plus independent final proof remain separate."
   },
   "remaining": [
     "Consume the next complete native registered interval on the measured D012 bundle and compare same-device capacity and actual per-store removal/preservation receipts.",
