@@ -20,6 +20,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism, tmpdir } from 'node:os';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
+import { startupTraceEnv } from './lib/vitest-startup-trace.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
 import {
   parseSummaryFailedCounts,
@@ -2495,6 +2496,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
   // PC_HEAVY_PSI_FINALIZATION_MAX_SEC, so a stuck marker cannot pin a slot.
   const runChild = (admissionContext, governedEnv, { inherited = false } = {}) => new Promise((resolveRun) => {
     const startedAt = Date.now();
+    const childEnv = startupTraceEnv(governedEnv ?? env);
     // EI-21903376339103215: snapshot BEFORE spawning so the close handler below can diff against
     // it and attribute only THIS run's own freeze time, not freeze time from an earlier group
     // sharing the same pc-heavy admission.
@@ -2503,14 +2505,14 @@ export function runCapturedTestProcess(command, args, options = {}) {
     const { ownsProcessGroup, spawnCommand, spawnArgs, scopeUnit } = resolveTestChildLauncher({
       command,
       args,
-      env: governedEnv ?? env,
+      env: childEnv,
       systemdRunPath,
       setsidPath,
       runtimeMaxSec: testScopeRuntimeMaxSec(watchdogMaxMs, killGraceMs),
     });
     const child = spawnImpl(spawnCommand, spawnArgs, {
       cwd,
-      env: governedEnv ?? env,
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     sampler.attach(child.pid);
