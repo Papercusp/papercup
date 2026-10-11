@@ -1078,6 +1078,76 @@ function evidenceWithBindings(statement: string, rows: SpecEvidenceForAdequacy[]
   return `${statement} Bound evidence: ${bindingSummary(rows)}.`;
 }
 
+type CorrectLayerEvidencePart = {
+  rating: AdequacyRating;
+  evidence: string;
+  statement: string;
+  bindingRows: SpecEvidenceForAdequacy[];
+  suggestion?: string;
+};
+
+function plainCorrectLayerPart(
+  rating: AdequacyRating,
+  evidence: string,
+  suggestion?: string,
+): CorrectLayerEvidencePart {
+  return {
+    rating,
+    evidence,
+    statement: evidence,
+    bindingRows: [],
+    ...(suggestion ? { suggestion } : {}),
+  };
+}
+
+function boundCorrectLayerPart(
+  rating: AdequacyRating,
+  statement: string,
+  bindingRows: SpecEvidenceForAdequacy[],
+  suggestion?: string,
+  suffix = '',
+): CorrectLayerEvidencePart {
+  return {
+    rating,
+    evidence: evidenceWithBindings(statement, bindingRows) + suffix,
+    statement: statement + suffix,
+    bindingRows,
+    ...(suggestion ? { suggestion } : {}),
+  };
+}
+
+function bindingIdentity(row: SpecEvidenceForAdequacy): string {
+  return Number.isSafeInteger(row.id)
+    ? 'id:' + row.id
+    : 'ref:' + logicalEvidenceReferenceKey(row);
+}
+
+function uniqueBindingRows(rows: SpecEvidenceForAdequacy[]): SpecEvidenceForAdequacy[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = bindingIdentity(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function correctLayerMutationExclusion(
+  evidence: SpecEvidenceForAdequacy[],
+  layerBindings: SpecEvidenceForAdequacy[],
+): string {
+  const included = new Set(layerBindings.map(bindingIdentity));
+  const excludedMutations = uniqueBindingRows(
+    evidence.filter((row) => row.evidenceKind === 'mutation' && !included.has(bindingIdentity(row))),
+  );
+  if (excludedMutations.length === 0) return '';
+  const labels = excludedMutations
+    .map((row) => Number.isSafeInteger(row.id) ? 'id=' + row.id : 'ref=' + JSON.stringify(row.evidenceRef))
+    .join(', ');
+  return ' Mutation binding(s) ' + labels +
+    ' are excluded because mutation outcomes establish falsifiability, not correct-layer path reachability.';
+}
+
 /**
  * Presence-and-sign ONLY, deliberately — this is not where fakery is stopped.
  *
@@ -1368,26 +1438,26 @@ function sourceBarTestSuiteRating(
   clause: SpecClauseRevision,
   evidence: SpecEvidenceForAdequacy[],
   requirements: SourceBarTestRequirements | undefined,
-): AdequacyRatingEntry | null {
+): CorrectLayerEvidencePart | null {
   const resolved = requirements ?? (clause.sourceBar
     ? { status: 'unavailable' as const, reason: 'the pinned source BAR requirements were not resolved by the caller' }
     : { status: 'not-required' as const });
   if (resolved.status === 'not-required') return null;
   if (resolved.status === 'unavailable') {
-    return {
-      rating: 'unknown',
-      evidence: `Source BAR registered test files are unknown for ${clauseIdentity(clause)}: ${resolved.reason}.`,
-      suggestion: 'Resolve the exact pinned source rubric revision and BAR identity before grading this clause.',
-    };
+    return plainCorrectLayerPart(
+      'unknown',
+      `Source BAR registered test files are unknown for ${clauseIdentity(clause)}: ${resolved.reason}.`,
+      'Resolve the exact pinned source rubric revision and BAR identity before grading this clause.',
+    );
   }
 
   const requiredFiles = [...new Set(resolved.files.map((file) => file.trim()).filter(Boolean))].sort();
   if (requiredFiles.length === 0) {
-    return {
-      rating: 'unknown',
-      evidence: `The pinned source BAR test-file list is empty for ${clauseIdentity(clause)}.`,
-      suggestion: 'Repair the source BAR check.files list before grading this clause.',
-    };
+    return plainCorrectLayerPart(
+      'unknown',
+      `The pinned source BAR test-file list is empty for ${clauseIdentity(clause)}.`,
+      'Repair the source BAR check.files list before grading this clause.',
+    );
   }
 
   const rowsByFile = new Map<string, SpecEvidenceForAdequacy[]>();
@@ -1433,14 +1503,12 @@ function sourceBarTestSuiteRating(
   }
 
   if (failed.length > 0) {
-    return {
-      rating: 'fail',
-      evidence: evidenceWithBindings(
-        `Current source BAR suite run(s) fail for ${clauseIdentity(clause)}: ${failed.map(({ file }) => file).join(', ')}.`,
-        distinctTestRunRows(citedRows),
-      ),
-      suggestion: 'Re-run each failing registered source BAR file against the current source and bind its measured passing result.',
-    };
+    return boundCorrectLayerPart(
+      'fail',
+      `Current source BAR suite run(s) fail for ${clauseIdentity(clause)}: ${failed.map(({ file }) => file).join(', ')}.`,
+      distinctTestRunRows(citedRows),
+      'Re-run each failing registered source BAR file against the current source and bind its measured passing result.',
+    );
   }
   if (missing.length > 0 || uncertain.length > 0 || ambiguousFiles.size > 0) {
     const unresolved = [...new Set([
@@ -1448,22 +1516,18 @@ function sourceBarTestSuiteRating(
       ...uncertain,
       ...[...ambiguousFiles].map((file) => `${file} (ambiguous measured path)`),
     ])].sort();
-    return {
-      rating: 'unknown',
-      evidence: evidenceWithBindings(
-        `Current passing bindings are not established for every registered source BAR file for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
-        distinctTestRunRows(citedRows),
-      ),
-      suggestion: 'Bind a current, ledger-backed passing test result for every registered source BAR file; missing, stale, and ambiguous paths remain unknown.',
-    };
-  }
-  return {
-    rating: 'pass',
-    evidence: evidenceWithBindings(
-      `Every registered source BAR test file has a current passing binding for ${clauseIdentity(clause)}: ${requiredFiles.join(', ')}.`,
+    return boundCorrectLayerPart(
+      'unknown',
+      `Current passing bindings are not established for every registered source BAR file for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
       distinctTestRunRows(citedRows),
-    ),
-  };
+      'Bind a current, ledger-backed passing test result for every registered source BAR file; missing, stale, and ambiguous paths remain unknown.',
+    );
+  }
+  return boundCorrectLayerPart(
+    'pass',
+    `Every registered source BAR test file has a current passing binding for ${clauseIdentity(clause)}: ${requiredFiles.join(', ')}.`,
+    distinctTestRunRows(citedRows),
+  );
 }
 
 function booleanRating(
@@ -2427,12 +2491,12 @@ export function evaluateSpecTestAdequacy(input: {
                   `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
           });
 
-  let layerRating: AdequacyRatingEntry;
+  let layerRating: CorrectLayerEvidencePart;
   if (clause.requiredTestLayers.length === 0) {
-    layerRating = {
-      rating: 'not-applicable',
-      evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseDeclarationProbe(clause, input.harness)}`,
-    };
+    layerRating = plainCorrectLayerPart(
+      'not-applicable',
+      `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseDeclarationProbe(clause, input.harness)}`,
+    );
   } else {
     const legacyOperationalRequired = clause.requiredTestLayers.find((layer) =>
       ['behavioral', 'manual-provenance'].includes(normalizedLayer(layer)));
@@ -2514,36 +2578,31 @@ export function evaluateSpecTestAdequacy(input: {
     );
     layerRating =
       contradictoryLayerRows.length || missing.length || unreachable.length
-        ? {
-            rating: 'fail',
-            evidence: `${evidenceWithBindings(
-              `Required layer/path gaps for ${clauseIdentity(clause)}: ${[
-                ...contradictoryLayerRows.map((row) => {
-                  const details = detailsOf(row);
-                  return `testLayer-claim-mismatch:${String(details.testLayer)}!=${String(row.testRunExecution?.testLayer)}`;
-                }),
-                ...missing.map((layer) => `${displayLayer(layer)}:missing`),
-                ...unreachable.map((layer) => `${displayLayer(layer)}:unreachable`),
-              ].join(', ')}.`,
-              [...new Set([...contradictoryLayerRows, ...evidence])],
-            )} ${clauseDeclarationProbe(clause, input.harness)}`,
-            suggestion: 'Bind passing measured evidence for every requiredTestLayer; its canonical layer and exact passing case or LLM scenario must match the binding, with path reachability attested.',
-          }
+        ? boundCorrectLayerPart(
+            'fail',
+            `Required layer/path gaps for ${clauseIdentity(clause)}: ${[
+              ...contradictoryLayerRows.map((row) => {
+                const details = detailsOf(row);
+                return `testLayer-claim-mismatch:${String(details.testLayer)}!=${String(row.testRunExecution?.testLayer)}`;
+              }),
+              ...missing.map((layer) => `${displayLayer(layer)}:missing`),
+              ...unreachable.map((layer) => `${displayLayer(layer)}:unreachable`),
+            ].join(', ')}.`,
+            [...new Set([...contradictoryLayerRows, ...evidence])],
+            'Bind passing measured evidence for every requiredTestLayer; its canonical layer and exact passing case or LLM scenario must match the binding, with path reachability attested.',
+            ` ${clauseDeclarationProbe(clause, input.harness)}`,
+          )
         : unresolvedTarget.length > 0
-          ? {
-              rating: 'unknown',
-              evidence: evidenceWithBindings(
-                `Required layer(s) have passing case evidence whose binding target does not identify the exact clause ${clause.planItemId}/${clauseIdentity(clause)}: ${unresolvedTarget.map(displayLayer).join(', ')}.`,
-                unresolvedTarget.flatMap((layer) => targetMismatchRows.get(layer) ?? []),
-              ),
-              suggestion:
-                `Bind passing measured evidence to ${clause.planSlug}/${clause.planItemId}/${clause.specId}@${clause.revision} ` +
+          ? boundCorrectLayerPart(
+              'unknown',
+              `Required layer(s) have passing case evidence whose binding target does not identify the exact clause ${clause.planItemId}/${clauseIdentity(clause)}: ${unresolvedTarget.map(displayLayer).join(', ')}.`,
+              unresolvedTarget.flatMap((layer) => targetMismatchRows.get(layer) ?? []),
+              `Bind passing measured evidence to ${clause.planSlug}/${clause.planItemId}/${clause.specId}@${clause.revision} ` +
                 `(${clause.contentHash}) with adequacy.targeted=${JSON.stringify(clause.specId)}; missing, boolean, and sibling-clause targets remain unknown.`,
-            }
-        : unresolved.length
-          ? {
-              rating: 'unknown',
-              evidence: evidenceWithBindings(
+            )
+          : unresolved.length
+            ? boundCorrectLayerPart(
+                'unknown',
                 `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.map(displayLayer).join(', ')}.`,
                 evidence.filter((row) => {
                   const details = detailsOf(row);
@@ -2553,17 +2612,11 @@ export function evaluateSpecTestAdequacy(input: {
                     (isRecordedTestLayer(measuredLayer) && unresolved.includes(normalizedLayer(measuredLayer)))
                   );
                 }),
-              ),
-              // EI-25235611084337188: name the repair. The attestation must sit on a binding OF the
-              // required layer; a pathReachable row on another layer (e.g. an integration mutation
-              // row) never satisfies it, and testing:run / re-measure bindings carry no attestation.
-              suggestion:
                 `Rebind passing measured evidence whose server-measured testLayer is one of the required layers (${unresolved.map(displayLayer).join(', ')}), ` +
-                'whose exact passedCaseTitles (or canonical llm-test scenarioId and executed file) corroborate adequacy.testCases, and whose adequacy.testLayer claim matches the measured layer; binder-only layer/path claims remain unknown.',
-            }
-          : {
-              rating: 'pass',
-              evidence: evidenceWithBindings(
+                  'whose exact passedCaseTitles (or canonical llm-test scenarioId and executed file) corroborate adequacy.testCases, and whose adequacy.testLayer claim matches the measured layer; binder-only layer/path claims remain unknown.',
+              )
+            : boundCorrectLayerPart(
+                'pass',
                 `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.map(displayLayer).join(', ')}.`,
                 evidence.filter((row) => {
                   const details = detailsOf(row);
@@ -2591,12 +2644,11 @@ export function evaluateSpecTestAdequacy(input: {
                     details.pathReachable === true
                   );
                 }),
-              ),
-            };
+              );
   }
 
   const requiredScenarios = [...new Set(clause.falsifier?.requiredScenarios ?? [])].sort();
-  let scenarioRating: AdequacyRatingEntry | null = null;
+  let scenarioRating: CorrectLayerEvidencePart | null = null;
   if (requiredScenarios.length > 0) {
     const malformedScenarioRows = evidence.filter((row) =>
       detailsOf(row).contractMetadataIssues?.includes('scenarioIds:invalid'),
@@ -2608,33 +2660,26 @@ export function evaluateSpecTestAdequacy(input: {
     const missing = requiredScenarios.filter((scenario) => !covered.has(scenario));
     scenarioRating =
       missing.length > 0
-        ? {
-            rating: 'fail',
-            evidence: evidenceWithBindings(
-              `Canonical acceptance scenario(s) are not covered by successful ledger-backed path proof for ${clauseIdentity(clause)}: ${missing.join(', ')}. Required scenarios: ${requiredScenarios.join(', ')}.`,
-              successfulScenarioRows,
-            ),
-            suggestion:
-              'Bind successful executed proof whose adequacy.scenarioIds cover every falsifier.requiredScenarios id.',
-          }
+        ? boundCorrectLayerPart(
+            'fail',
+            `Canonical acceptance scenario(s) are not covered by successful ledger-backed path proof for ${clauseIdentity(clause)}: ${missing.join(', ')}. Required scenarios: ${requiredScenarios.join(', ')}.`,
+            successfulScenarioRows,
+            'Bind successful executed proof whose adequacy.scenarioIds cover every falsifier.requiredScenarios id.',
+          )
         : malformedScenarioRows.length > 0
-          ? {
-              rating: 'unknown',
-              evidence: evidenceWithBindings(
-                `All named scenarios are represented, but malformed scenarioIds metadata prevents a complete scenario-cohort verdict for ${clauseIdentity(clause)}.`,
-                malformedScenarioRows,
+          ? boundCorrectLayerPart(
+              'unknown',
+              `All named scenarios are represented, but malformed scenarioIds metadata prevents a complete scenario-cohort verdict for ${clauseIdentity(clause)}.`,
+              malformedScenarioRows,
+              'Supersede malformed bindings with schema-valid adequacy.scenarioIds.',
+            )
+          : boundCorrectLayerPart(
+              'pass',
+              `Every canonical acceptance scenario has successful ledger-backed path proof for ${clauseIdentity(clause)}: ${requiredScenarios.join(', ')}.`,
+              successfulScenarioRows.filter((row) =>
+                (detailsOf(row).scenarioIds ?? []).some((scenario) => requiredScenarios.includes(scenario)),
               ),
-              suggestion: 'Supersede malformed bindings with schema-valid adequacy.scenarioIds.',
-            }
-          : {
-              rating: 'pass',
-              evidence: evidenceWithBindings(
-                `Every canonical acceptance scenario has successful ledger-backed path proof for ${clauseIdentity(clause)}: ${requiredScenarios.join(', ')}.`,
-                successfulScenarioRows.filter((row) =>
-                  (detailsOf(row).scenarioIds ?? []).some((scenario) => requiredScenarios.includes(scenario)),
-                ),
-              ),
-            };
+            );
   }
   // Required evidence strings are generally descriptive, but exact canonical evidence-kind
   // tokens are executable requirements. Check them against the active rows for this pinned
@@ -2647,17 +2692,17 @@ export function evaluateSpecTestAdequacy(input: {
     ))];
   const boundEvidenceKinds = new Set(exactEvidence.map((row) => row.evidenceKind));
   const missingEvidenceKinds = requiredEvidenceKinds.filter((kind) => !boundEvidenceKinds.has(kind));
-  const evidenceKindRating: AdequacyRatingEntry | null = requiredEvidenceKinds.length === 0 ? null
+  const evidenceKindRating: CorrectLayerEvidencePart | null = requiredEvidenceKinds.length === 0 ? null
     : missingEvidenceKinds.length > 0
-      ? {
-          rating: 'fail',
-          evidence: `Required evidence kind(s) are absent from active bindings for ${clauseIdentity(clause)} at revision ${clause.revision}: ${missingEvidenceKinds.join(', ')}.`,
-          suggestion: 'Bind active evidence of each required evidence kind to this exact clause revision.',
-        }
-      : {
-          rating: 'pass',
-          evidence: `Active bindings at revision ${clause.revision} cover the required evidence kind(s) for ${clauseIdentity(clause)}: ${requiredEvidenceKinds.join(', ')}.`,
-        };
+      ? plainCorrectLayerPart(
+          'fail',
+          `Required evidence kind(s) are absent from active bindings for ${clauseIdentity(clause)} at revision ${clause.revision}: ${missingEvidenceKinds.join(', ')}.`,
+          'Bind active evidence of each required evidence kind to this exact clause revision.',
+        )
+      : plainCorrectLayerPart(
+          'pass',
+          `Active bindings at revision ${clause.revision} cover the required evidence kind(s) for ${clauseIdentity(clause)}: ${requiredEvidenceKinds.join(', ')}.`,
+        );
   // A standalone clause can require a live or deployed observation without a source BAR.
   // The BAR ship gate checks its own evidence plane, but cannot cover such a clause.
   // Inspect only current-cohort bindings and use the same explicit plane metadata as
@@ -2670,16 +2715,16 @@ export function evaluateSpecTestAdequacy(input: {
     return typeof plane === 'string' ? [plane.trim().toLowerCase()] : [];
   }));
   const missingPlanes = requiredPlanes.filter((plane) => !presentPlanes.has(plane));
-  const planeRating: AdequacyRatingEntry | null = requiredPlanes.length === 0 ? null : missingPlanes.length > 0
-    ? {
-        rating: 'fail',
-        evidence: `Required evidence plane(s) are absent for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}.`,
-        suggestion: 'Bind current evidence with an explicit matching evidencePlane for each requiredEvidence plane.',
-      }
-    : {
-        rating: 'pass',
-        evidence: `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
-      };
+  const planeRating: CorrectLayerEvidencePart | null = requiredPlanes.length === 0 ? null : missingPlanes.length > 0
+    ? plainCorrectLayerPart(
+        'fail',
+        `Required evidence plane(s) are absent for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}.`,
+        'Bind current evidence with an explicit matching evidencePlane for each requiredEvidence plane.',
+      )
+    : plainCorrectLayerPart(
+        'pass',
+        `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
+      );
   const parts = [
     layerRating,
     sourceBarTestSuiteRating(clause, evidence, input.sourceBarTestRequirements),
@@ -2687,7 +2732,7 @@ export function evaluateSpecTestAdequacy(input: {
     evidenceKindRating,
     planeRating,
   ]
-    .filter((part): part is AdequacyRatingEntry => part !== null);
+    .filter((part): part is CorrectLayerEvidencePart => part !== null);
   const combinedRating: AdequacyRating = parts.some((part) => part.rating === 'fail')
     ? 'fail'
     : parts.some((part) => part.rating === 'unknown')
@@ -2697,7 +2742,14 @@ export function evaluateSpecTestAdequacy(input: {
         : 'pass';
   ratings['correct-layer'] = {
     rating: combinedRating,
-    evidence: parts.map((part) => part.evidence).join(' '),
+    evidence:
+      evidenceWithBindings(
+        parts.map((part) => part.statement).join(' '),
+        uniqueBindingRows(parts.flatMap((part) => part.bindingRows)),
+      ) + correctLayerMutationExclusion(
+        evidence,
+        uniqueBindingRows(parts.flatMap((part) => part.bindingRows)),
+      ),
     ...((parts.map((part) => part.suggestion).filter(Boolean).length > 0)
       ? { suggestion: parts.map((part) => part.suggestion).filter(Boolean).join(' ') }
       : {}),
