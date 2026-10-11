@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildTaskBrief, getClaimTimeTaskBrief, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { buildTaskBrief, getClaimTimeTaskBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
 import type { CodeIntelAnswer } from './contracts';
 
 const dirs: string[] = [];
@@ -77,9 +77,30 @@ describe('P012 bounded scoped task briefs', () => {
       expect(JSON.stringify(result?.taskBrief.excerpts)).toContain('CURRENT_SOURCE');
       expect(result?.taskBrief.graph.status).toBe('unknown');
       expect(result?.taskBrief.graph.reason).toMatch(/budget|unavailable/);
-      expect(vi.mocked(deps.graph).mock.calls[0]![4]).toBeLessThan(500);
+      expect(vi.mocked(deps.graph).mock.calls[0]![4]).toBeLessThan(TASK_BRIEF_BUDGET_MS);
     } finally { now.mockRestore(); }
   }, 10_000);
+  it('shares the capture window with compilation and rejects evidence from a file omitted by the safe packer', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "CURRENT_SOURCE"; }');
+    const deps = depsFor(root), pack = deps.pack;
+    let finishCompiler: ((answer: CodeIntelAnswer) => void) | undefined;
+    deps.graph = vi.fn(() => new Promise<CodeIntelAnswer>(resolve => { finishCompiler = resolve; }));
+    deps.pack = async (...args) => {
+      // A sequential capture cannot obtain this compiler response during the
+      // packing window; a response rejected by the safe packer must stay private.
+      expect(finishCompiler).toBeTypeOf('function');
+      finishCompiler!({ ...answer([]), error: null });
+      const packed = await pack(...args);
+      return { ...packed, answer: { ...packed.answer, sites: [] } };
+    };
+    const brief = await buildTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h',
+      payload: { paths: ['target.ts'] } } }, deps);
+    expect(brief.status).toBe('current');
+    expect(brief.files).toEqual([]); expect(brief.excerpts).toEqual([]);
+    expect(brief.graph.status).toBe('unknown');
+    expect(vi.mocked(deps.graph).mock.calls[0]![4]).toBeGreaterThan(2_000);
+    expect(vi.mocked(deps.graph).mock.calls[0]![4]).toBeLessThan(TASK_BRIEF_BUDGET_MS);
+  });
   it('keeps scoped source current after compiler failure but still rejects a concurrent source edit', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "CURRENT_SOURCE"; }');
     const deps = depsFor(root);

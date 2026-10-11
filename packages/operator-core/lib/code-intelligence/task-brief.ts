@@ -155,6 +155,23 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     if (!brief.scope.paths.length) throw new Error('no accessible bounded task files');
     brief.recover = { tool: 'code:pack', args: { op: 'pack', include: brief.scope.paths, rootPath: root } };
     const before = hash(JSON.stringify([...texts].map(([path, text]) => [path, hash(text)])));
+    const implementation = [...texts.keys()].find(path => {
+      if (kindOf(path) !== 'implementation' || !/\.[cm]?[jt]sx?$/.test(path)) return false;
+      const source = ts.createSourceFile(path, texts.get(path)!, ts.ScriptTarget.Latest, true);
+      return source.statements.some(statement => (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name);
+    });
+    const source = implementation && ts.createSourceFile(implementation, texts.get(implementation)!, ts.ScriptTarget.Latest, true);
+    const declaration = source && source.statements.find(statement =>
+      (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name);
+    const name = declaration && (ts.isFunctionDeclaration(declaration) || ts.isClassDeclaration(declaration)) ? declaration.name?.text : null;
+    // Packing and compilation consume the SAME bounded capture window. Starting
+    // the optional worker after packing gave a cold worker only two seconds even
+    // when its answer could fit the whole brief deadline. Publish its result only
+    // after safe packing and the final source-byte recheck both succeed.
+    const compilerMs = Math.max(0, deadline - Date.now() - 250);
+    const compiler = implementation && name && compilerMs > 0
+      ? deps.graph(root, name, implementation, brief.scope.paths, compilerMs).catch(() => null)
+      : Promise.resolve(null);
     const packed: PackerResult = await deps.pack('pack', {
       rootPath: root, include: brief.scope.paths, format: 'xml', compress: false,
     }, effects);
@@ -172,28 +189,19 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
       }
     }
     for (const path of texts.keys()) if (!included.has(path)) brief.exclusions.push('A scoped file was excluded by the safe packer.');
-    const implementation = brief.files.find(file => {
-      if (file.kind !== 'implementation' || !/\.[cm]?[jt]sx?$/.test(file.path)) return false;
-      const source = ts.createSourceFile(file.path, texts.get(file.path)!, ts.ScriptTarget.Latest, true);
-      return source.statements.some(statement => (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name);
-    });
-    if (implementation) {
-      brief.excerpts.sort((a, b) => Number(b.path === implementation.path) - Number(a.path === implementation.path));
-      const source = ts.createSourceFile(implementation.path, texts.get(implementation.path)!, ts.ScriptTarget.Latest, true);
-      const declaration = source.statements.find(statement =>
-        (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name);
-      const name = declaration && (ts.isFunctionDeclaration(declaration) || ts.isClassDeclaration(declaration)) ? declaration.name?.text : null;
+    if (implementation && brief.files.some(file => file.path === implementation)) {
+      brief.excerpts.sort((a, b) => Number(b.path === implementation) - Number(a.path === implementation));
       if (name) {
         // Compiler enrichment is optional. Reserve time to recheck the captured
         // source and finish the brief; worker termination can outlast its deadline.
-        const compilerMs = Math.max(0, Math.min(2_000, deadline - Date.now() - 250));
+        const waitMs = Math.max(0, deadline - Date.now() - 250);
         let graph: CodeIntelAnswer | null = null;
         let compilerTimer: ReturnType<typeof setTimeout> | undefined;
-        if (compilerMs > 0) {
+        if (waitMs > 0) {
           try {
             graph = await Promise.race([
-              deps.graph(root, name, implementation.path, brief.scope.paths, compilerMs).catch(() => null),
-              new Promise<null>(resolve => { compilerTimer = setTimeout(() => resolve(null), compilerMs); }),
+              compiler,
+              new Promise<null>(resolve => { compilerTimer = setTimeout(() => resolve(null), waitMs); }),
             ]);
           } finally { clearTimeout(compilerTimer); }
         }
