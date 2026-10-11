@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { lookupByMcpName, listAllProjectedTools } from '@papercusp/tooldef';
@@ -89,7 +89,23 @@ describe('registered subject evidence with the real local scorer', () => {
     if (privateHome) {
       // Fail before measurements if a shared/installed runtime was adopted.
       expect(isEmbedSidecarRunning(), 'owned scorer must be spawned by this test').toBe(true);
-      expect(readEmbedSidecarRecord()?.pid, 'owned scorer record must match the serving process').toBe(health?.pid);
+      const record = readEmbedSidecarRecord();
+      expect(record?.port, 'owned launch record must name the serving endpoint').toBe(Number(new URL(url!).port));
+      expect(Number.isInteger(health?.pid)).toBe(true);
+      if (process.platform === 'linux') {
+        // Source launches use npx -> tsx -> node; the record names npx,
+        // while health names node. Verify the actual ancestry, not PID equality.
+        const ancestry: number[] = [];
+        let pid = health.pid as number;
+        for (let depth = 0; depth < 8 && pid > 1; depth++) {
+          ancestry.push(pid);
+          if (pid === record?.pid) break;
+          const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+          pid = Number(status.match(/^PPid:\s+(\d+)$/m)?.[1]);
+        }
+        console.info('subject-scorer-ownership', JSON.stringify({ launchPid: record?.pid, ancestry }));
+        expect(ancestry, 'serving scorer must descend from the owned launch').toContain(record?.pid);
+      }
       expect(privateDb?.name).toMatch(/^subjectscorer_/);
       expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBe(privateDb?.url);
     }
