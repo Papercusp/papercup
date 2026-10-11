@@ -270,7 +270,7 @@ export async function evaluateIndependentVerificationGate(
       `plan '${input.planSlug}' cannot be marked shipped: ${gaps.length} live/deployed mandatory outcome bar(s) ` +
       `lack independent verification — ${lines.slice(0, 5).join('; ')}${lines.length > 5 ? ` (+${lines.length - 5} more)` : ''}. ` +
       'An agent outside the implementers\' spawn/rebind lineage must re-resolve the deployed identity, re-read ' +
-      "the receipts, and record plans:bind-spec-evidence { evidenceKind:'independent-verification', " +
+      "the receipts, and record plans:bind-independent-verification { evidenceKind:'independent-verification', " +
       'verifiesBindingId:<the implementer binding id>, sourceFingerprint and environmentFingerprint equal to ' +
       "that binding's }. Not waivable by force: it is an independence check, like independent grading.",
   };
@@ -305,7 +305,7 @@ export function renderIndependentVerificationBrief(
       `each clause: (1) read the cited binding with plans:get-spec-evidence { ${scope} } — its evidenceRef, ` +
       `workItemId, details.note/observedVia/instrument and details.currentMeasurement; (2) re-observe the same ` +
       `thing yourself through the read the binding names (for a database census, re-run its read-only ` +
-      `dev:pg_query) and compare with the receipt; (3) if it matches, record plans:bind-spec-evidence ` +
+      `dev:pg_query) and compare with the receipt; (3) if it matches, record plans:bind-independent-verification ` +
       `{ ${scope}, binding:{ workItemId, specId, specRevision, evidenceKind:'independent-verification', ` +
       `verifiesBindingId:<the cited id>, evidenceRef:<the same evidenceRef>, measurement:<its ` +
       `details.currentMeasurement, unchanged>, details:{ note:<what you re-observed, when, and through which ` +

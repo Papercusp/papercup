@@ -2881,17 +2881,27 @@ export const OWNER_DIRECTIVE_STATUS_CELL: CellSpec = {
  * `verification.health` — verification-system-improvements-2026-10-10 P-002. "Is the
  * verification system being used, and where is it failing?" in one read: contract coverage
  * by cohort, evidence-bound clause share, uncovered active plans (lane 2's triage measure,
- * D-018), the awaiting-acceptance age histogram, forced ships and VAL-* block usage. The
- * headline is the number of breached thresholds; each threshold is a live bar of the plan
- * (R-4 triageGaps, R-5 staleAcceptanceUndispositioned, SPEC-P-003-VAL-LIVE-CENSUS
- * valBlockPlans — all `eq 0`). Whole-workspace by construction (the resolver ignores the
- * session harness), so every reader in the workspace sees the same value.
+ * D-018), the awaiting-acceptance age histogram, forced ships and VAL-* block usage.
+ * Whole-workspace by construction (the resolver ignores the session harness), so every
+ * reader in the workspace sees the same value.
+ *
+ * ⚠ THE VALUE IS THE WHOLE `health` MEASUREMENT, NOT THE BREACH COUNT (EI-25692848225486055,
+ * plan D-049). The plan's live bars probe this cell per metric —
+ * `state:read { cell:'verification.health' }` at `$.value.triageGaps` (R-4),
+ * `$.value.staleAcceptanceUndispositioned` (R-5), `$.value.unreachablePlans` (R-12),
+ * `$.value.staleAcceptanceScopeExcluded` (R-13) — and R-2 requires the read to return every
+ * metric. A read value is `changeSignal.path` (cell-read.ts), so when that path was
+ * `health.breaches` the value was a bare integer and every per-metric probe resolved
+ * ABSENT while the resolver had the readings. The breach count stays reachable at
+ * `value.breaches`, and stays the MATERIAL change via `materiality` below.
+ * verification-health-cell-probes.test.ts runs the declared probe paths against a real
+ * read, so a narrowing of this path reds there.
  */
 export const VERIFICATION_HEALTH_CELL: CellSpec = {
   cell: 'verification.health',
   registeredOn: '2026-10-11',
   owner: 'verification-system-improvements-2026-10-10',
-  headline: 'health.breaches',
+  headline: 'health',
 
   assessment: {
     path: 'assessments.verificationHealth',
@@ -2930,7 +2940,16 @@ export const VERIFICATION_HEALTH_CELL: CellSpec = {
 
   visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
-  changeSignal: { kind: 'poll', tool: 'plans:verification-health', path: 'health.breaches' },
+  changeSignal: { kind: 'poll', tool: 'plans:verification-health', path: 'health' },
+  /**
+   * The whole measurement moves on every read (measuredAt-adjacent counts, coverage
+   * ratios, the age histogram). The MATERIAL change is whether the number of breached
+   * thresholds moved — that is what a subscriber has to act on.
+   */
+  materiality: {
+    path: 'health.breaches',
+    why: 'the breach count is the actionable quantity: each breach names a threshold to work (health.breachCodes). Coverage shares, plan counts and the acceptance age histogram drift as plans are created and age without any threshold changing state, so waking a subscriber for them is noise.',
+  },
   shape:
     '{ health: { coverageByCohort, activePlans, activePlansWithContract, activeClauses, activeClausesEvidenceBound, evidenceBoundShare, uncoveredActivePlans, uncoveredActivePlansRaw, closureReasonMissing, triageGaps, activePlansConsidered, unreachablePlans, awaitingAcceptancePlans, awaitingAcceptanceAgeDays, staleAcceptanceSurfaced, staleAcceptanceNeverSurfaced, staleAcceptanceUndispositioned, acceptancePlansConsidered, staleAcceptanceScopeExcluded, measurementErrors, forcedShips, valBlockPlans, breaches, breachCodes, unmeasuredCodes }, assessments: { verificationHealth }, thresholds, scope, measuredAt }',
 };
