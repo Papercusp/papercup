@@ -30,6 +30,9 @@ import {
   TicketIntegrationError,
 } from '../../../integrations/ticket-integrations';
 
+import { armTriggerPack, configureTriggerPack, TriggerPackLifecycleError } from '../../../cupboard/trigger-pack-lifecycle';
+import { TriggerPackMaterializeError } from '../../../cupboard/trigger-pack-materialize';
+
 export const TICKET_INTEGRATIONS_QUERY = 'integrations.tickets';
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -173,4 +176,95 @@ const disableRule = defineTool({
   },
 });
 
-export default [overview, containers, config, addRule, disableRule];
+// ── trigger packs (plan cupboard-distributable-integrations-2026-10-10 P-005) ─────────────────
+// Thin HTTP over cupboard/trigger-pack-lifecycle.ts, the same functions the trigger-packs:* tools
+// call. Bindings change on both writes, so the triggers admin query is invalidated with the page.
+
+const ARM_REFUSAL_STATUS: Record<string, number> = {
+  not_found: 404,
+  trigger_pack_needs_configuration: 409,
+  trigger_pack_review_stale: 409,
+};
+
+function packFailure(error: unknown): Response {
+  if (error instanceof TriggerPackLifecycleError) {
+    return Response.json(
+      { ok: false, error: error.code, detail: error.message },
+      { status: error.code === 'not_found' ? 404 : 422 },
+    );
+  }
+  if (error instanceof TriggerPackMaterializeError) {
+    return Response.json({ ok: false, error: error.code, detail: error.message }, { status: 422 });
+  }
+  return failure(error);
+}
+
+function invalidatePack(workspaceId: string, ownerUserId: string): void {
+  invalidate(workspaceId, ownerUserId);
+  void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
+}
+
+const setPackInputs = defineTool({
+  method: 'PUT',
+  path: '/user/integrations/trigger-packs/:installationId/inputs',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
+    const body = await jsonObject(req);
+    if (!body || !isPlainObject(body.inputs)) {
+      return Response.json({ ok: false, error: 'bad_request', detail: 'body must be { inputs: object }' }, { status: 400 });
+    }
+    try {
+      const s = await scope(req);
+      const installed = await configureTriggerPack(getOrgPg().sql, s.workspaceId, {
+        installationId: ctx.params.installationId ?? '',
+        inputs: body.inputs,
+        configuredBy: s.ownerUserId,
+      });
+      invalidatePack(s.workspaceId, s.ownerUserId);
+      return Response.json({
+        ok: true,
+        installationId: installed.id,
+        status: installed.status,
+        unmet: installed.unmet,
+        armed: installed.armed,
+        review: installed.review,
+      });
+    } catch (error) {
+      return packFailure(error);
+    }
+  },
+});
+
+const armPack = defineTool({
+  method: 'POST',
+  path: '/user/integrations/trigger-packs/:installationId/arm',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
+    const body = await jsonObject(req);
+    if (!body || typeof body.fingerprint !== 'string' || !body.fingerprint) {
+      return Response.json(
+        { ok: false, error: 'bad_request', detail: 'body must be { fingerprint: string } — the review you are arming' },
+        { status: 400 },
+      );
+    }
+    try {
+      const s = await scope(req);
+      const result = await armTriggerPack(getOrgPg().sql, s.workspaceId, {
+        installationId: ctx.params.installationId ?? '',
+        fingerprint: body.fingerprint,
+        reviewedBy: s.ownerUserId,
+      });
+      if (!result.ok) return Response.json(result, { status: ARM_REFUSAL_STATUS[result.error] ?? 409 });
+      invalidatePack(s.workspaceId, s.ownerUserId);
+      return Response.json(result);
+    } catch (error) {
+      return packFailure(error);
+    }
+  },
+});
+
+export default [overview, containers, config, addRule, disableRule, setPackInputs, armPack];

@@ -22,6 +22,11 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
+import type {
+  MaterializeTriggerPackInput,
+  TriggerPackInstallation,
+  TriggerPackManifest,
+} from './trigger-pack-materialize';
 import type postgres from 'postgres';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { detachExternalTriggerBinding } from '../external-triggers/admin';
@@ -108,6 +113,7 @@ interface InstallationRow {
   status: string;
   manifest: unknown;
   inputs: unknown;
+  sourceMappings: unknown;
   resources: unknown;
   unmet: unknown;
   reviewedFingerprint: string | null;
@@ -170,7 +176,8 @@ async function loadInstallation(
   const lock = forUpdate ? sql`FOR UPDATE` : sql``;
   const rows = await sql<InstallationRow[]>`
     SELECT id::text AS id, harness_slug AS "harnessSlug", plugin_name AS "pluginName",
-           plugin_version AS "pluginVersion", status, manifest, inputs, resources, unmet,
+           plugin_version AS "pluginVersion", status, manifest, inputs,
+           source_mappings AS "sourceMappings", resources, unmet,
            reviewed_fingerprint AS "reviewedFingerprint", reviewed_by AS "reviewedBy",
            reviewed_at AS "reviewedAt"
       FROM harness_shared.trigger_pack_installations
@@ -636,4 +643,93 @@ export async function listTriggerPackInstallations(
     armedBindingCount: row.armedBindingCount,
     planSlugs: [...new Set(Object.values(resourcesOf(row.resources).plans).map((plan) => plan.planSlug))].sort(),
   }));
+}
+
+// ── Settings → Integrations (plan cupboard-distributable-integrations-2026-10-10 P-005) ──────
+
+/** One installed trigger pack as Settings → Integrations shows it: inputs form, review, arm. */
+export interface TriggerPackSettings {
+  installationId: string;
+  harnessSlug: string;
+  pluginName: string;
+  pluginVersion: string;
+  status: string;
+  /** The pack's `triggerPack.inputs` JSON schema, or null when it takes no inputs. */
+  inputsSchema: Record<string, unknown> | null;
+  /** The input values the pack was last configured with. */
+  inputs: Record<string, unknown>;
+  /** The review the owner arms against: what the pack does, what it still lacks, its fingerprint. */
+  state: TriggerPackReviewState;
+}
+
+function settingsOf(row: InstallationRow, owned: OwnedBindingRow[]): TriggerPackSettings {
+  const schema = asRecord(asRecord(asRecord(row.manifest).triggerPack).inputs);
+  return {
+    installationId: row.id,
+    harnessSlug: row.harnessSlug,
+    pluginName: row.pluginName,
+    pluginVersion: row.pluginVersion,
+    status: row.status,
+    inputsSchema: Object.keys(schema).length > 0 ? schema : null,
+    inputs: asRecord(row.inputs),
+    state: reviewState(row, owned),
+  };
+}
+
+/** Every trigger pack installed in the workspace, with its inputs and current review. */
+export async function listTriggerPackSettings(sql: Db, workspaceId: string): Promise<TriggerPackSettings[]> {
+  const ids = await sql<Array<{ id: string }>>`
+    SELECT id::text AS id FROM harness_shared.trigger_pack_installations
+     WHERE workspace_id = ${workspaceId}
+     ORDER BY plugin_name, harness_slug`;
+  const settings = await Promise.all(
+    ids.map(async ({ id }) => {
+      const row = await loadInstallation(sql, workspaceId, id);
+      return row ? settingsOf(row, await loadOwnedBindings(sql, workspaceId, row.id)) : null;
+    }),
+  );
+  return settings.filter((entry): entry is TriggerPackSettings => entry !== null);
+}
+
+export interface ConfigureTriggerPackDeps {
+  /** Where installed plugins live. Production: GLOBAL_PLUGINS_DIR(). */
+  pluginsDir?: string;
+  /** Production: materializeTriggerPack. */
+  materialize?: (sql: postgres.Sql, workspaceId: string, input: MaterializeTriggerPackInput) => Promise<TriggerPackInstallation>;
+}
+
+/**
+ * Re-configure an installed pack with new input values. It runs the same materializer the Cupboard
+ * install runs, fed from the stored manifest, source mappings and the installed plugin directory,
+ * so an unchanged binding keeps its armed state and a changed one goes back to review disarmed.
+ */
+export async function configureTriggerPack(
+  sql: postgres.Sql,
+  workspaceId: string,
+  input: { installationId: string; inputs: Record<string, unknown>; configuredBy?: string | null },
+  deps: ConfigureTriggerPackDeps = {},
+): Promise<TriggerPackInstallation> {
+  const row = await loadInstallation(sql, workspaceId, input.installationId);
+  if (!row) throw new TriggerPackLifecycleError('not_found', `trigger-pack installation ${input.installationId} not found`);
+  const manifest = asRecord(row.manifest);
+  if (typeof manifest.name !== 'string' || !manifest.name || Object.keys(asRecord(manifest.triggerPack)).length === 0) {
+    throw new TriggerPackLifecycleError('manifest_missing', `installation ${row.id} has no stored trigger-pack manifest`);
+  }
+  const pluginsDir = resolve(deps.pluginsDir ?? (await import('../plugin-catalog')).GLOBAL_PLUGINS_DIR());
+  const pluginDir = resolve(pluginsDir, manifest.name);
+  if (!pluginDir.startsWith(`${pluginsDir}${sep}`)) {
+    throw new TriggerPackLifecycleError('manifest_invalid', `plugin name "${manifest.name}" leaves the plugins directory`);
+  }
+  const sourceMappings = Object.fromEntries(
+    Object.entries(asRecord(row.sourceMappings)).filter((pair): pair is [string, string] => typeof pair[1] === 'string'),
+  );
+  const materialize = deps.materialize ?? (await import('./trigger-pack-materialize')).materializeTriggerPack;
+  return materialize(sql, workspaceId, {
+    manifest: manifest as unknown as TriggerPackManifest,
+    pluginDir,
+    harnessSlug: row.harnessSlug,
+    sourceMappings,
+    inputs: input.inputs,
+    createdBy: input.configuredBy ?? null,
+  });
 }

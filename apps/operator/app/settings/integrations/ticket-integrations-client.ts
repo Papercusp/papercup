@@ -34,7 +34,26 @@ export class IntegrationRequestError extends Error {
 
 /** Call an integrations route; a non-2xx or `ok:false` body throws its code and detail. */
 export async function integrationRequest<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  const res = await fetch(INTEGRATIONS_API + path, {
+  return apiRequest<T>(INTEGRATIONS_API + path, method, body);
+}
+
+export const TRIGGER_PACKS_API = '/api/user/integrations/trigger-packs';
+
+/** Re-configure an installed trigger pack with new input values (P-005). */
+export function saveTriggerPackInputs(
+  installationId: string,
+  inputs: Record<string, unknown>,
+): Promise<{ installationId: string; status: string; unmet: unknown[]; armed: boolean }> {
+  return apiRequest(`${TRIGGER_PACKS_API}/${encodeURIComponent(installationId)}/inputs`, 'PUT', { inputs });
+}
+
+/** Arm a trigger pack against the review fingerprint the owner is looking at. */
+export function armTriggerPackRequest(installationId: string, fingerprint: string): Promise<{ armedBindingIds: string[] }> {
+  return apiRequest(`${TRIGGER_PACKS_API}/${encodeURIComponent(installationId)}/arm`, 'POST', { fingerprint });
+}
+
+async function apiRequest<T>(url: string, method = 'GET', body?: unknown): Promise<T> {
+  const res = await fetch(url, {
     method,
     cache: 'no-store',
     ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
@@ -59,8 +78,8 @@ export function useTicketIntegrations(): TicketIntegrationsState {
   useEffect(() => {
     let cancelled = false;
     integrationRequest<TicketIntegrationsOverview & { userId: string }>('')
-      .then(({ userId, providers, sources }) => {
-        if (!cancelled) setInitial({ userId, overview: { providers, sources } });
+      .then(({ userId, providers, sources, triggerPacks }) => {
+        if (!cancelled) setInitial({ userId, overview: { providers, sources, triggerPacks: triggerPacks ?? [] } });
       })
       .catch((err: unknown) => {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));

@@ -45,6 +45,7 @@ import { isDesktop } from '@/lib/ipc-status-tauri';
 import { SlackSetupCard } from './SlackSetupCard';
 import { ProviderAppRegistration } from './ProviderAppRegistration';
 import { ProviderCredentialsForm } from './ProviderCredentialsForm';
+import { TriggerPackSection } from './TriggerPackSection';
 
 export const PANELS = ['scope', 'mapping', 'rules'] as const;
 type Panel = (typeof PANELS)[number];
@@ -169,8 +170,8 @@ export default function IntegrationsSettingsPage() {
     <div>
       <h1>Integrations</h1>
       <p className="pc-settings-intro">
-        Connect a ticket tracker to mirror its tickets into Papercusp. Choose what each account syncs, then add rules that
-        turn matching tickets into work items. Papercusp comments on a ticket and moves it as its work progresses.
+        Every integration installed from the Cupboard appears here. Connect each one, choose what it syncs, then set up and
+        arm the workflows that act on what arrives.
       </p>
 
       {loadError && !overview && (
@@ -184,7 +185,7 @@ export default function IntegrationsSettingsPage() {
         </p>
       )}
       {overview && overview.providers.length === 0 && (
-        <p style={muteText}>No ticket providers are installed. A provider plugin adds itself here when it is enabled.</p>
+        <p style={muteText}>No integrations are installed. Install one from the Cupboard and it adds itself here.</p>
       )}
       {overview?.providers.map((provider) => (
         <ProviderCard
@@ -198,12 +199,28 @@ export default function IntegrationsSettingsPage() {
           onClose={closePanel}
         />
       ))}
+      {overview && overview.triggerPacks.length > 0 && (
+        <>
+          <h2 style={groupTitle}>Workflows</h2>
+          {overview.triggerPacks.map((pack) => (
+            <TriggerPackSection key={pack.installationId} pack={pack} />
+          ))}
+        </>
+      )}
       <SlackSetupCard />
     </div>
   );
 }
 
 // ── provider card ─────────────────────────────────────────────────────────────────────────────
+
+/** A credentials-only provider's status, from its declared fields (never a stored value). */
+function credentialStatus(provider: TicketProviderSummary): string {
+  const fields = provider.credentials;
+  const missing = fields.filter((field) => !field.configured).length;
+  if (fields.length === 0) return 'Nothing to set up';
+  return missing === 0 ? 'Connected' : `Needs ${missing} of ${fields.length} credential${fields.length === 1 ? '' : 's'}`;
+}
 
 function ProviderCard({
   provider,
@@ -224,6 +241,7 @@ function ProviderCard({
 }) {
   const [connecting, setConnecting] = useState(false);
   const connect = useCallback(async () => {
+    if (!provider.connectHref) return;
     setConnecting(true);
     try {
       if (await startConnect(provider.connectHref)) {
@@ -249,13 +267,19 @@ function ProviderCard({
             ))}
           </div>
         </div>
-        <Button variant={sources.length > 0 ? 'neutral' : 'primary'} onClick={() => void connect()} disabled={connecting}>
-          {sources.length > 0 ? 'Connect another account' : `Connect ${provider.displayName}`}
-        </Button>
+        {provider.connectHref ? (
+          <Button variant={sources.length > 0 ? 'neutral' : 'primary'} onClick={() => void connect()} disabled={connecting}>
+            {sources.length > 0 ? 'Connect another account' : `Connect ${provider.displayName}`}
+          </Button>
+        ) : (
+          <span role="status" style={metaText}>
+            {credentialStatus(provider)}
+          </span>
+        )}
       </div>
       <ProviderAppRegistration providerId={provider.id} displayName={provider.displayName} registration={provider.appRegistration} />
       <ProviderCredentialsForm providerId={provider.id} displayName={provider.displayName} credentials={provider.credentials} />
-      {sources.length === 0 ? (
+      {!provider.tracksTickets ? null : sources.length === 0 ? (
         <p style={muteText}>No {provider.displayName} account connected.</p>
       ) : (
         sources.map((source) => (
@@ -898,6 +922,7 @@ const metaText: CSSProperties = { color: 'var(--fg-mute)', fontSize: 12, marginT
 const cardStyle: CSSProperties = { marginBottom: 20 };
 const cardHead: CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 8 };
 const cardTitle: CSSProperties = { fontSize: 16, margin: 0 };
+const groupTitle: CSSProperties = { fontSize: 18, margin: '28px 0 12px' };
 const chipRow: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 };
 const chipStyle: CSSProperties = {
   fontSize: 11,

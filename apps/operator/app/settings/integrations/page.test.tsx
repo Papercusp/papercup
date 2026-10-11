@@ -76,6 +76,8 @@ const LINEAR = {
   id: 'linear',
   displayName: 'Linear',
   capabilities: ['ticket.sync', 'ticket.containers'],
+  datatypes: ['ticket'],
+  tracksTickets: true,
   canListContainers: true,
   statusMapping: 'provider-defined',
   requiredConfig: ['teamIds'],
@@ -87,6 +89,8 @@ const ASANA = {
   id: 'asana',
   displayName: 'Asana',
   capabilities: ['ticket.sync', 'ticket.containers'],
+  datatypes: ['ticket'],
+  tracksTickets: true,
   canListContainers: true,
   statusMapping: 'sections',
   requiredConfig: ['projectGids'],
@@ -119,8 +123,90 @@ function route(method: string, path: string | RegExp, body: unknown, status = 20
   H.routes.push({ method, path, status, body });
 }
 
-function serve(overview: { providers: unknown[]; sources: unknown[] }) {
-  route('GET', API, { ok: true, userId: 'user-1', ...overview });
+function serve(overview: { providers: unknown[]; sources: unknown[]; triggerPacks?: unknown[] }) {
+  route('GET', API, { ok: true, userId: 'user-1', triggerPacks: [], ...overview });
+}
+
+/** A provider that signs in with a pasted credential only and syncs no tickets (P-001/P-005). */
+const CHAT = {
+  id: 'chatter',
+  displayName: 'Chatter',
+  capabilities: ['chat.channels'],
+  datatypes: ['chat.message'],
+  tracksTickets: false,
+  canListContainers: false,
+  statusMapping: 'provider-defined',
+  requiredConfig: [],
+  connectHref: null,
+  credentials: [
+    { key: 'botToken', label: 'Bot token', help: null, helpUrl: null, placeholder: null, pattern: null, hosts: ['chat.example'], configured: false, savedAt: null },
+  ],
+  appRegistration: null,
+};
+
+const PACK_REVIEW = {
+  pluginName: 'intake-pack',
+  pluginVersion: '1.0.0',
+  harnessSlug: 'papercusp',
+  status: 'configured',
+  capabilities: [],
+  oauth: [],
+  bindings: [
+    {
+      packBindingId: 'intake',
+      triggerBindingId: 'b1',
+      kind: 'external',
+      source: { id: 's1', kind: 'chatter' },
+      eventPattern: 'message.posted',
+      datatype: null,
+      filter: {},
+      target: { harnessSlug: 'papercusp', planSlug: 'triage' },
+      planInput: {},
+      stormPolicy: {},
+    },
+  ],
+  entryPoints: [],
+  plans: [],
+  recipients: [],
+  unmet: [] as unknown[],
+};
+
+function pack(overrides: { installationId?: string; pluginName?: string; unmet?: unknown[] } = {}) {
+  const installationId = overrides.installationId ?? 'pack-1';
+  const pluginName = overrides.pluginName ?? 'intake-pack';
+  return {
+    installationId,
+    harnessSlug: 'papercusp',
+    pluginName,
+    pluginVersion: '1.0.0',
+    status: 'configured',
+    inputsSchema: {
+      type: 'object',
+      required: ['project'],
+      properties: { project: { type: 'string', title: 'Project' }, notify: { type: 'boolean', title: 'Notify' } },
+    },
+    inputs: { project: 'P1' },
+    state: {
+      installationId,
+      fingerprint: `fp-${installationId}`,
+      reviewedFingerprint: null,
+      reviewedBy: null,
+      reviewedAt: null,
+      current: false,
+      bindingCount: 1,
+      armedBindingCount: 0,
+      review: { ...PACK_REVIEW, pluginName, unmet: overrides.unmet ?? [] },
+    },
+  };
+}
+
+async function packSection(pluginName: string) {
+  const element = await waitFor(() => {
+    const found = document.querySelector(`[data-trigger-pack="${pluginName}"]`);
+    if (!found) throw new Error(`trigger pack ${pluginName} is not rendered`);
+    return found as HTMLElement;
+  });
+  return within(element);
 }
 
 /** The rendered row for one source, once the overview has loaded it. */
@@ -187,7 +273,7 @@ describe('Settings → Integrations', () => {
 
   it('renders the live query over the first read once it answers', async () => {
     serve({ providers: [LINEAR], sources: [source()] });
-    H.sync.set('integrations.tickets', [{ providers: [LINEAR], sources: [source({ accountLabel: 'Acme (live)' })] }]);
+    H.sync.set('integrations.tickets', [{ providers: [LINEAR], sources: [source({ accountLabel: 'Acme (live)' })], triggerPacks: [] }]);
     render(<Page />);
 
     expect(await screen.findByText('Acme (live)')).toBeTruthy();
@@ -442,5 +528,65 @@ describe('Settings → Integrations', () => {
       ),
     );
     expect(H.openExternal).not.toHaveBeenCalled();
+  });
+});
+
+describe('every installed integration and workflow (P-005)', () => {
+  it('gives a credentials-only provider a card with its status, and no sign-in button or ticket sources', async () => {
+    serve({ providers: [CHAT], sources: [] });
+    render(<Page />);
+
+    const card = await waitFor(() => {
+      const found = document.querySelector('[data-provider="chatter"]');
+      if (!found) throw new Error('chatter card is not rendered');
+      return within(found as HTMLElement);
+    });
+    expect(card.getByRole('heading', { name: 'Chatter' })).toBeTruthy();
+    expect(card.getByText('Needs 1 of 1 credential')).toBeTruthy();
+    expect(card.queryByRole('button', { name: /^Connect/ })).toBeNull();
+    expect(card.queryByText(/account connected/)).toBeNull();
+  });
+
+  it('saves a workflow’s settings through the inputs route, and blocks arming until they are saved', async () => {
+    serve({ providers: [], sources: [], triggerPacks: [pack()] });
+    route('PUT', '/api/user/integrations/trigger-packs/pack-1/inputs', { ok: true, installationId: 'pack-1', status: 'configured', unmet: [], armed: false });
+    render(<Page />);
+
+    const section = await packSection('intake-pack');
+    expect(section.getByText('message.posted')).toBeTruthy();
+    expect(section.getByText('triage')).toBeTruthy();
+    const arm = section.getByRole('button', { name: 'Arm intake-pack' }) as HTMLButtonElement;
+    expect(arm.disabled).toBe(false);
+
+    fireEvent.change(section.getByLabelText('Project (required)'), { target: { value: 'P2' } });
+    fireEvent.click(section.getByLabelText('Notify'));
+    expect(arm.disabled).toBe(true);
+    fireEvent.click(section.getByRole('button', { name: 'Save settings' }));
+
+    await waitFor(() =>
+      expect(call('PUT', '/api/user/integrations/trigger-packs/pack-1/inputs')?.body).toEqual({ inputs: { project: 'P2', notify: true } }),
+    );
+    expect(H.toast.success).toHaveBeenCalledWith(expect.stringContaining('intake-pack settings saved'));
+  });
+
+  it('arms a workflow against the review fingerprint on screen, and will not arm one that still needs setup', async () => {
+    const needsSetup = pack({
+      installationId: 'pack-2',
+      pluginName: 'other-pack',
+      unmet: [{ bindingId: 'inputs', reason: 'inputs-invalid', requirement: { kind: 'inputs', errors: ['project is required'] }, candidates: [] }],
+    });
+    serve({ providers: [], sources: [], triggerPacks: [pack(), needsSetup] });
+    route('POST', '/api/user/integrations/trigger-packs/pack-1/arm', { ok: true, installationId: 'pack-1', fingerprint: 'fp-pack-1', armedBindingIds: ['b1'] });
+    render(<Page />);
+
+    const blocked = await packSection('other-pack');
+    expect(blocked.getByText('Settings: project is required')).toBeTruthy();
+    expect((blocked.getByRole('button', { name: 'Arm other-pack' }) as HTMLButtonElement).disabled).toBe(true);
+
+    const ready = await packSection('intake-pack');
+    fireEvent.click(ready.getByRole('button', { name: 'Arm intake-pack' }));
+    await waitFor(() => expect(call('POST', '/api/user/integrations/trigger-packs/pack-1/arm')?.body).toEqual({ fingerprint: 'fp-pack-1' }));
+    expect(H.toast.success).toHaveBeenCalledWith('intake-pack armed: 1 trigger on.');
+    expect(H.calls.some((c) => c.url.includes('pack-2/arm'))).toBe(false);
   });
 });

@@ -29,6 +29,7 @@ import { createSourceHostFetch } from './source-host-fetch';
 import { descriptorOAuthPlugin } from './connection-lifecycle';
 import { providerCredentialStatus, type ProviderCredentialStatus } from './provider-credentials';
 import type { TokenStorage } from '../oauth/token';
+import { listTriggerPackSettings, type TriggerPackSettings } from '../cupboard/trigger-pack-lifecycle';
 import {
   DEFAULT_SOURCE_TOKEN_HARNESS,
   listOwnedExternalTriggerSources,
@@ -97,6 +98,13 @@ export interface TicketProviderSummary {
   id: string;
   displayName: string;
   capabilities: string[];
+  /** The datatypes the provider syncs, as its descriptor declares them. */
+  datatypes: string[];
+  /**
+   * True when the provider's connected accounts are ticket sources the page manages (scope,
+   * status mapping, rules). Derived from the descriptor (ticket datatype + OAuth), never a name.
+   */
+  tracksTickets: boolean;
   canListContainers: boolean;
   /**
    * How workflow states map onto the canonical columns: `sections` when the descriptor's config
@@ -106,8 +114,11 @@ export interface TicketProviderSummary {
   statusMapping: 'sections' | 'provider-defined';
   /** Top-level config keys the source needs before it can sync (descriptor configSchema.required). */
   requiredConfig: string[];
-  /** Starts the existing OAuth flow for this provider and lands back on this page. */
-  connectHref: string;
+  /**
+   * Starts the existing OAuth flow for this provider and lands back on this page; null when the
+   * provider signs in with pasted credentials only.
+   */
+  connectHref: string | null;
   /**
    * The paste-a-secret fields the provider declares (`setup.credentials`) and whether each is
    * configured. Status only: never a stored value. Empty when the provider declares none.
@@ -145,6 +156,8 @@ export interface TicketSourceSummary {
 export interface TicketIntegrationsOverview {
   providers: TicketProviderSummary[];
   sources: TicketSourceSummary[];
+  /** Installed trigger packs: inputs form, review and arm (P-005). */
+  triggerPacks: TriggerPackSettings[];
 }
 
 export interface TicketIntegrationsScope {
@@ -199,12 +212,31 @@ export async function requestRegistry(deps: { registry?: ProviderRegistry }): Pr
   }
 }
 
+const byDisplayName = (a: RegisteredProvider, b: RegisteredProvider): number =>
+  (a.descriptor.displayName ?? a.descriptor.id).localeCompare(b.descriptor.displayName ?? b.descriptor.id);
+
+/** Providers whose connected accounts are ticket sources (scope, status mapping, rules). */
 export function ticketProviders(registry: ProviderRegistry): RegisteredProvider[] {
   return registry
     .list()
     .filter((entry) => entry.descriptor.datatypes.includes(TICKET_DATATYPE) && entry.descriptor.oauth)
-    .sort((a, b) => (a.descriptor.displayName ?? a.descriptor.id).localeCompare(b.descriptor.displayName ?? b.descriptor.id));
+    .sort(byDisplayName);
 }
+
+/**
+ * Every installed provider the owner can set up from Settings → Integrations (P-005): one that
+ * signs in through OAuth or takes pasted credentials (`setup.credentials`, P-001). Derived from the
+ * descriptor alone, so a provider installed from the Cupboard gets a card without app changes.
+ */
+export function integrationProviders(registry: ProviderRegistry): RegisteredProvider[] {
+  return registry
+    .list()
+    .filter((entry) => Boolean(entry.descriptor.oauth) || (entry.descriptor.setup?.credentials?.length ?? 0) > 0)
+    .sort(byDisplayName);
+}
+
+const tracksTickets = (descriptor: ProviderDescriptor): boolean =>
+  descriptor.datatypes.includes(TICKET_DATATYPE) && Boolean(descriptor.oauth);
 
 /** The existing OAuth start link for a descriptor provider, returning to Settings → Integrations. */
 export function ticketConnectHref(descriptor: ProviderDescriptor): string {
@@ -224,7 +256,7 @@ function configSchemaOf(descriptor: ProviderDescriptor): Record<string, unknown>
   return isPlainObject(schema) ? schema : null;
 }
 
-function summarizeProvider(entry: RegisteredProvider, credentials: ProviderCredentialStatus[]): TicketProviderSummary {
+export function summarizeIntegrationProvider(entry: RegisteredProvider, credentials: ProviderCredentialStatus[]): TicketProviderSummary {
   const d = entry.descriptor;
   const schema = configSchemaOf(d);
   const properties = isPlainObject(schema?.properties) ? schema.properties : {};
@@ -232,10 +264,12 @@ function summarizeProvider(entry: RegisteredProvider, credentials: ProviderCrede
     id: d.id,
     displayName: d.displayName ?? d.id,
     capabilities: [...d.capabilities],
+    datatypes: [...d.datatypes],
+    tracksTickets: tracksTickets(d),
     canListContainers: d.capabilities.includes(TICKET_CONTAINERS_CAPABILITY),
     statusMapping: 'sectionCategories' in properties ? 'sections' : 'provider-defined',
     requiredConfig: missingRequiredJsonSchemaKeys(schema, {}),
-    connectHref: ticketConnectHref(d),
+    connectHref: d.oauth ? ticketConnectHref(d) : null,
     credentials,
     appRegistration: providerAppRegistrationView(d),
   };
@@ -266,8 +300,10 @@ export async function ticketIntegrationsOverview(
   scope: TicketIntegrationsScope,
   deps: Pick<TicketIntegrationsDeps, 'registry' | 'credentialStorage'> = {},
 ): Promise<TicketIntegrationsOverview> {
-  const providers = ticketProviders(await requestRegistry(deps));
-  const byKind = new Map(providers.map((entry) => [entry.descriptor.id, entry]));
+  const registry = await requestRegistry(deps);
+  const providers = integrationProviders(registry);
+  // Only ticket providers' accounts are sources this page manages; the rest get a card only.
+  const byKind = new Map(ticketProviders(registry).map((entry) => [entry.descriptor.id, entry]));
   const owned = (await listOwnedExternalTriggerSources(sql, scope.workspaceId, scope.ownerUserId)).filter((s) => byKind.has(s.kind));
   const ids = owned.map((s) => s.id);
   const [syncRows, mirroredRows, admittedRows, rules] = ids.length === 0
@@ -316,12 +352,15 @@ export async function ticketIntegrationsOverview(
   });
   // Pasted credentials live under the harness the connect link writes tokens to, the same one the
   // credentials route reads and writes.
-  const summaries = await Promise.all(
-    providers.map(async (entry) =>
-      summarizeProvider(entry, await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, deps.credentialStorage)),
+  const [summaries, triggerPacks] = await Promise.all([
+    Promise.all(
+      providers.map(async (entry) =>
+        summarizeIntegrationProvider(entry, await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, deps.credentialStorage)),
+      ),
     ),
-  );
-  return { providers: summaries, sources };
+    listTriggerPackSettings(sql, scope.workspaceId),
+  ]);
+  return { providers: summaries, sources, triggerPacks };
 }
 
 interface OwnedTicketSource {
