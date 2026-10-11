@@ -15,6 +15,23 @@
   "finishedAt": "2026-10-11T18:17:51.095Z",
   "timestampsScope": "Owned container generation directory creation and final saved cleanup receipt",
   "exitCode": 1,
+  "assertions": [
+    {
+      "id": "arm-static-external-resolution",
+      "passed": false,
+      "evidence": "Owned ARM static task0mv459kskyrtaik16q4 failed with ERR_MODULE_NOT_FOUND for js-tiktoken before canonical boot."
+    },
+    {
+      "id": "exact-owned-static-cleanup",
+      "passed": true,
+      "evidence": "Saved ownership receipt7100b7cb records container6e5f3809 removed=true and cleanupPending=false."
+    },
+    {
+      "id": "frozen-inputs-remain-unchanged",
+      "passed": true,
+      "evidence": "Postfailure task0mv45iu3j11m8b0vhwj completed0 after checking the full frozen source, all four release artifacts and the entire retained overlay."
+    }
+  ],
   "summary": "Fresh exact-source release build passed. ARM static imports then failed because js-tiktoken and its base64-js dependency are absent from the retained old diagnostic overlay. The owned static container was removed. Canonical 60000ms boot was not attempted on this new bundle; no installed, trusted or shipped acceptance.",
   "workItemId": "EI-25708127159467940",
   "parentWorkItemId": "WI-10007352",
