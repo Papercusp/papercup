@@ -1394,15 +1394,19 @@ export default defineTool({
     .refine(
       (a) =>
         !a.items?.length ||
-        [a.note, a.did, a.left, a.insight, a.next, a.keyInsight, a.nextAction, a.goal, a.workItem].every(
+        [a.checkpoint, a.note, a.did, a.left, a.insight, a.next, a.keyInsight, a.nextAction, a.goal, a.workItem].every(
           (value) => value === undefined,
         ),
       {
         message:
-          'root-level loop carry aliases apply only to the single shorthand; with items[] put checkpoint (or did/left/insight/next) on each entry',
+          'root-level checkpoint/carry aliases apply only to the single shorthand; with items[] put checkpoint (or did/left/insight/next) on each entry',
         path: ['items'],
       },
-    ),
+    )
+    .meta({
+      'x-papercusp-call-constraint':
+        'With `items[]`, omit root-level `checkpoint`, `note`, `did`, `left`, `insight`, `next`, `keyInsight`, `nextAction`, `goal`, and `workItem`; put checkpoint content or per-item carry aliases on each entry. Root-level `confirmShrink`, `append`, `rowsMode`, `confirmRetire`, and `retireIds` remain defaults for entries.',
+    }),
   result: z
     .object({
       ok: z.boolean().optional(),

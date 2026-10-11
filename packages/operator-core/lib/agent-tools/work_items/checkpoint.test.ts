@@ -812,6 +812,21 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(() => parse({ items: [{ id: 'WI-7', checkpoint: 'batch' }], nextAction: 'ignored before fix' })).toThrow(
       /single shorthand/,
     );
+    expect(() => parse({ items: [{ id: 'WI-7', checkpoint: 'per-item' }], checkpoint: 'ignored root body' })).toThrow(
+      /root-level checkpoint\/carry aliases/,
+    );
+  });
+
+  it('publishes the root checkpoint and carry-alias exclusion for items[]', () => {
+    const schema = z.toJSONSchema(checkpoint.args as never) as {
+      'x-papercusp-call-constraint'?: string;
+    };
+    expect(schema['x-papercusp-call-constraint']).toContain('With `items[]`, omit root-level');
+    for (const field of ['checkpoint', 'note', 'did', 'left', 'insight', 'next', 'workItem']) {
+      expect(schema['x-papercusp-call-constraint']).toContain(`\`${field}\``);
+    }
+    expect(schema['x-papercusp-call-constraint']).toContain('`confirmShrink`');
+    expect(schema['x-papercusp-call-constraint']).toContain('remain defaults for entries');
   });
 
   it('keeps terminal-only assumptions off the checkpoint contract', () => {
