@@ -464,6 +464,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
     },
   );
 
+  if (result.kind === 'refused') return { slug: it.slug, error: result.value.code, ...result.value };
   if (result.kind === 'busy') {
     return {
       ok: false,
