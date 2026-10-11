@@ -152,7 +152,7 @@ describe('readPickupHostView', () => {
     expect(await readPickupHostView('su-gone')).toBeNull();
   });
 
-  it('carries the host block flags, execution, and the NEWEST binding event from the tail', async () => {
+  it('carries the host block flags and execution, and judges the tail with the shared D-007 judge', async () => {
     vi.mocked(discovery.findLiveHostAsync).mockResolvedValueOnce({
       ownerId: 'su-a',
       advSessionId: null,
@@ -166,7 +166,7 @@ describe('readPickupHostView', () => {
       execution: { phase: 'failed', turnStartedAt: T0 + 1, lastProgressAt: null, pendingTools: 0, observedAt: T0 + 2 },
     });
     vi.mocked(discovery.readHostEventTailAsync).mockResolvedValueOnce([
-      { kind: 'respawn-binding-unconfirmed', ts: '2026-10-10T19:00:01Z' },
+      { kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', ts: '2026-10-10T19:00:01Z' },
       { kind: 'respawn-binding-confirmed', ts: '2026-10-10T19:00:02Z' },
       { kind: 'wake-inject', ts: '2026-10-10T19:00:03Z' },
     ]);
@@ -175,8 +175,32 @@ describe('readPickupHostView', () => {
       execution: { phase: 'failed', turnStartedAt: T0 + 1, lastProgressAt: null, pendingTools: 0, observedAt: T0 + 2 },
       authBlocked: true,
       quotaBlocked: false,
-      latestBindingEvent: 'respawn-binding-confirmed',
+      unboundSuccessor: false,
+      stuckPending: null,
     });
+  });
+
+  it('reads an unbindable child of the CURRENT host as unbound, but not a predecessor one', async () => {
+    const host = {
+      ownerId: 'su-a',
+      advSessionId: null,
+      pid: 1,
+      ptyPid: 2,
+      sock: '/tmp/x.sock',
+      command: 'codex',
+      startedAt: T0,
+    };
+    vi.mocked(discovery.findLiveHostAsync).mockResolvedValueOnce(host);
+    vi.mocked(discovery.readHostEventTailAsync).mockResolvedValueOnce([
+      { kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', ts: '2026-10-10T19:00:01Z' },
+    ]);
+    expect(await readPickupHostView('su-a')).toMatchObject({ unboundSuccessor: true });
+
+    vi.mocked(discovery.findLiveHostAsync).mockResolvedValueOnce(host);
+    vi.mocked(discovery.readHostEventTailAsync).mockResolvedValueOnce([
+      { kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', ts: '2026-10-10T18:59:00Z' },
+    ]);
+    expect(await readPickupHostView('su-a')).toMatchObject({ unboundSuccessor: false });
   });
 
   it('treats an unreadable event tail as no binding reading, never as unbound', async () => {
@@ -190,6 +214,6 @@ describe('readPickupHostView', () => {
       startedAt: T0,
     });
     vi.mocked(discovery.readHostEventTailAsync).mockRejectedValueOnce(new Error('EACCES'));
-    expect(await readPickupHostView('su-a')).toMatchObject({ latestBindingEvent: null });
+    expect(await readPickupHostView('su-a')).toMatchObject({ unboundSuccessor: false, stuckPending: null });
   });
 });

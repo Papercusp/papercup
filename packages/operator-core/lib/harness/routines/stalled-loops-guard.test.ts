@@ -2385,7 +2385,10 @@ describe('sweepStalledLoops — host-aware disarm (parked-agent-census P-007)', 
   });
   const unbound = (ownerId: string): StalledLoopHostReading => ({
     host: { ...recyclable, ownerId },
-    events: [{ kind: 'respawn-binding-unconfirmed' }] as unknown as StalledLoopHostReading['events'],
+    // D-007: only the unbindable reason, timestamped, reads as an unbound successor.
+    events: [
+      { kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', ts: new Date().toISOString() },
+    ] as unknown as StalledLoopHostReading['events'],
   });
   const stalled = (ownerId: string) => status({ ownerId, turnsStalled: true, fireCount: 9, lastTurnAt: null });
 

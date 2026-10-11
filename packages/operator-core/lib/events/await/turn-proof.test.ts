@@ -4,10 +4,13 @@ import {
   PICKUP_ESCALATION_SOURCE,
   TURN_PROOF_CONFIRMED,
   TURN_PROOF_STATES,
+  UNBINDABLE_BINDING_REASON,
   hostRecoverableCondition,
   initialTurnProof,
   isTurnProof,
   judgeExpiredPickup,
+  judgeHostTail,
+  pickupHostView,
   pickupWindowSec,
 } from './turn-proof';
 import { WAKE_TURN_CHANNELS } from './types';
@@ -78,18 +81,140 @@ describe('pickupWindowSec', () => {
   });
 });
 
-describe('hostRecoverableCondition (D-004 (4): only what P-004/P-005 recover)', () => {
-  it('names auth, quota and an unbound successor, auth first', () => {
+describe('hostRecoverableCondition (D-004 (4) + D-007)', () => {
+  const stuck = { repolls: 3, oldestAtMs: 1 };
+
+  it('names auth, quota, an unbound successor and a stuck pending pipeline, in that order', () => {
     expect(hostRecoverableCondition({ authBlocked: true, quotaBlocked: true })).toBe('auth-blocked');
-    expect(hostRecoverableCondition({ quotaBlocked: true })).toBe('quota-blocked');
-    expect(hostRecoverableCondition({ latestBindingEvent: 'respawn-binding-unconfirmed' })).toBe('unbound-successor');
-    expect(hostRecoverableCondition({ latestBindingEvent: 'respawn-carry-dropped' })).toBe('unbound-successor');
+    expect(hostRecoverableCondition({ quotaBlocked: true, unboundSuccessor: true })).toBe('quota-blocked');
+    expect(hostRecoverableCondition({ unboundSuccessor: true, stuckPending: stuck })).toBe('unbound-successor');
+    expect(hostRecoverableCondition({ stuckPending: stuck })).toBe('pending-turn-stuck');
   });
 
-  it('is null for a healthy host, a confirmed binding, or no host at all', () => {
+  it('is null for a healthy host, a bound successor, or no host at all', () => {
     expect(hostRecoverableCondition({ authBlocked: false, quotaBlocked: false })).toBeNull();
-    expect(hostRecoverableCondition({ latestBindingEvent: 'respawn-binding-confirmed' })).toBeNull();
+    expect(hostRecoverableCondition({ unboundSuccessor: false, stuckPending: null })).toBeNull();
     expect(hostRecoverableCondition(null)).toBeNull();
+  });
+});
+
+describe('judgeHostTail (D-007: one tail judge for P-006 and P-007)', () => {
+  const MIN = 60_000;
+  const WINDOW = 10 * MIN;
+  const START = 1_000 * MIN;
+  const NOW = START + 60 * MIN;
+  const at = (min: number) => new Date(START + min * MIN).toISOString();
+  const judge = (events: Parameters<typeof judgeHostTail>[0], extra: Partial<Parameters<typeof judgeHostTail>[1]> = {}) =>
+    judgeHostTail(events, { hostStartedAtMs: START, nowMs: NOW, pickupWindowMs: WINDOW, ...extra });
+  const unbindable = (min: number) => ({
+    kind: 'respawn-binding-unconfirmed',
+    reason: UNBINDABLE_BINDING_REASON,
+    ts: at(min),
+  });
+  const pending = (min: number) => ({ kind: 'duplicate-delivery-id', state: 'pending', ts: at(min) });
+
+  it('reads an unconfirmed binding as unbound ONLY for the unbindable reason', () => {
+    expect(judge([unbindable(1)]).unboundSuccessor).toBe(true);
+    // A binding WAIT that ended (superseded, re-anchor) is not a child without an identity:
+    // measured, hosts carrying these reasons ran 95-245 tool calls an hour.
+    for (const reason of ['superseded', 'successor-reanchor-unconfirmed', undefined]) {
+      expect(judge([{ kind: 'respawn-binding-unconfirmed', reason, ts: at(1) }]).unboundSuccessor).toBe(false);
+    }
+  });
+
+  it('reads a host refusal of an unbindable child as unbound', () => {
+    expect(judge([{ kind: 'successor-unbindable-refused', ts: at(2) }]).unboundSuccessor).toBe(true);
+  });
+
+  it('lets a later confirmed binding or a delivered turn clear an unbound verdict (newest wins)', () => {
+    expect(judge([unbindable(1), { kind: 'respawn-binding-confirmed', ts: at(2) }]).unboundSuccessor).toBe(false);
+    expect(judge([unbindable(1), { kind: 'respawn-carry-delivered', ts: at(2) }]).unboundSuccessor).toBe(false);
+    // The host refuses every turn to an unbindable child (P-005(c)), so a delivered turn proves
+    // the child was bindable after all.
+    expect(judge([unbindable(1), { kind: 'turn-delivered', ts: at(2) }]).unboundSuccessor).toBe(false);
+    expect(judge([{ kind: 'turn-delivered', ts: at(1) }, unbindable(2)]).unboundSuccessor).toBe(true);
+  });
+
+  it('ignores events from a predecessor host process (the tail file is per owner)', () => {
+    const predecessor = { kind: 'respawn-binding-unconfirmed', reason: UNBINDABLE_BINDING_REASON, ts: at(-5) };
+    expect(judge([predecessor]).unboundSuccessor).toBe(false);
+    // With no known start every timed event counts.
+    expect(judge([predecessor], { hostStartedAtMs: null }).unboundSuccessor).toBe(true);
+  });
+
+  it('ignores events without a usable timestamp', () => {
+    expect(judge([{ kind: 'successor-unbindable-refused' }]).unboundSuccessor).toBe(false);
+    expect(judge([{ kind: 'successor-unbindable-refused', ts: 'not a date' }]).unboundSuccessor).toBe(false);
+  });
+
+  it('reports a stuck pending pipeline after >=2 re-polls past the window with no turn since', () => {
+    expect(judge([pending(5), pending(20), pending(40)]).stuckPending).toEqual({
+      repolls: 3,
+      oldestAtMs: START + 5 * MIN,
+    });
+  });
+
+  it('does not report one pending sighting: a busy host pends a mid-turn wake routinely', () => {
+    expect(judge([pending(5)]).stuckPending).toBeNull();
+  });
+
+  it('does not report pending re-polls still inside the pickup window', () => {
+    expect(judge([pending(55), pending(58)]).stuckPending).toBeNull();
+  });
+
+  it('resets pending state on a delivered turn', () => {
+    expect(judge([pending(5), pending(10), { kind: 'turn-delivered', ts: at(12) }]).stuckPending).toBeNull();
+    // Re-polls after the turn start a new count from the newer oldest.
+    expect(judge([pending(5), { kind: 'turn-delivered', ts: at(12) }, pending(20), pending(30)]).stuckPending).toEqual({
+      repolls: 2,
+      oldestAtMs: START + 20 * MIN,
+    });
+  });
+
+  it('only counts duplicate-delivery-id events whose state is pending', () => {
+    const delivered = (min: number) => ({ kind: 'duplicate-delivery-id', state: 'delivered', ts: at(min) });
+    expect(judge([delivered(5), delivered(10), delivered(20)]).stuckPending).toBeNull();
+  });
+
+  it('does not report a visibly busy host: running with progress, or writing output, inside the window', () => {
+    const tail = [pending(5), pending(20), pending(40)];
+    expect(judge(tail, { execution: { phase: 'running', lastProgressAt: NOW - MIN } }).stuckPending).toBeNull();
+    // A bridged (interactive) host publishes no execution observation; its terminal output is the signal.
+    expect(judge(tail, { lastOutputAtMs: NOW - MIN }).stuckPending).toBeNull();
+    // Stale progress or stale output does not exempt it.
+    expect(judge(tail, { execution: { phase: 'running', lastProgressAt: NOW - 42 * MIN } }).stuckPending).not.toBeNull();
+    expect(judge(tail, { lastOutputAtMs: NOW - 42 * MIN }).stuckPending).not.toBeNull();
+    // Progress without a running phase is not busy.
+    expect(judge(tail, { execution: { phase: 'settled', lastProgressAt: NOW - MIN } }).stuckPending).not.toBeNull();
+  });
+});
+
+describe('pickupHostView', () => {
+  it('builds the judge view from the discovery record, anchored to the host start', () => {
+    const now = 10_000_000;
+    const view = pickupHostView(
+      { startedAt: now - 5_000, authBlocked: false, quotaBlocked: true, execution: { phase: 'settled' } },
+      [
+        { kind: 'successor-unbindable-refused', ts: now - 60_000 },
+        { kind: 'successor-unbindable-refused', ts: now - 1_000 },
+      ],
+      now,
+      600_000,
+    );
+    expect(view).toEqual({
+      execution: { phase: 'settled' },
+      authBlocked: false,
+      quotaBlocked: true,
+      unboundSuccessor: true,
+      stuckPending: null,
+    });
+  });
+
+  it('sees no unbound successor when every event predates the current host', () => {
+    const now = 10_000_000;
+    const view = pickupHostView({ startedAt: now - 5_000 }, [{ kind: 'successor-unbindable-refused', ts: now - 60_000 }], now, 600_000);
+    expect(view.unboundSuccessor).toBe(false);
+    expect(view.execution).toBeNull();
   });
 });
 
@@ -122,10 +247,24 @@ describe('judgeExpiredPickup (P-006 slice 2)', () => {
 
   it('escalates a turn-starting channel once when the host reports a recoverable condition', () => {
     expect(judgeExpiredPickup(psu, { quotaBlocked: true })).toMatchObject({ escalate: true, recoverable: 'quota-blocked' });
-    expect(judgeExpiredPickup(psu, { latestBindingEvent: 'respawn-binding-unconfirmed' })).toMatchObject({
+    expect(judgeExpiredPickup(psu, { unboundSuccessor: true })).toMatchObject({
       escalate: true,
       recoverable: 'unbound-successor',
     });
+  });
+
+  it('reports a pending-turn-stuck host without escalating: a re-queue would pend behind the stalled turn (D-007)', () => {
+    const v = judgeExpiredPickup(psu, { stuckPending: { repolls: 4, oldestAtMs: DELIVERED } });
+    expect(v).toMatchObject({ proof: 'not-picked-up', escalate: false, recoverable: 'pending-turn-stuck' });
+    expect((v as { reason: string }).reason).toMatch(/P-012/);
+  });
+
+  it('never counts a host turn start as a pickup while the host pipeline is stuck', () => {
+    const v = judgeExpiredPickup(psu, {
+      stuckPending: { repolls: 2, oldestAtMs: DELIVERED },
+      execution: { phase: 'running', turnStartedAt: DELIVERED + 5_000 },
+    });
+    expect(v.proof).toBe('not-picked-up');
   });
 
   it('never escalates a re-queue again (bounded to ONE)', () => {

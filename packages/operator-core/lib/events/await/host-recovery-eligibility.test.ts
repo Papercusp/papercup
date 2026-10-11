@@ -34,6 +34,17 @@ const reading = (host: Host | null, events: unknown[] = []): StalledLoopHostRead
   events: events as StalledLoopHostReading['events'],
 });
 
+const MIN = 60_000;
+const WINDOW = 10 * MIN;
+/** An ISO host-event timestamp `min` minutes from NOW (psu-pty-host writes ISO strings). */
+const at = (min: number) => new Date(NOW + min * MIN).toISOString();
+/** Three `pending` re-polls, the oldest 45 minutes old, no turn since (D-007 (c)). */
+const stuckTail = [
+  { kind: 'duplicate-delivery-id', state: 'pending', ts: at(-45) },
+  { kind: 'duplicate-delivery-id', state: 'pending', ts: at(-30) },
+  { kind: 'duplicate-delivery-id', state: 'pending', ts: at(-15) },
+];
+
 const authRecoveryAt = (startedAtMs: number) => ({
   kind: 'quota-recovery-started',
   recoveryOwnerId: OWNER,
@@ -119,11 +130,78 @@ describe('classifyStalledLoopHost (P-007)', () => {
   });
 
   it('an UNBOUND successor is never wake-recoverable, even on a fully recyclable host', () => {
-    for (const kind of ['respawn-binding-unconfirmed', 'respawn-carry-dropped']) {
-      const verdict = classifyStalledLoopHost(reading(recyclable, [{ kind: 'respawn-binding-confirmed' }, { kind }]), OWNER, NOW);
+    const unbound = [
+      { kind: 'respawn-binding-confirmed', ts: at(-20) },
+      { kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', ts: at(-10) },
+    ];
+    const refused = [{ kind: 'successor-unbindable-refused', ts: at(-5) }];
+    for (const events of [unbound, refused]) {
+      const verdict = classifyStalledLoopHost(reading(recyclable, events), OWNER, NOW);
       expect(verdict).toMatchObject({ kind: 'needs-relaunch', condition: 'unbound-successor' });
       expect(verdict.kind === 'needs-relaunch' && verdict.why).toContain('deferred-successor-unbindable');
     }
+  });
+
+  it('D-007: an unconfirmed binding that ended for another reason, or a predecessor host, is healthy', () => {
+    // A binding WAIT that ended (superseded) is not an unbindable child.
+    expect(
+      classifyStalledLoopHost(
+        reading(recyclable, [{ kind: 'respawn-binding-unconfirmed', reason: 'superseded', ts: at(-10) }]),
+        OWNER,
+        NOW,
+      ),
+    ).toEqual({ kind: 'healthy' });
+    // The tail is per owner: an unbindable child of a host process that has since been
+    // relaunched says nothing about the current one.
+    expect(
+      classifyStalledLoopHost(
+        reading({ ...recyclable, startedAt: NOW - 5 * MIN }, [
+          { kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', ts: at(-10) },
+        ]),
+        OWNER,
+        NOW,
+      ),
+    ).toEqual({ kind: 'healthy' });
+    // A turn the host delivered after the unconfirmed binding proves the child was bindable.
+    expect(
+      classifyStalledLoopHost(
+        reading(recyclable, [
+          { kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', ts: at(-10) },
+          { kind: 'turn-delivered', ts: at(-9) },
+        ]),
+        OWNER,
+        NOW,
+      ),
+    ).toEqual({ kind: 'healthy' });
+  });
+
+  it('D-007: a host re-polling pending deliveries past the window with no turn → needs-relaunch pending-turn-stuck', () => {
+    const verdict = classifyStalledLoopHost(reading(recyclable, stuckTail), OWNER, NOW, WINDOW);
+    expect(verdict).toMatchObject({ kind: 'needs-relaunch', condition: 'pending-turn-stuck' });
+    expect(verdict.kind === 'needs-relaunch' && verdict.why).toContain('3 times over 45m');
+    expect(verdict.kind === 'needs-relaunch' && verdict.remedy).toContain('P-012');
+  });
+
+  it('D-007: the same pending tail on a visibly busy host is healthy (a long turn pends its wakes)', () => {
+    expect(
+      classifyStalledLoopHost(reading({ ...recyclable, lastOutputAt: NOW - MIN }, stuckTail), OWNER, NOW, WINDOW),
+    ).toEqual({ kind: 'healthy' });
+    expect(
+      classifyStalledLoopHost(
+        reading({ ...recyclable, execution: { phase: 'running', lastProgressAt: NOW - MIN } }, stuckTail),
+        OWNER,
+        NOW,
+        WINDOW,
+      ),
+    ).toEqual({ kind: 'healthy' });
+  });
+
+  it('D-007: a host wall outranks a stuck pipeline, so the recovery that clears the cause still runs', () => {
+    expect(classifyStalledLoopHost(reading({ ...recyclable, authBlocked: true }, stuckTail), OWNER, NOW, WINDOW)).toEqual({
+      kind: 'recoverable-on-wake',
+      condition: 'auth-blocked',
+      cause: 'auth',
+    });
   });
 
   it('every needs-relaunch verdict carries a non-empty remedy', () => {
@@ -132,7 +210,8 @@ describe('classifyStalledLoopHost (P-007)', () => {
       [{ ...recyclable, quotaBlocked: true, launchedBy: null }, []],
       [{ ...recyclable, quotaBlocked: true, caps: [] }, []],
       [{ ...recyclable, authBlocked: true, ownerId: 'su-other' }, []],
-      [recyclable, [{ kind: 'respawn-carry-dropped' }]],
+      [recyclable, [{ kind: 'successor-unbindable-refused', ts: at(-1) }]],
+      [recyclable, stuckTail],
     ];
     for (const [host, events] of shapes) {
       const verdict = classifyStalledLoopHost(reading(host, events), OWNER, NOW);
