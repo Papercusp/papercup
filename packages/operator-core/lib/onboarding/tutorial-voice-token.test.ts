@@ -18,7 +18,8 @@ const principal = (patch: Partial<Parameters<typeof createHostedPrincipal>[0]> =
 });
 function setup(withProvider = true) {
   const disabled = vi.fn(async () => false);
-  const issue = vi.fn<TutorialVoiceTokenProvider['issue']>(async () => ({ ok: true, token: 'short-lived',
+  const issue = vi.fn<TutorialVoiceTokenProvider['issue']>(async () => ({ ok: true, connectionType: 'websocket',
+    signedUrl: 'wss://api.elevenlabs.io/v1/convai/conversation?conversation_signature=single-use',
     sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60 }));
   const runTenant = vi.fn(async <T>(_context: unknown, callback: (tx: Sql) => Promise<T>) => callback({} as Sql));
   const route = createHostedTutorialVoiceTokenRoute({ origin, controlPlaneWorkspaceId: 'control',
@@ -41,7 +42,9 @@ describe('hosted tutorial conversation token boundary', () => {
     const response = await call();
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect(await response.json()).toEqual({ token: 'short-lived', sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60 });
+    expect(await response.json()).toEqual({ connectionType: 'websocket',
+      signedUrl: 'wss://api.elevenlabs.io/v1/convai/conversation?conversation_signature=single-use',
+      sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60 });
     expect(issue).toHaveBeenCalledWith({ controlWorkspaceId: 'control', organizationId: scope.tenantId,
       userId: scope.userId, sessionId: 'session', sessionVersion: 1,
       customerWorkspaceId: null, lesson: body.context }, expect.any(AbortSignal));
@@ -105,6 +108,25 @@ describe('hosted tutorial conversation token boundary', () => {
   it('refuses cancellation before minting', async () => {
     const { call, issue } = setup(); const abort = new AbortController(); abort.abort();
     expect((await call(body, { signal: abort.signal })).status).toBe(408); expect(issue).not.toHaveBeenCalled();
+  });
+  it('refuses legacy WebRTC tokens and missing signed URLs without exposing provider diagnostics', async () => {
+    const { call, issue } = setup();
+    for (const result of [{ ok: true, token: 'private-token', apiKey: 'private-key' },
+      { ok: true, connectionType: 'websocket', signedUrl: '' },
+      { ok: true, connectionType: 'webrtc', signedUrl: 'private-url' }]) {
+      issue.mockResolvedValueOnce(result as Awaited<ReturnType<TutorialVoiceTokenProvider['issue']>>);
+      const response = await call();
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ ok: false, error: 'tutorial_voice_unavailable', message: 'tutorial_voice_unavailable' });
+    }
+  });
+  it('allowlists the signed session receipt without exposing server credential or remote ledger fields', async () => {
+    const { call, issue } = setup();
+    issue.mockResolvedValueOnce({ ok: true, connectionType: 'websocket', signedUrl: 'signed-session-url',
+      sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60, apiKey: 'private-key',
+      providerConversationId: 'server-only', issuanceAttemptId: 'server-only' } as Awaited<ReturnType<TutorialVoiceTokenProvider['issue']>>);
+    expect(await (await call()).json()).toEqual({ connectionType: 'websocket', signedUrl: 'signed-session-url',
+      sessionId: 'reservation', expiresAt: 123456, maximumSeconds: 60 });
   });
   it('requires selected authorized workspace and persisted legacy progress', async () => {
     const { call, issue } = setup();

@@ -29,7 +29,10 @@ export interface TutorialVoiceAdmission {
 export interface TutorialVoiceTokenProvider {
   disabled: (signal: AbortSignal) => Promise<boolean>;
   issue: (admission: TutorialVoiceAdmission, signal: AbortSignal) => Promise<
-    { ok: true; token: string; sessionId: string; expiresAt: number; maximumSeconds: number }
+    // The issuer requests include_conversation_id=true and commits that
+    // trusted remote identity before delivering this single-use URL. Agent
+    // WebRTC tokens have no documented equivalent replay/TTL guarantee.
+    { ok: true; connectionType: 'websocket'; signedUrl: string; sessionId: string; expiresAt: number; maximumSeconds: number }
     | { ok: false; reason: 'quota_exhausted' | 'session_active' | 'disabled' | 'unavailable' }>;
 }
 
@@ -92,7 +95,13 @@ export function createHostedTutorialVoiceTokenRoute({ origin, controlPlaneWorksp
         if (signal.aborted) return jsonError('tutorial_voice_cancelled', 408);
         // Deliberate allowlist: provider diagnostics or credentials cannot be
         // accidentally serialized by spreading a provider result.
-        return Response.json({ token: result.token, sessionId: result.sessionId, expiresAt: result.expiresAt,
+        // Fail closed if an old/misconfigured host still returns a WebRTC
+        // token. The browser must not guess the SDK's default transport.
+        if (result.connectionType !== 'websocket' || typeof result.signedUrl !== 'string' || !result.signedUrl) {
+          return jsonError('tutorial_voice_unavailable', 503);
+        }
+        return Response.json({ connectionType: result.connectionType, signedUrl: result.signedUrl,
+          sessionId: result.sessionId, expiresAt: result.expiresAt,
           maximumSeconds: result.maximumSeconds }, { headers: { 'cache-control': 'no-store' } });
       } catch { return jsonError('tutorial_voice_unavailable', 503); }
     },
