@@ -185,7 +185,7 @@ describe('Slack external-trigger adapter', () => {
         bot_id: 'BTEST', app_id: 'ATEST', text: 'BD001 shipping total is incorrect', ts: '1777000000.1', ...patch,
       } },
     });
-    const ingest = vi.fn(async () => ({ ok: true } as never));
+    const ingest = vi.fn(async (_db: unknown, _input: unknown) => ({ ok: true } as never));
     expect(normalizeSlackSocketEnvelope(envelope(), config)).toMatchObject({
       event: 'message', dedupeKey: 'slack:C1:1777000000.1', payload: { sender: 'UTEST' },
     });
