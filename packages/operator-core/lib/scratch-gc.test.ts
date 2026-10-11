@@ -364,14 +364,40 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
   it('coalesces stale refreshes and retains reservations made during the first walk', async () => {
     makeRunDir('ws-A', 'tool-a', UUID(1), 1000);
     makeRunDir('ws-A', 'tool-b', UUID(2), 2000);
-    reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
-    reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
-    await refreshScratchUsage('ws-A'); // joins the in-flight measure started by the first reservation
-    // The second reservation invalidated that snapshot: do not erase its reserved bytes.
-    expect(scratchUsageBytes('ws-A')).toBe(20);
-    await refreshScratchUsage('ws-A'); // the clean follow-up may replace the conservative total
-    // The workspace-root marker (WI-10006512) is real bytes on disk and is counted too.
-    expect(scratchUsageBytes('ws-A')).toBe(3000 + markerBytes('ws-A'));
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation();
+    if (!originalRead) throw new Error('async readdir mock has no original implementation');
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseWalk!: () => void;
+    let reachedRoot!: () => void;
+    const walkGate = new Promise<void>((resolve) => { releaseWalk = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    let gated = false;
+    readdirMock.mockImplementation((async (path: unknown, options?: unknown) => {
+      if (!gated && String(path) === scratchRootForWorkspace('ws-A')) {
+        gated = true;
+        reachedRoot();
+        await walkGate;
+      }
+      return await read(path, options) as never;
+    }) as typeof readdirAsync);
+    try {
+      reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
+      await atRoot; // prove the background walk is in flight before the second reservation
+      reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
+      const firstMeasure = refreshScratchUsage('ws-A'); // joins the gated in-flight measure
+      // The second reservation invalidated that snapshot: do not erase its reserved bytes.
+      expect(scratchUsageBytes('ws-A')).toBe(20);
+      releaseWalk();
+      await firstMeasure;
+      await refreshScratchUsage('ws-A'); // the clean follow-up may replace the conservative total
+      // The workspace-root marker (WI-10006512) is real bytes on disk and is counted too.
+      expect(scratchUsageBytes('ws-A')).toBe(3000 + markerBytes('ws-A'));
+    } finally {
+      releaseWalk();
+      readdirMock.mockImplementation(originalRead);
+      await refreshScratchUsage('ws-A');
+    }
   });
 
   it('refreshScratchUsage measures the tree size asynchronously (missing tree = 0)', async () => {
@@ -1005,6 +1031,7 @@ describe('deferred scratch quota recovery', () => {
     const statMock = vi.mocked(statAsync);
     const originalStat = statMock.getMockImplementation()!;
     let clock = 0;
+    let rootOperationStartedAt = 0;
     let release!: () => void;
     let reached!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -1013,7 +1040,10 @@ describe('deferred scratch quota recovery', () => {
     readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
       const entries = await read(path, options);
       if (!gated && String(path) === scratchRootForWorkspace('ws-Q')) {
-        gated = true; reached(); await gate;
+        gated = true;
+        rootOperationStartedAt = clock;
+        reached();
+        await gate;
       }
       clock += 2;
       return entries as never;
@@ -1068,8 +1098,9 @@ describe('deferred scratch quota recovery', () => {
       expect(phases[0].quotaRecoveryDiagnostics?.statOperations)
         .toBeGreaterThanOrEqual(phases[0].quotaRecoveryDiagnostics?.sizeWalkFiles ?? 0);
       expect(phases[0].quotaRecoveryDiagnostics?.operationTotalMs).toBeGreaterThan(0);
-      expect(phases[0].quotaRecoveryDiagnostics?.maxOperationMs).toBeGreaterThanOrEqual(40);
-      expect(phases[0].quotaRecoveryMs).toBeGreaterThanOrEqual(40);
+      expect(phases[0].quotaRecoveryDiagnostics?.maxOperationMs)
+        .toBeGreaterThanOrEqual(40 - rootOperationStartedAt);
+      expect(phases[0].quotaRecoveryMs).toBeGreaterThanOrEqual(40 - rootOperationStartedAt);
       expect(phases[1]).toEqual({
         quotaWaitMs: phases[0].quotaRecoveryMs, refreshWaitMs: 0, quotaRecoveryMs: 0,
         writeMs: 0, totalMs: phases[0].quotaRecoveryMs,
@@ -1173,7 +1204,7 @@ describe('deferred scratch quota recovery', () => {
     }) as typeof readdirAsync);
 
     const timings: ScratchWriteTimings[] = [];
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const measurement = refreshScratchUsage('ws-Q');
     let write: Promise<void> | undefined;
     try {
