@@ -1996,7 +1996,40 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
       path substituted for {}. Make the subject path overridable (an env var
       defaulting to the real path, e.g. PROBE_SUBJECT={}) and pass it from --test."
     fi
-    log "consumption control: the guard FAILED against a poisoned snapshot (exit $CONSUMPTION_RC), so it does read {}"
+    # A failure only proves consumption when it came FROM the poisoned subject
+    # (rubric acceptance-mutation-probe-evidence-value-2026-10-11 R-3 rev 6,
+    # vetting conv-mv47e8jr): the poison's own sentinel in the output, a
+    # recognized assertion failure, or the plain-guard exit-1 convention the
+    # historical leg already applies. A timeout, a missing dependency or a
+    # crash elsewhere fails the same run without saying anything about `{}`.
+    CONSUMPTION_EVIDENCE='exit-code-only'
+    if grep -Fq -e 'mutation-probe consumption control' -e 'MUTATION_PROBE_POISONED_SUBJECT' "$CONSUMPTION_LOG" 2>/dev/null; then
+      CONSUMPTION_EVIDENCE='poison-sentinel'
+    else
+      CONSUMPTION_DETECT_RC=0
+      CONSUMPTION_DETECTED="$(detect_assertion_failure_evidence "$CONSUMPTION_LOG")" || CONSUMPTION_DETECT_RC=$?
+      if [ "$CONSUMPTION_DETECT_RC" -eq 0 ]; then
+        CONSUMPTION_EVIDENCE="$CONSUMPTION_DETECTED"
+      elif [ "$CONSUMPTION_DETECT_RC" -eq 1 ]; then
+        CONSUMPTION_EVIDENCE='no-assertion-failure-evidence'
+      fi
+    fi
+    CONSUMPTION_PROVEN=0
+    case "$CONSUMPTION_EVIDENCE" in
+      poison-sentinel|test-file-assertion-failure) CONSUMPTION_PROVEN=1 ;;
+      no-assertion-failure-evidence) ;;
+      *) if is_assertion_failure_exit "$CONSUMPTION_RC" "$CONSUMPTION_EVIDENCE"; then CONSUMPTION_PROVEN=1; fi ;;
+    esac
+    if [ "$CONSUMPTION_PROVEN" -ne 1 ]; then
+      log "VERDICT: INCONCLUSIVE — the guard failed against a poisoned snapshot (exit $CONSUMPTION_RC) but the failure carries no evidence it came from {} (consumption_evidence=$CONSUMPTION_EVIDENCE)"
+      printf 'MUTATION_PROBE_RESULT mode=historical verdict=inconclusive expected=%s target=%s current_exit=%d historical_exit=%d consumption_exit=%d against_commit=%s reason=consumption-unproven consumption_evidence=%s\n' \
+        "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CONSUMPTION_RC" "$HISTORICAL_SHA" "$CONSUMPTION_EVIDENCE"
+      die "the guard passed against the historical snapshot, then failed against the poisoned snapshot with exit $CONSUMPTION_RC — but its output shows neither the poison's sentinel nor an assertion failure, and the exit is not the plain-guard assertion convention (1). A timeout, a missing dependency or a crash elsewhere fails that run without proving the guard read {}, so 'survived' would still be unproven.
+
+      Inspect $CONSUMPTION_LOG. If the guard crashed for an environment reason,
+      fix that and rerun; if it does read {}, make its failure an assertion."
+    fi
+    log "consumption control: the guard FAILED against a poisoned snapshot (exit $CONSUMPTION_RC, consumption_evidence=$CONSUMPTION_EVIDENCE), so it does read {}"
     VERDICT="survived"
     log "VERDICT: HISTORICAL SOURCE SURVIVED (guard exited 0) — the guard does NOT constrain this historical source ✗"
   else

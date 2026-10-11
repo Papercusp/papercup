@@ -100,6 +100,31 @@ describe('mutation-probe.sh historical consumption control (R-3)', () => {
     expect(out).toMatch(/mode=historical verdict=survived/);
   });
 
+  it('a poisoned-snapshot failure for an unrelated reason (environment crash, exit 7) is INCONCLUSIVE, not consumption', () => {
+    const { file, oldSha } = makeRepo();
+    // Fails on the poisoned run with an environment error, never an assertion,
+    // and prints nothing that came from the subject.
+    const guard = 'if grep -q MUTATION_PROBE_POISONED_SUBJECT {}; then echo "Error: connect ECONNREFUSED 127.0.0.1:5432" >&2; exit 7; fi; grep -q "^stable-control$" {}';
+    const { code, out } = probe(file, oldSha, guard);
+
+    expect(code).toBe(2);
+    expect(out).toMatch(/mode=historical verdict=inconclusive/);
+    expect(out).toMatch(/reason=consumption-unproven/);
+    expect(out).toMatch(/consumption_exit=7/);
+    expect(out).not.toMatch(/HISTORICAL SOURCE SURVIVED/);
+  });
+
+  it('a non-1 poisoned-snapshot failure that carries the poison sentinel still proves consumption', () => {
+    const { file, oldSha } = makeRepo();
+    // Exit 3 is outside the plain-guard convention; the subject's own sentinel
+    // in the output is what shows the failure came from `{}`.
+    const { code, out } = probe(file, oldSha, 'grep -q "^stable-control$" {} || { cat {} >&2; exit 3; }');
+
+    expect(code).toBe(1);
+    expect(out).toMatch(/consumption_evidence=poison-sentinel/);
+    expect(out).toMatch(/mode=historical verdict=survived/);
+  });
+
   it('CONTROL: a guard that catches the historical source never needs the consumption control', () => {
     const { file, oldSha } = makeRepo();
     const { code, out } = probe(file, oldSha, 'grep -q "^NEW_GUARD$" {}');
