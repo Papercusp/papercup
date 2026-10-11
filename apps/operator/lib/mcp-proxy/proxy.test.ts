@@ -2136,6 +2136,41 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     (s as http.Server & { hits: () => number }).hits = () => hits;
     return s;
   }
+
+  // Simulates a keyed call whose side effect lands before the upstream loses its response.
+  // This distinguishes a post-apply connection reset from a pre-connect refusal.
+  function applyThenResetUpstream(): http.Server & {
+    hits: () => number;
+    appliedEffects: () => number;
+    receivedKeys: () => string[];
+  } {
+    let hits = 0;
+    const receivedKeys: string[] = [];
+    const appliedKeys = new Set<string>();
+    const server = track(
+      http.createServer((req) => {
+        hits++;
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+        req.on("end", () => {
+          const envelope = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+            params?: { _meta?: { idempotencyKey?: unknown } };
+          };
+          const rawKey = envelope.params?._meta?.idempotencyKey;
+          const key = typeof rawKey === "string" ? rawKey : "";
+          receivedKeys.push(key);
+          if (key) appliedKeys.add(key);
+          req.socket.destroy();
+        });
+      }),
+    );
+    return Object.assign(server, {
+      hits: () => hits,
+      appliedEffects: () => appliedKeys.size,
+      receivedKeys: () => [...receivedKeys],
+    });
+  }
+
   const TOOLS_CALL =
     '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{}}}';
 
@@ -2256,6 +2291,87 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       expect(payload.note).toContain("may have performed reads or writes");
       expect(payload.note).not.toContain("the write's outcome is unknown");
       expect(upstream.hits()).toBe(1); // keyed safety remains unchanged
+    }),
+  );
+
+  it(
+    "records outcome_unknown when code:run applies before a post-connect reset",
+    withKeyedRetry("1", async () => {
+      const fs = await import("node:fs");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const logFile = path.join(
+        os.tmpdir(),
+        `mcp-proxy-code-run-reset-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+      );
+      const previousLogFile = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+      try {
+        const upstream = applyThenResetUpstream();
+        await listen(upstream);
+        const proxy = track(
+          createMcpProxy({
+            listenPort: 0,
+            targetHost: "127.0.0.1",
+            targetPort: port(upstream),
+            retryWindowMs: 2_000,
+            retryBackoffMs: 40,
+            log: () => {},
+          }),
+        );
+        await listen(proxy);
+
+        const r = await request(
+          port(proxy),
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: {
+              name: "code:run",
+              arguments: { script: "return 'controlled apply-then-reset';" },
+            },
+          }),
+        );
+        expect(r.status).toBe(502);
+        const payload = JSON.parse(r.body) as {
+          forwardingResult?: string;
+          attempts?: number;
+          note?: string;
+        };
+        expect(payload.forwardingResult).toBe("outcome_unknown");
+        expect(payload.attempts).toBe(1);
+        expect(payload.note).toContain(
+          "outer code:run wrapper's nested outcome is unknown",
+        );
+        expect(upstream.hits()).toBe(1);
+        expect(upstream.appliedEffects()).toBe(1);
+        expect(upstream.receivedKeys()).toHaveLength(1);
+        expect(upstream.receivedKeys()[0]).toBeTruthy();
+
+        const entries = fs
+          .readFileSync(logFile, "utf8")
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        const failure = entries.find((entry) => entry.kind === "upstream_error");
+        expect(failure).toMatchObject({
+          status: 502,
+          attempts: 1,
+          postConnectRetries: 0,
+          klass: "keyed",
+          forwardingResult: "outcome_unknown",
+          rpcMethods: ["tools/call"],
+        });
+        expect(typeof failure?.traceId).toBe("string");
+        expect(String(failure?.traceId)).not.toBe("");
+      } finally {
+        fs.rmSync(logFile, { force: true });
+        if (previousLogFile === undefined)
+          delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+        else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previousLogFile;
+      }
     }),
   );
 
