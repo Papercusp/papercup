@@ -8,6 +8,7 @@
  * so its coverage ends at 2026-07-01T00:00Z.
  */
 import { describe, expect, it } from 'vitest';
+import { MODEL_PRICES, normalizeModelId } from '@papercusp/model-pricing';
 import {
   armContamination,
   classifyTaskExposure,
@@ -77,13 +78,28 @@ describe('contamination policy — report headline label (FSWE-P009-CONTAMINATIO
 
   it('a model with no sourced cutoff is contamination-unknown even over post-cutoff tasks', () => {
     const bundle = bundleFromRollouts({
-      runId: 'r', suite: 's', createdAt: '2026-10-11T00:00:00Z', arms: ['x'], models: { x: 'gpt-6-sol' },
+      runId: 'r', suite: 's', createdAt: '2026-10-11T00:00:00Z', arms: ['x'], models: { x: 'no-such-model-1' },
       runResults: [{ ...row('t-1', true), arm: 'x' }], taskCreatedAt: { 't-1': '2026-09-01T00:00:00Z' },
     });
     const c = bundle.arms[0].contamination!;
     expect(c.label).toBe('contamination-unknown');
     expect(c.trainingDataCutoff).toBeNull();
     expect(c.cutoffSource).toBeNull();
+    expect(c.cutoffTerm).toBeNull();
+  });
+
+  it('a day-precision vendor cutoff (OpenAI "knowledge cutoff") covers its whole day, and the report names the term', () => {
+    // gpt-5's page states "Sep 30, 2024 knowledge cutoff", so coverage ends at 2024-10-01T00:00Z.
+    const at = (createdAt: string) => bundleFromRollouts({
+      runId: 'r', suite: 's', createdAt: '2026-10-11T00:00:00Z', arms: ['x'], models: { x: 'openai/gpt-5' },
+      runResults: [{ ...row('t-1', true), arm: 'x' }], taskCreatedAt: { 't-1': createdAt },
+    }).arms[0].contamination!;
+    const last = at('2024-09-30T23:59:59Z');
+    expect(last.label).toBe('contamination-exposed');
+    expect(last.trainingDataCutoff).toBe('2024-09-30');
+    expect(last.cutoffTerm).toBe('knowledge cutoff');
+    expect(last.cutoffSource).toBe('https://developers.openai.com/api/docs/models/gpt-5');
+    expect(at('2024-10-01T00:00:00Z').label).toBe('post-cutoff');
   });
 
   it('a mixed pool is exposed, and reports each subset with its own primary outcome', () => {
@@ -105,6 +121,7 @@ describe('contamination policy — report headline label (FSWE-P009-CONTAMINATIO
     const pinned = report({ 't-1': '2026-03-01T00:00:00Z' }, { trainingCutoffs: { [MODEL]: '2026-01' } }).arms[0].contamination!;
     expect(pinned.label).toBe('post-cutoff');
     expect(pinned.cutoffSource).toBe('caller-supplied');
+    expect(pinned.cutoffTerm).toBeNull();
     const unknown = report({ 't-1': '2026-03-01T00:00:00Z' }, { trainingCutoffs: { [MODEL]: null } }).arms[0].contamination!;
     expect(unknown.label).toBe('contamination-unknown');
   });
@@ -135,17 +152,39 @@ describe('contamination policy — building blocks', () => {
 
   it('looks up vendor-prefixed and suffixed ids', () => {
     expect(trainingCutoffFor('anthropic/claude-opus-5-5')?.trainingDataCutoff).toBe('2026-06');
-    expect(trainingCutoffFor('gpt-6-sol')).toBeNull();
+    expect(trainingCutoffFor('claude-opus-5-5[1m]')?.trainingDataCutoff).toBe('2026-06');
+    expect(trainingCutoffFor('no-such-model-1')).toBeNull();
     expect(trainingCutoffFor(null)).toBeNull();
   });
 
-  it('every curated cutoff parses and cites an https source', () => {
+  it('a dated snapshot id never inherits its alias row (exact lookup; unknown is the safe direction)', () => {
+    // gpt-5.5's page lists only the snapshot gpt-5.5-2026-04-23; an unlisted snapshot must stay unknown.
+    expect(trainingCutoffFor('gpt-5.5')).not.toBeNull();
+    expect(trainingCutoffFor('gpt-5.5-2026-01')).toBeNull();
+  });
+
+  it('every curated cutoff parses, cites a known vendor page, and carries that vendor\'s own label', () => {
+    // Each vendor prints one kind of figure; a new vendor domain must be added here deliberately.
+    const termByHost: Record<string, string> = {
+      'platform.claude.com': 'training data cutoff',
+      'developers.openai.com': 'knowledge cutoff',
+    };
     expect(Object.keys(MODEL_TRAINING_CUTOFFS).length).toBeGreaterThan(0);
     for (const [id, fact] of Object.entries(MODEL_TRAINING_CUTOFFS)) {
       expect(() => trainingCutoffEnd(fact.trainingDataCutoff), id).not.toThrow();
       expect(fact.source, id).toMatch(/^https:\/\//);
       expect(fact.retrievedAt, id).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(fact.vendorTerm, id).toBe(termByHost[new URL(fact.source).host]);
     }
+  });
+
+  it('every priced model has a sourced cutoff, except the named retired ids with no vendor page', () => {
+    // Retired per platform.claude.com model-deprecations (opus-4-1 on 2026-08-05; opus-4-0 and sonnet-4-0 on
+    // 2026-06-15); their model pages are gone, so there is nothing to cite. Any OTHER priced id without a row
+    // fails here: source its cutoff, or add it to this list with the reason.
+    const unsourced = ['claude-opus-4-0', 'claude-opus-4-1', 'claude-sonnet-4-0'];
+    const priced = Object.keys(MODEL_PRICES).map(normalizeModelId);
+    expect(priced.filter((id) => !MODEL_TRAINING_CUTOFFS[id]).sort()).toEqual(unsourced);
   });
 
   it('refuses a malformed pinned cutoff instead of silently labelling', () => {
