@@ -21,6 +21,9 @@ import {
   type VerifiedTenantServerContext,
 } from '@papercusp/db-org';
 import { HOSTED_SESSION_COOKIE, type HostedSession } from '../auth/hosted-session';
+import { createHostedPrincipalResolver } from '../auth/hosted-principal-resolver';
+import type { HostedUsageRecord, HostedUsageStatement } from '../auth/hosted/billing/usage-statement';
+import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { HostedTenantContextRunner } from '../auth/hosted/service-adapters';
 import type { SyncEvent } from '../sync-sse';
@@ -36,6 +39,7 @@ import {
 } from './hosted-browser';
 import type { AssembledHostedControlPlane } from './hosted-control-plane';
 import { createHostedRuntime, type HostedRuntimeDependencies } from './hosted-runtime';
+import { createHostedBillingRuntime } from './hosted-billing-runtime';
 import {
   HostedWorkspaceSessionBroker,
   type HostedWorkspaceRelaySocket,
@@ -331,6 +335,121 @@ afterAll(async () => {
 });
 
 describe.sequential('assembled hosted two-tenant acceptance', () => {
+  it('serves persisted-session billing usage over private HTTP with tenant isolation, replay and durable corrections', async () => {
+    const now = Date.UTC(2026, 9, 2);
+    const records: HostedUsageRecord[] = [
+      { controlWorkspaceId: CONTROL, organizationId: ORG_A, customerWorkspaceId: WORKSPACE_A,
+        provider: 'cloud-billing-fixture', recordId: 'cloud-billing-a-1', usageId: 'cloud-billing-a', revision: 1,
+        category: 'compute', payer: 'consumption', occurredAtMs: now - 1, observedAtMs: now,
+        quantity: 60, unit: 'seconds', costSource: 'provider-billed', costMicros: 20_003,
+        sourceRef: 'fixture:cloud-billing-a-1' },
+      { controlWorkspaceId: CONTROL, organizationId: ORG_B, customerWorkspaceId: WORKSPACE_B,
+        provider: 'cloud-billing-fixture', recordId: 'cloud-billing-b-1', usageId: 'cloud-billing-b', revision: 1,
+        category: 'compute', payer: 'consumption', occurredAtMs: now - 1, observedAtMs: now,
+        quantity: 60, unit: 'seconds', costSource: 'provider-billed', costMicros: 90_011,
+        sourceRef: 'fixture:cloud-billing-b-1' },
+    ];
+    // Persist both tenants before the first HTTP read: isolation must hold even
+    // when the foreign receipt is already present in the real service ledger.
+    const usageStore = new PostgresHostedUsageStore(runService);
+    for (const record of records) expect(await usageStore.append(record)).toBe('recorded');
+    const collectorRead = vi.fn(async (input: { scope: HostedUsageStatement['scope']; month: string }) => ({
+      scope: input.scope, month: input.month, complete: false, observedAtMs: now,
+      evidenceRef: 'fixture:cloud-billing-census',
+      records: records.filter(record => record.organizationId === input.scope.organizationId
+        && (input.scope.customerWorkspaceId === null || record.customerWorkspaceId === input.scope.customerWorkspaceId)),
+    }));
+    const billing = await createHostedBillingRuntime({ publicOrigin: ORIGIN,
+      stripeSecretKeyRef: null, stripeWebhookSecretRef: null, plans: [],
+    }, { runService, clock: () => new Date(now),
+      resolvePrincipal: createHostedPrincipalResolver({ ...plane.components, controlPlaneWorkspaceId: CONTROL }),
+      usageCollectors: [{ id: 'cloud-billing-fixture', provider: 'cloud-billing-fixture',
+        categories: ['compute'], read: collectorRead }],
+    });
+    const server = serve({ fetch: billing.app.fetch, hostname: '127.0.0.1', port: 0 });
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private billing HTTP address unavailable');
+      const base = `http://127.0.0.1:${address.port}/api/hosted/billing/usage?month=2026-10`;
+      const read = (session: HostedSession, query = '') => fetch(base + query, { headers: { cookie: cookie(plane, session) } });
+      const statement = async (session: HostedSession) => {
+        const response = await read(session);
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        return (await response.json() as { statement: HostedUsageStatement }).statement;
+      };
+      const first = await statement(sessionA);
+      expect(first.scope).toEqual({ controlWorkspaceId: CONTROL, organizationId: ORG_A, customerWorkspaceId: null });
+      expect(first.consumptionBilled).toMatchObject({ micros: 20_003, wholeCents: 2, roundingMicros: 3 });
+      expect(first.history.map(row => row.usageId)).toEqual(['cloud-billing-a']);
+      expect(first.settlementEligible).toBe(false);
+      expect(first.gaps).toContain('incomplete-source');
+      expect((await statement(sessionB)).consumptionBilled.micros).toBe(90_011);
+      // Retry reads append duplicate observations; they never duplicate a bill.
+      expect((await statement(sessionA)).consumptionBilled.micros).toBe(20_003);
+      records[0] = { ...records[0]!, recordId: 'cloud-billing-a-2', revision: 2,
+        costMicros: 30_007, sourceRef: 'fixture:cloud-billing-a-2' };
+      const corrected = await statement(sessionA);
+      expect(corrected.consumptionBilled).toMatchObject({ micros: 30_007, wholeCents: 3, roundingMicros: 7 });
+      expect(corrected.lines).toHaveLength(1);
+      expect(corrected.lines[0]?.usages).toBe(1);
+      expect(corrected.history[0]?.revisions.map(row => [row.recordId, row.revision, row.costMicros]))
+        .toEqual([['cloud-billing-a-1', 1, 20_003], ['cloud-billing-a-2', 2, 30_007]]);
+      expect((await statement(sessionA)).consumptionBilled.micros).toBe(30_007);
+      expect((await statement(sessionB)).consumptionBilled.micros).toBe(90_011);
+      const foreign = await read(sessionA, `&workspaceId=${WORKSPACE_B}`);
+      expect(foreign.status).toBe(200);
+      const foreignBody = await foreign.json() as { statement: HostedUsageStatement };
+      expect(foreignBody.statement.history).toEqual([]);
+      expect(foreignBody.statement.consumptionBilled.micros).toBe(0);
+      expect(foreignBody.statement.settlementEligible).toBe(false);
+      const calls = collectorRead.mock.calls.length;
+      for (const query of [`&organizationId=${ORG_B}`, '&controlWorkspaceId=foreign-control', '&complete=true']) {
+        const denied = await read(sessionA, query);
+        expect(denied.status).toBe(400);
+        await denied.arrayBuffer();
+      }
+      expect(collectorRead).toHaveBeenCalledTimes(calls);
+      expect(await runService(tx => tx`SELECT record_id, revision FROM papercusp_auth.hosted_usage_receipts
+        WHERE control_workspace_id = ${CONTROL} AND provider = 'cloud-billing-fixture' ORDER BY record_id`))
+        .toEqual([{ record_id: 'cloud-billing-a-1', revision: 1 },
+          { record_id: 'cloud-billing-a-2', revision: 2 }, { record_id: 'cloud-billing-b-1', revision: 1 }]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+        if ('closeAllConnections' in server) server.closeAllConnections();
+      });
+    }
+  });
+
+  it('denies anonymous and persistently revoked billing sessions before the collector while another tenant survives', async () => {
+    const session = await createSession(plane, USER_A, ORG_A, WORKSPACE_A, 'billing-revocation');
+    const now = Date.UTC(2026, 9, 2);
+    const collectorRead = vi.fn(async (input: { scope: HostedUsageStatement['scope']; month: string }) => ({
+      scope: input.scope, month: input.month, complete: false, observedAtMs: now,
+      evidenceRef: 'fixture:cloud-billing-empty-census', records: [],
+    }));
+    const billing = await createHostedBillingRuntime({ publicOrigin: ORIGIN,
+      stripeSecretKeyRef: null, stripeWebhookSecretRef: null, plans: [],
+    }, { runService, clock: () => new Date(now),
+      resolvePrincipal: createHostedPrincipalResolver({ ...plane.components, controlPlaneWorkspaceId: CONTROL }),
+      usageCollectors: [{ id: 'cloud-billing-fixture', provider: 'cloud-billing-fixture',
+        categories: ['compute'], read: collectorRead }],
+    });
+    const read = (value?: HostedSession) => billing.app.request('/api/hosted/billing/usage?month=2026-10',
+      value ? { headers: { cookie: cookie(plane, value) } } : {});
+    expect((await read(session)).status).toBe(200);
+    expect(collectorRead).toHaveBeenCalledTimes(1);
+    await plane.components.sessionStore.revoke(session.id);
+    expect(await plane.components.sessionStore.resolve(session.id)).toBeNull();
+    expect((await read(session)).status).toBe(401);
+    expect((await read()).status).toBe(401);
+    expect(collectorRead).toHaveBeenCalledTimes(1);
+    expect((await read(sessionB)).status).toBe(200);
+    expect(collectorRead).toHaveBeenCalledTimes(2);
+  });
+
   it('serves the hosted tenant API on a private HTTP target and refuses unpaid provisioning attacks', async () => {
     // Use the production composition and persisted hosted sessions above, on an
     // ephemeral loopback listener. This never borrows the shared controller or
