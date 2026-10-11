@@ -62,8 +62,21 @@ export function ProviderAppRegistration({
         connect it here.
       </p>
       <div style={actionRow}>
-        <Button type="button" variant="neutral" disabled={busy !== null} onClick={() => void create()}>
-          Create {displayName} app
+        {/* A link, not a button: it navigates to the vendor's page (the SDK contract calls it the
+            "Create app" link), so the resolved URL is in the DOM for hover, copy-link and agents.
+            The click still goes through the system opener — the webview cannot open it itself.
+            createUrl is validated https at manifest validation (validateProviderAppRegistration). */}
+        <Button asChild variant="neutral">
+          <a
+            href={registration.createUrl}
+            aria-disabled={busy !== null}
+            onClick={(event) => {
+              event.preventDefault();
+              if (busy === null) void create();
+            }}
+          >
+            Create {displayName} app
+          </a>
         </Button>
         {registration.definitionText !== null && (
           <Button type="button" variant="ghost" disabled={busy !== null} onClick={() => void copy()}>

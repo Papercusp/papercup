@@ -48,8 +48,12 @@ describe('ProviderAppRegistration', () => {
 
   it('opens the vendor page with the definition filled in when Create app is pressed', async () => {
     render(<ProviderAppRegistration providerId="fixture-chat" displayName="Fixture Chat" registration={declared} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Create Fixture Chat app' }));
+    const link = screen.getByRole('link', { name: 'Create Fixture Chat app' }) as HTMLAnchorElement;
+    // The link's href is the very URL handed to the system opener, so the page shows where it goes.
+    const notPrevented = fireEvent.click(link);
+    expect(notPrevented).toBe(false); // the webview itself never navigates away
     await waitFor(() => expect(H.openExternal).toHaveBeenCalledTimes(1));
+    expect(link.getAttribute('href')).toBe(H.openExternal.mock.calls[0]![0]);
     const opened = new URL(H.openExternal.mock.calls[0]![0]);
     expect(opened.origin + opened.pathname).toBe('https://fixture-chat.test/apps');
     expect(opened.searchParams.get('new_app')).toBe('1');
@@ -74,7 +78,7 @@ describe('ProviderAppRegistration', () => {
 
     const bare = appRegistrationSummary({ setup: { appRegistration: { createUrl: 'https://fixture-chat.test/apps/new' } } });
     render(<ProviderAppRegistration providerId="fixture-chat" displayName="Fixture Chat" registration={bare} />);
-    expect(screen.getByRole('button', { name: 'Create Fixture Chat app' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Create Fixture Chat app' }).getAttribute('href')).toBe('https://fixture-chat.test/apps/new');
     expect(screen.queryByRole('button', { name: 'Copy definition' })).toBeNull();
     expect(screen.queryByRole('link', { name: 'How to create it' })).toBeNull();
   });
@@ -82,7 +86,7 @@ describe('ProviderAppRegistration', () => {
   it('says so when the vendor page cannot be opened', async () => {
     H.openExternal.mockRejectedValueOnce(new Error('no browser'));
     render(<ProviderAppRegistration providerId="fixture-chat" displayName="Fixture Chat" registration={declared} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Create Fixture Chat app' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Create Fixture Chat app' }));
     await waitFor(() => expect(H.toast.error).toHaveBeenCalledWith('Couldn’t open the Fixture Chat app page: no browser'));
   });
 });
