@@ -840,6 +840,23 @@ validate_assertion_command_preflight() {
 
 validate_assertion_command_preflight || exit $?
 
+# Preparation must preserve a terminal verdict when a managed CLI respawns.
+# Install the same signal disposition used by teardown before any long child.
+SIGNAL_EXIT_CODE=0
+signal_exit_code() {
+  case "$1" in
+    HUP) printf '129\n' ;;
+    INT) printf '130\n' ;;
+    TERM) printf '143\n' ;;
+    *) printf '1\n' ;;
+  esac
+}
+handle_signal() {
+  SIGNAL_EXIT_CODE="$(signal_exit_code "$1")"
+  trap - INT TERM HUP
+  exit "$SIGNAL_EXIT_CODE"
+}
+
 # ── Verification-harness contract (expensive-verification-loops P-006) ───────
 # Bracket mode: phases prepare → boot → assert are marked at their section starts, the
 # script keeps its own exit semantics (teardown exits with the assertion's code), and each
@@ -868,6 +885,9 @@ else
   vh_capture_phase_start() { :; }; vh_capture_phase_stop() { :; }
   vh_run_step() { shift; "$@"; }
 fi
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
+trap 'handle_signal HUP' HUP
 
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
@@ -2598,23 +2618,6 @@ wait_owned_ports_free() {
 # and the signal trap's `exit` then re-entered the EXIT trap for a duplicate
 # teardown. Keep signal disposition separate from ordinary command status, and
 # let the one EXIT trap own cleanup.
-SIGNAL_EXIT_CODE=0
-signal_exit_code() {
-  case "$1" in
-    HUP) printf '129\n' ;;
-    INT) printf '130\n' ;;
-    TERM) printf '143\n' ;;
-    *) printf '1\n' ;;
-  esac
-}
-handle_signal() {
-  SIGNAL_EXIT_CODE="$(signal_exit_code "$1")"
-  # The EXIT trap below performs cleanup exactly once. Reset signal traps before
-  # leaving this handler so an exit during teardown cannot recurse through it.
-  trap - INT TERM HUP
-  exit "$SIGNAL_EXIT_CODE"
-}
-
 # Playwright writes attachments into the disposable source, including on passing
 # tests. Retain its conventional outputs in the existing assert phase before
 # stop.sh or snapshot cleanup can remove them (EI-25695165283875278).

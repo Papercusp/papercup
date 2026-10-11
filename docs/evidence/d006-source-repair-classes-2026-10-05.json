@@ -367,7 +367,29 @@
         "currentTestAndSourceMatch20898066Commit": false,
         "originalLoadedSourceCurrentness": "unknown"
       },
-      "assuranceLimits": "Read-only diagnostic recovery. Existing terminal WI-10005935 pass20678719 predates the original failure. No matching later repair attribution or maintained old/new-predicate causal guard recovered in bounded searches. Retain UNKNOWN pending actual loaded-byte assurance and both-family real-PG NULL-clock discrimination. No new tests, source repair, final D006 readiness or shipment claim."
+      "assuranceLimits": "Read-only diagnostic recovery. Existing terminal WI-10005935 pass20678719 predates the original failure. No matching later repair attribution or maintained old/new-predicate causal guard recovered in bounded searches. Retain UNKNOWN pending actual loaded-byte assurance and both-family real-PG NULL-clock discrimination. No new tests, source repair, final D006 readiness or shipment claim.",
+      "historicalQualification": {
+        "observedAt": "2026-10-11T19:50:00Z",
+        "originalCensus": "Immutable file-census records81 collected/executed,1 failed,0 skipped;80 passed follows the recorded accounting. affected-tests.log:13034-13042 and original receipt20765864 retain the F-RH10 NULL-fed_ts sibling failure.",
+        "storedReceiptScope": "Exact literal-file source=local lookup since2026-10-05T22:29:37Z returned10 matching rows. Five historical failures20815727/20897835/20897850/20898056/20898060 each report80pass/1fail/0skip; five later whole-file passes20898066/20898156/20940036/21069781/21103622 each report82pass/0fail/0skip with no selector. This scope excludes earlier and non-local receipts.",
+        "cleanFocusedReceipt": {
+          "id": 21103622,
+          "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+          "passed": 82,
+          "failed": 0,
+          "skipped": 0,
+          "worktreeDirty": false,
+          "isScratchConfig": false,
+          "testNamePattern": null,
+          "collectionFailed": false,
+          "includedCaseTitles": [
+            "WI-1999 remote-holder guard > WI-10005935: a NULL fed_ts plus recent updated_ts on a sibling row is NOT a sign of life",
+            "WI-1999 remote-holder guard > WI-10005935: issue reaper ignores a sibling bookkeeping touch without fed_ts"
+          ]
+        },
+        "repositoryComparison": "Current named test SHAe29573e732252bbfb4d76479818559923426d66611d62fba1eeebc48eb63bebc and imported work-items-stale-claims.ts SHA7b7eb800b73c8839f0e57ca431c86e1bdbca3ddfce3da484f637f0865fb401b0 exactly match the clean receipt commit. Commit48a5108e02d5e8ea73f408c8fda80731b00a8522 removes the sibling COALESCE(fed_ts,updated_ts) fallback in both reapers and adds the issue-parity case. Other changes share that commit; this is repository evidence, not an isolated loaded-source causal experiment.",
+        "limits": "The newer clean receipt closes the older bounded passedCaseTitles omission for the two named NULL-clock cases. Preserve the older receipts and their limits. No test was rerun. Original loaded-source identity, transitive imports/config/schema/environment, old/new-predicate causal discrimination and accountable later repair attribution remain unestablished. Keep rootCauseVerified=false, this row open-unknown, population33focused/20peer/71unknown, finalSweepReadiness=not-established, acceptanceClaim=false and shipmentClaim=false."
+      }
     },
     {
       "path": "packages/operator-core/lib/issues-engineer.integration.test.ts",
@@ -989,7 +1011,39 @@
         14285,
         14341,
         14353
-      ]
+      ],
+      "historicalQualification": {
+        "observedAt": "2026-10-11T19:57:00Z",
+        "originalCensus": "Immutable file-census records7 collected/executed,4 failed,0 skipped;3 passed follows that accounting. The saved FAIL headers identify missing gym routing, retired 'Awaiting Mug/owner triage' text, and two downstream undefined byRail.gym.routedRef accesses.",
+        "savedFailureScope": "affected-tests.log:14263-14364; diagnostic read retained in .papercusp/scratch/bash-c738fc0c-f16.log (task0mv48pome2rlb0fgh7f, exit0). This is an archived failure read, not a new test execution.",
+        "cleanFocusedReceipt": {
+          "id": 21103917,
+          "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+          "passed": 7,
+          "failed": 0,
+          "skipped": 0,
+          "worktreeDirty": false,
+          "isScratchConfig": false,
+          "testNamePattern": null,
+          "collectionFailed": false,
+          "caseCoverage": "Stored passedCaseTitles contains all seven named cases, including the four originally failing full-cycle, broad-plan, gym-archive and provenance cases."
+        },
+        "repositoryComparison": {
+          "testSha256": "d04de75a5900efb74772c741c735833e663423812ef0fba3cf64778eae67eac4",
+          "namedTestMatchesReceiptCommit": true,
+          "comparedEntrySources": [
+            "packages/operator-core/lib/scout/cycle.ts",
+            "packages/operator-core/lib/scout/cycle-deps.ts",
+            "packages/operator-core/lib/scout/scout-plan-draft.ts",
+            "packages/operator-core/lib/scout/router.ts",
+            "packages/operator-core/lib/scout/paused-rails.ts"
+          ],
+          "entrySourcesMatchReceiptCommit": true,
+          "scope": "Repository-byte equality only; this list is not the complete transitive import graph or the modules actually loaded by either historical process."
+        },
+        "presentFixtureContract": "The current fixture pins active workspace identity and seeds both enabled gym_autoloop_config and an active gym-cycle routine for paused-rails.ts's real liveness read (scout-su-ideate-pipeline-gaps-2026-10-08 P-002). The current broad-plan assertion expects 'Awaiting steward/owner triage', matching scout-plan-draft.ts. These present-source observations are compatible with the clean pass; they do not by themselves prove original causal repair attribution.",
+        "limits": "No source change, new admission or test replay. Retain this row open-unknown and the33focused/20peer/71unknown population. Original loaded bytes, full imports/config/schema/environment, accountable specific repair attribution, final D006/P004 assurance, acceptance and shipment remain unestablished."
+      }
     },
     {
       "path": "packages/operator-core/lib/workspace-host/initialization-runner.integration.test.ts",

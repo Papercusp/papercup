@@ -15,7 +15,7 @@
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { readVerifierSourceReceiptSync } from '@papercusp/verification-harness/verifier-source';
+import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';

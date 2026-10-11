@@ -38,6 +38,8 @@ let seededGh: Record<string, unknown> | null = null;
 let seededRepairQueue: Record<string, unknown> | null = null;
 let seededGateHealthByWorkspace: Map<string, Record<string, unknown>> | null = null;
 let updatedGateHealthByWorkspace: Map<string, Record<string, unknown>> | null = null;
+let latestHeadlineHealth: Record<string, unknown> | null = null;
+let headlineHealthOverride: Record<string, unknown> | undefined;
 /**
  * WI-42118: the `green_checkpoint` pipeline_events page the CROSS-STREAK cause digest reads.
  * Default EMPTY, which the reader turns into a `null` digest — so every pre-existing test in
@@ -55,6 +57,7 @@ let seededEvents: Array<{ status: string; detail: unknown; created_at: string }>
  */
 type FakeSqlResult =
   | Array<{ gh: Record<string, unknown> | null }>
+  | Array<{ headline_health: Record<string, unknown> | null }>
   | Array<{ streak: number; alerted: boolean }>
   | Array<{ status: string; detail: unknown; created_at: string }>
   | { count: number };
@@ -62,6 +65,9 @@ type FakeSqlResult =
 const fakeSql = {
   unsafe: (query: string, params: unknown[] = []): Promise<FakeSqlResult> => {
     calls.push({ query, params });
+    if (query.includes('AS headline_health')) {
+      return Promise.resolve([{ headline_health: headlineHealthOverride ?? latestHeadlineHealth ?? seededGh }]);
+    }
     if (/SELECT\s+metadata->'gate_health'/i.test(query)) {
       const workspace = query.includes('workspace_id') ? String(params.at(-1) ?? '') : null;
       const scopedGh = workspace && seededGateHealthByWorkspace
@@ -89,12 +95,14 @@ const fakeSql = {
     // old value + 1, and the PRE-existing alerted flag — or the escalation edge is untestable.
     if (/consecutiveNoVerdict/.test(query) && /RETURNING/i.test(query)) {
       const prev = typeof seededGh?.consecutiveNoVerdict === 'number' ? (seededGh.consecutiveNoVerdict as number) : 0;
+      latestHeadlineHealth = { ...seededGh, consecutiveNoVerdict: prev + 1 };
       return Promise.resolve([{ streak: prev + 1, alerted: seededGh?.noVerdictAlerted === true }]);
     }
     if (/UPDATE\s+harness_shared\.routines/i.test(query) && /\{gate_health\}/.test(query)) {
       const raw = typeof params[1] === 'string' ? params[1] : '';
       if (raw.startsWith('{')) {
         const payload = JSON.parse(raw) as { gate_health?: Record<string, unknown> };
+        if (payload.gate_health) latestHeadlineHealth = payload.gate_health;
         const workspace = String(params.at(-1) ?? '');
         if (payload.gate_health && updatedGateHealthByWorkspace) {
           updatedGateHealthByWorkspace.set(workspace, payload.gate_health);
@@ -141,6 +149,17 @@ vi.mock('../../severe-event-broadcast', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../severe-event-broadcast')>()),
   broadcastSevereEvent: (ev: Record<string, unknown>) => broadcastSevereEvent(ev),
   broadcastSevereEventResolved: (r: Record<string, unknown>) => broadcastSevereEventResolved(r),
+}));
+
+const findConditionKeyHolder = vi.fn(async (..._args: unknown[]): Promise<string | null> => null);
+vi.mock('../../coord/condition-bridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../coord/condition-bridge')>()),
+  findConditionKeyHolder: (...args: unknown[]) => findConditionKeyHolder(...args),
+}));
+const updateWorkItem = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
+  updateWorkItem: (...args: unknown[]) => updateWorkItem(...args),
 }));
 
 // gate-resilience P-003 (D-002): the torn-sweep announcement goes out through
@@ -190,12 +209,17 @@ beforeEach(() => {
   seededRepairQueue = null;
   seededGateHealthByWorkspace = null;
   updatedGateHealthByWorkspace = null;
+  latestHeadlineHealth = null;
+  headlineHealthOverride = undefined;
   seededEvents = [];
   notifyAttention.mockClear();
   notifyAttentionOnce.mockClear();
   broadcastSevereEvent.mockClear();
   broadcastSevereEventResolved.mockClear();
   emitAwaitedEvent.mockClear();
+  findConditionKeyHolder.mockReset();
+  findConditionKeyHolder.mockResolvedValue(null);
+  updateWorkItem.mockClear();
 });
 
 describe('WI-2143684: trackGateStall scopes routine rows by workspace', () => {
@@ -505,6 +529,65 @@ describe('P-005: trackGateStall opens/closes the gate-red-streak CONDITION', () 
     expect(written().consecutiveReds).toBe(stallReds);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('red-streak condition broadcast failed'));
     warn.mockRestore();
+  });
+});
+
+describe('WI-6554700010008583: existing gate incident headline stays current', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shows a nine-day freeze and the post-increment no-verdict count without re-opening the condition', async () => {
+    const now = Date.UTC(2026, 9, 11, 20);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    seededGh = {
+      lastVerdict: 'not-green', lastGreenAt: now - 216 * 3_600_000,
+      consecutiveReds: 2, consecutiveNoVerdict: 286, stallAlerted: true, noVerdictAlerted: true,
+      failingTests: ['check-a', 'check-b', 'check-c', 'check-d', 'check-e', 'check-f', 'check-g'],
+    };
+    findConditionKeyHolder.mockResolvedValue('WI-existing-gate');
+
+    await trackGateStall(ctx, 'error', undefined, undefined, 'runner exited without a verdict');
+
+    expect(updateWorkItem).toHaveBeenCalledWith('WI-existing-gate', {
+      title: 'green-checkpoint held on test-slug — ~216h since last green; 2 consecutive red verdict(s), 287 consecutive no-verdict run(s); last red: 7 failing check(s); main frozen.',
+    }, 'system:green-checkpoint', { harness: 'test-slug' });
+    expect(findConditionKeyHolder).toHaveBeenCalledWith('gate-red-streak:test-slug', {
+      harnessSlug: 'test-slug', workspaceId: 'test-ws',
+    });
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+    expect(calls.filter(c => /consecutiveNoVerdict/.test(c.query) && /RETURNING/i.test(c.query))).toHaveLength(1);
+  });
+
+  it('refreshes the age on a repair hold while preserving the owner and counters', async () => {
+    const now = Date.UTC(2026, 9, 11, 20);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    seededGh = {
+      lastVerdict: 'not-green', lastGreenAt: now - 216 * 3_600_000,
+      consecutiveReds: 2, consecutiveNoVerdict: 286, stallAlerted: true,
+    };
+    findConditionKeyHolder.mockResolvedValue('WI-existing-gate');
+
+    await trackGateStall(ctx, 'repair-in-progress', undefined, undefined, 'repair in progress');
+    clock.mockReturnValue(now + 24 * 3_600_000);
+    await trackGateStall(ctx, 'repair-in-progress', undefined, undefined, 'repair in progress');
+
+    const titles = updateWorkItem.mock.calls.map(call => (call[1] as { title: string }).title);
+    expect(titles[0]).toContain('~216h since last green');
+    expect(titles[1]).toContain('~240h since last green');
+    expect(titles.every(title => title.includes('2 consecutive red verdict(s), 286 consecutive no-verdict run(s)'))).toBe(true);
+    expect(updateWorkItem.mock.calls.every(call => call[0] === 'WI-existing-gate')).toBe(true);
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+    expect(calls.some(c => /consecutiveNoVerdict/.test(c.query) && /RETURNING/i.test(c.query))).toBe(false);
+  });
+
+  it('uses the current persisted health when another run has reset to green', async () => {
+    seededGh = { consecutiveReds: 2, consecutiveNoVerdict: 286, stallAlerted: true };
+    headlineHealthOverride = { lastVerdict: 'green', consecutiveReds: 0, consecutiveNoVerdict: 0 };
+    findConditionKeyHolder.mockResolvedValue('WI-existing-gate');
+
+    await trackGateStall(ctx, 'repair-in-progress', undefined, undefined, 'repair in progress');
+
+    expect(updateWorkItem).not.toHaveBeenCalled();
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
   });
 });
 

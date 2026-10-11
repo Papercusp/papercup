@@ -14,6 +14,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
+import postgres from 'postgres';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { readIdentity } from '../locks/identity';
@@ -39,6 +40,7 @@ import {
   HOST_BACKUP_APPLICATION_NAME,
   WORKSPACE_BACKUP_APPLICATION_NAME,
 } from '@papercusp/backup/application-names';
+import { inspectBackupRendezvousForMigration } from '../../backup-lock-migration-proof';
 import {
   preDestructiveSnapshotAdmissionGuardSql,
   requiresPreDestructiveSnapshotAdmission,
@@ -233,6 +235,22 @@ export function migrationPsqlScript(args: {
       );
     })
     .join('');
+}
+
+/** Skip the broad backup rendezvous only when a live backup owns it and the
+ * exact migration bytes are proven not to touch any relation it currently
+ * holds. Any query/connection failure keeps the original blocking path. */
+async function shouldSkipBusyBackupRendezvous(file: string, sqlText: string): Promise<boolean> {
+  let client: ReturnType<typeof postgres> | undefined;
+  try {
+    client = postgres(getHarnessAdminUrl(), { max: 1, idle_timeout: 5, prepare: false });
+    const inspection = await inspectBackupRendezvousForMigration(client, { file, sqlText });
+    return inspection.rendezvousBusy && inspection.conflicts.length === 0;
+  } catch {
+    return false;
+  } finally {
+    if (client) await client.end({ timeout: 2 }).catch(() => undefined);
+  }
 }
 
 // EI-19320461261471579: these predicates + the backoff now live in the
@@ -441,7 +459,7 @@ async function withConnectionRetry<T>(fn: () => Promise<T>, maxAttempts = CONNEC
  *  for tests. */
 async function runMigrationWithLockRetry(
   url: string,
-  script: string,
+  script: string | (() => Promise<string>),
   run: PsqlRunner = runPsql,
   maxAttempts = LOCK_RETRY_MAX_ATTEMPTS,
   // EI-18769559897594065: fired once per attempt (including the first) so a
@@ -452,8 +470,9 @@ async function runMigrationWithLockRetry(
 ): Promise<{ result: PsqlResult; attempts: number }> {
   for (let attempt = 1; ; attempt++) {
     onAttempt?.(attempt, maxAttempts);
+    const attemptScript = typeof script === 'function' ? await script() : script;
     const result = await run('psql', [url, '-v', 'ON_ERROR_STOP=1'], {
-      input: script,
+      input: attemptScript,
       encoding: 'utf8',
       onHeartbeat,
     });
@@ -740,9 +759,10 @@ export default defineTool({
     //   EI-217072: the advisory rendezvous proves only that a snapshot and a
     //     migration are not concurrent — require the newest pre_destructive
     //     receipt to be a completed database-backed restore point before DDL.
-    const migrationGuardPreamble = (lockTimeoutSec: number) =>
-      migrationBackupAdvisoryLockSql(lockTimeoutSec) +
-      migrationBackupLockGuardSql() +
+    const migrationGuardPreamble = (lockTimeoutSec: number, skipBackupRendezvous = false) =>
+      (skipBackupRendezvous
+        ? ''
+        : migrationBackupAdvisoryLockSql(lockTimeoutSec) + migrationBackupLockGuardSql()) +
       snapshotAdmissionGuard +
       migrationReservationGuardSql(path.basename(resolvedFile));
 
@@ -924,17 +944,22 @@ export default defineTool({
             args.lock_timeout_sec != null ? CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS : LOCK_RETRY_MAX_ATTEMPTS;
           // EI-9417/WI-6381: fail fast on ordinary hot-table contention, or
           // honour the caller-widened wait for a known long-lived holder.
-          // WI-1373379: migrationPsqlScript repeats the shared guard preamble
-          // in every breakpoint transaction, byte-identical to the withheld
-          // fallback path built by the same helper above.
-          const script = migrationPsqlScript({
-            sqlText,
-            resolvedFile,
-            filenameLiteral,
-            sha256,
-            lockTimeoutSec,
-            guardPreamble: migrationGuardPreamble(lockTimeoutSec),
-          });
+          // WI-1373379: migrationPsqlScript repeats the selected preamble in
+          // every breakpoint transaction. The withheld command keeps the full
+          // rendezvous; enabled applies omit it only after the live relation
+          // proof above returns no conflict.
+          const script = async () =>
+            migrationPsqlScript({
+              sqlText,
+              resolvedFile,
+              filenameLiteral,
+              sha256,
+              lockTimeoutSec,
+              guardPreamble: migrationGuardPreamble(
+                lockTimeoutSec,
+                await shouldSkipBusyBackupRendezvous(path.basename(resolvedFile), sqlText),
+              ),
+            });
           // perf:allow A4 — this tool IS the sanctioned dev-only migration
           // applier: psql's meta-command interpreter runs full .sql files
           // (dollar-quoted functions, DO blocks, COPY, \meta-commands) that

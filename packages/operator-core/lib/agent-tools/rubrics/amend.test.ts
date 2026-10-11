@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { applyPayloadTier } from '@papercusp/tooldef';
+import { dispatchProjectedTool, lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
 
 const rubricsMocks = vi.hoisted(() => ({
   amendRubric: vi.fn(),
@@ -114,6 +115,110 @@ const criterion = {
 };
 
 describe('rubrics:amend complete acceptance criteria input', () => {
+  it('public guidance teaches requestReview before manual preview posting', () => {
+    const schema = JSON.stringify(z.toJSONSchema(rubricsAmendArgs));
+    expect(schema).toContain('requestReview');
+    const dryRun = (z.toJSONSchema(rubricsAmendArgs) as any).properties.dryRun.description as string;
+    expect(dryRun.indexOf('requestReview')).toBeGreaterThanOrEqual(0);
+    expect(amendTool.guidance!.chaining!.indexOf('requestReview')).toBeLessThan(
+      amendTool.guidance!.chaining!.indexOf('reviewPreviewPost'),
+    );
+  });
+
+  it('a slow amend returns a durable receipt before a shorter production dispatcher deadline', async () => {
+    vi.useFakeTimers();
+    let release!: (value: any) => void;
+    const run = new Promise<any>(resolve => { release = resolve; });
+    rubricsMocks.previewAcceptanceBarAmendment.mockImplementation(() => run);
+    const args = { rubricRef: 'acceptance-deadline', dryRun: true, criteria: [criterion] };
+    const deadlineAtMs = Date.now() + 100;
+    try {
+      const projected = lookupByMcpName('rubrics:amend')!;
+      const answered = dispatchProjectedTool(
+        { ...projected, timeoutSec: 0.1 }, 'rubrics:amend', args,
+        {
+          signal: new AbortController().signal, deadlineAtMs,
+          log: vi.fn(), progress: vi.fn(), emit: vi.fn(), workspaceId: 'ws-amend-test',
+          runId: 'amend-short-deadline', isSuperuser: true, uiClientId: 'amend-test', role: 'su',
+          gateBypass: { role: true, capability: true, quota: true }, transport: 'mcp',
+          requestedFormat: 'json', contextTier: 'trimmed', tx: {},
+        }, {},
+      ).then(result => ({ result, answeredAt: Date.now() }));
+      await vi.advanceTimersByTimeAsync(40_100);
+      const { result, answeredAt } = await answered;
+      expect(result.error).toBeUndefined();
+      expect(result.ok).toBe(true);
+      expect(answeredAt).toBeLessThan(deadlineAtMs);
+      const payload = readJsonResult(result.result!) as any;
+      expect(payload).toMatchObject({ ok: true, pending: true, receipt: { rubricRef: args.rubricRef } });
+      release({ approvalRequired: false, approval: {}, changes: [] });
+      await vi.advanceTimersByTimeAsync(1);
+      const status = await amendStatusTool.handler(payload.receipt.poll.args, {} as never) as { data: any };
+      expect(status.data).toMatchObject({ state: 'previewed', result: { ok: true } });
+    } finally {
+      release({ approvalRequired: false, approval: {}, changes: [] });
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['trimmed', 'standard'] as const)('bounds actual serialized %s preview replies and retains a complete recovery reference', async tier => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({
+      approvalRequired: true,
+      approval: { rubricRef: 'acceptance-large', changes: Array.from({ length: 100 }, (_, n) => ({ barKey: `R-${n}`, beforeHash: 'a'.repeat(64), afterHash: 'b'.repeat(64) })) },
+      changes: Array.from({ length: 100 }, (_, n) => ({ barKey: `R-${n}`, detail: 'explanation '.repeat(100) })),
+    });
+    const args = { rubricRef: 'acceptance-large', dryRun: true };
+    const response = await amendTool.handler(args, {} as never);
+    const shaped = applyPayloadTier({ toolName: 'rubrics:amend', shape: amendTool.shape, response: response as never, tier, args }).data as any;
+    expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(5_000);
+    expect(JSON.stringify(shaped)).not.toContain('[undefined]');
+    expect(shaped.receipt.poll).toMatchObject({ tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef } });
+    const full = await amendStatusTool.handler(shaped.receipt.poll.args, {} as never) as { data: any };
+    expect(full.data.result.preview.approval.changes).toHaveLength(100);
+  });
+
+  it.each([true, false])('production cancellation preserves only a confirmed durable receipt (registered=%s)', async registered => {
+    vi.useFakeTimers();
+    let releaseRegistration: (() => void) | undefined;
+    let releasePreview!: (value: any) => void;
+    const preview = new Promise<any>(resolve => { releasePreview = resolve; });
+    rubricsMocks.previewAcceptanceBarAmendment.mockImplementation(() => preview);
+    if (!registered) receiptDb.sql.mockImplementationOnce(() => new Promise(resolve => { releaseRegistration = () => resolve([]); }));
+    try {
+      const projected = lookupByMcpName('rubrics:amend')!;
+      const resultPromise = dispatchProjectedTool(
+        { ...projected, timeoutSec: 0.1 }, 'rubrics:amend',
+        { rubricRef: 'acceptance-cancellation', dryRun: true, criteria: [criterion] },
+        {
+          signal: new AbortController().signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn(),
+          workspaceId: 'ws-amend-test', runId: `amend-cancel-${registered}`, isSuperuser: true,
+          uiClientId: 'amend-test', role: 'su', gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp', requestedFormat: 'json', contextTier: 'trimmed', tx: {},
+        }, {},
+      );
+      await vi.advanceTimersByTimeAsync(200);
+      const result = await resultPromise;
+      if (registered) {
+        expect(result.error).toBeUndefined();
+        const payload = readJsonResult(result.result!) as any;
+        expect(payload).toMatchObject({ pending: true, receipt: { registered: true } });
+        const status = await amendStatusTool.handler(payload.receipt.poll.args, {} as never) as { data: any };
+        expect(status.data.state).toBe('running');
+      } else {
+        expect(result.ok).toBe(false);
+        expect(result.error?.code).toBe('timeout');
+        expect(receiptDb.rows.size).toBe(0);
+      }
+      releaseRegistration?.();
+      releasePreview({ approvalRequired: false, approval: {}, changes: [] });
+      await vi.advanceTimersByTimeAsync(1);
+    } finally {
+      releaseRegistration?.();
+      releasePreview({ approvalRequired: false, approval: {}, changes: [] });
+      vi.useRealTimers();
+    }
+  });
+
   it('stays within the shared P-011 prompt-weight budget', () => {
     expect(promptWeight(amendTool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
@@ -731,6 +836,7 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(shaped._projection).toMatchObject({ kind: 'bounded-payload', truncated: true });
     expect(shaped.preview.changes.length).toBeLessThan(largePreview.changes.length);
     expect(JSON.stringify(shaped).length).toBeLessThan(JSON.stringify((response as any).data).length);
+    expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(5_000);
   });
 
   it('returns a structured refusal when the requested reviewer model is outside the workspace allowlist', async () => {
@@ -782,7 +888,7 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
 
     const result = await body(patchArgs);
 
-    expect(result).toEqual({ ok: true, dryRun: true, preview: { ...approvalRequired, approvalRequired: false } });
+    expect(result).toMatchObject({ ok: true, dryRun: true, preview: { ...approvalRequired, approvalRequired: false }, receipt: { registered: true } });
   });
 
   it('refuses reviewPreviewPost outside a dry run', () => {

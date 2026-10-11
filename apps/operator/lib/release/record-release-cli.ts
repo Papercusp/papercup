@@ -32,6 +32,7 @@ import { isDeepStrictEqual } from 'node:util';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { assertPublicDesktopArtifacts, assertPublicDesktopInterface } from '../../../../papercusp-desktop/bin/lib/spa-freshness.js';
 import postgres from 'postgres';
 import {
   getOwnerDirective,
@@ -638,6 +639,7 @@ export function scanArtifacts(
   bundleDirs: string[],
   version: string,
   tag: string,
+  options: { publicRelease?: boolean } = {},
 ): ReleaseArtifact[] {
   // `inno` is the Windows one, and its absence here is precisely why no Windows
   // installer has ever been recorded: tauri builds the Windows setup with Inno
@@ -704,6 +706,8 @@ export function scanArtifacts(
         // show the tester the same download twice.
         if (seen.has(name)) continue;
         seen.add(name);
+        const desktopInterface = options.publicRelease
+          ? assertPublicDesktopArtifacts([full])[0] : undefined;
         found.push({
           ...kind,
           name,
@@ -711,6 +715,7 @@ export function scanArtifacts(
           url: `${tag}/${name}`,
           size: stat.size,
           sha256: sha256File(full),
+          ...(desktopInterface ? { desktopInterface } : {}),
         });
       }
     }
@@ -1390,6 +1395,7 @@ export async function generateSite(
   outDir: string,
   siteScope: SiteScope = FULL_SITE_SCOPE,
 ): Promise<{ pages: number; written: number; unchanged: number }> {
+  assertPublicDesktopInterface();
   const want = (surface: SiteSurface) => siteScope.surfaces.has(surface);
   // WI-10003694: write a page only when its bytes changed, so an unchanged page keeps its
   // mtime and the publisher (and `aws s3 sync`) skips it.
@@ -1432,6 +1438,13 @@ export async function generateSite(
   // Every surface but `assets` renders registry content; an assets-only force skips the reads.
   const needsRegistry = [...siteScope.surfaces].some((surface) => surface !== 'assets');
   const rows = needsRegistry ? releasesToRender(await listReleases(sql, scope.workspaceId), siteScope) : [];
+  // Historical published rows may predate interface provenance. New cuts are
+  // validated by scanArtifacts; an explicitly marked candidate never renders.
+  for (const row of rows) {
+    for (const artifact of row.artifacts) {
+      if (artifact.desktopInterface) assertPublicDesktopInterface({ desktopInterface: artifact.desktopInterface });
+    }
+  }
   const hydratedAll: HydratedRelease[] = [];
   for (const row of rows) {
     const { items, plans, internalCount } = await hydrateRelease(sql, scope, row);
@@ -1548,6 +1561,7 @@ export async function auditScopedRegenerate(
 }
 
 export async function run(opts: RecordOpts): Promise<number> {
+  assertPublicDesktopInterface();
   // Check before opening Postgres or scanning multi-gigabyte artifact roots. A
   // missing changelog is a request-shape error, so the default path must fail
   // immediately instead of doing almost all the work and then looking successful.
@@ -1644,7 +1658,7 @@ export async function run(opts: RecordOpts): Promise<number> {
       return 0;
     }
 
-    const desktopArtifacts = scanArtifacts(opts.bundleDirs, opts.version, tag);
+    const desktopArtifacts = scanArtifacts(opts.bundleDirs, opts.version, tag, { publicRelease: true });
     try {
       assertRequestedDesktopArtifacts(opts.version, desktopArtifacts, opts.bundleDirs);
     } catch (error) {

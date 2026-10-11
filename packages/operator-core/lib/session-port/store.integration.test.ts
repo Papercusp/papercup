@@ -112,7 +112,7 @@ describe('session-port atomic attempt lifecycle (real PG)', () => {
     if (reservation.status !== 'reserved') throw new Error(`unexpected reservation ${reservation.status}`);
     const targetId = reservation.targetAdvSessionId;
     const host = { ownerId: 'su-port-source', advSessionId: String(targetId), command: 'codex',
-      args: ['resume', nativeId] };
+      args: ['resume', nativeId], nativeSessionId: nativeId };
     const options = { expectedSessionId: '11111111-1111-4111-8111-111111111111',
       expectedPort: { sourceAdvSessionId, targetBackend: 'codex' as const },
       readAdvSession: (id: number) => getAdvSessionInWorkspace(id, workspaceId),
@@ -132,7 +132,13 @@ describe('session-port atomic attempt lifecycle (real PG)', () => {
     await expect(verifyResumeStarted('su-port-source', options)).resolves.toMatchObject({
       started: true, mismatch: false, expectedSessionId: nativeId, actualSessionId: nativeId,
     });
+    // Requested argv can retain a predecessor after a carry; only the host's
+    // observed child UUID can establish or contradict the delivered target.
     host.args = ['resume', randomUUID()];
+    await expect(verifyResumeStarted('su-port-source', options)).resolves.toMatchObject({
+      started: true, mismatch: false, expectedSessionId: nativeId, actualSessionId: nativeId,
+    });
+    host.nativeSessionId = randomUUID();
     await expect(verifyResumeStarted('su-port-source', options)).resolves.toMatchObject({
       started: false, mismatch: true, expectedSessionId: nativeId,
     });

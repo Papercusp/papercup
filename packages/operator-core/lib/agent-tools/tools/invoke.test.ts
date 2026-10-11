@@ -87,6 +87,27 @@ describe('tools:invoke registration', () => {
     }
   });
 
+  it('recovers a long JSON record with one surplus closing brace (EI-25644994406425836)', () => {
+    const args = {
+      question: 'Can you review this decision?',
+      body: "Here's the longer context (with apostrophes and parentheses). ".repeat(30),
+      topics: ['papercusp-improvement'],
+      timeout_s: 0,
+    };
+    const r = def.args.safeParse({
+      name: 'coord:ask-owner',
+      args: `${JSON.stringify(args)}}`,
+    }) as { success: true; data: { args: unknown } } | { success: false };
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.args).toEqual(args);
+
+    const array = def.args.safeParse({
+      name: 'flags:set',
+      args: `${JSON.stringify(['not a record'])}}`,
+    });
+    expect(array.success).toBe(false);
+  });
+
   it('still rejects a non-JSON string args payload (no silent pass-through)', () => {
     expect(def.args.safeParse({ name: 'flags:set', args: 'not-json {' }).success).toBe(false);
   });

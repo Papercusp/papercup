@@ -25,7 +25,8 @@ const oldClause: SpecClauseRevision = {
   acceptedBy: 'reviewer', acceptedAt: '2026-08-20T00:00:00.000Z', acceptanceRef: 'D-001',
 };
 const newClause = { ...oldClause, currentRevision: 2, revision: 2, contentHash: 'b'.repeat(64),
-  behavior: 'POST /events returns 201 for a valid event', createdAt: '2026-08-21T00:00:00.000Z' };
+  behavior: 'POST /events returns 201 for a valid event', createdAt: '2026-08-21T00:00:00.000Z',
+  acceptedAt: '2026-08-21T00:00:00.010Z' };
 const oldEvaluation = evaluatePlanSpecQuality({ planSlug: 'quality-plan', harnessSlug: 'papercusp',
   planItemIds: ['P-001'], clauses: [oldClause], classRef: 'plan-class-feature-ship' });
 const replaySnapshot = { planContentHash: oldHash, clausesAsOf: '2026-08-20T00:00:00.001Z' };
@@ -74,6 +75,7 @@ describe('immutable spec-quality replay (WI-10007284)', () => {
     const second = await call({ slug: 'quality-plan', harness: 'papercusp' });
     expect(first.ok).toBe(true);
     expect(first).toEqual(second);
+    expect(Date.parse(first.replaySnapshot.clausesAsOf)).toBeGreaterThanOrEqual(Date.parse(newClause.acceptedAt));
     const replay = await call({ slug: 'quality-plan', harness: 'papercusp', classRef: first.classRef,
       expectedSpecSetHash: first.specSetHash, replaySnapshot: first.replaySnapshot });
     expect(replay.ratings).toEqual(first.ratings);

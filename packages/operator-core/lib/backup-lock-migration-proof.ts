@@ -25,7 +25,7 @@
  * waiting (the old behaviour), while a false "safe" is the thing to avoid.
  */
 import type { Sql } from 'postgres';
-import { BACKUP_APPLICATION_NAMES } from '@papercusp/backup/application-names';
+import { BACKUP_APPLICATION_NAMES, BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 import { splitStatements } from './db-tools/sanitize-baseline';
 
 export interface PendingMigrationText {
@@ -136,6 +136,48 @@ export function findBackupLockConflicts(
     }
   }
   return conflicts;
+}
+
+export interface BackupRendezvousInspection {
+  /** Whether another session currently owns the backup/migration advisory lock. */
+  rendezvousBusy: boolean;
+  /** Conflicts for this migration when the rendezvous is busy. */
+  conflicts: MigrationLockConflict[];
+}
+
+/**
+ * Inspect the manual migration rendezvous using the same proof as boot-migrate.
+ * A successful try-lock is immediately released; the actual psql apply then
+ * takes the normal transaction lock. When another session owns the rendezvous,
+ * only a complete relation proof with no conflicts permits a concurrent apply.
+ * Query or shape failures throw so callers can retain the blocking path.
+ */
+export async function inspectBackupRendezvousForMigration(
+  client: Sql,
+  migration: PendingMigrationText,
+): Promise<BackupRendezvousInspection> {
+  const lock = await client.unsafe<{ acquired: boolean }[]>(
+    'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
+    [BACKUP_MIGRATION_ADVISORY_LOCK_KEY],
+  );
+  if (lock[0]?.acquired === true) {
+    const unlocked = await client.unsafe<{ released: boolean }[]>(
+      'SELECT pg_advisory_unlock(hashtext($1)) AS released',
+      [BACKUP_MIGRATION_ADVISORY_LOCK_KEY],
+    );
+    if (unlocked[0]?.released !== true) {
+      throw new Error('the advisory-lock preflight could not release its probe lock');
+    }
+    return { rendezvousBusy: false, conflicts: [] };
+  }
+  if (lock[0]?.acquired !== false) {
+    throw new Error('the advisory-lock preflight returned no explicit result');
+  }
+  const lockedRelations = await readBackupLockedRelationNames(client);
+  return {
+    rendezvousBusy: true,
+    conflicts: findBackupLockConflicts([migration], lockedRelations),
+  };
 }
 
 /**

@@ -1340,6 +1340,7 @@ export function renderHistoryJson(releases: HydratedRelease[], opts: PageOptions
           url: a.url,
           size: a.size,
           sha256: a.sha256,
+          ...(a.desktopInterface ? { desktopInterface: a.desktopInterface } : {}),
         })),
     })),
   };

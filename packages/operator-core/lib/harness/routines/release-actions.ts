@@ -3414,6 +3414,7 @@ async function readStreakCauseDigest(
 export function gateRedStreakBroadcast(opts: {
   installSlug: string;
   consecutiveReds: number;
+  consecutiveNoVerdict?: number;
   heldHrs: number | null;
   candidate?: string | null;
   failingTests?: string[];
@@ -3422,15 +3423,17 @@ export function gateRedStreakBroadcast(opts: {
   commitsBehindTip?: number | null;
 }): { summary: string; body: string } {
   const tests = (opts.failingTests ?? []).slice(0, 20);
-  const held = opts.heldHrs != null ? ` (~${opts.heldHrs}h since the last green)` : '';
+  const held = opts.heldHrs != null ? `~${opts.heldHrs}h since last green` : 'last green time unknown';
+  const noVerdict = opts.consecutiveNoVerdict ?? 0;
   return {
     summary:
-      `green-checkpoint RED on ${opts.installSlug} — ${opts.consecutiveReds} consecutive red checkpoint(s)${held}; ` +
-      `\`main\` is frozen and staging changes are NOT reaching the release.`,
+      `green-checkpoint held on ${opts.installSlug} — ${held}; ` +
+      `${opts.consecutiveReds} consecutive red verdict(s), ${noVerdict} consecutive no-verdict run(s); ` +
+      `${tests.length ? `last red: ${tests.length} failing check(s); ` : ''}main frozen.`,
     body:
-      `The release gate is FIRING but every verdict is red${
+      `The last measured release verdict was red${
         opts.candidate ? `; the last judged candidate was ${opts.candidate.slice(0, 12)}` : ''
-      }.${
+      }. ${noVerdict} consecutive run(s) have produced no new verdict.${
         tests.length
           ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.`
           : ''
@@ -3462,6 +3465,54 @@ export function gateRedStreakBroadcast(opts: {
       `invisible to the gate, and no path ever re-cuts the candidate from tip. Full rule: ` +
       `/internal/docs/agent-insights/frozen-candidate-fix-only-admission.`,
   };
+}
+
+/** Refresh the existing incident from persisted health; never re-open its condition or claim. */
+async function refreshGateRedStreakHeadline(ctx: GateVerdictTarget): Promise<void> {
+  try {
+    const { findConditionKeyHolder } = await import('../../coord/condition-bridge');
+    const { gateRedStreakConditionKey } = await import('../../coord/gate-ownership');
+    const id = await findConditionKeyHolder(gateRedStreakConditionKey(ctx.installSlug), {
+      harnessSlug: ctx.installSlug,
+      workspaceId: ctx.workspaceId,
+    });
+    if (!id) return;
+    // Read after this tick's atomic write: its initial snapshot may predate another increment
+    // or a green reset. This read and the title-only patch cannot overwrite gate counters.
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+    const rows = (await sql.unsafe(
+      `SELECT metadata->'gate_health' AS headline_health
+         FROM harness_shared.routines
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+          AND workspace_id = $2`,
+      [ctx.installSlug, ctx.workspaceId],
+    )) as Array<{ headline_health: {
+      lastVerdict?: string;
+      lastGreenAt?: number;
+      consecutiveReds?: number;
+      consecutiveNoVerdict?: number;
+      failingTests?: string[];
+    } | null }>;
+    const health = rows[0]?.headline_health;
+    if (!health || health.lastVerdict === 'green') return;
+    const heldHrs = typeof health.lastGreenAt === 'number' && Number.isFinite(health.lastGreenAt)
+      ? Math.round(Math.max(0, Date.now() - health.lastGreenAt) / 3_600_000)
+      : null;
+    const { summary } = gateRedStreakBroadcast({
+      installSlug: ctx.installSlug,
+      consecutiveReds: health.consecutiveReds ?? 0,
+      consecutiveNoVerdict: health.consecutiveNoVerdict ?? 0,
+      failingTests: Array.isArray(health.failingTests) ? health.failingTests : undefined,
+      heldHrs,
+    });
+    const { updateWorkItem } = await import('../../work-items');
+    const result = await updateWorkItem(id, { title: summary }, 'system:green-checkpoint', {
+      harness: ctx.installSlug,
+    });
+    if (!result.ok) console.warn(`${orchestratorStdoutTag()} red-streak headline refresh refused: ${result.reason}`);
+  } catch (e) {
+    console.warn(`${orchestratorStdoutTag()} red-streak headline refresh failed: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 /** Pure classification of a green-checkpoint tick's outcome for gate_health tracking.
@@ -4834,6 +4885,7 @@ export async function trackGateStall(
         );
       }
     }
+    await refreshGateRedStreakHeadline(ctx);
     return;
   }
   // EI-19329732364513693: stamp HOW STALE the judged candidate is into the same blob that
@@ -5546,6 +5598,7 @@ export async function trackGateStall(
         AND workspace_id = $3`,
     [ctx.installSlug, JSON.stringify({ gate_health: next }), ctx.workspaceId],
   );
+  if (!isGreen) await refreshGateRedStreakHeadline(ctx);
 }
 
 /** P-009 thresholds: a workspace that has flaked this often is "chronically

@@ -3,20 +3,64 @@
 // scripts/lib/condition-rail-inventory.mjs and regenerate.
 /** Is this tracked path a source file the inventory should read? Pure. */
 export function isScannable(file: any): boolean;
+/** Does this file's BASENAME make it a watchdog module (a class-4 site by name alone)? */
+export function isWatchdogModule(file: any): boolean;
 /**
- * Scan ONE source text. Pure: (raw, file) → rows. `file` is the repo-relative path; it selects
- * the parser kind and drives the path-scoped classes (health fields, watchdog modules).
+ * Parse one source text into the structure the rail predicate needs: every function-like node's
+ * span and name chain, and the start offset of every rail call. Pure.
+ */
+export function railStructure(raw: any, file: any): {
+    functions: any[];
+    railCalls: any[];
+    length: any;
+};
+/**
+ * Locate one site in the AST: its enclosing symbol and whether a rail call lies in its own
+ * function's span (the whole file for a module-level site). Pure.
+ */
+export function locateSite(structure: any, offset: any, { moduleLevel }?: {
+    moduleLevel?: boolean | undefined;
+}): {
+    enclosing: any;
+    onRail: any;
+};
+/**
+ * Find every candidate SITE in one source text, on the rail or not. Pure: (raw, file) → sites.
+ * `file` is the repo-relative path; it selects the parser kind and drives the path-scoped classes
+ * (health fields, watchdog modules).
  *
  * @param {string} raw
  * @param {string} file
- * @returns {Array<{ class: string, file: string, line: number, symbol: string, key: string }>}
+ * @returns {Array<{ id: string, class: string, file: string, line: number, symbol: string, key: string, enclosing: string, ordinal: number, onRail: boolean }>}
  */
-export function scanSource(raw: string, file: string): Array<{
+export function scanSites(raw: string, file: string): Array<{
+    id: string;
     class: string;
     file: string;
     line: number;
     symbol: string;
     key: string;
+    enclosing: string;
+    ordinal: number;
+    onRail: boolean;
+}>;
+/**
+ * Scan ONE source text for the sites that BYPASS the rail. Pure: (raw, file) → rows.
+ *
+ * @param {string} raw
+ * @param {string} file
+ * @returns {Array<{ id: string, class: string, file: string, line: number, symbol: string, key: string, enclosing: string, ordinal: number, onRail: boolean }>}
+ */
+export function scanSource(raw: string, file: string): Array<{
+    id: string;
+    class: string;
+    file: string;
+    line: number;
+    symbol: string;
+    key: string;
+    enclosing: string;
+    ordinal: number;
+    onRail: boolean;
 }>;
 /**
  * Resolve one row's disposition from a dispositions map. Most specific key wins:
@@ -27,7 +71,8 @@ export function dispositionFor(row: any, dispositions: any): any;
 export function dispositionProblem(d: any): string | null;
 /**
  * Inventory a set of repo-relative files under `root`. `readFile` is injectable for tests.
- * Returns every row with its resolved disposition, plus coverage counters.
+ * Returns every bypass row with its resolved disposition, every site (on the rail or not), and
+ * coverage counters.
  */
 export function inventory({ root, files, dispositions, readFile }: {
     root: any;
@@ -38,11 +83,26 @@ export function inventory({ root, files, dispositions, readFile }: {
     rows: {
         disposition: any;
         problem: string | null;
+        id: string;
         class: string;
         file: string;
         line: number;
         symbol: string;
         key: string;
+        enclosing: string;
+        ordinal: number;
+        onRail: boolean;
+    }[];
+    sites: {
+        id: string;
+        class: string;
+        file: string;
+        line: number;
+        symbol: string;
+        key: string;
+        enclosing: string;
+        ordinal: number;
+        onRail: boolean;
     }[];
     scanned: number;
     unreadable: number;
@@ -53,7 +113,20 @@ export function inventory({ root, files, dispositions, readFile }: {
     staleDispositions: string[];
 };
 export const CLASSES: readonly string[];
-/** Lines on either side of a site searched for a rail call. */
-export const RAIL_WINDOW_LINES: 40;
+/** Callee names whose CALL puts the enclosing function on the condition rail. */
+export const RAIL_FUNCTIONS: readonly string[];
+/** Owner-alarm APIs: a call to one is a class-1 site, and on the rail when it passes a conditionKey. */
+export const ALARM_FUNCTIONS: readonly string[];
+/** The enclosing-symbol value of a site that sits outside every function. */
+export const MODULE_SCOPE: "<module>";
 /** Directories scanned. Generated bundles, tests and retired code are excluded by isScannable. */
 export const SCAN_ROOTS: readonly string[];
+export const ALARM_CALL_RE: RegExp;
+export const LOG_CALL_RE: RegExp;
+export const FALLBACK_WORDING_RE: RegExp;
+export const HEALTH_FIELD_RE: RegExp;
+export const HEALTH_PATH_RE: RegExp;
+export const TYPE_ONLY_VALUE_RE: RegExp;
+export const INTERVAL_RE: RegExp;
+export const DEFINE_SIGNAL_RE: RegExp;
+export const WAIVER_RE: RegExp;

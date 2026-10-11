@@ -157,6 +157,32 @@
       }
     }
   },
+  "compiledPreflight": {
+    "observedAt": "2026-10-11T20:12:59Z",
+    "workItem": "WI-10007170",
+    "buildId": "1DHsq9zazhmCtWqHAHyaP",
+    "static": {
+      "taskId": "0mv499zwh7eugb016ev",
+      "exitCode": 0,
+      "receipt": "/tmp/tutorial-d047-compiled-preflight-corrected-20261011T2009.json",
+      "receiptSha256": "4a3a43440977fb343d12775f59c07edaa38407190245b57bcca0358e4b4a081b",
+      "log": "/tmp/tutorial-d047-compiled-preflight-corrected-20261011T2009.log",
+      "procedure": "Read unchanged exact release metadata; resolve the published standalone entry; run maintained assertStandaloneBootstrapModules, assertTracedServerChunksPresent and assertPublicDocsBundle against the compiled artifact.",
+      "result": "Four bootstrap modules resolve inside the release; twelve traced relative chunk requires exist; the route-selected public/papercusp-docs bundle passes validation and all sixty-two file hashes are retained.",
+      "priorCallerFailure": "/tmp/tutorial-d047-compiled-preflight-20261011T2007.log assumed public/docs rather than reading the compiled route's public/papercusp-docs path. It is not evidence that the bundle was missing."
+    },
+    "anonymousRuntime": {
+      "taskId": "0mv49f05o1o7fzsy1fj",
+      "exitCode": 0,
+      "receipt": "/tmp/tutorial-d047-runtime-preflight-20261011T2012.json",
+      "receiptSha256": "de007dd28d6e086945d7202afe7fdf2e4392869d3b61a52df2d6422caddfe152",
+      "log": "/tmp/tutorial-d047-runtime-preflight-20261011T2012.log",
+      "configuration": "The same exact standalone release booted on an ephemeral loopback port inside maintained with-test-pg --isolated-runtime with private local-mode composition and no model credentials or requests.",
+      "result": "Anonymous /docs, Pagefind JavaScript and sitemap returned HTTP 200 with expected content types; a missing document returned HTTP 404. The Portal shut down its own Postgres and the outer wrapper verified runtimeRemoved and pgDataRemoved before exit 0.",
+      "modelCalls": 0
+    },
+    "qualification": "Artifact-local compiled dependencies, public bundle and anonymous runtime are verified. These receipts do not prove historical out-of-root dependency equality, hosted authentication, paid FAQ/cohort/history/live-state acceptance, human acceptance or production shipment. Original artifact, source and test lineage remain unchanged."
+  },
   "limitations": [
     "The private runtime and databases were shut down after acceptance. A new functional run needs freshly prepared private configuration.",
     "Catalogue observation attachments retain partial-onfailure diagnostic scope even on PASS; final verdict and actual assertions are the acceptance evidence.",

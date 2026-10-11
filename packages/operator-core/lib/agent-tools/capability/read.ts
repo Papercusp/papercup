@@ -520,21 +520,27 @@ function renderLargeLineWindow(
 ) {
   const { slice, start, totalLines } = window;
   if (args.raw) {
+    const end = start + slice.length;
+    const rawWindow = {
+      total_lines: totalLines,
+      start_line: slice.length === 0 ? null : start + 1,
+      end_line: slice.length === 0 ? null : end,
+      has_more: end < totalLines,
+    };
     if (slice.length === 0) {
       return {
         content: [{ type: 'text' as const, text: '' }],
         ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
-          ? { structuredContent: { ok: true, file_path: abs, body: '' } }
+          ? { structuredContent: { ok: true, file_path: abs, body: '', ...rawWindow } }
           : {}),
       };
     }
-    const end = start + slice.length;
     const rawBody = slice.map(({ line }) => line).join('\n') +
       (end < totalLines || (end === totalLines && window.endedWithNewline) ? '\n' : '');
     return {
       content: [{ type: 'text' as const, text: rawBody }],
       ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
-        ? { structuredContent: { ok: true, file_path: abs, body: rawBody } }
+        ? { structuredContent: { ok: true, file_path: abs, body: rawBody, ...rawWindow } }
         : {}),
     };
   }
@@ -910,6 +916,13 @@ export default defineTool({
     const slice = allLines.slice(start, start + (args.tail ? Math.min(args.tail, limit) : limit));
 
     if (args.raw) {
+      const end = start + slice.length;
+      const rawWindow = {
+        total_lines: allLines.length,
+        start_line: slice.length === 0 ? null : start + 1,
+        end_line: slice.length === 0 ? null : end,
+        has_more: end < allLines.length,
+      };
       if (slice.length === 0) {
         return {
           content: [{ type: 'text' as const, text: '' }],
@@ -927,7 +940,7 @@ export default defineTool({
           // instead of returning undefined; reusing either name here would let
           // that exact guess silently "succeed" against the wrong field again.
           ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
-            ? { structuredContent: { ok: true, file_path: abs, body: '' } }
+            ? { structuredContent: { ok: true, file_path: abs, body: '', ...rawWindow } }
             : {}),
         };
       }
@@ -955,7 +968,7 @@ export default defineTool({
         }],
         // EI-22044192752243601 — see the empty-slice branch above for why.
         ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
-          ? { structuredContent: { ok: true, file_path: abs, body: rawBody } }
+          ? { structuredContent: { ok: true, file_path: abs, body: rawBody, ...rawWindow } }
           : {}),
       };
     }

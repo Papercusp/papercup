@@ -20,6 +20,7 @@ import { runPrivateProjectHistoryPage, type PrivateProjectHistorySeed } from './
 import { runPrivateCalendarPage, type PrivateCalendarSeed } from './portal-calendar-fixture';
 import { runPrivateLearningPage, type PrivateLearningSeed } from './portal-learning-fixture';
 import { observeWorkflowDenialCycle, runPrivateWorkflowsPage, type PrivateWorkflowsSeed } from './portal-workflows-fixture';
+import { runPrivateStatsPage, type PrivateStatsSeed } from './portal-stats-fixture';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -131,6 +132,8 @@ type PortalRosterBrowserInput = {
   learningSeed?: PrivateLearningSeed;
   workflows?: boolean;
   workflowsSeed?: PrivateWorkflowsSeed;
+  stats?: boolean;
+  statsSeed?: PrivateStatsSeed;
   calendarSeed?: PrivateCalendarSeed;
   overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
   hud?: boolean;
@@ -159,7 +162,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'workflows' | 'stats' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -171,7 +174,20 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.workflows ? `
+  const entry = input.stats ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { AdvScopeProvider } from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvShell.tsx'))};
+    import AdvStatsTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvStatsTab.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(AdvScopeProvider, null, React.createElement(AdvStatsTab)))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.workflows ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -419,7 +435,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -430,7 +446,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
     alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
-    loader: { '.css': input.brainstorm || input.calendar || input.workflows ? 'css' : 'empty', '.module.css': 'local-css',
+    loader: { '.css': input.brainstorm || input.calendar || input.workflows || input.stats ? 'css' : 'empty', '.module.css': 'local-css',
       '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
     ...(boundary ? { define: boundary.define } : {}),
     // Browser packages may export CSS only under development/production (e.g.
@@ -468,7 +484,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `History browser graph requires ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.workflows
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.stats
+    ? '/apps/operator-vite/src/components/adv/AdvStatsTab.tsx' : input.workflows
     ? '/apps/operator-vite/src/components/adv/AdvWorkflowsTab.tsx' : input.learning
     ? '/apps/operator-vite/src/components/adv/LearningTab.tsx' : input.calendar
     ? '/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx' : input.projectHistory
@@ -669,6 +686,13 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
         if (surface === 'brainstorm') savedRow.content = parsed.content;
         response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"ok":true}');
       });
+    } else if (input.stats && pathname.endsWith('/git/stats')) {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ stats: null, notAGitRepo: true }));
+    } else if (input.stats && pathname === '/api/zero-harness/rest-query') {
+      const rows = requestUrl.searchParams.get('name') === 'harnessProjects.lite'
+        ? [input.selected, input.neighbor].map(slug => ({ slug, path: '/preflight/' + slug, hasState: true, hasSpec: false })) : [];
+      response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ rows }));
     } else if (input.harnesses && pathname === '/api/zero-harness/rest-query') {
       const work = input.harnesses;
       const rows = requestUrl.searchParams.get('name') === 'harnessProjects.lite' ? [
@@ -717,12 +741,14 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
     if (options.brainstormHydration || options.prsRead || options.insightsRead) url.searchParams.set('slug', input.selected);
     if (input.learning) { url.searchParams.set('lview', 'learnings'); url.searchParams.set('scope', 'all'); }
+    if (input.stats) { url.searchParams.set('app', 'stats'); url.searchParams.set('slug', input.selected); }
     if (options.prsRead || options.insightsRead) {
       url.searchParams.set('app', options.insightsRead ? 'insights' : 'prs'); url.searchParams.set('q', 'preflight-search');
       url.searchParams.set('ws', 'preflight-workspace');
     }
     await page.goto(url.href);
-    try { await (input.workflows ? page.getByTestId('workflows-control-deck')
+    try { await (input.stats ? page.getByRole('heading', { name: 'Git statistics', exact: true })
+      : input.workflows ? page.getByTestId('workflows-control-deck')
       : input.learning ? page.getByRole('region', { name: 'Retained ledger', exact: true })
       : input.calendar ? page.locator('.pc-sched-cal .fc') : input.projectHistory ? page.locator('.pc-project-history')
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
@@ -924,6 +950,9 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       }
     } else if (input.learning) {
       assert.equal(await page.getByRole('textbox', { name: 'Filter retained items' }).count(), 1);
+    } else if (input.stats) {
+      await page.getByText(`${input.selected} is not a Git repository.`, { exact: true }).waitFor();
+      assert.equal(await page.getByLabel('Repository summary').count(), 0);
     } else if (input.calendar) {
       assert.equal(await page.getByRole('heading', { name: 'Calendar', exact: true }).count(), 1);
       assert.equal(await page.locator('.pc-sched-cal .fc').count(), 1);
@@ -1265,6 +1294,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     }
     if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
     if (input.insightsHarnesses) url.searchParams.set('slug', input.insightsHarnesses.selected);
+    if (input.statsSeed) {
+      const receipt = await runPrivateStatsPage(page, context, input.statsSeed, url, evidence);
+      assert.deepEqual(pageErrors, [], 'actual Stats controls must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.testing) {
       const receipt = await runPrivateTestingPage(page, context, input, url);
       assert.deepEqual(pageErrors, [], 'actual Testing registry and domain controls must stay browser-safe');

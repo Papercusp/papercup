@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { verifierSourceFiles } from '../verifier-source';
 import {
   committedBlobProbes,
   diffProvenanceSnapshots,
@@ -34,6 +35,39 @@ const entry = (over: Record<string, unknown> = {}) => ({
   added: null,
   deleted: null,
   ...over,
+});
+
+describe('focused router verifier archive provenance', () => {
+  it('uses the external receipt at both boundaries and rejects a changed archive under another Git root', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'router-archive-'));
+    const root = join(parent, 'source');
+    mkdirSync(join(parent, '.git'));
+    mkdirSync(root);
+    const test = join(root, 'journey.test.ts');
+    writeFileSync(test, 'export const test = true;\n');
+    const files = verifierSourceFiles(root);
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'f'.repeat(40),
+      testedInputs: files.map(({ path, sha256 }) => ({ path, sha256 })), files };
+    const path = join(parent, 'receipt.json');
+    writeFileSync(path, JSON.stringify(receipt));
+    writeFileSync(join(root, '.verifier-source.json'), JSON.stringify(receipt));
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', path);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', receipt.sourceCommit);
+    try {
+      const before = snapshotProvenance([test], root);
+      expect(before.head).toBe(receipt.sourceCommit);
+      expect(before.entries[0]).toMatchObject({ path: 'journey.test.ts', state: 'clean' });
+      expect(snapshotProvenance([test], root).head).toBe(receipt.sourceCommit);
+      writeFileSync(test, 'export const test = false;\n');
+      const after = snapshotProvenance([test], root);
+      expect(after.head).toBeNull();
+      expect(after.entries[0].state).toBe('unknown');
+      expect(after.provenanceError).toContain('changed journey.test.ts');
+      const stamp = provenanceResultFields(after, diffProvenanceSnapshots(before, after));
+      expect(stamp).toContain('head=unknown');
+      expect(stamp).toContain('provenance=drifted');
+    } finally { vi.unstubAllEnvs(); rmSync(parent, { recursive: true, force: true }); }
+  });
 });
 
 describe('provenance banner', () => {

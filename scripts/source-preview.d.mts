@@ -129,7 +129,7 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         path: string;
         sha256: string;
     }[];
-    files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
+    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
     gitCheckout?: {
         parentCommit: string;
         trackedFilesHash: string;
@@ -151,7 +151,7 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
         path: string;
         sha256: string;
     }[];
-    files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
+    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
     gitCheckout?: {
         parentCommit: string;
         trackedFilesHash: string;
@@ -173,7 +173,7 @@ export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnT
         path: string;
         sha256: string;
     }[];
-    files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
+    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
     gitCheckout?: {
         parentCommit: string;
         trackedFilesHash: string;

@@ -1734,15 +1734,23 @@ describe('buildConsoleOneliner', () => {
     'keeps the interactive supervisor alive when Ctrl+C interrupts the greeting',
     async () => {
       const dir = mkdtempSync(join(tmpdir(), 'papercup-console-sigint-'));
+      const home = join(dir, 'home');
+      mkdirSync(home);
+      const survivedMarker = 'TERMINAL_SURVIVED_SIGINT';
       const out = buildConsoleOneliner(
         dir,
-        { SHELL: '/bin/bash', PS1: 'PAPERCUSP-SURVIVED> ' },
+        {
+          HOME: home,
+          SHELL: '/bin/bash',
+          PS1: 'PAPERCUSP-SURVIVED> ',
+          PAPERCUSP_TEST_SURVIVED_SIGINT: survivedMarker,
+        },
         "printf 'GREETING_STARTED\\n'; sleep 30",
         APPEARANCE,
       );
       const terminal = nodePty.spawn('bash', ['--noprofile', '--norc', '-lc', out], {
         cwd: dir,
-        env: { ...process.env, TERM: 'xterm-256color' },
+        env: { ...process.env, HOME: home, TERM: 'xterm-256color' },
         cols: 100,
         rows: 30,
       });
@@ -1750,10 +1758,14 @@ describe('buildConsoleOneliner', () => {
       terminal.onData((data) => {
         captured += data;
       });
-      const exited = new Promise<void>((resolve) => terminal.onExit(() => resolve()));
-      const waitForOutput = async (needle: string) => {
+      let exitEvent: unknown = null;
+      const exited = new Promise<void>((resolve) => terminal.onExit((event) => {
+        exitEvent = event;
+        resolve();
+      }));
+      const waitForOutput = async (needle: string, fromOffset = 0) => {
         const deadline = Date.now() + 3_000;
-        while (!captured.includes(needle)) {
+        while (captured.indexOf(needle, fromOffset) === -1) {
           if (Date.now() >= deadline) {
             throw new Error(`timed out waiting for ${needle}; output=${JSON.stringify(captured)}`);
           }
@@ -1763,20 +1775,39 @@ describe('buildConsoleOneliner', () => {
 
       try {
         await waitForOutput('GREETING_STARTED');
+        const interruptOffset = captured.length;
         terminal.write('\x03');
-        await waitForOutput('^C');
-        terminal.write('echo TERMINAL_SURVIVED_SIGINT\n');
-        await waitForOutput('TERMINAL_SURVIVED_SIGINT');
+        await waitForOutput('^C', interruptOffset);
+
+        // The login shell's system profile can override inherited PS1. Set a
+        // controlled prompt after Ctrl+C, then require command output (not PTY
+        // echo of the input line) and the following prompt before sending exit.
+        const markerOffset = captured.length;
+        terminal.write("PS1='PAPERCUSP-SURVIVED> '; printf '%s\\n' \"$PAPERCUSP_TEST_SURVIVED_SIGINT\"\n");
+        await waitForOutput(survivedMarker, markerOffset);
+        const outputOffset = captured.indexOf(survivedMarker, markerOffset) + survivedMarker.length;
+        await waitForOutput('PAPERCUSP-SURVIVED> ', outputOffset);
+
         terminal.write('exit\n');
         await Promise.race([
           exited,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`terminal did not exit; output=${JSON.stringify(captured)}`)), 3_000),
-          ),
+          new Promise<void>((_, reject) => setTimeout(() => {
+            let pidState = 'alive';
+            try {
+              process.kill(terminal.pid, 0);
+            } catch (error) {
+              const code = (error as NodeJS.ErrnoException).code;
+              pidState = code === 'ESRCH' ? 'exited' : `unknown (${code ?? String(error)})`;
+            }
+            reject(new Error(
+              `terminal did not exit (ptyPid=${terminal.pid}, pidState=${pidState}, ` +
+              `onExit=${JSON.stringify(exitEvent)}); output=${JSON.stringify(captured)}`,
+            ));
+          }, 3_000)),
         ]);
 
         expect(captured).toContain('^C');
-        expect(captured).toContain('TERMINAL_SURVIVED_SIGINT');
+        expect(captured).toContain(survivedMarker);
       } finally {
         try {
           terminal.kill();

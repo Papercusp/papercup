@@ -14,6 +14,7 @@ import { seedPrivateProjectHistory, preflightPrivateProjectHistory } from './por
 import { seedPrivateCalendar, preflightPrivateCalendar } from './portal-calendar-fixture';
 import { seedPrivateLearning, preflightPrivateLearning } from './portal-learning-fixture';
 import { seedPrivateWorkflows, preflightPrivateWorkflows } from './portal-workflows-fixture';
+import { seedPrivateStats, preflightPrivateStats } from './portal-stats-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
@@ -331,6 +332,9 @@ async function coordCanary(health: unknown) {
     const workflowsSeed = process.env.ROSTER_WORKFLOWS_BROWSER_PROOF === '1'
       ? await seedPrivateWorkflows(workspace, evidence) : undefined;
     if (workflowsSeed) await preflightPrivateWorkflows(workflowsSeed, base, cookie(ownSession.token), evidence);
+    const statsSeed = process.env.ROSTER_STATS_BROWSER_PROOF === '1'
+      ? await seedPrivateStats(workspace, evidence, portalSourceRoot!) : undefined;
+    if (statsSeed) await preflightPrivateStats(statsSeed, base, cookie(ownSession.token), cookie(foreignSession.token), evidence);
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;
     if (process.env.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
@@ -419,6 +423,7 @@ async function coordCanary(health: unknown) {
       ...(calendarSeed ? { calendar: true, calendarSeed } : {}),
       ...(learningSeed ? { learning: true, learningSeed } : {}),
       ...(workflowsSeed ? { workflows: true, workflowsSeed } : {}),
+      ...(statsSeed ? { stats: true, statsSeed } : {}),
       ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
       ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
       ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),

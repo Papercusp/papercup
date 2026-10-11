@@ -1,21 +1,21 @@
 /** The maintained Workbench journey, executed in the owned native rig. */
-import { execFile } from 'node:child_process';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { runNativeChild } from '../../../scripts/tauri-surface-verify-reports.mts';
 
-const execute = promisify(execFile);
 const isolated = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED === '1';
 const sections = ['directory', 'overview', 'join', 'members', 'proposals', 'vote', 'delegation', 'work',
   'jobs', 'treasury', 'funding', 'billing', 'ownership', 'returns', 'reputation', 'marketplace', 'records', 'settings', 'inbox'];
 let evidence: string;
 let width: number;
+let workspaceId: string;
 
 describe.skipIf(!isolated)('DAO Workbench in the isolated native desktop', () => {
   beforeAll(async () => {
     const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE!;
     const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
+    workspaceId = profile.workspaceId;
     expect(profile.tauriPID).toBe(Number(process.env.VERIFY_TAURI_PID));
     expect(profile.tauriPID).toBeGreaterThan(0);
     expect(process.env.PAPERCUSP_TEST_RUNS_DB_URL).toBeTruthy();
@@ -25,12 +25,8 @@ describe.skipIf(!isolated)('DAO Workbench in the isolated native desktop', () =>
     width = Number(process.env.DAO_WORKBENCH_VIEWPORT!.split('x')[0]);
     expect([1440, 390]).toContain(width);
     // The runner moves TMPDIR; bridge discovery must retain the owned rig's root.
-    const result = await execute(process.execPath, ['--import', 'tsx',
-      join(sourceRoot, 'scripts/tauri-surface-verify-dao-workbench.mts'),
-      ...(width === 390 ? ['--viewport-only'] : [])], {
-      cwd: sourceRoot, env: { ...process.env, TMPDIR: profile.nativeTmpDir },
-      timeout: 300_000, maxBuffer: 4 * 1024 * 1024,
-    });
+    const result = await runNativeChild(profile, sourceRoot,
+      'scripts/tauri-surface-verify-dao-workbench.mts', width === 390 ? ['--viewport-only'] : []);
     const match = result.stdout.match(/P019_TAURI_SURFACE_VERIFY_OK leg=dao-workbench output=(.+)/);
     expect(match, result.stdout + '\n' + result.stderr).not.toBeNull();
     evidence = join(match![1].trim(), 'phases/native');
@@ -42,7 +38,7 @@ describe.skipIf(!isolated)('DAO Workbench in the isolated native desktop', () =>
     expect(identity.sourceCommit).toBe(receipt.sourceCommit);
     expect(identity.health.sha).toBe(receipt.sourceCommit.slice(0, 12));
     writeFileSync(profilePath + '.dao.json', JSON.stringify({ evidence,
-      workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, sourceCommit: receipt.sourceCommit }));
+      workspaceId, sourceCommit: receipt.sourceCommit }));
     console.log('DAO_NATIVE_E2E_MANIFEST=' + join(match![1].trim(), 'result.json'));
     console.log('DAO_NATIVE_E2E_SOURCE_RECEIPT=' + process.env.VERIFY_TAURI_SOURCE_RECEIPT);
   }, 330_000);
@@ -63,7 +59,7 @@ describe.skipIf(!isolated)('DAO Workbench in the isolated native desktop', () =>
       const slug = JSON.parse(response.body).slug;
       const scopes = JSON.parse(readFileSync(join(evidence, 'proposal-scopes.json'), 'utf8'));
       expect(scopes).toEqual([expect.objectContaining({ plan_slug: slug,
-        workspace_id: process.env.PAPERCUSP_WORKSPACE_ID, harness_slug: 'workbench-native' })]);
+        workspace_id: workspaceId, harness_slug: 'workbench-native' })]);
       expect(readFileSync(join(evidence, 'signed-decision.json'), 'utf8')).toContain('Plan admission approved');
     }
   });

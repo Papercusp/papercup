@@ -184,12 +184,16 @@ export default defineTool({
       if (!snapshot || snapshot.contentSnapshotHash !== read.row.contentHash) {
         return snapshotFailure('plan_snapshot_unavailable', 'The current plan body has no exact immutable revision snapshot; repair its revision spine before grading.');
       }
-      // Deterministic cutoff preserves retry identity. Timestamp normalization
-      // rounds to milliseconds; include the whole last millisecond, then verify
-      // the reconstruction rather than assuming there was no concurrent write.
-      const latest = Math.max(...clauseRead.value.map((clause) => Date.parse(clause.createdAt)));
+      // Deterministic cutoff preserves retry identity. Acceptance is separately
+      // timestamped from revision creation, so include both times in the snapshot.
+      // Timestamp normalization rounds to milliseconds; include the whole last
+      // millisecond, then verify reconstruction rather than assuming no concurrent write.
+      const latest = Math.max(...clauseRead.value.flatMap((clause) => [
+        Date.parse(clause.createdAt),
+        ...(clause.acceptedAt ? [Date.parse(clause.acceptedAt)] : []),
+      ]));
       if (!Number.isFinite(latest) || latest + 1 > Date.now()) {
-        return snapshotFailure('spec_snapshot_cutoff_unavailable', 'Clause creation times do not identify a completed snapshot.');
+        return snapshotFailure('spec_snapshot_cutoff_unavailable', 'Clause revision and acceptance times do not identify a completed snapshot.');
       }
       const clausesAsOf = new Date(latest + 1).toISOString();
       const reconstructed = await listSpecClauses({ harnessSlug, planSlug: args.slug, asOf: clausesAsOf });

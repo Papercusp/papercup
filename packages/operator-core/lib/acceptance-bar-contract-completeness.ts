@@ -20,7 +20,7 @@
  * the criterion; the snapshot from its projection), and the caller passes the
  * verdict in. A second copy here would be a fourth definition of "manual".
  */
-import { RECORDED_TEST_LAYERS, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
+import { RECORDED_TEST_LAYERS, registeredVitestFileLayer, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 
 export type AcceptanceBarContractGap =
@@ -44,10 +44,11 @@ export interface AcceptanceBarContractGapFinding {
   detail: string;
 }
 
-/** Layers a check file's NAME can prove. Mirrors the repo's test taxonomy: the unit
+/** Configured layers a check file can run at. Mirrors the repo's test taxonomy: the unit
  * Vitest config excludes `*.integration.test.*` / `*.browser.test.*`
  * (libs/test-config/src/vitest-config.ts), e2e is Playwright under `e2e/` or a
- * `*.spec.*`, and LLM scenarios live under `llm-testing/`. */
+ * `*.spec.*`, and LLM scenarios live under `llm-testing/`. Explicit file routes
+ * are shared with their Vitest projects and take precedence over the suffix. */
 // ONE taxonomy with the ledger recorder (EI-24434635346407728): a BAR may only require a
 // layer that a test_runs row can record, so this is the recorder's type, not a copy of it.
 export type CheckFileTestLayer = RecordedTestLayer;
@@ -67,10 +68,12 @@ export function normalizedTestLayer(value: string): string {
 }
 
 /**
- * The layer(s) a check file can satisfy, judged from its path alone; `null` when the
+ * The layer(s) a check file is configured to run at; `null` when the
  * path does not look like a test at all (then no mismatch can be claimed for the BAR).
  */
 export function checkFileTestLayers(path: string): ReadonlySet<CheckFileTestLayer> | null {
+  const configuredLayer = registeredVitestFileLayer(path);
+  if (configuredLayer) return new Set([configuredLayer]);
   const p = path.trim().replaceAll('\\', '/').toLowerCase();
   const layers = new Set<CheckFileTestLayer>();
   if (new RegExp(`\\.integration\\.test\\.${SCRIPT_EXT}$`).test(p)) layers.add('integration');

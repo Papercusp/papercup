@@ -1294,6 +1294,68 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       });
     });
 
+    it('records only safe timeout facts when the search times out', async () => {
+      const backend = mockBackend([]);
+      backend.search.mockRejectedValue(new MemoryTimeoutError(
+        'raw request query and session su-private must not be copied',
+        'request-budget',
+        'shared-budget',
+        5000,
+      ));
+      useBackend(backend);
+
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'raw request query',
+        harnessSlugs: ['papercusp'],
+        potSlugs: [],
+      });
+      await flush();
+
+      const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
+        admission: { timeout: Record<string, unknown> };
+      };
+      expect(admission.timeout).toEqual({
+        scope: 'request-budget', phase: 'shared-budget', elapsedMs: 5000,
+      });
+      expect(Object.keys(admission.timeout).sort()).toEqual(['elapsedMs', 'phase', 'scope']);
+      expect(JSON.stringify(admission.timeout)).not.toContain('raw request query');
+      expect(JSON.stringify(admission.timeout)).not.toContain('su-private');
+    });
+
+    it('records safe timeout facts when backend availability times out before search', async () => {
+      const backend = mockBackend([]);
+      backend.available.mockRejectedValue(new MemoryTimeoutError(
+        'raw request query and session su-private must not be copied',
+        'backend-operation',
+        'availability',
+        5000,
+      ));
+      try {
+        useBackend(backend);
+
+        await buildMemoryContextBlock({
+          userId: 'u1',
+          workspaceId: 'ws',
+          queryContext: 'raw request query',
+          harnessSlugs: ['papercusp'],
+          potSlugs: [],
+        });
+        await flush();
+
+        const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
+          admission: { timeout: Record<string, unknown> };
+        };
+        expect(admission.timeout).toEqual({
+          scope: 'backend-operation', phase: 'availability', elapsedMs: 5000,
+        });
+        expect(Object.keys(admission.timeout).sort()).toEqual(['elapsedMs', 'phase', 'scope']);
+      } finally {
+        resetMemoryDegradedForTest();
+      }
+    });
+
     it('writes EXACTLY ONE row per recall', async () => {
       useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
       await buildMemoryContextBlock({

@@ -17,6 +17,7 @@ import { applyOpVia, type TableProjection } from '../projection';
 import type { PeerLogOp } from '../peer-log';
 import { SNAPSHOT_TABLE_TAG, type SnapshotPayload, type SnapshotRow } from '../log-snapshot';
 import { composeEngineerIssueKey } from '../feature-issue-op-keys';
+import { listFederationRefusedOpCounters } from '../federation-refused-op-counter';
 
 const WS = 'ws-ei-proj';
 const SLUG = 'papercup';
@@ -63,6 +64,13 @@ beforeAll(async () => {
   // projection applies REMOTE-origin ops (echo-guarded), so no capture trigger is needed.
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL);
+  // Install the production local-only counter, including its real conflict key.
+  const countersMigration = readFileSync(new URL(
+    '../../../../../../libs/papercusp/libs/db/sql/474-federation-refused-op-counters.sql', import.meta.url,
+  ), 'utf8');
+  await db.sql.unsafe(countersMigration.split('\n').filter((line) =>
+    !line.startsWith('\\') && line.trim() !== 'BEGIN;' && line.trim() !== 'COMMIT;',
+  ).join('\n'));
   // WI-183/WI-2845/WI-2853: the shared _work-items-schema.ts fixture deliberately
   // omits stamp_local_federated_write_trg (constraints/triggers are added per-test,
   // not in the shared fixture — see that file's own header). But `work_items` IS a
@@ -174,6 +182,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  await db.sql`DELETE FROM harness_shared.federation_refused_op_counters`;
   await db.sql`DELETE FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task')`;
   await db.sql`DELETE FROM harness_shared.substrate_outbox`;
 });
@@ -803,12 +812,18 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
           created_at: new Date(999_000).toISOString(),
           created_ts: 999_000,
         }),
-        { ts: 999, origin: 'remote', authorPubkey: 'peer-b' },
+        { ts: 999, origin: 'remote', authorPubkey: 'peer-b', sourceLogKeyHex: 'distinct-receiver-log' },
       );
       const afterCollision = await getIssue('EI-13236');
       expect(afterCollision?.title).toBe('freshly captured local improvement'); // NOT clobbered
       expect(afterCollision?.fed_ts).toBe(100); // the peer-b write never applied at all
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('EI-13285 id collision'));
+      await p.writeToPg(issueRow({ issue_id: 'EI-13236', created_ts: 999_000 }), {
+        ts: 1000, origin: 'remote', authorPubkey: 'peer-b', sourceLogKeyHex: 'distinct-receiver-log',
+      });
+      expect(await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql)).toEqual([
+        { sourceHive: 'distinct-receiver-log', tableTag: 'engineer-issues', reason: 'distinct-entity-collision', count: 2 },
+      ]);
 
       // A genuine follow-up edit of the SAME issue (identical created_at, newer
       // fed_ts) must still apply normally — the guard must not block real convergence.
@@ -820,6 +835,9 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       const afterRealEdit = await getIssue('EI-13236');
       expect(afterRealEdit?.title).toBe('edited by the same author');
       expect(afterRealEdit?.state).toBe('resolved');
+      expect(await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql)).toEqual([
+        { sourceHive: 'distinct-receiver-log', tableTag: 'engineer-issues', reason: 'distinct-entity-collision', count: 2 },
+      ]);
     } finally {
       warnSpy.mockRestore();
     }
@@ -978,6 +996,9 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       expect(await getIssueBaseRows(id)).toEqual([{ feature_id: id, harness_slug: SLUG, status: 'open', origin: 'remote' }]);
       expect((await getIssue(id))?.title).toBe('resident');
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('EI-13285 id collision'));
+      expect(await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql)).toEqual([
+        { sourceHive: 'peer-b', tableTag: 'engineer-issues', reason: 'distinct-entity-collision', count: 1 },
+      ]);
     } finally {
       warnSpy.mockRestore();
     }
@@ -1000,6 +1021,9 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
 
       expect((await getIssueBaseRows(id)).map((r) => r.harness_slug)).toEqual(['twin-a', 'twin-b']);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('P-009 resident-row refusal'));
+      expect(await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql)).toEqual([
+        { sourceHive: 'peer-b', tableTag: 'engineer-issues', reason: 'resident-row-collision', count: 1 },
+      ]);
     } finally {
       warnSpy.mockRestore();
     }
@@ -1590,6 +1614,9 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
   const peer = (ts: number) => ({ ts, fedHlc: `${ts}:00000:peer`, origin: 'remote' as const, authorPubkey: 'peer' });
 
   async function seed(p: ReturnType<typeof proj>): Promise<void> {
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, title, status, origin, fed_ts)
+      VALUES (${WS}, 'other-resident', 'EI-g-resident', 'feature', 'resident feature', 'open', 'remote', 100)`;
     // Created at 1000 (issueRow's default); the chunk's op claims a different creation instant.
     await p.writeToPg(issueRow({ issue_id: 'EI-g-collide', title: 'local distinct issue' }), peer(100));
     await p.writeToPg(issueRow({ issue_id: 'EI-g-older', title: 'stored older' }), peer(100));
@@ -1634,6 +1661,7 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
       );
     }
     rows.push(at('EI-g-collide', 6000, { title: 'remote distinct issue', created_ts: 999_000 }));
+    rows.push(at('EI-g-resident', 6000, { title: 'remote issue must not replace feature' }));
     rows.push(at('EI-g-older', 6001, { title: 'chunk wins' }));
     rows.push(at('EI-g-newer', 6002, { title: 'chunk loses under LWW' }));
     rows.push(
@@ -1672,7 +1700,9 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
        ORDER BY feature_id`;
   }
 
-  async function fold(snapshotLanes: number) {
+  async function fold(snapshotLanes: number, countersAvailable = true) {
+    if (countersAvailable) await db.sql`DELETE FROM harness_shared.federation_refused_op_counters`;
+    await db.sql`DELETE FROM harness_shared.work_items WHERE feature_id = 'EI-g-resident'`;
     await db.sql`DELETE FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task')`;
     const p = proj();
     await seed(p);
@@ -1689,8 +1719,30 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
       batchApply: { maxOps: 25, maxMs: 60_000, snapshotLanes },
     });
     const winners = Object.fromEntries([...cursor.winners].map(([k, v]) => [k, v.ts]));
-    return { res, rows: await snapshot(), position: cursor.positions.get('peer-log'), cursor, winners };
+    const counters = (countersAvailable
+      ? await listFederationRefusedOpCounters({ workspaceId: WS, harnessSlug: SLUG }, db.sql) : [])
+      .sort((a, b) => a.reason.localeCompare(b.reason));
+    return { res, rows: await snapshot(), position: cursor.positions.get('peer-log'), cursor, winners, counters };
   }
+
+  it('a failed counter statement does not abort accepted rows in per-op or snapshot-group batches', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await db.sql`ALTER TABLE harness_shared.federation_refused_op_counters RENAME TO unavailable_refusal_counters`;
+    try {
+      for (const lanes of [1, 4]) {
+        const result = await fold(lanes, false);
+        expect(result.rows).toHaveLength(66);
+        expect(result.position).toBe(1);
+        expect(result.cursor.applyFailures?.get('peer-log')).toBeUndefined();
+        expect(result.rows.find((r) => r.feature_id === 'EI-g-older')?.title).toBe('chunk wins');
+        expect(result.rows.find((r) => r.feature_id === 'EI-g-collide')?.title).toBe('local distinct issue');
+      }
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[federation-refused-op] counter bump failed'));
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.unavailable_refusal_counters RENAME TO federation_refused_op_counters`;
+      warnSpy.mockRestore();
+    }
+  });
 
   it('matches per-op writes row for row, refusing the same rows, while the lanes write in groups', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -1699,7 +1751,12 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
       const grouped = await fold(4);
 
       expect(grouped.rows).toEqual(perOp.rows);
-      expect(grouped.rows).toHaveLength(65);
+      expect(grouped.counters).toEqual(perOp.counters);
+      expect(grouped.counters).toEqual([
+        { sourceHive: 'peer-log', tableTag: 'engineer-issues', reason: 'distinct-entity-collision', count: 1 },
+        { sourceHive: 'peer-log', tableTag: 'engineer-issues', reason: 'resident-row-collision', count: 1 },
+      ]);
+      expect(grouped.rows).toHaveLength(66);
       expect(grouped.position).toBe(1);
       expect(perOp.position).toBe(1);
       expect(grouped.cursor.applyFailures?.get('peer-log')).toBeUndefined();
@@ -1712,6 +1769,7 @@ describe('P-536: snapshot-lane group writes leave the same rows as per-op writes
 
       const byId = new Map(grouped.rows.map((r) => [r.feature_id as string, r]));
       expect(byId.get('EI-g-collide')?.title).toBe('local distinct issue');
+      expect(byId.get('EI-g-resident')).toMatchObject({ harness_slug: 'other-resident', item_kind: 'feature', title: 'resident feature' });
       expect(byId.get('EI-g-older')?.title).toBe('chunk wins');
       expect(byId.get('EI-g-newer')?.title).toBe('stored newer');
       expect(byId.get('EI-g-wd-loser')).toMatchObject({ status: 'resolved', title: 'terminal signal' });

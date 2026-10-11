@@ -1,5 +1,75 @@
 import { describe, expect, it } from 'vitest';
-import { describeConflicts, findBackupLockConflicts, normalizeMigrationSql } from './backup-lock-migration-proof';
+import type { Sql } from 'postgres';
+import {
+  describeConflicts,
+  findBackupLockConflicts,
+  inspectBackupRendezvousForMigration,
+  normalizeMigrationSql,
+} from './backup-lock-migration-proof';
+
+function fakeSql(options: { acquired: boolean; lockedRelations?: string[] }): { client: Sql; queries: string[] } {
+  const queries: string[] = [];
+  const respond = (query: string) => {
+    queries.push(query);
+    if (query.includes('pg_try_advisory_lock')) return Promise.resolve([{ acquired: options.acquired }]);
+    if (query.includes('pg_advisory_unlock')) return Promise.resolve([{ released: true }]);
+    if (query.includes('WITH RECURSIVE locked AS')) {
+      return Promise.resolve((options.lockedRelations ?? []).map((name) => ({ name })));
+    }
+    throw new Error('unexpected SQL in fake postgres client');
+  };
+  const client = Object.assign(
+    (strings: TemplateStringsArray) => respond(strings.join('')),
+    {
+      array: (values: unknown[]) => values,
+      unsafe: (query: string) => respond(query),
+    },
+  ) as unknown as Sql;
+  return { client, queries };
+}
+
+describe('inspectBackupRendezvousForMigration', () => {
+  it('releases a successful probe lock and leaves the normal rendezvous path selected', async () => {
+    const { client, queries } = fakeSql({ acquired: true });
+    await expect(
+      inspectBackupRendezvousForMigration(client, { file: '1438-safe.sql', sqlText: 'CREATE TABLE new_table (id int);' }),
+    ).resolves.toEqual({ rendezvousBusy: false, conflicts: [] });
+    expect(queries.some((query) => query.includes('pg_advisory_unlock'))).toBe(true);
+    expect(queries.some((query) => query.includes('WITH RECURSIVE locked AS'))).toBe(false);
+  });
+
+  it('proves a busy rendezvous safe when the current backup locks only unrelated relations', async () => {
+    const { client } = fakeSql({ acquired: false, lockedRelations: ['session_archive_files'] });
+    await expect(
+      inspectBackupRendezvousForMigration(client, {
+        file: '1438-safe.sql',
+        sqlText: 'ALTER TABLE harness_shared.trigger_bindings ADD COLUMN note text;',
+      }),
+    ).resolves.toEqual({ rendezvousBusy: true, conflicts: [] });
+  });
+
+  it('keeps the blocking path for overlapping and unprovable migrations', async () => {
+    const overlap = fakeSql({ acquired: false, lockedRelations: ['trigger_bindings'] });
+    const overlapResult = await inspectBackupRendezvousForMigration(overlap.client, {
+      file: '1438-overlap.sql',
+      sqlText: 'ALTER TABLE harness_shared.trigger_bindings ADD COLUMN note text;',
+    });
+    expect(overlapResult.rendezvousBusy).toBe(true);
+    expect(overlapResult.conflicts).toEqual([
+      { file: '1438-overlap.sql', subject: 'trigger_bindings', reason: 'names-locked-relation' },
+    ]);
+
+    const unprovable = fakeSql({ acquired: false });
+    const unprovableResult = await inspectBackupRendezvousForMigration(unprovable.client, {
+      file: '1438-dynamic.sql',
+      sqlText: "DO $$ BEGIN EXECUTE format('ALTER TABLE %I ADD c int', t); END $$;",
+    });
+    expect(unprovableResult.rendezvousBusy).toBe(true);
+    expect(unprovableResult.conflicts).toEqual([
+      { file: '1438-dynamic.sql', subject: 'EXECUTE (dynamic SQL)', reason: 'unprovable-statement' },
+    ]);
+  });
+});
 
 // WI-10003357 — the relation-scoped proof that lets boot apply pending
 // migrations while a backup still holds the migration rendezvous. A false

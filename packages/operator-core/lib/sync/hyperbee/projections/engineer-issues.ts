@@ -43,6 +43,7 @@ import {
   WATCHDOG_IDENTITY_INDEX,
 } from './work-items-replay-identity-indexes';
 import { isDistinctEntityCollision } from './distinct-entity-collision';
+import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -634,6 +635,8 @@ interface IssueUpsertInput {
  */
 interface IssueWrite {
   input: IssueUpsertInput;
+  /** Keep receiver attribution through snapshot grouping and resident-row landing. */
+  sourceHive: string | null;
   /** WI-6327: the wire's creation instant, the only one the EI-13285 guard trusts. Null fails open. */
   createdTs: number | null;
   /** The wire payload as received, which the identity-conflict coalesce reads. */
@@ -705,6 +708,7 @@ function issueWrite(
     },
     createdTs: row.created_ts ?? null,
     payload: row.payload,
+    sourceHive: provenance.sourceLogKeyHex ?? provenance.authorPubkey ?? null,
   };
 }
 
@@ -805,7 +809,7 @@ async function writeToPg(
  * whole set. It must run BEFORE the upsert, which would otherwise blindly clobber a
  * distinct local record sharing this issue_id.
  */
-async function distinctEntityCollisions(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<Set<IssueWrite>> {
+async function distinctEntityCollisions(sql: postgres.Sql, harnessSlug: string, writes: readonly IssueWrite[]): Promise<Set<IssueWrite>> {
   const refused = new Set<IssueWrite>();
   // WI-6327: a write without a carried creation instant fails open, unread.
   const judged = writes.filter((w): w is IssueWrite & { createdTs: number } => w.createdTs !== null);
@@ -829,6 +833,13 @@ async function distinctEntityCollisions(sql: postgres.Sql, writes: readonly Issu
         `These are two distinct issues that were allocated the same id; the incoming op is DROPPED ` +
         `(not applied) to avoid destroying the local record. The authoring peer's own copy is unaffected.`,
     );
+    if (w.input.origin === 'remote') await bumpFederationRefusedOp({
+      workspaceId: w.input.workspace_id,
+      harnessSlug,
+      sourceHive: w.sourceHive,
+      tableTag: 'engineer-issues',
+      reason: 'distinct-entity-collision',
+    }, sql, projectionStatementFailed);
     refused.add(w);
   }
   return refused;
@@ -854,6 +865,7 @@ const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task'
 async function landOnResidentRows(
   sql: postgres.Sql,
   workspaceId: string,
+  harnessSlug: string,
   writes: readonly IssueWrite[],
 ): Promise<IssueWrite[]> {
   if (writes.length === 0) return [];
@@ -883,6 +895,13 @@ async function landOnResidentRows(
           `(scope harness_slug=${w.input.harness_slug}) is already held in workspace ${workspaceId} by ` +
           `${here.map((r) => `${r.harness_slug}[${r.item_kind}]`).join(', ')}; refusing the op instead of minting a twin`,
       );
+      if (w.input.origin === 'remote') await bumpFederationRefusedOp({
+        workspaceId,
+        harnessSlug,
+        sourceHive: w.sourceHive,
+        tableTag: 'engineer-issues',
+        reason: 'resident-row-collision',
+      }, sql, projectionStatementFailed);
       continue;
     }
     landed.push({ ...w, input: { ...w.input, harness_slug: resident.harness_slug } });
@@ -892,9 +911,9 @@ async function landOnResidentRows(
 
 /** One issue write on its own: the per-op path, and what a failed group write replays. */
 async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts, incoming: IssueWrite): Promise<void | false> {
-  const [write] = await landOnResidentRows(sql, opts.workspaceId, [incoming]);
+  const [write] = await landOnResidentRows(sql, opts.workspaceId, opts.harnessSlug, [incoming]);
   if (!write) return false;
-  if ((await distinctEntityCollisions(sql, [write])).size > 0) return false;
+  if ((await distinctEntityCollisions(sql, opts.harnessSlug, [write])).size > 0) return false;
   try {
     await upsertIssues(sql, [write]);
   } catch (error) {
@@ -943,11 +962,11 @@ async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts,
  * check sees what it would have seen alone. Any failure (an identity-index 23505 among
  * them) rolls the group back and the lane replays each write through {@link writeIssue}.
  */
-async function writeIssueGroup(sql: postgres.Sql, workspaceId: string, incoming: readonly IssueWrite[]): Promise<void> {
+async function writeIssueGroup(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts, incoming: readonly IssueWrite[]): Promise<void> {
   // P-009: two writes that land on the same resident row make the one-statement upsert
   // conflict with itself; that fails the group, which then replays each write alone.
-  const writes = await landOnResidentRows(sql, workspaceId, incoming);
-  const refused = await distinctEntityCollisions(sql, writes);
+  const writes = await landOnResidentRows(sql, opts.workspaceId, opts.harnessSlug, incoming);
+  const refused = await distinctEntityCollisions(sql, opts.harnessSlug, writes);
   const kept = refused.size === 0 ? writes : writes.filter((w) => !refused.has(w));
   if (kept.length > 0) await upsertIssues(sql, kept);
 }
@@ -956,7 +975,7 @@ function issueGroupWriter(opts: EngineerIssuesProjectionOpts): ProjectionGroupWr
   return {
     name: 'engineer-issues',
     rowOf: (w) => `${w.input.harness_slug}\u0000${w.input.feature_id}`,
-    writeMany: (sql, writes) => writeIssueGroup(sql, opts.workspaceId, writes),
+    writeMany: (sql, writes) => writeIssueGroup(sql, opts, writes),
     writeOne: async (w) => writeIssue(await projectionSql(opts.sql ?? getOrgPg().sql), opts, w),
   };
 }

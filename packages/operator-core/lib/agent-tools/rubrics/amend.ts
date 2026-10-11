@@ -9,7 +9,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { projectBoundedPayload } from '@papercusp/tooldef';
+import { projectBoundedPayload, type AbortCompletionReceipt, type ToolResult } from '@papercusp/tooldef';
+import { completedResultPayload } from '../abort-completion-payload';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
@@ -171,14 +172,33 @@ async function postPreviewApproval(
 }
 
 const AMEND_REVIEW_PRESERVE_PATHS = [
+  'receipt.poll.tool',
+  'receipt.poll.args.rubricRef',
+  'receipt.poll.args.idempotencyKey',
+  'receipt.registered',
+  'receipt.rubricRef',
+  'receipt.idempotencyKey',
   'review.state',
   'review.conversationId',
   'review.previewPostRef',
   'review.next',
   'ok',
   'dryRun',
-  'preview.approval',
+  'preview.approvalRef',
 ] as const;
+
+// The result door is ~6000 characters; leave room for its wire envelope and guidance.
+export const AMEND_REPLY_BUDGET_CHARS = 5_000;
+
+export function amendAbortCompletionReceipt(_args: unknown, result: ToolResult): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const receipt = payload?.receipt as Record<string, unknown> | undefined;
+  if (payload?.ok === true && receipt?.registered === true &&
+    typeof receipt.rubricRef === 'string' && typeof receipt.idempotencyKey === 'string') {
+    return { status: 'recorded', effectRef: `rubric-amend:${receipt.rubricRef}:${receipt.idempotencyKey}` };
+  }
+  return { status: 'recovery-incomplete', reason: 'No registered amendment receipt was confirmed.', failures: ['unconfirmed-amend-receipt'] };
+}
 
 function shapeAmendReviewPayload(
   data: unknown,
@@ -186,17 +206,29 @@ function shapeAmendReviewPayload(
 ): unknown {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return data;
   const record = data as Record<string, unknown>;
-  if (record.review === null || typeof record.review !== 'object' || Array.isArray(record.review)) return data;
-
   const originalChars = JSON.stringify(data).length;
-  const targetChars = tier === 'trimmed' ? 12_000 : 24_000;
+  const targetChars = AMEND_REPLY_BUDGET_CHARS;
   if (originalChars <= targetChars) return data;
 
-  return projectBoundedPayload(data, {
+  // Keep the complete approval in the existing durable receipt. A large approval must
+  // never be copied into a preserved field that makes the projector exceed its budget.
+  const preview = record.preview as Record<string, unknown> | undefined;
+  const { approval: _approval, ...previewSummary } = preview ?? {};
+  const review = record.review as Record<string, unknown> | undefined;
+  const receipt = record.receipt as Record<string, unknown> | undefined;
+  const compact = preview ? {
+    ...record,
+    preview: {
+      ...previewSummary,
+      approvalRef: review?.previewPostRef ?? (receipt?.poll ? { ...receipt.poll as object, path: 'result.preview.approval' } : undefined),
+    },
+  } : record;
+
+  return projectBoundedPayload(compact, {
     toolName: 'rubrics:amend',
     tier,
     originalChars,
-    targetChars,
+    targetChars: targetChars - 1_000,
     preservePaths: AMEND_REVIEW_PRESERVE_PATHS,
   });
 }
@@ -217,7 +249,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .boolean()
       .optional()
       .describe(
-        'Preview without writing. For BAR approval, post preview.approval as a work_items:comment, then repeat with reviewPreviewPost (see chaining).',
+        'Preview without applying. Prefer requestReview:{workItemId} to post approval and start review in one call; manual reviewPreviewPost remains supported.',
       ),
     reviewPreviewPost: z
       .string()
@@ -432,7 +464,7 @@ export default defineTool({
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
     chaining:
-      "Started BAR: read the subject plan's `## Requirements`/`## Design`; map each changed BAR to a non-dropped P-NNN item in `### Bar-to-work map for this plan` (removals exempt). Preview with `dryRun:true`; post `preview.approval` as a `work_items:comment`; retry with `reviewPreviewPost:'thread-post:<preview-id>'` and follow `review.next`. After `approve thread-post:<preview-post-id>`, apply with `approvalRef:'thread-post:<answer-id>'`. The relevance router chooses the outside-lineage reviewer; never pick or message a reviewer yourself; do not create a counter-sign work-item. Posts are immutable workspace/id refs (no hash transcription) and visible on every surface; a payload needs payloadTier, unreadable in some views. Full contract: /internal/docs/agent-insights/unified-requirement-contract.",
+      "Started BAR: read the subject plan's `## Requirements`/`## Design`; map changes to a non-dropped P-NNN item in `### Bar-to-work map for this plan` (removals exempt). Prefer `dryRun:true, requestReview:{workItemId}` to post approval and start review in one call. Manual compatibility: post preview.approval and pass `reviewPreviewPost:'thread-post:<preview-id>'`. Follow review.next; after `approve thread-post:<preview-post-id>`, apply the same patch with `approvalRef:'thread-post:<answer-id>'`. Large previews return an approvalRef/receipt. The relevance router chooses the outside-lineage reviewer; never pick or message one yourself; do not create a counter-sign work-item. Posts are immutable workspace/id refs (no hash transcription). Full contract: /internal/docs/agent-insights/unified-requirement-contract.",
     seeAlso: [
       'rubrics:propose (whole-document revision)',
       'rubrics:get (read before amending)',
@@ -443,6 +475,7 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  abortCompletionReceipt: amendAbortCompletionReceipt,
   args: rubricsAmendArgs,
   shape: {
     standard: shapeAmendReviewPayload,
@@ -477,6 +510,11 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    const foregroundDeadline = Math.min(
+      Date.now() + amendForegroundBudgetMs(),
+      ctx.deadlineAtMs === undefined ? Infinity : ctx.deadlineAtMs - 1_000,
+    );
+    const remainingBudget = () => Math.max(0, foregroundDeadline - Date.now());
     // ⚠ DO NOT pass `by: id.ownerId` here. AMENDING IS NOT AUTHORING (EI-10746 follow-on,
     // 2026-07-12). A rubric persists as a PLAN, and a plan has ONE `owner` — so
     // planRowToRubric projects createdBy AND proposedBy AND ratifiedBy from that single
@@ -532,6 +570,11 @@ export default defineTool({
       const receiptKey = previewSource
         ? reviewReceiptKey(args, identity, previewSource)
         : 'preview-' + randomUUID();
+      let registered = false;
+      const receipt = () => ({
+        idempotencyKey: receiptKey, rubricRef: args.rubricRef, registered,
+        poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey: receiptKey } },
+      });
       const run = trackAmendRun(receiptKey, args.rubricRef, async (): Promise<Record<string, unknown>> => {
         let preview: Awaited<ReturnType<typeof previewAcceptanceBarAmendment>>;
         try {
@@ -590,28 +633,23 @@ export default defineTool({
           throw error;
         }
         return { ok: true, dryRun: true, preview, review };
-      });
-      const settled = await settleWithin(run, amendForegroundBudgetMs());
+      }, { onRegistered: () => { registered = true; } });
+      const settled = await settleWithin(run, remainingBudget(), ctx.signal);
       if (settled.kind === 'rejected') {
         const refusal = proposeRubricInvalidArgsRefusal(settled.error);
         if (refusal) return { data: { ...refusal, dryRun: true } };
         throw settled.error;
       }
       const payload = settled.kind === 'resolved'
-        ? settled.value
+        ? (settled.value.ok === true ? { ...settled.value, receipt: receipt() } : settled.value)
         : {
             ok: true,
             dryRun: true,
             pending: true,
             idempotencyKey: receiptKey,
-            receipt: {
-              idempotencyKey: receiptKey,
-              rubricRef: args.rubricRef,
-              poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey: receiptKey } },
-            },
+            receipt: receipt(),
             note:
-              'The dry-run preview is still running after ' + Math.round(amendForegroundBudgetMs() / 1000) +
-              's and continues server-side. Poll rubrics:amend-status with this receipt; dryRun applies no writes.',
+              'The preview reached its foreground response deadline and continues server-side. Poll rubrics:amend-status with this receipt; dryRun does not apply the amendment.',
           };
       return { data: payload };
     }
@@ -622,27 +660,29 @@ export default defineTool({
     // a minted one is deterministic, so a re-issued identical request still replays.
     const idempotencyKey =
       input.idempotencyKey ?? mintAmendmentIdempotencyKey(input, (await getRubric(args.rubricRef))?.revision);
+    let registered = false;
+    const receipt = () => ({
+      idempotencyKey, rubricRef: args.rubricRef, registered,
+      poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey } },
+    });
     const run = trackAmendRun(
       idempotencyKey,
       args.rubricRef,
       () => executeAmend({ ...input, idempotencyKey }, args.rubricRef),
+      { onRegistered: () => { registered = true; } },
     );
-    const settled = await settleWithin(run, amendForegroundBudgetMs());
+    const settled = await settleWithin(run, remainingBudget(), ctx.signal);
     if (settled.kind === 'rejected') throw settled.error;
     const payload =
       settled.kind === 'resolved'
-        ? { ...settled.value, idempotencyKey }
+        ? { ...settled.value, idempotencyKey, receipt: receipt() }
         : {
             ok: true,
             pending: true,
             idempotencyKey,
-            receipt: {
-              idempotencyKey,
-              rubricRef: args.rubricRef,
-              poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey } },
-            },
+            receipt: receipt(),
             note:
-              `The amendment is still running after ${Math.round(amendForegroundBudgetMs() / 1000)}s and continues ` +
+              'The amendment reached its foreground response deadline and continues ' +
               'server-side. Poll rubrics:amend-status with this receipt; do not re-issue the amend while it reads running.',
           };
     return { data: payload };
@@ -664,10 +704,14 @@ type Settled<T> = { kind: 'resolved'; value: T } | { kind: 'rejected'; error: un
 /** Wait up to `budgetMs` for `run`. On `pending`, `run` keeps going; its
  *  rejection is already observed by trackAmendRun's receipt, so it is swallowed
  *  here rather than surfacing as an unhandled rejection. */
-async function settleWithin<T>(run: Promise<T>, budgetMs: number): Promise<Settled<T>> {
+async function settleWithin<T>(run: Promise<T>, budgetMs: number, signal?: AbortSignal): Promise<Settled<T>> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
   const pending = new Promise<Settled<T>>((resolve) => {
     timer = setTimeout(() => resolve({ kind: 'pending' }), budgetMs);
+    onAbort = () => resolve({ kind: 'pending' });
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
   });
   const outcome = run.then(
     (value): Settled<T> => ({ kind: 'resolved', value }),
@@ -677,6 +721,7 @@ async function settleWithin<T>(run: Promise<T>, budgetMs: number): Promise<Settl
     return await Promise.race([outcome, pending]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
   }
 }
 

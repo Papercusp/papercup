@@ -1,19 +1,31 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const seams = vi.hoisted(() => ({ execute: vi.fn(), authenticate: vi.fn(),
+const seams = vi.hoisted(() => ({ execute: vi.fn(), child: vi.fn(), authenticate: vi.fn(),
   reportRuntime: vi.fn(), end: vi.fn() }));
-vi.mock('node:child_process', () => ({ execFileSync: seams.execute }));
+vi.mock('node:child_process', () => ({ execFileSync: seams.execute, execFile: seams.child }));
 vi.mock('../../../libs/generic/tauri-verify/src/bridge-client', () => ({ bridgeEval: seams.authenticate }));
 vi.mock('./runtime-vintage', () => ({ reportRuntimeVintage: seams.reportRuntime,
   listRuntimeVintage: async () => [], measureRuntimeVintageEnvironment: () => 'measured-native' }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: seams.end } }) }));
-import { runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
+import { nativeChildEnvironment, runNativeChild, runNativeE2e } from '../../../scripts/tauri-surface-verify-reports.mts';
 import { verifierSourceFiles } from './verifier-source';
 
 describe('Reports native launcher at the Vitest temp-directory boundary', () => {
+  it('loads the production launcher and compatibility source API through the actual Node TS runtime', async () => {
+    const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+      'const m=await import("./scripts/tauri-surface-verify-reports.mts"); '
+      + 'const old=await import("@papercusp/verification-harness/verifier-source"); '
+      + 'if([m.runNativeE2e,m.runNativeChild,m.nativeChildEnvironment,old.verifyVerifierSourceSync].some(x=>typeof x!=="function")) throw Error("Missing native source API"); '
+      + 'console.log("NATIVE_SOURCE_RUNTIME_IMPORTS_OK");'], {
+      cwd: fileURLToPath(new URL('../../../', import.meta.url)), encoding: 'utf8', timeout: 30_000,
+    });
+    expect(output.trim()).toBe('NATIVE_SOURCE_RUNTIME_IMPORTS_OK');
+  });
   let root: string;
   let nativeRoot: string;
   let runnerRoot: string;
@@ -53,6 +65,8 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receiptPath);
     vi.stubEnv('VERIFY_TAURI_SOURCE_REF', source);
     vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'verify-tauri-isolated-90');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'caller-workspace');
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -61,6 +75,7 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
 
   it.each([false, true])('preserves the parent discovery root and removes the profile after runner failure=%s', async (fail) => {
     seams.execute.mockImplementation((_command, args, options) => {
+      if (_command === process.execPath) return '';
       profilePath = options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
       // This is the boundary that caused the incident: the running native
       // bridge stays in its original directory while the test runner moves.
@@ -69,11 +84,13 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       const profile = JSON.parse(readFileSync(profilePath, 'utf8'));
       expect(profile.nativeTmpDir).toBe(nativeRoot);
       expect(profile.tauriPID).toBe(process.pid);
+      expect(profile.workspaceId).toBe('verify-tauri-isolated-90');
       expect(existsSync(join(tmpdir(), `tauri-dev-bridge-${profile.tauriPID}.token`))).toBe(false);
       expect(JSON.parse(readFileSync(join(profile.nativeTmpDir,
         `tauri-dev-bridge-${profile.tauriPID}.token`), 'utf8')).pid).toBe(process.pid);
       expect(existsSync(join(options.cwd, '.git'))).toBe(false);
       expect(options.cwd).toBe(sourceRoot);
+      expect(options.env.PAPERCUSP_TEST_RUN_COMMIT).toBe('a'.repeat(40));
       expect(args).toEqual(['run', 'test:file', '--', 'packages/operator-core/lib/reports-library-native.e2e.test.ts']);
       expect(args.at(-1)).toBe('packages/operator-core/lib/reports-library-native.e2e.test.ts');
       if (fail) throw new Error('native test failed');
@@ -81,24 +98,24 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     });
     if (fail) await expect(runNativeE2e()).rejects.toThrow('native test failed');
     else await runNativeE2e();
-    expect(seams.execute).toHaveBeenCalledTimes(1);
+    expect(seams.execute).toHaveBeenCalledTimes(2);
     expect(existsSync(profilePath)).toBe(false);
   });
 
   it('runs the AI consumer through the same committed-source and native runtime boundary', async () => {
     const file = 'packages/operator-core/lib/blueprint/morning-ai-intelligence.native.e2e.test.ts';
     await runNativeE2e([file]);
-    const [command, args, options] = seams.execute.mock.calls[0];
+    const [command, args, options] = seams.execute.mock.calls[1];
     expect(command).toBe('npm');
     expect(args).toEqual(['run', 'test:file', '--', file]);
     expect(options.cwd).toBe(sourceRoot);
-    expect(seams.reportRuntime).toHaveBeenCalledTimes(1);
+    expect(seams.execute.mock.calls[0][0]).toBe(process.execPath);
     expect(existsSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)).toBe(false);
   });
 
   it.each([{ files: [] }, { files: ['../foreign.e2e.test.ts'] }, { files: ['--ref=other'] }])(
     'refuses invalid native test selection $files', async ({ files }) => {
-    await expect(runNativeE2e(files)).rejects.toThrow('Use maintained operator-core native E2E test files');
+    await expect(runNativeE2e(files)).rejects.toThrow('Use maintained operator-core native E2E or integration test files');
     expect(seams.authenticate).not.toHaveBeenCalled();
     expect(seams.reportRuntime).not.toHaveBeenCalled();
     expect(seams.execute).not.toHaveBeenCalled();
@@ -139,5 +156,35 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     expect(seams.authenticate).not.toHaveBeenCalled();
     expect(seams.reportRuntime).not.toHaveBeenCalled();
     expect(seams.execute).not.toHaveBeenCalled();
+  });
+
+  it('restores the private workspace after the worker scrub, preserving caller ledger attribution', async () => {
+    const profile = { tauriPID: process.pid, nativeTmpDir: nativeRoot, workspaceId: 'verify-tauri-isolated-90' };
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+    vi.stubEnv('TMPDIR', runnerRoot);
+    seams.child.mockImplementation((_command, _args, options, callback) => {
+      expect(options.env.PAPERCUSP_WORKSPACE_ID).toBe(profile.workspaceId);
+      expect(options.env.PAPERCUSP_WORKSPACE).toBe(profile.workspaceId);
+      expect(options.env.PAPERCUSP_TEST_RUN_WORKSPACE).toBe('caller-workspace');
+      expect(options.env.TMPDIR).toBe(nativeRoot);
+      callback(null, 'journey output', '');
+    });
+    expect(await runNativeChild(profile, sourceRoot, 'scripts/native.mts')).toEqual({ stdout: 'journey output', stderr: '' });
+    expect(process.env.PAPERCUSP_WORKSPACE_ID).toBeUndefined();
+    expect(process.env.TMPDIR).toBe(runnerRoot);
+  });
+
+  it.each([undefined, 'caller-workspace'])('refuses missing or live workspace=%s before starting the child', async workspaceId => {
+    const profile = { tauriPID: process.pid, nativeTmpDir: nativeRoot, workspaceId: workspaceId as string };
+    expect(() => nativeChildEnvironment(profile)).toThrow('explicit private workspace');
+    expect(seams.child).not.toHaveBeenCalled();
+  });
+
+  it('retains the child startup stack, stdout and stderr when execution fails', async () => {
+    const failure = Object.assign(new Error('child startup'), { code: 1, signal: null });
+    seams.child.mockImplementation((_command, _args, _options, callback) => callback(failure, 'child manifest', 'assert.match: undefined workspace'));
+    const profile = { tauriPID: process.pid, nativeTmpDir: nativeRoot, workspaceId: 'verify-tauri-isolated-90' };
+    await expect(runNativeChild(profile, sourceRoot, 'scripts/native.mts')).rejects.toThrow(
+      /child startup[\s\S]*stdout:\nchild manifest[\s\S]*stderr:\nassert.match: undefined workspace/);
   });
 });

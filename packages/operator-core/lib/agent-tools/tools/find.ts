@@ -294,6 +294,12 @@ function nestedObjectProperties(
  */
 const NESTED_FIELDS_SEGMENT_MAX_CHARS = 320;
 
+// The bounded spec-evidence tuple carries the exact evidence-kind enum and
+// the current test fingerprint. Its enum vocabulary can grow independently;
+// give this one known shape a still-bounded allowance after eliding the three
+// optional fixture/rubric/environment dimensions.
+const SPEC_EVIDENCE_CURRENT_SEGMENT_MAX_CHARS = 400;
+
 /**
  * When a nested object is too wide for its parent's bounded segment, keep one
  * of its own nested-object fields attached to the parent. Prefer the first
@@ -441,6 +447,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     ['testFingerprint', 'fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'].some((name) =>
       Object.prototype.hasOwnProperty.call(tupleProperties, name),
     );
+  const segmentMaxChars = isSpecEvidenceCurrentItem
+    ? SPEC_EVIDENCE_CURRENT_SEGMENT_MAX_CHARS
+    : NESTED_FIELDS_SEGMENT_MAX_CHARS;
   // Keep conditional lifecycle contracts ahead of descriptive/legacy fields in
   // a bounded nested object. `work_items:complete` places
   // `rootCauseVerification` after the wide `verification` record and several
@@ -526,10 +535,10 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     oversized: boolean;
   } => {
     let entries = propertiesToRender.map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
-    if (includeDescriptions && entries.join(',').length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+    if (includeDescriptions && entries.join(',').length > segmentMaxChars) {
       entries = propertiesToRender.map(([name, raw]) => renderEntry(name, raw, false));
     }
-    const oversized = entries.some((entry) => entry.length > NESTED_FIELDS_SEGMENT_MAX_CHARS);
+    const oversized = entries.some((entry) => entry.length > segmentMaxChars);
     let body = '';
     let dropped = 0;
     const omitted = new Set<string>();
@@ -545,7 +554,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
         continue;
       }
       const candidate = body ? `${body},${entry}` : entry;
-      if (body && candidate.length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+      if (body && candidate.length > segmentMaxChars) {
         // Keep the child name/type discoverable even when its recursive shape is
         // larger than the remaining segment budget. Dropping the whole entry
         // made large contracts (notably completion.verification) disappear,
@@ -590,7 +599,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
         ];
         const selectedFallback = fallbackCandidates.find((candidate) => {
           const candidateWithBody = `${body},${candidate}`;
-          return candidate.length < entry.length && candidateWithBody.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS;
+          return candidate.length < entry.length && candidateWithBody.length <= segmentMaxChars;
         });
         if (selectedFallback) {
           body = `${body},${selectedFallback}`;

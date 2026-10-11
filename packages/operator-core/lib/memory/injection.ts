@@ -59,6 +59,7 @@ import {
   withMemoryTimeout,
   createMemoryWorkDeadline,
   type MemoryWorkDeadline,
+  type MemoryTimeoutTelemetry,
 } from './op-deadline';
 
 // P-016: Mirrors EPHEMERAL_BENCHMARK_SLUG_RE in harness/improvements/watchdog.ts.
@@ -539,6 +540,11 @@ function corpusAdmissionStats(corpus: CorpusLegResult | null): CorpusAdmissionSt
   } : null;
 }
 
+function memoryTimeoutTelemetry(error: unknown): MemoryTimeoutTelemetry | undefined {
+  if (!(error instanceof MemoryTimeoutError) || error.elapsedMs === null) return undefined;
+  return { scope: error.scope, phase: error.phase, elapsedMs: error.elapsedMs };
+}
+
 const emptyCorpusDrops = (): Record<CorpusAdmissionDropReason, number> => ({
   'ambient-excluded': 0,
   'self-session': 0,
@@ -986,7 +992,7 @@ async function buildBlockInner(
     .filter((slug) => typeof slug === 'string' && slug.length > 0)
     .slice(0, MAX_HARNESS_FANOUT);
   let earlyStatsSchedule: Promise<void> | null = null;
-  const writeEarlyZeroRecallStats = (): Promise<void> => {
+  const writeEarlyZeroRecallStats = (timeout?: MemoryTimeoutTelemetry): Promise<void> => {
     if (earlyStatsSchedule) return earlyStatsSchedule;
     earlyStatsSchedule = (async () => {
       try {
@@ -1034,6 +1040,7 @@ async function buildBlockInner(
             dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, jev: 0, nearDuplicate: 0, budget: 0 },
             byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
             corpus: corpusAdmissionStats(corpus),
+            ...(timeout ? { timeout } : {}),
           },
         });
       } catch (error) {
@@ -1065,7 +1072,7 @@ async function buildBlockInner(
     }
   } catch (err) {
     noteMemoryFailure(err);
-    await writeEarlyZeroRecallStats();
+    await writeEarlyZeroRecallStats(memoryTimeoutTelemetry(err));
     return null;
   } finally {
     mark('availableMs', Date.now() - tAvail);
@@ -1312,6 +1319,7 @@ async function buildBlockInner(
     }
   } catch (err) {
     noteMemoryFailure(err);
+    const timeout = memoryTimeoutTelemetry(err);
     if (!(err instanceof MemoryTimeoutError) && process.env.NODE_ENV !== 'test') {
       console.warn('[memory-injection] search failed:', (err as Error).message);
     }
@@ -1327,6 +1335,7 @@ async function buildBlockInner(
         truncated: false,
         dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, jev: 0, nearDuplicate: 0, budget: 0 },
         byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+        ...(timeout ? { timeout } : {}),
       },
     );
     return null;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import publicVitestConfig from '../../../apps/operator-public/vitest.config';
 import { RECORDED_TEST_LAYERS, recordedTestLayer } from '@papercusp/test-config/execution-details';
 import {
   acceptanceBarContractGaps,
@@ -18,7 +19,7 @@ const complete: AcceptanceBarContractGapInput = {
 const gapsOf = (input: Partial<AcceptanceBarContractGapInput>) =>
   acceptanceBarContractGaps({ ...complete, ...input }).map((finding) => finding.gap);
 
-describe('checkFileTestLayers — the repo test taxonomy, from the path alone', () => {
+describe('checkFileTestLayers — the repo test taxonomy and configured file routes', () => {
   it('classifies each canonical framework and refuses to guess for non-test paths', () => {
     expect([...checkFileTestLayers('lib/a.test.ts')!]).toEqual(['unit']);
     expect([...checkFileTestLayers('lib/a.integration.test.ts')!]).toEqual(['integration']);
@@ -26,6 +27,25 @@ describe('checkFileTestLayers — the repo test taxonomy, from the path alone', 
     expect([...checkFileTestLayers('apps/operator/e2e/flow.spec.ts')!]).toEqual(['e2e']);
     expect([...checkFileTestLayers('lib/llm-testing/scenarios/su/a.test.ts')!].sort()).toEqual(['llm', 'unit']);
     expect(checkFileTestLayers('lib/a.ts')).toBeNull();
+  });
+
+  it('recognizes the actual public integration projects without promoting a matching basename elsewhere', () => {
+    for (const file of ['treasury.test.ts', 'transparency-routes.test.ts', 'identity-metered-usage.test.ts']) {
+      expect([...checkFileTestLayers(`apps/operator-public/src/__tests__/${file}`)!]).toEqual(['integration']);
+      expect([...checkFileTestLayers(`lib/${file}`)!]).toEqual(['unit']);
+    }
+    expect([...checkFileTestLayers(' apps\\operator-public\\src\\__tests__\\identity-metered-usage.test.ts ')!])
+      .toEqual(['integration']);
+  });
+
+  it('keeps hosted statement tests out of the unit project and in their measured integration project', () => {
+    expect(publicVitestConfig).toMatchObject({ test: { projects: [
+      { test: { name: 'unit', exclude: expect.arrayContaining(['**/identity-metered-usage.test.ts']) } },
+      { test: { name: 'treasury-integration', provide: { papercuspTestLayer: 'integration' },
+        include: ['src/__tests__/treasury.test.ts', 'src/__tests__/transparency-routes.test.ts'] } },
+      { test: { name: 'funded-turn-host-integration', provide: { papercuspTestLayer: 'integration' },
+        include: ['src/__tests__/funded-turn-host.integration.test.ts', 'src/__tests__/identity-metered-usage.test.ts'] } },
+    ] } });
   });
 });
 
@@ -89,6 +109,13 @@ describe('acceptanceBarContractGaps', () => {
         requiredTestLayers: ['unit', 'integration'],
       }),
     ).toEqual([]);
+  });
+
+  it('accepts configured hosted integration proof while still refusing it as unit proof', () => {
+    const check = { kind: 'tests', files: ['apps/operator-public/src/__tests__/identity-metered-usage.test.ts'] } as const;
+    expect(gapsOf({ check: { ...check, files: [...check.files] }, requiredTestLayers: ['integration'] })).toEqual([]);
+    expect(gapsOf({ check: { ...check, files: [...check.files] }, requiredTestLayers: ['unit'] }))
+      .toEqual(['check_layer_mismatch']);
   });
 
   it('claims no mismatch when a check file has no naming convention', () => {

@@ -7,15 +7,15 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, realpathSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { existsSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   exemptProbeSubject,
   isMutationProbeRun,
   resolveProbeSubjectExemptionSync,
 } from '@papercusp/test-config/admin-test-runs-reporter';
-import { verifyVerifierSourceSync } from './verifier-source';
+import { findVerifierSourceRoot, readVerifierSourceReceiptSync } from './verifier-source';
 
 export interface WorktreeGitSnapshot {
   /** `git rev-parse HEAD`, or null if it couldn't be read. */
@@ -34,13 +34,8 @@ export interface WorktreeGitSnapshot {
  */
 export function resolveReporterSourceRoot(projectDir?: string): string {
   if (projectDir) {
-    let dir = resolve(projectDir);
-    while (true) {
-      if (existsSync(join(dir, '.verifier-source.json'))) return dir;
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
+    const archive = findVerifierSourceRoot(projectDir);
+    if (archive) return archive;
   }
   return resolveAgentWorkspaceRoot(projectDir ? { projectDir } : {});
 }
@@ -55,15 +50,7 @@ export function captureTestSourceSnapshot(root: string): WorktreeGitSnapshot {
     return captureWorktreeSnapshot(root);
   }
   try {
-    const receiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
-    if (!receiptPath) throw new Error('missing independent verifier source receipt');
-    const canonicalRoot = realpathSync(root);
-    const receiptRel = relative(canonicalRoot, realpathSync(receiptPath));
-    if (receiptRel !== '..' && !receiptRel.startsWith(`..${sep}`)) {
-      throw new Error('verifier source receipt must be outside the archive');
-    }
-    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
-    verifyVerifierSourceSync(canonicalRoot, receipt, { runtimeArtifacts: true });
+    const receipt = readVerifierSourceReceiptSync(root);
     return { commit: receipt.sourceCommit, porcelain: '' };
   } catch (error) {
     return { commit: null, porcelain: null,

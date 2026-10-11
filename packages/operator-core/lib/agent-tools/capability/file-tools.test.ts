@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { toJsonSchema } from '@papercusp/tooldef';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
-import readTool, { capabilityReadSeeAlso, MAX_FILE_BYTES } from './read';
+import readTool, { capabilityReadSeeAlso, DEFAULT_LIMIT, MAX_FILE_BYTES } from './read';
 import writeTool, { emptyWriteWouldDestroy, looksLikeDisplayFormattedRead } from './write';
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
@@ -171,6 +171,55 @@ describe('capability:read', () => {
 
     expect(r.content[0].text).toBe(original);
     expect(r.content[0].text).not.toContain(`${f} (`);
+  });
+
+  it('reports line-window metadata for raw reads capped by the default limit', async () => {
+    const f = join(DIR, 'r-raw-capped.txt');
+    const lines = Array.from({ length: DEFAULT_LIMIT + 3 }, (_, i) => `line-${i + 1}`);
+    writeFileSync(f, `${lines.join('\n')}\n`);
+    const codeCtx = { ...baseCtx, codeMode: true } as never;
+
+    const first = (await readTool.handler!({ file_path: f, raw: true }, codeCtx)) as {
+      content: Array<{ text: string }>;
+      structuredContent?: {
+        body: string;
+        total_lines: number;
+        start_line: number | null;
+        end_line: number | null;
+        has_more: boolean;
+      };
+    };
+    const firstWindow = `${lines.slice(0, DEFAULT_LIMIT).join('\n')}\n`;
+    expect(first.content[0].text).toBe(firstWindow);
+    expect(first.structuredContent).toMatchObject({
+      body: firstWindow,
+      total_lines: DEFAULT_LIMIT + 3,
+      start_line: 1,
+      end_line: DEFAULT_LIMIT,
+      has_more: true,
+    });
+
+    const last = (await readTool.handler!({
+      file_path: f,
+      offset: DEFAULT_LIMIT + 1,
+      limit: 5,
+      raw: true,
+    }, codeCtx)) as {
+      content: Array<{ text: string }>;
+      structuredContent?: {
+        total_lines: number;
+        start_line: number | null;
+        end_line: number | null;
+        has_more: boolean;
+      };
+    };
+    expect(last.structuredContent).toMatchObject({
+      total_lines: DEFAULT_LIMIT + 3,
+      start_line: DEFAULT_LIMIT + 1,
+      end_line: DEFAULT_LIMIT + 3,
+      has_more: false,
+    });
+    expect(last.content[0].text).toBe(`${lines.slice(DEFAULT_LIMIT).join('\n')}\n`);
   });
 
   it('redacts credential-bearing config line reads and refuses exact read modes', async () => {
@@ -796,6 +845,23 @@ describe('capability:read', () => {
     expect(bounded.content[0].text).toContain('tail-marker');
     expect(bounded.content[0].text).not.toContain('too_large');
 
+    const raw = (await readTool.handler!({ file_path: f, tail: 1, raw: true }, {
+      ...baseCtx,
+      codeMode: true,
+    } as never)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+      structuredContent?: Record<string, unknown>;
+    };
+    expect(raw.isError).not.toBe(true);
+    expect(raw.content[0].text).toContain('tail-marker');
+    expect(raw.structuredContent).toMatchObject({
+      total_lines: lineCount,
+      start_line: lineCount,
+      end_line: lineCount,
+      has_more: false,
+    });
+
     const unbounded = (await readTool.handler!({ file_path: f }, ctx)) as {
       content: Array<{ text: string }>;
       isError?: boolean;
@@ -880,7 +946,15 @@ describe('capability:read', () => {
       };
       // Raw mode's own contract: the text body is the exact source span.
       expect(r.content[0].text).toBe('one\ntwo\nthree\n');
-      expect(r.structuredContent).toEqual({ ok: true, file_path: f, body: 'one\ntwo\nthree\n' });
+      expect(r.structuredContent).toEqual({
+        ok: true,
+        file_path: f,
+        body: 'one\ntwo\nthree\n',
+        total_lines: 3,
+        start_line: 1,
+        end_line: 3,
+        has_more: false,
+      });
     });
 
     it('still returns a real object — not a vanished falsy value — for an empty raw window', async () => {
@@ -898,7 +972,15 @@ describe('capability:read', () => {
       // this bug's `cur.content ?? cur.text ?? ''` fallback could not tell apart
       // from "the field was never there".
       expect(typeof r.structuredContent).toBe('object');
-      expect(r.structuredContent).toEqual({ ok: true, file_path: f, body: '' });
+      expect(r.structuredContent).toEqual({
+        ok: true,
+        file_path: f,
+        body: '',
+        total_lines: 1,
+        start_line: null,
+        end_line: null,
+        has_more: false,
+      });
     });
 
     it('costs a non-code-mode caller nothing on all three affected return sites', async () => {
@@ -928,8 +1010,24 @@ describe('capability:read', () => {
       )) as { structuredContent?: Record<string, unknown> };
 
       expect(direct.structuredContent).toMatchObject({ body: 'x\ny', total_lines: 2 });
-      expect(directRaw.structuredContent).toEqual({ ok: true, file_path: f, body: 'x\ny\n' });
-      expect(directRawEmpty.structuredContent).toEqual({ ok: true, file_path: f, body: '' });
+      expect(directRaw.structuredContent).toEqual({
+        ok: true,
+        file_path: f,
+        body: 'x\ny\n',
+        total_lines: 2,
+        start_line: 1,
+        end_line: 2,
+        has_more: false,
+      });
+      expect(directRawEmpty.structuredContent).toEqual({
+        ok: true,
+        file_path: f,
+        body: '',
+        total_lines: 2,
+        start_line: null,
+        end_line: null,
+        has_more: false,
+      });
     });
 
     it('preserves requestedStructured through the projected MCP transport', async () => {

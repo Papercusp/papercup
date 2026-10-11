@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifierSourceFiles, type VerifierSourceReceipt } from './verifier-source';
-import { captureTestSourceSnapshot, computeWorktreeDirty } from './testing-worktree';
+import { captureTestSourceSnapshot, computeWorktreeDirty, resolveReporterSourceRoot } from './testing-worktree';
 
 const gitProbe = vi.hoisted(() => vi.fn(() => { throw new Error('Git probe must not run for an archive'); }));
 vi.mock('node:child_process', async importOriginal => ({
@@ -36,6 +36,13 @@ function archive() {
 }
 
 describe('receipt-backed test source snapshots', () => {
+  it('stops at the archive marker before an enclosing Git checkout', () => {
+    const { root } = archive();
+    mkdirSync(join(root, '..', '.git'));
+    const project = join(root, 'packages/core/e2e');
+    mkdirSync(project, { recursive: true });
+    expect(resolveReporterSourceRoot(project)).toBe(root);
+  });
   it('attests both source boundaries without Git, including independent runtime dependencies', () => {
     const { root, receipt } = archive();
     const before = captureTestSourceSnapshot(root);

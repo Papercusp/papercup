@@ -234,6 +234,35 @@ describe('first-class plan spec clauses', () => {
     expect(getSpecsTool.args.safeParse({ slug: 'reconnect-plan', asOf: cutoff!.at, includeHistory: true }).success).toBe(false);
   });
 
+  it('does not expose an accepted revision before its acceptance timestamp in an as-of read', async () => {
+    await store.setSpecClause(clause({ lifecycleStatus: 'draft', acceptanceRef: null }));
+    const [cutoff] = await db.sql<{ at: string }[]>`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at`;
+    await db.sql`
+      INSERT INTO harness_shared.plan_spec_clause_revisions (
+        workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id,
+        behavior, behavior_class, lifecycle_status, content_hash, created_by, created_at,
+        accepted_by, accepted_at, acceptance_ref
+      ) VALUES (
+        ${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 'SPEC-003-01', 2, 'P-003',
+        'Accepted revision whose acceptance occurs after the replay cutoff.', 'concurrency',
+        'active', ${'f'.repeat(64)}, 'reviewer',
+        ${cutoff!.at}::timestamptz - INTERVAL '1 millisecond',
+        'reviewer', ${cutoff!.at}::timestamptz + INTERVAL '1 millisecond', 'D-003'
+      )`;
+    await db.sql`
+      UPDATE harness_shared.plan_spec_clauses SET current_revision = 2
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01'`;
+
+    const selected = await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan', asOf: cutoff!.at });
+    expect(selected).toMatchObject([{
+      specId: 'SPEC-003-01',
+      revision: 1,
+      lifecycleStatus: 'draft',
+      acceptedAt: null,
+    }]);
+  });
+
   it('reads a bounded current clause from the shared ad-hoc scope through plans:get-specs', async () => {
     const specId = 'WI-10007428:quota-recovery-operation-diagnostics';
     const planItemId = 'P-10007428';

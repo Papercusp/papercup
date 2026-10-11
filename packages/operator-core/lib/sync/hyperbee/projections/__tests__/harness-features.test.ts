@@ -189,12 +189,20 @@ describe('harness_features projection', () => {
         harnessSlug: 'sheets',
         sql: sql as never,
       });
-      await p.writeToPg(feature({ feature_id: 'WI-385' }), { origin: 'remote', authorPubkey: '' });
-      expect(sql).toHaveBeenCalledTimes(1);
-      const [strings, ...values] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+      await p.writeToPg(feature({ feature_id: 'WI-385' }), {
+        origin: 'remote', authorPubkey: 'carried-author', sourceLogKeyHex: 'resident-source-log',
+      });
+      const read = sql.mock.calls.find((c) => statementText(c[0]).includes('SELECT harness_slug, created_ts'))!;
+      const [strings, ...values] = read as unknown as [TemplateStringsArray, ...unknown[]];
       expect(statementText(strings)).not.toContain('INSERT');
       // The one read is scoped to this workspace and this id, under every harness.
       expect(values).toEqual(['papercusp-workspace', 'WI-385']);
+      const counters = sql.mock.calls.filter((c) => statementText(c[0]).includes('INSERT INTO harness_shared.federation_refused_op_counters'));
+      expect(counters).toHaveLength(1);
+      expect(sql.mock.calls.some((c) => statementText(c[0]).includes('INSERT INTO harness_shared.work_items'))).toBe(false);
+      expect(counters[0].slice(1)).toEqual([
+        'papercusp-workspace', 'sheets', 'resident-source-log', 'features-by-id', 'resident-row-collision',
+      ]);
       expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain('P-012 resident-row refusal: feature_id=WI-385');
     } finally {
       warn.mockRestore();
@@ -214,9 +222,15 @@ describe('harness_features projection', () => {
         sql: sql as never,
       });
       // One hour apart: a different item allocated the same id, not a re-delivery.
-      await p.writeToPg(feature({ feature_id: 'WI-10000294', created_ts: 1700003600000 }), { origin: 'remote', authorPubkey: '' });
-      expect(sql).toHaveBeenCalledTimes(1);
-      expect(sql.mock.calls.some((c) => statementText(c[0]).includes('INSERT'))).toBe(false);
+      await p.writeToPg(feature({ feature_id: 'WI-10000294', created_ts: 1700003600000 }), {
+        origin: 'remote', authorPubkey: 'distinct-source-log',
+      });
+      expect(sql.mock.calls.some((c) => statementText(c[0]).includes('INSERT INTO harness_shared.work_items'))).toBe(false);
+      const counters = sql.mock.calls.filter((c) => statementText(c[0]).includes('INSERT INTO harness_shared.federation_refused_op_counters'));
+      expect(counters).toHaveLength(1);
+      expect(counters[0].slice(1)).toEqual([
+        'papercusp-workspace', 'sheets', 'distinct-source-log', 'features-by-id', 'distinct-entity-collision',
+      ]);
       const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
       expect(logged).toContain('P-015 distinct-entity refusal: feature_id=WI-10000294');
       expect(logged).toContain('2023-11-14T22:13:20.000Z');
@@ -234,6 +248,7 @@ describe('harness_features projection', () => {
     });
     await p.writeToPg(feature({ feature_id: 'WI-10000294', created_ts: 1700000004000 }), { origin: 'remote', authorPubkey: '' });
     expect(insertValues(sql)).toContain('WI-10000294');
+    expect(sql.mock.calls.some((c) => statementText(c[0]).includes('federation_refused_op_counters'))).toBe(false);
   });
 
   it('P-015 / WI-6327: an op or a stored row without created_ts cannot be judged and fails open', async () => {

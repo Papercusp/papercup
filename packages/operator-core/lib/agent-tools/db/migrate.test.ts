@@ -66,8 +66,12 @@ const h = vi.hoisted(() => ({
       result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
     }),
   ),
+  postgres: vi.fn(),
+  backupRendezvousBusy: false,
+  backupLockedRelations: [] as string[],
 }));
 
+vi.mock('postgres', () => ({ default: h.postgres }));
 vi.mock('node:child_process', () => ({ execFile: h.execFile, spawnSync: h.spawnSync }));
 vi.mock('../../resource-governor/execution', () => ({
   runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
@@ -141,6 +145,26 @@ const ORIGINAL_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
 const ORIGINAL_CANONICAL_TREE = process.env.PAPERCUSP_CANONICAL_TREE;
 
 beforeEach(() => {
+  h.backupRendezvousBusy = false;
+  h.backupLockedRelations = [];
+  h.postgres.mockReset().mockImplementation(() => {
+    const respond = (query: string) => {
+      if (query.includes('pg_try_advisory_lock')) return Promise.resolve([{ acquired: !h.backupRendezvousBusy }]);
+      if (query.includes('pg_advisory_unlock')) return Promise.resolve([{ released: true }]);
+      if (query.includes('WITH RECURSIVE locked AS')) {
+        return Promise.resolve(h.backupLockedRelations.map((name) => ({ name })));
+      }
+      throw new Error('unexpected SQL in fake postgres client');
+    };
+    return Object.assign(
+      (strings: TemplateStringsArray) => respond(strings.join('')),
+      {
+        array: (values: unknown[]) => values,
+        unsafe: (query: string) => respond(query),
+        end: vi.fn(async () => undefined),
+      },
+    );
+  });
   h.spawnSync.mockReset().mockReturnValue({ status: 0, stdout: '', stderr: '' });
   h.execFile
     .mockReset()
@@ -827,6 +851,47 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     );
     expect(guard).toContain("USING ERRCODE = '55P03'");
     expect(guard).toContain('canceling statement due to lock timeout');
+  });
+
+  it('bypasses a busy rendezvous for an enabled migration proven unrelated to the live backup locks', async () => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+    h.backupRendezvousBusy = true;
+    h.backupLockedRelations = ['session_archive_files'];
+    h.readFileSync.mockReturnValue('ALTER TABLE harness_shared.trigger_bindings ADD COLUMN note text;');
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+    expect(out.applied).toBe(true);
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script).not.toContain('pg_advisory_xact_lock');
+    expect(script).not.toContain('backup pg_dump holds AccessShareLock');
+  });
+
+  it.each([
+    [
+      'overlapping relation',
+      'ALTER TABLE harness_shared.trigger_bindings ADD COLUMN note text;',
+      ['trigger_bindings'],
+    ],
+    [
+      'unprovable dynamic SQL',
+      "DO $$ BEGIN EXECUTE format('ALTER TABLE %I ADD c int', t); END $$;",
+      [],
+    ],
+  ])('keeps the blocking preamble for a busy rendezvous with %s', async (_label, sqlText, lockedRelations) => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+    h.backupRendezvousBusy = true;
+    h.backupLockedRelations = lockedRelations;
+    h.readFileSync.mockReturnValue(sqlText);
+    await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script).toContain(
+      'SELECT pg_advisory_xact_lock(hashtext(' +
+        "'" +
+        BACKUP_MIGRATION_ADVISORY_LOCK_KEY +
+        "'));",
+    );
+    expect(script).toContain('backup pg_dump holds AccessShareLock');
   });
 
   it('retries a lock-timeout cancel with backoff and succeeds once contention clears', async () => {

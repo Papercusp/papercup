@@ -27,6 +27,7 @@ import {
 } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
+import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
 
 /**
  * Wire-shape of a feature row in Hyperbee. Mirrors the PG columns
@@ -353,6 +354,13 @@ async function writeToPg(
         `(harness_slug=${row.harness_slug}) is already held in workspace ${opts.workspaceId} by ` +
         `${resident.harness_slug}; refusing the op instead of minting a twin`,
     );
+    if (origin === 'remote') await bumpFederationRefusedOp({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      sourceHive: provenance.sourceLogKeyHex ?? provenance.authorPubkey,
+      tableTag: 'features-by-id',
+      reason: 'resident-row-collision',
+    }, sql, projectionStatementFailed);
     return;
   }
   const sameHarness = existing.find((r) => r.harness_slug === row.harness_slug);
@@ -366,6 +374,13 @@ async function writeToPg(
           `Two items were allocated the same id; the op is DROPPED (not applied) so the local item is ` +
           `not overwritten. The authoring peer's own copy is unaffected.`,
       );
+      if (origin === 'remote') await bumpFederationRefusedOp({
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+        sourceHive: provenance.sourceLogKeyHex ?? provenance.authorPubkey,
+        tableTag: 'features-by-id',
+        reason: 'distinct-entity-collision',
+      }, sql, projectionStatementFailed);
       return;
     }
   }

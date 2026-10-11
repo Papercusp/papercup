@@ -73,6 +73,7 @@ export async function trackAmendRun(
   idempotencyKey: string,
   rubricRef: string,
   run: () => Promise<Record<string, unknown>>,
+  options: { onRegistered?: () => void } = {},
 ): Promise<Record<string, unknown>> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
@@ -111,10 +112,12 @@ export async function trackAmendRun(
   if (inserted.length === 0 && reclaimed.length === 0) {
     const existing = await getAmendReceipt(rubricRef, idempotencyKey);
     if (!existing) throw new Error('rubric amend receipt disappeared during same-key retry');
+    options.onRegistered?.();
     if (existing.result) return existing.result;
     if (existing.state === 'failed') throw new Error(existing.error ?? 'previous rubric amendment failed');
     return { ok: true, pending: true, idempotencyKey, receipt: { rubricRef, idempotencyKey } };
   }
+  options.onRegistered?.();
   let result: Record<string, unknown>;
   try {
     result = await run();

@@ -870,9 +870,20 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain(
       `constraint:completion.coverage (${COMPLETION_COVERAGE_CALL_CONSTRAINT})`,
     );
-    expect(compact).toContain(
-      'current?:array(≤500){planSlug?:string(1-2000),specId?:string(1-2000),specRevision?:integer(>0-9007199254740991),specFingerprint?:string(1-256),evidenceKind:enum(test|fixture|coverage-census|mutation|counterexample|check|manual|operational),evidenceRef:string(1-2000),sourceFingerprint:string(1-256),testFingerprint?:string|null(1-256)',
-    );
+    const currentEvidence = /current\?:array\(≤500\)\{([^}]*)\}/.exec(compact ?? '')?.[1] ?? '';
+    expect(currentEvidence).not.toBe('');
+    expect(currentEvidence).toContain('planSlug?');
+    expect(currentEvidence).toContain('specId?');
+    expect(currentEvidence).toContain('specRevision?');
+    expect(currentEvidence).toContain('specFingerprint?');
+    expect(currentEvidence).toMatch(/evidenceKind:enum\([^)]*\)/);
+    expect(currentEvidence).toContain('evidenceRef:string');
+    expect(currentEvidence).toContain('sourceFingerprint:string');
+    expect(currentEvidence).toContain('testFingerprint?:string|null(1-256)');
+    expect(currentEvidence).not.toContain('fixtureFingerprint');
+    expect(currentEvidence).not.toContain('rubricFingerprint');
+    expect(currentEvidence).not.toContain('environmentFingerprint');
+    expect(currentEvidence.length).toBeLessThanOrEqual(400);
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
