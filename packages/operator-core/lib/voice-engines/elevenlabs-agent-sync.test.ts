@@ -175,6 +175,24 @@ describe('immutable provider profile evidence', () => {
   it('accepts the current definition and exact tool from its trusted sync receipt', async () => {
     expect(await read(profile())).toEqual({ agentId: 'tutorial', maximumSeconds: 1800 });
   });
+  it('does not let policy mutation during a provider read authorize drift', async () => {
+    const owned = structuredClone(definition);
+    const ids = ['trusted-tool'];
+    const body: any = profile();
+    body.conversation_config.agent.prompt.prompt = 'unreviewed prompt';
+    body.conversation_config.agent.prompt.tool_ids = ['unreviewed-tool'];
+    body.conversation_config.tts.voice_id = 'unreviewed-voice';
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementationOnce(async () => {
+      owned.prompt = 'unreviewed prompt';
+      owned.tts.voiceId = 'unreviewed-voice';
+      ids[0] = 'unreviewed-tool';
+      return Response.json(body);
+    });
+    expect(await readElevenLabsImmutableProfile(owned, ids, {
+      apiKey: KEY, agentId: 'tutorial', fetch: fetchImpl, signal: new AbortController().signal,
+    })).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
   it('refuses independent prompt, tool, voice and alternate workflow drift', async () => {
     const paths = [['conversation_config', 'agent', 'prompt', 'prompt'],
       ['conversation_config', 'agent', 'first_message'], ['conversation_config', 'agent', 'language'],

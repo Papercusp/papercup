@@ -181,6 +181,8 @@ export interface ElevenLabsAgentSyncResult {
 export async function readElevenLabsAgentDuration(def: Pick<ElevenLabsAgentDefinition, 'maxDurationSeconds' | 'allowSessionOverrides'>,
   deps: { apiKey: string; agentId: string; fetch: typeof fetch; signal: AbortSignal }):
   Promise<{ agentId: string; maximumSeconds: number } | null> {
+  def = { ...def };
+  deps = { ...deps };
   if (!deps.apiKey || !deps.agentId.trim() || deps.signal.aborted
     || !Number.isSafeInteger(def.maxDurationSeconds) || def.maxDurationSeconds <= 0) return null;
   try {
@@ -221,6 +223,11 @@ export async function readElevenLabsAgentDuration(def: Pick<ElevenLabsAgentDefin
 export async function readElevenLabsImmutableProfile(def: ElevenLabsAgentDefinition,
   toolIds: string[], deps: { apiKey: string; agentId: string; fetch: typeof fetch; signal: AbortSignal }):
   Promise<{ agentId: string; maximumSeconds: number } | null> {
+  // Caller-owned policy may be rotated while a provider request is pending.
+  // Every comparison and request in this read must use its entry snapshot.
+  def = structuredClone(def);
+  toolIds = [...toolIds];
+  deps = { ...deps };
   if (def.allowSessionOverrides !== false || toolIds.length !== def.tools.length
     || toolIds.some(id => !id.trim()) || new Set(toolIds).size !== toolIds.length) return null;
   let profile: any;
