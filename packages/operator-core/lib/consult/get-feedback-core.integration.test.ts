@@ -606,9 +606,9 @@ describe('source-audit dispatcher through persisted consult routing', () => {
                 effects.push('selection');
                 return selected;
               },
-              reach: async (input) => {
+              reach: async (reachInput) => {
                 effects.push('delivery');
-                return fixture.deps.reach(input);
+                return fixture.deps.reach(reachInput);
               },
             }),
           });
