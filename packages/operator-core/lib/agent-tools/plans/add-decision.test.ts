@@ -714,6 +714,34 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
     expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
   });
 
+  it('preserves a machine-origin current-turn stamp on a plan decision write', async () => {
+    const ctx = handlerContext();
+    const currentTurn = {
+      ref: '[turn:session-cold-wake@2026-09-25T05:59:06.528Z]',
+      verdict: 'agent-injected',
+      origin: 'loop-fire',
+    };
+    handlerMocks.carryProvenanceFields.mockResolvedValueOnce({
+      turnProvenance: { writtenDuring: currentTurn },
+    });
+
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Cold wake provenance',
+        body: 'Machine-origin evidence keeps its recorded turn classification.',
+      },
+      ctx,
+    );
+
+    expect(result.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-001',
+      turnProvenance: { writtenDuring: currentTurn },
+    });
+  });
+
   it('WI-42142: a clean decision keeps its exact prior response shape (no provenance noise)', async () => {
     const ctx = handlerContext();
 
