@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 22,
-    "openUnknown": 69
+    "repairedPeerFocused": 24,
+    "openUnknown": 67
   },
   "classes": {
     "assertion": 55,
@@ -812,8 +812,16 @@
     {
       "path": "packages/operator-core/lib/scheduler/get-next-exclusion-breakdown.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-019",
+        "reviewedMapSha256": "e7e91e752e2b628b74219b8b54c98e5e19e4f3158b7aa8f5568824376a670462",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "WI-10007061",
+        "recurrenceGuard": "Committed population correction preserves the production agent-work predicate. Real-PG controls distinguish eight eligible rows/three claimable from observation/owner-action rows and assert eligible taken=1 with other buckets=0. Clean21103678 passes all27 named cases without skips; dirty20877271 remains dirty and diagnostic20877224 retains24 skips.",
+        "scope": "D-019 reviews only this historical diagnosis, accountable committed fixture repair and focused guard. Old terminal test freshness remains stale after later additions; whole get-next.ts equality and complete loaded imports/config/schema/environment remain unknown. Final D006/source readiness, acceptance and shipment are not established."
+      },
       "lines": [
         14204,
         14223
@@ -2661,8 +2669,16 @@
     {
       "path": "packages/operator-core/lib/claim-next-co-location.integration.test.ts",
       "class": "assertion",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-019",
+        "reviewedMapSha256": "e7e91e752e2b628b74219b8b54c98e5e19e4f3158b7aa8f5568824376a670462",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "WI-10006532",
+        "recurrenceGuard": "Causal receipts expose assignee_unknown, then fleet_assignment/memory_recall_stats fixture omissions. The committed caller/shared-read-deps repair retains real handler/selector/telemetry paths, unknown-assignee/no-claim and persisted recall controls. Clean20834347/20834351 and later21104226 pass all named cases without skips.",
+        "scope": "D-019 reviews only this historical diagnosis, accountable committed repair and focused guard. The archive's hidden refusal is inferred from later causal reproduction; old helper-pin completion is stale. Selected repository equality does not establish complete loaded imports/config/schema/environment or final D006/source readiness, acceptance or shipment."
+      },
       "lines": [
         12407,
         12426
@@ -3846,11 +3862,15 @@
     {
       "class": "assertion",
       "count": 55,
-      "status": "open-unknown",
+      "status": "partially-repaired-peer-focused",
+      "stateCounts": {
+        "repaired-peer-focused": 2,
+        "open-unknown": 53
+      },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "unproved",
+      "rootCause": "Fifty-three remaining entries unproved; exactly two historical fixture diagnoses and existing accountable repairs were independently reviewed in report-plan D-019. Their focused proof does not establish complete loaded-source/environment or final assurance.",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
     },
     {
