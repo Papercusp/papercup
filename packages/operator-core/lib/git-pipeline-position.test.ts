@@ -8846,16 +8846,14 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
  * the precedence at the pure seam instead, where a fixture cannot paper over it.
  */
 /**
- * main-green-status-visible-2026-09-03 P-011 follow-up — grader card EI-22277841040474660
- * rated C5 partial because its third leg (submodule containment as ONE read) was not
- * measurable: with no run in flight the cell answered `no-active-run` and with a CRON run
- * in flight it answered `inferred-candidate`, so for the entire life of a frozen repair
- * queue the containment verdict never materialised. Under freeze-and-converge the queue's
- * candidate IS the judged sha (the recorded red was computed on it; the next run resumes
- * it), so the persisted queue row is an authoritative source, ranked below the run's own
- * markers and above the checkout-head probe.
+ * main-green-status-visible-2026-09-03 P-011 follow-up — grader card EI-22277841040474660.
+ * The repair queue is authoritative while liveness is measured idle: the next run resumes
+ * its current repairHead. It is not evidence of an active run's sha, because admission can
+ * move repairHead mid-run while that run continues on its prior head. During an active
+ * markerless run, retain the checkout probe as run-probe (non-authoritative); a run-published
+ * marker remains authoritative. Unknown liveness never promotes the queue.
  */
-describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha', () => {
+describe('P-011 follow-up: a repair queue is authoritative only while the runner is measured idle', () => {
   const probeNull = { judgingSha: null, nextCandidateSha: 'tip00000' };
   const probeHead = { judgingSha: 'checkouthead', nextCandidateSha: 'tip00000' };
   const queue = { candidate: 'frozen0000', phase: 'awaiting-fixer' };
@@ -8863,26 +8861,59 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
   it('LOAD-BEARING: between runs (probe null, no marker) the queue candidate is the judged sha', () => {
     // THE REGRESSION: before the fix this stayed { judgingSha: null } → 'no-active-run',
     // whose safe action named a re-cut at tip while a candidate was frozen.
-    const out = reconcileGateCandidates(probeNull, { candidate: null, candidateSource: 'run-probe' }, queue);
+    const out = reconcileGateCandidates(
+      probeNull,
+      { active: false, candidate: null, candidateSource: 'run-probe' },
+      queue,
+    );
     expect(out.judgingSha).toBe('frozen0000');
     expect(out.judgingShaSource).toBe('repair-queue');
     expect(out.nextCandidateSha).toBe('tip00000');
     expect(isAuthoritativeJudgingShaSource(out.judgingShaSource)).toBe(true);
   });
 
-  it('outranks a checkout-head probe during a CRON run — the run resumed the frozen candidate', () => {
-    const out = reconcileGateCandidates(probeHead, { candidate: 'checkouthead', candidateSource: 'run-probe' }, queue);
-    expect(out.judgingSha).toBe('frozen0000');
-    expect(out.judgingShaSource).toBe('repair-queue');
+  it('does not let a repairHead admitted mid-run replace the active run probe', () => {
+    const movedQueue = {
+      ...queue,
+      phase: 'ready-to-verify',
+      frozenCandidate: 'run-started-head',
+      repairHead: 'repair-head-after-admission',
+    };
+    expect(frozenQueueCandidate(movedQueue)).toBe('repair-head-after-admission');
+    const out = reconcileGateCandidates(
+      { judgingSha: 'run-started-head', nextCandidateSha: 'tip00000' },
+      { active: true, candidate: 'run-started-head', candidateSource: 'run-probe' },
+      movedQueue,
+    );
+    expect(out.judgingSha).toBe('run-started-head');
+    expect(out.judgingShaSource).toBe('run-probe');
+    expect(isAuthoritativeJudgingShaSource(out.judgingShaSource)).toBe(false);
+  });
+
+  it('does not promote the repair queue when run liveness is unknown', () => {
+    const movedQueue = {
+      ...queue,
+      phase: 'ready-to-verify',
+      frozenCandidate: 'frozen0000',
+      repairHead: 'repair-head-after-admission',
+    };
+    const out = reconcileGateCandidates(probeHead, null, movedQueue);
+    expect(out.judgingSha).toBe('checkouthead');
+    expect(out.judgingShaSource).toBe('run-probe');
+    expect(isAuthoritativeJudgingShaSource(out.judgingShaSource)).toBe(false);
   });
 
   it("never outranks the run's own published marker", () => {
-    const out = reconcileGateCandidates(probeHead, { candidate: 'refiring9', candidateSource: 'retriage-marker' }, queue);
+    const out = reconcileGateCandidates(
+      probeHead,
+      { active: true, candidate: 'refiring9', candidateSource: 'retriage-marker' },
+      queue,
+    );
     expect(out.judgingSha).toBe('refiring9');
     expect(out.judgingShaSource).toBe('retriage-marker');
     const inFlight = reconcileGateCandidates(
       probeHead,
-      { candidate: 'started11', candidateSource: 'in-flight-candidate' },
+      { active: true, candidate: 'started11', candidateSource: 'in-flight-candidate' },
       queue,
     );
     expect(inFlight.judgingSha).toBe('started11');
@@ -8890,7 +8921,11 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
   });
 
   it('prefers the immutable frozenCandidate pin over the compatibility candidate field', () => {
-    const out = reconcileGateCandidates(probeNull, null, { ...queue, frozenCandidate: 'pinned0000' });
+    const out = reconcileGateCandidates(
+      probeNull,
+      { active: false, candidate: null, candidateSource: 'run-probe' },
+      { ...queue, frozenCandidate: 'pinned0000' },
+    );
     expect(out.judgingSha).toBe('pinned0000');
   });
 
@@ -8898,10 +8933,14 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
     // attempts / wall-clock exhausted → the queue awaits retire or escape; asserting "the
     // next run resumes this" would be exactly the confident-wrong reading P-004 forbids.
     expect(frozenQueueCandidate({ ...queue, phase: 'blocked' })).toBeNull();
-    const out = reconcileGateCandidates(probeHead, { candidate: 'checkouthead', candidateSource: 'run-probe' }, {
-      ...queue,
-      phase: 'blocked',
-    });
+    const out = reconcileGateCandidates(
+      probeHead,
+      { active: true, candidate: 'checkouthead', candidateSource: 'run-probe' },
+      {
+        ...queue,
+        phase: 'blocked',
+      },
+    );
     expect(out.judgingSha).toBe('checkouthead');
     expect(out.judgingShaSource).toBe('run-probe');
     expect(reconcileGateCandidates(probeNull, null, { ...queue, phase: 'blocked' }).judgingSha).toBeNull();
@@ -8920,7 +8959,11 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
   it('a repair-queue sha is NOT refused containment the way a run-probe sha is', () => {
     // The refusal exists because a checkout-head inference cannot support a verdict. The
     // frozen candidate is a persisted, published sha — the verdict-shaped boolean must arrive.
-    const reconciled = reconcileGateCandidates(probeNull, null, queue);
+    const reconciled = reconcileGateCandidates(
+      probeNull,
+      { active: false, candidate: null, candidateSource: 'run-probe' },
+      queue,
+    );
     const cic = evaluateChangeInCandidate({
       relPath: 'libs/papercusp/libs/db/sql/999-x.sql',
       candidates: reconciled,
@@ -8936,7 +8979,11 @@ describe('P-011 follow-up: a frozen repair queue is the authoritative judged sha
     // CONTROL: the same shape from a run-probe source still withholds the boolean.
     const probed = evaluateChangeInCandidate({
       relPath: 'libs/papercusp/libs/db/sql/999-x.sql',
-      candidates: reconcileGateCandidates(probeHead, { candidate: 'checkouthead', candidateSource: 'run-probe' }, null),
+      candidates: reconcileGateCandidates(
+        probeHead,
+        { active: true, candidate: 'checkouthead', candidateSource: 'run-probe' },
+        null,
+      ),
       judging: { inCandidate: false, reason: 'newer-commit' } as never,
       next: null,
     });

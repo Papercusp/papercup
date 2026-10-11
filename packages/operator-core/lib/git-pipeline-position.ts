@@ -3002,17 +3002,21 @@ export function frozenQueueCandidate(queue: FrozenQueueForReconcile | null | und
 export function reconcileGateCandidates(
   candidates: GateCandidates,
   inFlight:
-    | { candidate: string | null; candidateSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe' }
+    | {
+        active?: boolean;
+        candidate: string | null;
+        candidateSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe';
+      }
     | null
     | undefined,
   /**
    * main-green-status-visible-2026-09-03 P-011 follow-up: the frozen repair queue, when one
-   * is live. Precedence is marker > repair-queue > run-probe. The queue outranks the probe
-   * because under freeze-and-converge a live run RESUMES the frozen candidate by
-   * construction, while the probe on a CRON run is the checkout's HEAD — an inference the
-   * refusal below already declines to answer containment from. It ranks BELOW the run's own
-   * markers because those are observations of THIS run, and a re-fire can legitimately move
-   * the run onto a newer candidate before the queue row learns of it.
+   * is live. The run's own markers outrank the probe. The repair queue is authoritative
+   * only when `inFlight.active === false`: its repairHead is the sha the NEXT run resumes.
+   * While a run is active, an admission may move repairHead without changing that run's
+   * candidate; with no run marker, the checkout probe is the only available candidate and
+   * remains non-authoritative. Missing liveness is unknown, not proof the queue is safe to
+   * promote.
    */
   repairQueue?: FrozenQueueForReconcile | null,
 ): GateCandidates {
@@ -3038,11 +3042,11 @@ export function reconcileGateCandidates(
     return { ...candidates, judgingSha: markerSha, judgingShaSource: markerSource };
   }
   /**
-   * No marker, but a frozen repair queue: its candidate is the sha the recorded verdict was
-   * computed on and the sha the next run resumes, so it is the judged subject whether or
-   * not a run happens to be alive at the instant of the read.
+   * No marker. A queue row is authoritative only after the run-liveness leg measured idle.
+   * A moved repairHead cannot identify an active run's old candidate, and an unmeasured
+   * liveness read is not proof of idleness.
    */
-  const frozen = frozenQueueCandidate(repairQueue);
+  const frozen = inFlight?.active === false ? frozenQueueCandidate(repairQueue) : null;
   if (frozen) {
     return { ...candidates, judgingSha: frozen, judgingShaSource: 'repair-queue' };
   }
@@ -3053,7 +3057,7 @@ export function reconcileGateCandidates(
    * a real, merely-untrusted candidate.
    */
   return candidates.judgingSha
-    ? { ...candidates, judgingShaSource: candidates.judgingShaSource ?? 'run-probe' }
+    ? { ...candidates, judgingShaSource: 'run-probe' }
     : candidates;
 }
 
