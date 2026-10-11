@@ -159,6 +159,13 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(loaded.stdout).toContain('V=HEAD');
     expect(loaded.stdout).not.toContain('V=DIRTY');
     expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted mod.mjs');
+    // EI-25650771950762931: the line lands in launcher output that also carries a test run, so it
+    // must scope itself to the process that ran the HEAD bytes (pid + entry script, delivered to
+    // the hooks thread through register's data) and say child processes load working-tree bytes.
+    const line = loaded.stderr.split('\n').find((l) => l.startsWith('COMMITTED_SOURCE substituted mod.mjs'));
+    expect(line).toMatch(
+      /^COMMITTED_SOURCE substituted mod\.mjs: the working tree differs from HEAD, so the committed bytes ran in THIS process only \(pid \d+, entry entry\.mjs\); a process it starts without this loader \(vitest's test workers included\) loads the working-tree bytes$/,
+    );
     const kinds = Object.fromEntries(readAudit(audit).filter((r) => r.rel).map((r) => [r.rel, r.kind]));
     expect(kinds).toMatchObject({ 'entry.mjs': 'committed', 'mod.mjs': 'substituted' });
   }, 60_000);

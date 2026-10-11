@@ -186,10 +186,43 @@ export async function load(url, context, nextLoad) {
     );
   }
   if (verdict.kind === 'substituted') {
-    process.stderr.write(`${COMMITTED_SOURCE_MARKER} substituted ${verdict.rel}: the working tree differs from HEAD, so the committed bytes ran\n`);
+    process.stderr.write(`${formatSubstitutedLine(verdict.rel, process.pid, entryLabel)}\n`);
     return { ...result, source: verdict.head };
   }
   return result;
+}
+
+/**
+ * The process this loader runs in, as `initialize` received it (EI-25650771950762931). The line
+ * is printed inside a launcher (`npm run test:file` runs scripts/test-files.mjs under this loader)
+ * whose output also carries the test run, and a bare "the committed bytes ran" there reads as a
+ * statement about the TESTS — which run in vitest processes started without this loader, from
+ * working-tree bytes. Naming the process keeps the line true where it lands.
+ */
+let entryLabel = null;
+
+/** ES `initialize` hook (hooks thread): receives `register`'s `data`. */
+export function initialize(data) {
+  entryLabel = typeof data?.entry === 'string' && data.entry ? data.entry : null;
+}
+
+/** The stderr line for one substituted module, scoped to the process that ran its HEAD bytes. */
+export function formatSubstitutedLine(rel, pid, entry) {
+  return `${COMMITTED_SOURCE_MARKER} substituted ${rel}: the working tree differs from HEAD, so the committed bytes ran `
+    + `in THIS process only (pid ${pid}${entry ? `, entry ${entry}` : ''}); a process it starts without this loader `
+    + `(vitest's test workers included) loads the working-tree bytes`;
+}
+
+/** The entry script, as its checkout-relative path when inside one, else its file name. */
+function describeEntry(argv1) {
+  if (!argv1) return null;
+  try {
+    const where = locate(argv1);
+    if (where.place === 'checkout' || where.place === 'dependency') return where.rel;
+  } catch {
+    // An unreadable entry path only loses the label, never the judgement.
+  }
+  return argv1.split(sep).pop() || null;
 }
 
 /** Refuse checkout modules compiled through CommonJS (registering thread). */
@@ -212,6 +245,6 @@ function guardCommonJs() {
 if (!new URL(import.meta.url).searchParams.has(HOOKS_QUERY)) {
   const hooks = new URL(import.meta.url);
   hooks.searchParams.set(HOOKS_QUERY, '1');
-  register(hooks.href);
+  register(hooks.href, { data: { entry: describeEntry(process.argv[1]) } });
   guardCommonJs();
 }
