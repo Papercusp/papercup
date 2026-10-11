@@ -206,15 +206,23 @@ it('resume reaches the saved checkpoint and evidence without loading history or 
 
 it('resume documents and enforces its standalone contract', () => {
   expect(get.args.description ?? '').toBeDefined();
-  const resumeDescription = String(
-    ((get.args as { shape?: Record<string, { description?: string }> }).shape?.resume?.description ?? ''),
-  );
+  const argsShape = (get.args as { shape?: Record<string, { description?: string }> }).shape;
+  const resumeDescription = String(argsShape?.resume?.description ?? '');
+  const idsDescription = String(argsShape?.ids?.description ?? '');
+  const toolDescription = (get as unknown as { description?: string }).description ?? '';
+  expect(toolDescription).toContain('For `resume:true`, exactly one item is required');
+  expect(toolDescription).toContain('multi-id resume batches are rejected');
+  expect(idsDescription).toContain('With resume:true, provide one ID only');
   expect(resumeDescription).toContain('Standalone one-item continuation view');
+  expect(resumeDescription).toContain('a one-element ids array is accepted');
+  expect(resumeDescription).toContain('multi-id batches are rejected');
   for (const excluded of ['detail', 'checksOnly', 'threadLimit', 'priorAttemptRefs', 'operationalBrief']) {
     expect(resumeDescription).toContain(excluded);
   }
   const json = z.toJSONSchema(get.args as never) as { 'x-papercusp-call-constraint'?: string };
   expect(json['x-papercusp-call-constraint']).toContain('operationalBrief');
+  expect(() => parse({ id: 'WI-a', resume: true })).not.toThrow();
+  expect(() => parse({ ids: ['WI-a'], resume: true })).not.toThrow();
   expect(() => parse({ ids: ['WI-a', 'WI-b'], resume: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, detail: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, checksOnly: true })).toThrow(/resume requires one item/);
