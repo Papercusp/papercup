@@ -276,10 +276,13 @@ describe('index maintenance workflow body (P-006)', () => {
       expect(third.reclaimed).toBeNull();
       expect(third.pendingReclaims).toEqual([]);
 
-      // The rebuilt indexes still answer for every row.
+      // The rebuilt indexes still answer for every row. A computed query names its index the
+      // way the lexical seam does: bare `<@>` resolves an index only for a literal right side
+      // ("no BM25 index found for text <@> text expression" otherwise).
       for (const t of tables) {
         const [{ n }] = await sql.unsafe<{ n: number }[]>(
-          `SELECT count(*)::int AS n FROM harness_shared.${t} WHERE body <@> ('tok' || md5('${t}' || 7)) < 0`);
+          `SELECT count(*)::int AS n FROM harness_shared.${t}
+            WHERE body <@> to_bm25query('tok' || md5('${t}' || 7), '${idx(t)}') < 0`);
         expect(n).toBe(1);
       }
     } finally {
