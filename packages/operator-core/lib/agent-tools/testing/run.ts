@@ -128,7 +128,7 @@ import {
   type CgroupFs,
 } from '../../task-manager/cgroup-read';
 import { deriveUserManagerRoot, scopeCgroupRelPath } from '../../task-manager/types';
-import { isShuttingDown } from '../../shutdown-state';
+import { hostShutdownSignal, isShuttingDown } from '../../shutdown-state';
 import {
   admissionContextFromEnvironment,
   governedExecutionLeaseTtlForTimeout,
@@ -2287,11 +2287,12 @@ function runTestProcess(
   phaseTimings?: TestingRunPhaseTimings,
 ): Promise<RouterOutcome> {
   const runGroup = env.PAPERCUSP_TEST_RUN_GROUP ?? 'unattributed';
+  const processSignal = signal ? AbortSignal.any([signal, hostShutdownSignal()]) : hostShutdownSignal();
   const plannedDemand = buildTestProcessDemand({ fileCount });
   const admissionStartedAt = performance.now();
   return runWithTestProcessDeadline<RouterOutcome>({
     timeoutMs,
-    parentSignal: signal,
+    parentSignal: processSignal,
     onAdmissionTimeout: (budgetMs) => ({
       code: null,
       signal: null,

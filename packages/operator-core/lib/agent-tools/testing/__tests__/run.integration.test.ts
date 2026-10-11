@@ -22,6 +22,7 @@
  */
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
@@ -69,6 +70,7 @@ import runTool, {
 import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing-run-store';
 import { listDirtyFilesRecursive, readRestrictedWindowHoldings, type HoldRunGit } from '../../../personal-vault/git-sync-hold';
 import { restrictedHoldRefusal } from '../restricted-hold-fence';
+import { __resetShutdownStateForTest, markShuttingDown } from '../../../shutdown-state';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -1961,5 +1963,72 @@ describe('testing:run (integration)', () => {
 
     const survivors = await pidsTaggedWithRun(out.runId as string);
     expect(survivors).toEqual([]);
+  }, 30_000);
+
+  it('releases the request promptly and preserves its confined child on host shutdown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'testing-run-host-shutdown-'));
+    selectorRoots.push(root);
+    const file = 'packages/x/real.test.ts';
+    const startedPath = join(root, 'router-started');
+    await mkdir(join(root, '.git'), { recursive: true });
+    await mkdir(dirname(join(root, file)), { recursive: true });
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+    await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
+    await writeFile(join(root, file), 'export {};\n');
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(startedPath)}, String(process.pid));`,
+      'setTimeout(() => process.exit(0), 8_000);',
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+
+    __resetShutdownStateForTest();
+    const runId = randomUUID();
+    const caller = new AbortController();
+    const runPromise = runTestFilesCore({
+      root,
+      files: [file],
+      runId,
+      timeoutMs: 20_000,
+      signal: caller.signal,
+    });
+    let guardTimer: NodeJS.Timeout | undefined;
+
+    try {
+      await vi.waitFor(() => expect(existsSync(startedPath)).toBe(true), { timeout: 10_000 });
+
+      const shutdownAt = performance.now();
+      markShuttingDown();
+      const raced = await Promise.race([
+        runPromise.then((result) => ({ result })),
+        new Promise<{ timedOut: true }>((resolve) => {
+          guardTimer = setTimeout(() => resolve({ timedOut: true }), 5_000);
+        }),
+      ]);
+      if (guardTimer) clearTimeout(guardTimer);
+      if ('timedOut' in raced) caller.abort(new Error('host-shutdown handoff guard expired'));
+      const out = 'result' in raced ? raced.result : await runPromise;
+      const elapsedMs = performance.now() - shutdownAt;
+      const survivingPids = await pidsTaggedWithRun(runId);
+
+      // The confined child owns its lifetime after the request is handed off;
+      // let the fixture finish naturally before removing its scratch checkout.
+      await vi.waitFor(async () => expect(await pidsTaggedWithRun(runId)).toEqual([]), {
+        timeout: 10_000,
+        interval: 100,
+      });
+
+      expect('timedOut' in raced, 'host shutdown should release the request before the guard').toBe(false);
+      expect(elapsedMs).toBeLessThan(4_000);
+      expect(out.error).toBe('aborted');
+      expect(out.hint).toContain('confined router continues under systemd ownership');
+      expect(survivingPids.length).toBeGreaterThan(0);
+    } finally {
+      if (guardTimer) clearTimeout(guardTimer);
+      __resetShutdownStateForTest();
+      caller.abort(new Error('host-shutdown integration test cleanup'));
+      await runPromise;
+    }
   }, 30_000);
 });

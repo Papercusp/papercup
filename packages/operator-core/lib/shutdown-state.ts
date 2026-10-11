@@ -26,6 +26,8 @@ interface BeforeHostExitHook {
 
 interface ShutdownState {
   shuttingDown: boolean;
+  /** Aborted once this process starts its graceful host drain. */
+  hostShutdownController?: AbortController;
   /** Set once installGracefulShutdown has armed a drain in THIS process. */
   gracefulDrainInstalled: boolean;
   beforeHostExitHooks: BeforeHostExitHook[];
@@ -38,10 +40,19 @@ interface ShutdownState {
 // SIGTERM again, or a before-exit hook would register where exitOnce never looks.
 const state = pinModuleState<ShutdownState>('@papercusp/operator-core.shutdownState', () => ({
   shuttingDown: false,
+  hostShutdownController: new AbortController(),
   gracefulDrainInstalled: false,
   beforeHostExitHooks: [],
   beforeHostExitRan: false,
 }));
+
+function getHostShutdownController(): AbortController {
+  // The module state is pinned across copies and hot reloads. Initialize this
+  // field lazily too, so a process holding the pre-signal state shape remains
+  // compatible until its next full restart.
+  state.hostShutdownController ??= new AbortController();
+  return state.hostShutdownController;
+}
 
 /**
  * True once this process has begun a graceful drain (SIGTERM/SIGINT). One-way in
@@ -51,12 +62,21 @@ export function isShuttingDown(): boolean {
   return state.shuttingDown;
 }
 
+/** Shared process-wide signal for work that must settle when this host drains. */
+export function hostShutdownSignal(): AbortSignal {
+  return getHostShutdownController().signal;
+}
+
 /**
  * Mark this process as draining. Idempotent; called from the graceful-shutdown
  * handlers (installGracefulShutdown's drainAndExit + the cluster-primary shutdown).
  */
 export function markShuttingDown(): void {
   state.shuttingDown = true;
+  const controller = getHostShutdownController();
+  if (!controller.signal.aborted) {
+    controller.abort(new Error('operator host is shutting down'));
+  }
 }
 
 /**
@@ -107,6 +127,7 @@ export function runBeforeHostExitHooks(): void {
 /** Test seam ONLY — reset the flag between cases. Never call in production code. */
 export function __resetShutdownStateForTest(): void {
   state.shuttingDown = false;
+  state.hostShutdownController = new AbortController();
   state.gracefulDrainInstalled = false;
   state.beforeHostExitHooks = [];
   state.beforeHostExitRan = false;
