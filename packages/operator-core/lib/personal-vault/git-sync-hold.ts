@@ -213,6 +213,13 @@ export function turnHoldingsFromRows(rows: readonly TurnEditRow[]): RestrictedEd
  *    none is still open (`ended_at IS NULL`) — the same session-log authority as
  *    the liveness oracle's `recorded` leg. An owner with no session row is
  *    treated as live and bounded by `maxAgeMs`.
+ *  - ONLY JOURNALING EDITORS ARE HELD: the owner must have at least one
+ *    `session_turn_journal` row, ever. A host that never journals turn ends
+ *    (e.g. a Codex home whose hooks.json predates Stop-hook enrolment,
+ *    WI-6554700010008402) has nothing that could release its edits early, so
+ *    holding it would delay every edit by the full `maxAgeMs` cap. Such an
+ *    editor is not held, which is the pre-hold behaviour. Consequence: a brand-new
+ *    owner's first turn is also unheld, until its first turn end is journaled.
  *
  * Throws `disclosure_ledger_unavailable` on any read failure: git-sync then
  * skips the tick rather than staging a file an agent is still editing.
@@ -243,7 +250,11 @@ export async function readTurnHoldings(
                    AND j.created_at > now() - make_interval(secs => ${journalWindowSec})) AS turn_ended_at,
                (EXISTS (SELECT 1 FROM harness_shared.adv_sessions s WHERE s.coord_owner_id = e.agent_id)
                 AND NOT EXISTS (SELECT 1 FROM harness_shared.adv_sessions s
-                                 WHERE s.coord_owner_id = e.agent_id AND s.ended_at IS NULL)) AS session_ended
+                                 WHERE s.coord_owner_id = e.agent_id AND s.ended_at IS NULL)) AS session_ended,
+               -- Unbounded on purpose: an owner journaled once is journaling-capable.
+               -- One probe of the (owner_id, created_at) index per distinct editor.
+               EXISTS (SELECT 1 FROM harness_shared.session_turn_journal j
+                        WHERE j.owner_id = e.agent_id) AS journals_turns
           FROM (SELECT DISTINCT agent_id FROM recent) e
       )
       SELECT DISTINCT ON (r.repo_root, r.file)
@@ -251,6 +262,7 @@ export async function readTurnHoldings(
         FROM recent r
         JOIN editors e ON e.agent_id = r.agent_id
        WHERE NOT e.session_ended
+         AND e.journals_turns
          AND (e.turn_ended_at IS NULL OR r.ts > e.turn_ended_at)
        ORDER BY r.repo_root, r.file, r.ts DESC`;
   } catch (error) {
