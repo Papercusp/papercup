@@ -13,7 +13,7 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   liveCurrentBenchNativeCostReader, currentBenchLaunchRequest,
   currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchWorkloadTransitionReader, currentBenchWorkloadArtifactReader, currentBenchWorkloadContextReader,
-  currentBenchWorkloadCheckpointReader, currentBenchWorkloadHandoffReader,
+  currentBenchWorkloadCheckpointReader, currentBenchWorkloadHandoffReader, currentBenchWorkloadProviderInputReader,
   currentBenchProviderAuthenticator, currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
@@ -316,7 +316,7 @@ describe('private workload checkpoint authority', () => {
       index: 2, at, checkpointSha256: createHash('sha256').update(checkpoint).digest('hex'), fromState: 'wip', subjectFingerprint: { ...subjectFingerprint } }] });
   async function populate() {
     await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${harnessSlug}, ${subjectId}, 'wip')`;
-    await sql`INSERT INTO harness_shared.carry_notes VALUES (${workspaceId}, ${scope}, ${note}, ${sql.json([entry()])}, ${at})`;
+    await sql`INSERT INTO harness_shared.carry_notes VALUES (${workspaceId}, ${scope}, ${note}, ${JSON.stringify([entry()])}::text::jsonb, ${at})`;
   }
   it('resolves exact authored bytes through the writer span despite a truncated journal prefix', async () => {
     await populate();
@@ -356,7 +356,7 @@ describe('private workload checkpoint authority', () => {
       await sql`UPDATE harness_shared.carry_notes SET note = ${changed}`;
       journal[0].latestUpdate = { ...entry().latestUpdate, noteHash: shortCarryHash(changed) };
     }
-    await sql`UPDATE harness_shared.carry_notes SET journal = ${sql.json(journal)}`;
+    await sql`UPDATE harness_shared.carry_notes SET journal = ${JSON.stringify(journal)}::text::jsonb`;
     expect(await currentBenchWorkloadCheckpointReader(options())(options().receipts[0].receiptRef, binding)).toBeNull();
   });
   it('freezes host allocation and refuses other runs, bindings and candidate refs', async () => {
@@ -461,11 +461,9 @@ describe('private workload handoff authority', () => {
   });
 });
 
-describe('private workload context authority', () => {
-  const binding = { runId: 'private-context-run', trialBindingHash: 'a'.repeat(64) };
-  async function fixture() {
+async function workloadContextFixture(binding: { runId: string; trialBindingHash: string }) {
     const home = mkdtempSync(join(tmpdir(), 'private-context-source-')); roots.push(home);
-    const nativeSessionId = randomUUID(), nativeTurnId = 'private-context-turn';
+    const nativeSessionId = randomUUID(), nativeTurnId = randomUUID();
     const text = 'Resolved dependency output π\nwith exact whitespace.';
     const transcript = [
       { type: 'session_meta', payload: { id: nativeSessionId } },
@@ -493,7 +491,10 @@ describe('private workload context authority', () => {
       ${sql.json({ initialized: true, fileGeneration: 0 })})`;
     return { text, transcript, receipt, options: { sql, workspaceId, harnessSlug, ...binding,
       notBefore: '2026-10-11T00:00:00Z', receipts: [receipt] } };
-  }
+}
+describe('private workload context authority', () => {
+  const binding = { runId: 'private-context-run', trialBindingHash: 'a'.repeat(64) };
+  const fixture = () => workloadContextFixture(binding);
   it('projects source-defined input bytes under the exact private task, native home and trial binding', async () => {
     const f = await fixture();
     expect(await currentBenchWorkloadContextReader(f.options)(f.receipt.receiptRef, binding)).toEqual([
@@ -526,6 +527,117 @@ describe('private workload context authority', () => {
     expect(await reader(f.receipt.receiptRef, { ...binding, runId: 'foreign-run' })).toBeNull();
     expect(await reader(f.receipt.receiptRef, { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
     expect(await reader('candidate-chosen-ref', binding)).toBeNull();
+  });
+});
+
+describe('private workload provider input authority', () => {
+  const binding = { runId: 'private-provider-input-run', trialBindingHash: 'a'.repeat(64) };
+  async function fixture() {
+    const f = await workloadContextFixture(binding), reservationId = randomUUID();
+    const host = { workspaceId, loopId: `private-provider-input:${randomUUID()}`, runId: binding.runId,
+      preregHash: 'b'.repeat(64), assignmentId: currentBenchAssignmentId(binding.runId, 'papercusp', 't1', 1) };
+    const body = { model: 'configured-alias', reasoning: { effort: 'high' }, max_output_tokens: 10,
+      client_metadata: { 'x-codex-turn-metadata': JSON.stringify({ session_id: f.receipt.nativeSessionId,
+        thread_id: f.receipt.nativeSessionId, turn_id: f.receipt.nativeTurnId }) },
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: f.text }] }] };
+    const bodyPath = 'provider-input.json', bytes = JSON.stringify(body);
+    writeFileSync(join(repoRoot, bodyPath), bytes);
+    const identity = { attemptId: reservationId, manifestSha256: host.preregHash, armId: host.assignmentId,
+      nativeSessionId: f.receipt.nativeSessionId, nativeTurnId: f.receipt.nativeTurnId, transport: 'bearer-http' as const,
+      accountId: 'private-provider-account', credentialHeader: 'authorization' as const, credentialSha256: 'c'.repeat(64),
+      bodySha256: createHash('sha256').update(bytes).digest('hex'), clockId: 'private-provider-clock',
+      target: 'https://api.openai.com/v1/responses' };
+    const resources = { inputTokens: 1000, outputTokens: 100, requestsPerArm: 10, armIds: [host.assignmentId],
+      usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 60_000, wallClockMsPerArm: 60_000 };
+    await registerLearningLoop(sql, { workspaceId, loopId: host.loopId, budgetKind: 'lifetime', budgetUsd: 60,
+      enabled: true, meta: { reservationBinding: host.preregHash, reservationResourceBudget: resources } });
+    expect((await reserveLearningSpend(sql, { workspaceId, loopId: host.loopId, requestedUsd: 0.003, floorUsd: 0,
+      attemptKind: 'evaluation', note: JSON.stringify({ nativeGatewayAttempt: identity }),
+      exact: { reservationId, binding: host.preregHash, expectedBudgetUsd: 60,
+        resources: { armId: host.assignmentId, inputTokens: 100, outputTokens: 10 }, expectedResourceBudget: resources } })).ok).toBe(true);
+    const headers: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: reservationId,
+      outcome: 'response-headers', responseStatus: 200, costUsdMeasurementMissing: true };
+    expect(await recordLearningSpendAttemptResult(sql, { workspaceId, reservationId, result: headers })).toEqual({ ok: true });
+    const result: GatewayCarryTrialAttemptResult = { ...headers, outcome: 'response-completed', responseStatus: 200,
+      responseSha256: 'd'.repeat(64), responseBytes: 300, providerCompletion: { responseId: 'private-response',
+        model: 'configured-alias', providerEffort: 'high', usage: { inputTokenBasis: 'inclusive', inputTokens: 100,
+          outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0 } } };
+    expect(await recordLearningSpendAttemptResult(sql, { workspaceId, reservationId, result })).toEqual({ ok: true });
+    await sql`UPDATE harness_shared.learning_spend_reservations SET created_at = '2026-10-11T00:00:01.500Z'
+      WHERE id = ${reservationId}`;
+    const [row] = await sql`SELECT note FROM harness_shared.learning_spend_reservations WHERE id = ${reservationId}`;
+    const receipt = { ...f.receipt, reservationId, reservationNoteSha256: createHash('sha256').update(row.note).digest('hex'),
+      bodyRef: 'provider-body:private-input', bodyPath, maxBytes: 16_384, inputIndex: 0, textIndex: 0,
+      model: 'configured-alias', effort: 'high', accountId: identity.accountId };
+    return { ...f, body, identity, result, headers, host, note: JSON.parse(row.note), receipt,
+      options: { ...f.options, checkoutRoot: repoRoot, accountingBinding: host, receipts: [receipt] } };
+  }
+  it('joins recorded native bytes, captured request bytes and the completed provider reservation', async () => {
+    const f = await fixture(), reader = currentBenchWorkloadProviderInputReader(f.options);
+    const rows = await reader(f.receipt.receiptRef, binding);
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({ kind: 'input', content: f.text, metadata: { contextId: 'dependency-context',
+      nativeInputSource: { nativeSessionId: f.receipt.nativeSessionId, nativeTurnId: f.receipt.nativeTurnId },
+      providerInputSource: { basis: 'completed-provider-request-input', reservationId: f.receipt.reservationId,
+        bodySha256: f.identity.bodySha256, accountId: f.receipt.accountId, responseId: 'private-response' } } });
+    f.options.receipts[0].accountId = 'candidate-account'; f.options.receipts[0].inputIndex = 99;
+    expect(await reader(f.receipt.receiptRef, binding)).toEqual(rows);
+    expect(await reader('candidate-ref', binding)).toBeNull();
+    expect(await reader(f.receipt.receiptRef, { ...binding, runId: 'foreign-run' })).toBeNull();
+    expect(await reader(f.receipt.receiptRef, { ...binding, trialBindingHash: 'e'.repeat(64) })).toBeNull();
+  });
+  it.each(['workspace', 'loop', 'run-ref', 'arm', 'kind', 'cancelled', 'early', 'late', 'note-changed',
+    'headers-only', 'body-changed', 'wrong-text', 'wrong-role', 'wrong-turn', 'wrong-account', 'wrong-model',
+    'wrong-effort', 'response-hash', 'no-native-source', 'no-artifact', 'body-symlink'])
+  ('refuses %s provider input substitution', async fault => {
+    const f = await fixture();
+    if (fault === 'workspace') await sql`UPDATE harness_shared.learning_spend_reservations SET workspace_id = 'foreign'`;
+    if (fault === 'loop') await sql`UPDATE harness_shared.learning_spend_reservations SET loop_id = 'foreign'`;
+    if (fault === 'run-ref') await sql`UPDATE harness_shared.learning_spend_reservations SET run_ref = 'foreign'`;
+    if (fault === 'arm') await sql`UPDATE harness_shared.learning_spend_reservations SET arm_id = 'foreign'`;
+    if (fault === 'kind') await sql`UPDATE harness_shared.learning_spend_reservations SET attempt_kind = 'proposer'`;
+    if (fault === 'cancelled') await sql`UPDATE harness_shared.learning_spend_reservations SET status = 'cancelled'`;
+    if (fault === 'early') await sql`UPDATE harness_shared.learning_spend_reservations SET created_at = '2026-10-11T00:00:00Z'`;
+    if (fault === 'late') await sql`UPDATE harness_shared.learning_spend_reservations SET created_at = '2026-10-11T00:00:03Z'`;
+    if (fault === 'note-changed') await sql`UPDATE harness_shared.learning_spend_reservations SET note = note || ' '`;
+    if (fault === 'body-changed') writeFileSync(join(repoRoot, f.receipt.bodyPath), JSON.stringify(f.body) + ' ');
+    if (fault === 'no-native-source') await sql`TRUNCATE harness_shared.interactive_usage_files`;
+    if (fault === 'no-artifact') rmSync(join(repoRoot, f.receipt.bodyPath));
+    if (fault === 'body-symlink') {
+      renameSync(join(repoRoot, f.receipt.bodyPath), join(repoRoot, 'elsewhere.json'));
+      symlinkSync('elsewhere.json', join(repoRoot, f.receipt.bodyPath));
+    }
+    if (['headers-only', 'wrong-account', 'wrong-model', 'wrong-effort', 'response-hash'].includes(fault)) {
+      if (fault === 'headers-only') f.note.nativeGatewayAttemptResult = f.headers;
+      if (fault === 'wrong-account') f.note.nativeGatewayAttemptResult.accountId = 'foreign';
+      if (fault === 'wrong-model') f.note.nativeGatewayAttemptResult.providerCompletion.model = 'foreign';
+      if (fault === 'wrong-effort') f.note.nativeGatewayAttemptResult.providerCompletion.providerEffort = 'low';
+      if (fault === 'response-hash') f.note.nativeGatewayAttemptResult.responseSha256 = 'invalid';
+      const note = JSON.stringify(f.note); f.receipt.reservationNoteSha256 = createHash('sha256').update(note).digest('hex');
+      await sql`UPDATE harness_shared.learning_spend_reservations SET note = ${note}`;
+    }
+    if (['wrong-text', 'wrong-role', 'wrong-turn'].includes(fault)) {
+      if (fault === 'wrong-text') f.body.input[0].content[0].text = 'Other context';
+      if (fault === 'wrong-role') f.body.input[0].role = 'developer';
+      if (fault === 'wrong-turn') f.body.client_metadata['x-codex-turn-metadata'] = JSON.stringify({
+        thread_id: f.receipt.nativeSessionId, turn_id: randomUUID() });
+      const bytes = JSON.stringify(f.body); writeFileSync(join(repoRoot, f.receipt.bodyPath), bytes);
+      f.note.nativeGatewayAttempt.bodySha256 = f.note.nativeGatewayAttemptResult.bodySha256 = createHash('sha256').update(bytes).digest('hex');
+      const note = JSON.stringify(f.note); f.receipt.reservationNoteSha256 = createHash('sha256').update(note).digest('hex');
+      await sql`UPDATE harness_shared.learning_spend_reservations SET note = ${note}`;
+    }
+    expect(await currentBenchWorkloadProviderInputReader(f.options)(f.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('allows absent provider effort only when the exact forwarded request retains the frozen effort', async () => {
+    const f = await fixture(); f.note.nativeGatewayAttemptResult.providerCompletion.providerEffort = null;
+    const note = JSON.stringify(f.note); f.receipt.reservationNoteSha256 = createHash('sha256').update(note).digest('hex');
+    await sql`UPDATE harness_shared.learning_spend_reservations SET note = ${note}`;
+    expect((await currentBenchWorkloadProviderInputReader(f.options)(f.receipt.receiptRef, binding))?.[0].content).toBe(f.text);
+  });
+  it('refuses ambiguous request allocations and foreign accounting bindings before reads', async () => {
+    const f = await fixture();
+    expect(() => currentBenchWorkloadProviderInputReader({ ...f.options, receipts: [f.receipt, { ...f.receipt, receiptRef: 'different', index: 4 }] })).toThrow(/unique exact requests/);
+    expect(() => currentBenchWorkloadProviderInputReader({ ...f.options, accountingBinding: { ...f.host, workspaceId: 'foreign' } })).toThrow(/private accounting binding/);
   });
 });
 

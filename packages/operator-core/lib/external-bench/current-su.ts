@@ -1609,6 +1609,94 @@ export function currentBenchWorkloadContextReader(options: DbScope & {
   };
 }
 
+/** A recorded native input alone does not prove a provider received it. Join
+ * the exact private native text block to a host-captured request body and the
+ * maintained gateway reservation's completed response. Neither request IDs
+ * supplied by a candidate nor a response-headers observation can fill a gap.
+ * Capture after result settlement: a later changed reservation note refuses
+ * the pinned receipt rather than silently borrowing its replacement. */
+export function currentBenchWorkloadProviderInputReader(options:
+  Omit<Parameters<typeof currentBenchWorkloadContextReader>[0], 'receipts'> & {
+    checkoutRoot: string; accountingBinding: CurrentBenchAccountingBinding;
+    receipts: Array<Parameters<typeof currentBenchWorkloadContextReader>[0]['receipts'][number] & {
+      reservationId: string; reservationNoteSha256: string;
+      bodyRef: string; bodyPath: string; maxBytes: number;
+      inputIndex: number; textIndex: number; model: string; effort: string; accountId: string;
+    }>;
+  },
+): import('../evaluation-trial/integrity').WorkloadEvidenceResolver['readObservations'] {
+  const { sql: suppliedSql, ...allocation } = options;
+  const frozen = structuredClone(allocation), host = frozen.accountingBinding;
+  const present = (value: string) => typeof value === 'string' && !!value.trim();
+  const digest = (value: string) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  const uuid = (value: string) => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
+  if (!host || host.workspaceId !== frozen.workspaceId || host.runId !== frozen.runId ||
+      !present(host.loopId) || !digest(host.preregHash) || !host.assignmentId?.startsWith('bench-assignment:') ||
+      frozen.receipts.some(row => !uuid(row.reservationId) || !uuid(row.nativeSessionId) || !uuid(row.nativeTurnId) ||
+        !digest(row.reservationNoteSha256) || ![row.bodyRef, row.bodyPath, row.model, row.effort, row.accountId].every(present) ||
+        ![row.inputIndex, row.textIndex].every(index => Number.isSafeInteger(index) && index >= 0)) ||
+      new Set(frozen.receipts.map(row => row.reservationId)).size !== frozen.receipts.length)
+    throw new Error('Workload provider input reader requires unique exact requests and a private accounting binding.');
+  const native = currentBenchWorkloadContextReader({ ...frozen, sql: suppliedSql });
+  const artifacts = currentBenchWorkloadArtifactReader({ ...frozen, sql: suppliedSql,
+    artifacts: frozen.receipts.map(row => ({ ref: row.bodyRef, path: row.bodyPath,
+      subjectId: row.subjectId, maxBytes: row.maxBytes })) });
+  const allowed = new Map(frozen.receipts.map(row => [row.receiptRef, row]));
+  return async (ref, binding) => {
+    const receipt = allowed.get(ref);
+    if (!receipt || binding.runId !== frozen.runId || binding.trialBindingHash !== frozen.trialBindingHash) return null;
+    const inputs = await native(ref, binding), bytes = await artifacts(receipt.bodyRef, binding);
+    if (inputs?.length !== 1 || !bytes) return null;
+    const { resolveDb } = await import('./reproducibility/db');
+    const { sql } = resolveDb({ sql: suppliedSql, workspaceId: frozen.workspaceId });
+    const rows = await sql<{ note: string; created_at: Date; ended_at: Date }[]>`
+      SELECT r.note, r.created_at, t.ended_at
+        FROM harness_shared.learning_spend_reservations r
+        JOIN harness_shared.task_ledger t ON t.workspace_id = r.workspace_id AND t.task_id = ${receipt.taskId}
+       WHERE r.workspace_id = ${frozen.workspaceId} AND r.loop_id = ${host.loopId}
+         AND r.id = ${receipt.reservationId}::uuid
+         AND r.run_ref = ${`manifest:${host.preregHash}/attempt:${receipt.reservationId.toLowerCase()}`}
+         AND r.arm_id = ${host.assignmentId} AND r.attempt_kind = 'evaluation'
+         AND r.status IN ('open', 'settled')
+    `;
+    const row = rows[0], input = inputs[0];
+    if (rows.length !== 1 || typeof row.note !== 'string' ||
+        createHash('sha256').update(row.note).digest('hex') !== receipt.reservationNoteSha256 ||
+        !(row.created_at instanceof Date) || !(row.ended_at instanceof Date) ||
+        row.created_at.getTime() < Date.parse(input.at!) || row.created_at > row.ended_at) return null;
+    try {
+      const note = JSON.parse(row.note), attempt = note.nativeGatewayAttempt, result = note.nativeGatewayAttemptResult;
+      const bodyText = Buffer.from(bytes).toString('utf8');
+      if (!Buffer.from(bodyText).equals(Buffer.from(bytes))) return null;
+      const body = JSON.parse(bodyText), bodySha256 = createHash('sha256').update(bytes).digest('hex');
+      const identity = { attemptId: receipt.reservationId, manifestSha256: host.preregHash, armId: host.assignmentId,
+        nativeSessionId: receipt.nativeSessionId, nativeTurnId: receipt.nativeTurnId, accountId: receipt.accountId,
+        bodySha256, transport: 'bearer-http', credentialHeader: 'authorization', target: 'https://api.openai.com/v1/responses' };
+      if (!attempt || !result || Object.entries(identity).some(([key, value]) => attempt[key] !== value || result[key] !== value) ||
+          !digest(attempt.credentialSha256) || result.credentialSha256 !== attempt.credentialSha256 ||
+          !present(attempt.clockId) || result.clockId !== attempt.clockId || result.reservationRef !== receipt.reservationId ||
+          result.outcome !== 'response-completed' || result.responseStatus !== 200 || !digest(result.responseSha256) ||
+          !Number.isSafeInteger(result.responseBytes) || result.responseBytes <= 0 ||
+          result.costUsdMeasurementMissing !== true || !present(result.providerCompletion?.responseId) ||
+          result.providerCompletion.model !== receipt.model ||
+          result.providerCompletion.providerEffort !== null && result.providerCompletion.providerEffort !== receipt.effort ||
+          body.model !== receipt.model || body.reasoning?.effort !== receipt.effort || !selfContainedOpenAiInput(body)) return null;
+      const correlation = readGatewayNativeCorrelation(body);
+      if (correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
+          (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId ||
+          correlation.threadId !== receipt.nativeSessionId || !Array.isArray(body.input)) return null;
+      const message = body.input[receipt.inputIndex], block = message?.content?.[receipt.textIndex];
+      if ((message?.type ?? 'message') !== 'message' || message.role !== 'user' ||
+          !Array.isArray(message.content) || block?.type !== 'input_text' || block.text !== input.content) return null;
+      return [{ ...input, metadata: { ...input.metadata,
+        providerInputSource: { basis: 'completed-provider-request-input', reservationId: receipt.reservationId,
+          reservationNoteSha256: receipt.reservationNoteSha256, bodyRef: receipt.bodyRef, bodySha256,
+          inputIndex: receipt.inputIndex, textIndex: receipt.textIndex, accountId: receipt.accountId,
+          responseId: result.providerCompletion.responseId, responseSha256: result.responseSha256 } } }];
+    } catch { return null; }
+  };
+}
+
 export function liveCurrentSuBenchPorts(
   ctx: PapercuspUnifiedToolContext, observations: CurrentSuBenchObservations,
   opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>,
