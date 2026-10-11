@@ -125,6 +125,7 @@ type PortalRosterBrowserInput = {
   projectHistory?: boolean;
   projectHistorySeed?: PrivateProjectHistorySeed;
   calendar?: boolean;
+  learning?: boolean;
   calendarSeed?: PrivateCalendarSeed;
   overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
   hud?: boolean;
@@ -153,7 +154,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'calendar' | 'learning' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -165,7 +166,20 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.calendar ? `
+  const entry = input.learning ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { AdvScopeProvider } from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvShell.tsx'))};
+    import LearningTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/LearningTab.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(AdvScopeProvider, null, React.createElement(LearningTab)))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.calendar ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -387,7 +401,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
-    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar);
+    || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning);
   const boundary = input.inbox || input.plans || standaloneRouter
     ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
@@ -436,7 +450,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `History browser graph requires ${suffix}`);
     }
   }
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.calendar
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.learning
+    ? '/apps/operator-vite/src/components/adv/LearningTab.tsx' : input.calendar
     ? '/apps/operator-vite/src/components/adv/ScheduledCalendarTab.tsx' : input.projectHistory
     ? '/apps/operator-vite/src/components/adv/AdvHistoryTab.tsx' : input.health
     ? '/apps/operator-vite/src/components/adv/HealthTab.tsx' : input.overview
