@@ -162,7 +162,10 @@ export async function runFrontierSweControl(opts: RunFrontierSweControlOpts): Pr
     let oracle: FrontierSweOracleRun | undefined;
     if (mode === 'gold') {
       const cid = handle.containerId;
-      const cp = await exec('docker', ['cp', `${repoDir}/tasks/${task.instanceId}/solution`, `${cid}:/solution`]);
+      // `<dir>/.` copies the CONTENTS: the image entrypoint's oracle stage has usually already created /solution
+      // (and staged reference material in it), and `docker cp <dir> <cid>:/solution` onto an EXISTING directory
+      // nests it as /solution/solution — solve.sh would then not be at /solution/solve.sh.
+      const cp = await exec('docker', ['cp', `${repoDir}/tasks/${task.instanceId}/solution/.`, `${cid}:/solution`]);
       if (cp.code !== 0) return infra(`stage /solution: docker cp exit ${cp.code}: ${cp.stderr.slice(0, 300)}`);
       const prep = await exec('docker', [
         'exec', '--user', 'root', cid, 'bash', '-c', 'mkdir -p /logs/agent && chmod 0777 /logs/agent && chmod +x /solution/solve.sh',

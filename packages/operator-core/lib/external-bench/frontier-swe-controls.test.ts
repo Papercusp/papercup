@@ -101,7 +101,14 @@ describe('runFrontierSweControl — gold', () => {
     expect(r.score).toBe(0.97);
     expect(r.error).toBeUndefined();
 
-    expect(calls).toContainEqual(['cp', `${REPO}/tasks/${ID}/solution`, 'armcid:/solution']);
+    // contents-copy (`/.`): the entrypoint's oracle stage has already created /solution, and a plain dir copy
+    // onto an existing directory would nest it as /solution/solution
+    expect(calls).toContainEqual(['cp', `${REPO}/tasks/${ID}/solution/.`, 'armcid:/solution']);
+    // the SAME flag is in the arm container's env from `docker run`, so the image entrypoint's oracle stage
+    // (create /solution, stage reference material) runs at container init, as px-eval does
+    const run = calls.find((c) => c[0] === 'run')!;
+    expect(run).toContain('HARBOR_ORACLE_FLAG=f00dfeed');
+    expect(run.indexOf('HARBOR_ORACLE_FLAG=f00dfeed')).toBeLessThan(run.indexOf('sleep'));
     const solve = calls.find((c) => c[c.length - 1].includes('/solution/solve.sh >'))!;
     expect(solve.slice(0, 3)).toEqual(['exec', '--user', 'agent']);
     expect(solve).toContain('DEBIAN_FRONTEND=noninteractive');
