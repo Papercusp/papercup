@@ -102,6 +102,52 @@ export const WORK_ITEMS_GET_BUDGET_MS = 30_000;
  */
 export const WORK_ITEMS_GET_MAX_CONCURRENCY = 4;
 
+const WORK_ITEMS_GET_SLOW_ENRICHMENT_MS = 1_000;
+const WORK_ITEMS_GET_MAX_ENRICHMENT_DIAGNOSTICS = 32;
+
+type WorkItemsGetEnrichmentStage = {
+  name: string;
+  status: 'pending' | 'fulfilled' | 'rejected';
+  startedAtMs: number;
+  elapsedMs: number | null;
+};
+
+type WorkItemsGetStageSample = {
+  baseReadMs: number | null;
+  enrichmentMs: number | null;
+  enrichmentStartedAtMs: number | null;
+  enrichmentStages: WorkItemsGetEnrichmentStage[];
+};
+
+function trackWorkItemsGetEnrichment<T>(
+  sample: WorkItemsGetStageSample,
+  name: string,
+  operation: () => Promise<T> | T,
+): Promise<T> {
+  const stage: WorkItemsGetEnrichmentStage = {
+    name,
+    status: 'pending',
+    startedAtMs: Date.now(),
+    elapsedMs: null,
+  };
+  sample.enrichmentStages.push(stage);
+  return Promise.resolve()
+    .then(operation)
+    .then(
+      (value) => {
+        stage.status = 'fulfilled';
+        return value;
+      },
+      (error) => {
+        stage.status = 'rejected';
+        throw error;
+      },
+    )
+    .finally(() => {
+      stage.elapsedMs = Math.max(0, Date.now() - stage.startedAtMs);
+    });
+}
+
 const WORK_ITEMS_GET_TIMEOUT = Symbol("work_items:get:timeout");
 const WORK_ITEMS_GET_CANCELLED = Symbol("work_items:get:cancelled");
 
@@ -663,6 +709,13 @@ const workItemsGetReadSchema = z.object({
   elapsedMs: z.number().int().nonnegative(),
   baseReadMaxMs: z.number().int().nonnegative().nullable(),
   enrichmentMaxMs: z.number().int().nonnegative().nullable(),
+  enrichmentDiagnostics: z.array(z.object({
+    id: z.string(),
+    stage: z.string(),
+    status: z.enum(['pending', 'fulfilled', 'rejected']),
+    elapsedMs: z.number().int().nonnegative(),
+  })).optional(),
+  enrichmentDiagnosticsOmitted: z.number().int().nonnegative().optional(),
   outerStageAttribution: z.literal('tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time'),
   detailRows: z.number().int().nonnegative().optional(),
   stubbedRows: z.number().int().nonnegative().optional(),
@@ -677,11 +730,12 @@ export default defineTool({
   // to 1774 chars and breached the 1600 HARD CAP, reddening the fleet gate. It
   // is documentation of the RESPONSE, so `returns` is also where it belongs.
   description:
-    'Fetch ordinary work-item reads by one id or many ids (WI-/F-/EI-…). For `resume:true`, exactly one item is required: pass `id` or a one-element `ids` array; multi-id resume batches are rejected. `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window (0–10); `threadLimit:0` explicitly suppresses thread work; `detail:true` (or `detail:\'full\'`) remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.',
+    'Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Read `returns` for conditional warnings.',
   guidance: {
     when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
       "The result includes `completion`, a read-side alias for `workItem.terminalCompletionEvidence` (persisted under `payload._completionEvidence`), and `hasCompletionEvidence`, the scalar presence signal that remains authoritative when a payload tier drops the evidence body.\\n\\n" +
+      "`read.enrichmentMaxMs` includes timed-out and cancelled per-item enrichment up to the shared deadline. When present, `read.enrichmentDiagnostics` identifies pending/rejected enrichment legs and completed legs taking at least 1000ms; `enrichmentDiagnosticsOmitted` counts entries beyond the 32-row cap. These are diagnostics only and carry no arguments or result bodies.\\n\\n" +
       "\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker; do not infer checkpoint authorship from \`workItem.updatedAt\`, which also moves for state, assignment, dependency, payload, and other item writes.\\n\\n" +
       "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointBody?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loud when NO checkpoint exists — that row is indistinguishable from never-started, so read the source before building. LOUDEST at >=3 distinct prior sessions: judge the acceptance criterion itself, not just the checkpoint.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` / `checkpointBody` — remaining capacity in the checkpoint: check ROWS ({ count, cap, remaining }) and the stored BODY ({ chars, cap, remaining }). `null` on either means the checkpoint read FAILED (count 0 / chars 0 means the read succeeded and nothing is stored). Read `checkpointBody.remaining` BEFORE an `append:true` write: at the cap the write keeps succeeding and silently evicts the OLDEST content, and its only notice is a marker written into the body AFTER the loss — so this is the only signal that arrives in time to act on. `chars` measures the STORED note, not the `checkpoint` string returned here, which is clipped per shape tier.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — pass either ref back via `priorAttemptRefs` for the full text. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — those refs' full untruncated records, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's." +
       "When stored, `checkpointChecks` also carries bounded `rows:[{ id?, claim }]` and optional `rowsTruncated`; these are the caller-facing identities accepted by `work_items:checkpoint.retireIds`. `checksOnly:true` returns that ledger without loading the checkpoint narrative or other enrichments.\\n\\n",
@@ -894,7 +948,7 @@ export default defineTool({
       !needsPriorAttemptResolution &&
       !needsWorkItemDetail &&
       sourceReadOptions !== undefined;
-    const stageSamples: Array<{ baseReadMs: number | null; enrichmentMs: number | null }> = [];
+    const stageSamples: Array<WorkItemsGetStageSample | undefined> = [];
     const checkpointLatestUpdateById = new Map<
       string,
       NonNullable<Awaited<ReturnType<typeof getWorkItemCheckpointWithMeta>>['latestUpdate']>
@@ -934,7 +988,12 @@ export default defineTool({
       ids,
       async (id, index) => {
         const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (Date.now() - bulkStartedAt));
-        const stage = { baseReadMs: null as number | null, enrichmentMs: null as number | null };
+        const stage: WorkItemsGetStageSample = {
+          baseReadMs: null,
+          enrichmentMs: null,
+          enrichmentStartedAtMs: null,
+          enrichmentStages: [],
+        };
         stageSamples[index] = stage;
         if (canBatchProjectedBaseRead) {
           stage.baseReadMs = projectedBatchElapsedMs;
@@ -1025,15 +1084,17 @@ export default defineTool({
         const workItem = workItemRead;
         if (workItem && args.attachments) {
           return { ok: true as const, id, availability: 'available' as const,
-            reportAttachments: await readReportAttachmentEvidence(activeWorkspaceId(), workItem.id, args.attachments, { harness: workItem.harness }) };
+            reportAttachments: await trackWorkItemsGetEnrichment(stage, 'reportAttachments', () =>
+              readReportAttachmentEvidence(activeWorkspaceId(), workItem.id, args.attachments!, { harness: workItem.harness }),
+            ) };
         }
         if (!workItem) {
           return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
         }
         if (args.resume) {
-          const started = Date.now();
-          const resume = await readWorkItemResume(workItem);
-          stage.enrichmentMs = Date.now() - started;
+          stage.enrichmentStartedAtMs = Date.now();
+          const resume = await trackWorkItemsGetEnrichment(stage, 'resume', () => readWorkItemResume(workItem));
+          stage.enrichmentMs = Math.max(0, Date.now() - stage.enrichmentStartedAtMs);
           return { ok: true as const, id, availability: 'available' as const, resume };
         }
         // Feature summaries remain present in bodyless reads. Issue summaries are
@@ -1044,10 +1105,13 @@ export default defineTool({
         // the narrative, payload, thread, holder, plan, and prior-work enrichments
         // are all unrelated to building `retireIds` and can be very expensive.
         if (checksOnly) {
-          const checkpointRead = await getWorkItemCheckpointWithMeta({
-            harness: workItem.harness,
-            workItemId: workItem.id,
-          })
+          stage.enrichmentStartedAtMs = Date.now();
+          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
+            getWorkItemCheckpointWithMeta({
+              harness: workItem.harness,
+              workItemId: workItem.id,
+            }),
+          )
             .then((r) => ({
               checkpoint: r.checkpoint,
               updatedAtMs: r.updatedAtMs,
@@ -1106,8 +1170,11 @@ export default defineTool({
         // items. A failure is explicit and fail-soft so the ordinary work-item
         // read remains usable.
         const enrichmentStartedAt = Date.now();
+        stage.enrichmentStartedAtMs = enrichmentStartedAt;
         const threadWindowRead = boundedThread && needsThreadWindow
-          ? getWorkItemThreadWindow(id, effectiveThreadLimit!, args.harness)
+          ? trackWorkItemsGetEnrichment(stage, 'threadWindow', () =>
+              getWorkItemThreadWindow(id, effectiveThreadLimit!, args.harness),
+            )
               .then((threadWindow) => ({ threadWindow, failed: false as const }))
               .catch(() => ({ threadWindow: null, failed: true as const }))
           : Promise.resolve({ threadWindow: undefined, failed: false as const });
@@ -1149,10 +1216,12 @@ export default defineTool({
           priorWorkRaw,
           threadWindowReadResult,
         ] = await Promise.all([
-          needsCheckpoint ? getWorkItemCheckpointWithMeta({
-            harness: workItem.harness,
-            workItemId: workItem.id,
-          })
+          needsCheckpoint ? trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
+            getWorkItemCheckpointWithMeta({
+              harness: workItem.harness,
+              workItemId: workItem.id,
+            }),
+          )
             .then((r) => {
               // The canonical reader fails soft IN BAND. Preserve that state
               // through the same unknown projection as a rejected read.
@@ -1204,21 +1273,23 @@ export default defineTool({
               subjectFingerprint: undefined,
               readFailed: true as const,
             })) : Promise.resolve({ checkpoint: null, updatedAtMs: null, checkpointChecks: null, checkpointBody: null, checkpointContentHash: null, latestUpdate: undefined, subjectFingerprint: undefined, readFailed: false as const }),
-          needsPlanItemBlocked ? planItemLaneBlockReason(workItem).catch(() => null) : Promise.resolve(null),
-          needsClaimCollision ? planItemClaimCollision(workItem).catch(() => null) : Promise.resolve(null),
+          needsPlanItemBlocked ? trackWorkItemsGetEnrichment(stage, 'planItemBlocked', () => planItemLaneBlockReason(workItem)).catch(() => null) : Promise.resolve(null),
+          needsClaimCollision ? trackWorkItemsGetEnrichment(stage, 'planItemClaimCollision', () => planItemClaimCollision(workItem)).catch(() => null) : Promise.resolve(null),
           // WI-40825: has the linked plan item been REWRITTEN since this
           // work-item was minted from it? Derived by comparing the mint-time
           // text hash against the live plan, so it cannot go stale the way a
           // stored flag would. Third plan-item leg, same fail-soft contract.
-          needsPlanItemTextDrift ? planItemTextDriftForWorkItem(workItem).catch(() => null) : Promise.resolve(null),
-          needsHolder ? attachHolderContext([{ assignee: workItem.assignee ?? null, state: workItem.state ?? null }], reader).catch(
+          needsPlanItemTextDrift ? trackWorkItemsGetEnrichment(stage, 'planItemTextDrift', () => planItemTextDriftForWorkItem(workItem)).catch(() => null) : Promise.resolve(null),
+          needsHolder ? trackWorkItemsGetEnrichment(stage, 'holderContext', () =>
+            attachHolderContext([{ assignee: workItem.assignee ?? null, state: workItem.state ?? null }], reader),
+          ).catch(
             () => [undefined],
           ) : Promise.resolve([undefined]),
-          needsPriorWork ? getClaimTimePriorWorkHint({
+          needsPriorWork ? trackWorkItemsGetEnrichment(stage, 'priorWorkHint', () => getClaimTimePriorWorkHint({
             harness: workItem.harness,
             workItemId: workItem.id,
             currentClaimant: workItem.assignee,
-          }).catch(() => null) : Promise.resolve(null),
+          })).catch(() => null) : Promise.resolve(null),
           threadWindowRead,
         ]);
         const [decorated] = decoratedRows;
@@ -1261,7 +1332,9 @@ export default defineTool({
         // 3h-old note stale, and it cannot see a peer's edit at all (it keys on the
         // assignee's own activity). Undefined ⇒ nothing declared ⇒ fall back.
         const checkpointFreshness = needsCheckpointFreshness && checkpoint
-          ? await getWorkItemCheckpointFreshness({ harness: workItem.harness, workItemId: workItem.id }).catch(
+          ? await trackWorkItemsGetEnrichment(stage, 'checkpointFreshness', () =>
+              getWorkItemCheckpointFreshness({ harness: workItem.harness, workItemId: workItem.id }),
+            ).catch(
               () => undefined,
             )
           : undefined;
@@ -1270,7 +1343,7 @@ export default defineTool({
         // Skip the presence round-trip entirely when a declared verdict already
         // answers the question authoritatively.
         if (needsCheckpointStale && !freshnessDeclared && checkpoint && checkpointUpdatedAtMs != null && workItem.assignee) {
-          const assigneePresence = await getPresence(workItem.assignee).catch(() => null);
+          const assigneePresence = await trackWorkItemsGetEnrichment(stage, 'assigneePresence', () => getPresence(workItem.assignee)).catch(() => null);
           const activeAt = assigneePresence?.lastActiveAt ? Date.parse(assigneePresence.lastActiveAt) : null;
           const staleness = computeCheckpointStaleness({
             checkpointUpdatedAtMs,
@@ -1335,9 +1408,11 @@ export default defineTool({
         // the current HEAD on the read path; the helper is fail-soft so a local
         // filesystem/read problem never makes work_items:get fail.
         const completionFreshness = needsCompletionFreshness
-          ? await completionFreshnessForEvidence(workItem.terminalCompletionEvidence)
+          ? await trackWorkItemsGetEnrichment(stage, 'completionFreshness', () => completionFreshnessForEvidence(workItem.terminalCompletionEvidence))
           : null;
-        const deploymentPosition = needsDeploymentPosition ? await deploymentPositionForEvidence(workItem.terminalCompletionEvidence) : null;
+        const deploymentPosition = needsDeploymentPosition
+          ? await trackWorkItemsGetEnrichment(stage, 'deploymentPosition', () => deploymentPositionForEvidence(workItem.terminalCompletionEvidence))
+          : null;
         // EI-19397599078921465: the unified lifecycle history — "what actually happened to
         // this item". The filing that produced this believed the history did not exist; it
         // did, spread across audit_log + payload.reopenHistory + payload flags with nothing
@@ -1369,7 +1444,7 @@ export default defineTool({
           ? extractCitedFactKeys([(workItem as { summary?: string | null }).summary, checkpoint])
           : { keys: [] as string[], truncated: false };
         const citedFacts = needsCitedFacts && citedKeys.keys.length
-          ? citedFactsWarning(await resolveCitedFacts(citedKeys.keys).catch(() => []), {
+          ? citedFactsWarning(await trackWorkItemsGetEnrichment(stage, 'citedFacts', () => resolveCitedFacts(citedKeys.keys)).catch(() => []), {
               truncated: citedKeys.truncated,
             })
           : undefined;
@@ -1394,13 +1469,13 @@ export default defineTool({
         // it does for a collector timeout, so the absence of this field never asserts
         // "nothing was tried" — the same fail-soft contract the claim paths already run.
         const priorAttempts = args.detail && needsPriorAttempts
-          ? await import('../../prior-attempt-context')
+          ? await trackWorkItemsGetEnrichment(stage, 'priorAttempts', () => import('../../prior-attempt-context')
               .then((m) =>
                 m.getClaimTimePriorAttemptBrief({
                   workItem,
                   harness: (workItem as { harness?: string | null }).harness ?? args.harness ?? null,
                 }),
-              )
+              ))
               .catch(() => null)
           : null;
         // The raw drill-down. Independent of `detail` on purpose: a caller arrives here
@@ -1408,14 +1483,14 @@ export default defineTool({
         // tool), and making it pay for the full detail render to resolve one omitted ref
         // would put the cost back in front of the thing the ref exists to make cheap.
         const priorAttemptRefResolution = needsPriorAttemptResolution && args.priorAttemptRefs?.length
-          ? await import('../../prior-attempt-context')
+          ? await trackWorkItemsGetEnrichment(stage, 'priorAttemptRefResolution', () => import('../../prior-attempt-context')
               .then((m) =>
                 m.resolvePriorAttemptRefs({
                   workItem,
                   harness: (workItem as { harness?: string | null }).harness ?? args.harness ?? null,
                   rawRefs: args.priorAttemptRefs!,
                 }),
-              )
+              ))
               .catch(() => null)
           : null;
         const completion = workItem.terminalCompletionEvidence ?? null;
@@ -1425,16 +1500,16 @@ export default defineTool({
           !Array.isArray(completion) &&
           Object.keys(completion).length > 0;
         const lifecycle = args.detail && needsLifecycle
-          ? await getWorkItemLifecycleHistory({
+          ? await trackWorkItemsGetEnrichment(stage, 'lifecycle', () => getWorkItemLifecycleHistory({
               id: workItem.id,
               workspaceId: activeWorkspaceId(),
               payload: (workItem as { payload?: unknown }).payload,
               family: (workItem as { family?: string | null }).family ?? null,
-            }).catch(() => null)
+            })).catch(() => null)
           : null;
         // P-012 (D-049): fail-soft — a ledger read failure omits the block, never the item.
         const corroboration = sourceSelectionWants(sourceSelection, 'corroboration')
-          ? await import('../../harness/improvements/corroboration')
+          ? await trackWorkItemsGetEnrichment(stage, 'corroboration', () => import('../../harness/improvements/corroboration')
               .then((m) =>
                 m.readCorroborationSummary({
                   workspaceId: activeWorkspaceId(),
@@ -1442,7 +1517,7 @@ export default defineTool({
                   harness: (workItem as { harness?: string | null }).harness ?? args.harness ?? null,
                   payload: (workItem as { payload?: unknown }).payload,
                 }),
-              )
+              ))
               .catch(() => null)
           : null;
         stage.enrichmentMs = Date.now() - enrichmentStartedAt;
@@ -1504,6 +1579,9 @@ export default defineTool({
           signal: ctx.signal,
           label: `work_items:get:${id}`,
         });
+        if (stage.enrichmentStartedAtMs !== null && stage.enrichmentMs === null) {
+          stage.enrichmentMs = Math.max(0, Date.now() - stage.enrichmentStartedAtMs);
+        }
         if (bounded.reason === "error") {
           const ambiguous = workItemsGetAmbiguousResult(id, bounded.error);
           if (ambiguous) return ambiguous;
@@ -1528,6 +1606,19 @@ export default defineTool({
       const measured = values.filter((value): value is number => value !== null);
       return measured.length ? Math.max(...measured) : null;
     };
+    const enrichmentDiagnostics = stageSamples.flatMap((sample, index) =>
+      (sample?.enrichmentStages ?? [])
+        .map((stage) => ({
+          id: ids[index]!,
+          stage: stage.name,
+          status: stage.status,
+          elapsedMs: stage.elapsedMs ?? Math.max(0, Date.now() - stage.startedAtMs),
+        }))
+        .filter((stage) =>
+          stage.status !== 'fulfilled' || stage.elapsedMs >= WORK_ITEMS_GET_SLOW_ENRICHMENT_MS,
+        ),
+    ).sort((a, b) => b.elapsedMs - a.elapsedMs);
+    const boundedEnrichmentDiagnostics = enrichmentDiagnostics.slice(0, WORK_ITEMS_GET_MAX_ENRICHMENT_DIAGNOSTICS);
     const availability = env.results.map((result) => (result as { availability?: string }).availability);
     const read = {
       schemaVersion: 'work-items-get-read-v1' as const,
@@ -1543,6 +1634,14 @@ export default defineTool({
       elapsedMs: Date.now() - bulkStartedAt,
       baseReadMaxMs: maxMeasured(stageSamples.map((sample) => sample?.baseReadMs ?? null)),
       enrichmentMaxMs: maxMeasured(stageSamples.map((sample) => sample?.enrichmentMs ?? null)),
+      ...(boundedEnrichmentDiagnostics.length > 0
+        ? {
+            enrichmentDiagnostics: boundedEnrichmentDiagnostics,
+            ...(enrichmentDiagnostics.length > boundedEnrichmentDiagnostics.length
+              ? { enrichmentDiagnosticsOmitted: enrichmentDiagnostics.length - boundedEnrichmentDiagnostics.length }
+              : {}),
+          }
+        : {}),
       outerStageAttribution: 'tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time' as const,
     };
     ctx.metadata?.({ workItemsGet: read });
