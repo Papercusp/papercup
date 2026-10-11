@@ -22,6 +22,19 @@ import { fileURLToPath } from 'node:url';
 import { reapArchiveCensusProducer, maintenanceDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
 import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 
+/** Read only source-backed tables; unrelated schemas cannot exhaust this census. */
+export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres>, sources: readonly MigrationCensusSource[]) {
+  const tables = [...new Set(sources.flatMap(source => [...source.tables]))];
+  if (!tables.length) return [];
+  const rows = await sql<{ table_schema: string; table_name: string; column_name: string; data_type: string }[]>`
+    SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns
+    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+      AND (table_schema || '.' || table_name) = ANY(${tables})
+    ORDER BY table_schema, table_name, ordinal_position LIMIT 20001`;
+  if (rows.length > 20000) throw new Error('Database schema census bound exceeded');
+  return rows;
+}
+
 /** Importing this entry performs no census or host-catalog reads. */
 export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string } = {}) {
 const args = options.args ?? [];
@@ -258,11 +271,7 @@ if (hostCatalogs && migrationSources.length) {
     url.pathname = `/${encodeURIComponent(database.name)}`;
     const sql = postgres(url.toString(), { max: 1, connect_timeout: 5 });
     try {
-      const rows = await sql<{ table_schema: string; table_name: string; column_name: string; data_type: string }[]>`
-        SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns
-        WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-        ORDER BY table_schema, table_name, ordinal_position LIMIT 20001`;
-      if (rows.length > 20000) throw new Error('Database schema census bound exceeded');
+      const rows = await readMigrationCensusColumns(sql, migrationSources);
       declarations.push(...migrationDatabaseCensusDeclarations(database,
         [...new Set(rows.map(row => `${row.table_schema}.${row.table_name}`))], migrationSources,
         rows.map(row => ({ table: `${row.table_schema}.${row.table_name}`, name: row.column_name, type: row.data_type }))));

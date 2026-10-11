@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { runRootCensus } from '../../../../scripts/state-census-roots.mts';
+import { runRootCensus, readMigrationCensusColumns } from '../../../../scripts/state-census-roots.mts';
 
 // Some credential writers resolve their home at module load. Isolate before
 // collection, so the in-process census cannot enumerate the developer's home.
@@ -21,6 +21,21 @@ const fixtureHome = vi.hoisted(() => {
 afterAll(() => { vi.unstubAllEnvs(); rmSync(fixtureHome, { recursive: true, force: true }); });
 
 describe('unit census executable exit contract', () => {
+  it('limits schema reads to exact source tables and preserves the overflow guard', async () => {
+    const sources = [{ producer: 'fixture', tables: ['harness_shared.consult_state', 'public.records'] }];
+    const matching = [{ table_schema: 'harness_shared', table_name: 'consult_state', column_name: 'routing', data_type: 'jsonb' }];
+    const query = vi.fn(async (strings: TemplateStringsArray, tables: string[]) => {
+      // A catalog with 20,001 unrelated columns must never enter the result.
+      const catalog = [...matching, ...Array.from({ length: 20001 }, () => ({ table_schema: 'unrelated', table_name: 'records', column_name: 'id', data_type: 'text' }))];
+      expect(strings.join('?')).toContain("(table_schema || '.' || table_name) = ANY(?)");
+      return catalog.filter(row => tables.includes(`${row.table_schema}.${row.table_name}`));
+    });
+    expect(await readMigrationCensusColumns(query as never, sources)).toEqual(matching);
+    expect(await readMigrationCensusColumns(query as never, [])).toEqual([]);
+    expect(query).toHaveBeenCalledTimes(1);
+    await expect(readMigrationCensusColumns(vi.fn(async () => Array(20001).fill(matching[0])) as never, sources))
+      .rejects.toThrow('Database schema census bound exceeded');
+  });
   it('root diagnostic explicitly reports partial scope and fails unknown filesystem ownership', async () => {
     const directory = fixtureHome;
     try {
