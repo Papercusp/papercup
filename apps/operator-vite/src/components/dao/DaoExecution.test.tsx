@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import DaoExecution from './DaoExecution';
 vi.mock('@papercusp/sync', () => ({ onSyncBusEvent: () => () => {} }));
 vi.mock('@/app/adv/harnesses/HumanWorkSection', () => ({ HumanWorkSection: () => <div>Maintained human work</div> }));
@@ -18,7 +19,10 @@ describe('organization execution scope', () => {
     const fetcher = vi.fn(async (_path: string, init?: RequestInit) => ({ ok: true, json: async () => init?.method === 'POST' ? { ok: true, id: 'WI-request' } : { workItems: [{ id: 'WI-existing', title: 'Existing work', kind: 'task', state: 'wip' }], total: 1 } }));
     vi.stubGlobal('fetch', fetcher); render(<DaoExecution view={view} section="jobs" />); await screen.findByText('Existing work');
     expect((screen.getByRole('button', { name: 'Submit work request' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Project scope'), { target: { value: 'linked' } }); fireEvent.change(screen.getByLabelText('Work title'), { target: { value: 'Build the DAO feature' } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Project scope' }));
+    await user.click(screen.getByRole('option', { name: 'Linked' }));
+    fireEvent.change(screen.getByLabelText('Work title'), { target: { value: 'Build the DAO feature' } });
     fireEvent.click(screen.getByRole('button', { name: 'Submit work request' })); await screen.findByText('Work request WI-request filed for admission review.');
     expect(fetcher.mock.calls.find(call => call[1]?.method === 'POST')?.[0]).toBe('/api/harness/linked/work-items');
   });

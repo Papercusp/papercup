@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import { switchWorkspace } from '@papercusp/operator-core/lib/workspaces-tauri';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 import { parseAsString, useQueryState } from 'nuqs';
 import { onSyncBusEvent, useSyncQuery } from '@papercusp/sync';
 import RouteLink from '@/app/_components/RouteLink';
@@ -102,12 +104,10 @@ export default function DaoWorkspace() {
       <aside className="dao-sidebar" aria-label="DAO workspace">
         <div className="dao-brand"><span aria-hidden="true">◈</span><div><strong>DAO Workbench</strong><small>Community · decisions · execution</small></div></div>
         <label className="dao-picker">Organization
-          <select aria-label="Choose a DAO" value={selectedDao} onChange={event => {
-            void setSelectedDao(event.target.value); setAcceptedTerms(false); setNotice('');
-          }}>
-            <option value="">Choose an organization</option>
-            {organizations.map(row => <option key={row.potId} value={row.potId}>{row.title}</option>)}
-          </select>
+          <Select ariaLabel="Choose a DAO" value={selectedDao} onChange={value => {
+            void setSelectedDao(value); setAcceptedTerms(false); setNotice('');
+          }} placeholder="Choose an organization" triggerClassName="h-select-trigger dao-select"
+            options={organizations.map(row => ({ value: row.potId, label: row.title }))} />
         </label>
         <nav aria-label="DAO sections">
           {['Community', 'Governance', 'Execution', 'Finance', 'Organization'].map(group => (
@@ -146,7 +146,8 @@ export default function DaoWorkspace() {
             <section className="dao-card"><p className="dao-eyebrow">Projects</p><strong className="dao-stat">{selected.memberCount}</strong><p>Linked projects in the discovery record</p><button type="button" className="dao-action" onClick={() => { void setSelectedSection('work'); }}>Explore work →</button></section>
             <section className="dao-card"><p className="dao-eyebrow">Your next step</p><h2>Review membership</h2><p>Connect to the organization before participating in its plans.</p><button type="button" className="dao-action" onClick={() => { void setSelectedSection('join'); }}>Membership →</button></section>
           </div> : sectionId === 'join' ? <section className="dao-card dao-purpose"><h2>Join {selected.title}</h2><p>Joining connects this workspace to the organization’s published projects. Voting and spending retain their separate admission and signer requirements.</p>
-            <label className="dao-check"><input type="checkbox" checked={acceptedTerms} onChange={event => setAcceptedTerms(event.target.checked)} /> I want to connect to this organization’s published projects.</label>
+            <label className="dao-check"><Checkbox ariaLabel="I want to connect to this organization’s published projects."
+              checked={acceptedTerms} onChange={setAcceptedTerms} /> I want to connect to this organization’s published projects.</label>
             {!selected.memberLinks.length ? <p>This publisher has not provided the project links required to join.</p> : null}
             <button type="button" className="dao-action" disabled={!acceptedTerms || joining || !selected.memberLinks.length} onClick={() => { void join(); }}>{joining ? 'Joining…' : 'Join organization'}</button>
           </section> : <DaoWorkspaceDetails section={sectionId} view={workspace?.directoryId === selectedDao ? workspace : null} loading={workspaceLoading} error={workspaceError} onChanged={() => setRefreshVersion(value => value + 1)} />}

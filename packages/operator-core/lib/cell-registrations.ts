@@ -2877,6 +2877,64 @@ export const OWNER_DIRECTIVE_STATUS_CELL: CellSpec = {
     '{ kind: unclaimed|claimed|done|declined, claimedBy?, holders[], activeWorkItemIds[], workedButUndispositioned }',
 };
 
+/**
+ * `verification.health` — verification-system-improvements-2026-10-10 P-002. "Is the
+ * verification system being used, and where is it failing?" in one read: contract coverage
+ * by cohort, evidence-bound clause share, uncovered active plans (lane 2's triage measure,
+ * D-018), the awaiting-acceptance age histogram, forced ships and VAL-* block usage. The
+ * headline is the number of breached thresholds; each threshold is a live bar of the plan
+ * (R-4 triageGaps, R-5 staleAcceptanceUndispositioned, SPEC-P-003-VAL-LIVE-CENSUS
+ * valBlockPlans — all `eq 0`). Whole-workspace by construction (the resolver ignores the
+ * session harness), so every reader in the workspace sees the same value.
+ */
+export const VERIFICATION_HEALTH_CELL: CellSpec = {
+  cell: 'verification.health',
+  registeredOn: '2026-10-11',
+  owner: 'verification-system-improvements-2026-10-10',
+  headline: 'health.breaches',
+
+  assessment: {
+    path: 'assessments.verificationHealth',
+    codes: {
+      healthy: {
+        meaning: 'Every thresholded reading (triageGaps, staleAcceptanceUndispositioned, valBlockPlans) was measured and is at or under its threshold.',
+        safeAction: 'Nothing is breached. Read the coverage and evidence-share metrics for trend, not for action.',
+      },
+      breached: {
+        meaning: 'At least one thresholded reading is above its threshold; health.breachCodes names which.',
+        safeAction: 'Work the named code: triageGaps → triage the uncovered active plans; staleAcceptanceUndispositioned → disposition the stale awaiting-acceptance plans; valBlockPlans → migrate the remaining [VAL- blocks.',
+      },
+      unmeasured: {
+        meaning: 'Nothing breached, but at least one thresholded reading is null (its measure threw or examined zero plans, D-019), so no verdict exists for it.',
+        safeAction: 'Read health.measurementErrors and health.unmeasuredCodes; fix the measurement before trusting a 0 anywhere else.',
+      },
+    },
+    evidence: ['health.breachCodes', 'health.unmeasuredCodes', 'health.measurementErrors'],
+  },
+
+  nullable: false,
+  whyTotal:
+    'runVerificationHealth() returns a report or throws: its own plan query is total (no default stands in for a failed read), and a lane-2 measure that throws nulls only its own readings and is named in measurementErrors. breaches is always an integer count of measured readings over threshold.',
+
+  callerRelativity: { kind: 'global' },
+
+  provenance: {
+    obtainedBy:
+      'runVerificationHealth(tx, { workspaceId }, VERIFICATION_HEALTH_MEASURES) — VERIFICATION_HEALTH_PLANS_QUERY over harness_plans + plan_spec_clauses/revisions + spec_evidence_bindings, plus lane 2 measureContractTriage (plan_contract_triage) and measureStaleAcceptance — aggregated by the pure buildVerificationHealth()',
+    liveExercised: true,
+    evidence:
+      'Ran the resolver path against the operator DB (:5432, workspace papercusp-workspace) at 2026-10-11T05:51:06Z (.papercusp/scratch/verif/health-live-probe.mts, WI-6554700010008354): activePlans 15 (post-epoch 1/1, legacy-backfilled 1/1, none 13/1 with contract), activeClauses 3884, evidence-bound 2676 (share 0.689), triageGaps 1 over 15 considered, awaitingAcceptance 141 (116 older than 28 days), staleAcceptanceUndispositioned 0 over 1551 considered, forcedShips 9, valBlockPlans 0 → breaches 1 [triageGaps], assessment breached. A first run against a discovered embedded PG (:24680) returned measurementErrors for the missing plan_contract_triage table and assessment unmeasured — the D-019 null path, observed live.',
+  },
+
+  resolver: 'runVerificationHealth() @ packages/operator-core/lib/verification-health.ts — via plans:verification-health (agent-tools/plans/verification-health.ts)',
+
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'plans:verification-health', path: 'health.breaches' },
+  shape:
+    '{ health: { coverageByCohort, activePlans, activePlansWithContract, activeClauses, activeClausesEvidenceBound, evidenceBoundShare, uncoveredActivePlans, uncoveredActivePlansRaw, closureReasonMissing, triageGaps, activePlansConsidered, awaitingAcceptancePlans, awaitingAcceptanceAgeDays, staleAcceptanceSurfaced, staleAcceptanceNeverSurfaced, staleAcceptanceUndispositioned, acceptancePlansConsidered, measurementErrors, forcedShips, valBlockPlans, breaches, breachCodes, unmeasuredCodes }, assessments: { verificationHealth }, thresholds, scope, measuredAt }',
+};
+
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
@@ -2908,6 +2966,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   ROLE_LAUNCH_CELL,
   WORK_SCOPE_CELL,
   OWNER_DIRECTIVE_STATUS_CELL,
+  VERIFICATION_HEALTH_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry

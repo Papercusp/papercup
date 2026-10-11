@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
+import { Select } from '@/app/harness/Select';
 import type { DaoSection } from './dao-navigation';
 import DaoPolicyEditor from './DaoPolicyEditor';
 type RecordRead = { status: string; value?: Record<string, unknown>; message?: string };
@@ -55,7 +56,9 @@ export default function DaoFinance({ view, section, onChanged }: { view: DaoWork
         </form>
         {challenge ? <section><h3>Sign this exact message in your wallet</h3><pre>{challenge.message}</pre><label>Wallet signature<input value={signature} onChange={event => setSignature(event.target.value)} /></label><button type="button" className="dao-action" disabled={pending || !signature} onClick={() => { void act({ op: 'wallet-verify', challengeId: challenge.challengeId, signature }, () => { setSignature(''); setReload(value => value + 1); }); }}>Verify wallet signature</button></section> : null}
         <form className="dao-proposal-form" onSubmit={event => { event.preventDefault(); if (!action || !canPrepare) return; let parsed: unknown; try { parsed = JSON.parse(args); } catch { setError('Action arguments must be a JSON array.'); return; } void act({ op: 'prepare-equity', expectedPolicyVersion: data.policyVersion, contract: action.contract, functionName: action.name, args: parsed }, result => setTransaction(result.unsignedTransaction)); }}>
-          <label>Equity action<select value={selected} onChange={event => { setSelected(event.target.value); setTransaction(null); }} disabled={!canPrepare || pending}><option value="">Choose an action</option>{data.actions.map(value => <option key={value.contract + '/' + value.name} value={value.contract + '/' + value.name}>{value.contract} · {value.name}</option>)}</select></label>
+          <label>Equity action<Select ariaLabel="Equity action" value={selected} onChange={value => { setSelected(value); setTransaction(null); }}
+            disabled={!canPrepare || pending} placeholder="Choose an action" triggerClassName="h-select-trigger dao-select"
+            options={data.actions.map(value => ({ value: value.contract + '/' + value.name, label: value.contract + ' · ' + value.name }))} /></label>
           {action ? <p>Arguments in order: {action.inputs.map(value => value.name + ' (' + value.type + ')').join(', ') || 'none'}</p> : null}
           <label>Action arguments (JSON array)<textarea value={args} onChange={event => { setArgs(event.target.value); setTransaction(null); }} disabled={!canPrepare || pending} /></label>
           <button className="dao-action" disabled={!canPrepare || !action || pending}>Prepare unsigned wallet transaction</button>

@@ -1,5 +1,6 @@
 import type { DaoWorkspaceView, DaoRead } from '@papercusp/operator-core/lib/dao-workspace-types';
 import RouteLink from '@/app/_components/RouteLink';
+import { Table, type TableColumn } from '@/app/harness/Table';
 import type { DaoSection } from './dao-navigation';
 import DaoGovernance from './DaoGovernance';
 import DaoPolicyEditor from './DaoPolicyEditor';
@@ -22,6 +23,15 @@ export default function DaoWorkspaceDetails({ section, view, loading, error, onC
   const members = view.members?.status === 'ready' ? view.members.value : [];
   const governance = view.governance?.status === 'ready' ? view.governance.value : null;
   const policy = view.policy?.status === 'ready' ? view.policy.value : null;
+  const memberColumns: TableColumn<(typeof members)[number]>[] = [
+    { key: 'contributor', header: 'Contributor', headerStyle: { padding: '12px', color: 'var(--fg-mute)', fontWeight: 500 },
+      cellStyle: { padding: '12px', borderBottom: '1px solid var(--border)' },
+      render: member => <><strong>{member.displayName || member.username}</strong><small>{member.username}</small></> },
+    { key: 'binding', header: 'Membership binding', headerStyle: { padding: '12px', color: 'var(--fg-mute)', fontWeight: 500 },
+      cellStyle: { padding: '12px', borderBottom: '1px solid var(--border)' }, render: member => member.bindingStatus },
+    { key: 'devices', header: 'Bound devices', headerStyle: { padding: '12px', color: 'var(--fg-mute)', fontWeight: 500 },
+      cellStyle: { padding: '12px', borderBottom: '1px solid var(--border)' }, render: member => member.devices },
+  ];
   const policyAvailable = view.policy?.status === 'ready';
   const rounds = governance?.events.filter(event => event.kind === 'round-open') ?? [];
   const operations = '/adv?slug=' + encodeURIComponent(view.localHomeSlug!);
@@ -30,9 +40,8 @@ export default function DaoWorkspaceDetails({ section, view, loading, error, onC
 
   if (section === 'members') return <section className="dao-card">
     <h2>Admitted contributors</h2><ReadState read={view.members} />
-    {members.length ? <div className="dao-table-wrap"><table><thead><tr><th>Contributor</th><th>Membership binding</th><th>Bound devices</th></tr></thead><tbody>
-      {members.map(member => <tr key={member.id}><td><strong>{member.displayName || member.username}</strong><small>{member.username}</small></td><td>{member.bindingStatus}</td><td>{member.devices}</td></tr>)}
-    </tbody></table></div> : view.members?.status === 'ready' ? <p>No admitted contributor records are available.</p> : null}
+    {members.length ? <div className="dao-table-wrap"><Table ariaLabel="Admitted contributors" columns={memberColumns}
+      rows={members} getRowKey={member => member.id} /></div> : view.members?.status === 'ready' ? <p>No admitted contributor records are available.</p> : null}
     <RouteLink className="dao-action" href={operations + '&tab=harnesses'}>Open contributor work</RouteLink>
   </section>;
 

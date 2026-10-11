@@ -124,6 +124,7 @@ interface TestRunRow {
   /** Exact failing case identities (WI-10006806): what a filed red names as "the failing tests". */
   failedCaseTitles?: string[];
   passedCaseTitles?: string[];
+  passedCaseTitlesTruncated?: true;
   runtimeEnvironmentBefore?: RuntimeCapture;
   runtimeEnvironmentAfter?: RuntimeCapture;
 }
@@ -187,6 +188,7 @@ export function playwrightExecutionDetails(
     ...(row.passedCaseTitles && row.passedCaseTitles.length > 0
       ? { passedCaseTitles: row.passedCaseTitles.slice(0, Math.min(MAX_RECORDED_PASSED_CASES, row.passed)) }
       : {}),
+    ...(row.passedCaseTitlesTruncated ? { passedCaseTitlesTruncated: true as const } : {}),
   };
 }
 
@@ -335,6 +337,7 @@ interface PerFile {
   skipped: number;
   failedTitles: Set<string>;
   passedTitles: Set<string>;
+  passedCaseTitlesTruncated: boolean;
 }
 
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
@@ -378,6 +381,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         skipped: 0,
         failedTitles: new Set<string>(),
         passedTitles: new Set<string>(),
+        passedCaseTitlesTruncated: false,
       };
 
       const endMs = (result.startTime?.getTime() ?? Date.now()) + result.duration;
@@ -391,7 +395,10 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
           existing.allSkipped = false;
           {
             const title = playwrightCaseTitle(test);
-            if (title && existing.passedTitles.size < MAX_RECORDED_PASSED_CASES) existing.passedTitles.add(title);
+            if (title && !existing.passedTitles.has(title)) {
+              if (existing.passedTitles.size < MAX_RECORDED_PASSED_CASES) existing.passedTitles.add(title);
+              else existing.passedCaseTitlesTruncated = true;
+            }
           }
           break;
         case 'failed':
@@ -464,6 +471,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               skipped: agg.skipped,
               failedCaseTitles: [...agg.failedTitles],
               passedCaseTitles: [...agg.passedTitles],
+              ...(agg.passedCaseTitlesTruncated ? { passedCaseTitlesTruncated: true as const } : {}),
               runtimeEnvironmentBefore: this.runtimeBefore,
               runtimeEnvironmentAfter: runtimeAfter,
             }, worktreeAfter, this.runRoot),

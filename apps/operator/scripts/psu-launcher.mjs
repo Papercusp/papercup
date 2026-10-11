@@ -1755,6 +1755,11 @@ export function modelArgsFor(agent, model, { claudeSettings, compactionLimit } =
 }
 
 function compactionLimitForResumeSession(session) {
+  // The maintained resume response carries the current owner budget, including
+  // later config:set-compaction-limit writes and derived legacy defaults.
+  const current = session?.compactionLimit;
+  if (typeof current === "number" && Number.isFinite(current) && current > 0)
+    return Math.floor(current);
   return parseLaunchCompactionLimitArgv(session?.launchArgv);
 }
 
@@ -12383,7 +12388,19 @@ export function runWrapper(options) {
   // shim's re-exec loop spawned us, not it. Consuming is single-shot and
   // self-validating; a null here is the ordinary cold-launch case.
   const hostHandoff =
-    initialHostHandoff || (ownerId ? readHostHandoff(ownerId) : null);
+    initialHostHandoff ||
+    (ownerId
+      ? readHostHandoff(ownerId, {
+          // WI-6554700010008431: name why consumed orders were refused.
+          onReject: (rejection) => {
+            const { path: _path, ownerId: _ownerId, ...detail } = rejection ?? {};
+            appendHostEvent(ownerId, "host-code-adoption-handoff-rejected", {
+              site: "owner-keyed",
+              ...detail,
+            });
+          },
+        })
+      : null);
   let adoptedCarryRespawn = null;
   if (hostHandoff) {
     // Use the predecessor's argv VERBATIM. It was minted from an argv that had
@@ -17093,8 +17110,22 @@ async function main() {
   // while the handoff's already-minted child belongs to the predecessor row.
   if (args.headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
   const handoffReadStartedAt = Date.now();
+  // WI-6554700010008431: a refused handoff is CONSUMED, and the event below is
+  // keyed by the handoff's own ownerId — so without this sink a refusal on a
+  // shim whose env carries no PAPERCUSP_SID left no event at all.
   const hostHandoff = isHostAdoptionReexec
-    ? readHostHandoffForParentPid(process.ppid)
+    ? readHostHandoffForParentPid(process.ppid, {
+        onReject: (rejection) => {
+          const rejectedOwnerId = rejection?.ownerId || adoptionOwnerId;
+          if (!rejectedOwnerId) return;
+          const { path: _path, ownerId: _ownerId, ...detail } = rejection;
+          appendHostEvent(rejectedOwnerId, "host-code-adoption-handoff-rejected", {
+            site: "parent-pid",
+            reexecExitCode: hostReexecExitCode,
+            ...detail,
+          });
+        },
+      })
     : null;
   if (isHostAdoptionReexec) {
     const ownerIdForHandoff = hostHandoff?.ownerId || adoptionOwnerId;

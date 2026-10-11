@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import type { DaoDirectoryEntry } from './dao-navigation';
 import DaoWorkspace from './DaoWorkspace';
@@ -41,7 +42,7 @@ describe('DAO Workbench journeys', () => {
     expect(screen.getByRole('navigation', { name: 'DAO sections' }).querySelectorAll('button')).toHaveLength(19);
     fireEvent.click(screen.getByRole('button', { name: 'Open workspace →' }));
     await screen.findByRole('heading', { name: 'Overview', level: 1 });
-    expect(screen.getByRole('combobox', { name: 'Choose a DAO' }).getAttribute('value') ?? (screen.getByRole('combobox') as HTMLSelectElement).value).toBe('builders');
+    expect(screen.getByRole('combobox', { name: 'Choose a DAO' }).textContent).toBe('Builders DAO');
     expect(screen.getByText('Build public infrastructure')).toBeTruthy();
   });
   it('searches published organization information', () => {
@@ -77,23 +78,23 @@ describe('DAO Workbench journeys', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(<DaoWorkspace />);
     expect((screen.getByRole('button', { name: 'Join organization' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole('checkbox'));
+    await userEvent.setup().click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Join organization' }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(call => call[0] === '/api/discovery/join-pot')).toHaveLength(1));
     const joinCall = fetchMock.mock.calls.find(call => call[0] === '/api/discovery/join-pot')!;
     expect(JSON.parse(joinCall[1].body)).toEqual({ potId: 'builders', title: 'Builders DAO', memberLinks: community.memberLinks });
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Joined builders'));
   });
-  it('keeps publisher entries without links ineligible for joining', () => {
+  it('keeps publisher entries without links ineligible for joining', async () => {
     data = [{ ...community, memberLinks: [] }]; initialDao = community.potId; initialSection = 'join';
     render(<DaoWorkspace />);
-    fireEvent.click(screen.getByRole('checkbox'));
+    await userEvent.setup().click(screen.getByRole('checkbox'));
     expect((screen.getByRole('button', { name: 'Join organization' }) as HTMLButtonElement).disabled).toBe(true);
   });
   it('surfaces a failed join and allows a deliberate retry', async () => {
     initialDao = community.potId; initialSection = 'join';
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'Admission rejected' }) }));
-    render(<DaoWorkspace />); fireEvent.click(screen.getByRole('checkbox'));
+    render(<DaoWorkspace />); await userEvent.setup().click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Join organization' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Admission rejected'));
     expect((screen.getByRole('button', { name: 'Join organization' }) as HTMLButtonElement).disabled).toBe(false);
@@ -104,7 +105,10 @@ describe('DAO Workbench journeys', () => {
     render(<DaoWorkspace />);
     expect(screen.getByRole('heading', { name: 'Discover workspaces', level: 1 })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Personal work' })).toBeTruthy();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Choose a DAO' }));
     expect(screen.queryByRole('option', { name: 'Personal work' })).toBeNull();
+    await user.keyboard('{Escape}');
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Personal' } });
     expect(screen.queryByRole('heading', { name: 'Builders DAO' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Open workspace →' }));
@@ -123,13 +127,16 @@ describe('DAO Workbench journeys', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('lists cloud workspaces without DAO membership and links to their existing workspace controls', () => {
+  it('lists cloud workspaces without DAO membership and links to their existing workspace controls', async () => {
     hostData = [{ kind: 'connection', id: 'connection', label: 'Cloud connection' },
       { kind: 'workspace', id: 'studio & research', name: 'Research studio', target: 'gcp', region: 'us-central1' }];
     render(<DaoWorkspace />);
     expect(screen.getByRole('heading', { name: 'Research studio' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Cloud connection' })).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Choose a DAO' }));
     expect(screen.queryByRole('option', { name: 'Research studio' })).toBeNull();
+    await user.keyboard('{Escape}');
     expect(screen.getByRole('link', { name: 'Open workspace →' }).getAttribute('href')).toBe('/cloud-workspaces?host=studio%20%26%20research');
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'us-central1' } });
     expect(screen.getByRole('heading', { name: 'Research studio' })).toBeTruthy();
@@ -180,7 +187,7 @@ describe('DAO Workbench journeys', () => {
     await screen.findByText('No admitted contributor records are available.');
     act(() => { busListener?.({ name: 'plans.list' }); });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect((screen.getByLabelText('Choose a DAO') as HTMLSelectElement).value).toBe(community.potId);
+    expect(screen.getByRole('combobox', { name: 'Choose a DAO' }).textContent).toBe('Builders DAO');
     expect(screen.queryByText('Loading organization records…')).toBeNull();
   });
 });

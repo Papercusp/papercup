@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 960,
+  "count": 961,
   "tools": [
     {
       "name": "ablation:report",
@@ -25989,6 +25989,80 @@
       }
     },
     {
+      "name": "plans:verification-health",
+      "http": {
+        "path": "/api/agent-tools/plans/verification-health",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read verification-system health from Postgres: contract coverage by cohort, evidence-bound clause share, uncovered active plans, awaiting-acceptance age histogram, forced ships, VAL-* block usage, and threshold breaches.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "As the resolver behind state:read { cell:\"verification.health\" }, or to see where the verification system is unused or failing without hand-written SQL.",
+        "notWhen": "To repair a plan: use plans:migrate-acceptance-bars or plans:acceptance-disposition.",
+        "chaining": "state:read { cell:\"verification.health\" } is the ordinary entry point; a null probe reading names its cause in health.measurementErrors."
+      }
+    },
+    {
       "name": "platform:contribute",
       "http": {
         "path": "/api/agent-tools/platform/contribute",
@@ -34971,7 +35045,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window (0–10); `threadLimit:0` explicitly suppresses thread work; `detail:true` (or `detail:'full'`) remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
+      "description": "Fetch ordinary work-item reads by one id or many ids (WI-/F-/EI-…). For `resume:true`, exactly one item is required: pass `id` or a one-element `ids` array; multi-id resume batches are rejected. `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window (0–10); `threadLimit:0` explicitly suppresses thread work; `detail:true` (or `detail:'full'`) remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
       "capabilities": [
         "work_items:read"
       ],
@@ -34999,9 +35073,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.",
+        "when": "For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.",
         "notWhen": "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
-        "chaining": "work_items:list → work_items:get { ids:[…] } for detail on the ones you care about."
+        "chaining": "work_items:list → work_items:get { ids:[…] } for ordinary batch detail; use work_items:get { id, resume:true } once per continuation packet."
       }
     },
     {

@@ -7384,6 +7384,86 @@ describe('host handoff record (WI-38292 increment 2)', () => {
     expect(nodeFs.statSync(handoffPathFor(owner)).mode & 0o777).toBe(0o600);
     readAsSuccessor(owner);
   });
+
+  describe('names every refusal (WI-6554700010008431)', () => {
+    // Every refusal CONSUMES the orders. Two P-012 adoptions lost their carry this
+    // way and the successor booted the ordinary flow with nothing in the event log
+    // to say why. Each refusal must reach the sink with its reason and owner.
+    const capture = () => {
+      const seen: Array<Record<string, unknown>> = [];
+      return { seen, onReject: (r: Record<string, unknown>) => { seen.push(r); } };
+    };
+
+    it('reports a still-alive predecessor with its pid and owner', () => {
+      writeHostHandoff(owner, orders);
+      const sink = capture();
+      expect(readHostHandoff(owner, { isAlive: () => true, onReject: sink.onReject })).toBeNull();
+      expect(sink.seen).toEqual([
+        expect.objectContaining({ reason: 'predecessor-alive', ownerId: owner, fromPid: process.pid, mode: 'carry-respawn' }),
+      ]);
+    });
+
+    it('reports stale orders with their age', () => {
+      writeHostHandoff(owner, orders);
+      const sink = capture();
+      expect(readAsSuccessor(owner, { now: () => Date.now() + 10 * 60_000, onReject: sink.onReject })).toBeNull();
+      expect(sink.seen).toHaveLength(1);
+      expect(sink.seen[0]).toMatchObject({ reason: 'stale', ownerId: owner, maxAgeMs: 120_000 });
+      expect(Number(sink.seen[0].ageMs)).toBeGreaterThan(120_000);
+    });
+
+    it('reports an owner mismatch and an empty argv', () => {
+      const sink = capture();
+      writeHostHandoff(owner, { ...orders, ownerId: 'someone-else' });
+      expect(readAsSuccessor(owner, { onReject: sink.onReject })).toBeNull();
+      writeHostHandoff(owner, { mode: 'recycle', args: [] });
+      expect(readAsSuccessor(owner, { onReject: sink.onReject })).toBeNull();
+      expect(sink.seen.map((r) => r.reason)).toEqual(['owner-mismatch', 'no-args']);
+      expect(sink.seen[0]).toMatchObject({ ownerId: 'someone-else', expectedOwnerId: owner });
+    });
+
+    it('reports unparseable orders', () => {
+      nodeFs.writeFileSync(handoffPathFor(owner), '{not json', { mode: 0o600 });
+      const sink = capture();
+      expect(readAsSuccessor(owner, { onReject: sink.onReject })).toBeNull();
+      expect(sink.seen).toEqual([expect.objectContaining({ reason: 'unparseable', ownerId: owner })]);
+      expect(nodeFs.existsSync(handoffPathFor(owner))).toBe(false);
+    });
+
+    it('stays SILENT on the ordinary cold launch and on accepted orders', () => {
+      const sink = capture();
+      expect(readAsSuccessor(`${owner}-never-written`, { onReject: sink.onReject })).toBeNull();
+      writeHostHandoff(owner, orders);
+      expect(readAsSuccessor(owner, { onReject: sink.onReject })).toBeTruthy();
+      expect(sink.seen).toEqual([]);
+    });
+
+    it('reports an ambiguous parent match instead of returning null silently', () => {
+      const twin = `${owner}-twin`;
+      try {
+        writeHostHandoff(owner, orders);
+        writeHostHandoff(twin, orders);
+        const sink = capture();
+        expect(readHostHandoffForParentPid(process.ppid, { isAlive: () => false, onReject: sink.onReject })).toBeNull();
+        expect(sink.seen).toEqual([
+          expect.objectContaining({ reason: 'ambiguous-parent', parentPid: process.ppid, candidateCount: 2 }),
+        ]);
+        expect(new Set(sink.seen[0].ownerIds as string[])).toEqual(new Set([owner, twin]));
+      } finally {
+        for (const id of [owner, twin]) {
+          try { nodeFs.unlinkSync(handoffPathFor(id)); } catch { /* consumed */ }
+        }
+      }
+    });
+
+    it('a throwing sink never changes the verdict', () => {
+      writeHostHandoff(owner, orders);
+      const boom = () => { throw new Error('sink failed'); };
+      expect(readHostHandoff(owner, { isAlive: () => true, onReject: boom })).toBeNull();
+      writeHostHandoff(owner, orders);
+      expect(readAsSuccessor(owner, { onReject: boom })).toBeTruthy();
+    });
+  });
 });
 
 describe('observeKickoffModelTurnStart (WI-2140591 — a marker proves SUBMISSION, not EXECUTION)', () => {

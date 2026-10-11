@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import { fetchPlan } from '@/app/admin/plans/plans-api';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 
 interface Proposal { title?: string; raw?: string; prose?: string; contentHash: string }
 interface Round {
@@ -106,15 +108,17 @@ export default function DaoGovernance({ view, onChanged }: { view: DaoWorkspaceV
   return <section className="dao-card dao-governance">
     <h2>Proposals & member decisions</h2>
     <details><summary>Propose work</summary><form className="dao-form" onSubmit={event => { void propose(event); }}>
-      <label>Project<select value={projectSlug} onChange={event => setProjectSlug(event.target.value)}>{projects.map(project => <option key={project.slug} value={project.slug}>{project.title}</option>)}</select></label>
+      <label>Project<Select ariaLabel="Project" value={projectSlug} onChange={setProjectSlug}
+        triggerClassName="h-select-trigger dao-select" options={projects.map(project => ({ value: project.slug, label: project.title }))} /></label>
       <label>Proposal title<input required maxLength={160} value={title} onChange={event => setTitle(event.target.value)} /></label>
       <label>Purpose & scope<textarea required maxLength={4000} value={purpose} onChange={event => setPurpose(event.target.value)} /></label>
       <label>How members will verify success<textarea required maxLength={4000} value={acceptance} onChange={event => setAcceptance(event.target.value)} /></label>
       <button className="dao-action" disabled={pending || !projects.length}>Save draft proposal</button>
     </form></details>
-    <label className="dao-picker">Review proposal<select value={selection} onChange={event => { setSelection(event.target.value); setReviewed(false); }}>
-      <option value="">Choose a proposal</option>{proposals.map(plan => <option key={plan.key} value={plan.key}>{plan.title} · {plan.harness}</option>)}
-    </select></label>
+    <label className="dao-picker">Review proposal<Select ariaLabel="Review proposal" value={selection}
+      onChange={value => { setSelection(value); setReviewed(false); }} placeholder="Choose a proposal"
+      triggerClassName="h-select-trigger dao-select"
+      options={proposals.map(plan => ({ value: plan.key, label: plan.title + ' · ' + plan.harness }))} /></label>
     {!proposals.length ? <p>No proposal records in the linked projects.</p> : null}
     {loading ? <p role="status">Loading the proposal and voting policy…</p> : null}
     {message ? <p role="status">{message}</p> : null}
@@ -123,7 +127,8 @@ export default function DaoGovernance({ view, onChanged }: { view: DaoWorkspaceV
       <p className="dao-meta">Reviewed revision: {proposal.contentHash.slice(0, 12)}</p>
       {inspection && !revisionMatches ? <p role="alert">The proposal changed while loading. Reload before deciding.</p> : null}
       {inspection && !evidenceValid ? <p role="alert">Conflicting or unverifiable decision records prevent voting.</p> : null}
-      <label className="dao-check"><input type="checkbox" checked={reviewed} onChange={event => setReviewed(event.target.checked)} /> I reviewed this proposal and its exact revision.</label>
+      <label className="dao-check"><Checkbox ariaLabel="I reviewed this proposal and its exact revision." checked={reviewed} onChange={setReviewed} />
+        I reviewed this proposal and its exact revision.</label>
       {!inspection?.actor ? <p>Your current device is not enrolled as a signer in this organization’s verified voting policy.</p> : <p>Deciding as {inspection.actor.memberId}</p>}
       <button className="dao-action" disabled={!canDecide || !inspection?.actor?.roles.includes('round-open')} onClick={() => { void act({ kind: 'open' }); }}>Open voting round</button>
       {inspection?.rounds.map(round => <article className="dao-decision-list" key={round.roundId}><h3>Voting round</h3><p>{round.status} · closes {new Date(round.expiresAtMs).toLocaleString()}</p>

@@ -431,9 +431,11 @@ export function operationalExecution(artifact: OperationalEvidenceArtifact) {
     ...(unexplainedExit ? [`nonzero-exit-${artifact.exitCode}`] : []),
   ])].filter((title) => isRecordedCaseTitle(title)).slice(0, MAX_RECORDED_FAILED_CASES);
   const failedTitles = new Set(titles);
-  const passedTitles = [...new Set(
+  const allPassedTitles = [...new Set(
     artifact.assertions.filter((assertion) => assertion.passed).map((assertion) => assertion.id),
-  )].filter((title) => isRecordedCaseTitle(title) && !failedTitles.has(title)).slice(0, MAX_RECORDED_PASSED_CASES);
+  )].filter((title) => isRecordedCaseTitle(title) && !failedTitles.has(title));
+  const passedTitles = allPassedTitles.slice(0, MAX_RECORDED_PASSED_CASES);
+  const passedCaseTitlesTruncated = allPassedTitles.length > passedTitles.length;
   return {
     passed: artifact.assertions.length - failing.length,
     failed: failing.length + (unexplainedExit ? 1 : 0),
@@ -442,6 +444,7 @@ export function operationalExecution(artifact: OperationalEvidenceArtifact) {
     runStartedAt: artifact.startedAt,
     ...(titles.length > 0 ? { failedCaseTitles: titles } : {}),
     ...(passedTitles.length > 0 ? { passedCaseTitles: passedTitles } : {}),
+    ...(passedCaseTitlesTruncated ? { passedCaseTitlesTruncated: true as const } : {}),
   };
 }
 

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import DaoGovernance from './DaoGovernance';
 
@@ -31,8 +32,13 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+async function selectOption(label: string, option: string) {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('combobox', { name: label }));
+  await user.click(screen.getByRole('option', { name: option }));
+}
 async function choose() {
-  fireEvent.change(screen.getByLabelText('Review proposal'), { target: { value: 'project/proposal' } });
+  await selectOption('Review proposal', 'Build the tool · project');
   await screen.findByText('Exact proposal text');
 }
 describe('DAO member decision actions', () => {
@@ -48,7 +54,7 @@ describe('DAO member decision actions', () => {
   });
   it('keeps a failed proposal read ineligible even when the voting policy loads', async () => {
     readFailure = true; render(<DaoGovernance view={view} />);
-    fireEvent.change(screen.getByLabelText('Review proposal'), { target: { value: 'project/proposal' } });
+    await selectOption('Review proposal', 'Build the tool · project');
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain("plans write verb 'get' not found"));
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
     expect(fetchMock.mock.calls.some(([, init]) => init?.body && JSON.parse(String(init.body)).op === 'local-action')).toBe(false);
@@ -56,14 +62,14 @@ describe('DAO member decision actions', () => {
   it.each([undefined, ''])('refuses a proposal without an exact revision: %s', async contentHash => {
     document.contentHash = contentHash as unknown as string;
     render(<DaoGovernance view={view} />);
-    fireEvent.change(screen.getByLabelText('Review proposal'), { target: { value: 'project/proposal' } });
+    await selectOption('Review proposal', 'Build the tool · project');
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('exact revision'));
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   });
   it('requires revision review and sends a scoped signed-device vote action', async () => {
     const onChanged = vi.fn(); render(<DaoGovernance view={view} onChanged={onChanged} />); await choose();
     expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole('checkbox'));
+    await userEvent.setup().click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     await screen.findByText('Your approve vote was recorded.');
     const call = fetchMock.mock.calls.find(([, init]) => init?.body && JSON.parse(String(init.body)).op === 'local-action')!;
@@ -73,32 +79,32 @@ describe('DAO member decision actions', () => {
   });
   it('keeps mismatched document and governance revisions ineligible', async () => {
     document.contentHash = 'newer-hash'; render(<DaoGovernance view={view} />); await choose();
-    fireEvent.click(screen.getByRole('checkbox'));
+    await userEvent.setup().click(screen.getByRole('checkbox'));
     expect(screen.getByRole('alert').textContent).toContain('changed while loading');
     expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
   });
   it('shows an eligible reader without granting signing permission', async () => {
     current = { ...current, actor: null as unknown as typeof current.actor };
-    render(<DaoGovernance view={view} />); await choose(); fireEvent.click(screen.getByRole('checkbox'));
+    render(<DaoGovernance view={view} />); await choose(); await userEvent.setup().click(screen.getByRole('checkbox'));
     expect(screen.getByText(/not enrolled as a signer/)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
   });
   it('blocks decisions on conflicted evidence', async () => {
     current = { ...current, conflictedRoundIds: ['round'] as never[] };
-    render(<DaoGovernance view={view} />); await choose(); fireEvent.click(screen.getByRole('checkbox'));
+    render(<DaoGovernance view={view} />); await choose(); await userEvent.setup().click(screen.getByRole('checkbox'));
     expect(screen.getByRole('alert').textContent).toContain('prevent voting');
     expect((screen.getByRole('button', { name: 'Finalize result' }) as HTMLButtonElement).disabled).toBe(true);
   });
   it('surfaces a server-side refusal without claiming the ballot was saved', async () => {
     actionResponse = { ok: false, detail: 'The member key was revoked.' };
-    render(<DaoGovernance view={view} />); await choose(); fireEvent.click(screen.getByRole('checkbox'));
+    render(<DaoGovernance view={view} />); await choose(); await userEvent.setup().click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('key was revoked'));
     expect(screen.queryByText('Your reject vote was recorded.')).toBeNull();
   });
   it('accepts the canonical dated creation receipt in the explicitly chosen linked project', async () => {
     render(<DaoGovernance view={view} />);
-    fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project' } });
+    await selectOption('Project', 'Project');
     fireEvent.change(screen.getByLabelText('Proposal title'), { target: { value: 'New proposal' } });
     fireEvent.change(screen.getByLabelText('Purpose & scope'), { target: { value: 'Build an export' } });
     fireEvent.change(screen.getByLabelText('How members will verify success'), { target: { value: 'The export includes the records' } });
@@ -116,7 +122,7 @@ describe('DAO member decision actions', () => {
     creationResponse = response;
     const onChanged = vi.fn();
     render(<DaoGovernance view={view} onChanged={onChanged} />);
-    fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'project' } });
+    await selectOption('Project', 'Project');
     fireEvent.change(screen.getByLabelText('Proposal title'), { target: { value: 'New proposal' } });
     fireEvent.change(screen.getByLabelText('Purpose & scope'), { target: { value: 'Build an export' } });
     fireEvent.change(screen.getByLabelText('How members will verify success'), { target: { value: 'The records persist' } });

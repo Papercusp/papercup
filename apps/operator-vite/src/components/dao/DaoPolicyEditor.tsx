@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
+import { Select } from '@/app/harness/Select';
 
 export default function DaoPolicyEditor({ view, onChanged }: { view: DaoWorkspaceView; onChanged?: () => void }) {
   const [text, setText] = useState('');
@@ -48,9 +49,11 @@ export default function DaoPolicyEditor({ view, onChanged }: { view: DaoWorkspac
     <button type="button" className="dao-action" disabled={pending} onClick={() => setReload(value => value + 1)}>Reload policy</button>
     {version !== null ? <form onSubmit={event => { void save(event); }} className="dao-proposal-form">
       <p>Reviewed policy version {version}</p>
-      <label>Membership admission<select value={String(document?.membership ?? 'open')} disabled={!canEdit || !document || pending} onChange={event => field('membership', event.target.value)}>
-        <option value="open">Open</option><option value="approval">Approval required</option><option value="allowlist">Allowlist</option>
-      </select></label>
+      <label>Membership admission<Select ariaLabel="Membership admission" value={String(document?.membership ?? 'open')}
+        disabled={!canEdit || !document || pending} onChange={value => field('membership', value)}
+        triggerClassName="h-select-trigger dao-select" options={[
+          { value: 'open', label: 'Open' }, { value: 'approval', label: 'Approval required' }, { value: 'allowlist', label: 'Allowlist' },
+        ]} /></label>
       <label>Allowed GitHub identities<input value={Array.isArray(document?.allowlist) ? document.allowlist.join(', ') : ''} disabled={!canEdit || !document || pending} onChange={event => field('allowlist', event.target.value.split(',').map(v => v.trim()).filter(Boolean))} /></label>
       <label>Policy document<textarea aria-label="Policy document" rows={18} value={text} disabled={!canEdit || pending} onChange={event => setText(event.target.value)} /></label>
       {!document ? <p role="alert">Enter a valid policy object before saving. Your draft is retained.</p> : null}

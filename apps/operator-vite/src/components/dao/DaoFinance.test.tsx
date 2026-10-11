@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import DaoFinance from './DaoFinance';
 const view = { directoryId: 'dao', localHomeSlug: 'local-home', status: 'connected' as const };
 const account = { ok: true, policyVersion: 7, bindings: {}, wallet: { ok: true, value: { binding: { walletAddress: '0x' + '4'.repeat(40), chainId: 1 } } },
@@ -15,7 +16,9 @@ describe('DAO finance actions', () => {
     });
     vi.stubGlobal('fetch', fetcher); render(<DaoFinance view={view} section="ownership" />);
     await screen.findByText('42');
-    fireEvent.change(screen.getByLabelText('Equity action'), { target: { value: 'PapercuspEquity/requestRecovery' } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Equity action' }));
+    await user.click(screen.getByRole('option', { name: 'PapercuspEquity · requestRecovery' }));
     fireEvent.change(screen.getByLabelText('Action arguments (JSON array)'), { target: { value: '["1","0x' + '5'.repeat(40) + '"]' } });
     fireEvent.click(screen.getByRole('button', { name: 'Prepare unsigned wallet transaction' }));
     await screen.findByRole('heading', { name: 'Review unsigned transaction' });

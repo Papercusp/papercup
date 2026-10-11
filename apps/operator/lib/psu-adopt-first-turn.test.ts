@@ -76,18 +76,35 @@ describe("EI-23076695727837648: an adopting carry-respawn hands its first turn t
 
   it("records whether the parent-pid handoff contained first-turn text", () => {
     const mainAt = launcherSrc.indexOf("async function main()");
-    const readAt = launcherSrc.indexOf("readHostHandoffForParentPid(process.ppid)", mainAt);
+    const readAt = launcherSrc.indexOf("readHostHandoffForParentPid(process.ppid", mainAt);
     const eventAt = launcherSrc.indexOf('"host-code-adoption-handoff-acceptance"', readAt);
     const launchAt = launcherSrc.indexOf("await launchHostHandoff(hostHandoff)", eventAt);
     expect(readAt).toBeGreaterThan(mainAt);
     expect(eventAt).toBeGreaterThan(readAt);
     expect(launchAt).toBeGreaterThan(eventAt);
+    // WI-6554700010008431: a refused handoff is consumed; the read must name why,
+    // keyed by the handoff's own owner so a shim with no PAPERCUSP_SID still logs.
+    const readStage = launcherSrc.slice(readAt, eventAt);
+    expect(readStage).toMatch(/onReject:/);
+    expect(readStage).toMatch(/"host-code-adoption-handoff-rejected"/);
+    expect(readStage).toMatch(/rejection\?\.ownerId \|\| adoptionOwnerId/);
     const stage = launcherSrc.slice(eventAt, launchAt);
     expect(stage).toMatch(/accepted: Boolean\(hostHandoff\)/);
     expect(stage).toMatch(/firstTurnPresent:/);
     expect(stage).toMatch(/firstTurnBytes:/);
     expect(stage).toMatch(/argsCount:/);
     expect(stage).not.toMatch(/firstTurnText:\s*firstTurnText/);
+  });
+
+  it("names a refused owner-keyed handoff before the ordinary launch proceeds (WI-6554700010008431)", () => {
+    const readAt = launcherSrc.indexOf("readHostHandoff(ownerId, {");
+    const adoptAt = launcherSrc.indexOf("if (hostHandoff) {", readAt);
+    expect(readAt).toBeGreaterThan(0);
+    expect(adoptAt).toBeGreaterThan(readAt);
+    const stage = launcherSrc.slice(readAt, adoptAt);
+    expect(stage).toMatch(/onReject:/);
+    expect(stage).toMatch(/"host-code-adoption-handoff-rejected"/);
+    expect(stage).toMatch(/site: "owner-keyed"/);
   });
 
   it("records the final kickoff and managed-pty decision before spawning the adopted child", () => {

@@ -18682,6 +18682,19 @@ describe("launch-time mode: the tokens launch-su emits are the tokens psu parses
  * path: it emits nothing when no model is named.
  */
 describe("codexContextWindowConfigPatch (resume inherits the window)", () => {
+  it("uses the current owner budget instead of a stale or missing launch flag", () => {
+    for (const launchArgv of [undefined, ["psu", "--compaction-limit=250000"]]) {
+      const resumed = resumeArgsFor(
+        { agent: "codex", sessionId: "rollout", compactionLimit: 200_000, launchArgv },
+        { model: "gpt-5.6-sol:xhigh" },
+      );
+      expect(resumed.args).toContain("model_auto_compact_token_limit=160000");
+      expect(resumed.args).toContain("model_context_window=1000000");
+      expect(resumed.args).toContain('model_reasoning_effort="xhigh"');
+      expect(resumed.args.slice(-2)).toEqual(["resume", "rollout"]);
+    }
+  });
+
   it("keeps the native auto-compaction trigger at the recorded session cap", () => {
     const out = codexContextWindowConfigPatch(
       'model = "gpt-5.6-sol"\n',
@@ -18689,7 +18702,7 @@ describe("codexContextWindowConfigPatch (resume inherits the window)", () => {
       { compactionLimit: 250_000 },
     );
     expect(out).toContain("model_context_window = 1000000");
-    expect(out).toContain("model_auto_compact_token_limit = 250000");
+    expect(out).toContain("model_auto_compact_token_limit = 200000");
   });
 
   it("passes the recorded cap from both launch argv spellings into Codex resume args", () => {
@@ -18701,7 +18714,7 @@ describe("codexContextWindowConfigPatch (resume inherits the window)", () => {
         { agent: "codex", sessionId: "rollout", launchArgv },
         { model: "gpt-5.6-sol" },
       );
-      expect(resumed.args).toContain("model_auto_compact_token_limit=250000");
+      expect(resumed.args).toContain("model_auto_compact_token_limit=200000");
     }
   });
 

@@ -21,6 +21,7 @@
  * Docker-gated, like every `*.integration.test.ts` here.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 
@@ -50,6 +51,8 @@ const { createIssue, issuesScopeWorkspace } = await import('../../issues-enginee
 const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
+const { drainDetached } = await import('../../detached-imports');
+const { getReport } = await import('../../report-library');
 
 /** The acceptance-rubric AUTHOR — the implementer, the only party who may record a verdict. */
 const AUTHOR = 'su-p003-author';
@@ -228,6 +231,56 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
         independentGrading: { scorecardId: independentId, gradedBy: GRADER, selectedBy: 'acceptanceOf' },
       },
     });
+  });
+
+  it('automatically publishes the persisted acceptance verdict through the real Reports producer', async () => {
+    vi.stubEnv('PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY', '1');
+    try {
+      const independentId = await fileIndependentGrading({ createdBy: GRADER });
+      const args = acceptanceArgs(independentId, {
+        title: 'Acceptance producer readback', body: 'The original verdict body is preserved.',
+      });
+      const producer = { ...asAuthor, ctxHarness: 'papercusp' };
+      const result = await emitScorecard(args as never, producer as never);
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true });
+      const issueId = (result as { issueId: string }).issueId;
+      expect(issueId).toBeTruthy();
+      const persisted = await readBackAcceptanceCard(db);
+      expect(persisted?.issue_id).toBe(issueId);
+
+      // Wait for the actual producer's tracked publication, rather than calling
+      // the adapter ourselves or asserting arguments on a publisher mock.
+      await drainDetached();
+      const requestKey = `capture:acceptance:${createHash('sha256').update(issueId).digest('hex')}`;
+      const rows = await db.adminSql<Array<{ report_id: string }>>`
+        SELECT report_id FROM harness_shared.report_library
+         WHERE workspace_id = ${activeWorkspaceId()} AND request_key = ${requestKey}`;
+      expect(rows).toHaveLength(1);
+      const report = await getReport(db.adminSql, activeWorkspaceId(), rows[0].report_id, { isOwner: true });
+      expect(report).toMatchObject({
+        title: 'Acceptance producer readback', kind: 'review', visibility: 'owner',
+        source: 'capture:acceptance', requestKey,
+        subject: { kind: 'plan', ref: SUBJECT_PLAN },
+        origin: { authorOwnerId: AUTHOR, harnessSlug: 'papercusp', authorSessionRef: AUTHOR },
+      });
+      expect(report!.bodyMd).toContain('The original verdict body is preserved.');
+      expect(report!.bodyMd).toContain(`Source reference: ${issueId}`);
+      const verdict = report!.bodyMd.match(/```json\n([\s\S]*?)\n```/);
+      expect(verdict).not.toBeNull();
+      expect(JSON.parse(verdict![1])).toEqual({
+        ratings: persisted!.observation.ratings, acceptance: persisted!.observation.acceptance,
+      });
+
+      const replay = await emitScorecard(args as never, producer as never);
+      expect(replay, JSON.stringify(replay)).toMatchObject({ ok: true, created: false, issueId });
+      await drainDetached();
+      const retried = await db.adminSql<Array<{ report_id: string }>>`
+        SELECT report_id FROM harness_shared.report_library
+         WHERE workspace_id = ${activeWorkspaceId()} AND request_key = ${requestKey}`;
+      expect(retried).toEqual(rows);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   // WI-10003534: the rail admits an author verdict only against a complete grading

@@ -85,6 +85,7 @@ const testingRunResultSchema = z
       collectionFailed: z.boolean(),
       testNamePattern: z.string().nullable(),
       passedCaseTitles: z.array(z.string()).optional(),
+      passedCaseTitlesTruncated: z.literal(true).optional(),
       failedCaseTitles: z.array(z.string()).optional(),
     }).passthrough().nullable(),
     executionDetailsBounded: z.object({
@@ -228,7 +229,8 @@ function projectTestingRun(row: unknown, outputTailChars: number): { row: Record
   const details = r.executionDetails as Record<string, unknown> | null | undefined;
   let executionProjection: Record<string, unknown> = {};
   if (details && JSON.stringify(details).length > 1_400) {
-    const summaryKeys = ['schemaVersion', 'passed', 'failed', 'skipped', 'collectionFailed', 'testNamePattern'];
+    const summaryKeys = ['schemaVersion', 'passed', 'failed', 'skipped', 'collectionFailed', 'testNamePattern',
+      'passedCaseTitlesTruncated'];
     const summary = Object.fromEntries(summaryKeys.map(key => [key, details[key]]));
     const omitted = { passedCaseTitlesOmitted: 0, failedCaseTitlesOmitted: 0,
       fieldsOmitted: Object.keys(details).filter(key => !summaryKeys.includes(key)

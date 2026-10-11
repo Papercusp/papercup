@@ -3380,8 +3380,23 @@ export function writeHostHandoff(ownerId, record) {
 function readHostHandoffFile(
   p,
   expectedOwnerId,
-  { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive } = {},
+  { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive, onReject = null } = {},
 ) {
+  // WI-6554700010008431: every refusal below CONSUMES the orders, so a refusal
+  // that says nothing turns a carry-respawn into a bare cold boot with no trace
+  // of why (2 of 15 P-012 adoptions: the successor booted the ordinary flow and
+  // its codex sat idle until an outside wake). `onReject` names the reason; the
+  // ordinary no-file cold launch is NOT a rejection and stays silent.
+  const reject = (reason, detail = {}) => {
+    if (typeof onReject === 'function') {
+      try {
+        onReject({ reason, path: p, ...detail });
+      } catch {
+        /* a diagnostic sink must never change the adoption verdict */
+      }
+    }
+    return null;
+  };
   let raw;
   try {
     raw = readFileSync(p, 'utf8');
@@ -3397,19 +3412,31 @@ function readHostHandoffFile(
   try {
     rec = JSON.parse(raw);
   } catch {
-    return null;
+    return reject('unparseable', { ownerId: expectedOwnerId ?? null });
   }
-  if (!rec || typeof rec !== 'object') return null;
-  if (expectedOwnerId && rec.ownerId && rec.ownerId !== expectedOwnerId) return null;
+  if (!rec || typeof rec !== 'object') {
+    return reject('unparseable', { ownerId: expectedOwnerId ?? null });
+  }
+  const recOwnerId = typeof rec.ownerId === 'string' ? rec.ownerId : null;
+  const base = {
+    ownerId: recOwnerId ?? expectedOwnerId ?? null,
+    fromPid: rec.fromPid ?? null,
+    mode: rec.mode ?? null,
+  };
+  if (expectedOwnerId && rec.ownerId && rec.ownerId !== expectedOwnerId) {
+    return reject('owner-mismatch', { ...base, expectedOwnerId });
+  }
   // A LIVE writer means we are not its successor — that host is running and owns
   // the session, and acting on its argv would put a second child behind a live
   // discovery key. No self-exemption: a process is never its own successor, so
   // `fromPid === process.pid` is refused by the same rule rather than waved past
   // it (the exemption also made this guard untestable, which is how it was found).
-  if (rec.fromPid && isAlive(rec.fromPid)) return null;
+  if (rec.fromPid && isAlive(rec.fromPid)) return reject('predecessor-alive', base);
   const age = now() - Date.parse(rec.createdAt ?? '');
-  if (!Number.isFinite(age) || age < 0 || age > maxAgeMs) return null;
-  if (!Array.isArray(rec.args) || rec.args.length === 0) return null;
+  if (!Number.isFinite(age) || age < 0 || age > maxAgeMs) {
+    return reject('stale', { ...base, ageMs: Number.isFinite(age) ? age : null, maxAgeMs });
+  }
+  if (!Array.isArray(rec.args) || rec.args.length === 0) return reject('no-args', base);
   return rec;
 }
 
@@ -3426,7 +3453,7 @@ function readHostHandoffFile(
  * accept). A rejected record is still consumed: leaving it behind means the next
  * launch re-litigates the same stale orders.
  * @param {string} ownerId
- * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean}} [opts]
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
  */
 export function readHostHandoff(ownerId, opts = {}) {
   return readHostHandoffFile(handoffPathFor(ownerId), ownerId, opts);
@@ -3443,7 +3470,7 @@ export function readHostHandoff(ownerId, opts = {}) {
  * Refuse an ambiguous parent match: selecting the newest file would recreate
  * the same cross-session identity split this handoff path is meant to prevent.
  * @param {number} parentPid
- * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean}} [opts]
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
  */
 export function readHostHandoffForParentPid(parentPid, opts = {}) {
   if (!Number.isInteger(parentPid) || parentPid <= 0) return null;
@@ -3467,6 +3494,18 @@ export function readHostHandoffForParentPid(parentPid, opts = {}) {
       }
     } catch {
       /* a malformed file is not evidence for this parent */
+    }
+  }
+  if (candidates.length > 1 && typeof opts.onReject === 'function') {
+    try {
+      opts.onReject({
+        reason: 'ambiguous-parent',
+        parentPid,
+        candidateCount: candidates.length,
+        ownerIds: candidates.map((c) => c.ownerId),
+      });
+    } catch {
+      /* a diagnostic sink must never change the adoption verdict */
     }
   }
   if (candidates.length !== 1) return null;

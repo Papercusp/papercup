@@ -1767,13 +1767,15 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
   let skipped = 0;
   const failedCaseTitles = new Set<string>();
   const passedCaseTitles = new Set<string>();
+  let passedCaseTitlesTruncated = false;
   for (const assertion of assertions) {
     if (!assertion || typeof assertion !== 'object') return undefined;
     switch (assertion.status) {
       case 'passed':
         passed += 1;
-        if (isRecordedCaseTitle(assertion.fullName) && passedCaseTitles.size < MAX_RECORDED_PASSED_CASES) {
-          passedCaseTitles.add(assertion.fullName);
+        if (isRecordedCaseTitle(assertion.fullName) && !passedCaseTitles.has(assertion.fullName)) {
+          if (passedCaseTitles.size < MAX_RECORDED_PASSED_CASES) passedCaseTitles.add(assertion.fullName);
+          else passedCaseTitlesTruncated = true;
         }
         break;
       case 'failed':
@@ -1799,6 +1801,7 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
     collectionFailed: false,
     ...(failedCaseTitles.size > 0 ? { failedCaseTitles: [...failedCaseTitles] } : {}),
     ...(passedCaseTitles.size > 0 ? { passedCaseTitles: [...passedCaseTitles] } : {}),
+    ...(passedCaseTitlesTruncated ? { passedCaseTitlesTruncated: true as const } : {}),
   };
 }
 
