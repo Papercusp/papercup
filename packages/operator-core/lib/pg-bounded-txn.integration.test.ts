@@ -21,6 +21,113 @@ describe('boundedOrgTxn (real PostgreSQL cancellation)', () => {
     await db?.cleanup();
   });
 
+  it('settles a lost reserved connection and reacquires on the same single-connection client', async () => {
+    const isolated = await createOrgTestDb({ adminPoolMax: 1 });
+    let releaseWork!: () => void;
+    const workReleased = new Promise<void>((resolve) => { releaseWork = resolve; });
+    let markReserved!: (pid: number) => void;
+    const reserved = new Promise<number>((resolve) => { markReserved = resolve; });
+    let transaction: Promise<unknown> | undefined;
+    let lateError: unknown;
+    let markLateSettled!: () => void;
+    const lateSettled = new Promise<void>((resolve) => { markLateSettled = resolve; });
+
+    try {
+      transaction = boundedOrgTxn(async (tx) => {
+        const [row] = await tx.unsafe('SELECT pg_backend_pid() AS pid');
+        markReserved(Number(row?.pid));
+        await workReleased;
+        try {
+          return await tx.unsafe('SELECT 1 AS n');
+        } catch (error) {
+          lateError = error;
+          throw error;
+        } finally {
+          markLateSettled();
+        }
+      }, {
+        client: isolated.adminSql as BoundedOrgTxnOptions['client'],
+        acquireTimeoutMs: 2_000,
+        acquireRetries: 0,
+      });
+      // Connection loss can reject before the test reaches its assertion.
+      void transaction.catch(() => undefined);
+      const pid = await reserved;
+      expect(pid).toBeGreaterThan(0);
+
+      // Use the independent fixture client and restrict termination to the
+      // backend this test reserved in its own disposable database.
+      const terminated = await db.adminSql`
+        SELECT pg_terminate_backend(pid) AS terminated
+        FROM pg_stat_activity
+        WHERE pid = ${pid} AND datname = ${isolated.dbName}
+      `;
+      expect(terminated).toEqual([{ terminated: true }]);
+      await expect(transaction).rejects.toThrow();
+
+      // Resume the abandoned callback only after the driver's close signal.
+      // It must not submit its old transaction's query on a new reservation.
+      releaseWork();
+      await lateSettled;
+      expect(lateError).toMatchObject({ code: 'CONNECTION_CLOSED' });
+
+      expect(await boundedOrgTxn((tx) => tx.unsafe('SELECT 1 AS n'), {
+        client: isolated.adminSql as BoundedOrgTxnOptions['client'],
+        acquireTimeoutMs: 2_000,
+        acquireRetries: 0,
+      })).toEqual([{ n: 1 }]);
+      expect(await isolated.adminSql.unsafe('SELECT 1 AS n')).toEqual([{ n: 1 }]);
+    } finally {
+      releaseWork();
+      await isolated.cleanup();
+      await transaction?.catch(() => undefined);
+    }
+  }, 20_000);
+
+  it('rejects queries on a closed explicit reservation without poisoning the pool', async () => {
+    const isolated = await createOrgTestDb({ adminPoolMax: 1 });
+    let markClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { markClosed = resolve; });
+    isolated.adminSql.options.onclose = markClosed;
+    const reserved = await isolated.adminSql.reserve();
+    try {
+      const [row] = await reserved.unsafe('SELECT pg_backend_pid() AS pid');
+      const pid = Number(row?.pid);
+      expect(pid).toBeGreaterThan(0);
+      expect(await db.adminSql`
+        SELECT pg_terminate_backend(pid) AS terminated
+        FROM pg_stat_activity
+        WHERE pid = ${pid} AND datname = ${isolated.dbName}
+      `).toEqual([{ terminated: true }]);
+      await closed;
+
+      await expect(reserved.unsafe('SELECT 1 AS n')).rejects.toMatchObject({ code: 'CONNECTION_CLOSED' });
+      reserved.release();
+      expect(await boundedOrgTxn((tx) => tx.unsafe('SELECT 1 AS n'), {
+        client: isolated.adminSql as BoundedOrgTxnOptions['client'],
+        acquireTimeoutMs: 2_000,
+        acquireRetries: 0,
+      })).toEqual([{ n: 1 }]);
+    } finally {
+      reserved.release();
+      await isolated.cleanup();
+    }
+  }, 20_000);
+
+  it('rejects an explicitly released reservation while the client remains usable', async () => {
+    const isolated = await createOrgTestDb({ adminPoolMax: 1 });
+    try {
+      const reserved = await isolated.adminSql.reserve();
+      expect(await reserved.unsafe('SELECT 1 AS n')).toEqual([{ n: 1 }]);
+      reserved.release();
+      await expect(reserved.unsafe('SELECT 1 AS n')).rejects.toMatchObject({ code: 'CONNECTION_RELEASED' });
+      reserved.release();
+      expect(await isolated.adminSql.unsafe('SELECT 1 AS n')).toEqual([{ n: 1 }]);
+    } finally {
+      await isolated.cleanup();
+    }
+  }, 20_000);
+
   it('rolls back a begin that resolves after its deadline without setup SQL or caller work', async () => {
     const isolated = await createOrgTestDb({ adminPoolMax: 1 });
     let releaseHeld: () => void = () => {};

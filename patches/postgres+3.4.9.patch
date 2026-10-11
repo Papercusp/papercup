@@ -144,10 +144,10 @@ index 8e79170..c6fc73f 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cf/src/index.js b/node_modules/postgres/cf/src/index.js
-index ffbe7ae..5ce6bf1 100644
+index ffbe7ae..929b6a8 100644
 --- a/node_modules/postgres/cf/src/index.js
 +++ b/node_modules/postgres/cf/src/index.js
-@@ -108,13 +108,23 @@ function Postgres(a, b) {
+@@ -108,13 +108,23 @@
        return new Parameter(value, type)
      }
  
@@ -172,7 +172,7 @@ index ffbe7ae..5ce6bf1 100644
      }
  
      function unsafe(string, args = [], options = {}) {
-@@ -124,7 +134,7 @@ function Postgres(a, b) {
+@@ -124,7 +134,7 @@
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -181,7 +181,7 @@ index ffbe7ae..5ce6bf1 100644
      }
  
      function file(path, args = [], options = {}) {
-@@ -141,7 +151,7 @@ function Postgres(a, b) {
+@@ -141,7 +151,7 @@
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -190,11 +190,21 @@ index ffbe7ae..5ce6bf1 100644
      }
    }
  
-@@ -215,6 +225,11 @@ function Postgres(a, b) {
+@@ -203,6 +213,7 @@
+ 
+   async function reserve() {
+     const queue = Queue()
++    let reservationError
+     const c = open.length
+       ? open.shift()
+       : await new Promise((resolve, reject) => {
+@@ -215,10 +226,20 @@
      c.reserved = () => queue.length
        ? c.execute(queue.shift())
        : move(c, reserved)
 +    c.reserved.onclose = e => {
++      // Preserve invalidation for queries submitted after this close, too.
++      reservationError = e
 +      // The connection error path cannot see queries parked in this private queue.
 +      while (queue.length)
 +        queue.shift().reject(e)
@@ -202,7 +212,54 @@ index ffbe7ae..5ce6bf1 100644
      c.reserved.release = true
  
      const sql = Sql(handler)
-@@ -421,6 +436,7 @@ function Postgres(a, b) {
+     sql.release = () => {
++      if (reservationError)
++        return
++      reservationError = Errors.generic('CONNECTION_RELEASED', 'Reserved connection has been released')
+       c.reserved = null
+       onopen(c)
+     }
+@@ -226,6 +247,8 @@
+     return sql
+ 
+     function handler(q) {
++      if (reservationError)
++        return q.reject(reservationError)
+       c.queue === full
+         ? queue.push(q)
+         : c.execute(q) || move(c, full)
+@@ -237,6 +260,7 @@
+     const queries = Queue()
+     let savepoints = 0
+       , connection
++      , connectionError
+       , prepare = null
+ 
+     try {
+@@ -290,6 +314,10 @@
+       }
+ 
+       function handler(q) {
++        // A callback may resume after begin() rejected on close. Never let its
++        // old SQL or rollback reach a disconnected or reassigned connection.
++        if (connectionError)
++          return q.reject(connectionError)
+         q.catch(e => uncaughtError || (uncaughtError = e))
+         c.queue === full
+           ? queries.push(q)
+@@ -303,6 +331,11 @@
+       c.reserved = () => queries.length
+         ? c.execute(queries.shift())
+         : move(c, reserved)
++      c.reserved.onclose = e => {
++        connectionError = e
++        while (queries.length)
++          queries.shift().reject(e)
++      }
+     }
+   }
+ 
+@@ -421,6 +454,7 @@
  
    function onclose(c, e) {
      move(c, closed)
@@ -210,7 +267,7 @@ index ffbe7ae..5ce6bf1 100644
      c.reserved = null
      c.onclose && (c.onclose(e), c.onclose = null)
      options.onclose && options.onclose(c.id)
-@@ -491,6 +507,8 @@ function parseOptions(a, b) {
+@@ -491,6 +525,8 @@
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
@@ -384,10 +441,10 @@ index 07f6716..f9b2d6f 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cjs/src/index.js b/node_modules/postgres/cjs/src/index.js
-index f09c61c..ef21658 100644
+index f09c61c..a874fff 100644
 --- a/node_modules/postgres/cjs/src/index.js
 +++ b/node_modules/postgres/cjs/src/index.js
-@@ -107,13 +107,23 @@ function Postgres(a, b) {
+@@ -107,13 +107,23 @@
        return new Parameter(value, type)
      }
  
@@ -412,7 +469,7 @@ index f09c61c..ef21658 100644
      }
  
      function unsafe(string, args = [], options = {}) {
-@@ -123,7 +133,7 @@ function Postgres(a, b) {
+@@ -123,7 +133,7 @@
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -421,7 +478,7 @@ index f09c61c..ef21658 100644
      }
  
      function file(path, args = [], options = {}) {
-@@ -140,7 +150,7 @@ function Postgres(a, b) {
+@@ -140,7 +150,7 @@
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -430,11 +487,21 @@ index f09c61c..ef21658 100644
      }
    }
  
-@@ -214,6 +224,11 @@ function Postgres(a, b) {
+@@ -202,6 +212,7 @@
+ 
+   async function reserve() {
+     const queue = Queue()
++    let reservationError
+     const c = open.length
+       ? open.shift()
+       : await new Promise((resolve, reject) => {
+@@ -214,10 +225,20 @@
      c.reserved = () => queue.length
        ? c.execute(queue.shift())
        : move(c, reserved)
 +    c.reserved.onclose = e => {
++      // Preserve invalidation for queries submitted after this close, too.
++      reservationError = e
 +      // The connection error path cannot see queries parked in this private queue.
 +      while (queue.length)
 +        queue.shift().reject(e)
@@ -442,7 +509,54 @@ index f09c61c..ef21658 100644
      c.reserved.release = true
  
      const sql = Sql(handler)
-@@ -420,6 +435,7 @@ function Postgres(a, b) {
+     sql.release = () => {
++      if (reservationError)
++        return
++      reservationError = Errors.generic('CONNECTION_RELEASED', 'Reserved connection has been released')
+       c.reserved = null
+       onopen(c)
+     }
+@@ -225,6 +246,8 @@
+     return sql
+ 
+     function handler(q) {
++      if (reservationError)
++        return q.reject(reservationError)
+       c.queue === full
+         ? queue.push(q)
+         : c.execute(q) || move(c, full)
+@@ -236,6 +259,7 @@
+     const queries = Queue()
+     let savepoints = 0
+       , connection
++      , connectionError
+       , prepare = null
+ 
+     try {
+@@ -289,6 +313,10 @@
+       }
+ 
+       function handler(q) {
++        // A callback may resume after begin() rejected on close. Never let its
++        // old SQL or rollback reach a disconnected or reassigned connection.
++        if (connectionError)
++          return q.reject(connectionError)
+         q.catch(e => uncaughtError || (uncaughtError = e))
+         c.queue === full
+           ? queries.push(q)
+@@ -302,6 +330,11 @@
+       c.reserved = () => queries.length
+         ? c.execute(queries.shift())
+         : move(c, reserved)
++      c.reserved.onclose = e => {
++        connectionError = e
++        while (queries.length)
++          queries.shift().reject(e)
++      }
+     }
+   }
+ 
+@@ -420,6 +453,7 @@
  
    function onclose(c, e) {
      move(c, closed)
@@ -450,7 +564,7 @@ index f09c61c..ef21658 100644
      c.reserved = null
      c.onclose && (c.onclose(e), c.onclose = null)
      options.onclose && options.onclose(c.id)
-@@ -490,6 +506,8 @@ function parseOptions(a, b) {
+@@ -490,6 +524,8 @@
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
@@ -624,10 +738,10 @@ index 1b1cccd..6f7f4e3 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/src/index.js b/node_modules/postgres/src/index.js
-index c7fba3d..8652354 100644
+index c7fba3d..32fae94 100644
 --- a/node_modules/postgres/src/index.js
 +++ b/node_modules/postgres/src/index.js
-@@ -107,13 +107,23 @@ function Postgres(a, b) {
+@@ -107,13 +107,23 @@
        return new Parameter(value, type)
      }
  
@@ -652,7 +766,7 @@ index c7fba3d..8652354 100644
      }
  
      function unsafe(string, args = [], options = {}) {
-@@ -123,7 +133,7 @@ function Postgres(a, b) {
+@@ -123,7 +133,7 @@
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -661,7 +775,7 @@ index c7fba3d..8652354 100644
      }
  
      function file(path, args = [], options = {}) {
-@@ -140,7 +150,7 @@ function Postgres(a, b) {
+@@ -140,7 +150,7 @@
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -670,11 +784,21 @@ index c7fba3d..8652354 100644
      }
    }
  
-@@ -214,6 +224,11 @@ function Postgres(a, b) {
+@@ -202,6 +212,7 @@
+ 
+   async function reserve() {
+     const queue = Queue()
++    let reservationError
+     const c = open.length
+       ? open.shift()
+       : await new Promise((resolve, reject) => {
+@@ -214,10 +225,20 @@
      c.reserved = () => queue.length
        ? c.execute(queue.shift())
        : move(c, reserved)
 +    c.reserved.onclose = e => {
++      // Preserve invalidation for queries submitted after this close, too.
++      reservationError = e
 +      // The connection error path cannot see queries parked in this private queue.
 +      while (queue.length)
 +        queue.shift().reject(e)
@@ -682,7 +806,54 @@ index c7fba3d..8652354 100644
      c.reserved.release = true
  
      const sql = Sql(handler)
-@@ -420,6 +435,7 @@ function Postgres(a, b) {
+     sql.release = () => {
++      if (reservationError)
++        return
++      reservationError = Errors.generic('CONNECTION_RELEASED', 'Reserved connection has been released')
+       c.reserved = null
+       onopen(c)
+     }
+@@ -225,6 +246,8 @@
+     return sql
+ 
+     function handler(q) {
++      if (reservationError)
++        return q.reject(reservationError)
+       c.queue === full
+         ? queue.push(q)
+         : c.execute(q) || move(c, full)
+@@ -236,6 +259,7 @@
+     const queries = Queue()
+     let savepoints = 0
+       , connection
++      , connectionError
+       , prepare = null
+ 
+     try {
+@@ -289,6 +313,10 @@
+       }
+ 
+       function handler(q) {
++        // A callback may resume after begin() rejected on close. Never let its
++        // old SQL or rollback reach a disconnected or reassigned connection.
++        if (connectionError)
++          return q.reject(connectionError)
+         q.catch(e => uncaughtError || (uncaughtError = e))
+         c.queue === full
+           ? queries.push(q)
+@@ -302,6 +330,11 @@
+       c.reserved = () => queries.length
+         ? c.execute(queries.shift())
+         : move(c, reserved)
++      c.reserved.onclose = e => {
++        connectionError = e
++        while (queries.length)
++          queries.shift().reject(e)
++      }
+     }
+   }
+ 
+@@ -420,6 +453,7 @@
  
    function onclose(c, e) {
      move(c, closed)
@@ -690,7 +861,7 @@ index c7fba3d..8652354 100644
      c.reserved = null
      c.onclose && (c.onclose(e), c.onclose = null)
      options.onclose && options.onclose(c.id)
-@@ -490,6 +506,8 @@ function parseOptions(a, b) {
+@@ -490,6 +524,8 @@
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
