@@ -9,6 +9,25 @@
   ],
   "assembledAt": "2026-10-10T13:31:30.813001+00:00",
   "status": "references coupled; R2/R6 acceptance and R7 shipment remain open",
+  "currentMethodAlignment": {
+    "specId": "AUTO-BAR-R-6-P-006",
+    "specRevision": 6,
+    "specFingerprint": "82e5c82859ae26b35450741ac8b2ea65eb2e43c9b80e417ed960986c263d9b10",
+    "evidencePlane": "live",
+    "runtime": "staging-operator",
+    "requiredTestLayers": ["manual-provenance"],
+    "originalArtifactContainingCommit": "78ea0ea2b5d30af59baa86e0e1255a96cc4b60d4",
+    "originalArtifactSha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "originalArtifactBytesUnchanged": true,
+    "interpretation": "Current R6 permits requester-authored project decisions recovered from ordinary work. The original artifact's references to missing structured reconciliation describe its historical measurement procedure; they do not impose a reporting obligation.",
+    "originalCutDecisionStatus": "The original four-thread selection, shortfall four and two unknown requester decisions are retained. D-003 authorship at the original cut has not been independently established here; later requester records do not retroactively repair that cut.",
+    "outcome": "unknown",
+    "limits": [
+      "Binding immutable historical manual evidence to the current clause does not make the original trials current-build trials.",
+      "The later eight-of-eleven review retains its separate requester, cut and identity.",
+      "No healthy R6 rating, independent acceptance or shipment is asserted."
+    ]
+  },
   "snapshot": {
     "windowStart": "2026-10-03T05:21:32.561Z",
     "windowEnd": "2026-10-10T12:34:00.000Z",
