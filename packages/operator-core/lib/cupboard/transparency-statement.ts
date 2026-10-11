@@ -8,8 +8,8 @@
  * signer with `verifyMessage`; the signer is the anchor key's address (D-021).
  */
 import { canonicalJson, sha256Hex } from '@papercusp/hash-chain';
-import { verifyMessage, type Address, type Hex } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
+import { verifyMessage } from 'viem/utils';
+import type { Address, Hex } from 'viem';
 import { LIVE_MINIMUM_PAYMENTS, monthPeriod, type MonthlyStatement, type TransparencyReport } from './transparency-report';
 import { MOVEMENT_KINDS } from './money-journal';
 
@@ -116,6 +116,7 @@ export function statementDigest(statement: MonthlyStatement): string {
 }
 
 export async function signStatement(statement: MonthlyStatement, privateKey: Hex): Promise<SignedStatement> {
+  const { privateKeyToAccount } = await import('viem/accounts');
   const account = privateKeyToAccount(privateKey);
   const digest = statementDigest(statement);
   const signature = await account.signMessage({ message: { raw: `0x${digest}` } });
