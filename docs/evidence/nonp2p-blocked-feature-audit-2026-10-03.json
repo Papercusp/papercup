@@ -4222,7 +4222,134 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-014 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "humansMarketplaceEvidenceQualification": {
+    "schemaVersion": "personal-evidence-qualification-v1",
+    "status": "retained-current-dependency-and-unproved-acceptance",
+    "auditedAt": "2026-10-11",
+    "auditor": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "evidenceRefs": [
+     "WI-10005820#thread-post:1173830",
+     "WI-10005820#thread-post:1173841",
+     "WI-10005820#thread-post:1173844"
+    ],
+    "sourceQualification": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "inspectedVersion": 178,
+     "inspectedContentHash": "0a5f185d4d820f31a574fa78b30797a5313a8bb75bbf7ebc3f96b95c090d33d3",
+     "originalRowVersion": 100,
+     "note": "This dated qualification supplements the original row; it does not replace its captured source, disposition or population boundaries."
+    },
+    "contractQualification": {
+     "activeSpec": {
+      "id": "AUTO-BAR-R-25-P-014",
+      "revision": 2,
+      "contentHash": "1ef5be942eb4db1da6e90bbb4ddcc611f3580e5855a63aa42b68d3a3fb97c1ee"
+     },
+     "draftSpec": {
+      "id": "AUTO-REQ-M-003-P-014",
+      "revision": 1,
+      "contentHash": "cc3b65f10cb959d224daf140eaa59218becc8c86c11a7e15b4f917bf1fff3222",
+      "status": "draft-unaccepted"
+     },
+     "criterion": "r-25",
+     "barHash": "0245af7659f27d3cc702d4fdd0f7f5fde5bac6f0c3c6ee6f5b886178e5b52682",
+     "requiredOutcome": "Route a matching role task to a retained human; the current mandatory tree/unit criterion names packages/operator-core/lib/humans/designated-human-routing.test.ts.",
+     "namedDetector": "Independently checked absent in post1173830; passing market foundation tests do not substitute for the named retained-role outcome.",
+     "bindingRead": "Two exact two-clause and WI-10004298 binding lookups returned count0 with truncatedByLimit=false. This is scoped lookup evidence, not global evidence absence.",
+     "rubricQualification": "Current rubric revision10/contentHash prefix3c56d18a was VETTED with EI-25665353333578244 and independent-authority post1173794. Construction vetting is not product acceptance; the historical sourceBar rubric revision1 remains distinct."
+    },
+    "dependencyQualification": {
+     "workItem": "WI-10004289",
+     "item": "P-005",
+     "observedState": "needs-human",
+     "observedAssignee": null,
+     "observedCompletionAuthority": null,
+     "observedAtRef": "WI-10005820#thread-post:1173830",
+     "condition": "Actual payer, external non-Avi claimant, independent grade and real manual payment remain an active stored condition. This read does not establish global absence of participant evidence."
+    },
+    "inspectedFoundation": [
+     "Strict market job schema captures brief, payer, exact rubric identity, amount/currency and claim/submission/grade/payment lifecycle.",
+     "Store adapter resolves current independent scorecards and protects full offer/lifecycle/holder terms with CAS. Real-PG tests exercise stale reads, concurrent claims, tenant/admission/claim-hold fences, grader eligibility, retraction and concurrent grading.",
+     "HTTP tests mock store/auth and exercise cookie identity, origin/version checks and strict-input routing. UI tests mock fetch and exercise claim/submit, refusals and late responses.",
+     "The reviewed schema/adapters do not establish retained-role routing, DAO employer good standing, disclosure policy, escrow or default-fiat enforcement.",
+     "recordHumanMarketPayment and the review adapter attest a manual transfer; they do not execute a money transfer."
+    ],
+    "focusedTestEvidence": {
+     "date": "2026-10-11",
+     "rerunDuringQualification": false,
+     "receipts": [
+      {
+       "id": 21045338,
+       "path": "packages/operator-core/lib/work-items-human-market.test.ts",
+       "status": "PASS",
+       "passed": 5,
+       "failed": 0,
+       "skipped": 0,
+       "source": "local",
+       "runGroup": "b0f86c29-60bb-45d6-aa2b-f4a086dcbb0c"
+      },
+      {
+       "id": 21045346,
+       "path": "packages/operator-core/lib/endpoint-route/routes/harness/work-items-human-market.test.ts",
+       "status": "PASS",
+       "passed": 7,
+       "failed": 0,
+       "skipped": 0,
+       "source": "local",
+       "runGroup": "f8598b45-634a-4d7c-b7ca-4672f9e318e3"
+      },
+      {
+       "id": 21045349,
+       "path": "packages/operator-core/lib/work-items-human-market-store.integration.test.ts",
+       "status": "PASS",
+       "skipped": 0,
+       "source": "admin-ui",
+       "initialRunGroup": "c34db2a8-6409-4587-8e48-51046bf69dc0",
+       "recovery": "fd381026-c123-4fbd-b501-c2ff55d7a6d3 terminal PASS/exit0; exact ledger row independently read"
+      },
+      {
+       "id": 21045351,
+       "path": "apps/operator/app/adv/harnesses/HumanWorkSection.test.tsx",
+       "status": "PASS",
+       "passed": 4,
+       "failed": 0,
+       "skipped": 0,
+       "source": "local",
+       "runGroup": "ff1f19f2-f0d1-4d1d-ae47-645d779939bd"
+      }
+     ],
+     "receiptCommitSha": "f253aae19f49102212b454523d94ca760efbc4c2",
+     "branch": "staging",
+     "isScratchConfig": false,
+     "worktreeDirty": true,
+     "receiptRoot": null,
+     "storageRecoveryQualification": "The documented45s foreground cap was reached; exact detached recovery completed without a manual rerun. The output report path was subsequently unavailable locally. Evidence is the exact terminal snapshot and ledger21045349, not a locally re-read report or durable artifact.",
+     "scope": "Foundation assertions only. No aggregate storage assertion count is inferred from missing receipt fields; dirty/rootnull do not establish a cause or a clean whole import graph."
+    },
+    "stableNamedSourcePins": {
+     "packages/operator-core/lib/work-items-human-market.ts": "980926e3c64a8544b50cdaa16267ca2c5c70c402b5a5ae6d271785e2a2c52b9a",
+     "packages/operator-core/lib/work-items-human-market-store.ts": "9d2756d2fe53129f63043322fef32968aa29f28d71704774e25e71cddb7aec88",
+     "packages/operator-core/lib/work-items-human-market.test.ts": "e4e46efa1a86ce5e3d763b03824495c2ea08acbf1d4ee9fa2d09c2bf82b67244",
+     "packages/operator-core/lib/work-items-human-market-store.integration.test.ts": "8c9c9022d6b4a1ecad964f56a6fce85db7d21574233e087fe33ce86ce1ef7210",
+     "packages/operator-core/lib/endpoint-route/routes/harness/work-items.ts": "1a101e2005f65bff40b829a40df15405cbd6f5160fb7e7df8352da07af7cc790",
+     "packages/operator-core/lib/endpoint-route/routes/harness/work-items-human-market.test.ts": "eba1ff0f08eb2df3eb00fb3504a7337bbdc55f992cc1ef26cc215beb6f594f22",
+     "apps/operator/app/adv/harnesses/HumanWorkSection.tsx": "1166218609409540eaa66d0ba784d6a776cc873122f96b7fc58f7dd5afa948c0",
+     "apps/operator/app/adv/harnesses/HumanWorkSection.test.tsx": "de25ca69f4015048e64ec0c2f0d07bcf32aa5c29365ded69105d3fe388f43de5"
+    },
+    "pinQualification": "Eight named source/test SHA256 values matched before/after the saved focused runs and were rechecked before this JSON addition. HEAD changed from aadf5f64f0ce19039ee8830eb306ea3b2ba94dcb to f253aae19f49102212b454523d94ca760efbc4c2 during those runs. Named pins do not prove whole-import-graph identity.",
+    "unprovedAcceptance": [
+     "Matching-role routing to a retained human and the mandatory designated-human-routing detector.",
+     "Actual external-human P005 pilot and independent payment/grade outcome.",
+     "DAO employer accountability/good standing, disclosure enforcement, escrow and default fiat payout.",
+     "Live Tauri acceptance, whole PERSONAL population audit completion and final shipment."
+    ],
+    "preservedBoundaries": [
+     "Original row values, all other audit rows and original200/172 UNKNOWN population limits remain preserved.",
+     "Archive1160078, twelve loop checks, one item check and both existing unanswered Avi conversations/walls remain in force.",
+     "No LIVE_GATE_OPS, provider action, mainnet/Safe execution, killed-residue-goal renewal or shipment claim."
+    ]
+   }
   },
   {
    "id": "WI-10004389",
