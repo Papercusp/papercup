@@ -4899,6 +4899,15 @@ async function amendAcceptanceBarRubric(
       if (unrecordableLayers.length > 0) {
         throw new Error(`acceptance_bar_amendment_test_layer_unrecordable: ${unrecordableLayers.join('; ')}`);
       }
+      // A manual check cannot promise automated test-layer evidence. Refuse this
+      // contract mismatch in the preview path, before rubrics:amend routes an
+      // outside reviewer for a patch that cannot satisfy its declared BAR.
+      const checkLayerMismatches = changedBarGaps
+        .filter((gap) => gap.gap === 'check_layer_mismatch')
+        .map((gap) => gap.line);
+      if (checkLayerMismatches.length > 0) {
+        throw new Error(`acceptance_bar_amendment_check_layer_mismatch: ${checkLayerMismatches.join('; ')}`);
+      }
       // A classRef bind is metadata-only: it changes neither the BAR set nor any
       // criterion meaning. Do not make this repair depend on the started contract
       // being ready for vetting; draft plans intentionally reach this path before
