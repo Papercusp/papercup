@@ -866,6 +866,7 @@ const WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY =
  * this later, generic door has to project the response again.
  */
 const PIPELINE_POSITION_PRESERVE_PATHS = [
+  'currentBuildTestRoute',
   'changeInCandidate.markerJudging',
   'changeInCandidate.markerNext',
   'changeInCandidate.judgingSha',
