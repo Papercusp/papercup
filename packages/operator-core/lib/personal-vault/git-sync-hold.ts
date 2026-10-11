@@ -86,6 +86,11 @@ export interface RestrictedEditRow {
 
 /** Map ledger rows to census holdings: one per (domain, path), blanks dropped. Pure. */
 export function restrictedHoldingsFromRows(rows: readonly RestrictedEditRow[]): RestrictedEditHolding[] {
+  return holdingsFromLedgerRows(rows, RESTRICTED_HOLD_INTENT);
+}
+
+/** Shared row → holding mapping for every ledger-backed hold. Pure. */
+function holdingsFromLedgerRows(rows: readonly RestrictedEditRow[], intent: string): RestrictedEditHolding[] {
   const out: RestrictedEditHolding[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
@@ -100,7 +105,7 @@ export function restrictedHoldingsFromRows(rows: readonly RestrictedEditRow[]): 
     out.push({
       path,
       owner,
-      intent: RESTRICTED_HOLD_INTENT,
+      intent,
       // A work-item seeds git-sync's edit-cohort expansion, so a restricted edit's
       // source+test siblings stay together instead of one reaching HEAD alone.
       ...(goalRef ? { goalRef } : {}),
@@ -140,6 +145,111 @@ export async function readRestrictedEditHoldings(sql: Db = getOrgPg().sql): Prom
     throw ledgerUnavailable('git-sync restricted-write hold', error);
   }
   return restrictedHoldingsFromRows(rows);
+}
+
+// ── turn-scoped hold (git-sync-turn-scoped-commit-hold-2026-10-11) ─────────
+
+/**
+ * The intent of a turn hold. git-sync renders it in skipped-path diagnostics; the
+ * holder lifts it by ending its turn, not with `locks:release`.
+ */
+export const TURN_HOLD_INTENT =
+  'turn-scoped hold (git-sync-turn-scoped-commit-hold P-002): edited during its editor\'s current turn; held from commit until that turn ends, the session ends, or 60 min after the edit';
+
+const TURN_HOLD_PREFIX = 'turn-scoped hold (';
+
+/** True for a census row produced by the turn-scoped hold. */
+export function isTurnHoldIntent(intent: string | null | undefined): boolean {
+  return typeof intent === 'string' && intent.startsWith(TURN_HOLD_PREFIX);
+}
+
+/**
+ * True for ANY census row this module produced — a hold rather than a real,
+ * releasable edit lock. Its holder cannot lift it with `locks:release`, so
+ * git-sync does not tell them to.
+ */
+export function isCensusHoldIntent(intent: string | null | undefined): boolean {
+  return isRestrictedHoldIntent(intent) || isTurnHoldIntent(intent);
+}
+
+/**
+ * D-001 [owner 2026-10-11]: the hold never outlives this age, measured
+ * from the EDIT. A session that never records a turn end (a crash with no session
+ * end recorded, or a client whose Stop hook is missing — WI-6554700010008402)
+ * therefore delays a file's commit by at most this long after its last edit.
+ */
+export const TURN_HOLD_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** A ledger row as `readTurnHoldings` selects it. */
+export interface TurnEditRow extends RestrictedEditRow {
+  /** ISO time of the newest qualifying edit of this path. */
+  ts: string | null;
+}
+
+/** Map turn-hold rows to census holdings. Pure. */
+export function turnHoldingsFromRows(rows: readonly TurnEditRow[]): RestrictedEditHolding[] {
+  return holdingsFromLedgerRows(rows, TURN_HOLD_INTENT);
+}
+
+/**
+ * Every path a live session edited during its CURRENT turn: a native edit
+ * (edit_attribution_ledger — written at lock grant, before the edit) newer than
+ * the editor's last recorded turn end, unless the edit is older than
+ * `maxAgeMs` or every recorded session of the editor has ended.
+ *
+ *  - TURN END = the newest `session_turn_journal` row for the owner, using its
+ *    `turn_ts` (the turn's final assistant message, transcript-derived) and only
+ *    falling back to `created_at` (the asynchronous insert) when absent. The
+ *    insert can land AFTER the next turn's first edit, which would release a
+ *    mid-turn file; `turn_ts` cannot. Erring early holds longer, never shorter.
+ *  - SESSION ENDED needs POSITIVE evidence: the owner has adv_sessions rows and
+ *    none is still open (`ended_at IS NULL`) — the same session-log authority as
+ *    the liveness oracle's `recorded` leg. An owner with no session row is
+ *    treated as live and bounded by `maxAgeMs`.
+ *
+ * Throws `disclosure_ledger_unavailable` on any read failure: git-sync then
+ * skips the tick rather than staging a file an agent is still editing.
+ */
+export async function readTurnHoldings(
+  sql: Db = getOrgPg().sql,
+  opts: { maxAgeMs?: number } = {},
+): Promise<RestrictedEditHolding[]> {
+  const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? TURN_HOLD_MAX_AGE_MS) / 1000));
+  // A turn end older than every candidate edit cannot release any of them, so the
+  // journal read is bounded to the same window (plus slack for turn_ts lagging
+  // created_at), which keeps it on the (owner_id, created_at) index.
+  const journalWindowSec = maxAgeSec + 600;
+  let rows: TurnEditRow[];
+  try {
+    rows = await sql<TurnEditRow[]>`
+      WITH recent AS (
+        SELECT l.repo_root, l.file, l.agent_id, l.work_item_id, l.ts
+          FROM harness_shared.edit_attribution_ledger l
+         WHERE l.ts > now() - make_interval(secs => ${maxAgeSec})
+           AND l.agent_id IS NOT NULL
+      ),
+      editors AS (
+        SELECT e.agent_id,
+               (SELECT max(COALESCE(j.turn_ts, j.created_at))
+                  FROM harness_shared.session_turn_journal j
+                 WHERE j.owner_id = e.agent_id
+                   AND j.created_at > now() - make_interval(secs => ${journalWindowSec})) AS turn_ended_at,
+               (EXISTS (SELECT 1 FROM harness_shared.adv_sessions s WHERE s.coord_owner_id = e.agent_id)
+                AND NOT EXISTS (SELECT 1 FROM harness_shared.adv_sessions s
+                                 WHERE s.coord_owner_id = e.agent_id AND s.ended_at IS NULL)) AS session_ended
+          FROM (SELECT DISTINCT agent_id FROM recent) e
+      )
+      SELECT DISTINCT ON (r.repo_root, r.file)
+             r.repo_root, r.file, r.agent_id, r.work_item_id, r.ts::text AS ts
+        FROM recent r
+        JOIN editors e ON e.agent_id = r.agent_id
+       WHERE NOT e.session_ended
+         AND (e.turn_ended_at IS NULL OR r.ts > e.turn_ended_at)
+       ORDER BY r.repo_root, r.file, r.ts DESC`;
+  } catch (error) {
+    throw ledgerUnavailable('git-sync turn-scoped hold', error);
+  }
+  return turnHoldingsFromRows(rows);
 }
 
 // ── writes with no ledger row (WI-10005576) ───────────────────────────────
@@ -362,11 +472,16 @@ export async function readRestrictedSourceHoldState(
   }
 }
 
+/** The census's independent reads, in the order git-sync reports them. */
+export const GIT_SYNC_CENSUS_LEGS = ['live-locks', 'restricted-holds', 'working-tree-window', 'turn-holds'] as const;
+export type GitSyncCensusLeg = (typeof GIT_SYNC_CENSUS_LEGS)[number];
+
 /**
- * git-sync's commit-gate census: every live edit lock, every restricted hold, and
+ * git-sync's commit-gate census: every live edit lock, every restricted hold,
  * (given the tree to read) every unattributed write inside an active disclosure
- * window. Every half is strict, so any read failing throws and git-sync fails the
- * tick closed rather than staging a held path. Used for the initial census AND the
+ * window, and every path a live session edited during its current turn. Every
+ * leg is strict, so any read failing throws and git-sync fails the tick closed
+ * rather than staging a held path. Used for the initial census AND the
  * final-commit-seam refresh (git-sync-action.ts).
  */
 export async function readGitSyncCensusStrict(
@@ -375,11 +490,14 @@ export async function readGitSyncCensusStrict(
     restricted?: () => Promise<RestrictedEditHolding[]>;
     /** The tree git-sync is about to sweep. Production always passes it (git-sync-action.ts). */
     window?: { repoPath: string; runGit: HoldRunGit } | (() => Promise<RestrictedEditHolding[]>);
-    /** Progress for the three independent reads. Diagnostic callbacks never affect the fail-closed census. */
-    onLeg?: (
-      leg: 'live-locks' | 'restricted-holds' | 'working-tree-window',
-      status: 'started' | 'completed' | 'failed',
-    ) => void;
+    /**
+     * Turn-scoped holds. Omitted ⇒ no turn hold (the leg reports complete with an
+     * empty set); git-sync-action passes `readTurnHoldings` while its kill-switch
+     * flag is ON, so this default never silently widens another caller's census.
+     */
+    turn?: () => Promise<RestrictedEditHolding[]>;
+    /** Progress for the independent reads. Diagnostic callbacks never affect the fail-closed census. */
+    onLeg?: (leg: GitSyncCensusLeg, status: 'started' | 'completed' | 'failed') => void;
   } = {},
 ): Promise<LiveLockHolding[]> {
   const tree = deps.window;
@@ -390,10 +508,7 @@ export async function readGitSyncCensusStrict(
         ? () => readRestrictedWindowHoldings({ listDirtyFiles: () => listDirtyFilesRecursive(tree.runGit, tree.repoPath) })
         : async () => [];
 
-  const observeLeg = async <T>(
-    leg: 'live-locks' | 'restricted-holds' | 'working-tree-window',
-    read: () => Promise<T>,
-  ): Promise<T> => {
+  const observeLeg = async <T>(leg: GitSyncCensusLeg, read: () => Promise<T>): Promise<T> => {
     const notify = (status: 'started' | 'completed' | 'failed'): void => {
       try {
         deps.onLeg?.(leg, status);
@@ -412,12 +527,13 @@ export async function readGitSyncCensusStrict(
     }
   };
 
-  const [locks, restricted, windowHolds] = await Promise.all([
+  const [locks, restricted, windowHolds, turnHolds] = await Promise.all([
     observeLeg('live-locks', deps.locks ?? liveLockHoldingsStrict),
     observeLeg('restricted-holds', deps.restricted ?? (() => readRestrictedEditHoldings())),
     observeLeg('working-tree-window', readWindow),
+    observeLeg('turn-holds', deps.turn ?? (async () => [])),
   ]);
-  return [...locks, ...restricted, ...windowHolds];
+  return [...locks, ...restricted, ...windowHolds, ...turnHolds];
 }
 
 /** Whether `ownerId` holds any unreleased disclosure. Throws `disclosure_ledger_unavailable`. */
