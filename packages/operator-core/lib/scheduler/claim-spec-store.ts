@@ -29,6 +29,7 @@ import { ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 import { RESOURCE_GOVERNOR_PARK_OWNER } from '../resource-governor/queue';
 import { activeExternalBlockers } from '../external-blockers';
 import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
+import type { RevisionAdoptionBrief } from '../harness/improvements/agent-review';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
 /**
@@ -710,6 +711,8 @@ export async function getNextForBee(args: {
       specSource: ClaimSpecRecord['source'];
       /** P-007 Phase B (D-027): set only when a verifier-lane spec served verification work. */
       verificationKind?: 'agent-review' | 'verification-task';
+      /** D-011 B: set only when a revisionAdoption:'first' spec served an adopted content revision. */
+      revisionAdoption?: RevisionAdoptionBrief;
     })
   | null
 > {
@@ -858,6 +861,40 @@ export async function getNextForBee(args: {
       specSource: record.source,
       verificationKind: served.kind,
     };
+  }
+
+  // D-011 B (bug-queue-legitimacy-and-actionable-validation-2026-10-10): an implementation
+  // spec that opts into revisionAdoption:'first' adopts ONE orphaned content revision before
+  // its ordinary claim. 'first' because the ordinary pool is never empty in practice (560
+  // claimable bugs measured 2026-10-11), so a miss-only leg would never fire. Only the D-008
+  // orphan proof admits an adoption; the spec's view.filter scopes discovery. A caller (or
+  // spec) narrowing `states` away from 'open' is honoured: adoption rows are open rows.
+  const effectiveStates = args.states ?? record.spec.states;
+  if (record.spec.revisionAdoption === 'first' && (!effectiveStates || effectiveStates.includes('open'))) {
+    claimStep('revision-adoption');
+    try {
+      const { adoptNextAgentReviewRevision } = await import('../harness/improvements/agent-review');
+      const adoption = await adoptNextAgentReviewRevision({
+        adopter: args.cupId,
+        harnessSlug: args.harness,
+        workspaceId: args.workspaceId,
+        filter: record.spec.view.filter,
+        signal: args.signal,
+      });
+      if (adoption.adopted && adoption.workItem && adoption.brief) {
+        return {
+          workItem: adoption.workItem,
+          claimedUnder: { specId: record.spec.specId, revision: record.spec.revision },
+          specSource: record.source,
+          revisionAdoption: adoption.brief,
+        };
+      }
+    } catch (error) {
+      // An aborted caller stops here. Any other adoption fault falls through to the ordinary
+      // claim: an opt-in leg must never take a member's whole pull down with it.
+      if (args.signal?.aborted) throw error;
+      claimStep('revision-adoption-failed');
+    }
   }
 
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
