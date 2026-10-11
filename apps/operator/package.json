@@ -24,7 +24,7 @@
     "setup-monaco-runtime": "bash scripts/setup-monaco-runtime.sh",
     "setup-excalidraw-runtime": "bash scripts/setup-excalidraw-runtime.sh",
     "setup-porcupine-runtime": "bash scripts/setup-porcupine-runtime.sh",
-    "postinstall": "bash scripts/setup-wake-runtime.sh && bash scripts/setup-vad-runtime.sh && bash scripts/setup-vditor-runtime.sh && bash scripts/setup-monaco-runtime.sh && bash scripts/setup-excalidraw-runtime.sh && bash scripts/setup-porcupine-runtime.sh",
+    "postinstall": "bash scripts/setup-wake-runtime.sh && bash scripts/setup-vad-runtime.sh && bash scripts/setup-vditor-runtime.sh && bash scripts/setup-monaco-runtime.sh && bash scripts/setup-excalidraw-runtime.sh && bash scripts/setup-porcupine-runtime.sh && node scripts/setup-elevenlabs-runtime.mjs",
     "test:el-suite": "node scripts/el-suite-test.mjs",
     "test:el-suite:required": "EL_SUITE_REQUIRED=1 node scripts/el-suite-test.mjs",
     "verify:dogfood-bootstrap": "tsx scripts/run-dogfood-bootstrap.ts",
@@ -56,6 +56,7 @@
     "llm-test": "tsx bin/llm-test.ts"
   },
   "dependencies": {
+    "@alexanderolsen/libsamplerate-js": "2.1.2",
     "@anthropic-ai/sdk": "^0.93.0",
     "@assistant-ui/react": "^0.12.25",
     "@azure/identity": "^4.13.1",

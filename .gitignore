@@ -319,6 +319,7 @@ yarn.lock
 # Derived voice-runtime assets — copied out of node_modules by apps/operator's
 # postinstall (scripts/setup-{vad,wake}-runtime.sh); every fresh install regenerates.
 apps/operator/public/vad-runtime/
+apps/operator/public/elevenlabs-runtime/
 apps/operator/public/wake-runtime/
 apps/operator/public/ort-wasm-*
 apps/operator/public/silero_vad_*.onnx
