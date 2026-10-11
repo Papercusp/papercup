@@ -1,5 +1,24 @@
 import { describe, expect, test } from 'vitest';
-import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
+import { paneContains, screenContains, screenHasAssistantReply, screenIsSendReady, SEND_READY_MARKERS, VtScreen } from './vt-screen';
+
+describe('composer readiness during new-session setup', () => {
+  test.each(SEND_READY_MARKERS)('rejects a background %s composer while the wizard has focus', (marker) => {
+    // Retained candidate47a6 OMP failure: setup overlays the composer and
+    // its footer. Seeing that footer did not authorize typing a greeting.
+    const frame = `┌ New session — 1 Context ───┐\n│Connection: Connected      │\n└───────────────────────────┘\n${marker}\n>`;
+    expect(screenIsSendReady(frame)).toBe(false);
+    expect(screenIsSendReady(marker)).toBe(true);
+  });
+
+  test('waits for the armed asynchronous setup driver before its first frame arrives', () => {
+    expect(screenIsSendReady('Message — Enter send', true)).toBe(false);
+    expect(screenIsSendReady('Message — Enter send', false)).toBe(true);
+  });
+
+  test('does not mistake ordinary transcript wording for a setup modal', () => {
+    expect(screenIsSendReady('agent: New session setup is complete.\nEnter sends')).toBe(true);
+  });
+});
 
 function frame(left: string[], right?: string[], title = 'Agent Chat'): string {
   const header = `┌ ${title} `.padEnd(36, '─') + '┐';

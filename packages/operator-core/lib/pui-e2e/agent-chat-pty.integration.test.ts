@@ -34,7 +34,7 @@ import type { RpcFrame, SuStdioPeer, SuStdioPeerOptions } from '../su-session-st
 import { _armSuClientLeaseTimersForTest, suClientLeaseDiagnostics } from '../su-session-client-lease';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
-import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
+import { paneContains, screenContains, screenHasAssistantReply, screenIsSendReady as isSendReady, SEND_READY_MARKERS, VtScreen } from './vt-screen';
 import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
@@ -802,12 +802,6 @@ function approvalOptionKey(lines: string[], answer: 'yes' | 'always' | 'no'): st
  * the boxed `Message — Enter send` title. All three mean the same state, so one
  * suite drives builds from before and after P-021. (Not `Enter to send`: the
  * failure sentences say "press Enter to send your message again".) */
-const SEND_READY_MARKERS = ['Message — Enter send', '? for shortcuts', 'Enter sends'] as const;
-
-function isSendReady(screen: string): boolean {
-  return SEND_READY_MARKERS.some((marker) => screenContains(screen, marker));
-}
-
 /** An open question card on screen. P-020 heads the card with its question;
  * a build from before P-020 heads it `▾ Needs your answer`. A question too
  * long for the border falls back to the plain `Question` heading. */
@@ -962,6 +956,11 @@ class PuiPane {
 
   screen(): string {
     if (this.setupDriverError) throw this.setupDriverError;
+    return this.failureScreen();
+  }
+
+  /** Failure reporting must not throw the setup error it is reporting. */
+  failureScreen(): string {
     const vt = new VtScreen(this.rows, this.cols);
     vt.feed(this.raw);
     return vt.text();
@@ -1017,7 +1016,7 @@ class PuiPane {
         .slice(-8).map((match) => {
           try { return JSON.parse(match[1]); } catch { return { decodeError: true }; }
         }),
-      screen: this.stoppedScreen ?? this.screen(),
+      screen: this.stoppedScreen ?? this.failureScreen(),
       screenFrozenAtStop: this.stoppedScreen !== undefined,
       observerMaxLateMs: this.observerMaxLateMs,
       inputTrace: this.inputTraceLog && existsSync(this.inputTraceLog)
@@ -1084,7 +1083,9 @@ class PuiPane {
   /** Wait until the composer is ready to send (see SEND_READY_MARKERS). */
   async waitForSendReady(opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
-    const { ok, maxLateMs } = await pollUntil(() => isSendReady(this.screen()), {
+    const { ok, maxLateMs } = await pollUntil(() => isSendReady(
+      this.screen(), this.setupDriverArmed || this.setupDriverRunning,
+    ), {
       timeoutMs,
       beforeCheck: () => this.checkProviderCapacity('Waiting for send readiness'),
       onMiss: () => { this.settleSuToolApproval(); },
@@ -1147,7 +1148,7 @@ class PuiPane {
   async stop(): Promise<void> {
     this.stoppedRawLength ??= this.raw.length;
     try {
-      this.stoppedScreen ??= this.screen();
+      this.stoppedScreen ??= this.failureScreen();
     } catch {
       /* no screen to keep */
     }
@@ -7909,7 +7910,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           events: first.events.slice(-30),
           readiness: first.readiness.slice(-10),
           responses: first.responses.slice(-20),
-          screen: pane.screen(),
+          screen: pane.failureScreen(),
         }),
       );
       throw error;
