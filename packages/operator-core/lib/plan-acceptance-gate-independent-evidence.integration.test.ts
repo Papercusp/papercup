@@ -45,7 +45,13 @@ const SHIPPER = 'agent-zzz-iv-shipper';
 const HEX = (c: string) => c.repeat(64);
 const SOURCE_FP = 'src-fp-implementer-observed-build';
 const ENV_FP = 'env-fp-live-3070';
-const WORK_ITEM = 'WI-zzz-iv-impl';
+// One work-item id per seed, derived from that seed's fresh harness. A work-item id
+// names ONE row per workspace (UNIQUE (workspace_id, feature_id), migration 1444,
+// scope-unique-identifiers-2026-07-26#P-012), so a constant id re-inserted under a
+// fresh harness each seed is a same-workspace twin: the index refuses the second
+// seed with 23505, and on a pre-1444 reused container the leftovers block 1444.
+const workItemFor = (harness: string) => `WI-${harness}`;
+let WORK_ITEM = workItemFor(HARNESS);
 const SPEC_FP = HEX('c'); // the clause revision's content_hash
 
 function planBody(): string {
@@ -120,6 +126,7 @@ async function cleanup(): Promise<void> {
 async function seedBase(plane: 'live' | 'deployed' | 'tree', createdAt: string): Promise<void> {
   await cleanup();
   HARNESS = freshHarness();
+  WORK_ITEM = workItemFor(HARNESS);
   await seedPlan(admin, WS, HARNESS, SLUG, planBody());
   // The implementer: the work item that delivered the plan names it.
   await admin`
