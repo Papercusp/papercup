@@ -79,11 +79,16 @@ describe('logs:read — payload-tier shapers are WIRED (EI-20203342112661815)', 
 });
 
 describe('logs:read — nested result fields are published to callers', () => {
-  it('declares collapsed-row timestamps and shaper markers in the result schema', () => {
+  it('declares the backend, collapsed-row timestamps, and shaper markers in the result schema', () => {
     const result = (logsReadTool as unknown as {
-      result: { toJSONSchema: () => { properties?: Record<string, unknown> } };
+      result: { toJSONSchema: () => { properties?: Record<string, unknown>; required?: string[] } };
     }).result.toJSONSchema();
 
+    expect(result.properties?.backend).toMatchObject({
+      type: 'string',
+      enum: ['systemd', 'macos-unified', 'none'],
+    });
+    expect(result.required ?? []).not.toContain('backend');
     expect(result.properties?.entries).toMatchObject({
       type: 'array',
       items: {

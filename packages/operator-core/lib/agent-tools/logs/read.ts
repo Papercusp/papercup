@@ -98,6 +98,9 @@ export default defineTool({
   }),
   result: z
     .object({
+      // `readJournal` returns the selected backend, but the early unscoped-read
+      // rejection has no backend to report.
+      backend: z.enum(['systemd', 'macos-unified', 'none']).optional(),
       entries: z.array(logEntryResultSchema).optional(),
       matched: z.unknown().optional(),
       collapsed: z.unknown().optional(),

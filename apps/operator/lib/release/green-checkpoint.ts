@@ -9470,6 +9470,16 @@ export function buildGreenCheckpointEnv(
   // gate-owned setting, those imports rewrite tracked __pycache__ files and make the isolated
   // worktree look dirty even though the tested source is unchanged.
   env.PYTHONDONTWRITEBYTECODE = "1";
+  // WI-6554700010008606: pin a shell level so a test's `bash -c` never sources the host's
+  // ~/.bashrc. Bash (built with SSH_SOURCE_BASHRC, as Debian/Ubuntu ship it) treats a
+  // non-interactive `-c` shell whose stdin is a socket as "started by rshd" and sources
+  // ~/.bashrc when its shell level is below 2. Node's spawnSync pipes ARE socketpairs, and
+  // nothing between this builder and the tests (node, npm, dash) sets SHLVL, so every such
+  // shell ran at level 1 and sourced the rc: on this box that re-exported the host's
+  // NODE_OPTIONS (and its secrets file) over the test's own env, so the desktop leg failed
+  // in the gate and passed in every interactive shell. Inherited SHLVL=1 makes bash run at
+  // level 2 and skip that path. Overwrite, never inherit: a launcher's value is identity.
+  env.SHLVL = "1";
   // WI-6140: the release gate's exemption from the pc-heavy admission semaphore.
   // DELIBERATELY NOT keyed off GREEN_CHECKPOINT — that marker is DOUBLE-DUTY (it also
   // makes load-/network-sensitive tests self-exclude via describe.skipIf, see above),

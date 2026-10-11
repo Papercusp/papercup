@@ -9707,6 +9707,38 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
     expect(src.INVOCATION_ID).toBe("systemd-run-a");
   });
 
+  // WI-6554700010008606: bash sources ~/.bashrc for a non-interactive `-c` shell whose
+  // stdin is a socket (Node's spawnSync pipes are socketpairs) when its shell level is
+  // below 2. With no SHLVL in the suite env, every test `bash -c` in the gate ran the
+  // HOST's rc, which re-exported NODE_OPTIONS over the test's own value: the desktop leg
+  // went red in the gate (2 of 2 runs) and passed in every interactive shell.
+  it("pins SHLVL so a test's `bash -c` never sources the host ~/.bashrc", () => {
+    const home = mkdtempSync(join(tmpdir(), "gate-shlvl-home-"));
+    try {
+      writeFileSync(join(home, ".bashrc"), "export NODE_OPTIONS=HIJACKED_BY_BASHRC\n");
+      const override = "--require=/test/override.cjs";
+      const probe = (env: Record<string, string | undefined>) =>
+        spawnSync("bash", ["-c", 'printf %s "$NODE_OPTIONS"'], {
+          encoding: "utf8",
+          env: { ...env, HOME: home, NODE_OPTIONS: override },
+        }).stdout;
+      const env = buildGreenCheckpointEnv("base123", {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: "/home/t",
+        SHLVL: "7", // a launcher's value is identity, never inherited
+      });
+      expect(env.SHLVL).toBe("1");
+      expect(probe(env)).toBe(override);
+      // Control: the identical spawn without the pin. Where bash is built with
+      // SSH_SOURCE_BASHRC (Debian/Ubuntu, this box) it sources the rc and the override is
+      // lost — the pin above is what prevents that. Elsewhere bash never reads the rc here.
+      const { SHLVL: _unpinned, ...unpinned } = env;
+      expect(["HIJACKED_BY_BASHRC", override]).toContain(probe(unpinned));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   // WI-6583: HARNESS_SLUG is a non-`PAPERCUSP_`-prefixed test-run-attribution
   // fallback the vitest/playwright reporters now read (admin-test-runs-reporter.ts's
   // resolveTestRunHarnessSlug). If the gate's own host process ever inherited a stray

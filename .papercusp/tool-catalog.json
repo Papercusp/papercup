@@ -15435,7 +15435,7 @@
           "POST"
         ]
       },
-      "description": "Resolve the on-disk path for a (harness_slug, phase) pair. Phase = staging|testing|production.",
+      "description": "Find the existing on-disk directory for a (harness_slug, phase) pair. Phase = staging|testing|production.",
       "capabilities": [
         "harness:read"
       ],
