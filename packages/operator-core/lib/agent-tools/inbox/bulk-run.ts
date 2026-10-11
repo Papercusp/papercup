@@ -176,6 +176,16 @@ interface ManifestItem {
 type LiveAction = { id: string; label: string; terminal: boolean };
 type LiveActionIndex = Map<string, LiveAction[]>;
 
+class LiveActionDiscoveryError extends Error {
+  readonly code = 'action_discovery_failed' as const;
+  readonly retryable = true as const;
+
+  constructor() {
+    super('The live attention action snapshot could not be read.');
+    this.name = 'LiveActionDiscoveryError';
+  }
+}
+
 interface AttentionFeedItem {
   id?: string;
   actions?: { id?: string; label?: string }[];
@@ -220,7 +230,7 @@ function normalizeLiveActions(it: AttentionFeedItem): LiveAction[] {
  * deadline. Invocation-local reuse keeps membership live without creating a
  * cross-call cache whose authority could go stale.
  */
-async function liveActionsById(): Promise<LiveActionIndex | null> {
+async function liveActionsById(): Promise<LiveActionIndex> {
   try {
     const { callPlansRead } = await import('../plans/read-dispatch');
     // The UI list projection deliberately DROPS `actions` to keep the ~1MB
@@ -230,9 +240,10 @@ async function liveActionsById(): Promise<LiveActionIndex | null> {
     // the entire run even though the middle pane showed Acknowledge/Resolve.
     // Ask the shared reader for the canonical shape, not the list display shape.
     const r = (await callPlansRead('attention', {}, { uiProjection: false })) as {
-      groups?: { items?: unknown[] }[];
-    };
-    const groups = Array.isArray(r?.groups) ? r.groups : [];
+      groups?: unknown;
+    } | null;
+    if (!Array.isArray(r?.groups)) throw new Error('plans:attention returned no groups array');
+    const groups = r.groups as { items?: unknown[] }[];
     const byId: LiveActionIndex = new Map();
     for (const g of groups) {
       for (const raw of g?.items ?? []) {
@@ -243,7 +254,7 @@ async function liveActionsById(): Promise<LiveActionIndex | null> {
     }
     return byId;
   } catch {
-    return null;
+    throw new LiveActionDiscoveryError();
   }
 }
 
@@ -255,6 +266,24 @@ async function liveActionsById(): Promise<LiveActionIndex | null> {
 async function liveActionsFor(itemId: string): Promise<LiveAction[] | null> {
   const byId = await liveActionsById();
   return byId?.get(itemId) ?? null;
+}
+
+function actionDiscoveryRetryResponse(runId: string, details: Record<string, unknown> = {}) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: false,
+          error: 'action_discovery_failed',
+          retryable: true,
+          message: 'The live attention action snapshot could not be read; no action or report was accepted. Retry shortly.',
+          runId,
+          ...details,
+        }),
+      },
+    ],
+  };
 }
 
 function failureDetails(value: Record<string, unknown>): string {
@@ -487,7 +516,15 @@ export const bulkRunManifest = defineTool({
     const wanted = args.includeReported ? rows : rows.filter((r) => r.outcome === 'pending');
 
     // An intake-triage run's rows are never feed members (P-008): skip the ~1MB read.
-    const liveActions = wanted.length > 0 && !isSourceLivenessRunKind(storedRun.runKind) ? await liveActionsById() : null;
+    let liveActions: LiveActionIndex | null = null;
+    if (wanted.length > 0 && !isSourceLivenessRunKind(storedRun.runKind)) {
+      try {
+        liveActions = await liveActionsById();
+      } catch (error) {
+        if (error instanceof LiveActionDiscoveryError) return actionDiscoveryRetryResponse(runId);
+        throw error;
+      }
+    }
     const items: ManifestItem[] = [];
     for (const r of wanted) {
       const actions = liveActions?.get(r.itemId) ?? [];
@@ -845,6 +882,14 @@ export const bulkRunAct = defineTool({
         ],
       };
     } catch (error) {
+      if (error instanceof LiveActionDiscoveryError) {
+        return actionDiscoveryRetryResponse(runId, {
+          itemId: row.itemId,
+          actionId: args.actionId,
+          actionDispatched: false,
+          reconciliationRequired: false,
+        });
+      }
       return {
         content: [
           {
@@ -1341,7 +1386,15 @@ export const bulkRunReport = defineTool({
     // Validate each proposed action id against what the item ACTUALLY offers,
     // before anything is written. One invocation gets one canonical snapshot;
     // a bad id still fails only its own item.
-    const liveActions = reports.some((report) => Boolean(report.actionId)) ? await liveActionsById() : null;
+    let liveActions: LiveActionIndex | null = null;
+    if (reports.some((report) => Boolean(report.actionId))) {
+      try {
+        liveActions = await liveActionsById();
+      } catch (error) {
+        if (error instanceof LiveActionDiscoveryError) return actionDiscoveryRetryResponse(runId);
+        throw error;
+      }
+    }
     const accepted: BulkOutcomeReport[] = [];
     const env = await runBulk(
       reports,

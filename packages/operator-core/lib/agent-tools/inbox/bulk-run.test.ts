@@ -227,6 +227,56 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
     });
   });
 
+  it('returns a typed retryable failure when the canonical action snapshot read fails', async () => {
+    h.callPlansRead.mockRejectedValue(new Error('temporary attention read failure'));
+
+    const result = body(
+      await bulkRunManifest.handler({ runId: run.runId, includeReported: false }, {
+        workspaceId: run.workspaceId,
+      } as never),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'action_discovery_failed',
+      retryable: true,
+      runId: run.runId,
+    });
+    expect(result.items).toBeUndefined();
+  });
+
+  it('preserves a valid empty action snapshot as a successful manifest', async () => {
+    h.callPlansRead.mockResolvedValue({ groups: [] });
+
+    const result = body(
+      await bulkRunManifest.handler({ runId: run.runId, includeReported: false }, {
+        workspaceId: run.workspaceId,
+      } as never),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      items: [expect.objectContaining({ itemId: item.itemId, actions: [] })],
+    });
+  });
+
+  it('does not treat a malformed action snapshot as a valid empty snapshot', async () => {
+    h.callPlansRead.mockResolvedValue({});
+
+    const result = body(
+      await bulkRunManifest.handler({ runId: run.runId, includeReported: false }, {
+        workspaceId: run.workspaceId,
+      } as never),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'action_discovery_failed',
+      retryable: true,
+      runId: run.runId,
+    });
+  });
+
   it('loads one canonical action snapshot for a max-size 200-item manifest', async () => {
     const items = Array.from({ length: 200 }, (_, position) => ({
       ...item,
@@ -426,6 +476,25 @@ describe('inbox:bulk-run-report standing-policy auto-accept', () => {
     expect(h.executeBulkRunAction).not.toHaveBeenCalled();
     expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
     expect(h.upsertTriage).not.toHaveBeenCalled();
+  });
+
+  it('returns a retryable action-discovery error before accepting a report', async () => {
+    h.callPlansRead.mockRejectedValue(new Error('temporary attention read failure'));
+
+    const result = body(
+      await bulkRunReport.handler({ runId: run.runId, items: [reportItem()] }, {
+        workspaceId: run.workspaceId,
+      } as never),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'action_discovery_failed',
+      retryable: true,
+      runId: run.runId,
+    });
+    expect(h.reportOutcomes).not.toHaveBeenCalled();
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
   });
 
   it('returns a canonical receipt when a late report is refused after Stop', async () => {
@@ -808,6 +877,37 @@ describe('inbox:bulk-run-act authority boundary', () => {
     );
     expect(result).toMatchObject({ ok: true, outcome: 'auto_resolved', actionDispatched: true });
     expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a retryable action-discovery error before dispatching a terminal action', async () => {
+    h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => {
+      await input.execute();
+      throw new Error('unreachable after a successful execution callback');
+    });
+    h.callPlansRead.mockRejectedValue(new Error('temporary attention read failure'));
+
+    const result = body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: item.itemId,
+          actionId: 'ack',
+          rationale: 'The message has decisive evidence.',
+          confidenceLevel: 'high',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'action_discovery_failed',
+      retryable: true,
+      actionDispatched: false,
+      reconciliationRequired: false,
+    });
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+    expect(h.upsertTriage).not.toHaveBeenCalled();
   });
 
   it('keeps owner-by-right kinds unreachable at L1', async () => {
