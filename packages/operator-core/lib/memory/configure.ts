@@ -449,7 +449,14 @@ configureMemory({
   // setting → PAPERCUSP_MEMORY_BACKEND → 'mem0', re-evaluated every call
   // so a UI flip on the settings memory page takes effect with no
   // restart. An unknown name fails loud at first use.
-  backend: () => currentMemoryBackendChoice(),
+  backend: () => {
+    // Tool registration imports this module before packaged serve has started
+    // Postgres. Hydrate only on actual memory use (including the boot warm-up),
+    // so an import-only qualification cannot create a pool against the fallback
+    // endpoint. The existing idempotent initializer and sync fallback stay intact.
+    void initMemoryBackendSelection();
+    return currentMemoryBackendChoice();
+  },
   getCredentials: async () => {
     const c = await readCredentials();
     return { openai_api_key: c.openai_api_key, anthropic_api_key: c.anthropic_api_key };
@@ -466,9 +473,3 @@ configureMemory({
   // learning loop. Best-effort — the package treats it as a black box.
   getLearningInstructions: async () => (await buildLearningInstructions()) ?? undefined,
 });
-
-// Best-effort: hydrate the persisted memory-backend selection into the
-// in-process cache so getMemoryBackend()'s thunk reflects it. Until this
-// resolves (or if PG isn't up), the thunk falls back to the env/default.
-// A UI write (writeMemoryBackendChoice) also updates the cache live.
-void initMemoryBackendSelection();
