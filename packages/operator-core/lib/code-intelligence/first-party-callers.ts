@@ -87,7 +87,7 @@ export interface FirstPartyCallersAnswer extends CodeIntelAnswer {
 export interface CompilerInterfaceEvidence {
   readonly status: 'measured' | 'unknown';
   readonly diagnostics: readonly { site: SymbolSite; code: number; message: string }[];
-  readonly registrations: readonly { name: string | null; kind: 'tool' | 'route'; method: string | null; path: string | null;
+  readonly registrations: readonly { name: string | null; kind: 'tool' | 'route' | 'unknown'; method: string | null; path: string | null;
     factoryAuthority: 'maintained-import' | 'maintained-source' | 'unverified'; factory: SymbolSite | null;
     site: SymbolSite; implementation: SymbolSite | null;
     requestValidator: SymbolSite | null; responseValidator: SymbolSite | null; documentation: SymbolSite | null;
@@ -440,11 +440,11 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
     const bound = checker.getSymbolAtLocation(expression);
     const imported = bound?.declarations?.find(ts.isImportSpecifier);
     let declaration: TsModule.ImportDeclaration | undefined;
-    if (imported && (imported.propertyName ?? imported.name).text === 'defineTool')
+    if (imported && (imported.propertyName ?? imported.name).text === 'defineTool' && ts.isImportDeclaration(imported.parent.parent.parent))
       declaration = imported.parent.parent.parent;
     if (ts.isPropertyAccessExpression(expression) && expression.name.text === 'defineTool') {
       const namespace = checker.getSymbolAtLocation(expression.expression)?.declarations?.find(ts.isNamespaceImport);
-      if (namespace) declaration = namespace.parent.parent;
+      if (namespace && ts.isImportDeclaration(namespace.parent.parent)) declaration = namespace.parent.parent;
     }
     const moduleName = declaration && ts.isStringLiteralLike(declaration.moduleSpecifier) ? declaration.moduleSpecifier.text : null;
     let resolved = bound;
@@ -478,13 +478,17 @@ function compilerInterfaceEvidence(ts: Ts, program: TsModule.Program, root: stri
         if (factory && node.arguments[0] && ts.isObjectLiteralExpression(node.arguments[0])) {
           if (registrations.length >= limit) { truncated = true; return; }
           const props = new Map<string, TsModule.Node>();
+          let dynamic = false;
           for (const prop of node.arguments[0].properties) {
-            if (!(ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop) || ts.isMethodDeclaration(prop))) continue;
-            if (!ts.isIdentifier(prop.name) && !ts.isStringLiteralLike(prop.name)) continue;
+            if (!(ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop) || ts.isMethodDeclaration(prop))
+              || (!ts.isIdentifier(prop.name) && !ts.isStringLiteralLike(prop.name))) { dynamic = true; continue; }
             props.set(prop.name.text, ts.isPropertyAssignment(prop) ? prop.initializer : ts.isShorthandPropertyAssignment(prop) ? prop.name : prop);
           }
+          // A spread/computed key may replace a literal handler or validator.
+          // Do not turn an unevaluated object into an authoritative contract.
+          if (dynamic) props.clear();
           const literal = (key: string) => { const value = props.get(key); return value && ts.isStringLiteralLike(value) ? value.text : null; };
-          const kind = props.has('method') && props.has('path') ? 'route' : 'tool';
+          const kind = dynamic ? 'unknown' : props.has('method') && props.has('path') ? 'route' : 'tool';
           registrations.push({ name: literal('name'), kind, method: kind === 'route' ? literal('method') : null,
             path: kind === 'route' ? literal('path') : null, ...factory,
             site: site(node, `static-${kind}-registration`)!, implementation: reference(props.get('handler'), `${kind}-implementation`),
