@@ -113,7 +113,20 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
   chmodSync(npm, 0o755);
   chmodSync(pw, 0o755);
   chmodSync(netns, 0o755);
-  return { dir, rig, pw, npm, record, viteCwd, netns, netnsRecord };
+  // Delegate to the real harness CLI while retaining command boundaries even
+  // when the runner is interrupted before it can emit HARNESS_RESULT.
+  const harnessTiming = join(dir, 'harness-timing.txt');
+  const harnessTsx = join(dir, 'harness-tsx.sh');
+  writeFileSync(harnessTsx, [
+    '#!/usr/bin/env bash',
+    `printf 'start %s %s\\n' "$EPOCHREALTIME" "$2" >> '${harnessTiming}'`,
+    `'${join(REPO_ROOT, 'node_modules/.bin/tsx')}' "$@"`,
+    'rc=$?',
+    `printf 'end %s %s %s\\n' "$EPOCHREALTIME" "$2" "$rc" >> '${harnessTiming}'`,
+    'exit "$rc"',
+  ].join('\n'));
+  chmodSync(harnessTsx, 0o755);
+  return { dir, rig, pw, npm, record, viteCwd, netns, netnsRecord, harnessTiming, harnessTsx };
 }
 
 function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, string> = {}) {
@@ -230,6 +243,7 @@ describe('run-operator-e2e-isolated.sh', () => {
         OPERATOR_E2E_RIG: f.rig,
         OPERATOR_E2E_PLAYWRIGHT: f.pw,
         OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
+        VH_TSX: f.harnessTsx,
       } });
       let output = '';
       child.stderr.on('data', chunk => { output += chunk; });
@@ -251,7 +265,7 @@ describe('run-operator-e2e-isolated.sh', () => {
         });
         if (wholeGroup) process.kill(-child.pid!, signal);
         else child.kill(signal);
-        expect(await closed, output).toBe(code);
+        expect(await closed, `${output}\n${readFileSync(f.harnessTiming, 'utf8')}`).toBe(code);
         expect(output).toContain('verdict=fail');
         expect(output).not.toContain('verdict=pass');
         expect(existsSync(stopped), 'The runner must terminate and wait for its owned rig').toBe(true);
@@ -262,6 +276,7 @@ describe('run-operator-e2e-isolated.sh', () => {
         expect(phases.find(phase => phase.phase === 'isolated-suite')?.status).toBe('failed');
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        if (existsSync(f.harnessTiming)) console.info(`SIGNAL_HARNESS_TIMING signal=${signal} wholeGroup=${wholeGroup}\n${readFileSync(f.harnessTiming, 'utf8')}`);
       }
     }, 15_000,
   );
@@ -273,8 +288,11 @@ describe('run-operator-e2e-isolated.sh', () => {
       ...process.env,
       OPERATOR_E2E_RIG: f.rig,
       OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
+      VH_TSX: f.harnessTsx,
     }, encoding: 'utf8', timeout: 15_000 });
-    expect(res.signal).toBe('SIGUSR1');
+    const timing = existsSync(f.harnessTiming) ? readFileSync(f.harnessTiming, 'utf8') : 'harness CLI never started';
+    console.info(`SIGNAL_HARNESS_TIMING signal=SIGUSR1\n${timing}`);
+    expect(res.signal, `${res.stdout}\n${res.stderr}\n${timing}`).toBe('SIGUSR1');
     const evidence = join(f.dir, 'evidence');
     const runDirs = readdirSync(evidence).filter(name => /^\d{8}T\d{6}Z-/.test(name));
     expect(runDirs).toHaveLength(1);
