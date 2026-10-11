@@ -121,13 +121,14 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   '🔁 Loop wake (every ~{intervalSec}s after each turn settles). You are continuing your OWN warm session toward: {goal}',
   '',
   'Each wake:',
-  '1. Decide the next concrete unit(s) of work. If the goal is DONE or there\'s nothing left to do, call `loop:end` and stop — do not spin on empty wakes. An idle SELF-PULLER (your scheduler:get_next / work_items:claim_next came back empty) parks on a standing wake watch instead of polling: register `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <your claim spec\'s view> }`, then `loop:end` — do not pass `targetKind` with `wake:true`; the watch re-invokes you on every matching claimable transition and remains armed after a re-miss, so your pull stays the authoritative claim. If AUTO (or another autonomy-implying mode) remains active without that deliberate wake watch, use `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` so the wake-less safety guard does not refuse the stop.',
+  '1. Decide the next concrete unit(s) of work. If the goal is DONE (every item you claimed is completed, released or handed off), call `loop:end` and stop — do not spin on empty wakes. An idle SELF-PULLER that holds NO claims (your scheduler:get_next / work_items:claim_next came back empty) parks on a standing wake watch instead of polling: register `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <your claim spec\'s view> }`, then `loop:end` — do not pass `targetKind` with `wake:true`; the watch re-invokes you on every matching claimable transition and remains armed after a re-miss, so your pull stays the authoritative claim. If AUTO (or another autonomy-implying mode) remains active without that deliberate wake watch, use `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` so the wake-less safety guard does not refuse the stop — that acknowledgement covers a claimless stop only.',
   '2. Work it per your persona\'s "Working as a fleet MEMBER — the member operating loop" contract — create + ' +
     'self-assign the unit atomically, pick `kind` by what it IS, finish with `work_items:complete { completion }` ' +
     'evidence (never a bare "done" assertion). harness:{harness}, assign_to:{ownerId}.',
-  "3. When this iteration's work is done (or you are blocked), END YOUR TURN. The loop re-wakes this same session ~{intervalSec}s after the turn settles.",
+  "3. When this iteration's work is done, END YOUR TURN. The loop re-wakes this same session ~{intervalSec}s after the turn settles.",
+  '   BLOCKED on one thing? Keep doing every unit that does not depend on it. When EVERYTHING left is blocked: record it on the held item (`work_items:set_blocker`), register a bounded `events:await { event: <the specific unblocking event — the owner\'s answer, work-item:unblocked:<id>, the gate verdict>, timeout_sec, on_timeout:\'wake\' }`, then END YOUR TURN. Being blocked is never a reason to call `loop:end`.',
   '',
-  'To stop: `loop:end`. If AUTO (or another autonomy-implying mode) remains active without a deliberate event await, pass `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true`; otherwise the wake-less safety guard refuses the stop. If you are blocked on something external (a build, another agent, an owner decision), call `loop:end` and say why rather than burning wakes spinning. `loop:status` shows the loop state.',
+  'To stop: `loop:end` — only when the goal is done, your claims are released or handed off, or the owner told this session to stop (cite it with `ownerStopDirectiveId`). If AUTO (or another autonomy-implying mode) remains active without a deliberate event await, pass `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true` for a claimless stop; otherwise the wake-less safety guard refuses it. While you still hold unfinished work-items that flag does NOT help: the stop is refused until a bounded wake source exists — follow the refusal\'s `recovery` (the bounded events:await, or checkpoint + release). `loop:status` shows the loop state.',
 ].join('\n');
 
 /**
@@ -146,7 +147,7 @@ export const MONITOR_LOOP_WAKE_PROMPT_TEMPLATE = [
   '2. Act ONLY on deltas: something stalled/failed/blocked → unblock it, re-steer, or escalate. Nothing changed → write a one-line loop:checkpoint and END YOUR TURN — a quiet wake is a SUCCESS, not a license to invent work. Do NOT create work_items for routine checks; only file one when a delta needs real follow-up work.',
   '3. END YOUR TURN when this check settles. The loop re-wakes this same session ~{intervalSec}s after the turn settles.',
   '',
-  'To stop: `loop:end`. If AUTO (or another autonomy-implying mode) remains active without a deliberate event await, pass `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true`; otherwise the wake-less safety guard refuses the stop. `loop:status` shows the loop state.',
+  'To stop: `loop:end` — when the watched thing is finished, your claims are released or handed off, or the owner told this session to stop. If AUTO (or another autonomy-implying mode) remains active without a deliberate event await, pass `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true` for a claimless stop; otherwise the wake-less safety guard refuses it. Still holding unfinished work-items? That flag does NOT help — follow the refusal\'s `recovery` (a bounded events:await, or checkpoint + release). `loop:status` shows the loop state.',
 ].join('\n');
 
 /**
@@ -275,7 +276,7 @@ function renderDrivenWorkItemLine(workItem: string): string {
     `turns the work_items:checkpoint mandate above from an "if" into a REQUIREMENT each wake: work_items:checkpoint`,
     `{ id:'${workItem}', checkpoint } is the ONE piece of in-flight state a successor/reclaimer INHERITS if this`,
     'session dies mid-work — refresh it before every turn ends, at least as often as the carry-note. Finish it with',
-    `work_items:complete { id:'${workItem}', … } when the goal is done (then loop:end; if AUTO or another autonomy-implying mode remains active without a deliberate event await, pass acknowledgeOpenDirectives:true and acknowledgeWakeLessAutonomy:true).`,
+    `work_items:complete { id:'${workItem}', … } when the goal is done (then loop:end; if AUTO or another autonomy-implying mode remains active without a deliberate event await and you hold no other unfinished work-items, pass acknowledgeOpenDirectives:true and acknowledgeWakeLessAutonomy:true). Blocked instead of done? Record work_items:set_blocker plus a bounded events:await on the unblocking event (on_timeout:'wake') and END YOUR TURN — do not loop:end.`,
   ].join('\n');
 }
 

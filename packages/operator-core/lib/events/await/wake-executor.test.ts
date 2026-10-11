@@ -301,6 +301,17 @@ describe('live Codex quota gateway repair', () => {
     expect(f.inject).not.toHaveBeenCalled();
   });
 
+  it('redacts rejected Codex home repair diagnostics before parking quota recovery', async () => {
+    const f = fixture();
+    const bearer = 'opaque-test-bearer-value-for-quota-repair';
+    f.repair.mockRejectedValueOnce(new Error(`Invalid character at row 102\nAuthorization = "Bearer ${bearer}"`));
+    const out = await executeWake(f.delivery, f.common);
+    expect(out).toMatchObject({ kind: 'park', reason: expect.stringContaining('Invalid character at row 102') });
+    expect(out).toMatchObject({ reason: expect.stringContaining('Authorization = "Bearer [redacted]"') });
+    expect(JSON.stringify(out)).not.toContain(bearer);
+    expect(f.inject).not.toHaveBeenCalled();
+  });
+
   it('leaves an explicitly default account route unchanged', async () => {
     const f = fixture('default');
     await executeWake(f.delivery, f.common);
@@ -3635,17 +3646,24 @@ describe('executeWake — the liveness ladder', () => {
   });
 
   it.each([
-    { repairResult: { ok: false, reason: 'repair-failed' }, reason: 'repair-failed' },
-    { repairResult: { ok: true, repaired: false, reason: 'no-launch-spec' }, reason: 'no-launch-spec' },
+    { repairResult: { ok: false, reason: 'repair-failed' }, reason: 'repair-failed', error: null },
+    { repairResult: { ok: true, repaired: false, reason: 'no-launch-spec' }, reason: 'no-launch-spec', error: null },
+    { repairResult: { ok: false, reason: 'unused' },
+      error: 'Invalid character at row 102\nAuthorization = "Bearer opaque-test-bearer-value-for-resume-repair"',
+      reason: 'Invalid character at row 102\nAuthorization = "Bearer [redacted]"' },
   ])(
     'parks a Codex auto-route resume when home repair cannot restore the gateway ($reason)',
-    async ({ repairResult, reason }) => {
+    async ({ repairResult, reason, error }) => {
       const advSessionId = 1002;
       const home = codexHomeForAdvSession(advSessionId);
       const nativeId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
       const spawnDetached = vi.fn(() => 4321);
       const claimResume = vi.fn(async () => true);
-      const repair = vi.fn(async () => repairResult);
+      const repair = vi.fn(async () => {
+        if (error) throw new Error(error);
+        return repairResult;
+      });
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
       rmSync(home, { recursive: true, force: true });
       const sessionsDir = join(home, 'sessions', '2026', '10', '06');
       mkdirSync(sessionsDir, { recursive: true });
@@ -3690,6 +3708,7 @@ describe('executeWake — the liveness ladder', () => {
         expect(claimResume).not.toHaveBeenCalled();
         expect(spawnDetached).not.toHaveBeenCalled();
       } finally {
+        warning.mockRestore();
         rmSync(home, { recursive: true, force: true });
       }
     },

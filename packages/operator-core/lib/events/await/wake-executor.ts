@@ -51,6 +51,7 @@ import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { resolveInheritedOperatorBaseUrl } from '../../mcp-base-url';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { redactSensitiveText } from '../../sensitive-text';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { packWakeText, recordWakePack, renderSectionIndex } from './wake-text-budget';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -731,7 +732,7 @@ export async function defaultEnsureCodexHomeForWake(
   } catch (err) {
     // A repair failure must not turn a recoverable rollout into a dropped wake;
     // the exact UUID check below remains the authoritative resume safety gate.
-    console.warn(`[wake-executor] codex home repair failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[wake-executor] codex home repair failed: ${redactSensitiveText(err instanceof Error ? err.message : String(err))}`);
     return { ok: false, repaired: false, reason: 'repair-failed' };
   }
 }
@@ -4256,7 +4257,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           ...codexWakeGatewayInputs(liveAccountRoute),
         }).catch((error: unknown) => ({
           ok: false,
-          reason: error instanceof Error ? error.message : String(error),
+          reason: redactSensitiveText(error instanceof Error ? error.message : String(error)),
         }));
         if (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent') {
           return {
@@ -4634,7 +4635,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           sessionRow: fresh,
           ...codexWakeGatewayInputs(codexAccountRoute),
         }).catch((err) => {
-          const reason = err instanceof Error ? err.message : String(err);
+          const reason = redactSensitiveText(err instanceof Error ? err.message : String(err));
           console.warn(`[wake-executor] codex home repair seam failed: ${reason}`);
           return { ok: false, reason };
         });
