@@ -87,6 +87,8 @@ describe('ProviderOptionsSelect', () => {
     expect(await screen.findByText('Fixture Chat · Acme')).toBeTruthy();
     expect(screen.getByText('Fixture Chat · Beta')).toBeTruthy();
     expect(screen.getByRole('option', { name: '#triage' })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
     expect(screen.getByRole('alert').textContent).toBe('Fixture Chat · Gamma: token revoked');
   });
 
@@ -100,14 +102,16 @@ describe('ProviderOptionsSelect', () => {
   it('is a multiple choice for an array property', async () => {
     answer([group()]);
     const onChange = vi.fn();
-    render(<ProviderOptionsSelect id="channels" label="Channels" property={CHANNELS} value={['C1']} onChange={onChange} />);
+    const props = { id: 'channels', label: 'Channels', property: CHANNELS, onChange };
+    const { rerender } = render(<ProviderOptionsSelect {...props} value={['C1']} />);
     const bugs = await screen.findByRole('checkbox', { name: 'Channels: #bugs' });
     const general = screen.getByRole('checkbox', { name: 'Channels: #general' });
     expect(bugs.getAttribute('aria-checked')).toBe('true');
     expect(general.getAttribute('aria-checked')).toBe('false');
     fireEvent.click(general);
     expect(onChange).toHaveBeenCalledWith(['C1', 'C2']);
-    fireEvent.click(general);
+    rerender(<ProviderOptionsSelect {...props} value={['C1', 'C2']} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Channels: #general' }));
     expect(onChange).toHaveBeenLastCalledWith(['C1']);
   });
 
