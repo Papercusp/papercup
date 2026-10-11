@@ -34,7 +34,7 @@ import { scopeSpawnEnvForRole, SEARCH_PROVIDER_ENV_KEYS } from '@papercusp/orche
 import { wrapUntrusted } from '../../../libs/papercusp/packages/orchestrator/src/prompt-build';
 import { readFrontierFeatures } from '@papercusp/operator-core/lib/dbos/orchestrator-loop';
 // eslint-disable-next-line import/no-relative-packages -- reuse the maintained complete test schema
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../packages/operator-core/test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../../packages/operator-core/test/_work-items-schema';
 
 const WS = 'ws_protect';
 const SLUG = 'protect';
@@ -56,6 +56,7 @@ describe('User-protection gate — live readFrontierFeatures G2 gate (real PG, P
     async function db_init() {
       db = await createFreshPgDb('dbos_protect');
       await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL).simple();
+      await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
       await db.sql.unsafe(`
         -- EI-1 (D-027): feature blocking is the coord_links rel='blocks' edge, read
         -- by the frontier via getFeatureBlockers. These features set no blockers
@@ -108,6 +109,22 @@ describe('User-protection gate — live readFrontierFeatures G2 gate (real PG, P
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('reads canonical dependency edges through the supplied private connection', async () => {
+    // No getOrgPg mock: the live-PG guard must still reject any accidental fallback.
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, satisfaction)
+      VALUES ('default', 'feature', ${`${SLUG}#F-LOCAL`}, 'feature', ${`${SLUG}#F-ADMITTED`}, 'success')`;
+    try {
+      const frontier = await readFrontierFeatures(db.sql as never, WS, SLUG);
+      expect(frontier.find((feature) => feature.id === 'F-LOCAL')?.blockedBy)
+        .toEqual([{ id: 'F-ADMITTED', satisfaction: 'success' }]);
+      expect(frontier.find((feature) => feature.id === 'F-ADMITTED')?.blockedBy).toEqual([]);
+    } finally {
+      await db.sql`DELETE FROM harness_shared.work_item_deps`;
+    }
   });
 
   it('picks EXACTLY {F-LOCAL, F-ADMITTED} — rejected/pending remote features are quarantined', async () => {

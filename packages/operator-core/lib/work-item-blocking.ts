@@ -17,7 +17,7 @@ import { PgLinkStore, type LinkRow, type ObjectRef } from '@papercusp/coordinati
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFeatureBlockers } from './dbos/feature-blockers-edges';
-import { getWorkItemDepBlockers, workItemDepEdgeReader, type WorkItemBlockerRequirement } from './dbos/work-item-deps-store';
+import { getWorkItemDepBlockers, workItemDepEdgeReader, type WorkItemBlockerRequirement, type WorkItemDependencyWriterOptions } from './dbos/work-item-deps-store';
 import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/frontier-readiness';
 import { activeWorkspaceId } from './workspace-registry';
 import { isDeepStrictEqual } from 'node:util';
@@ -191,7 +191,7 @@ export interface BlockingNode {
  */
 export interface BlockingStore {
   /** blocked id → its blocker ids, within `harnessSlug` (within-harness, prefix-stripped). */
-  blockersFor(harnessSlug: string): Promise<Map<string, WorkItemBlockerRequirement[]>>;
+  blockersFor(harnessSlug: string, opts?: Pick<WorkItemDependencyWriterOptions, 'sql'>): Promise<Map<string, WorkItemBlockerRequirement[]>>;
 }
 
 /**
@@ -199,15 +199,15 @@ export interface BlockingStore {
  * `work_item_deps` table, so this is no longer a distinct coord_links backend.
  */
 export const coordLinksBlockingStore: BlockingStore = {
-  blockersFor: async (harnessSlug: string) =>
-    new Map([...(await getFeatureBlockers(harnessSlug))].map(([id, blockers]) => [id, blockers.map((blocker) => ({ id: blocker, satisfaction: 'settled' as const }))])),
+  blockersFor: async (harnessSlug, opts) =>
+    new Map([...(await getFeatureBlockers(harnessSlug, opts))].map(([id, blockers]) => [id, blockers.map((blocker) => ({ id: blocker, satisfaction: 'settled' as const }))])),
 };
 
 /**
  * Canonical backend: the dedicated `work_item_deps` table.
  */
 export const workItemDepsBlockingStore: BlockingStore = {
-  blockersFor: (harnessSlug: string) => getWorkItemDepBlockers(harnessSlug),
+  blockersFor: (harnessSlug, opts) => getWorkItemDepBlockers(harnessSlug, opts),
 };
 
 /**

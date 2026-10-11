@@ -1217,8 +1217,11 @@ export async function removeMirroredWorkItemBlockingEdge(
 }
 
 /** blocked feature_id → blocker feature_ids (within `harnessSlug`, prefix-stripped). Pure read. */
-export async function getWorkItemDepBlockers(harnessSlug: string): Promise<Map<string, WorkItemBlockerRequirement[]>> {
-  const { sql } = getOrgPg();
+export async function getWorkItemDepBlockers(
+  harnessSlug: string,
+  opts: Pick<WorkItemDependencyWriterOptions, 'sql'> = {},
+): Promise<Map<string, WorkItemBlockerRequirement[]>> {
+  const sql = opts.sql ?? getOrgPg().sql;
   const prefix = `${harnessSlug}#`;
   const rows = await sql<{ blocked_ref: string; blocker_ref: string; satisfaction: DependencySatisfaction }[]>`
     SELECT blocked_ref, blocker_ref, satisfaction
