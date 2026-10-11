@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   applyD001Rule,
@@ -5,11 +6,13 @@ import {
   BM25_BAKEOFF_ENGINES,
   comparePaired,
   createDatabaseSql,
+  decideCap,
   parseCsv,
   parseEvalRows,
   percentileCont,
   rankAgreement,
   renderSummaryTable,
+  restrictToCommonQueries,
   summarize,
   type BakeoffVariant,
   type EvalRow,
@@ -178,6 +181,76 @@ describe('applyD001Rule (plan D-001)', () => {
   it('refuses to decide without a complete Evoke and pg_textsearch reading', () => {
     expect(() => applyD001Rule(both('pgts', 0.4, 0.3))).toThrow(/Evoke/);
     expect(() => applyD001Rule([...both('evoke', 0.4, 0.3), summary('pgts', 'title', 0.4, 0.3)])).toThrow(/pgts/);
+  });
+
+  it('refuses an unpaired comparison (arms read on different query counts)', () => {
+    const capped = both('evoke', 0.4, 0.3).map(s => ({ ...s, n: 200 }));
+    expect(() => applyD001Rule([...capped, ...both('pgts', 0.4, 0.3)])).toThrow(/unpaired comparison/);
+  });
+
+  it('reports the paired query count on every check', () => {
+    const v = applyD001Rule([...both('evoke', 0.46, 0.34), ...both('pgts', 0.42, 0.31)]);
+    expect(v.checks.every(c => c.n === 1000)).toBe(true);
+  });
+});
+
+describe('restrictToCommonQueries (run 2 regression: capped Evoke vs full-sample pg_textsearch)', () => {
+  // Shape of run 2: Evoke answered only the first 200 (easy) queries; pg_textsearch all 1,000.
+  // On the easy 200 both hit; on the hard 800 pg_textsearch mostly misses. Read unpaired,
+  // pg_textsearch looks far worse than Evoke; on the same 200 queries it is equal.
+  const ids = Array.from({ length: 1000 }, (_, i) => `t${String(i).padStart(4, '0')}`);
+  const rows: EvalRow[] = [];
+  for (const variant of ['title', 'short'] as const) {
+    for (const [i, id] of ids.entries()) {
+      if (i < 200) rows.push(row('evoke_stem', id, 1, { variant }));
+      rows.push(row('pgts', id, i < 200 || i % 4 === 0 ? 1 : null, { variant }));
+    }
+    rows.push(row('tsv_and', ids[0], 1, { variant }));
+  }
+
+  it('keeps only the listed methods, on the queries every one of them answered, per form', () => {
+    const kept = restrictToCommonQueries(rows, ['evoke', 'evoke_stem', 'pgts']);
+    expect(kept.some(r => r.method === 'tsv_and')).toBe(false);
+    for (const variant of ['title', 'short'] as const) {
+      for (const m of ['evoke_stem', 'pgts']) {
+        const targets = kept.filter(r => r.method === m && r.variant === variant).map(r => r.target);
+        expect(targets).toEqual(ids.slice(0, 200));
+      }
+    }
+  });
+
+  it('the unpaired reading is refused and the paired reading chooses pg_textsearch', () => {
+    expect(() => applyD001Rule(summarize(rows))).toThrow(/unpaired comparison/);
+    const v = applyD001Rule(summarize(restrictToCommonQueries(rows, ['evoke', 'evoke_stem', 'pgts'])));
+    expect(v.evokeMethod).toBe('evoke_stem');
+    expect(v.choice).toBe('pg_textsearch');
+    expect(v.checks.filter(c => c.metric !== 'latency').every(c => c.n === 200 && c.pgts === c.evoke)).toBe(true);
+  });
+});
+
+describe('decideCap (cap on the recorded probe median, not a warm-up mean)', () => {
+  const opts = { slowCapMs: 300, slowCapN: 200, nQueries: 1000, probeN: 100 };
+
+  it('does not cap a fast engine whose cold warm-up was slow (run 2 Evoke: warm-up ~1 s/query, steady p50 2.4 ms)', () => {
+    expect(decideCap(2.4, opts)).toEqual({ capped: false, limit: 1000 });
+  });
+
+  it('caps a genuinely slow engine to slowCapN, never below the probe already recorded', () => {
+    expect(decideCap(885, opts)).toEqual({ capped: true, limit: 200 });
+    expect(decideCap(885, { ...opts, slowCapN: 50 })).toEqual({ capped: true, limit: 100 });
+    expect(decideCap(885, { ...opts, nQueries: 150 })).toEqual({ capped: true, limit: 150 });
+  });
+
+  it('does not cap when the median is unmeasurable (every probe query errored)', () => {
+    expect(decideCap(Number.NaN, opts)).toEqual({ capped: false, limit: 1000 });
+  });
+});
+
+describe('common.sql query order', () => {
+  it('evaluates queries in a stable hash order, so a capped prefix is not the oldest items', () => {
+    const sql = readFileSync(new URL('./bm25-bakeoff/common.sql', import.meta.url), 'utf8');
+    const loop = sql.match(/FOR r IN SELECT \* FROM q ORDER BY ([^\n]+?) LIMIT p_limit OFFSET p_offset LOOP/);
+    expect(loop?.[1]).toBe('md5(target), target');
   });
 });
 

@@ -279,6 +279,45 @@ export function rankAgreement(rows: readonly EvalRow[], a: string, b: string, va
   return { n, agree: n ? agree / n : Number.NaN };
 }
 
+/**
+ * Keep only the rows of `methods`, restricted per query form to the queries EVERY one of
+ * them answered (a method with no rows for a form is ignored for that form). A rate is
+ * comparable across arms only on the same queries: run 2 (WI-10008294) set pg_textsearch
+ * over 1,000 queries against Evoke capped to 200 and printed an Evoke verdict that the
+ * same-query pairing reversed.
+ */
+export function restrictToCommonQueries(rows: readonly EvalRow[], methods: readonly string[]): EvalRow[] {
+  const out: EvalRow[] = [];
+  for (const v of BAKEOFF_VARIANTS) {
+    const byMethod = new Map<string, EvalRow[]>();
+    for (const r of rows) {
+      if (r.variant !== v || !methods.includes(r.method)) continue;
+      const g = byMethod.get(r.method);
+      if (g) g.push(r); else byMethod.set(r.method, [r]);
+    }
+    if (byMethod.size === 0) continue;
+    const [first, ...rest] = [...byMethod.values()].map(g => new Set(g.map(r => r.target)));
+    const common = new Set([...first].filter(t => rest.every(s => s.has(t))));
+    for (const g of byMethod.values()) out.push(...g.filter(r => common.has(r.target)));
+  }
+  return out;
+}
+
+/**
+ * Whether an arm is too slow to evaluate on the full query set. Decided on the MEDIAN of
+ * the in-database per-query timings of a RECORDED probe chunk, never on a warm-up
+ * wall-clock mean: in run 2 one cold first touch per Evoke index pushed the 50-query
+ * warm-up mean to ~1 s/query while the steady-state p50 was 2.4 ms, so Evoke was capped to
+ * 200 queries. A NaN median (every probe query errored) does not cap.
+ */
+export function decideCap(
+  probeMedianMs: number,
+  opts: { slowCapMs: number; slowCapN: number; nQueries: number; probeN: number },
+): { capped: boolean; limit: number } {
+  if (!(probeMedianMs > opts.slowCapMs)) return { capped: false, limit: opts.nQueries };
+  return { capped: true, limit: Math.max(opts.probeN, Math.min(opts.nQueries, opts.slowCapN)) };
+}
+
 // ─── D-001 engine-choice rule ──────────────────────────────────────────────────
 
 /** Plan R-2: lexical query p50 <= 10 ms and p95 <= 50 ms in the production configuration. */
@@ -288,6 +327,8 @@ export const D001_WITHIN_FRACTION = 0.1;
 export interface D001Check {
   variant: BakeoffVariant;
   metric: 'recallAt10' | 'mrrAt10' | 'latency';
+  /** Queries both arms were compared on (the rule refuses unequal counts). */
+  n: number;
   evoke: number;
   pgts: number;
   pass: boolean;
@@ -332,15 +373,21 @@ export function applyD001Rule(
   for (const v of BAKEOFF_VARIANTS) {
     const e = get(evokeMethod, v)!;
     const p = get(pgtsMethod, v)!;
+    if (e.n !== p.n) {
+      throw new Error(
+        `applyD001Rule: unpaired comparison on ${v} (${pgtsMethod} n=${p.n} vs ${evokeMethod} n=${e.n}); ` +
+        'summarize restrictToCommonQueries(rows, [evoke arms, pgts]) so both arms are read on the same queries',
+      );
+    }
     for (const metric of ['recallAt10', 'mrrAt10'] as const) {
       const floor = (1 - within) * e[metric];
       checks.push({
-        variant: v, metric, evoke: e[metric], pgts: p[metric], pass: p[metric] >= floor,
-        note: `pg_textsearch ${p[metric].toFixed(3)} vs floor ${floor.toFixed(3)} (${(100 * (1 - within)).toFixed(0)}% of Evoke ${e[metric].toFixed(3)})`,
+        variant: v, metric, n: p.n, evoke: e[metric], pgts: p[metric], pass: p[metric] >= floor,
+        note: `pg_textsearch ${p[metric].toFixed(3)} vs floor ${floor.toFixed(3)} (${(100 * (1 - within)).toFixed(0)}% of Evoke ${e[metric].toFixed(3)}, n=${p.n})`,
       });
     }
     checks.push({
-      variant: v, metric: 'latency', evoke: e.p95Ms, pgts: p.p95Ms, pass: meetsR2(p),
+      variant: v, metric: 'latency', n: p.n, evoke: e.p95Ms, pgts: p.p95Ms, pass: meetsR2(p),
       note: `pg_textsearch p50 ${p.p50Ms.toFixed(2)} ms / p95 ${p.p95Ms.toFixed(2)} ms vs R-2 budget ${R2_LATENCY_BUDGET.p50Ms} / ${R2_LATENCY_BUDGET.p95Ms} ms`,
     });
   }

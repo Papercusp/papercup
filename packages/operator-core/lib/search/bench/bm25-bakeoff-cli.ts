@@ -18,8 +18,10 @@
  *   discarded warm-up pass, in committed chunks of 100 queries.
  * - Removes the container and the corpus copy at the end unless --keep / --keep-data.
  *
- * An arm whose warm-up mean exceeds --slow-cap-ms (default 300) is capped to
- * --slow-cap-n queries (default 200) per form; the JSON records the cap.
+ * An arm whose RECORDED probe chunk has an in-database median above --slow-cap-ms
+ * (default 300) is capped to --slow-cap-n queries (default 200) per form; the JSON records
+ * the cap. Queries run in a stable hash order (common.sql), so a capped prefix is a fair
+ * sample, and the D-001 verdict is computed on the queries every compared arm answered.
  *
  * Exit 0: every requested arm produced a reading (the JSON + .md hold the results and
  * the D-001 verdict). Exit 2: the run failed; nothing is reported as a result.
@@ -37,11 +39,13 @@ import {
   bakeoffDatabases,
   comparePaired,
   createDatabaseSql,
+  decideCap,
   INHERITED_EXTENSIONS_SQL,
   parseCsv,
   parseEvalRows,
   rankAgreement,
   renderSummaryTable,
+  restrictToCommonQueries,
   summarize,
   type BakeoffEngine,
   type D001Verdict,
@@ -148,7 +152,12 @@ class Container {
   }
 }
 
-interface ArmRun { method: string; queries: number; capped: boolean; warmupMeanMs: number }
+/**
+ * warmupMeanMs is wall-clock over the discarded warm-up (cold first touches, psql startup):
+ * diagnostic only. probeMedianMs is the in-database median of the first recorded chunk and
+ * is what decides the cap (decideCap).
+ */
+interface ArmRun { method: string; queries: number; capped: boolean; warmupMeanMs: number; probeMedianMs: number }
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
@@ -216,24 +225,31 @@ async function main(): Promise<number> {
 
     const nQueries = Number(c.psql(databases[0].database, { sql: 'SELECT count(*) FROM q' }).trim());
     const arms: ArmRun[] = [];
+    const probeN = Math.min(args.chunk, args.slowCapN, nQueries);
     for (const e of engines) {
-      let capped = false;
-      let limit = nQueries;
       let warmupMeanMs = 0;
       for (const v of BAKEOFF_VARIANTS) {
         const t0 = Date.now();
         c.psql(e.database, { sql: `SELECT run_eval_chunk('${e.method}', '${v}', ${args.warmup}, 0, false)` });
-        const mean = (Date.now() - t0) / args.warmup;
-        warmupMeanMs = Math.max(warmupMeanMs, mean);
+        warmupMeanMs = Math.max(warmupMeanMs, (Date.now() - t0) / args.warmup);
       }
-      if (warmupMeanMs > args.slowCapMs) { capped = true; limit = Math.min(nQueries, args.slowCapN); }
-      log(`${e.method}: warm-up mean ${warmupMeanMs.toFixed(1)} ms/query${capped ? `, CAPPED to ${limit} queries per form` : ''}`);
+      // Recorded probe chunk: its in-database per-query median decides the cap.
+      let probeMedianMs = 0;
       for (const v of BAKEOFF_VARIANTS) {
-        for (let off = 0; off < limit; off += args.chunk) {
+        c.psql(e.database, { sql: `SELECT run_eval_chunk('${e.method}', '${v}', ${probeN}, 0, true)` });
+        const median = Number(c.psql(e.database, {
+          sql: `SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY ms) FROM res WHERE method = '${e.method}' AND variant = '${v}' AND NOT err`,
+        }).trim());
+        if (Number.isFinite(median)) probeMedianMs = Math.max(probeMedianMs, median);
+      }
+      const { capped, limit } = decideCap(probeMedianMs, { slowCapMs: args.slowCapMs, slowCapN: args.slowCapN, nQueries, probeN });
+      log(`${e.method}: warm-up wall mean ${warmupMeanMs.toFixed(1)} ms/query, probe median ${probeMedianMs.toFixed(1)} ms/query${capped ? `, CAPPED to ${limit} queries per form` : ''}`);
+      for (const v of BAKEOFF_VARIANTS) {
+        for (let off = probeN; off < limit; off += args.chunk) {
           c.psql(e.database, { sql: `SELECT run_eval_chunk('${e.method}', '${v}', ${Math.min(args.chunk, limit - off)}, ${off}, true)` });
         }
       }
-      arms.push({ method: e.method, queries: limit, capped, warmupMeanMs });
+      arms.push({ method: e.method, queries: limit, capped, warmupMeanMs, probeMedianMs });
     }
 
     const rows: EvalRow[] = [];
@@ -260,7 +276,9 @@ async function main(): Promise<number> {
     let verdict: D001Verdict | null = null;
     if (['evoke', 'evoke_stem', 'pgts'].some(m => engines.some(e => e.method === m))) {
       try {
-        verdict = applyD001Rule(summaries);
+        // D-001 compares arms on the SAME queries: a capped arm must not be set against a
+        // full-sample one (run 2's printed verdict did exactly that and was reversed).
+        verdict = applyD001Rule(summarize(restrictToCommonQueries(rows, ['evoke', 'evoke_stem', 'pgts'])));
         for (const v of BAKEOFF_VARIANTS) {
           const p = comparePaired(rows, verdict.evokeMethod, 'pgts', v);
           if (p) paired.push(p);

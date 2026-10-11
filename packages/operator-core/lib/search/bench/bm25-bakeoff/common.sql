@@ -43,12 +43,15 @@ CREATE TABLE res (
 -- Evaluate one chunk of queries. Commit happens per CALL (the CLI issues one psql call
 -- per chunk), so progress is visible and a failure loses one chunk, not the run.
 -- p_record = false is the discarded warm-up pass.
+-- Queries run in a stable HASH order, never id order: a capped arm evaluates a prefix,
+-- and an id-ordered prefix is the oldest items (run 2: pg_textsearch MRR@10 on the first
+-- 200 by id was 0.650 vs 0.496 over all 1,000), which is not a fair sample.
 CREATE FUNCTION run_eval_chunk(p_method text, p_variant text, p_limit int, p_offset int, p_record boolean)
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
   r record; qtext text; ids text[]; t0 timestamptz; elapsed numeric; rk int; failed boolean; msg text; n int := 0;
 BEGIN
-  FOR r IN SELECT * FROM q ORDER BY target LIMIT p_limit OFFSET p_offset LOOP
+  FOR r IN SELECT * FROM q ORDER BY md5(target), target LIMIT p_limit OFFSET p_offset LOOP
     qtext := CASE p_variant WHEN 'title' THEN r.q_title WHEN 'short' THEN r.q_short END;
     CONTINUE WHEN qtext IS NULL OR btrim(qtext) = '';
     ids := NULL; failed := false; msg := NULL;
