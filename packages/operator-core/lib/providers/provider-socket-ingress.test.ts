@@ -230,6 +230,28 @@ describe('provider socket ingress (P-003, D-009)', () => {
     expect(h.admitted).toEqual([]);
   });
 
+  it('never claims a source of the same kind that was connected another way (WI-6554700010008468)', async () => {
+    // The in-app Slack path writes `slack-socket:<field>`; an OAuth connect `<plugin>:<field>`.
+    const inApp: ConnectorSourceRow = { ...source, id: '00000000-0000-4000-8000-000000000002', credentialRef: 'slack-socket:bot_token' };
+    const oauth: ConnectorSourceRow = { ...source, id: '00000000-0000-4000-8000-000000000003', credentialRef: 'provider:example-chat:owner' };
+
+    // No credential pasted: the other paths' sources get no health write at all.
+    const unpasted = harness({ credential: null, sources: () => [inApp, oauth] });
+    await unpasted.manager.reconcile();
+    expect(unpasted.opens).toEqual([]);
+    expect(unpasted.health).toEqual([]);
+
+    // Credential pasted: only the pasted-credential source gets a socket.
+    const pasted = harness({ sources: () => [inApp, source, oauth] });
+    await pasted.manager.reconcile();
+    expect(pasted.opens).toHaveLength(1);
+    expect(pasted.sockets).toHaveLength(1);
+    expect(pasted.manager.size).toBe(1);
+    pasted.sockets[0]!.emit('message', JSON.stringify({ envelope_id: 'env-5', type: 'events_api' }));
+    await vi.waitFor(() => expect(pasted.invokes).toHaveLength(1));
+    expect(pasted.invokes[0]!.source).toBe(source.id);
+  });
+
   it('closes the socket of a source that is no longer connected', async () => {
     let live = true;
     const h = harness({ sources: () => (live ? [source] : []) });

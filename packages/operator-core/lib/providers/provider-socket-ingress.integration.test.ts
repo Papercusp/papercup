@@ -32,7 +32,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
-import { DEFAULT_SOURCE_TOKEN_HARNESS } from '../external-triggers/source-store';
+import { slackSocketCredentialRef } from '../external-triggers/slack-credential-ref';
+import { DEFAULT_SOURCE_TOKEN_HARNESS, upsertOwnedExternalTriggerSource } from '../external-triggers/source-store';
 import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
 import { saveProviderCredentials, syncProviderCredentialSource } from '../integrations/provider-credentials';
 import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
@@ -325,4 +326,46 @@ describe('provider socket ingress (P-003, D-009)', () => {
     expect(opens).toHaveLength(1);
     expect(logs.join('\n')).not.toContain(BAD_TOKEN);
   });
+
+  // WI-6554700010008468. A source of the provider's kind connected some other way (the in-app
+  // Slack OAuth/socket path writes `slack-socket:<field>`) belongs to that path. The manager used
+  // to claim every row of the kind: with no pasted credential it wrote
+  // `reconnect_required: credential_not_configured` onto the in-app source, which made the in-app
+  // manager drop it; with one pasted, both paths opened sockets and split the vendor's events.
+  it('leaves a source of the same kind that was connected another way untouched, with no credential pasted', async () => {
+    const inAppId = await connectInApp(await newOwner());
+    await startManager().reconcile();
+
+    expect(opens).toEqual([]);
+    expect(manager!.size).toBe(0);
+    // Give a stray health write time to land before reading the row.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await source(inAppId)).toEqual({ status: 'connected', last_error: null });
+  });
+
+  it('serves only the pasted-credential source when a source of the same kind was connected another way', async () => {
+    const inAppId = await connectInApp(await newOwner());
+    const packageId = await pasteCredential(await newOwner(), GOOD_TOKEN);
+    await startManager().reconcile();
+
+    await waitFor('the package source to report connected', async () => (await source(packageId)).status === 'connected');
+    expect(opens).toHaveLength(1);
+    expect(manager!.size).toBe(1);
+    await waitFor('the socket to connect', () => serverSockets[0]);
+    expect(serverSockets).toHaveLength(1);
+    expect(await source(inAppId)).toEqual({ status: 'connected', last_error: null });
+  });
 });
+
+/** A source of the fixture kind connected by the in-app Slack path, not by a pasted credential. */
+async function connectInApp(ownerUserId: string): Promise<string> {
+  const row = await upsertOwnedExternalTriggerSource(sql, {
+    workspaceId: WS,
+    kind: KIND,
+    ownerUserId,
+    credentialRef: slackSocketCredentialRef('bot_token'),
+    status: 'connected',
+    createdBy: ownerUserId,
+  });
+  return row.id;
+}
