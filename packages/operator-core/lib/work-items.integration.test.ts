@@ -2890,10 +2890,10 @@ describe('unified work_items surface (real PG)', () => {
     h.sql = new Proxy(originalSql, {
       apply(target, thisArg, args) {
         const statement = Array.isArray(args[0]) ? args[0].join('') : '';
-        if (statement.includes('ts_rank(_search, websearch_to_tsquery')) {
-          if (statement.includes('FROM harness_shared.work_items')) lexicalCalls.issues += 1;
-          if (statement.includes('FROM harness_shared.harness_features_consolidated')) lexicalCalls.features += 1;
-        }
+        // Count each source query independently of its configured ranker
+        // (BM25 or legacy ts_rank); rank-expression spelling is not the query-call contract.
+        if (statement.includes('FROM harness_shared.work_items')) lexicalCalls.issues += 1;
+        if (statement.includes('FROM harness_shared.harness_features_consolidated')) lexicalCalls.features += 1;
         return Reflect.apply(target, thisArg, args);
       },
     }) as typeof h.sql;
