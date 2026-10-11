@@ -24,19 +24,29 @@ describe('native P012 current scoped brief integration', () => {
     writeFileSync(join(root, '.env'), 'TASK_PRIVATE_SECRET_MUST_NOT_APPEAR');
     const item = { id: 'WI-task-fixture', harness: 'brief-fixture', state: 'open',
       payload: { paths: ['target.ts', 'consumer.ts', 'target.test.ts', 'guide.md'] } };
+    const compilerAttempts: { budgetMs: number; startedAtMs: number; elapsedMs?: number; error?: string | null }[] = [];
     const source = async () => ({ taskBrief: await buildTaskBrief({ workspaceId: 'fixture-workspace', workItem: item }, {
       root: async (workspaceId, harness) => workspaceId === 'fixture-workspace' && harness === 'brief-fixture' ? root : null,
       effects: DEFAULT_PACKER_EFFECTS, pack: packerFacade,
-      graph: (repo, name, filePath, paths, budgetMs) => firstPartyCallersOffthread({
-        root: repo, name, filePath, paths, op: 'callers', limit: 8, vendorDir: LSP_VENDOR_DIR,
-      }, { budgetMs }),
+      graph: async (repo, name, filePath, paths, budgetMs) => {
+        const attempt = { budgetMs, startedAtMs: Date.now() } as (typeof compilerAttempts)[number];
+        compilerAttempts.push(attempt);
+        const answer = await firstPartyCallersOffthread({
+          root: repo, name, filePath, paths, op: 'callers', limit: 8, vendorDir: LSP_VENDOR_DIR,
+        }, { budgetMs });
+        attempt.elapsedMs = Date.now() - attempt.startedAtMs;
+        attempt.error = answer.error;
+        return answer;
+      },
     }) });
     const deps = { checkpoint: async () => ({ checkpoint: null, updatedAtMs: null }),
       freshness: async () => undefined, evidence: async () => [], taskBrief: source };
     const first = await readWorkItemResume(item, deps);
     expect(first.taskBrief?.status, JSON.stringify(first.taskBrief)).toBe('current');
-    expect(first.taskBrief).toHaveProperty('graph.status', 'measured');
-    expect(first.taskBrief).toHaveProperty('graph.consumers', expect.arrayContaining(['consumer.ts:2']));
+    const measurement = () => JSON.stringify({ brief: first.taskBrief, compilerAttempts,
+      elapsedSinceStartMs: compilerAttempts.map(attempt => Date.now() - attempt.startedAtMs) });
+    expect(first.taskBrief, measurement()).toHaveProperty('graph.status', 'measured');
+    expect(first.taskBrief, measurement()).toHaveProperty('graph.consumers', expect.arrayContaining(['consumer.ts:2']));
     expect(first.taskBrief).toHaveProperty('files', expect.arrayContaining([
       expect.objectContaining({ path: 'guide.md', kind: 'doc' }), expect.objectContaining({ path: 'target.test.ts', kind: 'test' }),
     ]));
