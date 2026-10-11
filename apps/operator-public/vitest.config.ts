@@ -1,7 +1,9 @@
 import { defineConfig } from 'vitest/config';
 import { gateParticipationConfig, sharedHostWorkerCap } from '@papercusp/test-config/vitest-config';
+import { REGISTERED_VITEST_FILE_PROJECTS } from '@papercusp/test-config/execution-details';
 
 const participation = gateParticipationConfig();
+const fileProjects = REGISTERED_VITEST_FILE_PROJECTS.filter(project => project.root === 'apps/operator-public');
 
 // Hand-rolled config (not defineVitestConfig). gateParticipationConfig() wires what the
 // green-checkpoint gate needs from every unit config: the /admin/testing reporter, the
@@ -18,29 +20,19 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'unit',
-          exclude: [...participation.exclude, '**/treasury.test.ts', '**/transparency-routes.test.ts',
-            '**/funded-turn-host.integration.test.ts', '**/identity-metered-usage.test.ts'],
+          exclude: [...participation.exclude, ...fileProjects.flatMap(project =>
+            project.files.map(file => `**/${file.slice(file.lastIndexOf('/') + 1)}`))],
           provide: { papercuspTestLayer: 'unit' },
         },
       },
-      {
-        extends: true,
+      ...fileProjects.map(project => ({
+        extends: true as const,
         test: {
-          name: 'treasury-integration',
-          include: ['src/__tests__/treasury.test.ts', 'src/__tests__/transparency-routes.test.ts'],
-          provide: { papercuspTestLayer: 'integration' },
+          name: project.name,
+          include: [...project.files],
+          provide: { papercuspTestLayer: project.layer },
         },
-      },
-      {
-        extends: true,
-        test: {
-          name: 'funded-turn-host-integration',
-          // Both suites exercise the hosted handler against migrated D1.
-          include: ['src/__tests__/funded-turn-host.integration.test.ts',
-            'src/__tests__/identity-metered-usage.test.ts'],
-          provide: { papercuspTestLayer: 'integration' },
-        },
-      },
+      })),
     ],
   },
 });
