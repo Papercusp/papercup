@@ -12,6 +12,7 @@ import {
   buildAgentConfig,
   syncElevenLabsAgent,
   readElevenLabsAgentDuration,
+  readElevenLabsImmutableProfile,
   type ElevenLabsAgentSyncDeps,
 } from './elevenlabs-agent-sync';
 
@@ -93,6 +94,41 @@ describe('provider duration evidence for tutorial admission', () => {
 });
 
 interface FakeOpts { failToolCreate?: boolean; failAgentPatch?: number }
+
+describe('immutable provider profile evidence', () => {
+  const definition = { ...PAPERCUP_FRONT_AGENT, allowSessionOverrides: false };
+  const profile = () => ({ ...buildAgentConfig(definition, ['trusted-tool']), agent_id: 'tutorial',
+    platform_settings: { ...(buildAgentConfig(definition, []).platform_settings as object),
+      auth: { enable_auth: true, allowlist: [], shareable_token: null } } });
+  const read = (body: unknown, tool: unknown = { id: 'trusted-tool', tool_config: ASK_PAPERCUP_TOOL }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(body))
+      .mockResolvedValueOnce(Response.json(tool));
+    return readElevenLabsImmutableProfile(definition, ['trusted-tool'], {
+      apiKey: KEY, agentId: 'tutorial', fetch: fetchImpl, signal: new AbortController().signal });
+  };
+  it('accepts the current definition and exact tool from its trusted sync receipt', async () => {
+    expect(await read(profile())).toEqual({ agentId: 'tutorial', maximumSeconds: 1800 });
+  });
+  it('refuses independent prompt, tool, voice and alternate workflow drift', async () => {
+    const paths = [['conversation_config', 'agent', 'prompt', 'prompt'],
+      ['conversation_config', 'agent', 'first_message'], ['conversation_config', 'agent', 'language'],
+      ['conversation_config', 'agent', 'prompt', 'tool_ids'],
+      ['conversation_config', 'agent', 'prompt', 'tools'],
+      ['conversation_config', 'agent', 'prompt', 'knowledge_base'],
+      ...['voice_id', 'model_id', 'stability', 'similarity_boost', 'speed'].map(key => ['conversation_config', 'tts', key]),
+      ['workflow'], ['conversation_config', 'language_presets']];
+    for (const path of paths) {
+      const body: any = profile();
+      let target = body;
+      for (const key of path.slice(0, -1)) target = target[key!];
+      target[path.at(-1)!] = 'changed';
+      expect(await read(body), path.join('.')).toBeNull();
+    }
+    expect(await read(profile(), { id: 'other', tool_config: ASK_PAPERCUP_TOOL })).toBeNull();
+    expect(await read(profile(), { id: 'trusted-tool', tool_config: { ...ASK_PAPERCUP_TOOL, type: 'webhook' } })).toBeNull();
+    expect(await read(profile(), { id: 'trusted-tool', tool_config: { ...ASK_PAPERCUP_TOOL, unreviewed: true } })).toBeNull();
+  });
+});
 
 /** In-memory ElevenLabs ConvAI API covering the endpoints the sync uses. */
 function fakeElevenLabs(opts: FakeOpts = {}) {
