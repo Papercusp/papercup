@@ -3,9 +3,14 @@
  *
  * A configuration-sensitive acceptance bar declares the configuration its proof must run
  * under, in `verification.productionConfiguration` ({ flags, env }). Every recorded test run
- * carries a CONFIGURATION SNAPSHOT (test_runs.execution_details.configuration): the resolved
- * feature-flag values plus SHA-256 hashes of the in-scope environment values (raw env values
- * are never stored: an env var can hold a secret).
+ * carries a CONFIGURATION SNAPSHOT (column `test_runs.configuration_snapshot`, written by
+ * `@papercusp/test-config/configuration-snapshot`): the RAW flag-override env vars plus a
+ * SHA-256 of every in-scope env value (raw values of other vars never leave the process).
+ *
+ * The snapshot records flag INPUTS, not resolved values, because the reporter that writes it
+ * cannot depend on `@papercusp/flags`. This module resolves a declared flag from those inputs
+ * with `resolveFlagFromEnv`, the same function the running process's getFlag() uses for its
+ * env precedence, so the judge and the run cannot disagree on what a flag was.
  *
  * The two meet at bind time and at currentness classification:
  *  - `declaredConfigurationFingerprint(declared)` fingerprints what the bar requires;
@@ -18,19 +23,20 @@
  */
 import { createHash } from 'node:crypto';
 
+import { FLAG_DEFAULTS, resolveFlagFromEnv } from '@papercusp/flags';
+import {
+  CONFIGURATION_SNAPSHOT_ENV_KEY,
+  type ConfigurationSnapshot,
+  readConfigurationSnapshot,
+} from '@papercusp/test-config/configuration-snapshot';
+
+export { type ConfigurationSnapshot, readConfigurationSnapshot };
+
 export interface ProductionConfiguration {
-  /** Feature-flag key -> the value the proof must run with. */
+  /** Registered feature-flag key -> the value the proof must run with. */
   flags?: Record<string, boolean>;
   /** Environment variable -> the exact value the proof must run with. */
   env?: Record<string, string>;
-}
-
-export interface ConfigurationSnapshot {
-  schemaVersion: 1;
-  /** Resolved flag values at run time. */
-  flags: Record<string, boolean>;
-  /** In-scope env var -> sha256 hex of its value. Raw values are never recorded. */
-  envSha256: Record<string, string>;
 }
 
 export const DECLARED_CONFIGURATION_FINGERPRINT_PREFIX = 'sha256-declared-config-v1:';
@@ -52,7 +58,7 @@ export type DeclaredConfigurationVerdict =
     };
 
 /** Env vars a snapshot records (hashed). Product configuration lives under these prefixes. */
-export const SNAPSHOT_ENV_KEY = /^(PAPERCUSP_[A-Z0-9_]+|PC_[A-Z0-9_]+|NODE_ENV)$/;
+export const SNAPSHOT_ENV_KEY = CONFIGURATION_SNAPSHOT_ENV_KEY;
 
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -62,10 +68,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isRegisteredFlag(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(FLAG_DEFAULTS, key);
+}
+
 /**
  * Validate a declared production configuration. Returns null when nothing is declared
  * (absent, or both maps empty). Throws on a malformed declaration: a bar that tries to
- * declare a configuration but cannot be read must not silently become "no declaration".
+ * declare a configuration but cannot be read must not silently become "no declaration",
+ * and a declared flag that is not registered could never be satisfied by any run.
  */
 export function parseProductionConfiguration(value: unknown): ProductionConfiguration | null {
   if (value === undefined || value === null) return null;
@@ -77,6 +88,9 @@ export function parseProductionConfiguration(value: unknown): ProductionConfigur
     if (!isPlainObject(value.flags)) throw new Error('productionConfiguration.flags must map flag keys to booleans');
     for (const [key, flag] of Object.entries(value.flags)) {
       if (typeof flag !== 'boolean') throw new Error(`productionConfiguration.flags.${key} must be a boolean`);
+      if (!isRegisteredFlag(key)) {
+        throw new Error(`productionConfiguration.flags.${key} is not a registered feature flag (libs/flags/src/types.ts)`);
+      }
     }
     if (Object.keys(value.flags).length) out.flags = { ...(value.flags as Record<string, boolean>) };
   }
@@ -93,40 +107,12 @@ export function parseProductionConfiguration(value: unknown): ProductionConfigur
   return out.flags || out.env ? out : null;
 }
 
-/** Build the snapshot a test-run ledger row records. */
-export function captureConfigurationSnapshot(input: {
-  flags: Record<string, unknown>;
-  env: Record<string, string | undefined>;
-}): ConfigurationSnapshot {
-  const flags: Record<string, boolean> = {};
-  for (const key of Object.keys(input.flags).sort()) {
-    const value = input.flags[key];
-    if (typeof value === 'boolean') flags[key] = value;
-  }
-  const envSha256: Record<string, string> = {};
-  for (const key of Object.keys(input.env).sort()) {
-    const value = input.env[key];
-    if (typeof value === 'string' && SNAPSHOT_ENV_KEY.test(key)) envSha256[key] = sha256Hex(value);
-  }
-  return { schemaVersion: 1, flags, envSha256 };
+/** The value a run resolved for a flag, from its recorded flag inputs. Null for an unknown key. */
+export function resolvedRunFlag(snapshot: ConfigurationSnapshot, key: string): boolean | null {
+  return resolveFlagFromEnv(key, snapshot.flagEnv).value;
 }
 
-/** Read the snapshot from a test_runs.execution_details value; null when absent or malformed. */
-export function readConfigurationSnapshot(executionDetails: unknown): ConfigurationSnapshot | null {
-  if (!isPlainObject(executionDetails)) return null;
-  const snapshot = executionDetails.configuration;
-  if (!isPlainObject(snapshot) || snapshot.schemaVersion !== 1) return null;
-  if (!isPlainObject(snapshot.flags) || !isPlainObject(snapshot.envSha256)) return null;
-  if (Object.values(snapshot.flags).some((value) => typeof value !== 'boolean')) return null;
-  if (Object.values(snapshot.envSha256).some((value) => typeof value !== 'string')) return null;
-  return {
-    schemaVersion: 1,
-    flags: snapshot.flags as Record<string, boolean>,
-    envSha256: snapshot.envSha256 as Record<string, string>,
-  };
-}
-
-/** Canonical projection: sorted keys; a declared key absent from the run is `null`. */
+/** Canonical projection: sorted keys; a declared key the run cannot answer is `null`. */
 function fingerprintProjection(flags: Record<string, boolean | null>, envSha256: Record<string, string | null>): string {
   const canonical = JSON.stringify({
     flags: Object.keys(flags).sort().map((key) => [key, flags[key]]),
@@ -148,7 +134,7 @@ export function evidenceConfigurationFingerprint(
   declared: ProductionConfiguration,
 ): string {
   const flags: Record<string, boolean | null> = {};
-  for (const key of Object.keys(declared.flags ?? {})) flags[key] = snapshot.flags[key] ?? null;
+  for (const key of Object.keys(declared.flags ?? {})) flags[key] = resolvedRunFlag(snapshot, key);
   const env: Record<string, string | null> = {};
   for (const key of Object.keys(declared.env ?? {})) env[key] = snapshot.envSha256[key] ?? null;
   return fingerprintProjection(flags, env);
@@ -175,14 +161,17 @@ export function judgeDeclaredConfiguration(
   }
   const fingerprint = evidenceConfigurationFingerprint(snapshot, declared);
   if (fingerprint === declaredFingerprint) return { ok: true, fingerprint, declaredFingerprint };
-  const differing = [
-    ...Object.entries(declared.flags ?? {})
-      .filter(([key, value]) => snapshot.flags[key] !== value)
-      .map(([key]) => `flag:${key}`),
-    ...Object.entries(declared.env ?? {})
-      .filter(([key, value]) => snapshot.envSha256[key] !== sha256Hex(value))
-      .map(([key]) => `env:${key}`),
-  ].sort();
+  const flagDiffs = Object.entries(declared.flags ?? {})
+    .map(([key, value]) => ({ key, value, observed: resolvedRunFlag(snapshot, key) }))
+    .filter((d) => d.observed !== d.value);
+  const envDiffs = Object.entries(declared.env ?? {})
+    .filter(([key, value]) => snapshot.envSha256[key] !== sha256Hex(value))
+    .map(([key]) => key);
+  const differing = [...flagDiffs.map((d) => `flag:${d.key}`), ...envDiffs.map((key) => `env:${key}`)].sort();
+  const detail = [
+    ...flagDiffs.map((d) => `flag ${d.key} declared ${d.value}, run resolved ${d.observed}`),
+    ...envDiffs.map((key) => `env ${key} ${snapshot.envSha256[key] ? 'had a different value' : 'was unset'}`),
+  ].join('; ');
   return {
     ok: false,
     code: 'declared_configuration_fingerprint_mismatch',
@@ -190,7 +179,7 @@ export function judgeDeclaredConfiguration(
     fingerprint,
     differing,
     message:
-      `the run's configuration differs from the bar's declared verification.productionConfiguration on `
-      + `${differing.join(', ')}. Re-run under the declared configuration and bind that run.`,
+      `the run's configuration differs from the bar's declared verification.productionConfiguration (${detail}). `
+      + 'Re-run under the declared configuration and bind that run.',
   };
 }
