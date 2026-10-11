@@ -38,7 +38,7 @@ import {
   realpathSync,
   truncateSync,
 } from 'node:fs';
-import { readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
+import { mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import {
@@ -381,6 +381,21 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     makeRunDir('ws-B', 'tool', UUID(4), 7000);
     await refreshScratchUsage('ws-B');
     expect(scratchUsageBytes('ws-B')).toBe(12000 + markerBytes('ws-B'));
+  });
+
+  it('treats a missing workspace root as empty before the first quota write', async () => {
+    const workspaceId = 'ws-first-write';
+    const runDir = join(scratchRootForWorkspace(workspaceId), 'tool', UUID(5));
+    const filePath = join(runDir, 'payload');
+    expect(existsSync(scratchRootForWorkspace(workspaceId))).toBe(false);
+
+    await writeWithScratchQuota({ workspaceId, filePath, bytes: 7 }, async () => {
+      await mkdir(runDir, { recursive: true, mode: 0o700 });
+      await writeFile(filePath, Buffer.alloc(7));
+    });
+
+    expect(readFileSync(filePath)).toHaveLength(7);
+    expect(scratchUsageBytes(workspaceId)).toBe(7);
   });
 
   it('overlaps one exact scan and caps filesystem work across concurrent workspaces', async () => {
@@ -1311,9 +1326,13 @@ describe('deferred scratch quota recovery', () => {
     // Another process can reclaim old runs while this process retains their cached size.
     _setScratchUsageForTests('ws-Q', 5_400_804_525);
     const nextPath = join(runDir, 'next');
+    const next = writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: nextPath, bytes: 6709 },
+      () => writeFile(nextPath, Buffer.alloc(6709)));
+    // Submit the follower while the active reservation owns the workspace mutex, then let the
+    // holder settle so the follower can reconcile the now-current shared quota state.
+    finish();
     try {
-      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: nextPath, bytes: 6709 },
-        () => writeFile(nextPath, Buffer.alloc(6709)))).resolves.toBeUndefined();
+      await expect(next).resolves.toBeUndefined();
       expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 512 + 6709);
     } finally {
       finish();
@@ -1497,10 +1516,13 @@ describe('deferred scratch quota recovery', () => {
     const held = writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(active, 'held'), bytes: 512 }, async () => {
       started();
       await new Promise<void>((resolve) => { finish = resolve; });
+      await writeFile(join(active, 'held'), Buffer.alloc(512));
     });
     await began;
+    const next = writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'next'), bytes: 2048 }, async () => {});
+    finish();
     try {
-      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(target, 'next'), bytes: 2048 }, async () => {});
+      await next;
       expect(existsSync(active)).toBe(true);
       expect(existsSync(other)).toBe(false);
       expect(existsSync(target)).toBe(true);
@@ -1536,14 +1558,16 @@ describe('deferred scratch quota recovery', () => {
   });
 
   it('releases a failed write reservation and preserves reservations across a concurrent refresh', async () => {
-    _setScratchUsageForTests('ws-Q', 0);
-    const filePath = join(scratchRootForWorkspace('ws-Q'), 'tool', UUID(1), 'next');
+    const runDir = ensureScratchRunDir({ workspaceId: 'ws-Q', toolName: 'tool', runId: UUID(1) });
+    const marker = markerBytes('ws-Q');
+    _setScratchUsageForTests('ws-Q', marker, Date.now(), true);
+    const filePath = join(runDir, 'next');
     await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 1024 }, async () => {
       await refreshScratchUsage('ws-Q');
-      expect(scratchUsageBytes('ws-Q')).toBe(1024);
+      expect(scratchUsageBytes('ws-Q')).toBe(marker + 1024);
       throw new Error('write failed');
     })).rejects.toThrow('write failed');
-    expect(scratchUsageBytes('ws-Q')).toBe(0);
+    expect(scratchUsageBytes('ws-Q')).toBe(marker);
   });
 
   it('does not double-count a successful write already included in a usage refresh', async () => {
