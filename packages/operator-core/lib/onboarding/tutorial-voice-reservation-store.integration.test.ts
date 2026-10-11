@@ -41,7 +41,9 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
 
   it('confines reservation and global-policy privileges to the hosted service', async () => {
     const table = 'papercusp_auth.tutorial_voice_reservations';
-    for (const role of ['harness_app', 'harness_zero', 'harness_admin', 'hosted_app', 'hosted_service']) {
+    // harness_admin is deliberately SUPERUSER in the canonical PG fixture;
+    // effective-privilege functions cannot measure its explicit ACL revocation.
+    for (const role of ['harness_app', 'harness_zero', 'hosted_app', 'hosted_service']) {
       const [privileges] = await db.adminSql`SELECT
         has_table_privilege(${role}, ${table}, 'SELECT') AS can_read,
         has_table_privilege(${role}, ${table}, 'INSERT') AS can_insert,
@@ -65,6 +67,48 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     const [security] = await db.adminSql`SELECT relrowsecurity, relforcerowsecurity
       FROM pg_class WHERE oid = ${table}::regclass`;
     expect(security).toEqual({ relrowsecurity: true, relforcerowsecurity: true });
+  });
+
+  it('commits one issuance attempt across replicas and retains ambiguous exposure', async () => {
+    const who = admission(); const first = store(); const second = store();
+    const reserved = await first.reserve(who);
+    if (!reserved.ok) throw new Error('reservation failed');
+    const attempts = await Promise.all([first.beginIssuance(reserved.reservationId),
+      second.beginIssuance(reserved.reservationId)]);
+    expect(attempts.filter(Boolean)).toHaveLength(1);
+    expect(await first.beginIssuance(reserved.reservationId)).toBeNull();
+    expect(await first.reserve(who)).toEqual({ ok: false, reason: 'session_active' });
+    const [row] = await db.adminSql`SELECT issuance_attempt_id, provider_conversation_id, provider_final_ref
+      FROM papercusp_auth.tutorial_voice_reservations WHERE id = ${reserved.reservationId}::uuid`;
+    expect(row).toEqual({ issuance_attempt_id: attempts.find(Boolean),
+      provider_conversation_id: null, provider_final_ref: null });
+  });
+
+  it('binds immutable remote identity to its attempt and keeps finality separate', async () => {
+    const first = store(); const reserved = await first.reserve(admission());
+    if (!reserved.ok) throw new Error('reservation failed');
+    const id = reserved.reservationId;
+    expect(await first.recordProviderConversation(id, randomUUID(), 'conv-one')).toBe(false);
+    const attempt = (await first.beginIssuance(id))!;
+    expect(await first.recordProviderConversation(id, randomUUID(), 'conv-one')).toBe(false);
+    expect(await first.recordProviderConversation(id, attempt, 'conv-one')).toBe(true);
+    expect(await first.recordProviderConversation(id, attempt, 'conv-one')).toBe(true);
+    expect(await first.recordProviderConversation(id, attempt, 'conv-two')).toBe(false);
+    await expect(run(tx => tx`UPDATE papercusp_auth.tutorial_voice_reservations
+      SET issuance_attempt_id = ${randomUUID()}::uuid WHERE id = ${id}::uuid`)).rejects.toMatchObject({ code: '23514' });
+    await expect(run(tx => tx`UPDATE papercusp_auth.tutorial_voice_reservations
+      SET provider_conversation_id = NULL WHERE id = ${id}::uuid`)).rejects.toMatchObject({ code: '23514' });
+    const other = await first.reserve(admission());
+    if (!other.ok) throw new Error('reservation failed');
+    const otherAttempt = (await first.beginIssuance(other.reservationId))!;
+    await expect(first.recordProviderConversation(other.reservationId, otherAttempt, 'conv-one'))
+      .rejects.toMatchObject({ code: '23505' });
+    expect(await first.recordProviderFinal(id, 'verified-finality')).toBe(true);
+    expect(await first.beginIssuance(id)).toBeNull();
+    expect(await first.recordProviderConversation(id, attempt, 'conv-one')).toBe(false);
+    const [row] = await db.adminSql`SELECT maximum_seconds, provider_conversation_id
+      FROM papercusp_auth.tutorial_voice_reservations WHERE id = ${id}::uuid`;
+    expect(row).toEqual({ maximum_seconds: 60, provider_conversation_id: 'conv-one' });
   });
 
   it('locks persisted global policy through admission and refuses absent or malformed authority', async () => {

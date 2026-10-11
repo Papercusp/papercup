@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { deriveTenantContext, withHostedServiceContext, type VerifiedTenantServerContext } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
-import type { TutorialVoiceAdmission } from '../endpoint-route/routes/hosted-tutorial-progress';
+import type { TutorialVoiceAdmission, TutorialVoiceTokenProvider } from '../endpoint-route/routes/hosted-tutorial-progress';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
@@ -188,6 +188,59 @@ export async function readReservedElevenLabsTutorialCredential(
   return admitted;
 }
 const identifier = (s: unknown): s is string => typeof s === 'string' && s.length > 0 && s.length <= 256;
+/** Server-only issuer composition. No retry after remote I/O: ambiguous outcomes
+ * retain their reservation for reconciliation. This factory does not install or
+ * enable issuance. Live acceptance must verify the provider identity contract. */
+export function createElevenLabsTutorialVoiceTokenProvider(options: {
+  disabled: TutorialVoiceTokenProvider['disabled'];
+  store: Pick<PostgresTutorialVoiceReservationStore, 'reserve' | 'beginIssuance' | 'recordProviderConversation'>;
+  credential: Parameters<typeof readAdmittedElevenLabsIntegrationCredential>[0];
+}): TutorialVoiceTokenProvider {
+  const credential = { ...options.credential,
+    allowedPermissions: [...options.credential.allowedPermissions],
+    definition: structuredClone(options.credential.definition), toolIds: [...options.credential.toolIds] };
+  const unavailable = { ok: false as const, reason: 'unavailable' as const };
+  return { disabled: options.disabled, async issue(admission, signal) {
+    try {
+      const combined = AbortSignal.any([signal, credential.signal]);
+      if (combined.aborted) return unavailable;
+      if (await options.disabled(combined)) return { ok: false, reason: 'disabled' };
+      const reservation = await options.store.reserve(admission);
+      if (!reservation.ok) return reservation;
+      const admitted = await readReservedElevenLabsTutorialCredential(reservation, { ...credential, signal: combined });
+      if (!admitted || combined.aborted) return unavailable;
+      if (await options.disabled(combined)) return { ok: false, reason: 'disabled' };
+      const attempt = await options.store.beginIssuance(reservation.reservationId);
+      if (!attempt || combined.aborted) return unavailable;
+      // The documented 15-minute initiation window is conservatively measured
+      // from BEFORE the request, never from a delayed response or delivery.
+      const expiresAt = Date.now() + 15 * 60 * 1000;
+      const endpoint = new URL('https://api.elevenlabs.io/v1/convai/conversation/get-signed-url');
+      endpoint.searchParams.set('agent_id', admitted.agentId);
+      endpoint.searchParams.set('include_conversation_id', 'true');
+      const response = await credential.fetch(endpoint, { headers: { 'xi-api-key': admitted.apiKey },
+        signal: combined, redirect: 'error' });
+      if (!response.ok) return unavailable;
+      const body: unknown = await response.json();
+      if (!body || typeof body !== 'object' || !('signed_url' in body) || typeof body.signed_url !== 'string') return unavailable;
+      const url = new URL(body.signed_url);
+      const ids = url.searchParams.getAll('conversation_id');
+      const signatures = url.searchParams.getAll('conversation_signature');
+      if (url.protocol !== 'wss:' || url.host !== 'api.elevenlabs.io'
+        || url.pathname !== '/v1/convai/conversation' || url.username || url.password || url.hash
+        || ids.length !== 1 || !identifier(ids[0]) || signatures.length !== 1 || !signatures[0]
+        || url.searchParams.getAll('agent_id').length !== 1 || url.searchParams.get('agent_id') !== admitted.agentId) return unavailable;
+      // Persist a valid trusted receipt even if the browser disconnected while
+      // the response was arriving. Cancellation cannot erase provider exposure.
+      if (!await options.store.recordProviderConversation(reservation.reservationId, attempt, ids[0])) return unavailable;
+      if (combined.aborted || Date.now() >= expiresAt) return unavailable;
+      if (await options.disabled(combined) || combined.aborted) return { ok: false, reason: 'disabled' };
+      if (Date.now() >= expiresAt) return unavailable;
+      return { ok: true, connectionType: 'websocket', signedUrl: body.signed_url,
+        sessionId: reservation.reservationId, expiresAt, maximumSeconds: admitted.maximumSeconds };
+    } catch { return unavailable; }
+  } };
+}
 const positive = (n: unknown): n is number => Number.isSafeInteger(n) && Number(n) > 0;
 async function fence(sql: Sql) {
   const [row] = await sql<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
@@ -244,6 +297,37 @@ export class PostgresTutorialVoiceReservationStore {
           ${admission.userId}, ${admission.customerWorkspaceId}, ${clock.day}::date,
           ${authority.maximumSeconds}, ${authority.providerLimitRef})`;
       return { ok: true, reservationId, maximumSeconds: authority.maximumSeconds, providerLimitRef: authority.providerLimitRef };
+    });
+  }
+
+  /** Commit before mint I/O. A lost response retains exposure and forbids a
+   * second attempt; reconciliation must establish provider finality first. */
+  async beginIssuance(reservationId: string): Promise<string | null> {
+    if (!/^[0-9a-f-]{36}$/i.test(reservationId)) throw new Error('invalid issuance reservation');
+    return (this.options.run ?? withHostedServiceContext)(async sql => {
+      await fence(sql);
+      const attemptId = randomUUID();
+      const rows = await sql`UPDATE papercusp_auth.tutorial_voice_reservations
+        SET issuance_attempt_id = ${attemptId}::uuid
+        WHERE id = ${reservationId}::uuid AND issuance_attempt_id IS NULL
+          AND provider_final_ref IS NULL RETURNING id`;
+      return rows.length === 1 ? attemptId : null;
+    });
+  }
+
+  /** Bind a trusted provider receipt to its attempt. No URL/token is stored.
+   * Identical receipt retries are safe; conflicting identities cannot replace it. */
+  async recordProviderConversation(reservationId: string, attemptId: string, conversationId: string): Promise<boolean> {
+    if (![reservationId, attemptId].every(id => /^[0-9a-f-]{36}$/i.test(id))
+      || !identifier(conversationId)) throw new Error('invalid provider conversation');
+    return (this.options.run ?? withHostedServiceContext)(async sql => {
+      await fence(sql);
+      const rows = await sql`UPDATE papercusp_auth.tutorial_voice_reservations
+        SET provider_conversation_id = ${conversationId}
+        WHERE id = ${reservationId}::uuid AND issuance_attempt_id = ${attemptId}::uuid
+          AND provider_final_ref IS NULL
+          AND (provider_conversation_id IS NULL OR provider_conversation_id = ${conversationId}) RETURNING id`;
+      return rows.length === 1;
     });
   }
 
