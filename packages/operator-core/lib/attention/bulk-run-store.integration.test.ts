@@ -63,6 +63,7 @@ const {
   RUN_HEARTBEAT_STALE_MS,
 } = await import('./bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { upsertTriage, readTriageByWorkspace } = await import('./triage-store');
 
 /** A three-item snapshot shaped like what InboxPane posts. */
 function seed(prefix: string) {
@@ -1098,6 +1099,137 @@ describe('attention bulk-run store (real PG)', () => {
     // a resolution that did not happen.
     expect(auditedAfterStop).toBe(false);
     expect((await getRunItems(lateRun.runId, ws))[0]!.outcome).toBe('pending');
+  });
+
+  it('preserves a canonical terminal receipt when a stale report queues behind the action', async () => {
+    const ws = `ws-stale-report-${Date.now()}`;
+    const items = seed('stale-report');
+    const resolverOwner = 'su-stale-report-resolver';
+    const run = await createRun({ items, workspaceId: ws });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner, workspaceId: ws });
+
+    let releaseAction!: () => void;
+    const actionMayFinish = new Promise<void>((resolve) => {
+      releaseAction = resolve;
+    });
+    let markActionStarted!: () => void;
+    const actionStarted = new Promise<void>((resolve) => {
+      markActionStarted = resolve;
+    });
+
+    let auditCount = 0;
+    const action = executeBulkRunAction({
+      runId: run.runId,
+      itemId: items[0]!.itemId,
+      actionId: 'resolve',
+      rationale: 'Canonical action completed.',
+      resolverOwner,
+      workspaceId: ws,
+      execute: async () => {
+        markActionStarted();
+        await actionMayFinish;
+        return { resolved: true };
+      },
+      audit: async (tx) => {
+        auditCount += 1;
+        await upsertTriage({
+          itemId: items[0]!.itemId,
+          action: 'resolve',
+          note: 'Bulk resolve: Canonical action completed.',
+          triagedBy: resolverOwner,
+          workspaceId: ws,
+          sql: tx,
+        });
+      },
+    });
+    await actionStarted;
+
+    let reportSettled = false;
+    const staleReport = reportOutcomes({
+      runId: run.runId,
+      resolverOwner,
+      workspaceId: ws,
+      outcomes: [
+        {
+          itemId: items[0]!.itemId,
+          outcome: 'recommended',
+          actionId: 'retry',
+          rationale: 'Recommendation from the pre-action manifest.',
+        },
+        {
+          itemId: items[1]!.itemId,
+          outcome: 'recommended',
+          actionId: 'ack',
+          rationale: 'This sibling still needs review.',
+        },
+      ],
+    }).then((result) => {
+      reportSettled = true;
+      return result;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(reportSettled).toBe(false);
+
+    releaseAction();
+    const [acted, reported] = await Promise.all([action, staleReport]);
+    expect(acted.refused).toBeNull();
+    expect(acted.item).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'Canonical action completed.',
+    });
+    expect(auditCount).toBe(1);
+    expect(reported).toMatchObject({
+      updated: [items[1]!.itemId],
+      unknown: [],
+      refused: null,
+      run: { autoResolved: 1, recommended: 1 },
+      preserved: [
+        expect.objectContaining({
+          itemId: items[0]!.itemId,
+          outcome: 'auto_resolved',
+          disposition: 'auto_resolved',
+          actionId: 'resolve',
+          rationale: 'Canonical action completed.',
+          revertHandle: {
+            kind: 'attention-bulk-item',
+            version: 1,
+            workspaceId: ws,
+            runId: run.runId,
+            itemId: items[0]!.itemId,
+          },
+        }),
+      ],
+    });
+
+    const receipt = (reported as { preserved?: Array<{ decidedAt: string | null; reversalWindowUntil: string | null }> })
+      .preserved?.[0];
+    expect(Date.parse(receipt?.reversalWindowUntil ?? '')).toBeGreaterThan(
+      Date.parse(receipt?.decidedAt ?? ''),
+    );
+    const rows = await getRunItems(run.runId, ws);
+    expect(rows).toHaveLength(3);
+    expect(rows.find((row) => row.itemId === items[0]!.itemId)).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'resolve',
+      rationale: 'Canonical action completed.',
+    });
+    expect(rows.find((row) => row.itemId === items[1]!.itemId)).toMatchObject({
+      outcome: 'recommended',
+      actionId: 'ack',
+    });
+    expect(rows.find((row) => row.itemId === items[2]!.itemId)).toMatchObject({
+      outcome: 'pending',
+      actionId: null,
+    });
+
+    const triage = await readTriageByWorkspace(ws);
+    expect([...triage.keys()]).toEqual([items[0]!.itemId]);
+    expect(triage.get(items[0]!.itemId)).toMatchObject({
+      action: 'resolve',
+      note: 'Bulk resolve: Canonical action completed.',
+      triagedBy: resolverOwner,
+    });
   });
 
   it('persists a typed bounded handle and appends one compensation without rewriting the action audit', async () => {

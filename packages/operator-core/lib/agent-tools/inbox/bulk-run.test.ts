@@ -370,6 +370,116 @@ describe('inbox:bulk-run-report standing-policy auto-accept', () => {
     }));
   }
 
+  it('returns the canonical receipt and skips auto-accept for a stale report', async () => {
+    const receipt = {
+      ...item,
+      outcome: 'auto_resolved',
+      actionId: 'ack',
+      rationale: 'Canonical action completed.',
+      disposition: 'auto_resolved',
+      decidedAt: '2026-10-11T12:00:00.000Z',
+      revertHandle: {
+        kind: 'attention-bulk-item',
+        version: 1,
+        workspaceId: run.workspaceId,
+        runId: run.runId,
+        itemId: item.itemId,
+      },
+      reversalWindowUntil: '2026-10-11T13:00:00.000Z',
+    };
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L0', minConfidence: 'high' });
+    arrangeSuccessfulAction();
+    h.reportOutcomes.mockResolvedValue({
+      updated: [],
+      unknown: [],
+      preserved: [receipt],
+      run: { ...run, autoResolved: 1 },
+      refused: null,
+    });
+
+    const result = body(
+      await bulkRunReport.handler({ runId: run.runId, items: [reportItem()] }, {
+        workspaceId: run.workspaceId,
+      } as never),
+    );
+
+    expect(result.preservedOutcomes).toEqual([
+      expect.objectContaining({
+        itemId: item.itemId,
+        outcome: 'auto_resolved',
+        actionId: 'ack',
+        rationale: 'Canonical action completed.',
+        disposition: 'auto_resolved',
+        decidedAt: receipt.decidedAt,
+        revertHandle: receipt.revertHandle,
+        reversalWindowUntil: receipt.reversalWindowUntil,
+      }),
+    ]);
+    expect(result.autoAccept).toMatchObject({
+      reportedRecommendations: 0,
+      actionCandidates: 0,
+      terminalCandidates: 0,
+      attempted: 0,
+      resolved: 0,
+      leftForReview: 0,
+    });
+    expect(h.executeBulkRunAction).not.toHaveBeenCalled();
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+    expect(h.upsertTriage).not.toHaveBeenCalled();
+  });
+
+  it('returns a canonical receipt when a late report is refused after Stop', async () => {
+    const receipt = {
+      ...item,
+      outcome: 'auto_resolved',
+      actionId: 'ack',
+      rationale: 'Canonical action completed.',
+      disposition: 'auto_resolved',
+      decidedAt: '2026-10-11T12:00:00.000Z',
+      revertHandle: {
+        kind: 'attention-bulk-item',
+        version: 1,
+        workspaceId: run.workspaceId,
+        runId: run.runId,
+        itemId: item.itemId,
+      },
+      reversalWindowUntil: '2026-10-11T13:00:00.000Z',
+    };
+    h.reportOutcomes.mockResolvedValue({
+      updated: [],
+      unknown: [item.itemId],
+      preserved: [receipt],
+      run: { ...run, phase: 'review', autoResolved: 1 },
+      refused: { reason: 'run_not_accepting_reports', phase: 'review' },
+    });
+
+    const result = body(
+      await bulkRunReport.handler({ runId: run.runId, items: [reportItem()] }, {
+        workspaceId: run.workspaceId,
+      } as never),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      refused: 'run_not_accepting_reports',
+      phase: 'review',
+      runId: run.runId,
+      wrote: 0,
+      preservedOutcomes: [
+        expect.objectContaining({
+          itemId: item.itemId,
+          outcome: 'auto_resolved',
+          actionId: 'ack',
+          rationale: 'Canonical action completed.',
+          revertHandle: receipt.revertHandle,
+        }),
+      ],
+    });
+    expect(h.executeBulkRunAction).not.toHaveBeenCalled();
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+    expect(h.upsertTriage).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['coord-message', 'ack'],
     ['work-item-needs-human', 'resolve'],
