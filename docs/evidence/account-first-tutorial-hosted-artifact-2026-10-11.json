@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "D-047 exact hosted tutorial artifact, full nine-case acceptance",
+  "plan": "cloud-app-live-tutorial-2026-10-01",
+  "workItem": "WI-10007170",
+  "layerWorkItem": "WI-10007744",
+  "decision": "D-047",
+  "activationAudit": {
+    "sequence": 29,
+    "revision": 137,
+    "contentHash": "617585b29f3cb69a7014b1ba09ab0b2c5878d4af03c5958471ea9dec772b5b25",
+    "mapping": "M-038"
+  },
+  "framework": "playwright",
+  "testFile": "e2e/portal-product-tutorial-served.spec.ts",
+  "startedAt": "2026-10-11T10:37:38.380Z",
+  "finishedAt": "2026-10-11T10:41:25.150Z",
+  "exitCode": 0,
+  "passed": 9,
+  "failed": 0,
+  "skipped": 0,
+  "retries": 0,
+  "admission": "WorkOS TEST",
+  "origin": "https://localhost:4432",
+  "summary": "The actual isolated hosted artifact passed real narration and answer replay, both authorized-workspace catalogue states, two persisted non-Cloud preference tasks including Tab/arrow traversal at 200 percent text, preassigned-account entry, real current-lesson Help, Billing Help/resume, and new-account entry. This is private exact-artifact acceptance, not production shipment.",
+  "source": {
+    "coreCommit": "9d60d682b3e67e78074e2b842aeee43d2c472b8e",
+    "portalCommit": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+    "coreRoot": "/dev/shm/pcv/papercusp-lint-as-committed-9d60d682b3-DFgZeU",
+    "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-0e88e2e67b-2lSWTE",
+    "manifest": {
+      "path": "${PAPERCUSP_USER_HOME}/.papercusp/launch-context/tutorial-candidate-20261011T1024.manifest.json",
+      "sha256": "3750b0b50b335b07c3fe118ba2d5608322f851d0b6b28cd160ab27dc81d1c866"
+    },
+    "coreInputs": [
+      { "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts", "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4" },
+      { "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "cd741196a73abd62f1b5f57108524b7fea0455045657891ceeb035a4a97bf512" },
+      { "path": "packages/operator-ui/src/browser-telemetry.tsx", "sha256": "02273e39a12546a75e2c5a8081e5f10a5a093cbb681f84d5cbcf2b36ead18cb0" }
+    ],
+    "portalInputs": [
+      { "path": "packages/ui/src/shell.tsx", "sha256": "0477784fbbae1dc88523f309b926104d752d9ff3f462ac6c799bbe99a370e470" },
+      { "path": "packages/ui/src/auth.tsx", "sha256": "7aef72afb0a431396db5f004bb55f10a19f664e0f948434fc7a61c05cbeefaa4" },
+      { "path": "packages/ui/src/shell-model.ts", "sha256": "92bb9a49f04ae9da8c27299e60afb316997a18efde6042910a41256d2fcc6a6f" },
+      { "path": "app/tokens.css", "sha256": "956a7e727acee15f2bfcff0d58eb3288bf5f4ee7da3ec2692a4499a7c421b9b6" },
+      { "path": "app/globals.css", "sha256": "27442a1d1d012f7fc945d0bed94f821ce463c2fc64eff10869186baf654c5548" },
+      { "path": "playwright.config.ts", "sha256": "7f282f66b2706f5f2cbe4f13ec4bda1059f506bc351f0db6af5e63d205710887" },
+      { "path": "e2e/portal-product-tutorial-served.spec.ts", "sha256": "332d9ca73db460eb3b6312bee9e5fd188511508b1de14b1d2623d77ddb114cc8" },
+      { "path": "e2e/served-artifact.ts", "sha256": "d45a3504255538a49ea335e4ef366713d0a61a568b901b889ac0fbffbb8f750d" },
+      { "path": "e2e/hosted-test-user.ts", "sha256": "ab2c4f7c2b30e26b795db1fc28f122ac16952fdfd3242c92351868a2af9c4480" },
+      { "path": "e2e/guide-write-observer.ts", "sha256": "31fb6d5344a6fea09fef844419d8a03baa55cba30842f3e74b83bfff3354a717" },
+      { "path": "e2e/guide-destination-observer.ts", "sha256": "256392f7759cc1694497b34fe7c451e6813f7569f296d29c3197facc0ec3ea2a" }
+    ]
+  },
+  "verifier": {
+    "root": "/dev/shm/pcv/tutorial-verifier-0e88-9d60-20261011T1024",
+    "receipt": "/dev/shm/tutorial-verifier-0e88-9d60-20261011T1024.receipt.json",
+    "receiptSha256": "3c95b844aba2fb825b143c626194f6563334e401c57dc29b6af16dd4849da32e",
+    "schemaVersion": "verifier-source-v1",
+    "sourceCommit": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+    "archiveFileEntries": 587,
+    "testedInputEntries": 11,
+    "recoveryCustodyVerification": "All eleven tested input hashes match the archive; all three core and eleven Portal manifest inputs match the retained source roots. Recovery did not replay any settled test."
+  },
+  "artifact": {
+    "buildId": "1DHsq9zazhmCtWqHAHyaP",
+    "release": "/dev/shm/tutorial-candidate-runtime-0e88-9d60-20261011T1031/releases/1DHsq9zazhmCtWqHAHyaP-20261011103425643-4056354-aa8048b0",
+    "releaseMetadata": {
+      "schemaVersion": 2,
+      "buildId": "1DHsq9zazhmCtWqHAHyaP",
+      "release": "1DHsq9zazhmCtWqHAHyaP-20261011103425643-4056354-aa8048b0",
+      "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-0e88e2e67b-2lSWTE",
+      "publishedAt": "2026-10-11T10:34:25.643Z",
+      "sourceRootDigest": "37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0"
+    }
+  },
+  "ledger": {
+    "id": 21055793,
+    "status": "pass",
+    "source": "local",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "runGroup": "tutorial-full-served-0e88-9d60-20261011T1041",
+    "recordedCommitSha": null,
+    "recordedRoot": null,
+    "recordedWorktreeDirty": true,
+    "executionRoot": "/dev/shm/pcv/tutorial-verifier-0e88-9d60-20261011T1024",
+    "qualification": "Archive verifier run recorded without Git identity. This row is not clean-committed ledger evidence. Retained source, verifier inputs, release metadata and exact test log establish separate custody; do not rewrite, re-register or replay it to change its recorded lineage."
+  },
+  "passedCaseTitles": [
+    "served account-first product guide > real full-product lesson narration and answer replay stop without capture or progress writes",
+    "served account-first product guide > real catalogue destinations and recovery with authorized workspace=false",
+    "served account-first product guide > real catalogue destinations and recovery with authorized workspace=true",
+    "served account-first product guide > a real hosted non-Cloud preference task saves and survives reload with narrow enlarged text, reduced motion and keyboard activation",
+    "served account-first product guide > a real hosted non-Cloud preference task saves and survives reload using only Tab and arrow traversal at 200 percent text",
+    "served account-first product guide > a hosted account with a preassigned authorized workspace enters the guide before domain bootstrap",
+    "served account-first product guide > an explicit current-lesson question receives a real hosted answer without changing progress",
+    "served account-first product guide > the real Billing destination retains contextual guide Help and resume without billing writes",
+    "served account-first product guide > new hosted account persists guide and opens the real account panel with contextual Help"
+  ],
+  "rawEvidence": [
+    { "path": "/dev/shm/tutorial-full-served-0e88-9d60-20261011T1041.log", "sha256": "f306b5a51e77820b2d417e5ee17fac9da2a2ee64cc5f88d92b8481c579bddf0a" },
+    { "path": "/dev/shm/tutorial-full-served-0e88-9d60-20261011T1041.receipts.jsonl", "sha256": "978ed93ec1c2712c714afc261be676926d58a5780670049c07d93e7ecc3005ac" }
+  ],
+  "limitations": [
+    "The private runtime and databases were shut down after acceptance. A new functional run needs freshly prepared private configuration.",
+    "Catalogue observation attachments retain partial-onfailure diagnostic scope even on PASS; final verdict and actual assertions are the acceptance evidence.",
+    "Expected no-workspace refusal and unavailable Mail/Calendar explanations do not establish those providers' domain-task success.",
+    "No human-heard audio, novice-human review, protected native microphone-question acceptance, pilot baseline, required current affected-suite PASS or app.papercusp.com shipment is asserted.",
+    "Historical proofs, failures and older artifacts retain their original scope and lineage. Owner directive 1534 remains open until verified shipment."
+  ]
+}
