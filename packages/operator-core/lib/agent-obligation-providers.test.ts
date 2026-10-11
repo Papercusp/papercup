@@ -1003,7 +1003,7 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
     // review-routing-through-relevance-router-2026-09-26 D-001: plans:set-plan-status
     // → shipped IS the recruiter. The action must name that call so a reader does
     // not pick a grader off coord:presence and message it directly.
-    for (const code of ['acceptance_ungraded', 'self_graded_only'] as const) {
+    for (const code of ['acceptance_ungraded', 'self_graded_only', 'independent_verification_missing'] as const) {
       const action = independentVerificationObligation(verifyInput(known(gate(false, code)))).action;
       expect(action).toMatchObject({
         kind: 'delegate',
@@ -1041,7 +1041,13 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
     // Without this, a Record that somehow enumerated nothing would make every
     // assertion below pass VACUOUSLY — the it.each would simply run zero cases.
     expect(ownershipCodes.length).toBeGreaterThanOrEqual(20);
-    expect(ownershipCodes.filter(([, owner]) => owner === 'grader')).toHaveLength(2);
+    // WI-6554700010008529: independent_verification_missing joined acceptance_ungraded and
+    // self_graded_only — a recruited grader is the D-005 independent verifier.
+    expect(ownershipCodes.filter(([, owner]) => owner === 'grader').map(([code]) => code).sort()).toEqual([
+      'acceptance_ungraded',
+      'independent_verification_missing',
+      'self_graded_only',
+    ]);
   });
 
   it.each(ownershipCodes)('%s (%s) routes by ownership, and only a grader gap delegates', (code, owner) => {

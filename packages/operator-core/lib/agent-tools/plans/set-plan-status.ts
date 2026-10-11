@@ -56,6 +56,10 @@ import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { checkPlanAdmission } from './plan-admission-gate';
 import { resolvePlanScope } from './source';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
+import {
+  evaluateIndependentVerificationGate,
+  renderIndependentVerificationBrief,
+} from '../../independent-verification-gate';
 import { restoreHistoricalShipment } from './restore-historical-shipment';
 import {
   settleAcceptanceReviewReservationsForPlan,
@@ -414,7 +418,25 @@ function resolveRatifierOwnerId(ctx: unknown): string | null {
 /** Exported so the acceptance-grading stall sweep can PIN its own copy of this set
  * against the definition the live gate actually uses, instead of the two drifting
  * apart silently (acceptance-grading-stall-sweep-2026-08-26 P-001). */
-export const ACCEPTANCE_GRADER_GATE_CODES = new Set(['acceptance_ungraded', 'self_graded_only']);
+// WI-6554700010008529: independent_verification_missing recruits too. A recruited grader is
+// outside the implementers' lineage by construction, which is the independence D-005 asks
+// of a verifier; its brief carries the re-observation step
+// (renderIndependentVerificationBrief) ahead of grading. Keep the literal comment-free:
+// acceptance-grading-sweep.test.ts pins it by parsing this array's text.
+export const ACCEPTANCE_GRADER_GATE_CODES = new Set([
+  'acceptance_ungraded',
+  'self_graded_only',
+  'independent_verification_missing',
+]);
+
+/** The codes where the gate itself found no admissible independent grading. */
+const GRADING_ABSENT_GATE_CODES = new Set(['acceptance_ungraded', 'self_graded_only']);
+
+/** Read the open IV gaps and render the verifier step; '' when none or unreadable. */
+async function defaultIndependentVerificationBrief(slug: string, harnessSlug: string, workspaceId: string): Promise<string> {
+  const verdict = await evaluateIndependentVerificationGate({ planSlug: slug, harnessSlug, workspaceId });
+  return verdict.satisfied ? '' : renderIndependentVerificationBrief(slug, harnessSlug, verdict.gaps);
+}
 
 /** D-006: a grading refusal recruits one grader. Keeping this decision in a
  * small exported seam makes the trigger independently testable and prevents
@@ -433,6 +455,9 @@ export async function launchAcceptanceGraderForGate(
   launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
   evaluateRecruitment: typeof evaluatePlanAcceptanceGate = evaluatePlanAcceptanceGate,
   current?: EvidenceCurrentInput[],
+  /** WI-6554700010008529: the re-observation step for an `independent_verification_missing` recruit. */
+  renderVerification: (slug: string, harnessSlug: string, workspaceId: string) => Promise<string> =
+    defaultIndependentVerificationBrief,
 ): Promise<AcceptanceGraderLifecycle | undefined> {
   if (!gate.satisfied && gate.code === 'plan_items_unfinished') {
     // The real ship gate stays strict. Its not-code ceremony tail can still
@@ -485,15 +510,21 @@ export async function launchAcceptanceGraderForGate(
       ),
     ),
   ];
+  const verifyHarness = scopedCtx.harnessSlug?.trim();
+  const verificationBrief = gate.code === 'independent_verification_missing' && verifyHarness
+    ? await renderVerification(slug, verifyHarness, workspaceId)
+    : '';
   return launch(slug, {
     ...scopedCtx,
     acceptanceShipperOwnerId,
+    ...(verificationBrief ? { acceptanceIndependentVerificationBrief: verificationBrief } : {}),
     ...(gate.staleGradingScorecardId ? { acceptanceStaleGradingScorecardId: gate.staleGradingScorecardId } : {}),
     ...(staleIds.length > 0 ? { acceptanceStaleGradingScorecardIds: staleIds } : {}),
-    // WI-10003286: this seam only runs for ACCEPTANCE_GRADER_GATE_CODES, where the gate
-    // has already resolved identities and found no admissible independent grading. The
-    // recruiter's identity-free settlement read must not override that verdict.
-    acceptanceGateFoundNoAdmissibleGrading: true,
+    // WI-10003286: for the grading codes the gate has already resolved identities and
+    // found no admissible independent grading; the recruiter's identity-free settlement
+    // read must not override that verdict. independent_verification_missing says nothing
+    // about grading, so the recruiter's own settlement read decides there.
+    ...(GRADING_ABSENT_GATE_CODES.has(gate.code) ? { acceptanceGateFoundNoAdmissibleGrading: true } : {}),
     uiClientId: null,
     isSuperuser: false,
     isPowerUser: false,

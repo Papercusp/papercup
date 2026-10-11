@@ -42,6 +42,7 @@ import {
   evaluateIndependentVerificationGate,
   type IndependentVerificationVerdict,
 } from './independent-verification-gate';
+import { evaluateBlindReviewGate } from './blind-review-gate';
 
 vi.mock('./agent-tools/work_items/design-evidence-gate', () => ({ planDesignEvidenceGate: vi.fn() }));
 vi.mock('./rubrics', async (importOriginal) => ({
@@ -74,6 +75,10 @@ vi.mock('./goals/plan-closure-observations', async (orig) => ({
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('./independent-verification-gate', () => ({ evaluateIndependentVerificationGate: vi.fn() }));
+// The blind-review door (verification-system-improvements-2026-10-10 P-006) sits right
+// after this suite's door and has its own suites; hold it satisfied so the positive
+// control isolates the independent-verification door.
+vi.mock('./blind-review-gate', () => ({ evaluateBlindReviewGate: vi.fn() }));
 vi.mock('./acceptance-grading-authority', async (orig) => ({
   ...(await orig<typeof import('./acceptance-grading-authority')>()),
   readGraderSelectionVia: vi.fn(),
@@ -112,7 +117,7 @@ const ivVerdict = (over: Partial<IndependentVerificationVerdict> = {}): Independ
   inScope: 1,
   gaps: [{
     specId: 'AUTO-BAR-R-1-P-001', revision: 1, evidencePlane: 'live', barKey: 'R-1',
-    reason: 'no-independent-binding', rejectedBindingIds: [],
+    reason: 'no-independent-binding', rejectedBindingIds: [], citableBindingIds: [],
   }],
   ...over,
 });
@@ -150,6 +155,9 @@ beforeEach(() => {
   vi.mocked(resolvePlanImplementerIdentities).mockResolvedValue([]);
   vi.mocked(readRubricPlanRevision).mockResolvedValue({ ok: true as const, revision: 1 });
   vi.mocked(readGraderSelectionVia).mockResolvedValue(new Map());
+  vi.mocked(evaluateBlindReviewGate).mockResolvedValue({
+    satisfied: true, applicable: true, acceptedReviewIds: [1], rejectedReviews: [], undispositionedGaps: [],
+  });
   // Only the rubric family is on: the code-truth gates have their own suites and run
   // before the door; turning them on here would only test their mocks.
   vi.mocked(getFlag).mockImplementation(async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE);
