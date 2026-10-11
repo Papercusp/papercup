@@ -14,6 +14,7 @@ import {
   passedCaseTitlesIncomplete,
   stableRecordedRuntimeEnvironment,
 } from '@papercusp/test-config/execution-details';
+import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import { pgTimestampToIso } from '../../pg-timestamp';
@@ -2057,6 +2058,9 @@ interface EvidenceRow extends CurrentnessRow {
   mutation_failure_tail: string | null;
   /** Same source/status fence as the tail; optional for legacy mock/read envelopes. */
   mutation_execution_details?: unknown;
+  mutation_baseline_id?: number | string | null;
+  mutation_baseline_status?: string | null;
+  mutation_baseline_execution_details?: unknown;
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
 }
@@ -3042,6 +3046,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            tr.execution_details AS test_run_execution_details,
            tr.started_at AS test_run_started_at,
            tr.finished_at AS test_run_finished_at,
+           mutation_baseline.id AS mutation_baseline_id,
+           mutation_baseline.status AS mutation_baseline_status,
+           mutation_baseline.execution_details AS mutation_baseline_execution_details,
            -- WI-10006745: unconditional, so no adequacy reader (the ship-gate snapshot included)
            -- can forget to ask for it. Bounded by the ledger's own 4000-char tail.
            CASE
@@ -3077,6 +3084,25 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       LEFT JOIN harness_shared.test_runs tr
         ON tr.id = b.test_run_id
        AND tr.workspace_id = b.workspace_id AND tr.harness_slug = b.harness_slug
+      LEFT JOIN LATERAL (
+        SELECT baseline.id, baseline.status, baseline.execution_details
+          FROM harness_shared.test_runs baseline
+         WHERE b.evidence_kind IN ('mutation', 'counterexample')
+           AND tr.source = 'mutation-probe'
+           AND tr.execution_details->'mutation'->>'leg' = 'mutant'
+           AND baseline.workspace_id = tr.workspace_id
+           AND baseline.harness_slug = tr.harness_slug
+           AND baseline.file_path = tr.file_path
+           AND baseline.source = 'mutation-probe'
+           AND baseline.status = 'pass'
+           AND baseline.execution_details->'mutation'->>'leg' = ANY(${[...CALIBRATION_LEGS]}::text[])
+           AND baseline.execution_details->'mutation'->>'probeInvocationId'
+               = tr.execution_details->'mutation'->>'probeInvocationId'
+           AND baseline.execution_details->'mutation'->>'subjectBeforeSha256'
+               = tr.execution_details->'mutation'->>'subjectBeforeSha256'
+         ORDER BY baseline.id DESC
+         LIMIT 1
+      ) mutation_baseline ON TRUE
       JOIN harness_shared.plan_spec_clauses c
         ON c.workspace_id = b.workspace_id AND c.harness_slug = b.harness_slug
        AND c.plan_slug = b.plan_slug AND c.spec_id = b.spec_id
@@ -3435,6 +3461,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     const parsedTestRunExecution = row.test_run_id === null
       ? undefined
       : parseTestRunExecutionDetails(row.test_run_execution_details);
+    const baselineExecution = parseTestRunExecutionDetails(row.mutation_baseline_execution_details);
     const scopedCurrentKey = evidenceCurrentInputKey({
       planSlug: row.plan_slug,
       specId: row.spec_id,
@@ -3557,6 +3584,20 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             framework: row.test_run_framework ?? null,
             source: row.test_run_source ?? null,
             mutationPhase: parsedTestRunExecution?.mutationPhase ?? null,
+            ...(parsedTestRunExecution?.mutation ? {
+              mutation: parsedTestRunExecution.mutation,
+              mutationBaseline: row.mutation_baseline_id != null && baselineExecution?.mutation
+                ? {
+                    testRunId: Number(row.mutation_baseline_id),
+                    status: row.mutation_baseline_status ?? null,
+                    mutation: baselineExecution.mutation,
+                    passed: baselineExecution.passed,
+                    failed: baselineExecution.failed,
+                    skipped: baselineExecution.skipped,
+                    collectionFailed: baselineExecution.collectionFailed,
+                  }
+                : null,
+            } : {}),
             commitSha: row.test_run_commit_sha,
             worktreeDirty: row.test_run_worktree_dirty,
             ...(row.mutation_failure_tail || row.mutation_execution_details != null
