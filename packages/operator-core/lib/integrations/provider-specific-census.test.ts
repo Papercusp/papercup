@@ -94,7 +94,7 @@ type CensusGroup = 'slack' | 'social' | 'facebook-vault' | 'google-workspace' | 
 
 /** Where each group's migration is owned. */
 export const MIGRATION_OWNERS: Record<CensusGroup, string> = {
-  slack: 'cupboard-distributable-integrations-2026-10-10#P-008',
+  slack: 'provider-adapters-to-packages-2026-10-11#P-008',
   social: 'provider-adapters-to-packages-2026-10-11',
   'facebook-vault': 'provider-adapters-to-packages-2026-10-11',
   'google-workspace': 'provider-adapters-to-packages-2026-10-11',
@@ -113,17 +113,14 @@ interface CensusEntry {
 const p = (path: string, group: CensusGroup): CensusEntry => ({ path, group, detectedBy: 'path' });
 
 export const CENSUS: readonly CensusEntry[] = [
-  // Slack and the Slack -> Asana bug workflow: removed by P-008 once the slack and bug-triage
-  // packages carry the same journey.
-  p('apps/operator/app/settings/integrations/SlackSetupCard.tsx', 'slack'),
-  p('packages/operator-core/lib/agent-tools/slack/file-asana-bug.ts', 'slack'),
-  p('packages/operator-core/lib/agent-tools/slack/record-classification.ts', 'slack'),
-  p('packages/operator-core/lib/agent-tools/slack/respond-in-thread.ts', 'slack'),
+  // Slack: cupboard-distributable-integrations-2026-10-10#P-008 deleted what the slack and
+  // bug-triage packages replace (SlackSetupCard, the slack:* agent tools, slack-asana-filing,
+  // slack-bug-classification; D-019). What remains carries the report-bug gesture system, the
+  // in-app socket path (incl. the /admin/triggers/slack/{manifest,connect} routes this doc-claim
+  // judges) and the Slack organization data source, all owned by the follow-up item (D-019 ruling 3).
   p('packages/operator-core/lib/data-sources/slack-org-connector.ts', 'slack'),
   p('packages/operator-core/lib/data-sources/slack-realtime-search.ts', 'slack'),
   p('packages/operator-core/lib/doc-claims/slack-external-trigger-setup.ts', 'slack'),
-  p('packages/operator-core/lib/external-triggers/slack-asana-filing.ts', 'slack'),
-  p('packages/operator-core/lib/external-triggers/slack-bug-classification.ts', 'slack'),
   p('packages/operator-core/lib/external-triggers/slack-credential-ref.ts', 'slack'),
   p('packages/operator-core/lib/external-triggers/slack-flagship.ts', 'slack'),
   p('packages/operator-core/lib/external-triggers/slack-report-bug.ts', 'slack'),
@@ -195,7 +192,7 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 62;
+export const CENSUS_HIGH_WATERMARK = 56;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.

@@ -5,7 +5,6 @@ import { dispatchPendingTriggerRuns } from './binding-engine';
 import { ingestExternalTriggerEvent } from './ingestion';
 import {
   ensureSlackRespondInThreadBinding,
-  respondToSlackTriggerPlanRun,
   SLACK_RESPOND_IN_THREAD_EVENT,
   SLACK_RESPOND_IN_THREAD_HARNESS,
   SLACK_RESPOND_IN_THREAD_PLAN,
@@ -184,49 +183,9 @@ describe('Slack flagship desktop flow', () => {
       SELECT title, payload FROM harness_shared.work_items
        WHERE workspace_id = ${WS} AND source_plan_slug = ${SLACK_RESPOND_IN_THREAD_PLAN}`;
     expect(work).toHaveLength(1);
-    expect(work[0].title).toContain('slack:respond-in-thread');
-
-    const storage = {
-      read: vi.fn(async () => ({
-        owner_app_token: 'xapp-secret',
-        owner_bot_token: 'xoxb-secret',
-      })),
-      update: vi.fn(async () => undefined),
-    };
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            ok: true,
-            channel: 'C1',
-            ts: '1777000001.4',
-          }),
-        ),
-    ) as never;
-    await expect(
-      sql.begin((tx) =>
-        respondToSlackTriggerPlanRun(tx, WS, runs[0].planRunId, 'Release is green.', {
-          storage,
-          fetch: fetchImpl,
-          apiOrigin: 'https://slack.test',
-          now: () => new Date('2026-08-22T18:00:00.000Z'),
-        }),
-      ),
-    ).resolves.toMatchObject({
-      posted: true,
-      alreadyPosted: false,
-      channelId: 'C1',
-      threadId: '1777000000.1',
-      messageTs: '1777000001.4',
-    });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    await expect(
-      respondToSlackTriggerPlanRun(sql, WS, runs[0].planRunId, 'Release is green.', {
-        storage,
-        fetch: fetchImpl,
-        apiOrigin: 'https://slack.test',
-      }),
-    ).resolves.toMatchObject({ posted: false, alreadyPosted: true, messageTs: '1777000001.4' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // The reply itself goes through the provider-neutral chat:reply { planRunId }
+    // (cupboard-distributable-integrations-2026-10-10#D-019); its exactly-once,
+    // anchored-thread contract is covered in capability-verbs/chat.test.ts.
+    expect(work[0].title).toContain('chat:reply');
   });
 });

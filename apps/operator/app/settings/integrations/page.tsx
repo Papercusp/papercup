@@ -43,7 +43,6 @@ import { Checkbox } from '../../harness/Checkbox';
 import { Select, type SelectOption } from '../../harness/Select';
 import { isExternalWebUrl, openExternalWebUrl } from '../../_components/ExternalLinkProvider';
 import { isDesktop } from '@/lib/ipc-status-tauri';
-import { SlackSetupCard } from './SlackSetupCard';
 import { ProviderAppRegistration } from './ProviderAppRegistration';
 import { ProviderCredentialsForm } from './ProviderCredentialsForm';
 import { ProviderOAuthClientForm } from './ProviderOAuthClientForm';
@@ -212,7 +211,6 @@ export default function IntegrationsSettingsPage() {
           ))}
         </>
       )}
-      <SlackSetupCard />
     </div>
   );
 }

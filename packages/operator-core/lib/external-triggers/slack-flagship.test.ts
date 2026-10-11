@@ -29,7 +29,8 @@ describe('Slack flagship respond-in-thread binding', () => {
     expect(plan.frontmatter.status).toBe('ready');
     expect(plan.items).toHaveLength(1);
     expect(plan.items[0]).toMatchObject({ id: 'P-001', storedStatus: 'todo' });
-    expect(plan.items[0].text).toContain('slack:respond-in-thread');
+    expect(plan.items[0].text).toContain('chat:reply');
+    expect(plan.items[0].text).not.toContain('slack:respond-in-thread');
     // WI-2143575: the engine projects `trigger.payload` OUT of plan-run inputs
     // because those inputs federate, so the schema must not require it — a
     // schema that did would refuse every launch, silently.
