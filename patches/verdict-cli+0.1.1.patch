@@ -182,7 +182,7 @@ index a3392d2..c83809b 100755
 +  } else { outputError(e.message); }
  }
 diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
-index 249847c..97f0329 100644
+index 249847c..e29ee48 100644
 --- a/node_modules/verdict-cli/src/server.mjs
 +++ b/node_modules/verdict-cli/src/server.mjs
 @@ -8,8 +8,15 @@ import { createServer } from 'node:http';
