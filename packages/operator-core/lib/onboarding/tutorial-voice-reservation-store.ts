@@ -1,12 +1,40 @@
 import { randomUUID } from 'node:crypto';
-import { withHostedServiceContext } from '@papercusp/db-org';
-import type { Sql } from 'postgres';
+import { deriveTenantContext, withHostedServiceContext, type VerifiedTenantServerContext } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { TutorialVoiceAdmission } from '../endpoint-route/routes/hosted-tutorial-progress';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import type { HostedIdentityProvider } from '../auth/hosted/provider';
+
+/** Read a verified tenant's lesson inside the reservation transaction. Unlike
+ * withTenantContext, this must not open a second transaction: successful row
+ * locks protect admission until the outer commit. The savepoint restores role
+ * and GUCs even when a SQL error aborts the scoped read. */
+export async function withTutorialVoiceTenantContext<T>(sql: Sql, context: VerifiedTenantServerContext,
+  read: (tx: Sql) => Promise<T>): Promise<T> {
+  const tenant = deriveTenantContext(context);
+  const transaction = sql as unknown as TransactionSql;
+  if (typeof sql.begin === 'function' || typeof transaction.savepoint !== 'function') {
+    throw new Error('tutorial_lock_requires_transaction');
+  }
+  const [before] = await sql<{ role: string; organization: string | null; user: string | null; workspace: string | null }[]>`
+    SELECT current_user AS role, current_setting('app.organization_id', true) AS organization,
+      current_setting('app.user_id', true) AS "user", current_setting('app.workspace_id', true) AS workspace`;
+  if (before?.role !== 'hosted_service') throw new Error('tutorial_service_context_required');
+  return transaction.savepoint(async scoped => {
+    const tx = scoped as unknown as Sql;
+    await tx`SELECT set_config('app.organization_id', ${tenant.organizationId}, true),
+      set_config('app.user_id', ${tenant.userId}, true), set_config('app.workspace_id', ${tenant.workspaceId ?? ''}, true)`;
+    await tx.unsafe('SET LOCAL ROLE hosted_app');
+    const result = await read(tx);
+    await tx.unsafe('SET LOCAL ROLE hosted_service');
+    await tx`SELECT set_config('app.organization_id', ${before.organization ?? ''}, true),
+      set_config('app.user_id', ${before.user ?? ''}, true), set_config('app.workspace_id', ${before.workspace ?? ''}, true)`;
+    return result;
+  });
+}
 
 /** Server composition supplies the provider, never an identity from a request.
  * Keep local revocation locks until the surrounding reservation commits. This
