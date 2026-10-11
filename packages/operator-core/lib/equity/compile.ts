@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import type { Abi, Hex } from 'viem';
 
 export const EQUITY_BUILD = Object.freeze({ openzeppelin: '5.6.1', solc: '0.8.37', evmVersion: 'cancun', optimizerRuns: 200 });
-export const EQUITY_CONTRACT_NAMES = ['PapercuspEquity', 'EquityGovernor', 'EquityTimelock'] as const;
+export const EQUITY_CONTRACT_NAMES = ['PapercuspEquity', 'EquityGovernor', 'EquityTimelock', 'PapercuspEquityV2', 'EquityGovernorV2'] as const;
 export type EquityContractName = typeof EQUITY_CONTRACT_NAMES[number];
 export interface EquityArtifact { abi: Abi; bytecode: Hex; deployedBytecode: Hex }
 export interface EquityArtifacts {

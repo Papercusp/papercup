@@ -14,7 +14,8 @@ export const TERMS = digest('Fixture issuer signed ownership-register documents'
 export type Contract = { address: Address; abi: Abi };
 export type Action = { contract: Contract; name: string; args?: unknown[] };
 
-export async function equityEvm() {
+/** One in-memory Cancun chain with eight funded signing accounts. */
+export async function evmChain() {
   const common = new Common({ chain: Mainnet, hardfork: Hardfork.Cancun });
   const vm = await createVM({ common });
   const keys = Array.from({ length: 8 }, (_, i) => hexToBytes(('0x' + (i + 1).toString(16).padStart(64, '0')) as Hex));
@@ -46,6 +47,14 @@ export async function equityEvm() {
     const fn = c.abi.find(f => f.type === 'function' && f.name === name);
     return fn && 'outputs' in fn && fn.outputs.length ? decodeFunctionResult({ abi: c.abi, functionName: name, data: output }) : undefined;
   }
+  /** A state-changing message call whose sender is any address (e.g. the timelock executor). */
+  async function callAs(caller: Address, c: Contract, name: string, args: unknown[] = []) {
+    ++time; ++number;
+    const result = await vm.evm.runCall({ to: createAddressFromString(c.address), caller: createAddressFromString(caller),
+      data: hexToBytes(encodeFunctionData({ abi: c.abi, functionName: name, args })), gasLimit: 50_000_000n, block: block() });
+    const output = bytesToHex(result.execResult.returnValue) as Hex;
+    if (result.execResult.exceptionError) throw new Error('EVM reverted: ' + error(c.abi, output) + ' (' + result.execResult.exceptionError.error + ')');
+  }
   async function read(c: Contract, name: string, args: unknown[] = []) {
     const result = await vm.evm.runCall({ to: createAddressFromString(c.address), caller: createAddressFromString(accounts[0]),
       data: hexToBytes(encodeFunctionData({ abi: c.abi, functionName: name, args })), gasLimit: 50_000_000n, block: block(), isStatic: true });
@@ -55,33 +64,58 @@ export async function equityEvm() {
   }
   const advance = (seconds: bigint | number) => { time += BigInt(seconds); ++number; };
   const now = () => time;
-  const equity = await deploy('PapercuspEquity', [TERMS, 'https://issuer.example/legal/register-v1', 1_000_000n, 100_000n]);
-  await send(equity, 'activateGenesis', [digest('founder-identity'), TERMS]);
-  const timelock = await deploy('EquityTimelock', [86400n]);
-  const governor = await deploy('EquityGovernor', [equity.address, timelock.address]);
-  await send(timelock, 'initializeGovernor', [governor.address]);
-  await send(equity, 'bindGovernance', [governor.address, timelock.address]);
-  advance(2);
+  return { vm, accounts, raw, deploy, send, callAs, read, advance, now };
+}
+type Chain = Awaited<ReturnType<typeof evmChain>>;
+
+/** Propose → vote → queue → execute through a bound governor and timelock. */
+function governanceOf(c: Chain, equity: Contract, governor: Contract, timelock: Contract) {
   const actionData = (actions: Action[]) => ({ targets: actions.map(a => a.contract.address), values: actions.map(() => 0n),
     calldatas: actions.map(a => encodeFunctionData({ abi: a.contract.abi, functionName: a.name, args: a.args ?? [] })) });
   async function propose(actions: Action[], description: string, sender = 0) {
     const data = actionData(actions);
-    const id = await send(governor, 'propose', [data.targets, data.values, data.calldatas, description], sender) as bigint;
+    const id = await c.send(governor, 'propose', [data.targets, data.values, data.calldatas, description], sender) as bigint;
     return { ...data, descriptionHash: digest(description), id };
   }
   async function finish(proposal: Awaited<ReturnType<typeof propose>>, voters = [0]) {
-    advance(61);
-    for (const voter of voters) await send(governor, 'castVote', [proposal.id, 1], voter);
-    advance(Number(await read(governor, 'votingPeriod')) + 1);
-    await send(governor, 'queue', [proposal.targets, proposal.values, proposal.calldatas, proposal.descriptionHash]);
-    advance(Number(await read(timelock, 'getMinDelay')) + 1);
-    await send(governor, 'execute', [proposal.targets, proposal.values, proposal.calldatas, proposal.descriptionHash]);
+    c.advance(61);
+    for (const voter of voters) await c.send(governor, 'castVote', [proposal.id, 1], voter);
+    c.advance(Number(await c.read(governor, 'votingPeriod')) + 1);
+    await c.send(governor, 'queue', [proposal.targets, proposal.values, proposal.calldatas, proposal.descriptionHash]);
+    c.advance(Number(await c.read(timelock, 'getMinDelay')) + 1);
+    await c.send(governor, 'execute', [proposal.targets, proposal.values, proposal.calldatas, proposal.descriptionHash]);
   }
   let sequence = 0;
   async function govern(actions: Action[], voters = [0]) { const p = await propose(actions, 'Fixture governance action ' + ++sequence); await finish(p, voters); return p; }
   async function register(sender: number, voters = [0]) {
-    await govern([{ contract: equity, name: 'registerHolder', args: [accounts[sender], digest('holder-' + sender)] }], voters);
-    await send(equity, 'acceptTerms', [TERMS], sender);
+    await govern([{ contract: equity, name: 'registerHolder', args: [c.accounts[sender], digest('holder-' + sender)] }], voters);
+    await c.send(equity, 'acceptTerms', [TERMS], sender);
   }
-  return { vm, accounts, read, send, raw, deploy, advance, now, equity, governor, timelock, govern, propose, finish, register, actionData };
+  return { propose, finish, govern, register, actionData };
+}
+
+export async function equityEvm() {
+  const c = await evmChain();
+  const equity = await c.deploy('PapercuspEquity', [TERMS, 'https://issuer.example/legal/register-v1', 1_000_000n, 100_000n]);
+  await c.send(equity, 'activateGenesis', [digest('founder-identity'), TERMS]);
+  const timelock = await c.deploy('EquityTimelock', [86400n]);
+  const governor = await c.deploy('EquityGovernor', [equity.address, timelock.address]);
+  await c.send(timelock, 'initializeGovernor', [governor.address]);
+  await c.send(equity, 'bindGovernance', [governor.address, timelock.address]);
+  c.advance(2);
+  return { ...c, equity, governor, timelock, ...governanceOf(c, equity, governor, timelock) };
+}
+
+/** Account index of the bounded admin in the version-2 fixture (never a holder). */
+export const V2_ADMIN = 7;
+export async function equityV2Evm() {
+  const c = await evmChain();
+  const equity = await c.deploy('PapercuspEquityV2', [TERMS, 'https://issuer.example/legal/register-v2', 1_000_000n, 100_000n]);
+  await c.send(equity, 'activateGenesis', [digest('founder-identity'), TERMS]);
+  const timelock = await c.deploy('EquityTimelock', [86400n]);
+  const governor = await c.deploy('EquityGovernorV2', [equity.address, timelock.address]);
+  await c.send(timelock, 'initializeGovernor', [governor.address]);
+  await c.send(equity, 'bindGovernance', [governor.address, timelock.address, c.accounts[V2_ADMIN]]);
+  c.advance(2);
+  return { ...c, equity, governor, timelock, admin: V2_ADMIN, ...governanceOf(c, equity, governor, timelock) };
 }
