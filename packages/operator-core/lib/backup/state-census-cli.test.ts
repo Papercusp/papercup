@@ -15,6 +15,10 @@ const fixtureHome = vi.hoisted(() => {
   for (const [key, value] of Object.entries({ HOME: directory, PAPERCUSP_HOME: directory,
     XDG_CONFIG_HOME: path.join(directory, '.config'), PAPERCUSP_WORKSPACES_ROOT: path.join(directory, 'registry'),
     PAPERCUSP_SCRATCH_ROOT: path.join(directory, 'spills'), PAPERCUSP_STRIP_CACHE_DIR: path.join(directory, 'analysis-cache'),
+    // Committed-test runners set these to shared host paths. Both census
+    // executions must read fixture files, even when those variables are set.
+    AFFECTED_TASK_HISTORY_PATH: path.join(directory, 'affected-cache', 'durations.json'),
+    AFFECTED_TASK_VERDICT_CACHE_PATH: path.join(directory, 'affected-cache', 'verdict.json'),
     PAPERCUSP_DB_ENCRYPTION_KEY_FILE: path.join(directory, 'db-key') })) vi.stubEnv(key, value as string);
   return directory;
 });
@@ -43,6 +47,8 @@ describe('unit census executable exit contract', () => {
       mkdirSync(join(directory, 'registry'));
       mkdirSync(join(directory, 'spills'));
       mkdirSync(join(directory, 'analysis-cache'));
+      mkdirSync(join(directory, 'affected-cache'));
+      writeFileSync(join(directory, 'affected-cache', 'unowned-cache-entry'), 'fixture');
       mkdirSync(join(directory, 'checkpoint-history'));
       mkdirSync(join(directory, '.config', 'papercusp'), { recursive: true });
       const peer = join(directory, 'registry', 'fixture', '.papercusp', 'harness', 'hyperbee');
@@ -97,6 +103,7 @@ describe('unit census executable exit contract', () => {
       expect(report.representedSubtrees.some((entry: { name: string }) => entry.name === 'checkpoint-history')).toBe(true);
       expect(report.inventory.find((entry: { name: string }) => entry.name.endsWith('.next-build-123-456-abcd')).classification).toBe('cache');
       expect(report.residue.some((entry: { name: string }) => entry.name === 'unknown')).toBe(true);
+      expect(report.residue.some((entry: { name: string }) => entry.name === 'unowned-cache-entry')).toBe(true);
       expect(report.representedGit.some((entry: { name: string }) => entry.name === 'registry/clones/owned')).toBe(true);
       expect(report.inventory.find((entry: { name: string }) => entry.name === 'registry/clones').classification).toBe('state');
       expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/clones/owned/uncommitted-state')).toBe(false);
