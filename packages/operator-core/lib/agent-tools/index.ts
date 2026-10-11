@@ -313,10 +313,6 @@ import './personal/open-sealed';
 import './documents/search';
 import './documents/read';
 import './documents/subscriptions';
-// external-triggers P-008: reply only to the Slack thread anchored by a durable plan run.
-import './slack/respond-in-thread';
-import './slack/record-classification';
-import './slack/file-asana-bug';
 // external-triggers D-019 Tier 1 (P-029/P-030/P-031): provider-neutral capability
 // verbs keyed to the canonical datatypes. Reply-shaped verbs resolve the
 // destination server-side (D-020 rail 1); create-shaped verbs check the
@@ -1368,6 +1364,8 @@ import './plans/set-specs';
 // P-005 — exact many-to-many work-item/spec-revision coverage plus immutable
 // proof fingerprints and computed (never stored) currentness.
 import './plans/bind-spec-evidence';
+// EI-25692833751908142 — the judge's narrow door for independent-verification bindings only.
+import './plans/bind-independent-verification';
 import './plans/get-spec-evidence';
 // review-system-rework-reduction-2026-09-23 P-040 — which live repo-files proof measures a
 // path; the PostToolUse proof-stale nudge calls it after every edit.

@@ -3,12 +3,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DaoExecution from './DaoExecution';
+import { WORKBENCH_FIELD_SELECTOR } from '../../../../../scripts/lib/dao-workbench-controls';
 vi.mock('@papercusp/sync', () => ({ onSyncBusEvent: () => () => {} }));
 vi.mock('@/app/adv/harnesses/HumanWorkSection', () => ({ HumanWorkSection: () => <div>Maintained human work</div> }));
 vi.mock('@/app/_components/RouteLink', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
 const view = { directoryId: 'dao', localHomeSlug: 'joined-home', status: 'connected' as const, projects: { status: 'ready' as const, value: [{ slug: 'linked', title: 'Linked', plans: [] }] } };
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('organization execution scope', () => {
+  it('measures the visible Radix project control and each native work field', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ workItems: [], total: 0 }) }));
+    const { container } = render(<DaoExecution view={view} section="work" />);
+    await screen.findByText('No work records match this view.');
+    const labels = [...container.querySelectorAll('.dao-execution label')];
+    expect(labels.map(label => label.firstChild?.textContent?.trim())).toEqual(['Project scope', 'Find work', 'Work title', 'Work brief']);
+    const controls = labels.map(label => label.querySelector(WORKBENCH_FIELD_SELECTOR));
+    expect(controls[0]).toBe(screen.getByRole('combobox', { name: 'Project scope' }));
+    expect(controls.slice(1)).toEqual(['Find work', 'Work title', 'Work brief'].map(label => screen.getByLabelText(label)));
+  });
   it('opens the maintained participation controls for a recorded human-work offer', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ workItems: [{ id: 'WI-human', title: 'Contributor job', kind: 'task', state: 'todo', payload: { humanWork: { offered: true } } }], total: 1 }) }));
     render(<DaoExecution view={view} section="jobs" />);

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import DaoGovernance from './DaoGovernance';
+import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from '../../../../../scripts/lib/dao-workbench-controls';
 
 const view: DaoWorkspaceView = { directoryId: 'dao', localHomeSlug: 'local-home', status: 'connected',
   projects: { status: 'ready', value: [{ slug: 'project', title: 'Project', plans: [{ slug: 'proposal', title: 'Build the tool', status: 'draft', owner: null, itemCount: 1 }] }] } };
@@ -42,6 +43,29 @@ async function choose() {
   await screen.findByText('Exact proposal text');
 }
 describe('DAO member decision actions', () => {
+  it('drives the native verifier through current portaled select and revision checkbox controls', async () => {
+    render(<DaoGovernance view={view} />);
+    expect(() => window.eval(workbenchTextField('Review proposal', 'project/proposal'))).toThrow('Missing text field');
+    act(() => { window.eval(openWorkbenchSelect('Review proposal')); });
+    await screen.findByRole('option', { name: 'Build the tool · project' });
+    act(() => { window.eval(chooseWorkbenchOption('Build the tool · project')); });
+    await screen.findByText('Exact proposal text');
+    const open = screen.getByRole('button', { name: 'Open voting round' }) as HTMLButtonElement;
+    expect(open.disabled).toBe(true);
+    act(() => { window.eval(reviewWorkbenchProposal()); });
+    await waitFor(() => expect(open.disabled).toBe(false));
+    expect(screen.getByRole('checkbox').getAttribute('aria-checked')).toBe('true');
+    act(() => { window.eval(reviewWorkbenchProposal()); });
+    expect(screen.getByRole('checkbox').getAttribute('aria-checked')).toBe('true');
+    expect(() => window.eval(chooseWorkbenchOption('Missing proposal'))).toThrow('Missing enabled option');
+  });
+  it('updates controlled proposal fields through the native verifier adapter', async () => {
+    render(<DaoGovernance view={view} />);
+    act(() => { window.eval(workbenchTextField('Proposal title', 'Native proposal')); });
+    expect((screen.getByLabelText('Proposal title') as HTMLInputElement).value).toBe('Native proposal');
+    act(() => { window.eval(workbenchTextField('Purpose & scope', 'Persist exact scope')); });
+    expect((screen.getByLabelText('Purpose & scope') as HTMLTextAreaElement).value).toBe('Persist exact scope');
+  });
   it('loads the exact proposal through the maintained scoped GET reader', async () => {
     render(<DaoGovernance view={view} />); await choose();
     const call = fetchMock.mock.calls.find(([url]) => new URL(url, 'http://localhost').pathname.endsWith('/get'))!;
