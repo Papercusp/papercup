@@ -11,6 +11,7 @@ import { configureRuntimeVintageStore, InMemoryRuntimeVintageStore, reportRuntim
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
+  scopePolicy: undefined as import('./work-scope-policy').WorkScopePolicy | null | undefined,
   // undefined ⇒ the real policy (none under VITEST). A test sets it to exercise the work-scope hold.
   scopeTerms: undefined as {
     exact: string[];
@@ -37,6 +38,10 @@ vi.mock('./work-scope-policy', async (orig) => {
   const actual = await orig<typeof import('./work-scope-policy')>();
   return {
     ...actual,
+    isHarnessInScope: (slug: string | null | undefined) =>
+      h.scopePolicy === undefined ? actual.isHarnessInScope(slug) : actual.isHarnessInScope(slug, h.scopePolicy),
+    evaluateWorkScope: (subject: import('./work-scope-policy').WorkScopeSubject) =>
+      h.scopePolicy === undefined ? actual.evaluateWorkScope(subject) : actual.evaluateWorkScope(subject, h.scopePolicy),
     workScopeSqlTerms: (...args: Parameters<typeof actual.workScopeSqlTerms>) =>
       h.scopeTerms === undefined ? actual.workScopeSqlTerms(...args) : h.scopeTerms,
     recordWorkScopeDecision: async (d: Parameters<typeof actual.recordWorkScopeDecision>[0]) => {
@@ -61,6 +66,7 @@ const {
   readWorkItemAdmissionProducerPressure,
   readWorkItemReadinessProjection,
   readPromoterLiveness,
+  readPromoterWindow,
   runWorkItemAdmissionFailOpen,
   runWorkItemAdmissionPromoter,
   WORK_ITEM_ADMISSION_PROMOTER,
@@ -254,6 +260,7 @@ beforeEach(async () => {
     harness_shared.dedup_adjudications, harness_shared.admission_runs,
     harness_shared.work_item_occurrences, harness_shared.routines RESTART IDENTITY`;
   h.scopeTerms = undefined;
+  h.scopePolicy = undefined;
   h.scopeDecisions.length = 0;
   vintage = new InMemoryRuntimeVintageStore();
   configureRuntimeVintageStore(vintage);
@@ -337,6 +344,65 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
 }
 
 describe('work-item admission promoter (real Postgres)', () => {
+  it.each([false, true])('excludes typed source and direct child lineage in either screening direction (reverse=%s)', async (reverse) => {
+    await seedItem({ id: 'WI-source-record', itemKind: 'ticket', admission: reverse ? 'pending' : null });
+    await seedItem({ id: 'WI-report', admission: reverse ? 'admitted' : 'pending', payload: {
+      admission: { sourceKind: 'record', sourceKey: 'WI-source-record' },
+    } });
+    await seedItem({ id: 'WI-reproduction-child', parentId: 'WI-report', admission: reverse ? 'pending' : 'auto' });
+    await seedItem({ id: 'WI-independent', admission: 'admitted' });
+    for (const target of reverse ? ['WI-source-record', 'WI-reproduction-child'] : ['WI-report']) {
+      const window = await readPromoterWindow(db.sql, {
+        workspaceId: WS, harnessSlug: HARNESS, batchSize: 1,
+        targetItemIds: [target], recentTerminalDays: 30, nowMs: NOW,
+      });
+      expect(window.pairRows.some(pair => [pair.a.id, pair.b.id].includes('WI-report') &&
+        [pair.a.id, pair.b.id].some(id => id === 'WI-source-record' || id === 'WI-reproduction-child'))).toBe(false);
+      expect(window.pairRows.some(pair => [pair.a.id, pair.b.id].includes('WI-independent'))).toBe(true);
+    }
+  });
+
+  it.each([HARNESS, 'papercusp/*'])('screens a harness admitted by the %s scope exception', async (exception) => {
+    const harness = exception === HARNESS ? HARNESS : 'papercusp/drill';
+    h.scopePolicy = {
+      mode: 'enforce', allowHarnesses: ['home-only'],
+      exceptions: [{ harness: exception, reason: 'Owner-authorized drill' }],
+    };
+    h.scopeTerms = { exact: ['home-only'], likePrefixes: [] };
+    await seedItem({ id: 'WI-exception', harness, vector: null });
+    const llmCall = vi.fn();
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: harness, runId: 'promoter-harness-exception',
+      sql: db.sql, llmCall, now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 1, held: 0, modelCalled: false });
+    expect(llmCall).not.toHaveBeenCalled();
+    const [item] = await db.sql`SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-exception'`;
+    expect(item.admission).toBe('admitted');
+    const [run] = await db.sql`SELECT detail->>'status' AS status FROM harness_shared.admission_runs WHERE id = 'promoter-harness-exception'`;
+    expect(run.status).toBe('complete');
+  });
+
+  it('keeps a neighbouring harness pending when its scope exception does not match', async () => {
+    h.scopePolicy = {
+      mode: 'enforce', allowHarnesses: ['home-only'],
+      exceptions: [{ harness: 'papercusp/*', reason: 'Owner-authorized drill' }],
+    };
+    h.scopeTerms = { exact: ['home-only'], likePrefixes: [] };
+    await seedItem({ id: 'WI-held-scope', harness: 'unrelated-app', vector: null });
+    const llmCall = vi.fn();
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: 'unrelated-app', runId: 'promoter-unmatched-scope',
+      sql: db.sql, llmCall, now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 0, modelCalled: false });
+    expect(llmCall).not.toHaveBeenCalled();
+    const [item] = await db.sql`SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-held-scope'`;
+    expect(item.admission).toBe('pending');
+    expect(await db.sql`SELECT id FROM harness_shared.admission_runs WHERE id = 'promoter-unmatched-scope'`).toEqual([]);
+    expect(h.scopeDecisions).toContainEqual(expect.objectContaining({ harness: 'unrelated-app', verdict: 'held' }));
+  });
+
   it('records the actual producing runtime process and preserves it during stranded recovery', async () => {
     const build = getBuildInfo();
     const identity = readProcessIdentity(process.pid);

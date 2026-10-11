@@ -42,7 +42,7 @@ import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 // EI-19447523039740352. Safe direction: release-deploy-launch imports git-pipeline-STATS,
 // never git-pipeline-POSITION, so this does not close an import cycle.
 import { readDeployInFlight, type DeployInFlight } from './release-deploy-launch';
-import { probeServiceStart, resolveServiceStartMs } from './agent-tools/dev/systemd-service-probe';
+import { probeServiceStart, readProcStartMs, resolveServiceStartMs } from './agent-tools/dev/systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 import {
   classifyPathsAgainstCandidate,
@@ -5054,7 +5054,38 @@ export const realResolveGateCandidates = async (root: string): Promise<GateCandi
 /** Default unit-start probe: the shared systemd probe, mapped into ms. */
 /** EI-19447523039740352. Never throws: an unreadable systemd degrades to
  *  `source:'systemd-unavailable'`, which evaluateServing reads as UNKNOWN (keeps the lever). */
-const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlight();
+const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlightShared();
+
+/**
+ * WI-10008286: the same defect class as the unit-start probe below. readDeployInFlight
+ * forks `systemctl show` on EVERY call, and one evidence read runs gitPipelinePosition
+ * for up to 12 paths in parallel, so an operator-release read paid up to 12 forks of a
+ * multi-GB process. It was 8.1% of the 2026-10-11T00:10Z papercusp-bg-host
+ * loop-saturation profile (p95 lag 605 ms). One read per window, shared by every
+ * concurrent caller. A deploy runs for minutes, so a 2 s window cannot hide one; it can
+ * only report a just-started deploy up to 2 s late, as the uncached read could already.
+ */
+export const DEPLOY_IN_FLIGHT_TTL_MS = 2_000;
+
+const deployInFlightRead = pinModuleState('@papercusp/operator-core.git-pipeline-position.deploy-in-flight', () => ({
+  cache: createCache(),
+}));
+
+/** Memoized deploy-in-flight read; `uncached` is injectable for tests. */
+export function readDeployInFlightShared(
+  uncached: () => Promise<DeployInFlight> = readDeployInFlight,
+): Promise<DeployInFlight> {
+  return deployInFlightRead.cache.getOrSet('host-local', 'deploy-in-flight', () => uncached(), {
+    softTtlMs: DEPLOY_IN_FLIGHT_TTL_MS,
+    hardTtlMs: DEPLOY_IN_FLIGHT_TTL_MS,
+    cacheEmpty: true,
+  });
+}
+
+/** Test-only: drop the memoized deploy-in-flight read. */
+export function resetDeployInFlightCacheForTest(): void {
+  deployInFlightRead.cache = createCache();
+}
 
 // WI-10550: `resolveServiceStartMs` prefers the probe's MEASURED /proc start over
 // the `etimes`-derived one. That derivation is biased LATE (whole-second truncation
@@ -5088,20 +5119,57 @@ const probeUnitStartUncached = async (unit: string): Promise<{ pid: number | nul
  */
 export const UNIT_START_PROBE_TTL_MS = 2_000;
 
+/**
+ * WI-10008286: the longest a probed unit start is re-served WITHOUT a fork, and only
+ * while the fork-free identity check below still matches.
+ *
+ * The 2 s TTL alone still forked `systemctl` once per unit every 2 s in every process
+ * that answers pipeline reads. On papercusp-bg-host (multi-GB, serving ~77 agents) the
+ * loop-saturation profile of 2026-10-11T00:10Z (p95 lag 605 ms) spent 19.8% of its
+ * samples in probeUnitStartUncached, and the 22:54Z profile 13.9% in spawn under the
+ * same caller. The fork itself freezes the loop, so every re-fork is paid in lag.
+ *
+ * A unit's start only changes when its MainPID changes, and a changed MainPID is
+ * visible without a fork: the old `/proc/<pid>` disappears, or a recycled pid carries
+ * a different `/proc/<pid>` start (the same mtime `probeServiceStart` records as
+ * `startedAtMs`). So past the TTL a cached `{pid, startedAtMs}` is re-served only after
+ * that one `stat`, and any mismatch falls through to the normal probe. The backstop
+ * bounds what the identity check cannot see (a MainPID handed to another live
+ * process); null and pid-less results cannot be identity-checked and keep the 2 s TTL.
+ */
+export const UNIT_START_IDENTITY_MAX_MS = 60_000;
+
+type UnitStartProbe = { pid: number | null; startedAtMs: number | null } | null;
+
+/** Fork-free read of `/proc/<pid>`'s start (epoch ms); null when the pid is gone. Injectable for tests. */
+export type ProcStartReader = (pid: number) => Promise<number | null>;
+
 const unitStartProbe = pinModuleState('@papercusp/operator-core.git-pipeline-position.unit-start-probe', () => ({
   cache: createCache(),
+  /** Last probed value per unit, with the time its probe (or cache read) returned. */
+  identified: new Map<string, { value: UnitStartProbe; probedAtMs: number }>(),
 }));
 
-/** Memoized unit-start probe; `uncached` is injectable for tests. */
-export function probeUnitStartShared(
+/** Memoized unit-start probe; `uncached` and `readStart` are injectable for tests. */
+export async function probeUnitStartShared(
   unit: string,
-  uncached: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null> = probeUnitStartUncached,
-): Promise<{ pid: number | null; startedAtMs: number | null } | null> {
-  return unitStartProbe.cache.getOrSet('host-local', `unit-start:${unit}`, () => uncached(unit), {
+  uncached: (unit: string) => Promise<UnitStartProbe> = probeUnitStartUncached,
+  readStart: ProcStartReader = readProcStartMs,
+): Promise<UnitStartProbe> {
+  const known = unitStartProbe.identified.get(unit);
+  if (known && Date.now() - known.probedAtMs < UNIT_START_IDENTITY_MAX_MS) {
+    const { value } = known;
+    if (value?.pid && value.pid > 0 && value.startedAtMs !== null && (await readStart(value.pid)) === value.startedAtMs) {
+      return value;
+    }
+  }
+  const value = await unitStartProbe.cache.getOrSet('host-local', `unit-start:${unit}`, () => uncached(unit), {
     softTtlMs: UNIT_START_PROBE_TTL_MS,
     hardTtlMs: UNIT_START_PROBE_TTL_MS,
     cacheEmpty: true,
   });
+  unitStartProbe.identified.set(unit, { value, probedAtMs: Date.now() });
+  return value;
 }
 
 const realProbeUnitStart = (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
@@ -5110,6 +5178,7 @@ const realProbeUnitStart = (unit: string): Promise<{ pid: number | null; started
 /** Test-only: drop memoized unit-start probes. */
 export function resetUnitStartProbeCacheForTest(): void {
   unitStartProbe.cache = createCache();
+  unitStartProbe.identified.clear();
 }
 
 /**

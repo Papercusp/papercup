@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
+import type { SystemHealth } from '../lib/system-health/types';
 import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 
@@ -173,6 +174,40 @@ async function coordCanary(health: unknown) {
   const verifyReceipt = (receipt: { status: number; body: any }, expectedOwner: string, wake: boolean, summary = marker) =>
     verifyPrivateCoordReceipt(receipt, { ownerId: expectedOwner, summary, wake }, getMessageById);
   if (process.env.ROSTER_COORD_BROWSER_PROOF === '1') {
+    if (process.env.ROSTER_HEALTH_BROWSER_PROOF === '1') {
+      const { writeSharedSnapshot } = await import('../lib/derived-reads/shared-snapshot');
+      const { recordHealthHistory } = await import('../lib/system-health/history');
+      const { PANEL_ORDER, PANEL_LABELS } = await import('../lib/system-health/types');
+      const { createWorkItem, setWorkItemState, updateExternalBlockerHistory } = await import('../lib/work-items');
+      // A real private needs-human row keeps the maintained Work-items collector
+      // alarming across the positive ack/unack ticks; no collector is mocked.
+      const { blockers } = updateExternalBlockerHistory({}, { kind: 'human', capability: 'credential',
+        ref: 'credential:private-health-test', summary: 'Provide the private test credential',
+        nextVerb: 'provide private test credential', defaultIfUnanswered: 'stay parked until the private credential is supplied' },
+      'private-health-fixture');
+      const condition = await createWorkItem({ kind: 'bug', title: 'Private Health accepted condition',
+        harness: 'papercusp', workspaceId: workspace, createdBy: 'private-health-fixture', payload: { externalBlockers: blockers } });
+      const needsHuman = await setWorkItemState(condition.id, 'needs-human', { harness: 'papercusp', by: 'private-health-fixture' });
+      assert.equal(needsHuman?.state, 'needs-human');
+      const now = Date.now();
+      const snapshot = (workspaceId: string, foreign: boolean): SystemHealth => ({ workspaceId, evaluatedAt: now, overall: 'warn',
+        crossMonitor: { queenAlive: true, overwatchAlive: null },
+        panels: Object.fromEntries(PANEL_ORDER.map(key => [key, { key, label: PANEL_LABELS[key],
+          status: key === 'workItems' || key === 'plans' ? 'warn' : 'unknown',
+          summary: foreign ? 'private-health-foreign' : key === 'workItems' ? 'private-health-selected'
+            : key === 'plans' ? 'private-health-neighbor' : 'private-health-unmeasured',
+          metrics: [], data: null,
+          ...(key === 'workItems' ? { link: { label: 'Work', href: '/adv?tab=harnesses' } } : {}),
+        }])) as SystemHealth['panels'] });
+      const current = snapshot(workspace, false);
+      await writeSharedSnapshot('system.health', workspace, current, 1);
+      await writeSharedSnapshot('system.health', foreignWorkspace, snapshot(foreignWorkspace, true), 1);
+      const { panels, ...rest } = current;
+      await recordHealthHistory({ ...rest, panels: { ...panels, workItems: { ...panels.workItems, status: 'ok' } } },
+        { ...current, panels: { ...panels, workItems: { ...panels.workItems, summary: 'private-health-transition' } } });
+      writeFileSync(join(evidence, 'portal-health-seed.json'), JSON.stringify({ current, foreignWorkspace, conditionId: condition.id,
+        scope: 'Initial supplied snapshot/history; real private needs-human row drives subsequent Work-items collector ticks' }, null, 2));
+    }
     let harnesses: { hive: string; selected: string; neighbor: string; foreign: string } | undefined;
     if (process.env.ROSTER_WORK_BROWSER_PROOF === '1') {
       const { mutateHarnessRegistry } = await import('../lib/harness-registry');
@@ -261,6 +296,7 @@ async function coordCanary(health: unknown) {
       ...(process.env.ROSTER_SETTINGS_BROWSER_PROOF === '1' ? { settings: true } : {}),
       ...(process.env.ROSTER_PROMPTS_BROWSER_PROOF === '1' ? { prompts: true } : {}),
       ...(process.env.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
+      ...(process.env.ROSTER_HEALTH_BROWSER_PROOF === '1' ? { health: true } : {}),
       ...(harnesses ? { harnesses } : {}),
       ...(docs ? { docs } : {}),
       ...(plans ? { plans } : {}),

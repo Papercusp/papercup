@@ -126,7 +126,16 @@ describe('testing:run selector arbitration', () => {
     }
     expect(unscoped.testRunSource).toBe('local');
     expect(unscoped.env).not.toHaveProperty('PAPERCUSP_TEST_RUN_HARNESS');
-    expect(single.detachedReportArtifacts).toBeUndefined();
+    expect(single.detachedReportArtifacts).toHaveLength(1);
+    expect(single.detachedReportArtifacts?.[0]).toMatchObject({
+      root: REPO_ROOT,
+      routerReports: true,
+      scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+    });
+    expect(mixed.detachedReportArtifacts).toHaveLength(1);
+    expect(mixed.detachedReportArtifacts?.[0]).toMatchObject({ root: REPO_ROOT, routerReports: true });
+    expect(unscoped.detachedReportArtifacts).toHaveLength(1);
+    expect(unscoped.detachedReportArtifacts?.[0]).not.toHaveProperty('scope');
     const reportPath = focused.detachedReportArtifacts?.[0]?.reportPath;
     expect(focused.detachedReportArtifacts).toHaveLength(1);
     expect(focused.detachedReportArtifacts?.[0]).toMatchObject({
@@ -144,6 +153,21 @@ describe('testing:run selector arbitration', () => {
       `--outputFile=${reportPath}`,
       '--testNamePattern=focused proof',
     ]);
+  });
+
+  it('retains a JSON recovery report beside the admin reporter for ordinary multi-file runs', () => {
+    const request = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files: ['packages/operator-core/lib/testing-run-store.test.ts', 'apps/operator/lib/verify-tauri-headless-env.test.ts'],
+      harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace',
+    });
+    const artifact = request.detachedReportArtifacts?.[0];
+    expect(artifact).toMatchObject({ root: REPO_ROOT, routerReports: true, testNamePattern: null });
+    expect(request.args).toEqual(expect.arrayContaining([
+      '--reporter=json',
+      `--reporter=${join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts')}`,
+      `--outputFile=${artifact?.reportPath}`,
+    ]));
   });
 
   it('does not claim evidence from an affected-test plan that runs nothing', async () => {

@@ -475,7 +475,7 @@ export function resolveServiceStartMs(
  * the benign race where the pid exits between the systemctl read and this call.
  * Callers keep their existing fallback.
  */
-async function readProcStartMs(pid: number): Promise<number | null> {
+export async function readProcStartMs(pid: number): Promise<number | null> {
   try {
     const { stat } = await import('node:fs/promises');
     const st = await stat(`/proc/${pid}`);

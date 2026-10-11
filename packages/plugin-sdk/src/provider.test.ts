@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { validateProviderDescriptor, type ProviderDescriptor } from './provider';
+import {
+  PROVIDER_CREDENTIAL_MAX_LENGTH,
+  providerCredentialForHost,
+  providerCredentialValueIssue,
+  validateProviderDescriptor,
+  type ProviderDescriptor,
+} from './provider';
 
 /**
  * Value rules for a provider's OAuth identity endpoint (linear-asana-task-sync-2026-10-05 P-004).
@@ -134,5 +140,103 @@ describe('validateProviderDescriptor: push', () => {
     expect(withPush({ handshake: { header: 'x-hook-signature' }, signature }))
       .toContain('provider.push.handshake.header must differ from provider.push.signature.header');
     expect(withPush('push')).toEqual(['provider.push must be an object']);
+  });
+});
+
+/**
+ * Paste-a-secret setup fields (cupboard-distributable-integrations-2026-10-10 P-001,
+ * SPEC-R-2-P-001 / SPEC-R-7-P-001). A descriptor describes a secret's shape; it never carries one,
+ * and every injected host has exactly one credential.
+ */
+describe('validateProviderDescriptor: setup.credentials', () => {
+  const base: ProviderDescriptor = {
+    id: 'example-chat',
+    contractVersion: 1,
+    datatypes: ['chat-message'],
+    capabilities: ['chat.send'],
+    egressHosts: ['api.example.com', '*.hooks.example.com'],
+  };
+  const withCredentials = (credentials: unknown, extra: Partial<ProviderDescriptor> = {}) =>
+    validateProviderDescriptor({ ...base, ...extra, setup: { credentials } } as unknown as ProviderDescriptor);
+  const bot = { key: 'bot_token', label: 'Bot token', pattern: 'xoxb-[A-Za-z0-9-]+', hosts: ['api.example.com'] };
+
+  it('accepts injected and ingress-only fields with help text', () => {
+    expect(
+      withCredentials([
+        { ...bot, help: 'OAuth & Permissions → Bot User OAuth Token', helpUrl: 'https://api.example.com/apps', placeholder: 'xoxb-…' },
+        { key: 'app-token', label: 'App-level token', pattern: 'xapp-[A-Za-z0-9-]+' },
+      ]),
+    ).toEqual([]);
+    // A host covered by an egress wildcard can carry a credential.
+    expect(withCredentials([{ ...bot, hosts: ['in.hooks.example.com'] }])).toEqual([]);
+  });
+
+  it('refuses a field that carries a value', () => {
+    for (const forbidden of ['value', 'default', 'secret', 'token']) {
+      expect(withCredentials([{ ...bot, [forbidden]: 'xoxb-1' }])).toContain(
+        `provider.setup.credentials[0].${forbidden} is not allowed: a descriptor never carries a credential value`,
+      );
+    }
+  });
+
+  it('refuses bad keys, repeats, missing labels and broken patterns', () => {
+    expect(withCredentials([{ ...bot, key: 'Bot Token' }])).toContain(
+      `provider.setup.credentials[0].key must match ${/^[a-z][a-z0-9_-]{0,62}$/}`,
+    );
+    expect(withCredentials([bot, { ...bot, hosts: undefined }])).toContain('provider.setup.credentials repeats key "bot_token"');
+    expect(withCredentials([{ ...bot, label: '' }])).toContain('provider.setup.credentials[0].label must be a non-empty string');
+    expect(withCredentials([{ ...bot, pattern: 'xoxb-[' }])).toContain('provider.setup.credentials[0].pattern is not a valid regular expression');
+    expect(withCredentials([{ ...bot, helpUrl: 'http://example.com' }])).toContain('provider.setup.credentials[0].helpUrl must be an https URL');
+    expect(withCredentials([])).toEqual(['provider.setup.credentials must list at least one field']);
+    expect(validateProviderDescriptor({ ...base, setup: 'creds' } as unknown as ProviderDescriptor)).toEqual(['provider.setup must be an object']);
+  });
+
+  it('refuses a host outside egressHosts, a wildcard host, and a host two credentials claim', () => {
+    expect(withCredentials([{ ...bot, hosts: ['api.other.com'] }])).toContain(
+      "provider.setup.credentials[0] host 'api.other.com' is not in provider.egressHosts",
+    );
+    expect(withCredentials([{ ...bot, hosts: ['*.hooks.example.com'] }])).toContain(
+      "provider.setup.credentials[0].hosts entry '*.hooks.example.com' is not a hostname",
+    );
+    expect(withCredentials([bot, { ...bot, key: 'user_token' }])).toContain(
+      "provider.setup.credentials[1] host 'api.example.com' is already given a credential by provider.setup.credentials[0]",
+    );
+    expect(withCredentials([bot], { serviceCredentials: [{ ref: 'pubsub', hosts: ['api.example.com'] }] })).toContain(
+      "provider.setup.credentials[0] host 'api.example.com' is already given a credential by provider.serviceCredentials",
+    );
+  });
+});
+
+describe('providerCredentialValueIssue', () => {
+  const field = { label: 'Bot token', pattern: 'xoxb-[A-Za-z0-9-]+' };
+
+  it('accepts a whole-value match, trimming surrounding space', () => {
+    expect(providerCredentialValueIssue(field, 'xoxb-123-abc')).toBeNull();
+    expect(providerCredentialValueIssue(field, '  xoxb-123-abc\n')).toBeNull();
+    expect(providerCredentialValueIssue({ label: 'Key' }, 'anything-goes')).toBeNull();
+  });
+
+  it('refuses a value that only partly matches, is empty, contains spaces, or is too long', () => {
+    expect(providerCredentialValueIssue(field, 'xapp-123')).toBe('Bot token does not have the expected format');
+    expect(providerCredentialValueIssue(field, 'prefix xoxb-123')).toBe('Bot token must not contain spaces or line breaks');
+    expect(providerCredentialValueIssue(field, 'xoxb-123!')).toBe('Bot token does not have the expected format');
+    expect(providerCredentialValueIssue(field, '   ')).toBe('Bot token is required');
+    expect(providerCredentialValueIssue(field, undefined)).toBe('Bot token is required');
+    expect(providerCredentialValueIssue(field, `xoxb-${'a'.repeat(PROVIDER_CREDENTIAL_MAX_LENGTH)}`)).toBe(
+      `Bot token is longer than ${PROVIDER_CREDENTIAL_MAX_LENGTH} characters`,
+    );
+  });
+
+  it('reports an invalid provider pattern instead of throwing', () => {
+    expect(providerCredentialValueIssue({ label: 'Key', pattern: '(' }, 'x')).toBe("Key cannot be checked: the provider's format is invalid");
+  });
+});
+
+describe('providerCredentialForHost', () => {
+  const d = { setup: { credentials: [{ key: 'bot_token', label: 'Bot', hosts: ['slack.com'] }, { key: 'app_token', label: 'App' }] } };
+  it('finds the credential injected for a host, case-insensitively, and none for an ingress-only field', () => {
+    expect(providerCredentialForHost(d, 'Slack.com')?.key).toBe('bot_token');
+    expect(providerCredentialForHost(d, 'api.slack.com')).toBeNull();
+    expect(providerCredentialForHost({}, 'slack.com')).toBeNull();
   });
 });

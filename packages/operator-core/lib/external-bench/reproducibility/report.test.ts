@@ -21,6 +21,7 @@ describe('preregistered product reports', () => {
   it('reports the maintained structured-arm protocol with absent assignments preserved', () => {
     const protocol = currentProtocolFixture('assigned-run');
     protocol.taskIds = ['a', 'b'];
+    protocol.sampling!.taskRepositories = { a: 'repo-a', b: 'repo-b', 'withheld-1': 'withheld-repo' };
     protocol.seeds = [0, 1, 2];
     const frozen = prereg({ ...protocol });
     const [report] = buildRunReports([result({ modelId: protocol.arms[0].model })], frozen);
@@ -63,7 +64,8 @@ describe('preregistered product reports', () => {
     expect(report.arms[0].passAt1).toBeCloseTo(1 / 6);
     expect(report.arms[1]).toMatchObject({ arm: 'baseline-b-native', tasks: 2, attempts: 0, passAt1: 0, absentTasks: 2 });
     expect(report.frontier.map(point => point.arm)).toEqual(['papercusp']);
-    expect(report.deltas).toEqual([]); // An absent arm has no measured cost for efficiency.
+    expect(report.deltas[0]).toMatchObject({ efficiencyMeasured: false, costFraction: null,
+      uncertainty: { taskPairs: 2, baselineAbsentAttempts: 6, treatmentAbsentAttempts: 5 } });
   });
 
   it('reports a wholly unattempted frozen run instead of erasing it', () => {
@@ -71,7 +73,8 @@ describe('preregistered product reports', () => {
     expect(report.arms).toHaveLength(2);
     expect(report.arms.every(arm => arm.tasks === 2 && arm.passAt1 === 0 && arm.attempts === 0)).toBe(true);
     expect(report.frontier).toEqual([]);
-    expect(report.deltas).toEqual([]);
+    expect(report.deltas[0]).toMatchObject({ accuracyDelta: 0, efficiencyMeasured: false,
+      uncertainty: { baselineAbsentAttempts: 6, treatmentAbsentAttempts: 6 } });
   });
 
   it('keeps agent timeout as an assigned outcome and grader outage inconclusive', () => {
@@ -81,7 +84,8 @@ describe('preregistered product reports', () => {
     ], prereg());
     expect(report.arms[0]).toMatchObject({ passAt1: 0, missingMeasurements: 0 });
     expect(report.arms[1]).toMatchObject({ passAt1: null, missingMeasurements: 1 });
-    expect(report.deltas).toEqual([]);
+    expect(report.deltas[0]).toMatchObject({ accuracyDelta: null, accuracyDeltaCi: null,
+      uncertainty: { status: 'missing-grade', missingMeasurements: 1 } });
   });
 
   it.each([
@@ -104,5 +108,32 @@ describe('preregistered product reports', () => {
     const legacy = prereg(); legacy.config = { model: 'old', seeds: 3 };
     expect(buildRunReports([result()], legacy)[0].assignment?.basis).toBe('observed');
     expect(buildRunReports([], legacy)).toEqual([]);
+  });
+
+  it('binds repository intervals and reproduction settings to the immutable protocol', () => {
+    const protocol = currentProtocolFixture('assigned-run');
+    protocol.taskIds = ['a', 'b', 'absent']; protocol.seeds = [0, 1];
+    protocol.sampling = { unit: 'repository', ci: 0.9, bootstrapSeed: 17, bootstrapIterations: 2000,
+      taskRepositories: { a: 'repo-a', b: 'repo-b', absent: 'repo-a', 'withheld-1': 'withheld-repo' } };
+    const rows = protocol.seeds.flatMap(seed => [
+      result({ taskId: 'a', seed, modelId: protocol.arms[0].model }),
+      result({ taskId: 'b', seed, modelId: protocol.arms[0].model, resolved: false, graderStatus: 'failed' }),
+      result({ taskId: 'a', seed, arm: 'baseline', modelId: protocol.arms[1].model, resolved: false, graderStatus: 'failed' }),
+      result({ taskId: 'b', seed, arm: 'baseline', modelId: protocol.arms[1].model }),
+    ]);
+    const [report] = buildRunReports(rows, prereg({ ...protocol }));
+    expect(report.sampling).toMatchObject({ unit: 'repository', taskPairs: 3, independentUnits: 2,
+      ci: 0.9, bootstrapSeed: 17, bootstrapIterations: 2000,
+      repositoryByTask: { a: 'repo-a', b: 'repo-b', absent: 'repo-a' } });
+    expect(report.deltas[0].uncertainty).toMatchObject({ taskPairs: 3, independentUnits: 2,
+      baselineAbsentAttempts: 2, treatmentAbsentAttempts: 2 });
+    expect(report.deltas[0].accuracyDeltaCi).toMatchObject({ point: 0, ci: 0.9 });
+    const reordered = buildRunReports([...rows].reverse(), prereg({ ...protocol }))[0];
+    expect(reordered.deltas).toEqual(report.deltas);
+    delete protocol.sampling;
+    const [historical] = buildRunReports(rows, prereg({ ...protocol }));
+    expect(historical.deltas[0]).toMatchObject({ accuracyDelta: 0, accuracyDeltaCi: null,
+      uncertainty: { status: 'unregistered-policy' } });
+    expect(historical.arms.every(arm => arm.passAt1Ci === null)).toBe(true);
   });
 });

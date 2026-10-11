@@ -42,9 +42,11 @@ import { unmeasuredSourceEvidence, versionedSymbolIdentity, type CodeIntelAnswer
 // stripping, which resolves no extension-less relative import.
 import {
   incomingCallSites,
+  hierarchyItems,
   isExternalPath,
   openScopedTsTree,
   tsDeclarations,
+  tsSiteOf,
   type Ts,
 } from './typescript-service.ts';
 
@@ -85,6 +87,11 @@ export interface FirstPartyCallersQuery {
   /** Registry identity when the dispatching repository registry supplies one. */
   readonly repositoryId?: string;
   readonly name: string;
+  /** Native graph operations share the existing bounded compiler worker. */
+  readonly op?: 'callers' | 'symbol' | 'callees' | 'context';
+  readonly filePath?: string;
+  readonly line1?: number;
+  readonly kind?: string;
   readonly limit?: number;
   /**
    * Repository-relative files or directories to search (WI-10006543). Default: the
@@ -269,14 +276,14 @@ function buildAnswer(
   name: string,
   started: number,
   now: () => number,
-  parts: { sites?: SymbolSite[]; total?: number; error?: string | null; attribution?: FirstPartyCallersAttribution | null; limitations?: string[]; evidence?: CodeIntelSourceEvidence },
+  parts: { sites?: SymbolSite[]; total?: number; error?: string | null; attribution?: FirstPartyCallersAttribution | null; limitations?: string[]; evidence?: CodeIntelSourceEvidence; intent?: CodeIntelAnswer['intent'] },
 ): FirstPartyCallersAnswer {
   const sites = parts.sites ?? [];
   const total = parts.total ?? sites.length;
   const error = parts.error ?? null;
   return {
     backend: 'typescript-service',
-    intent: 'callers',
+    intent: parts.intent ?? 'callers',
     query: name,
     sites,
     truncation: { truncated: total > sites.length, totalAvailable: total, continuation: null },
@@ -310,8 +317,9 @@ function buildAnswer(
  * `error` is set and health is unhealthy.
  */
 export function failedCallersAnswer(name: string, error: string, startedMs: number, nowMs: number = Date.now(),
-  scope?: Pick<FirstPartyCallersQuery, 'root' | 'repositoryId' | 'paths'>): FirstPartyCallersAnswer {
-  const result = buildAnswer(name, startedMs, () => nowMs, { error });
+  scope?: Pick<FirstPartyCallersQuery, 'root' | 'repositoryId' | 'paths' | 'op'>): FirstPartyCallersAnswer {
+  const result = buildAnswer(name, startedMs, () => nowMs, { error,
+    intent: scope?.op === 'callees' ? 'callees' : scope?.op && scope.op !== 'callers' ? 'definition' : 'callers' });
   return { ...result, evidence: unmeasuredCallersEvidence(result, scope) };
 }
 
@@ -335,11 +343,16 @@ function unmeasuredCallersEvidence(result: Pick<CodeIntelAnswer, 'intent' | 'sit
 export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersAnswer {
   const now = q.now ?? (() => Date.now());
   const started = now();
+  const op = q.op ?? 'callers';
+  const intent = op === 'callees' ? 'callees' : op === 'callers' ? 'callers' : 'definition';
   const answer = (name: string, startedAt: number, clock: () => number, parts: Parameters<typeof buildAnswer>[3]) => {
-    const result = buildAnswer(name, startedAt, clock, parts);
+    const result = buildAnswer(name, startedAt, clock, { ...parts, intent });
     return parts.evidence ? result : { ...result, evidence: unmeasuredCallersEvidence(result, q) };
   };
   const limit = Math.max(1, Math.floor(q.limit ?? FIRST_PARTY_CALLERS_DEFAULT_LIMIT));
+  if (!['callers', 'symbol', 'callees', 'context'].includes(op)) {
+    return answer(q.name, started, now, { error: `unsupported first-party graph operation '${op}'` });
+  }
   if (!IDENTIFIER.test(q.name)) {
     return answer(q.name, started, now, { error: `callers needs one identifier; "${q.name}" is not one` });
   }
@@ -351,6 +364,14 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   }
   const scope = resolveSearchPaths(q.root, q.paths);
   if (!scope.ok) return answer(q.name, started, now, { error: scope.error });
+  let definingPath: string | undefined;
+  if (op !== 'callers' && q.filePath) {
+    const selected = resolveSearchPaths(q.root, [q.filePath]);
+    if (!selected.ok) return answer(q.name, started, now, { error: selected.error });
+    definingPath = selected.paths[0];
+    const physical = posix(relative(realpathSync(q.root), realpathSync(join(q.root, definingPath!))));
+    if (isExternalPath(physical)) return answer(q.name, started, now, { error: 'defining file resolves outside the repository' });
+  }
   const search = findCandidateFiles(q.root, q.name, rgPath, scope.paths);
   if (search.error) return answer(q.name, started, now, { error: search.error });
   const partial = [
@@ -360,6 +381,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   if (search.files.length === 0) {
     // No searched source file contains the word: as strong an absence as grep's.
     return answer(q.name, started, now, {
+      ...(op !== 'callers' ? { error: `No declaration named '${q.name}' in the searched source scope` } : {}),
       limitations: partial,
       attribution: {
         resolved: 0,
@@ -372,12 +394,38 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     });
   }
 
-  const tree = openScopedTsTree(q.ts, q.root, search.files);
+  // Outgoing/context queries need the actual reached declarations, not callers'
+  // re-export-only optimization. These remain inside the worker heap/deadline.
+  const tree = openScopedTsTree(q.ts, q.root, search.files,
+    op === 'callers' ? undefined : (_ts, _file, text) => text);
   try {
     const program = tree.service.getProgram();
     if (!program) return answer(q.name, started, now, { error: 'TypeScript produced no program for the candidate files' });
-    const decls = tsDeclarations(tree, program, q.name);
-    const resolved = incomingCallSites(tree, program, decls);
+    const decls = tsDeclarations(tree, program, q.name).filter(d => op === 'callers' ||
+      (tree.rootFiles.has(d.file) && (!definingPath || d.site.path === definingPath) &&
+       (q.line1 === undefined || d.site.line1 === q.line1) &&
+       (!q.kind || d.site.kind?.toLowerCase() === q.kind.toLowerCase())));
+    const nativeOutgoing: SymbolSite[] = [];
+    let nativeError: string | null = null;
+    if (op !== 'callers') {
+      if (decls.length !== 1) nativeError = decls.length === 0
+        ? `No declaration named '${q.name}' matches the defining-file/line/kind selector`
+        : `Ambiguous symbol '${q.name}': ${decls.map(d => `${d.site.path}:${d.site.line1}`).join(', ')}. Supply file_path and, when needed, line1.`;
+      else if (op !== 'symbol') {
+        const items = hierarchyItems(tree, decls[0]!);
+        if (items.length === 0 && op === 'callees') nativeError = 'Outgoing call hierarchy is unsupported for this declaration';
+        for (const item of items) {
+          for (const call of tree.service.provideCallHierarchyOutgoingCalls(item.file, item.selectionSpan.start)) {
+            for (const span of call.fromSpans) nativeOutgoing.push({
+              ...tsSiteOf(tree, program, item.file, span.start, call.to.kind), name: call.to.name,
+              detail: `calls ${call.to.name}; target ${posix(relative(q.root, call.to.file))}:${tsSiteOf(tree, program, call.to.file, call.to.selectionSpan.start, call.to.kind).line1}`,
+            });
+          }
+        }
+      }
+    }
+    const nativeOutgoingSet = new Set(nativeOutgoing);
+    const resolved = op === 'callers' ? incomingCallSites(tree, program, decls) : nativeOutgoing;
     const resolvedKeys = new Set(resolved.map(keyOf));
     const declKeys = new Set(decls.map((d) => keyOf(d.site)));
 
@@ -385,7 +433,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     const counts: Record<UnattributedReason, number> = { external: 0, 'other-in-repo': 0, unresolved: 0 };
     const unattributed: SymbolSite[] = [];
     const seen = new Set<string>();
-    for (const file of search.files) {
+    for (const file of op === 'callers' ? search.files : []) {
       const sf = program.getSourceFile(file);
       if (!sf) continue;
       for (const call of syntacticCalls(q.ts, sf, posix(relative(q.root, file)), q.name)) {
@@ -398,7 +446,9 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
       }
     }
 
-    const all = [...resolved.sort(bySite), ...unattributed.sort(bySite)];
+    const all = op === 'callers' ? [...resolved.sort(bySite), ...unattributed.sort(bySite)]
+      : nativeError || op === 'symbol' ? decls.map(d => d.site)
+      : op === 'context' ? [...decls.map(d => d.site), ...nativeOutgoing.sort(bySite)] : nativeOutgoing.sort(bySite);
     const reported = all.slice(0, limit);
     // Hash the exact compiler snapshots, including re-export stubs. Reading disk
     // after the worker answers could attach a different version to the old sites.
@@ -407,7 +457,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
       if (isExternalPath(path) || program.isSourceFileDefaultLibrary(sf)) return [];
       return [{ path, contentHash: createHash('sha256').update(sf.text).digest('hex'),
         language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript',
-        representation: tree.rootFiles.has(sf.fileName) ? 'full-source' as const : 'reexport-stub' as const }];
+        representation: op !== 'callers' || tree.rootFiles.has(sf.fileName) ? 'full-source' as const : 'reexport-stub' as const }];
     }).sort((a, b) => a.path.localeCompare(b.path));
     const repositoryId = q.repositoryId ?? `local-root:${createHash('sha256').update(realpathSync(q.root)).digest('hex')}`;
     const sourceByPath = new Map(sources.map(source => [source.path, source]));
@@ -418,20 +468,23 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
         sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'),
         paths: scope.paths, supportingFiles: sources.filter(source => supporting.has(source.path)) },
       graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [
-        ...partial, 'Only candidate files are full compiler inputs; other reached files are re-export stubs.',
+        ...partial, op === 'callers' ? 'Only candidate files are full compiler inputs; other reached files are re-export stubs.'
+          : 'Candidate files and reached in-repository dependencies are full compiler snapshots; this is not a repository-wide completeness proof.',
         'Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown.' ] },
       languageCapabilities: [...new Set(sources.map(source => source.language))].map(language =>
-        ({ language, intent: 'callers', status: 'compiler-backed' })),
+        ({ language, intent, status: 'compiler-backed' })),
       siteIdentities: reported.map((site, siteIndex) => ({ siteIndex, sourcePath: site.path,
         contentHash: sourceByPath.get(site.path)?.contentHash ?? null,
         versionedSymbolId: versionedSymbolIdentity(repositoryId, site, sourceByPath.get(site.path)) })),
-      relationships: reported.map((site, siteIndex) => ({ siteIndex, kind: 'callers',
-        origin: resolvedKeys.has(keyOf(site)) ? 'compiler' : 'syntax',
-        knowledge: resolvedKeys.has(keyOf(site)) ? 'observed' : 'unknown', runtimeExecution: 'unknown' })),
+      relationships: reported.map((site, siteIndex) => ({ siteIndex,
+        kind: op === 'callers' ? 'callers' : nativeOutgoingSet.has(site) ? 'callees' : 'definition',
+        origin: op !== 'callers' || resolvedKeys.has(keyOf(site)) ? 'compiler' : 'syntax',
+        knowledge: op !== 'callers' || resolvedKeys.has(keyOf(site)) ? 'observed' : 'unknown', runtimeExecution: 'unknown' })),
     };
     return answer(q.name, started, now, {
       sites: reported,
       evidence,
+      error: nativeError,
       total: all.length,
       limitations: partial,
       attribution: {

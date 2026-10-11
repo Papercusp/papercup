@@ -84,7 +84,8 @@ describe('frozen report population', () => {
     expect(missing.cost).toMatchObject({ missingMeasurements: 1, costPerResolved: null });
     expect(missing.cost.costUsd).toBeGreaterThan(0); // known subtotal survives
     expect(report.frontier.map(point => point.arm)).not.toContain(missingArm);
-    expect(report.deltas).toEqual([]);
+    expect(report.deltas[0]).toMatchObject({ accuracyDelta: 0, efficiencyMeasured: false,
+      costRatio: null, costFraction: null, paretoDominates: false });
   });
 
   it('includes a wholly absent assigned arm without assigning it a free-cost frontier point', () => {
@@ -94,7 +95,8 @@ describe('frozen report population', () => {
     expect(report.arms[0].passAt1).toBeCloseTo(1 / 6);
     expect(report.arms[1]).toMatchObject({ arm: 'baseline-b-native', passAt1: 0, attempts: 0, tasks: 2 });
     expect(report.frontier.map(p => p.arm)).toEqual(['papercusp']);
-    expect(report.deltas).toEqual([]);
+    expect(report.deltas[0]).toMatchObject({ accuracyDelta: 1 / 6, efficiencyMeasured: false,
+      uncertainty: { taskPairs: 2, baselineAbsentAttempts: 6, treatmentAbsentAttempts: 5 } });
   });
   it('requires explicit identity and a complete frozen roster for an empty report', () => {
     expect(() => buildSuiteReport([])).toThrow('no rows');
@@ -156,7 +158,10 @@ describe('buildSuiteReport', () => {
     ]);
     expect(report.arms[0]).toMatchObject({ passAt1: null, missingMeasurements: 1 });
     expect(report.frontier.map(point => point.arm)).toEqual(['baseline-b-native']);
-    expect(report.deltas).toEqual([]);
+    expect(report.arms[0].passAt1Ci).toBeNull();
+    expect(report.arms[0].resolvedRateWilson).toBeNull();
+    expect(report.deltas[0]).toMatchObject({ accuracyDelta: null, accuracyDeltaCi: null,
+      uncertainty: { status: 'missing-grade', missingMeasurements: 1 } });
   });
 
   it('reports per-arm scores, the cost/accuracy frontier, and papercusp-vs-baseline deltas', () => {
@@ -204,6 +209,51 @@ describe('buildSuiteReport', () => {
   it('throws on empty input', () => {
     expect(() => buildSuiteReport([])).toThrow(/no rows/);
   });
+
+  it('collapses seeds before paired repository inference and preserves entirely absent task pairs', () => {
+    const makeRows = (seeds: number[]) => seeds.flatMap(seed => [
+      mk({ taskId: 'a', seed, resolved: true, graderStatus: 'passed' }),
+      mk({ taskId: 'a', seed, arm: 'baseline', resolved: false }),
+      mk({ taskId: 'b', seed, resolved: false }),
+      mk({ taskId: 'b', seed, arm: 'baseline', resolved: true, graderStatus: 'passed' }),
+    ]);
+    const opts = { assignedTaskIds: ['a', 'b', 'absent'], assignedArms: ['papercusp', 'baseline'],
+      repositoryByTask: { a: 'repo-a', b: 'repo-b', absent: 'repo-a' } };
+    const one = buildSuiteReport(makeRows([0]), { ...opts, assignedSeeds: [0] });
+    const repeated = buildSuiteReport(makeRows([0, 1, 2]), { ...opts, assignedSeeds: [0, 1, 2] });
+    expect(repeated.deltas[0].accuracyDeltaCi).toEqual(one.deltas[0].accuracyDeltaCi);
+    expect(repeated.arms[0].passAt1Ci).toEqual(one.arms[0].passAt1Ci);
+    expect(repeated.sampling).toMatchObject({ unit: 'repository', independentUnits: 2,
+      taskPairs: 3, seedPolicy: 'collapse-within-task', assignedSeeds: [0, 1, 2] });
+    expect(repeated.deltas[0].uncertainty).toMatchObject({ status: 'measured', taskPairs: 3,
+      independentUnits: 2, baselineObservedAttempts: 6, treatmentObservedAttempts: 6,
+      baselineAbsentAttempts: 3, treatmentAbsentAttempts: 3 });
+    expect(repeated.deltas[0].accuracyDeltaCi!.lower).toBeLessThan(0);
+    expect(repeated.deltas[0].accuracyDeltaCi!.upper).toBeGreaterThan(0);
+    expect(buildSuiteReport([...makeRows([0])].reverse(), { ...opts, assignedSeeds: [0] }).deltas)
+      .toEqual(one.deltas);
+  });
+
+  it('withholds intervals for insufficient independent repositories or unregistered current policies', () => {
+    const rows = [mk({ taskId: 'a', seed: 0, resolved: true, graderStatus: 'passed' }),
+      mk({ taskId: 'b', seed: 0, arm: 'baseline', resolved: false })];
+    const opts = { assignedTaskIds: ['a', 'b'], assignedSeeds: [0], assignedArms: ['papercusp', 'baseline'] };
+    const single = buildSuiteReport(rows, { ...opts, repositoryByTask: { a: 'repo', b: 'repo' } });
+    expect(single.deltas[0]).toMatchObject({ accuracyDelta: 0.5, accuracyDeltaCi: null,
+      uncertainty: { status: 'insufficient-independent-units', independentUnits: 1 } });
+    expect(single.arms.every(arm => arm.passAt1Ci === null)).toBe(true);
+    const unregistered = buildSuiteReport(rows, { ...opts, requireRegisteredSampling: true });
+    expect(unregistered.sampling.unit).toBe('unregistered');
+    expect(unregistered.deltas[0]).toMatchObject({ accuracyDeltaCi: null,
+      uncertainty: { status: 'unregistered-policy', independentUnits: null } });
+  });
+
+  it.each([{ a: 'repo' }, { a: 'repo', b: 'repo', foreign: 'repo' }, { a: 'repo', b: '' }] as Record<string, string>[])
+    ('rejects repository roster drift %j', repositoryByTask => {
+      expect(() => buildSuiteReport([mk({ taskId: 'a', seed: 0 })], {
+        assignedTaskIds: ['a', 'b'], assignedSeeds: [0], repositoryByTask,
+      })).toThrow(/repository mapping/);
+    });
 
   it('rides a non-SWE benchmark: open arm vocab + interactive modality + custom treatmentArm', () => {
     // tau2-style: a 'hive' arm vs a 'su' arm on an interactive suite, treatment = 'hive'.

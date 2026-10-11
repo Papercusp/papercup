@@ -177,7 +177,7 @@ describe('native baseline admitted operation inventory across real interfaces', 
   const operations = (tool: string) => baseline.routes.filter(row => row.tool === tool)
     .flatMap(row => row.operations.map(op => ({ op, backend: row.backend })));
 
-  it.each(operations('graph:query').filter(row => row.op !== 'callers'))(
+  it.each(operations('graph:query').filter(row => ['impact', 'health'].includes(row.op)))(
     'graph $op reaches the recorded $backend provider through the actual facade', async ({ op, backend }) => {
       const dispatched: string[] = [];
       const result = await graphQuery.handler(graphQuery.args.parse({ op, name: 'baselineTarget' }), {
@@ -193,6 +193,22 @@ describe('native baseline admitted operation inventory across real interfaces', 
       expect(dispatched).toEqual(op === 'health' ? ['gitnexus.list_repos']
         : ['gitnexus.list_repos', op === 'impact' ? 'gitnexus.impact' : 'gitnexus.context']);
     });
+
+  it('P007 exposed context returns the known outgoing call and measured compiler input versions', async () => {
+    put('src/graph-helper.ts', 'export function nativeHelper() { return 1; }\n');
+    put('src/graph-context.ts', 'import { nativeHelper } from "./graph-helper";\nexport function nativeCompose() {\n  return nativeHelper();\n}\n');
+    const result = await graphQuery.handler(graphQuery.args.parse({ op: 'context', name: 'nativeCompose',
+      file_path: 'src/graph-context.ts' }), { projectDir: root } as never) as { data: CodeIntelAnswer };
+    expect(result.data.error).toBeNull();
+    expect(result.data.backend).toBe('typescript-service');
+    expect(result.data.sites).toEqual([
+      expect.objectContaining({ path: 'src/graph-context.ts', line1: 2 }),
+      expect.objectContaining({ path: 'src/graph-context.ts', line1: 3, name: 'nativeHelper' }),
+    ]);
+    expect(result.data.evidence!.relationships.map(r => r.kind)).toEqual(['definition', 'callees']);
+    expect(result.data.evidence!.sourceScope.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.data.evidence!.siteIdentities.every(s => s.contentHash && s.versionedSymbolId)).toBe(true);
+  }, 60_000);
 
   it.each(operations('lsp:query'))('LSP $op crosses the real daemon RPC route', async ({ op, backend }) => {
     const before = rpcOperations.length;

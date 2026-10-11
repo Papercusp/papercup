@@ -76,15 +76,29 @@ function collect(child: ChildProcess): { stdout: () => string; stderr: () => str
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// WI-10008303: how long a spawned build may take to reach its command. Startup
+// latency is not what these tests measure, and under a loaded gate run a spawned
+// bash + preflight lost more than the old fixed 5 s. Bounded by a deadline, not
+// an attempt count, so a slow poll loop cannot shrink the budget.
+const START_DEADLINE_MS = 30_000;
+// The holder's safety valve: it exits 9 on its own after HOLD_SECS so a leaked
+// holder cannot run forever. It must outlast the start deadline plus a waiter's
+// own startup, or a slow waiter finds the lock already free and races.
+const HOLD_SECS = 90;
+// Timeout for the cases that start two builds back to back with the default lock.
+const DEFAULT_LOCK_TEST_TIMEOUT_MS = 120_000;
+
 async function waitForFile(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  const deadline = Date.now() + START_DEADLINE_MS;
+  while (Date.now() < deadline) {
     if (existsSync(path)) return;
     await sleep(50);
   }
-  throw new Error(`Build did not reach its command: ${path}`);
+  if (existsSync(path)) return;
+  throw new Error(`Build did not reach its command within ${START_DEADLINE_MS}ms: ${path}`);
 }
 
-const holdBuild = 'touch "$TEST_STARTED"; for i in $(seq 1 200); do [ ! -e "$TEST_RELEASE" ] || exit 0; sleep 0.05; done; exit 9';
+const holdBuild = `touch "$TEST_STARTED"; end=$(( $(date +%s) + ${HOLD_SECS} )); while [ "$(date +%s)" -lt "$end" ]; do [ ! -e "$TEST_RELEASE" ] || exit 0; sleep 0.05; done; exit 9`;
 
 /** Seed a previous, WORKING bundle in dist/ — the thing a red build must not eat. */
 function seedWorkingBundle(): void {
@@ -138,7 +152,7 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
       writeFileSync(release, 'release');
       await first.exited;
     }
-  }, 15_000);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   it('serializes symlink aliases of the same output root with the default lock', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
@@ -165,7 +179,30 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
       writeFileSync(release, 'release');
       await first.exited;
     }
-  }, 15_000);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
+
+  // WI-10008303: the budgets above only hold together if they are ordered. A
+  // holder that self-releases before a slow waiter starts lets the waiter race,
+  // and a start deadline past the test timeout reports as a bare timeout.
+  it('keeps its own start and hold budgets ordered', () => {
+    expect(START_DEADLINE_MS).toBeLessThan(HOLD_SECS * 1000);
+    expect(HOLD_SECS * 1000).toBeLessThan(DEFAULT_LOCK_TEST_TIMEOUT_MS);
+  });
+
+  it('derives the default lock key without starting Node', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const io = collect(launch({
+      VITE_BUILD_LOCK: '', TMPDIR: tmp, VITE_BUILD_OUT_ROOT: join(tmp, 'out'),
+      // No node on PATH: a key derivation that still needs Node fails here.
+      PATH: '/usr/bin:/bin',
+      VITE_BUILD_CMD: 'echo keyed',
+    }));
+    expect(await io.exited).toBe(0);
+    expect(io.stdout()).toContain('keyed');
+    const locks = readdirSync(tmp).filter((n) => n.startsWith('papercup-operator-vite-build-') && n.endsWith('.lock'));
+    expect(locks).toHaveLength(1);
+    expect(locks[0]).toMatch(/^papercup-operator-vite-build-[0-9a-f]{64}\.lock$/);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   it('a second one-shot build WAITS for the first, then runs — never races or refuses', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));

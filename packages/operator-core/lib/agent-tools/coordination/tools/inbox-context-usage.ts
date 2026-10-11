@@ -174,7 +174,9 @@ export function renderBandedContextGauge(
           ? `point and call loop:end under the typed fleet wind-down authorization; preserve the session and do not call session:end or respawn.`
           : selfCompactionAvailable === false
           ? `point soon; self-compaction is unavailable to this session (no supported live psu-pty host), so keep the loop armed and end for the next wake.`
-          : `point soon and call session:request-compaction with a focus.`)
+          : selfCompactionAvailable === true
+          ? `point soon and call session:request-compaction with a focus.`
+          : `point soon; use this session's supported continuation path and keep any required loop armed.`)
       );
     case 'critical':
       return (
@@ -183,7 +185,10 @@ export function renderBandedContextGauge(
           ? `then call loop:end under the typed fleet wind-down authorization; preserve the session and do not call session:end or respawn.`
           : selfCompactionAvailable === false
           ? `then keep the loop armed and end at the nearest stopping point for the next wake; self-compaction is unavailable to this session (no supported live psu-pty host).`
-          : `then call session:request-compaction with a focus NOW, at the nearest stopping ` +
+          : selfCompactionAvailable === true
+          ? `then call session:request-compaction with a focus NOW, at the nearest stopping ` +
+            `point — do not merely narrate ending the turn.`
+          : `then use this session's supported continuation path NOW, at the nearest stopping ` +
             `point — do not merely narrate ending the turn.`)
       );
   }

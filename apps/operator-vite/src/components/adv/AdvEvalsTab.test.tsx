@@ -17,6 +17,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { buildSuiteReport, type TaskRunResult } from '@papercusp/bench-metrics';
 
 // ── nuqs: per-key store with spy setters captured per render. ──
 const nuqsState: Record<string, unknown> = { evalView: 'external', evalSuite: null, evalRun: null };
@@ -39,11 +40,15 @@ vi.mock('nuqs', () => ({
 const H = vi.hoisted(() => ({
   results: {} as Record<string, { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }>,
   mutatePaths: [] as string[],
+  queryCalls: [] as Array<{ queryName: string; args: unknown }>,
 }));
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
+  useSyncQuery: ({ queryName, args }: { queryName: string; args: unknown }) => {
+    H.queryCalls.push({ queryName, args });
+    return H.results[queryName] ?? blank();
+  },
   useSyncMutate: (path: string, restFallback: (args: unknown) => Promise<unknown>) => {
     H.mutatePaths.push(path);
     return restFallback;
@@ -101,7 +106,7 @@ vi.mock('@/app/harness/Select', () => ({
   ),
 }));
 
-import AdvEvalsTab, { toFrontierPoints, toComparePerTask } from './AdvEvalsTab';
+import AdvEvalsTab, { toFrontierPoints, toComparePerTask, normalizeEvalReport } from './AdvEvalsTab';
 
 beforeEach(() => {
   nuqsState.evalView = 'external';
@@ -111,12 +116,63 @@ beforeEach(() => {
   nuqsState.compareB = null;
   H.results = {};
   H.mutatePaths = [];
+  H.queryCalls = [];
 });
 afterEach(() => cleanup());
 
 function seedSuites(suites: unknown[], extra: Partial<ReturnType<typeof blank>> = {}) {
   H.results['evals.suites'] = { ...blank(), data: suites, ...extra };
 }
+
+function canonicalReport(over: Partial<TaskRunResult> = {}, singleRepository = false) {
+  const rows = ['a', 'b'].flatMap(taskId => ['papercusp', 'baseline'].map(arm => ({
+    runId: 'current-run', suite: 'swe-bench-pro', taskId, arm, seed: 0,
+    modality: 'diff', resolved: arm === 'papercusp', graderStatus: arm === 'papercusp' ? 'passed' : 'failed',
+    graderFamily: 'official', graderVersion: 'pinned', generationStatus: 'completed',
+    tokensIn: 100, tokensOut: 100, tokensTotal: 200, costUsd: 0.1, priceTableVersion: 'price-table-v1',
+    wallClockMs: 10, turns: 1, capped: false, modelId: 'claude-opus-4-8', harnessVersion: 'current',
+    preregHash: 'frozen', rolloutId: `${taskId}-${arm}`, createdAt: '2026-10-10T00:00:00Z',
+    ...(arm === 'papercusp' && taskId === 'a' ? over : {}),
+  } as TaskRunResult)));
+  return buildSuiteReport(rows, { assignedTaskIds: ['a', 'b', 'absent'], assignedSeeds: [0, 1, 2],
+    assignedArms: ['papercusp', 'baseline'], ci: 0.9,
+    repositoryByTask: { a: 'repo-a', b: singleRepository ? 'repo-a' : 'repo-b', absent: 'repo-a' } });
+}
+
+describe('canonical benchmark report boundary', () => {
+  it('renders actual maintained report output, paired policy and complete assignment counts', () => {
+    nuqsState.evalView = 'report'; nuqsState.evalRun = 'current-run';
+    H.results['evals.report'] = { ...blank(), data: [canonicalReport()] };
+    render(<AdvEvalsTab />);
+    expect(screen.getByText(/3 task pairs.*2 independent repositories.*3 assigned seeds per task.*90% CI/)).toBeTruthy();
+    expect(screen.getByText(/Primary difference: 22%.*Paired 90% CI/)).toBeTruthy();
+    expect(screen.getByText(/Absent assignments: baseline 7, treatment 7/)).toBeTruthy();
+    expect(screen.queryByTestId('viz-compare-baseline-b-native')).toBeNull();
+    for (const queryName of ['evals.report', 'evals.runs']) {
+      expect(H.queryCalls.find(call => call.queryName === queryName)?.args).toEqual({ runId: 'current-run' });
+    }
+  });
+
+  it('withholds primary intervals for missing grades and reports insufficient repository inference', () => {
+    nuqsState.evalView = 'report';
+    H.results['evals.report'] = { ...blank(), data: [canonicalReport({ resolved: null, graderStatus: 'error' })] };
+    const view = render(<AdvEvalsTab />);
+    expect(screen.getByText(/Primary difference: —.*Interval unavailable: missing official grades/)).toBeTruthy();
+    expect(screen.getByText(/Missing measurements: 1/)).toBeTruthy();
+    expect(screen.getByText('Cost efficiency is unmeasured.')).toBeTruthy();
+    H.results['evals.report'].data = [canonicalReport({}, true)]; view.rerender(<AdvEvalsTab />);
+    expect(screen.getByText(/Interval unavailable: fewer than two independent sampling units/)).toBeTruthy();
+  });
+
+  it('uses canonical normalized attempt cost and omits incomplete usage from the frontier', () => {
+    const report = canonicalReport();
+    const normalized = normalizeEvalReport(report)!;
+    expect(toFrontierPoints(normalized).find(point => point.arm === 'papercusp')?.cost)
+      .toBe(report.arms[0].cost.costUsd / report.arms[0].attempts);
+    expect(toFrontierPoints(normalizeEvalReport(canonicalReport({ armMeta: { costUsdMeasurementMissing: true } }))))
+      .not.toContainEqual(expect.objectContaining({ arm: 'papercusp' }));
+  });
+});
 
 describe('toFrontierPoints', () => {
   it('returns [] for no report', () => {
@@ -235,6 +291,7 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
   const RUN_DETAIL = {
     id: 'm3-realqueen-2026-06-16',
     arm: 'hive-realqueen',
+    source: 'import',
     status: 'done',
     run: { arm: 'hive-realqueen', startedAt: '2026-06-16T04:00:00Z', coordEvents: [{ kind: 'placement' }, { kind: 'complete' }] },
     perTask: [
@@ -269,6 +326,8 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     expect(screen.getByLabelText(/hive-realqueen — preserved run summary/)).toBeTruthy();
     expect(screen.getByTestId('preserved-task-grid')).toBeTruthy();
     expect(screen.getByTestId('rich-grid').getAttribute('data-rows')).toBe('2');
+    expect(screen.getByText('Historical archive evidence')).toBeTruthy();
+    expect(screen.queryByText(/Real graded run|92% opus|no valid no-Mug control/)).toBeNull();
     // The per-task Compare + the single-arm throughput/MAST viz are fed from the detail.
     expect(screen.getByTestId('viz-throughput')).toBeTruthy();
     expect(screen.getByTestId('viz-mast')).toBeTruthy();

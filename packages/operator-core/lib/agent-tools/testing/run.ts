@@ -371,26 +371,17 @@ export function buildDetachedTestRunRequest(opts: {
   // test is different: its suite can mock @papercusp/db-org, which also redirects the
   // reporter's connection into the disposable test database. The foreground runner already
   // avoids that trap by ingesting a JSON report in the parent operator. Preserve the same
-  // boundary for the documented one-integration-file detached recovery path. A focused unit
-  // recovery also needs JSON counts so scripts/test-files.mjs can distinguish a matching test
-  // from a zero-match run; keep the admin reporter beside JSON so unit rows still persist in
-  // process, while the close-time reader reconciles any missing rows and consumes the artifact.
+  // boundary for the documented one-integration-file detached recovery path. Every recovery
+  // also retains JSON so observer loss cannot erase its only verdict. Keep the admin reporter
+  // beside JSON for unit rows; the existing store reconciles missing rows and router reports.
   const adminReporterPath = resolveAdminTestRunsReporterPath(opts.root);
   const parentIngestsIntegration =
     opts.files.length === 1 && /\.integration\.test\.[cm]?[jt]sx?$/i.test(opts.files[0]!);
-  const reportPath = parentIngestsIntegration || Boolean(opts.testNamePattern)
-    ? join(ensurePapercuspTmpdir() ?? tmpdir(), `papercusp-testing-run-detached-${randomUUID()}.json`)
-    : null;
+  const reportPath = join(ensurePapercuspTmpdir() ?? tmpdir(), `papercusp-testing-run-detached-${randomUUID()}.json`);
   const vitestArgs = [
-    ...(reportPath
-      ? [
-          '--reporter=json',
-          ...(!parentIngestsIntegration && adminReporterPath ? [`--reporter=${adminReporterPath}`] : []),
-          `--outputFile=${reportPath}`,
-        ]
-      : adminReporterPath
-        ? [`--reporter=${adminReporterPath}`]
-        : []),
+    '--reporter=json',
+    ...(!parentIngestsIntegration && adminReporterPath ? [`--reporter=${adminReporterPath}`] : []),
+    `--outputFile=${reportPath}`,
     ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
   ];
   const env: NodeJS.ProcessEnv = {
@@ -407,20 +398,15 @@ export function buildDetachedTestRunRequest(opts: {
     command: process.execPath,
     args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
     cwd: opts.root,
-    ...(reportPath
-      ? {
-          detachedReportArtifacts: [
-            {
-              reportPath,
-              root: opts.root,
-              testNamePattern: opts.testNamePattern ?? null,
-              ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
-                ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } }
-                : {}),
-            },
-          ],
-        }
-      : {}),
+    detachedReportArtifacts: [{
+      reportPath,
+      root: opts.root,
+      routerReports: true,
+      testNamePattern: opts.testNamePattern ?? null,
+      ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
+        ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } }
+        : {}),
+    }],
     runtimeMaxSec: detachedRecoveryRuntimeMaxSec(opts.timeoutMs),
     ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
@@ -450,7 +436,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
 }): SpawnRequest {
   const commands: Array<{ command: string; args: string[]; cwd: string }> = [];
   const detachedReportArtifacts: NonNullable<SpawnRequest['detachedReportArtifacts']> = [];
-  const reportPathFor = (root: string): string => {
+  const reportPathFor = (root: string, routerReports = false): string => {
     // Reporter-less external checkouts need a machine-readable report after
     // this function returns and the detached child outlives the foreground
     // call. Keep each report in the shared, guarded tmp root and use one
@@ -460,6 +446,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
     detachedReportArtifacts.push({
       reportPath,
       root,
+      ...(routerReports ? { routerReports: true } : {}),
       testNamePattern: opts.testNamePattern ?? null,
       ...(opts.harnessSlug && opts.harnessSlug !== '*' && opts.workspaceId && opts.workspaceId !== '*'
         ? { scope: { harnessSlug: opts.harnessSlug, workspaceId: opts.workspaceId } }
@@ -480,9 +467,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
           join(group.root, 'scripts', 'test-files.mjs'),
           ...group.files,
           '--',
-          ...(adminReporterPath
-            ? vitestArgs
-            : ['--reporter=json', `--outputFile=${reportPathFor(group.root)}`, ...vitestArgs]),
+          '--reporter=json', `--outputFile=${reportPathFor(group.root, true)}`, ...vitestArgs,
         ],
         cwd: group.root,
       });
@@ -493,9 +478,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
       // file and an integration file with different Vitest configs). Vitest
       // replaces --outputFile on each invocation, so each child needs its own
       // artifact or the last route erases earlier ledger rows.
-      const routeVitestArgs = adminReporterPath
-        ? vitestArgs
-        : ['--reporter=json', `--outputFile=${reportPathFor(group.root)}`, ...vitestArgs];
+      const routeVitestArgs = ['--reporter=json', `--outputFile=${reportPathFor(group.root)}`, ...vitestArgs];
       commands.push({
         command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
         args: [

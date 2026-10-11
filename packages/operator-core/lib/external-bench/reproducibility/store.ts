@@ -170,6 +170,14 @@ export function resolveRunReportAssignment(rows: readonly Pick<TaskRunResult,
         }
       }
       assignment.priceTable = currentProtocolPriceTable(currentProtocol, rows);
+      assignment.requireRegisteredSampling = true;
+      if (currentProtocol.sampling) {
+        const sampling = currentProtocol.sampling;
+        assignment.repositoryByTask = Object.fromEntries(assignedTaskIds.map(id => [id, sampling.taskRepositories[id]]));
+        assignment.ci = sampling.ci;
+        assignment.bootstrapSeed = sampling.bootstrapSeed;
+        assignment.bootstrapIterations = sampling.bootstrapIterations;
+      }
     }
   }
   return assignment;

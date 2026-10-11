@@ -17,7 +17,8 @@
 import { randomInt } from 'node:crypto';
 
 // A fixed epoch (arbitrary — keeps the millis component shorter) so the numeric
-// tail stays well inside a bigint/JS-safe-integer range for centuries.
+// tail stays inside a signed 64-bit (Postgres bigint) range for ~278 years. It is
+// NOT a JS-safe integer (it exceeds 2^53 already), so never parse it with Number().
 const ID_EPOCH_MS = Date.UTC(2026, 0, 1);
 // 20 random bits (~1M values) appended per millisecond of entropy — same-millisecond
 // collision odds are ~1-in-a-million even with ZERO cross-writer coordination.

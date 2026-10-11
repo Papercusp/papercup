@@ -10,6 +10,7 @@
  * providers.
  */
 import {
+  providerCredentialForHost,
   providerEgressAllows,
   type HostFetch,
   type HostFetchRequest,
@@ -25,7 +26,8 @@ export type HostFetchErrorCode =
   | 'insecure-url'
   | 'caller-authorization-header'
   | 'token-unavailable'
-  | 'service-credential-unavailable';
+  | 'service-credential-unavailable'
+  | 'credential-unavailable';
 
 export class HostFetchError extends Error {
   constructor(
@@ -53,6 +55,12 @@ export interface HostFetchDeps {
    * Defaults to the service-credentials registry.
    */
   serviceAccessToken?(ref: string): Promise<string>;
+  /**
+   * The owner-pasted value of the provider's `setup.credentials` field `key`, or null when it is
+   * not configured (cupboard-distributable-integrations P-001). Required for a provider whose
+   * descriptor injects a pasted credential; the value never reaches provider code.
+   */
+  pastedCredential?(key: string): Promise<string | null>;
   fetchImpl?: typeof fetch;
 }
 
@@ -116,7 +124,19 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     // A host declared under serviceCredentials gets the host-held service
     // identity, never the source's user token (D-018.1).
     const service = serviceCredentialForHost(registered.descriptor.serviceCredentials, url.hostname);
-    if (service) {
+    // A host a pasted credential claims gets that value (P-001); the descriptor validator keeps
+    // pasted and service credentials from claiming the same host.
+    const pasted = service ? null : providerCredentialForHost(registered.descriptor, url.hostname);
+    if (pasted) {
+      const value = deps.pastedCredential ? await deps.pastedCredential(pasted.key) : null;
+      if (!value) {
+        throw new HostFetchError(
+          'credential-unavailable',
+          `host.fetch: "${pasted.label}" for provider "${providerId}" is not set up; paste it on the Integrations page`,
+        );
+      }
+      headers.set('authorization', `Bearer ${value}`);
+    } else if (service) {
       let serviceToken: string;
       try {
         serviceToken = await (deps.serviceAccessToken ?? defaultServiceAccessToken)(service.ref);

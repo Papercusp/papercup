@@ -10,10 +10,15 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEPLOY_IN_FLIGHT_TTL_MS,
+  UNIT_START_IDENTITY_MAX_MS,
   UNIT_START_PROBE_TTL_MS,
   probeUnitStartShared,
+  readDeployInFlightShared,
+  resetDeployInFlightCacheForTest,
   resetUnitStartProbeCacheForTest,
 } from './git-pipeline-position';
+import type { DeployInFlight } from './release-deploy-launch';
 
 type Probe = { pid: number | null; startedAtMs: number | null } | null;
 
@@ -46,14 +51,15 @@ describe('probeUnitStartShared', () => {
     expect(uncached.mock.calls.map((c) => c[0])).toEqual(['a.service', 'bb.service']);
   });
 
-  it('re-probes once the TTL has passed, never serving the old value', async () => {
+  it('re-probes once the TTL has passed when the cached pid is gone, never serving the old value', async () => {
     let n = 0;
     const uncached = vi.fn(async (): Promise<Probe> => ({ pid: ++n, startedAtMs: n }));
-    await expect(probeUnitStartShared('u.service', uncached)).resolves.toEqual({ pid: 1, startedAtMs: 1 });
+    const pidGone = vi.fn(async () => null);
+    await expect(probeUnitStartShared('u.service', uncached, pidGone)).resolves.toEqual({ pid: 1, startedAtMs: 1 });
     vi.setSystemTime(Date.now() + UNIT_START_PROBE_TTL_MS - 1);
-    await expect(probeUnitStartShared('u.service', uncached)).resolves.toEqual({ pid: 1, startedAtMs: 1 });
+    await expect(probeUnitStartShared('u.service', uncached, pidGone)).resolves.toEqual({ pid: 1, startedAtMs: 1 });
     vi.setSystemTime(Date.now() + 2);
-    await expect(probeUnitStartShared('u.service', uncached)).resolves.toEqual({ pid: 2, startedAtMs: 2 });
+    await expect(probeUnitStartShared('u.service', uncached, pidGone)).resolves.toEqual({ pid: 2, startedAtMs: 2 });
     expect(uncached).toHaveBeenCalledTimes(2);
   });
 
@@ -62,5 +68,136 @@ describe('probeUnitStartShared', () => {
     await probeUnitStartShared('gone.service', uncached);
     await probeUnitStartShared('gone.service', uncached);
     expect(uncached).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * WI-10008286: past the 2 s TTL an unchanged unit must not re-fork. The bg-host
+ * loop-saturation profile of 2026-10-11T00:10Z (p95 605 ms) spent 19.8% of its samples
+ * in probeUnitStartUncached because every 2 s re-probe forked systemctl from a
+ * multi-GB process. These tests pin that an unchanged MainPID is re-served from a
+ * fork-free /proc identity check, and that every way the identity can change still
+ * reaches the real probe.
+ */
+describe('probeUnitStartShared fork-free identity revalidation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-11T00:30:00Z'));
+    resetUnitStartProbeCacheForTest();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    resetUnitStartProbeCacheForTest();
+  });
+
+  const START = 1_791_000_000_123.456;
+
+  it('probes an unchanged unit ONCE across many TTL windows while /proc identity matches', async () => {
+    const uncached = vi.fn(async (): Promise<Probe> => ({ pid: 4242, startedAtMs: START }));
+    const readStart = vi.fn(async (pid: number) => (pid === 4242 ? START : null));
+    for (let i = 0; i < 20; i++) {
+      await expect(probeUnitStartShared('papercusp-bg-host.service', uncached, readStart)).resolves.toEqual({
+        pid: 4242,
+        startedAtMs: START,
+      });
+      vi.setSystemTime(Date.now() + UNIT_START_PROBE_TTL_MS + 500);
+    }
+    expect(uncached).toHaveBeenCalledTimes(1);
+    expect(readStart).toHaveBeenCalled();
+    expect(readStart.mock.calls.every(([pid]) => pid === 4242)).toBe(true);
+  });
+
+  it('falls through to the real probe when the pid now has a different start (recycled pid / restart)', async () => {
+    let probes = 0;
+    const uncached = vi.fn(async (): Promise<Probe> => {
+      probes += 1;
+      return probes === 1 ? { pid: 4242, startedAtMs: START } : { pid: 4242, startedAtMs: START + 90_000 };
+    });
+    let liveStart = START;
+    const readStart = vi.fn(async () => liveStart);
+    await probeUnitStartShared('u.service', uncached, readStart);
+    liveStart = START + 90_000;
+    vi.setSystemTime(Date.now() + UNIT_START_PROBE_TTL_MS + 1);
+    await expect(probeUnitStartShared('u.service', uncached, readStart)).resolves.toEqual({
+      pid: 4242,
+      startedAtMs: START + 90_000,
+    });
+    expect(uncached).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls through to the real probe when the cached pid has exited', async () => {
+    let probes = 0;
+    const uncached = vi.fn(async (): Promise<Probe> => ({ pid: ++probes === 1 ? 4242 : 5151, startedAtMs: START + probes }));
+    let alive = true;
+    const readStart = vi.fn(async (pid: number) => (alive && pid === 4242 ? START + 1 : null));
+    await probeUnitStartShared('u.service', uncached, readStart);
+    alive = false;
+    vi.setSystemTime(Date.now() + UNIT_START_PROBE_TTL_MS + 1);
+    await expect(probeUnitStartShared('u.service', uncached, readStart)).resolves.toEqual({ pid: 5151, startedAtMs: START + 2 });
+    expect(uncached).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-probes at the identity backstop even while identity still matches', async () => {
+    const uncached = vi.fn(async (): Promise<Probe> => ({ pid: 4242, startedAtMs: START }));
+    const readStart = vi.fn(async () => START);
+    await probeUnitStartShared('u.service', uncached, readStart);
+    vi.setSystemTime(Date.now() + UNIT_START_IDENTITY_MAX_MS - 1);
+    await probeUnitStartShared('u.service', uncached, readStart);
+    expect(uncached).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 2);
+    await probeUnitStartShared('u.service', uncached, readStart);
+    expect(uncached).toHaveBeenCalledTimes(2);
+  });
+
+  it('never identity-serves a value it cannot check: null, pid 0 and unknown start keep the 2 s TTL', async () => {
+    const readStart = vi.fn(async () => START);
+    for (const value of [null, { pid: 0, startedAtMs: START }, { pid: null, startedAtMs: START }, { pid: 4242, startedAtMs: null }] as Probe[]) {
+      resetUnitStartProbeCacheForTest();
+      const uncached = vi.fn(async (): Promise<Probe> => value);
+      await probeUnitStartShared('u.service', uncached, readStart);
+      vi.setSystemTime(Date.now() + UNIT_START_PROBE_TTL_MS + 1);
+      await probeUnitStartShared('u.service', uncached, readStart);
+      expect(uncached).toHaveBeenCalledTimes(2);
+    }
+    expect(readStart).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-10008286 (same class): readDeployInFlight forks `systemctl show` per call, and
+ * one evidence read fans gitPipelinePosition out over up to 12 paths. 8.1% of the
+ * 00:10Z bg-host stall profile. Pin one shared read per window, re-read after it.
+ */
+describe('readDeployInFlightShared', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-11T00:30:00Z'));
+    resetDeployInFlightCacheForTest();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    resetDeployInFlightCacheForTest();
+  });
+
+  const reading = (active: boolean): DeployInFlight =>
+    ({ active, unit: 'papercusp-deploy', activeState: active ? 'active' : 'inactive', source: 'systemd' }) as DeployInFlight;
+
+  it('shares ONE systemd read across 12 concurrent callers', async () => {
+    const uncached = vi.fn(async () => reading(false));
+    const results = await Promise.all(Array.from({ length: 12 }, () => readDeployInFlightShared(uncached)));
+    expect(uncached).toHaveBeenCalledTimes(1);
+    expect(results.every((r) => r.active === false)).toBe(true);
+  });
+
+  it('re-reads once the window has passed, so a started deploy is seen', async () => {
+    let active = false;
+    const uncached = vi.fn(async () => reading(active));
+    await expect(readDeployInFlightShared(uncached)).resolves.toMatchObject({ active: false });
+    active = true;
+    vi.setSystemTime(Date.now() + DEPLOY_IN_FLIGHT_TTL_MS - 1);
+    await expect(readDeployInFlightShared(uncached)).resolves.toMatchObject({ active: false });
+    vi.setSystemTime(Date.now() + 2);
+    await expect(readDeployInFlightShared(uncached)).resolves.toMatchObject({ active: true });
+    expect(uncached).toHaveBeenCalledTimes(2);
   });
 });

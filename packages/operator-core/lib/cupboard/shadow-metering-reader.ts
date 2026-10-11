@@ -29,6 +29,7 @@ import { quoteIdentityInferenceTurn } from './identity-per-use-offer';
 import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
 import {
   buildShadowStatements,
+  shadowMonthBounds,
   SHADOW_MARKUP_SHEET,
   usdToMicros,
   type ShadowCostBasisRow,
@@ -38,22 +39,8 @@ import {
   type ShadowUsageAggregate,
 } from './shadow-metering';
 
-const MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
-
-/** UTC bounds of a `YYYY-MM` month as epoch milliseconds, end exclusive. */
-export function shadowMonthBounds(month: string): { startMs: number; endMs: number } {
-  const match = MONTH_RE.exec(month);
-  if (!match) throw new Error(`shadow metering: month must be YYYY-MM, got ${JSON.stringify(month)}`);
-  const year = Number(match[1]);
-  const monthIndex = Number(match[2]) - 1;
-  // Date.UTC treats years 0–99 as 1900–1999. setUTCFullYear preserves
-  // the literal year and normalizes the exclusive boundary across December.
-  const start = new Date(0);
-  const end = new Date(0);
-  start.setUTCFullYear(year, monthIndex, 1);
-  end.setUTCFullYear(year, monthIndex + 1, 1);
-  return { startMs: start.getTime(), endMs: end.getTime() };
-}
+// Preserve the reader's public import path for existing metering consumers.
+export { shadowMonthBounds } from './shadow-metering';
 
 interface UsageRow {
   attributed: boolean;

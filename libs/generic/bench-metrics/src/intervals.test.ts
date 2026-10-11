@@ -170,6 +170,32 @@ describe('pairedBootstrapCI', () => {
     const r = pairedBootstrapCI([0.5, 0.5, 0.5, 0.5], [0.1, 0.9, 0.2, 0.8]);
     expect(r.rho).toBe(0);
   });
+
+  it('keeps correlated repository blocks together rather than treating their tasks as independent', () => {
+    const a = Array(1000).fill(0.5);
+    const b = a.map((_, i) => i < 500 ? 0.7 : 0.3);
+    const clusterIds = a.map((_, i) => i < 500 ? 'repo-a' : 'repo-b');
+    const task = pairedBootstrapCI(a, b, { seed: 17 });
+    const repository = pairedBootstrapCI(a, b, { seed: 17, clusterIds });
+    expect(task.halfWidth).toBeLessThan(0.02);
+    expect(repository.halfWidth).toBeGreaterThan(0.19);
+    expect(repository).toMatchObject({ n: 1000, independentUnits: 2, resamplingUnit: 'cluster', significant: false });
+    expect(repository.delta.point).toBeCloseTo(0);
+    expect(pairedBootstrapCI(a, b, { seed: 17, clusterIds })).toEqual(repository);
+  });
+
+  it('retains task weighting when repository sizes differ', () => {
+    const r = pairedBootstrapCI(Array(10).fill(0), [...Array(9).fill(1), 0], {
+      clusterIds: [...Array(9).fill('large'), 'small'],
+    });
+    expect(r.delta).toEqual({ point: 0.9, lower: 0, upper: 1, ci: 0.95 });
+    expect(r.independentUnits).toBe(2);
+  });
+
+  it.each([{ clusterIds: ['repo'] }, { clusterIds: ['repo', ''] }, { clusterIds: ['repo', 'repo'] }])
+    ('rejects malformed or single-cluster inference %j', ({ clusterIds }) => {
+    expect(() => pairedBootstrapCI([0, 0], [1, 1], { clusterIds })).toThrow(/index-aligned|independent clusters/);
+  });
 });
 
 describe('mcnemarExact', () => {

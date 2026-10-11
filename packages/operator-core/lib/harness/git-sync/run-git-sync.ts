@@ -3795,8 +3795,15 @@ export async function isRegenerableProjection(
 /** Enumerate every dirty path (modified/added/deleted/untracked), repo-relative, in the
  *  same path-space as the oversized/content excludes. `-z` keeps paths with spaces/newlines
  *  intact; a rename/copy origin path (the 2nd `-z` field) is skipped. Exported for P-004 tests. */
-export async function dirtyFiles(runGit: RunGit, repoPath: string): Promise<string[]> {
-  const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
+export async function dirtyFiles(
+  runGit: RunGit,
+  repoPath: string,
+  options: { ignoreSubmodules?: 'dirty' } = {},
+): Promise<string[]> {
+  const r = await runGit([
+    'status', '--porcelain', '-z', '-uall',
+    ...(options.ignoreSubmodules ? [`--ignore-submodules=${options.ignoreSubmodules}`] : []),
+  ], repoPath);
   if (r.code !== 0) return [];
   const entries = r.stdout.split('\0').filter(Boolean);
   const out: string[] = [];
@@ -4603,7 +4610,10 @@ export async function commitAttributedGroups(
   } = {},
 ): Promise<{ committedAny: boolean; committedCount: number; error?: string }> {
   const excludeSet = new Set(excludePaths);
-  const allDirty = await dirtyFiles(runGit, repoPath);
+  // Child worktree edits cannot change a superproject gitlink. A protected
+  // child edit with the same committed pointer must not strand root sources;
+  // actual child HEAD changes still appear with --ignore-submodules=dirty.
+  const allDirty = await dirtyFiles(runGit, repoPath, { ignoreSubmodules: 'dirty' });
   const prioritySet = new Set(opts.priorityPaths ?? []);
   const dirtyPriorityPaths = allDirty.filter((f) => prioritySet.has(f));
   const blockedPriorityPaths = dirtyPriorityPaths.filter((f) => excludeSet.has(f));
@@ -4660,7 +4670,8 @@ export async function commitAttributedGroups(
     } else if (priority.status === 'error') {
       return { committedAny, committedCount, error: priority.error };
     }
-    const remainingPriorityPaths = (await dirtyFiles(runGit, repoPath)).filter((f) => prioritySet.has(f));
+    const remainingPriorityPaths = (await dirtyFiles(runGit, repoPath, { ignoreSubmodules: 'dirty' }))
+      .filter((f) => prioritySet.has(f));
     if (remainingPriorityPaths.length > 0) {
       if (priority.status === 'nothing') {
         opts.deferAttributedPaths?.([...new Set(groups.flatMap((g) => g.files))]);

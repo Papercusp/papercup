@@ -11,10 +11,10 @@
  * TypeScript itself is never bundled: it is loaded from the vendored LSP install
  * the host names, the same TypeScript typescript-language-server runs.
  */
-import { failedCallersAnswer, firstPartyCallers, type FirstPartyCallersAnswer } from './first-party-callers.ts';
+import { failedCallersAnswer, firstPartyCallers, type FirstPartyCallersAnswer, type FirstPartyCallersQuery } from './first-party-callers.ts';
 import { loadVendoredTypescript } from './typescript-service.ts';
 
-export interface FirstPartyCallersJob {
+export interface FirstPartyCallersJob extends Omit<FirstPartyCallersQuery, 'ts' | 'now'> {
   readonly vendorDir: string;
   readonly root: string;
   readonly repositoryId?: string;
@@ -32,11 +32,11 @@ const started = Date.now();
 let result: FirstPartyCallersAnswer;
 try {
   const ts = loadVendoredTypescript(job.vendorDir);
-  result = firstPartyCallers({ ts, root: job.root, repositoryId: job.repositoryId, name: job.name, limit: job.limit, paths: job.paths, rgPath: job.rgPath });
+  result = firstPartyCallers({ ...job, ts });
 } catch (error) {
   // Loading TypeScript is the one step firstPartyCallers does not guard itself.
   const why = error instanceof Error ? error.message : String(error);
-  result = failedCallersAnswer(job.name, `could not load the vendored TypeScript from ${job.vendorDir}: ${why}`, started);
+  result = failedCallersAnswer(job.name, `could not load the vendored TypeScript from ${job.vendorDir}: ${why}`, started, Date.now(), job);
 }
 await new Promise<void>((resolve, reject) => process.send!(result, (error: Error | null) => (error ? reject(error) : resolve())));
 process.disconnect();

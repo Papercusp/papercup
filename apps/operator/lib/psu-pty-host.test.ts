@@ -190,6 +190,7 @@ const {
   shouldRetryCarryOnFreshEpoch,
   shouldRetryLaunchKickoffOnFreshChild,
   isUnbindableChild,
+  duplicateDeliveryVerdict,
   unboundChildWindowMs,
   UNBOUND_CHILD_WINDOW_MS,
   shouldRedeliverLaunchKickoffAfterRespawn,
@@ -4113,6 +4114,51 @@ describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
     expect(shouldRetryCarryOnFreshEpoch({ ...missing, drillId: 'drill-1' })).toBe(false);
     // A found id whose operator report is slow is not a wedged child.
     expect(shouldRetryCarryOnFreshEpoch({ reason: 'successor-reanchor-unconfirmed' })).toBe(false);
+  });
+});
+
+describe('duplicate delivery verdict (P-005(c) / D-007 (d))', () => {
+  const yes = () => true;
+  const no = () => false;
+
+  it('refuses a PENDING turn/reset retry once the child is unbindable, instead of re-ACKing pending forever', () => {
+    // Pre-fix the duplicate-id short-circuit answered `pending-delivery-id` before the
+    // unbindable check ever ran, so a delivery accepted inside the window re-polled forever.
+    expect(duplicateDeliveryVerdict({ duplicateState: 'pending', mode: 'turn', unbindable: yes })).toBe('refuse-unbindable');
+    expect(duplicateDeliveryVerdict({ duplicateState: 'pending', mode: 'reset', unbindable: yes })).toBe('refuse-unbindable');
+  });
+
+  it('keeps the idempotent short-circuit for a bindable child, other modes, and settled ids', () => {
+    expect(duplicateDeliveryVerdict({ duplicateState: 'pending', mode: 'turn', unbindable: no })).toBe('short-circuit');
+    expect(duplicateDeliveryVerdict({ duplicateState: 'pending', mode: 'carry-respawn', unbindable: yes })).toBe('short-circuit');
+    // A completed id already wrote: refusing it would make the sender deliver it twice.
+    expect(duplicateDeliveryVerdict({ duplicateState: 'completed', mode: 'turn', unbindable: yes })).toBe('short-circuit');
+    expect(duplicateDeliveryVerdict({ duplicateState: 'cancelled', mode: 'turn', unbindable: yes })).toBe('short-circuit');
+  });
+
+  it('is not a duplicate without a recorded state, and probes the child only when it can change the answer', () => {
+    const probe = vi.fn(() => true);
+    expect(duplicateDeliveryVerdict({ duplicateState: null, mode: 'turn', unbindable: probe })).toBe('not-duplicate');
+    expect(duplicateDeliveryVerdict({ duplicateState: 'completed', mode: 'turn', unbindable: probe })).toBe('short-circuit');
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('is wired ahead of the pending short-circuit in the live control handler', () => {
+    // The verdict is pure; this pins its ORDER in the handler, which is the defect.
+    // Reads the same override as the module import so a copy-out mutation probe can
+    // falsify this pin without touching the tracked file.
+    const src = readFileSync(
+      hostOverride
+        ? hostOverride.startsWith('file:')
+          ? new URL(hostOverride)
+          : hostOverride
+        : new URL('../scripts/psu-pty-host.mjs', import.meta.url),
+      'utf8',
+    );
+    const refusal = src.indexOf("return refuseUnbindableDelivery(msg.mode, 'duplicate-pending')");
+    const pendingAnswer = src.indexOf("duplicateState === 'pending' ? 'pending-delivery-id' : 'duplicate-delivery-id'");
+    expect(refusal).toBeGreaterThan(0);
+    expect(pendingAnswer).toBeGreaterThan(refusal);
   });
 });
 

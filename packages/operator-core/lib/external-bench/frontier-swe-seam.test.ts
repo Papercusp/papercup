@@ -33,6 +33,14 @@ function fakeDocker(files: Record<string, string>, opts: { runCode?: number; rmF
       return { stdout: '', stderr: '', code: 0 };
     }
     if (args[0] === 'exec') {
+      if (args.includes('test')) {
+        // `test -e|-d <path>` → exit 0 present / 1 absent (the reader distinguishes absent from empty).
+        const path = args[args.length - 1];
+        const flag = args[args.length - 2];
+        const isDir = Object.keys(files).some((f) => f.startsWith(`${path.replace(/\/+$/, '')}/`));
+        const present = flag === '-d' ? isDir : path in files || isDir;
+        return { stdout: '', stderr: '', code: present ? 0 : 1 };
+      }
       const isCat = args.includes('cat');
       if (isCat) {
         const path = args[args.length - 1];

@@ -34,6 +34,8 @@ export interface AdmissionPrecheckQueueTarget {
 }
 
 export interface AdmissionPrecheckWorkerInput {
+  /** Proposal work uses the same confined worker but never settles an admission. */
+  proposal?: { candidate: string; repairHead: string };
   operationId: string;
   taskId: string;
   queueTarget: AdmissionPrecheckQueueTarget;
@@ -172,6 +174,7 @@ export function admissionPrecheckSettlementTransition(
 }
 
 export interface AdmissionPrecheckWorkerDeps {
+  runProposal?: (input: AdmissionPrecheckWorkerInput) => Promise<void>;
   getTask: (taskId: string) => Promise<Pick<TaskRow, 'state' | 'confined'> | null>;
   readQueue: (target: AdmissionPrecheckQueueTarget) => Promise<FrozenCandidateRepairQueueRead>;
   transition: (
@@ -190,6 +193,7 @@ export interface AdmissionPrecheckWorkerDeps {
 
 export type AdmissionPrecheckWorkerOutcome =
   | { status: 'settled'; verdict: FixPrecheckVerdict }
+  | { status: 'proposed' }
   | { status: 'ignored'; reason: string };
 
 const defaultWorkerDeps: AdmissionPrecheckWorkerDeps = {
@@ -206,6 +210,12 @@ export async function runAdmissionPrecheckWorker(
   const task = await deps.getTask(input.taskId);
   if (!task || !task.confined || (task.state !== 'pending' && task.state !== 'running')) {
     return { status: 'ignored', reason: 'managed task is absent, unconfined, or no longer live' };
+  }
+
+  if (input.proposal) {
+    const runProposal = deps.runProposal ?? (await import('./staging-fix-proposal-cli')).runAutomaticStagingFixProposal;
+    await runProposal(input);
+    return { status: 'proposed' };
   }
 
   const read = await deps.readQueue(input.queueTarget);
@@ -277,6 +287,10 @@ export function parseAdmissionPrecheckWorkerInput(raw: string | undefined): Admi
         !row.testCommand.every((arg) => typeof arg === 'string' && arg.trim()))) ||
       (row.clearEnv !== undefined && (!Array.isArray(row.clearEnv) ||
         !row.clearEnv.every((key) => typeof key === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)))) ||
+      (row.proposal !== undefined && (!row.proposal || typeof row.proposal !== 'object' ||
+        Array.isArray(row.proposal) ||
+        !/^[a-f0-9]{40}$/.test(String((row.proposal as Record<string, unknown>).candidate)) ||
+        !/^[a-f0-9]{40}$/.test(String((row.proposal as Record<string, unknown>).repairHead)))) ||
       typeof row.expiresAtMs !== 'number' || !Number.isFinite(row.expiresAtMs) || row.expiresAtMs < 0
     ) return null;
     return {
@@ -289,6 +303,7 @@ export function parseAdmissionPrecheckWorkerInput(raw: string | undefined): Admi
       ...(Array.isArray(row.testCommand) ? { testCommand: row.testCommand as string[] } : {}),
       ...(Array.isArray(row.clearEnv) ? { clearEnv: row.clearEnv as string[] } : {}),
       expiresAtMs: row.expiresAtMs,
+      ...(row.proposal ? { proposal: row.proposal as { candidate: string; repairHead: string } } : {}),
     };
   } catch {
     return null;

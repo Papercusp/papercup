@@ -523,7 +523,9 @@ export function consultSubjectKeys(question: string): string[] {
   for (const match of question.matchAll(untypedDatedSlug)) {
     keys.add(`slug:${match[1].toLowerCase()}`);
   }
-  const explicitIds = /\b((?:WI|EI|F|D)-\d{1,12})\b/gi;
+  // EI- tails are ~17 digits and slotted WI- ids are 16 (migration 1442), so the
+  // digit run must not be capped below that: a capped run plus \b matches nothing.
+  const explicitIds = /\b((?:WI|EI|F|D)-\d{1,20})\b/gi;
   for (const match of question.matchAll(explicitIds)) keys.add(`id:${match[1].toUpperCase()}`);
   return [...keys].sort();
 }

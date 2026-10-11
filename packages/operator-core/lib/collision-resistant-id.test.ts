@@ -50,11 +50,13 @@ describe('newFeatureId / newCollisionResistantIdTail', () => {
     expect(ids.size).toBeGreaterThanOrEqual(1998);
   });
 
-  it('stays a JS-safe integer for decades and orders by time', () => {
-    const tenYears = Date.UTC(2036, 0, 1);
-    const tail = BigInt(newCollisionResistantIdTail(tenYears));
-    expect(tail < BigInt(Number.MAX_SAFE_INTEGER)).toBe(true);
-    expect(BigInt(newCollisionResistantIdTail(tenYears + 1000)) > tail).toBe(true);
+  it('fits a signed 64-bit integer for two centuries and orders by time', () => {
+    // The tail is NOT a JS-safe integer (it passed 2^53 within days of the epoch),
+    // so readers must treat it as a string; it only has to fit Postgres bigint.
+    const in200Years = Date.UTC(2226, 0, 1);
+    const tail = BigInt(newCollisionResistantIdTail(in200Years));
+    expect(tail < 2n ** 63n).toBe(true);
+    expect(BigInt(newCollisionResistantIdTail(in200Years + 1000)) > tail).toBe(true);
   });
 
   it('rejects a kind that would break the F- id shape', () => {

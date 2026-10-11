@@ -178,8 +178,12 @@ test.describe('/admin/plans — plan detail flow', () => {
     // a status pill (StatusPill in PlanRail.tsx).
     // The default rail lists plans with matching items. A status bucket also
     // includes empty plans, which are valid fixtures in a fresh isolated DB.
-    await page.getByRole('group', { name: 'Plan status filters' })
-      .getByRole('button', { name: new RegExp(`^${plan.status === 'ready' ? 'Ready' : plan.status === 'draft' ? 'Draft' : plan.status === 'shipped' ? 'Shipped' : plan.status === 'active' ? 'Running' : 'Awaiting acceptance'}`) }).click();
+    // Select the rendered lifecycle buckets rather than deriving one from
+    // status alone: an active but unstarted plan belongs to Ready, not Running.
+    const buckets = page.getByRole('group', { name: 'Plan status filters' }).getByRole('button');
+    for (const bucket of await buckets.all()) {
+      if (await bucket.getAttribute('aria-pressed') !== 'true') await bucket.click();
+    }
     const rows = page.locator('.pc-plan-row');
     await expect(rows.first()).toBeVisible({ timeout: 20_000 });
     await expect(page.locator('.pc-plan-rail__rows .pc-pill').first()).toBeVisible();

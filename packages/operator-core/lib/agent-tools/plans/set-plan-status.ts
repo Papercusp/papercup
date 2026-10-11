@@ -432,7 +432,17 @@ export async function launchAcceptanceGraderForGate(
   ctx: Parameters<typeof launchAcceptanceGrader>[1],
   harness: string | undefined,
   launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
+  evaluateRecruitment: typeof evaluatePlanAcceptanceGate = evaluatePlanAcceptanceGate,
 ): Promise<AcceptanceGraderLifecycle | undefined> {
+  if (!gate.satisfied && gate.code === 'plan_items_unfinished') {
+    // The real ship gate stays strict. Its not-code ceremony tail can still
+    // need a grade before completion, so use the existing recruitment-only
+    // gate to decide whether the immediate retry may launch that judge.
+    gate = await evaluateRecruitment(slug, {
+      harnessSlug: harness ?? ctx.harnessSlug,
+      gradingRecruitment: true,
+    });
+  }
   if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
   // The tool accepts a per-call harness override. Keep the scoping at this
   // launch seam so the acceptance grader cannot accidentally resolve the plan

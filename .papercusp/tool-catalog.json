@@ -14823,7 +14823,7 @@
           "POST"
         ]
       },
-      "description": "Code topology: symbol | callers | callees | impact | health; refused intents return redirects. `callers` reads current source (TypeScript call hierarchy plus labelled unresolved calls), so empty means no call in any searched file. Other ops use the GitNexus index. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Missing/ambiguous symbols and backend failures carry errors.",
+      "description": "Code topology: symbol | context | callers | callees | impact | health. Symbol/context/callees use current JS/TS compiler snapshots with defining-file disambiguation; context includes outgoing call sites. Callers retains labelled unresolved calls. Impact/health use the GitNexus index. Other languages and refused intents require their named native/structural routes. Sites are one-indexed and carry measured source versions; missing/ambiguous symbols and unsupported selectors carry errors.",
       "capabilities": [
         "intel:read"
       ],

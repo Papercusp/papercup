@@ -38,9 +38,9 @@ describe('graph:query callers', () => {
     expect(a.coverage.limitations.join('\n')).toMatch(/callers ignores kind, uid/);
   }, 60_000);
 
-  it('leaves the other ops on the GitNexus facade', async () => {
+  it('leaves impact on the GitNexus facade', async () => {
     // No dispatcher in this ctx: the facade refuses with a wiring fault, which proves the route.
-    const a = await run({ op: 'callees', name: 'target' });
+    const a = await run({ op: 'impact', name: 'target' });
     expect(a.backend).not.toBe('typescript-service');
     expect(a.error).toBeTruthy();
   });

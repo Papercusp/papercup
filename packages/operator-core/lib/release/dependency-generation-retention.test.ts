@@ -91,10 +91,37 @@ describe('hourly dependency-generation retention discovery', () => {
     expect(result.stores).toHaveLength(2);
     expect(result.stores.find((row) => row.generationRoot === alias)).toMatchObject({ retired: false, status: 'pruned' });
     expect(pruneArguments()).toEqual([
-      '--integration', integration, '--generation-root', replacement, '--prune-only',
-      '--integration', other, '--generation-root', alias, '--prune-only',
+      '--integration', integration, '--generation-root', replacement, '--prune-only', '--no-recorded-store-cascade',
+      '--integration', other, '--generation-root', alias, '--prune-only', '--no-recorded-store-cascade',
     ]);
     expect(governed.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('sweeps recorded former stores once when the actor already enumerates them', async () => {
+    const current = join(fixture, 'current');
+    const former = join(fixture, 'former');
+    const identity = `v1-${'d'.repeat(64)}`;
+    mkdirSync(join(current, identity, 'tree'), { recursive: true });
+    mkdirSync(former);
+    writeFileSync(join(current, identity, '.papercusp-dependency-generation'), `identity=${identity}\nsnapshot=fixture\ncreated=2\n`);
+    recordStore(current, [former]);
+    vi.stubEnv('PAPERCUSP_RETENTION_ACTUAL_SCRIPT',
+      resolve(__dirname, '../../../../apps/operator/bin/release/dependency-generation.sh'));
+    // Count calls through the real CLI and preserve the original pruner.
+    writeFileSync(script, [
+      'source "$PAPERCUSP_RETENTION_ACTUAL_SCRIPT"',
+      'eval "$(declare -f dependency_generation_apply_retention | sed "1s/dependency_generation_apply_retention/fixture_original_retention/")"',
+      'dependency_generation_apply_retention() { printf "%s\\n" "$1" >> "$PAPERCUSP_RETENTION_TEST_OUTPUT"; fixture_original_retention "$@"; }',
+      'dependency_generation_main "$@"',
+    ].join('\n'));
+
+    const result = await runDependencyGenerationRetention();
+
+    expect(result.status).toBe('complete');
+    expect(pruneArguments()).toEqual([current, former]);
+    expect(readFileSync(join(current, identity, '.papercusp-dependency-generation'), 'utf8'))
+      .toContain(`identity=${identity}`);
+    expect(result.stores.map((store) => store.status)).toEqual(['pruned', 'pruned']);
   });
 
   it('returns failed prune diagnostics while continuing an independent store', async () => {
@@ -120,8 +147,8 @@ describe('hourly dependency-generation retention discovery', () => {
     expect(resolveDependencyGenerationRoot(integration, {})).toBe(current);
     await runDependencyGenerationRetention();
     expect(pruneArguments()).toEqual([
-      '--integration', integration, '--generation-root', current, '--prune-only',
-      '--integration', integration, '--generation-root', old, '--prune-only', '--retired-store',
+      '--integration', integration, '--generation-root', current, '--prune-only', '--no-recorded-store-cascade',
+      '--integration', integration, '--generation-root', old, '--prune-only', '--no-recorded-store-cascade', '--retired-store',
     ]);
     expect(governed.run).toHaveBeenCalledTimes(2);
   });
@@ -192,7 +219,7 @@ describe('hourly dependency-generation retention discovery', () => {
 
     await runDependencyGenerationRetention();
 
-    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only']);
+    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only', '--no-recorded-store-cascade']);
   });
 
   it('discovers an environment-configured store ahead of a missing recorded store', async () => {
@@ -203,7 +230,7 @@ describe('hourly dependency-generation retention discovery', () => {
 
     await runDependencyGenerationRetention();
 
-    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only']);
+    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only', '--no-recorded-store-cascade']);
   });
 
   it('retains discovery of the default tree-local store', async () => {
@@ -212,7 +239,7 @@ describe('hourly dependency-generation retention discovery', () => {
 
     await runDependencyGenerationRetention();
 
-    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only']);
+    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only', '--no-recorded-store-cascade']);
   });
 
   it('skips a missing selected store even if an unused legacy directory exists', async () => {
@@ -240,7 +267,7 @@ describe('hourly dependency-generation retention discovery', () => {
     await runDependencyGenerationRetention();
 
     expect(registry.load).toHaveBeenCalledTimes(2);
-    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only']);
+    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only', '--no-recorded-store-cascade']);
     // One admission per swept root, owned by the first workspace that registered it.
     expect(governed.run).toHaveBeenCalledTimes(1);
     expect(governed.run.mock.calls[0]![0]).toMatchObject({
@@ -272,7 +299,7 @@ describe('hourly dependency-generation retention discovery', () => {
     await runDependencyGenerationRetention();
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('workspace broken: registry unavailable'));
-    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only']);
+    expect(pruneArguments()).toEqual(['--integration', integration, '--generation-root', store, '--prune-only', '--no-recorded-store-cascade']);
   });
 
   it('skips registry discovery when the maintained script is absent', async () => {

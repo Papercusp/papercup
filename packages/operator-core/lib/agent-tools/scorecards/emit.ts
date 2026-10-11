@@ -1293,6 +1293,19 @@ function validateSpecTestAdequacyBinding(
     };
   }
 
+  // Equality of two unknown SHAs does not identify a replayable evaluator.
+  // Refuse before replay/persistence, so a best-effort build-info failure cannot
+  // create a card whose sole independent auditor has no exact build to run.
+  const evaluatorBuilds = [parsedRecipe.data.evaluatorBuild, parsedRecipe.data.args.evaluatorBuild];
+  if (evaluatorBuilds.some(build => build && !build.sha?.trim())) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot certify an unmeasured evaluator build; ` +
+        'restore the evaluator artifact identity and re-run its current draft; no scorecard was persisted',
+    };
+  }
+
   const selection = parsedRecipe.data.selection;
   const expectedRef = specTestAdequacySubjectRef(selection.planSlug, selection.specId, selection.specRevision);
   if (args.subject?.kind !== 'plan' || args.subject.ref !== expectedRef) {

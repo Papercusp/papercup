@@ -94,7 +94,7 @@ export async function runDependencyGenerationRetention(): Promise<DependencyRete
             metadata: { command: 'dependency-generation.sh --prune-only', generationRoot, retired },
           },
           async () =>
-            run('bash', [script, '--integration', root, '--generation-root', generationRoot, '--prune-only',
+            run('bash', [script, '--integration', root, '--generation-root', generationRoot, '--prune-only', '--no-recorded-store-cascade',
               ...(retired ? ['--retired-store'] : [])], {
               timeout: 120_000,
             }),

@@ -272,6 +272,30 @@ describe("P-006 repairSignatureFromVerdict — a verdict names WHICH kinds it me
 });
 
 describe("P-006 verifyRepairHead — the typed signature drives the runners, at the repair head only", () => {
+  it("selects the measured signature despite stale failing lifecycle legs and flat names (P-008)", async () => {
+    const staleId = `${CORE} :: test:lane-stateful`;
+    const remainingId = `${WEB} :: test`;
+    const queue = queueWith([
+      entry({ kind: "workspace-task", id: remainingId, workspace: WEB }),
+      entry({ kind: "lint-leg", id: "lint:tsc" }),
+    ], {
+      failingTests: [staleId, remainingId],
+      legs: [{
+        id: staleId, state: "failing", admittedRound: 1,
+        admittedHead: CANDIDATE, admittedAtMs: 1,
+        lastMeasuredHead: CANDIDATE, lastMeasuredAtMs: 1,
+        lastMeasuredRound: 1, failingRounds: 1,
+      }],
+    });
+    const { deps, gateRuns, fileRuns, refs } = recordingDeps();
+
+    await verifyRepairHead(deps, queue);
+
+    expect(gateRuns).toEqual([[remainingId, "lint:tsc"]]);
+    expect(fileRuns).toEqual([]);
+    expect(refs).toEqual([HEAD]);
+  });
+
   it.each([
     { selected: 2, workspaces: 1, files: 2, rows: ["lib/a.test.ts"] },
     { selected: 1, workspaces: 2, files: 1, rows: ["lib/a.test.ts"] },

@@ -81,7 +81,7 @@ import { DEFAULT_SIGNAL_ORIGIN, deriveReporterProvenance, type SignalOrigin } fr
 import { createBlockingEdgeReader, ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { planItemRef } from './issue-blocks-merge';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
-import { randomInt } from 'node:crypto';
+import { newCollisionResistantIdTail } from './collision-resistant-id';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { trackDetached } from './detached-imports';
 import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
@@ -969,26 +969,18 @@ export const _issueRowDbKeysParityAssertion: [AssertNoMissingFromTuple, AssertNo
 // is now the single builder for both families, so the evidence key and the
 // assumptions key cannot land differently depending on which family closed.
 
-// EI-13285: a fixed epoch (arbitrary — keeps the millis component shorter) so the
-// numeric tail stays well inside a bigint/JS-safe-integer range for centuries.
-const EI_ID_EPOCH_MS = Date.UTC(2026, 0, 1);
-// 20 random bits (~1M values) appended per millisecond of entropy — same-millisecond
-// collision odds are ~1-in-a-million even with ZERO cross-writer coordination.
-const EI_ID_RAND_BITS = 20n;
-const EI_ID_RAND_SPACE = 2 ** 20;
-
 /**
  * Mint the numeric tail of a fresh, collision-resistant EI-<n> id (EI-13285).
  *
  * Exported so the Hyperbee→PG issue projection (engineer-issues.ts) can mint the
  * SAME kind of id when it needs to re-key a genuinely colliding incoming remote op
  * (see writeToPg's collision guard there) — both callers need the identical
- * "no shared state required" property.
+ * "no shared state required" property. The generator itself lives in
+ * collision-resistant-id.ts, shared with the F-FIX / F-IDEA feature minters
+ * (scope-unique-identifiers-2026-07-26 P-005).
  */
 export function newCollisionResistantIssueTail(): string {
-  const ms = BigInt(Math.max(0, Date.now() - EI_ID_EPOCH_MS));
-  const rand = BigInt(randomInt(0, EI_ID_RAND_SPACE));
-  return ((ms << EI_ID_RAND_BITS) + rand).toString();
+  return newCollisionResistantIdTail();
 }
 
 /**

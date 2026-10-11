@@ -68,8 +68,14 @@ export function interpretRestrictedHoldPreflight(result) {
     .reverse()
     .find((candidate) => candidate.startsWith(`${RESTRICTED_HOLD_PREFLIGHT_MARKER} `));
   if (!line) {
-    const tail = String(result.stderr ?? '').trim().split('\n').slice(-3).join(' | ');
-    return unknownState(`preflight exited ${result.status} without a verdict${tail ? `: ${tail}` : ''}`);
+    // The final frames name the loader worker, while the error that explains
+    // the refusal is usually at the start (e.g. a foreign esbuild binary).
+    // Keep both ends bounded, including a single oversized stderr line.
+    const stderr = String(result.stderr ?? '').trim();
+    const diagnostic = stderr.length > 2400
+      ? stderr.slice(0, 1800) + '\n… stderr clipped …\n' + stderr.slice(-600)
+      : stderr;
+    return unknownState(`preflight exited ${result.status} without a verdict${diagnostic ? `: ${diagnostic.replaceAll('\n', ' | ')}` : ''}`);
   }
   let payload;
   try {

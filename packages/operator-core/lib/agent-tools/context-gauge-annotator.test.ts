@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { contextGaugeAnnotator } from './context-gauge-annotator';
+import * as ptyDiscovery from '../events/await/psu-pty-discovery';
 import {
   recordContextUsage,
   resetContextUsageCacheForTests,
@@ -55,10 +56,18 @@ describe('contextGaugeAnnotator (P-013 wiring logic)', () => {
     expect(texts).toHaveLength(2);
     expect(texts[1]).toContain('context: 270000/300000 (90%)');
     expect(texts[1]).toContain('CRITICAL');
-    // Test owners are headless: the ambient result must not offer a carry-respawn
-    // that can only fail with no_live_pty_host.
+    // The synchronous result-annotation seam does not probe for a live host;
+    // precise host support is rendered by the async coord:inbox path.
     expect(texts[1]).not.toContain('request-compaction');
+    expect(texts[1]).toContain("session's supported continuation path");
     expect((out._meta as Record<string, unknown>)?._contextGauge).toContain('90%');
+  });
+
+  it('does not synchronously probe psu-pty host availability on the result hot path', () => {
+    trackOwner('su-no-host-probe', 270_000, 300_000);
+    const availability = vi.spyOn(ptyDiscovery, 'selfCompactionAvailability');
+    contextGaugeAnnotator(ok('result body'), ctx('su-no-host-probe'));
+    expect(availability).not.toHaveBeenCalled();
   });
 
   // EI-23761864550626068: the gauge numerator is transcript bytes/4, so the rendered line

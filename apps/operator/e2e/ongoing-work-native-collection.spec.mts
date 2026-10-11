@@ -1,11 +1,12 @@
 import { test, expect, type TestInfo } from '@playwright/test';
 import type { OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
 import { createRequire } from 'node:module';
 import { basename, dirname } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 
 // Native failures can happen in the initial API read before a browser is
@@ -13,20 +14,69 @@ import { decodeNativeBridgeJson } from './_native-bridge-json';
 // records nothing when this owned, expensive verifier runs without retries.
 test.use({ trace: 'retain-on-failure' });
 
-function nativeCliArgs(command: string, pid: string, args: string[]) {
-  // PID selects the bridge; screenshots also need a DOM or window target.
-  return [command, '--pid', pid, ...(command === 'screenshot' ? ['--selector', 'html'] : []), ...args];
+function nativeCliArgs(command: string, pid: string, args: string[], windowId?: string) {
+  // PID selects the bridge. document.title can differ from the OS window title.
+  if (command === 'screenshot' && !windowId) throw new Error('Screenshots require an owned native window id');
+  return [command, '--pid', pid,
+    ...(command === 'screenshot' ? ['--selector', 'html', '--window-id', windowId!] : []), ...args];
+}
+
+async function nativeCliInvocation(command: string, pid: string, args: string[],
+  display = process.env.VERIFY_TAURI_DISPLAY,
+  search = async (ownedPid: string, env: NodeJS.ProcessEnv) => {
+    const result = await promisify(execFile)('xdotool', ['search', '--onlyvisible', '--pid', ownedPid],
+      { timeout: 10_000, env });
+    return result.stdout;
+  }) {
+  if (command !== 'screenshot') return { args: nativeCliArgs(command, pid, args), env: process.env };
+  if (!display || !/^:\d+$/.test(display)) throw new Error('Screenshots require the verifier X11 display');
+  const env = { ...process.env, DISPLAY: display, XDG_SESSION_TYPE: 'x11', WAYLAND_DISPLAY: '' };
+  const windowIds = (await search(pid, env)).trim().split(/\s+/).filter(Boolean);
+  if (windowIds.length !== 1 || !/^[1-9]\d*$/.test(windowIds[0])) {
+    throw new Error(`Expected one visible window owned by native PID ${pid}; found ${windowIds.length}`);
+  }
+  return { args: nativeCliArgs(command, pid, args, windowIds[0]), env };
 }
 
 test('native screenshot command passes target validation without a running app', async ({}, info) => {
   const run = promisify(execFile);
-  const args = nativeCliArgs('screenshot', '2147483647', ['--output', info.outputPath('absent-app.png')]);
+  const args = nativeCliArgs('screenshot', '2147483647', ['--output', info.outputPath('absent-app.png')], '2147483647');
   const error = await run(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools', args, { timeout: 10_000 })
     .then(() => null, (value: Error & { stderr?: string; killed?: boolean }) => value);
   expect(error, 'an absent app cannot provide a screenshot').not.toBeNull();
   expect(error?.killed, 'target validation must fail before waiting on an absent bridge').not.toBe(true);
   expect(error?.message).not.toContain('Either --selector');
   expect(error?.stderr).toMatch(/pid|process|bridge|app/i);
+});
+
+test('native screenshot uses the owned window when document and OS titles differ', async () => {
+  const invocation = await nativeCliInvocation('screenshot', '123', [], ':999', async (pid, env) => {
+    expect(pid).toBe('123');
+    expect(env.DISPLAY).toBe(':999');
+    expect(env.XDG_SESSION_TYPE).toBe('x11');
+    expect(env.WAYLAND_DISPLAY).toBe('');
+    return '4194306\n';
+  });
+  // Exercise the installed CLI's actual resolver, including the failing title
+  // path. An absent-app check alone cannot detect this screenshot contract.
+  const run = promisify(execFile);
+  const executable = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools';
+  const cliPath = await realpath(executable.includes('/') ? executable : (await run('which', [executable])).stdout.trim());
+  const { resolveWindowId } = await import(pathToFileURL(`${dirname(cliPath)}/commands/shared.js`).href);
+  const adapter = { findWindow: async (title: string) => { throw new Error(`No window found matching: ${title}`); } };
+  const bridge = { getDocumentTitle: async () => 'Papercusp Operator' };
+  await expect(resolveWindowId(adapter, bridge, {})).rejects.toThrow('No window found matching: Papercusp Operator');
+  const windowId = invocation.args[invocation.args.indexOf('--window-id') + 1];
+  await expect(resolveWindowId(adapter, bridge, { windowId })).resolves.toBe('4194306');
+});
+
+test('native screenshot refuses missing display and absent or ambiguous owned windows', async () => {
+  await expect(nativeCliInvocation('screenshot', '123', [], '')).rejects.toThrow('verifier X11 display');
+  for (const windows of ['', '11\n22\n', 'invalid\n']) {
+    await expect(nativeCliInvocation('screenshot', '123', [], ':999', async () => windows))
+      .rejects.toThrow('Expected one visible window owned by native PID 123');
+  }
+  expect(() => nativeCliArgs('screenshot', '123', [])).toThrow('owned native window id');
 });
 
 test('native CLI JSON boundary preserves scalar and JSON-looking string values', () => {
@@ -293,7 +343,8 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
   const sourceReceipt = JSON.parse(await readFile(sourceReceiptPath!, 'utf8'));
   async function native(command: string, ...args: string[]) {
     await run('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 10_000 });
-    const result = await run(bridge, nativeCliArgs(command, process.env.VERIFY_TAURI_PID!, args), { timeout: 20_000 });
+    const invocation = await nativeCliInvocation(command, process.env.VERIFY_TAURI_PID!, args);
+    const result = await run(bridge, invocation.args, { timeout: 20_000, env: invocation.env });
     if (command === 'screenshot') return result.stdout.trim();
     return decodeNativeBridgeJson(result.stdout);
   }
@@ -570,7 +621,8 @@ test('native declared collections persist controls and reject a barrier-controll
   expect(bridge).toBeTruthy();
   const evidence: unknown[] = [];
   async function native(command: string, ...args: string[]) {
-    const result = await run(bridge, nativeCliArgs(command, process.env.VERIFY_TAURI_PID!, args), { timeout: 15_000 });
+    const invocation = await nativeCliInvocation(command, process.env.VERIFY_TAURI_PID!, args);
+    const result = await run(bridge, invocation.args, { timeout: 15_000, env: invocation.env });
     if (command === 'screenshot') return result.stdout.trim();
     return decodeNativeBridgeJson(result.stdout);
   }

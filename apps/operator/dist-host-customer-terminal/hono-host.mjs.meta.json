@@ -3728,7 +3728,7 @@
       "format": "esm"
     },
     "libs/papercusp/libs/db/src/schema/generated.ts": {
-      "bytes": 1009679,
+      "bytes": 1018856,
       "imports": [
         {
           "path": "node_modules/drizzle-orm/pg-core/index.js",
@@ -3744,7 +3744,7 @@
       "format": "esm"
     },
     "libs/papercusp/libs/db/src/schema/generated-relations.ts": {
-      "bytes": 56221,
+      "bytes": 56951,
       "imports": [
         {
           "path": "node_modules/drizzle-orm/relations.js",
@@ -17106,6 +17106,17 @@
       "imports": [],
       "format": "esm"
     },
+    "packages/operator-core/lib/collision-resistant-id.ts": {
+      "bytes": 2315,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        }
+      ],
+      "format": "esm"
+    },
     "packages/operator-core/lib/feature-audit.ts": {
       "bytes": 1718,
       "imports": [
@@ -17169,12 +17180,17 @@
       "format": "esm"
     },
     "packages/operator-core/lib/promote-issue.ts": {
-      "bytes": 12114,
+      "bytes": 12199,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
           "kind": "import-statement",
           "original": "@papercusp/db-org"
+        },
+        {
+          "path": "packages/operator-core/lib/collision-resistant-id.ts",
+          "kind": "import-statement",
+          "original": "./collision-resistant-id"
         },
         {
           "path": "packages/operator-core/lib/feature-audit.ts",
@@ -38677,12 +38693,12 @@
       "format": "esm"
     },
     "packages/plugin-sdk/src/provider.ts": {
-      "bytes": 26465,
+      "bytes": 34225,
       "imports": [],
       "format": "esm"
     },
     "packages/plugin-sdk/src/index.ts": {
-      "bytes": 82300,
+      "bytes": 82484,
       "imports": [
         {
           "path": "packages/plugin-sdk/src/tier-table.ts",
@@ -38698,7 +38714,7 @@
       "format": "esm"
     },
     "packages/plugin-sdk/papercusp-plugin.schema.json": {
-      "bytes": 30399,
+      "bytes": 31861,
       "imports": [],
       "format": "esm",
       "with": {
@@ -38936,7 +38952,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/integrations/host-fetch.ts": {
-      "bytes": 6506,
+      "bytes": 7577,
       "imports": [
         {
           "path": "packages/plugin-sdk/src/index.ts",
@@ -48092,7 +48108,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/dev/systemd-service-probe.ts": {
-      "bytes": 31392,
+      "bytes": 31399,
       "imports": [
         {
           "path": "node:child_process",
@@ -55669,7 +55685,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/harness/git-sync/run-git-sync.ts": {
-      "bytes": 346460,
+      "bytes": 346917,
       "imports": [
         {
           "path": "node:child_process",
@@ -57414,7 +57430,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/testing-run-store.ts": {
-      "bytes": 119189,
+      "bytes": 121592,
       "imports": [
         {
           "path": "node:child_process",
@@ -57944,7 +57960,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/testing/run.ts": {
-      "bytes": 187664,
+      "bytes": 187210,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -59684,7 +59700,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/coordination/tools/inbox-context-usage.ts": {
-      "bytes": 9947,
+      "bytes": 10305,
       "imports": [],
       "format": "esm"
     },
@@ -60349,7 +60365,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/context-gauge-annotator.ts": {
-      "bytes": 4479,
+      "bytes": 4559,
       "imports": [
         {
           "path": "packages/operator-core/lib/agent-tools/coordination/identity.ts",
@@ -60375,11 +60391,6 @@
           "path": "packages/operator-core/lib/compaction-usage.ts",
           "kind": "import-statement",
           "original": "../compaction-usage"
-        },
-        {
-          "path": "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
-          "kind": "import-statement",
-          "original": "../events/await/psu-pty-discovery"
         }
       ],
       "format": "esm"
@@ -66265,7 +66276,7 @@
       "format": "esm"
     },
     "apps/operator/scripts/psu-pty-host.mjs": {
-      "bytes": 744297,
+      "bytes": 746260,
       "imports": [
         {
           "path": "node:module",
@@ -71986,7 +71997,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/consult/get-feedback-core.ts": {
-      "bytes": 93018,
+      "bytes": 93184,
       "imports": [
         {
           "path": "node:crypto",
@@ -73503,7 +73514,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/plans/set-plan-status.ts": {
-      "bytes": 51793,
+      "bytes": 52308,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -90521,7 +90532,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/scorecards/emit.ts": {
-      "bytes": 199484,
+      "bytes": 200185,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -96523,8 +96534,24 @@
       ],
       "format": "esm"
     },
+    "packages/operator-core/lib/integrations/provider-credentials.ts": {
+      "bytes": 6814,
+      "imports": [
+        {
+          "path": "packages/plugin-sdk/src/index.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/plugin-sdk"
+        },
+        {
+          "path": "packages/operator-core/lib/oauth/storage-fs.ts",
+          "kind": "import-statement",
+          "original": "../oauth/storage-fs"
+        }
+      ],
+      "format": "esm"
+    },
     "packages/operator-core/lib/integrations/source-host-fetch.ts": {
-      "bytes": 3359,
+      "bytes": 3735,
       "imports": [
         {
           "path": "packages/operator-core/lib/external-triggers/source-store.ts",
@@ -96545,6 +96572,11 @@
           "path": "packages/operator-core/lib/integrations/host-fetch.ts",
           "kind": "import-statement",
           "original": "./host-fetch"
+        },
+        {
+          "path": "packages/operator-core/lib/integrations/provider-credentials.ts",
+          "kind": "import-statement",
+          "original": "./provider-credentials"
         },
         {
           "path": "packages/operator-core/lib/integrations/provider-registry.ts",
@@ -101001,6 +101033,287 @@
       ],
       "format": "esm"
     },
+    "packages/operator-core/lib/release/admission-fix-precheck.ts": {
+      "bytes": 41135,
+      "imports": [
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/release/dependency-generation-prebuild.ts",
+          "kind": "import-statement",
+          "original": "./dependency-generation-prebuild"
+        },
+        {
+          "path": "packages/operator-core/lib/release-checkpoint-launch.ts",
+          "kind": "import-statement",
+          "original": "../release-checkpoint-launch"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/release/repair-head-admission.ts": {
+      "bytes": 28890,
+      "imports": [
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/release/admission-commit-date.ts",
+          "kind": "import-statement",
+          "original": "./admission-commit-date"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/release/admission-import-completeness.ts": {
+      "bytes": 38467,
+      "imports": [
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "typescript",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/release/repair-head-admission.ts",
+          "kind": "import-statement",
+          "original": "./repair-head-admission"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/release/staging-fix-proposal.ts": {
+      "bytes": 13349,
+      "imports": [
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/release/admission-fix-precheck.ts",
+          "kind": "import-statement",
+          "original": "./admission-fix-precheck"
+        },
+        {
+          "path": "packages/operator-core/lib/release/repair-head-admission.ts",
+          "kind": "import-statement",
+          "original": "./repair-head-admission"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/release/admission-fix-precheck-managed.ts": {
+      "bytes": 14167,
+      "imports": [
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/store.ts",
+          "kind": "import-statement",
+          "original": "../task-manager/store"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/managed-spawn.ts",
+          "kind": "import-statement",
+          "original": "../task-manager/managed-spawn"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/types.ts",
+          "kind": "import-statement",
+          "original": "../task-manager/types"
+        },
+        {
+          "path": "packages/operator-core/lib/process-supervision/sidecar-spawn-shared.ts",
+          "kind": "import-statement",
+          "original": "../process-supervision/sidecar-spawn-shared"
+        },
+        {
+          "path": "packages/operator-core/lib/harness/routines/release-actions.ts",
+          "kind": "import-statement",
+          "original": "../harness/routines/release-actions"
+        },
+        {
+          "path": "packages/operator-core/lib/release/admission-fix-precheck.ts",
+          "kind": "import-statement",
+          "original": "./admission-fix-precheck"
+        },
+        {
+          "path": "packages/operator-core/lib/release/staging-fix-proposal-cli.ts",
+          "kind": "dynamic-import",
+          "original": "./staging-fix-proposal-cli"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/release/staging-fix-proposal-cli.ts": {
+      "bytes": 12390,
+      "imports": [
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/release/admission-fix-precheck.ts",
+          "kind": "import-statement",
+          "original": "./admission-fix-precheck"
+        },
+        {
+          "path": "packages/operator-core/lib/release/admission-import-completeness.ts",
+          "kind": "import-statement",
+          "original": "./admission-import-completeness"
+        },
+        {
+          "path": "packages/operator-core/lib/release/dependency-generation-prebuild.ts",
+          "kind": "import-statement",
+          "original": "./dependency-generation-prebuild"
+        },
+        {
+          "path": "packages/operator-core/lib/release/judged-sha-containment.ts",
+          "kind": "import-statement",
+          "original": "./judged-sha-containment"
+        },
+        {
+          "path": "packages/operator-core/lib/release/staging-fix-proposal.ts",
+          "kind": "import-statement",
+          "original": "./staging-fix-proposal"
+        },
+        {
+          "path": "packages/operator-core/lib/harness/routines/release-actions.ts",
+          "kind": "dynamic-import",
+          "original": "../harness/routines/release-actions"
+        },
+        {
+          "path": "packages/operator-core/lib/release-deploy-launch.ts",
+          "kind": "dynamic-import",
+          "original": "../release-deploy-launch"
+        },
+        {
+          "path": "packages/operator-core/lib/workspace-registry.ts",
+          "kind": "dynamic-import",
+          "original": "../workspace-registry"
+        },
+        {
+          "path": "packages/operator-core/lib/harness/operator-home-harness.ts",
+          "kind": "dynamic-import",
+          "original": "../harness/operator-home-harness"
+        },
+        {
+          "path": "packages/operator-core/lib/release-checkpoint-launch.ts",
+          "kind": "dynamic-import",
+          "original": "../release-checkpoint-launch"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/index.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/db-org"
+        },
+        {
+          "path": "packages/operator-core/lib/release/admission-fix-precheck-managed.ts",
+          "kind": "dynamic-import",
+          "original": "./admission-fix-precheck-managed"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/types.ts",
+          "kind": "dynamic-import",
+          "original": "../task-manager/types"
+        },
+        {
+          "path": "packages/operator-core/lib/release-deploy-launch.ts",
+          "kind": "dynamic-import",
+          "original": "../release-deploy-launch"
+        },
+        {
+          "path": "packages/operator-core/lib/release-checkpoint-launch.ts",
+          "kind": "dynamic-import",
+          "original": "../release-checkpoint-launch"
+        },
+        {
+          "path": "packages/operator-core/lib/harness/routines/release-actions.ts",
+          "kind": "dynamic-import",
+          "original": "../harness/routines/release-actions"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/index.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/db-org"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/messages.ts",
+          "kind": "dynamic-import",
+          "original": "../agent-tools/coordination/messages"
+        },
+        {
+          "path": "packages/operator-core/lib/attention-notify.ts",
+          "kind": "dynamic-import",
+          "original": "../attention-notify"
+        }
+      ],
+      "format": "esm"
+    },
     "packages/operator-core/lib/db-schema-reference/index-manifest.ts": {
       "bytes": 570928,
       "imports": [],
@@ -102884,7 +103197,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/harness/routines/release-actions.ts": {
-      "bytes": 416566,
+      "bytes": 417105,
       "imports": [
         {
           "path": "node:child_process",
@@ -103155,6 +103468,11 @@
           "path": "packages/operator-core/lib/coord/gate-ownership.ts",
           "kind": "dynamic-import",
           "original": "../../coord/gate-ownership"
+        },
+        {
+          "path": "packages/operator-core/lib/release/staging-fix-proposal-cli.ts",
+          "kind": "dynamic-import",
+          "original": "../../release/staging-fix-proposal-cli"
         },
         {
           "path": "packages/operator-core/lib/harness/routines/hive-release-env.ts",
@@ -105540,7 +105858,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/work-items-admission-promoter.ts": {
-      "bytes": 247989,
+      "bytes": 248702,
       "imports": [
         {
           "path": "node:crypto",
@@ -111763,7 +112081,7 @@
       "format": "esm"
     },
     "libs/generic/bench-metrics/src/schema.ts": {
-      "bytes": 16201,
+      "bytes": 17111,
       "imports": [],
       "format": "esm"
     },
@@ -111778,7 +112096,7 @@
       "format": "esm"
     },
     "libs/generic/bench-metrics/src/intervals.ts": {
-      "bytes": 12378,
+      "bytes": 14141,
       "imports": [],
       "format": "esm"
     },
@@ -111809,7 +112127,7 @@
       "format": "esm"
     },
     "libs/generic/bench-metrics/src/aggregate.ts": {
-      "bytes": 12802,
+      "bytes": 15909,
       "imports": [
         {
           "path": "libs/generic/bench-metrics/src/pass-k.ts",
@@ -126211,7 +126529,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/endpoint-route/routes/harness/brainstorm.ts": {
-      "bytes": 11568,
+      "bytes": 11322,
       "imports": [
         {
           "path": "node:fs/promises",
@@ -126247,6 +126565,11 @@
           "path": "packages/operator-core/lib/feature-audit.ts",
           "kind": "import-statement",
           "original": "../../../feature-audit"
+        },
+        {
+          "path": "packages/operator-core/lib/collision-resistant-id.ts",
+          "kind": "import-statement",
+          "original": "../../../collision-resistant-id"
         },
         {
           "path": "packages/agent-mcp/src/index.ts",
@@ -133210,7 +133533,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/reproducibility/schema.ts": {
-      "bytes": 13455,
+      "bytes": 14473,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -133242,7 +133565,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/reproducibility/store.ts": {
-      "bytes": 11192,
+      "bytes": 11629,
       "imports": [
         {
           "path": "libs/generic/bench-metrics/src/index.ts",
@@ -133553,7 +133876,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/task-sets.ts": {
-      "bytes": 44953,
+      "bytes": 54888,
       "imports": [
         {
           "path": "node:fs",
@@ -133994,7 +134317,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/estimate.ts": {
-      "bytes": 6469,
+      "bytes": 6573,
       "imports": [
         {
           "path": "packages/operator-core/lib/external-bench/task-sets.ts",
@@ -210246,37 +210569,6 @@
       ],
       "format": "esm"
     },
-    "packages/operator-core/lib/release/repair-head-admission.ts": {
-      "bytes": 28890,
-      "imports": [
-        {
-          "path": "node:child_process",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:os",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "packages/operator-core/lib/release/admission-commit-date.ts",
-          "kind": "import-statement",
-          "original": "./admission-commit-date"
-        }
-      ],
-      "format": "esm"
-    },
     "packages/operator-core/lib/release/hunk-exact-admission.ts": {
       "bytes": 27626,
       "imports": [
@@ -210309,27 +210601,6 @@
           "path": "packages/operator-core/lib/release/frozen-repair-edit-ledger.ts",
           "kind": "import-statement",
           "original": "./frozen-repair-edit-ledger"
-        }
-      ],
-      "format": "esm"
-    },
-    "packages/operator-core/lib/release/admission-import-completeness.ts": {
-      "bytes": 38467,
-      "imports": [
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "typescript",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "packages/operator-core/lib/release/repair-head-admission.ts",
-          "kind": "import-statement",
-          "original": "./repair-head-admission"
         }
       ],
       "format": "esm"
@@ -210420,98 +210691,6 @@
     "packages/operator-core/lib/release/admission-step-clock.ts": {
       "bytes": 3663,
       "imports": [],
-      "format": "esm"
-    },
-    "packages/operator-core/lib/release/admission-fix-precheck.ts": {
-      "bytes": 41135,
-      "imports": [
-        {
-          "path": "node:child_process",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:os",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "packages/operator-core/lib/release/dependency-generation-prebuild.ts",
-          "kind": "import-statement",
-          "original": "./dependency-generation-prebuild"
-        },
-        {
-          "path": "packages/operator-core/lib/release-checkpoint-launch.ts",
-          "kind": "import-statement",
-          "original": "../release-checkpoint-launch"
-        }
-      ],
-      "format": "esm"
-    },
-    "packages/operator-core/lib/release/admission-fix-precheck-managed.ts": {
-      "bytes": 13285,
-      "imports": [
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:os",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:url",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "packages/operator-core/lib/task-manager/store.ts",
-          "kind": "import-statement",
-          "original": "../task-manager/store"
-        },
-        {
-          "path": "packages/operator-core/lib/task-manager/managed-spawn.ts",
-          "kind": "import-statement",
-          "original": "../task-manager/managed-spawn"
-        },
-        {
-          "path": "packages/operator-core/lib/task-manager/types.ts",
-          "kind": "import-statement",
-          "original": "../task-manager/types"
-        },
-        {
-          "path": "packages/operator-core/lib/process-supervision/sidecar-spawn-shared.ts",
-          "kind": "import-statement",
-          "original": "../process-supervision/sidecar-spawn-shared"
-        },
-        {
-          "path": "packages/operator-core/lib/harness/routines/release-actions.ts",
-          "kind": "import-statement",
-          "original": "../harness/routines/release-actions"
-        },
-        {
-          "path": "packages/operator-core/lib/release/admission-fix-precheck.ts",
-          "kind": "import-statement",
-          "original": "./admission-fix-precheck"
-        }
-      ],
       "format": "esm"
     },
     "packages/operator-core/lib/release/repair-auto-verify.ts": {
@@ -237654,7 +237833,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/git-pipeline-position.ts": {
-      "bytes": 409740,
+      "bytes": 413244,
       "imports": [
         {
           "path": "node:child_process",
@@ -240002,7 +240181,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/release/dependency-generation-retention.ts": {
-      "bytes": 6078,
+      "bytes": 6109,
       "imports": [
         {
           "path": "node:child_process",
@@ -253407,7 +253586,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/issues-engineer.ts": {
-      "bytes": 253788,
+      "bytes": 253400,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
@@ -253595,9 +253774,9 @@
           "original": "./dbos/work-item-deps-store"
         },
         {
-          "path": "node:crypto",
+          "path": "packages/operator-core/lib/collision-resistant-id.ts",
           "kind": "import-statement",
-          "external": true
+          "original": "./collision-resistant-id"
         },
         {
           "path": "packages/operator-core/lib/agent-tools/coordination/identity.ts",
@@ -263188,7 +263367,7 @@
     }
   },
   "outputs": {
-    "apps/operator/dist-host-customer-terminal/hono-host.mjs.tmp.3401471": {
+    "apps/operator/dist-host-customer-terminal/hono-host.mjs.tmp.1824358": {
       "imports": [
         {
           "path": "node:module",
@@ -264337,6 +264516,11 @@
         },
         {
           "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
           "kind": "import-statement",
           "external": true
         },
@@ -273291,6 +273475,91 @@
           "external": true
         },
         {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "typescript",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:os",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:url",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
           "path": "node:crypto",
           "kind": "import-statement",
           "external": true
@@ -280876,26 +281145,6 @@
           "external": true
         },
         {
-          "path": "node:child_process",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:os",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
           "path": "node:fs",
           "kind": "import-statement",
           "external": true
@@ -280921,16 +281170,6 @@
           "external": true
         },
         {
-          "path": "typescript",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
           "path": "node:fs",
           "kind": "import-statement",
           "external": true
@@ -280947,46 +281186,6 @@
         },
         {
           "path": "node:worker_threads",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:child_process",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:os",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:os",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:url",
           "kind": "import-statement",
           "external": true
         },
@@ -282382,11 +282581,6 @@
         },
         {
           "path": "node:util",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:crypto",
           "kind": "import-statement",
           "external": true
         },
@@ -283816,10 +284010,10 @@
           "bytesInOutput": 4411
         },
         "libs/papercusp/libs/db/src/schema/generated.ts": {
-          "bytesInOutput": 1134770
+          "bytesInOutput": 1144718
         },
         "libs/papercusp/libs/db/src/schema/generated-relations.ts": {
-          "bytesInOutput": 71749
+          "bytesInOutput": 72725
         },
         "libs/papercusp/libs/db/src/schema/index.ts": {
           "bytesInOutput": 7676
@@ -284497,7 +284691,7 @@
           "bytesInOutput": 8055
         },
         "packages/operator-core/lib/task-manager/types.ts": {
-          "bytesInOutput": 4776
+          "bytesInOutput": 5841
         },
         "libs/generic/tooldef/src/partial-guidance.ts": {
           "bytesInOutput": 5059
@@ -286143,6 +286337,9 @@
         "packages/operator-core/lib/work-item-claim-freshness.ts": {
           "bytesInOutput": 7931
         },
+        "packages/operator-core/lib/collision-resistant-id.ts": {
+          "bytesInOutput": 740
+        },
         "packages/operator-core/lib/feature-audit.ts": {
           "bytesInOutput": 1450
         },
@@ -286150,7 +286347,7 @@
           "bytesInOutput": 9182
         },
         "packages/operator-core/lib/promote-issue.ts": {
-          "bytesInOutput": 5507
+          "bytesInOutput": 5159
         },
         "packages/operator-core/lib/completion-claims.ts": {
           "bytesInOutput": 8429
@@ -289057,13 +289254,13 @@
           "bytesInOutput": 952
         },
         "packages/plugin-sdk/src/provider.ts": {
-          "bytesInOutput": 11151
+          "bytesInOutput": 15950
         },
         "packages/plugin-sdk/src/index.ts": {
-          "bytesInOutput": 13483
+          "bytesInOutput": 13759
         },
         "packages/plugin-sdk/papercusp-plugin.schema.json": {
-          "bytesInOutput": 32253
+          "bytesInOutput": 33749
         },
         "packages/plugin-loader/src/manifest-validate.ts": {
           "bytesInOutput": 1094
@@ -289087,7 +289284,7 @@
           "bytesInOutput": 3637
         },
         "packages/operator-core/lib/integrations/host-fetch.ts": {
-          "bytesInOutput": 4563
+          "bytesInOutput": 5069
         },
         "packages/plugin-loader/src/daemon/jsonrpc-bridge.ts": {
           "bytesInOutput": 4804
@@ -290362,7 +290559,7 @@
           "bytesInOutput": 1088
         },
         "packages/operator-core/lib/agent-tools/dev/systemd-service-probe.ts": {
-          "bytesInOutput": 9498
+          "bytesInOutput": 9540
         },
         "packages/operator-core/lib/sync/hyperbee/substrate-socket-path.ts": {
           "bytesInOutput": 1313
@@ -290764,10 +290961,10 @@
           "bytesInOutput": 889
         },
         "node_modules/property-information/lib/util/types.js": {
-          "bytesInOutput": 825
+          "bytesInOutput": 827
         },
         "node_modules/property-information/lib/util/defined-info.js": {
-          "bytesInOutput": 1170
+          "bytesInOutput": 1173
         },
         "node_modules/property-information/lib/util/create.js": {
           "bytesInOutput": 813
@@ -291727,7 +291924,7 @@
           "bytesInOutput": 5836
         },
         "packages/operator-core/lib/harness/git-sync/run-git-sync.ts": {
-          "bytesInOutput": 195600
+          "bytesInOutput": 195791
         },
         "packages/operator-core/lib/agent-tools/coordination/presence-payload.ts": {
           "bytesInOutput": 8922
@@ -291946,7 +292143,7 @@
           "bytesInOutput": 3385
         },
         "packages/operator-core/lib/testing-run-store.ts": {
-          "bytesInOutput": 70440
+          "bytesInOutput": 72511
         },
         "packages/operator-core/lib/release/sync-batch-delta-check.ts": {
           "bytesInOutput": 36063
@@ -292006,7 +292203,7 @@
           "bytesInOutput": 50740
         },
         "packages/operator-core/lib/agent-tools/testing/run.ts": {
-          "bytesInOutput": 119394
+          "bytesInOutput": 119219
         },
         "packages/operator-core/lib/git-trackedness.ts": {
           "bytesInOutput": 2038
@@ -292195,7 +292392,7 @@
           "bytesInOutput": 2554
         },
         "packages/operator-core/lib/agent-tools/coordination/tools/inbox-context-usage.ts": {
-          "bytesInOutput": 5341
+          "bytesInOutput": 5645
         },
         "packages/operator-core/lib/agent-tools/context-gauge-evidence.ts": {
           "bytesInOutput": 2502
@@ -292270,7 +292467,7 @@
           "bytesInOutput": 31038
         },
         "packages/operator-core/lib/agent-tools/context-gauge-annotator.ts": {
-          "bytesInOutput": 1963
+          "bytesInOutput": 1836
         },
         "packages/operator-core/lib/agent-tools/context-gauge-wiring.ts": {
           "bytesInOutput": 318
@@ -292567,7 +292764,7 @@
           "bytesInOutput": 3208
         },
         "packages/operator-core/lib/connected-apps/key.ts": {
-          "bytesInOutput": 2652
+          "bytesInOutput": 2667
         },
         "packages/operator-core/lib/connected-apps/scope-policy.ts": {
           "bytesInOutput": 10238
@@ -293629,7 +293826,7 @@
           "bytesInOutput": 84945
         },
         "packages/operator-core/lib/agent-tools/plans/set-plan-status.ts": {
-          "bytesInOutput": 33628
+          "bytesInOutput": 33884
         },
         "packages/operator-core/lib/agent-tools/plans/plan-drain-transition.ts": {
           "bytesInOutput": 2345
@@ -295141,7 +295338,7 @@
           "bytesInOutput": 3751
         },
         "packages/operator-core/lib/voice-node/local-whisper-service.ts": {
-          "bytesInOutput": 9105
+          "bytesInOutput": 9107
         },
         "packages/operator-core/lib/voice-node/agent-peer.ts": {
           "bytesInOutput": 4298
@@ -295537,7 +295734,7 @@
           "bytesInOutput": 3702
         },
         "packages/operator-core/lib/agent-tools/scorecards/emit.ts": {
-          "bytesInOutput": 137568
+          "bytesInOutput": 138016
         },
         "packages/operator-core/lib/system-health/goal-computed-tenure-card-sweep.ts": {
           "bytesInOutput": 6442
@@ -296115,8 +296312,11 @@
         "packages/operator-core/lib/integrations/builtin-connection-adapters.ts": {
           "bytesInOutput": 5457
         },
+        "packages/operator-core/lib/integrations/provider-credentials.ts": {
+          "bytesInOutput": 751
+        },
         "packages/operator-core/lib/integrations/source-host-fetch.ts": {
-          "bytesInOutput": 1443
+          "bytesInOutput": 1805
         },
         "packages/operator-core/lib/work-admission/admission-sources.ts": {
           "bytesInOutput": 1191
@@ -296760,6 +296960,24 @@
         "packages/operator-core/lib/sync/pot-git/gate/verdicts.ts": {
           "bytesInOutput": 3079
         },
+        "packages/operator-core/lib/release/admission-fix-precheck.ts": {
+          "bytesInOutput": 21821
+        },
+        "packages/operator-core/lib/release/repair-head-admission.ts": {
+          "bytesInOutput": 15898
+        },
+        "packages/operator-core/lib/release/admission-import-completeness.ts": {
+          "bytesInOutput": 27392
+        },
+        "packages/operator-core/lib/release/staging-fix-proposal.ts": {
+          "bytesInOutput": 7708
+        },
+        "packages/operator-core/lib/release/admission-fix-precheck-managed.ts": {
+          "bytesInOutput": 11709
+        },
+        "packages/operator-core/lib/release/staging-fix-proposal-cli.ts": {
+          "bytesInOutput": 12202
+        },
         "packages/operator-core/lib/db-schema-reference/index-manifest.ts": {
           "bytesInOutput": 619772
         },
@@ -296941,7 +297159,7 @@
           "bytesInOutput": 5837
         },
         "packages/operator-core/lib/harness/routines/release-actions.ts": {
-          "bytesInOutput": 214194
+          "bytesInOutput": 214533
         },
         "packages/operator-core/lib/p2p/resource-allotments.ts": {
           "bytesInOutput": 9533
@@ -297136,7 +297354,7 @@
           "bytesInOutput": 2627
         },
         "packages/operator-core/lib/work-items-admission-promoter.ts": {
-          "bytesInOutput": 180534
+          "bytesInOutput": 181246
         },
         "packages/operator-core/lib/scout/budget.ts": {
           "bytesInOutput": 853
@@ -297871,7 +298089,7 @@
           "bytesInOutput": 115
         },
         "libs/generic/bench-metrics/src/intervals.ts": {
-          "bytesInOutput": 2703
+          "bytesInOutput": 5453
         },
         "libs/generic/bench-metrics/src/pareto.ts": {
           "bytesInOutput": 994
@@ -297886,7 +298104,7 @@
           "bytesInOutput": 3113
         },
         "libs/generic/bench-metrics/src/aggregate.ts": {
-          "bytesInOutput": 9117
+          "bytesInOutput": 11964
         },
         "libs/generic/bench-metrics/src/capability-attribution.ts": {
           "bytesInOutput": 196
@@ -298171,7 +298389,7 @@
           "bytesInOutput": 8048
         },
         "packages/operator-core/lib/scout/code-search-deps.ts": {
-          "bytesInOutput": 3737
+          "bytesInOutput": 3740
         },
         "packages/operator-core/lib/source-citation-claim-port.ts": {
           "bytesInOutput": 4225
@@ -298189,7 +298407,7 @@
           "bytesInOutput": 11783
         },
         "packages/operator-core/lib/work-items-admission-census.ts": {
-          "bytesInOutput": 49410
+          "bytesInOutput": 49412
         },
         "packages/operator-core/lib/work-items-admission-merge-quality.ts": {
           "bytesInOutput": 33679
@@ -298552,7 +298770,7 @@
           "bytesInOutput": 8008
         },
         "packages/operator-core/lib/harness/join-hive.ts": {
-          "bytesInOutput": 12697
+          "bytesInOutput": 12699
         },
         "packages/operator-core/lib/endpoint-route/routes/discovery/join-pot.ts": {
           "bytesInOutput": 2855
@@ -299275,7 +299493,7 @@
           "bytesInOutput": 7764
         },
         "packages/operator-core/lib/endpoint-route/routes/harness/brainstorm.ts": {
-          "bytesInOutput": 10590
+          "bytesInOutput": 10207
         },
         "packages/operator-core/lib/harness/completion-ref-verifier.ts": {
           "bytesInOutput": 9260
@@ -299953,13 +300171,13 @@
           "bytesInOutput": 539
         },
         "packages/operator-core/lib/external-bench/reproducibility/schema.ts": {
-          "bytesInOutput": 8242
+          "bytesInOutput": 9476
         },
         "packages/operator-core/lib/external-bench/reproducibility/db.ts": {
           "bytesInOutput": 381
         },
         "packages/operator-core/lib/external-bench/reproducibility/store.ts": {
-          "bytesInOutput": 8755
+          "bytesInOutput": 9202
         },
         "packages/operator-core/lib/external-bench/reproducibility/fleet.ts": {
           "bytesInOutput": 8754
@@ -300007,7 +300225,7 @@
           "bytesInOutput": 1764
         },
         "packages/operator-core/lib/external-bench/task-sets.ts": {
-          "bytesInOutput": 23620
+          "bytesInOutput": 28933
         },
         "packages/operator-core/lib/external-bench/reproducibility/prereg.ts": {
           "bytesInOutput": 7503
@@ -300028,7 +300246,7 @@
           "bytesInOutput": 82095
         },
         "packages/operator-core/lib/external-bench/estimate.ts": {
-          "bytesInOutput": 5869
+          "bytesInOutput": 5973
         },
         "packages/operator-core/lib/attention/operator-report-source.ts": {
           "bytesInOutput": 1753
@@ -304549,7 +304767,7 @@
           "bytesInOutput": 3127
         },
         "packages/operator-core/lib/harness/env-operator-launcher.ts": {
-          "bytesInOutput": 24871
+          "bytesInOutput": 24873
         },
         "packages/operator-core/lib/vm-release-runtime-policy.ts": {
           "bytesInOutput": 395
@@ -306592,7 +306810,7 @@
           "bytesInOutput": 34170
         },
         "scripts/check-migration-forward-compat.mjs": {
-          "bytesInOutput": 41225
+          "bytesInOutput": 41227
         },
         "packages/operator-core/lib/migration-preapply-lint.ts": {
           "bytesInOutput": 3503
@@ -306622,7 +306840,7 @@
           "bytesInOutput": 14819
         },
         "packages/operator-core/lib/agent-tools/db/next_migration.ts": {
-          "bytesInOutput": 8316
+          "bytesInOutput": 8319
         },
         "packages/operator-core/lib/testing-orphan-runs.ts": {
           "bytesInOutput": 3115
@@ -307315,7 +307533,7 @@
           "bytesInOutput": 14697
         },
         "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts": {
-          "bytesInOutput": 33637
+          "bytesInOutput": 33640
         },
         "packages/operator-core/lib/harness/routines/host-code-staleness-from-ledger.ts": {
           "bytesInOutput": 10995
@@ -307473,14 +307691,8 @@
         "packages/operator-core/lib/release/frozen-repair-edit-ledger.ts": {
           "bytesInOutput": 7242
         },
-        "packages/operator-core/lib/release/repair-head-admission.ts": {
-          "bytesInOutput": 15898
-        },
         "packages/operator-core/lib/release/hunk-exact-admission.ts": {
           "bytesInOutput": 18598
-        },
-        "packages/operator-core/lib/release/admission-import-completeness.ts": {
-          "bytesInOutput": 27392
         },
         "packages/operator-core/lib/release/admission-lockfile-consistency.ts": {
           "bytesInOutput": 11760
@@ -307493,12 +307705,6 @@
         },
         "packages/operator-core/lib/release/admission-step-clock.ts": {
           "bytesInOutput": 1674
-        },
-        "packages/operator-core/lib/release/admission-fix-precheck.ts": {
-          "bytesInOutput": 21849
-        },
-        "packages/operator-core/lib/release/admission-fix-precheck-managed.ts": {
-          "bytesInOutput": 9897
         },
         "packages/operator-core/lib/release/repair-auto-verify.ts": {
           "bytesInOutput": 2771
@@ -309211,7 +309417,7 @@
           "bytesInOutput": 17782
         },
         "packages/operator-core/lib/git-pipeline-position.ts": {
-          "bytesInOutput": 182229
+          "bytesInOutput": 183408
         },
         "packages/operator-core/lib/acceptance-bar-evidence-runtime.ts": {
           "bytesInOutput": 3491
@@ -309343,7 +309549,7 @@
           "bytesInOutput": 9750
         },
         "packages/operator-core/lib/release/dependency-generation-retention.ts": {
-          "bytesInOutput": 5280
+          "bytesInOutput": 5323
         },
         "packages/operator-core/lib/external-triggers/delivery-retention.ts": {
           "bytesInOutput": 2183
@@ -310369,7 +310575,7 @@
           "bytesInOutput": 2949
         },
         "packages/operator-core/lib/issues-engineer.ts": {
-          "bytesInOutput": 118309
+          "bytesInOutput": 117999
         },
         "packages/operator-core/lib/verification-attempts/loop-gate.ts": {
           "bytesInOutput": 8083
@@ -311107,7 +311313,7 @@
           "bytesInOutput": 1163
         }
       },
-      "bytes": 75889280
+      "bytes": 75949124
     }
   }
 }

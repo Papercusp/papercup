@@ -7,7 +7,7 @@
  * the generated Tauri launcher boundary; the dev-operator's later defaults
  * cannot protect Tauri's beforeDevCommand or stale socket adoption.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
@@ -21,6 +21,42 @@ const devWrapper = readFileSync(
 const launchTemplate = src.match(
   /cat > "\$WORK\/launch\.sh" <<LAUNCH\n([\s\S]*?)\nLAUNCH/,
 )?.[1];
+
+describe('verifier assertion display handoff', () => {
+  const handoff = src.match(/^export VERIFY_TAURI_DISPLAY=.*(?:\nexport DISPLAY=.*)?/m)?.[0];
+  const haveX11 = existsSync('/usr/bin/Xvfb') && existsSync('/usr/bin/xdotool');
+
+  it.skipIf(!haveX11).each(['', ':65530'])(
+    'runs X11 assertion children on the private display instead of inherited DISPLAY=%j',
+    (inheritedDisplay) => {
+      expect(handoff).toBeTruthy();
+      // Execute the real shell handoff against an independently allocated X
+      // server. Neither the empty caller display nor the deliberately absent
+      // caller display can provide the geometry asserted below.
+      const result = execFileSync('bash', ['-c', `
+        set -eu
+        task_display_tmp=$(mktemp -d)
+        task_xvfb_pid=''
+        trap 'if [ -n "$task_xvfb_pid" ]; then kill "$task_xvfb_pid" 2>/dev/null || true; wait "$task_xvfb_pid" 2>/dev/null || true; fi; rm -rf "$task_display_tmp"' EXIT
+        Xvfb -displayfd 3 -screen 0 640x480x24 -nolisten tcp -noreset 3>"$task_display_tmp/display" >/dev/null 2>&1 &
+        task_xvfb_pid=$!
+        for task_display_attempt in $(seq 1 100); do
+          [ ! -s "$task_display_tmp/display" ] || break
+          kill -0 "$task_xvfb_pid"
+          sleep 0.02
+        done
+        DISPLAY_NUM=$(cat "$task_display_tmp/display")
+        [ -n "$DISPLAY_NUM" ]
+        ${handoff}
+        xdotool getdisplaygeometry
+      `], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, DISPLAY: inheritedDisplay },
+      });
+      expect(result.trim()).toBe('640 480');
+    },
+  );
+});
 
 describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', () => {
   it('keeps disposable backup coordination local despite inherited host pins', () => {

@@ -43,6 +43,7 @@ beforeEach(() => {
   vi.clearAllMocks(); _resetActiveRunsForTests();
   config = currentProtocolFixture('frozen-host-study', 1000);
   config.taskIds = ['t1', 't2']; config.seeds = [1, 2, 3];
+  config.sampling!.taskRepositories.t2 = 'fixture-repo';
   config.priceSchedule.rates[0].inputTokenCeiling = 1000;
   config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = 'e'.repeat(64);
   const preregHash = createHash('sha256').update(JSON.stringify(config)).digest('hex');

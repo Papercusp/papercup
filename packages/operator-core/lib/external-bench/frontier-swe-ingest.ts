@@ -18,7 +18,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { FrontierSweTaskRow } from './task-sets';
+import { FRONTIER_SWE_V2_SUITE_CATEGORIES, type FrontierSweArtifact, type FrontierSweTaskRow } from './task-sets';
 
 export const FRONTIER_SWE_V2_REPO = 'Proximal-Labs/frontier-swe-v2';
 
@@ -136,6 +136,51 @@ const num = (v: unknown): number | undefined => (typeof v === 'number' && Number
 const strList = (v: unknown): string[] | undefined =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
 
+/** The five upstream suite categories (plan D-003 §4) — defined once in task-sets, where the pilot stratifies on them. */
+export { FRONTIER_SWE_V2_SUITE_CATEGORIES };
+
+/**
+ * Parse the README task table (`| 01 | [Name](tasks/<id>/) | Cat A, Cat B |`) into task id → suite categories.
+ * Returns an empty map when the README has no such table. Throws on a category outside the known five, so a
+ * renamed category fails the ingest instead of silently dropping a task out of every stratum.
+ */
+export function parseFrontierSweReadmeCategories(readme: string | null): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const known = new Set<string>(FRONTIER_SWE_V2_SUITE_CATEGORIES);
+  for (const line of (readme ?? '').split('\n')) {
+    const m = /^\|\s*\d+\s*\|\s*\[[^\]]*\]\(tasks\/([^/)]+)\/?\)\s*\|\s*([^|]+?)\s*\|\s*$/.exec(line.trim());
+    if (!m) continue;
+    const cats = m[2].split(',').map((c) => c.trim()).filter(Boolean);
+    const unknown = cats.filter((c) => !known.has(c));
+    if (unknown.length) throw new Error(`README task '${m[1]}' has unknown suite categor${unknown.length > 1 ? 'ies' : 'y'}: ${unknown.join(', ')}`);
+    out.set(m[1], cats);
+  }
+  return out;
+}
+
+/** task.toml `artifacts` (strings or `{ source, exclude }` tables) → normalized entries; malformed entries throw. */
+export function frontierSweArtifactsOf(v: unknown): FrontierSweArtifact[] {
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) throw new Error('artifacts must be an array');
+  return v.map((entry, i) => {
+    if (typeof entry === 'string') return { source: entry, exclude: [] };
+    const t = table(entry);
+    const source = str(t.source);
+    if (!source) throw new Error(`artifacts[${i}] has no string source`);
+    return { source, exclude: strList(t.exclude) ?? [] };
+  });
+}
+
+/** task.toml [verifier.env] → a string map (non-string values are stringified the way TOML wrote them). */
+function verifierEnvOf(v: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(table(v))) {
+    if (typeof val === 'string') out[k] = val;
+    else if (typeof val === 'number' || typeof val === 'boolean') out[k] = String(val);
+  }
+  return out;
+}
+
 /**
  * Build the corpus rows + provenance manifest from a vendored checkout root (the directory holding `tasks/`).
  * Throws {@link FrontierSweIngestError} listing EVERY problem (not just the first) when the commit is not a
@@ -153,6 +198,12 @@ export async function ingestFrontierSweCorpus(
   const dirs = (await fs.listDirs(tasksDir)).slice().sort();
   const rows: FrontierSweTaskRow[] = [];
   const manifestTasks: FrontierSweManifestTask[] = [];
+  let readmeCategories = new Map<string, string[]>();
+  try {
+    readmeCategories = parseFrontierSweReadmeCategories(await fs.readText(join(input.root, 'README.md')));
+  } catch (e) {
+    problems.push(`README.md task table: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   for (const name of dirs) {
     const dir = join(tasksDir, name);
@@ -191,6 +242,19 @@ export async function ingestFrontierSweCorpus(
     } catch (e) {
       problems.push(`${name}: job.yaml does not parse (${e instanceof Error ? e.message : String(e)})`);
     }
+    let artifacts: FrontierSweArtifact[] = [];
+    try {
+      artifacts = frontierSweArtifactsOf(cfg.artifacts);
+    } catch (e) {
+      problems.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // A README that HAS a task table must list every task, or that task would silently fall out of every
+    // category stratum (D-003 §4). A README without a table (no rows parsed) leaves categories empty.
+    const suiteCategories = readmeCategories.get(name) ?? [];
+    if (readmeCategories.size > 0 && suiteCategories.length === 0) {
+      problems.push(`${name}: missing from the README task table (no suite category)`);
+    }
+    const verifierEnvironmentMode = str(verifier.environment_mode) === 'separate' ? 'separate' : 'shared';
     rows.push({
       instanceId: name,
       category,
@@ -211,6 +275,12 @@ export async function ingestFrontierSweCorpus(
       networkMode,
       verifierNetworkMode: str(verifierEnv.network_mode) ?? str(verifier.network_mode),
       externalNeeds,
+      verifierEnvironmentMode,
+      verifierEnv: verifierEnvOf(verifier.env),
+      artifacts,
+      suiteCategories,
+      // Harbor's convention: the verifier entrypoint is /tests/test.sh. v2 verifier images own a /tests/test.sh
+      // shim that execs the root-only /root/tests/test.sh (D-003 §1) — it does NOT exist in the agent image.
       verifierCmd: 'bash /tests/test.sh',
       rewardPath: '/logs/verifier/reward.txt',
       rewardJsonPath: '/logs/verifier/reward.json',

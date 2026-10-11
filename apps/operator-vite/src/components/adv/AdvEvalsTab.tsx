@@ -42,8 +42,8 @@
  * `@papercusp/bench-metrics`; PG is `benchmark_run_result` (migration 291).
  *
  * Sync-arg discipline (the invalidation-match gotcha): `emitRollout` fires
- * `notifySyncInvalidate('evals.runs', { run_id })`, so the runs/report queries
- * are keyed by `run_id` (NOT suite) or live invalidation silently won't refresh.
+ * `notifySyncInvalidate('evals.runs', { runId })`, so the runs/report queries
+ * use the maintained camelCase runId argument for filtering and invalidation.
  * The suite picker resolves suite → latest `run_id` via `evals.suites`.
  *
  * Until those resolvers register + the first run lands, every query resolves to
@@ -52,6 +52,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { useSyncMutate, useSyncQuery } from '@papercusp/sync';
+import type { SuiteReport, ArmDelta, Interval, ArmId as MetricArmId } from '@papercusp/bench-metrics';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Trophy, Beaker, TrendingUp, FileText, RefreshCw, Gauge, Scale, Zap, DollarSign, Network, Archive, Play, CheckCircle2, Download, RotateCcw, Trash2 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
@@ -83,7 +84,7 @@ import {
 // These exact strings key the schema, the Pareto/delta math, and the viz series.
 // Do NOT invent new labels — every arm-runner emits one of these.
 const ARMS = ['papercusp', 'baseline-a-ablation', 'baseline-b-native', 'baseline-c-bestofn'] as const;
-type ArmId = (typeof ARMS)[number];
+type ArmId = MetricArmId;
 
 const ARM_LABEL: Record<ArmId, string> = {
   papercusp: 'Papercusp',
@@ -139,6 +140,7 @@ interface EvalArmAggregate {
   arm: ArmId;
   passAt1: number | null;
   ci?: [number, number];
+  ciLevel?: number;
   // null (not just absent) is a real value: an ablation arm can report "no cost
   // measured". The frontier filter already guards `costUsd != null` (line ~311),
   // and the sibling aggregate types below allow null — align this one.
@@ -148,8 +150,26 @@ interface EvalArmAggregate {
 export interface EvalReport {
   suite: string;
   byArm: EvalArmAggregate[];
+  canonical?: boolean;
+  sampling?: SuiteReport['sampling'];
+  assignment?: SuiteReport['assignment'];
   /** System-delta vs each baseline (papercusp − baseline). */
-  deltas?: Array<{ baseline: ArmId; deltaPassAt1: number; costRatio: number | null }>;
+  deltas?: Array<{ baseline: ArmId; treatment?: ArmId; deltaPassAt1: number | null; costRatio: number | null;
+    accuracyDeltaCi?: Interval | null; uncertainty?: ArmDelta['uncertainty']; efficiencyMeasured?: boolean }>;
+}
+
+/** Translate the maintained report at the consumer boundary; keep legacy read shapes readable. */
+export function normalizeEvalReport(report: SuiteReport | EvalReport | undefined): EvalReport | undefined {
+  if (!report || 'byArm' in report) return report;
+  return { suite: report.suite, canonical: true, sampling: report.sampling, assignment: report.assignment,
+    byArm: report.arms.map(arm => ({ arm: arm.arm, passAt1: arm.passAt1,
+      ci: arm.passAt1Ci ? [arm.passAt1Ci.lower, arm.passAt1Ci.upper] : undefined,
+      ciLevel: arm.passAt1Ci?.ci,
+      costUsd: arm.attempts > 0 && !arm.cost.missingMeasurements ? arm.cost.costUsd / arm.attempts : null,
+      isoBudgetTokens: arm.budgetTokens })),
+    deltas: report.deltas.map(delta => ({ baseline: delta.baseline, treatment: delta.treatment,
+      deltaPassAt1: delta.accuracyDelta, costRatio: delta.costRatio, accuracyDeltaCi: delta.accuracyDeltaCi,
+      uncertainty: delta.uncertainty, efficiencyMeasured: delta.efficiencyMeasured })) };
 }
 
 // One per-(task × arm × seed) row from `evals.runs`. camelCase mirror of the
@@ -163,6 +183,8 @@ export interface EvalRunRow {
   resolved: boolean | null;
   costUsd?: number | null;
   tokensTotal?: number | null;
+  generationStatus?: string;
+  armMeta?: Record<string, unknown>;
 }
 
 // Fleet-layer (L2–L4) read shapes ARE the shared eval-viz prop item types —
@@ -204,6 +226,8 @@ interface PreservedResolvedTask {
   wallClockMs?: number;
   diffBytes?: number;
   resolved: boolean | null;
+  generationError?: string | null;
+  armMeta?: Record<string, unknown>;
 }
 interface PreservedRunSummary {
   arm: string;
@@ -240,7 +264,7 @@ interface PreservedRunDetail {
   arm?: string;
   taskSetId?: string;
   source?: string;
-  config?: { cap?: number | null } | null;
+  config?: { cap?: number | null; current?: unknown; protocol?: unknown; synthetic?: boolean } | null;
   run: { arm: string; startedAt?: string; coordEvents?: Array<{ kind: string; agent?: string; taskId?: string | null; detail?: string }> };
   perTask: PreservedResolvedTask[];
   summary: PreservedRunSummary;
@@ -578,13 +602,13 @@ function ExternalBenchmarksView({
   // The per-arm aggregate for the selected run (pass@1 + derived cost), keyed by
   // run_id to match emitRollout's notifySyncInvalidate('evals.report', { run_id }).
   // Feeds the cost/accuracy Pareto (P-021 Frontier).
-  const reportSync = useSyncQuery<EvalReport>({
+  const reportSync = useSyncQuery<SuiteReport | EvalReport>({
     queryName: 'evals.report',
-    args: { run_id: runId },
+    args: { runId },
     staleTime: 30_000,
     enabled: !!runId,
   });
-  const report = reportSync.data?.[0];
+  const report = useMemo(() => normalizeEvalReport(reportSync.data?.[0]), [reportSync.data]);
   const frontierPoints = useMemo(() => toFrontierPoints(report), [report]);
 
   if (suitesLoading) {
@@ -680,6 +704,47 @@ export function PreservedOutcomeStats({ summary: s }: {
       sub={`${s.resolvedCount}/${s.gradedCount} graded submissions · conditional quality`}
       hint="Secondary score among officially graded submissions; excludes generation failures and absent attempts." />
   </>;
+}
+
+/** Classify recorded evidence; a current config or a successful exit alone proves no measurement. */
+export function BenchmarkEvidenceNote({ source, hasFrozenProtocol = false, protocolCommitted = false,
+  tasks, expectedAssignments, missingGradeCount = 0, synthetic = false }: {
+  source?: string; hasFrozenProtocol?: boolean; protocolCommitted?: boolean;
+  tasks: Array<Pick<EvalRunRow, 'resolved' | 'generationStatus' | 'armMeta'> & { generationError?: string | null }>;
+  expectedAssignments?: number; missingGradeCount?: number; synthetic?: boolean;
+}) {
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const fixture = synthetic || source === 'synthetic' || tasks.some(task => task.armMeta?.synthetic === true);
+  const complete = expectedAssignments != null && expectedAssignments > 0 && tasks.length === expectedAssignments
+    && missingGradeCount === 0 && tasks.every(task => task.resolved != null);
+  const verified = complete && protocolCommitted && tasks.every(task => {
+    const execution = object(task.armMeta?.currentExecution);
+    const identity = object(execution?.measured);
+    const protocol = object(execution?.protocolIdentity);
+    const prereg = object(execution?.preregistration);
+    return (execution?.kind === 'current-su' || execution?.kind === 'stock-native')
+      && execution.identityStatus === 'measured' && protocol?.status === 'matched'
+      && ['sourceRevision', 'runtimeRevision', 'clientVersion', 'promptHash', 'toolsHash']
+        .every(key => typeof identity?.[key] === 'string' && Boolean((identity[key] as string).trim()))
+      && typeof prereg?.gitCommitSha === 'string' && Boolean(prereg.gitCommitSha.trim())
+      && typeof prereg.receiptRef === 'string' && Boolean(prereg.receiptRef.trim());
+  });
+  const label = fixture ? 'Synthetic fixture evidence'
+    : source === 'import' ? 'Historical archive evidence'
+    : !hasFrozenProtocol ? 'Historical or unverified evidence'
+    : verified ? 'Current measured evidence' : 'Incomplete current evidence';
+  return <div className="pc-evals__note" role="note" aria-label="Benchmark evidence class">
+    <strong>{label}</strong>
+    <span>{fixture ? 'Fixture results do not measure current product performance.'
+      : source === 'import' || !hasFrozenProtocol ? 'Recorded snapshot; current runtime and protocol parity are not established.'
+      : verified ? 'Recorded execution identity matches the committed protocol; assigned outcomes are measured. This alone does not establish superiority.'
+      : 'Complete assigned outcomes, committed protocol and measured matching execution identity are required before this is current measured performance.'}
+      {missingGradeCount > 0 ? ` ${missingGradeCount} submissions await official grades.` : ''}
+      {expectedAssignments != null && tasks.length < expectedAssignments
+        ? ` ${expectedAssignments - tasks.length} assigned attempts are absent.` : ''}
+    </span>
+  </div>;
 }
 
 // ── Throughput view (L2 — fleet speedup, tasks/$, backlog-drain) ──────────────
@@ -892,9 +957,9 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
   // The headline aggregate for this run — pass@1 + Wilson CI by arm + the
   // system-delta vs each baseline (P-011 `buildSuiteReport`). Keyed by run_id to
   // match emitRollout's invalidation.
-  const reportSync = useSyncQuery<EvalReport>({
+  const reportSync = useSyncQuery<SuiteReport | EvalReport>({
     queryName: 'evals.report',
-    args: { run_id: runId },
+    args: { runId },
     staleTime: 30_000,
     enabled: !!runId,
   });
@@ -902,11 +967,11 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
   // tables. Keyed by run_id to match emitRollout's invalidation of evals.runs.
   const runsSync = useSyncQuery<EvalRunRow>({
     queryName: 'evals.runs',
-    args: { run_id: runId },
+    args: { runId },
     staleTime: 30_000,
     enabled: !!runId,
   });
-  const report = reportSync.data?.[0];
+  const report = normalizeEvalReport(reportSync.data?.[0]);
   const runs = runsSync.data ?? [];
 
   return (
@@ -933,10 +998,19 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
         <EmptyCard
           icon={<Scale size={20} aria-hidden />}
           title="No report yet"
-          body="Once a suite has been run across all four arms with ≥3 seeds, the headline lands here: pass@1 with a 95% confidence interval per arm, the iso-budget cost, and the system-delta — “holding the model constant, the Papercusp harness resolves X% more at Z% of the native-harness cost.” The per-baseline A/B/C deltas plot below as Papercusp-vs-baseline tables."
+          body="Select a registered run to see assigned-task outcomes, measured costs and paired uncertainty under its frozen sampling policy. Missing grades remain inconclusive."
         />
       ) : (
         <>
+          <BenchmarkEvidenceNote tasks={runs}
+            hasFrozenProtocol={report.assignment?.basis === 'frozen'}
+            protocolCommitted={report.assignment?.protocolCommitted}
+            expectedAssignments={report.assignment?.seeds
+              ? report.assignment.taskIds.length * report.assignment.arms.length * report.assignment.seeds.length : undefined}
+            missingGradeCount={report.deltas?.reduce((count, delta) => Math.max(count, delta.uncertainty?.missingMeasurements ?? 0), 0)} />
+          {report.sampling && <p className="pc-evals__empty">
+            {report.sampling.taskPairs} task pairs · {report.sampling.independentUnits ?? 'unknown'} independent {report.sampling.unit === 'repository' ? 'repositories' : 'sampling units'} · {report.sampling.assignedSeeds?.length ?? 'unknown'} assigned seeds per task · {Math.round(report.sampling.ci * 100)}% CI
+          </p>}
           <div className="pc-evals__scoreboard" aria-label={`${suite} — headline pass@1 by arm`}>
             {report.byArm.map((a) => (
               <ArmStat
@@ -944,7 +1018,7 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
                 arm={a.arm}
                 value={pctLabel(a.passAt1)}
                 sub={a.ci ? `${pctLabel(a.ci[0])}–${pctLabel(a.ci[1])}` : undefined}
-                hint={`pass@1 (95% CI) for ${ARM_LABEL[a.arm]}. ${ARM_HINT[a.arm]}`}
+                hint={`Primary assigned-task outcome${a.ciLevel ? ` (${Math.round(a.ciLevel * 100)}% CI)` : '; interval unavailable'} for ${ARM_LABEL[a.arm] ?? armLabel(a.arm)}.`}
               />
             ))}
           </div>
@@ -952,7 +1026,22 @@ function ReportView({ suite, runId }: { suite: string; runId: string }) {
           {/* Papercusp vs each baseline — per-task score deltas (P-021 Compare),
               B native first (the headline baseline, D-002). Each Compare renders
               its own empty state until per-task rows arrive. */}
-          {BASELINE_ARMS.map((baseline) => (
+          {report.canonical ? report.deltas?.map(delta => (
+            <div key={delta.baseline} className="pc-evals__compareblock">
+              <h3 className="pc-evals__h3">{armLabel(delta.treatment ?? 'papercusp')} vs {armLabel(delta.baseline)}</h3>
+              <p>Primary difference: {pctLabel(delta.deltaPassAt1)}. {delta.accuracyDeltaCi
+                ? `Paired ${Math.round(delta.accuracyDeltaCi.ci * 100)}% CI: ${pctLabel(delta.accuracyDeltaCi.lower)}–${pctLabel(delta.accuracyDeltaCi.upper)}.`
+                : delta.uncertainty?.status === 'missing-grade' ? 'Interval unavailable: missing official grades.'
+                : delta.uncertainty?.status === 'insufficient-independent-units' ? 'Interval unavailable: fewer than two independent sampling units.'
+                : 'Interval unavailable: sampling policy is unregistered.'}</p>
+              {delta.uncertainty && <p>
+                Observed attempts: baseline {delta.uncertainty.baselineObservedAttempts}, treatment {delta.uncertainty.treatmentObservedAttempts}.
+                {' '}Absent assignments: baseline {delta.uncertainty.baselineAbsentAttempts}, treatment {delta.uncertainty.treatmentAbsentAttempts}.
+                {' '}Missing measurements: {delta.uncertainty.missingMeasurements}.
+              </p>}
+              {delta.efficiencyMeasured === false && <p>Cost efficiency is unmeasured.</p>}
+            </div>
+          )) : BASELINE_ARMS.map((baseline) => (
             <div key={baseline} className="pc-evals__compareblock">
               <h3 className="pc-evals__h3">Papercusp vs {ARM_LABEL[baseline]}</h3>
               <Compare
@@ -1755,18 +1844,11 @@ function PreservedRunsView() {
           {/* Live fleet panel (P-007) while the run is in flight. */}
           {live?.isLive ? <LiveFleetPanel live={live} /> : null}
 
-          {/* Honest caveats (impartial-benchmark-suite D-027): this is a single
-              preserved arm, not strictly opus, empty diffs counted as unresolved,
-              no valid no-Queen control yet, and an 11-task subset. */}
-          <div className="pc-evals__note" role="note">
-            <strong>Real graded run · {armLabel(s.arm)}</strong>
-            <span>
-              Officially graded snapshot. Caveats: ~92% opus (not strictly opus); empty diffs (no patch) score as
-              unresolved; no valid no-Mug control arm yet (single treatment arm, so the per-task table has no
-              baseline column); {s.taskCount}-task subset, not the full set.
-              {s.recovered ? ' This snapshot was reconstructed from recovered fleet state (no preserved wall-clock).' : ''}
-            </span>
-          </div>
+          <BenchmarkEvidenceNote source={detail.source ?? selRun?.source}
+            tasks={detail.perTask} expectedAssignments={s.taskCount} missingGradeCount={s.missingGradeCount}
+            hasFrozenProtocol={Boolean(detail.config?.current && detail.config?.protocol)}
+            protocolCommitted={Boolean(detail.config?.current && detail.config?.protocol)}
+            synthetic={detail.config?.synthetic === true} />
 
           <div className="pc-evals__scoreboard" aria-label={`${s.arm} — preserved run summary`}>
             <PreservedOutcomeStats summary={s} />
@@ -1853,10 +1935,10 @@ function ArmStat({
   hint?: string;
 }) {
   return (
-    <div className="pc-evals__stat" aria-label={hint} style={{ ['--arm-accent' as string]: ARM_COLOR[arm] }}>
+    <div className="pc-evals__stat" aria-label={hint} style={{ ['--arm-accent' as string]: ARM_COLOR[arm] ?? armColor(arm) }}>
       <span className="pc-evals__statlabel">
         <span className="pc-evals__statdot" aria-hidden />
-        {ARM_LABEL[arm]}
+        {ARM_LABEL[arm] ?? armLabel(arm)}
       </span>
       <span className="pc-evals__statvalue">{value}</span>
       {sub ? <span className="pc-evals__statsub">{sub}</span> : null}

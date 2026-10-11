@@ -50,7 +50,7 @@ import {
   type StoredWorkItemDependencyRow,
 } from './dbos/work-item-deps-store';
 import {
-  isHarnessInScope,
+  evaluateWorkScope,
   isPlatformNonPotHarness,
   primeWorkScopePolicy,
   recordWorkScopeDecision,
@@ -2160,7 +2160,7 @@ async function readPromoterPairs(
   const rows = await sql<PromoterPairRow[]>`
     WITH pending AS (
       SELECT feature_id, title, summary, status, item_kind, admission, condition_key,
-             created_ts, embedding, embedding_mode, embedding_profile
+             created_ts, embedding, embedding_mode, embedding_profile, parent_id, payload
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
@@ -2199,6 +2199,18 @@ async function readPromoterPairs(
          WHERE wi.workspace_id = ${workspaceId}
            AND wi.harness_slug = ${harnessSlug}
            AND wi.feature_id <> p.feature_id
+           -- A report's persisted source and deliberately parented reproduction work
+           -- are its provenance, not independently filed duplicate fixes.
+           AND wi.parent_id IS DISTINCT FROM p.feature_id
+           AND p.parent_id IS DISTINCT FROM wi.feature_id
+           AND NOT (
+             COALESCE(p.payload #>> '{admission,sourceKind}', '') = 'record'
+             AND COALESCE(p.payload #>> '{admission,sourceKey}', '') = wi.feature_id
+           )
+           AND NOT (
+             COALESCE(wi.payload #>> '{admission,sourceKind}', '') = 'record'
+             AND COALESCE(wi.payload #>> '{admission,sourceKey}', '') = p.feature_id
+           )
            AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
            AND (${includeOutsidePending} OR wi.admission IS DISTINCT FROM 'pending' OR wi.feature_id = ANY(${candidateIds}::text[]))
            AND (
@@ -5259,7 +5271,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
   // cache reads as "not enforced", so the first tick after a boot would PROMOTE rows in a
   // harness the stored policy holds. Memoised — one awaited read per process.
   await primeWorkScopePolicy();
-  if (!isHarnessInScope(opts.harnessSlug)) {
+  if (!evaluateWorkScope({ harness: opts.harnessSlug }).allowed) {
     if (!scopeHeldHarnessesNoted.has(opts.harnessSlug)) {
       scopeHeldHarnessesNoted.add(opts.harnessSlug);
       await recordWorkScopeDecision({

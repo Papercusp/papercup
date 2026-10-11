@@ -157,6 +157,9 @@ export function bootstrapMeanCI(
 export interface PairedComparison {
   /** Number of pairs. */
   n: number;
+  /** Independent units drawn together in each resample. */
+  resamplingUnit: 'pair' | 'cluster';
+  independentUnits: number;
   /** Mean of the baseline arm. */
   meanA: number;
   /** Mean of the candidate arm. */
@@ -188,12 +191,14 @@ export interface PairedComparison {
  * on the SAME items, resampling PAIRS so the pairing is preserved.
  *
  * `a` and `b` must be index-aligned: `a[i]` and `b[i]` are the two arms' scores
- * on the same item. Deterministic given `seed`.
+ * on the same item. Optional index-aligned cluster IDs draw whole clusters,
+ * retaining the task-weighted mean (including unequal cluster sizes).
+ * Deterministic given `seed`; cluster inference requires at least two clusters.
  */
 export function pairedBootstrapCI(
   a: readonly number[],
   b: readonly number[],
-  opts: { ci?: number; iterations?: number; seed?: number } = {},
+  opts: { ci?: number; iterations?: number; seed?: number; clusterIds?: readonly string[] } = {},
 ): PairedComparison {
   if (a.length !== b.length) {
     throw new Error(`pairedBootstrapCI: arms must be index-aligned (got ${a.length} vs ${b.length})`);
@@ -202,9 +207,31 @@ export function pairedBootstrapCI(
   const iterations = opts.iterations ?? 10_000;
   const seed = opts.seed ?? 12345;
   const n = a.length;
+  zFor(ci);
+  if (!Number.isSafeInteger(iterations) || iterations < 2 || !Number.isSafeInteger(seed) ||
+      a.some(value => !Number.isFinite(value)) || b.some(value => !Number.isFinite(value))) {
+    throw new Error('pairedBootstrapCI: finite values, an integer seed and at least two iterations required');
+  }
+  const clusters = new Map<string, number[]>();
+  if (opts.clusterIds) {
+    if (opts.clusterIds.length !== n || opts.clusterIds.some(id => typeof id !== 'string' || !id.trim())) {
+      throw new Error('pairedBootstrapCI: cluster IDs must be nonempty and index-aligned');
+    }
+    opts.clusterIds.forEach((id, i) => {
+      const indices = clusters.get(id) ?? [];
+      indices.push(i);
+      clusters.set(id, indices);
+    });
+    if (clusters.size < 2) throw new Error('pairedBootstrapCI: at least two independent clusters required');
+  }
+  const blocks = opts.clusterIds ? [...clusters.values()] : null;
+  const independentUnits = blocks?.length ?? n;
+  const resamplingUnit = blocks ? 'cluster' as const : 'pair' as const;
   if (n === 0) {
     return {
       n: 0,
+      independentUnits,
+      resamplingUnit,
       meanA: 0,
       meanB: 0,
       delta: { point: 0, lower: 0, upper: 0, ci },
@@ -235,6 +262,8 @@ export function pairedBootstrapCI(
   if (n === 1) {
     return {
       n,
+      independentUnits,
+      resamplingUnit,
       meanA,
       meanB,
       delta: { point: observed, lower: observed, upper: observed, ci },
@@ -249,12 +278,19 @@ export function pairedBootstrapCI(
   const deltas = new Float64Array(iterations);
   for (let it = 0; it < iterations; it++) {
     let sum = 0;
-    for (let i = 0; i < n; i++) {
-      // ONE index for both arms — this is what makes the bootstrap paired.
-      const k = Math.floor(rng() * n);
-      sum += b[k] - a[k];
+    let sampledPairs = 0;
+    for (let i = 0; i < independentUnits; i++) {
+      // ONE draw for both arms; every task in a drawn repository stays together.
+      const k = Math.floor(rng() * independentUnits);
+      if (blocks) {
+        for (const index of blocks[k]) sum += b[index] - a[index];
+        sampledPairs += blocks[k].length;
+      } else {
+        sum += b[k] - a[k];
+        sampledPairs++;
+      }
     }
-    deltas[it] = sum / n;
+    deltas[it] = sum / sampledPairs;
   }
   deltas.sort();
   const alpha = (1 - ci) / 2;
@@ -273,6 +309,8 @@ export function pairedBootstrapCI(
 
   return {
     n,
+    independentUnits,
+    resamplingUnit,
     meanA,
     meanB,
     delta: { point: observed, lower, upper, ci },

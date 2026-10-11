@@ -621,7 +621,7 @@ describe('hosted usage production collector composition', () => {
     const response = await app.request('/api/hosted/billing/usage?month=2026-10', get('owner'));
     expect(response.status).toBe(200);
     expect(readOpenRouterBindings).toHaveBeenCalledTimes(1);
-    expect(resolveSecret).toHaveBeenCalledWith('env:EXECUTION_OPENROUTER_KEY');
+    expect(resolveSecret).toHaveBeenCalledWith('env:EXECUTION_OPENROUTER_KEY', expect.any(AbortSignal));
     expect(usageStore.append).toHaveBeenCalledTimes(1);
     const body = await response.text();
     expect(body).toContain('"reportedMicrosExact":"0.1"'); expect(body).toContain('"settlementEligible":false');

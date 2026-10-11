@@ -1825,13 +1825,23 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(portfolioSql).toContain("pic.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])");
     expect(portfolioSql).toContain("cp.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])");
     expect(portfolioSql).toContain('count(DISTINCT member_presence.owner_id)');
-    expect(portfolioSql).toContain("END)->>'plan' = p.plan_slug");
-    expect(portfolioSql).toContain("END)->>'harness' = p.harness_slug");
+    const planFleetPrefetchSql = portfolioSql.slice(
+      portfolioSql.indexOf('plan_fleets AS MATERIALIZED'),
+      portfolioSql.indexOf('SELECT g.status'),
+    );
+    expect(planFleetPrefetchSql).toContain('af.workspace_id = g.workspace_id');
+    expect(planFleetPrefetchSql).toContain('CASE jsonb_typeof(af.headcount_config)');
+    expect(planFleetPrefetchSql).toContain("WHEN 'string' THEN (af.headcount_config #>> '{}')::jsonb");
+    expect(planFleetPrefetchSql).toContain('ELSE af.headcount_config');
+    expect(planFleetPrefetchSql).toContain("SELECT DISTINCT ON (fc.cfg->>'harness', fc.cfg->>'plan')");
+    expect(planFleetPrefetchSql).toContain("ORDER BY fc.cfg->>'harness', fc.cfg->>'plan', af.updated_at DESC");
+    expect(portfolioSql).toContain('af.plan_slug = p.plan_slug');
+    expect(portfolioSql).toContain('af.harness_slug = p.harness_slug');
     const placementFleetSql = portfolioSql.slice(
       portfolioSql.indexOf("'fleet', ("),
       portfolioSql.indexOf('FROM jsonb_array_elements_text', portfolioSql.indexOf("'fleet', (")),
     );
-    expect(placementFleetSql).toContain('FROM harness_shared.agent_fleets af');
+    expect(placementFleetSql).toContain('FROM plan_fleets af');
     expect(placementFleetSql).not.toMatch(/agent_modes|session_briefs|goal_role|drain_fleet/);
   });
 

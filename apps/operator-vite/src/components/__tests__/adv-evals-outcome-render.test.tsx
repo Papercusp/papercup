@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { PreservedOutcomeStats } from '../adv/AdvEvalsTab';
+import { BenchmarkEvidenceNote, PreservedOutcomeStats } from '../adv/AdvEvalsTab';
 
 const renderOutcome = (overrides: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(
   PreservedOutcomeStats,
@@ -35,5 +35,46 @@ describe('rendered preserved outcome scores', () => {
     expect(html).toContain('0/0 graded submissions · conditional quality');
     expect(html).toContain('—');
     expect(html).not.toContain('inconclusive');
+  });
+});
+
+describe('rendered benchmark evidence classes', () => {
+  const measured = {
+    resolved: true,
+    armMeta: { currentExecution: { kind: 'current-su', identityStatus: 'measured',
+      measured: { sourceRevision: 'source', runtimeRevision: 'runtime', clientVersion: 'client', promptHash: 'prompt', toolsHash: 'tools' },
+      protocolIdentity: { status: 'matched' }, preregistration: { gitCommitSha: 'committed', receiptRef: 'receipt' } } },
+  };
+  const renderEvidence = (over: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(
+    BenchmarkEvidenceNote, { tasks: [measured], expectedAssignments: 1,
+      hasFrozenProtocol: true, protocolCommitted: true, ...over },
+  ));
+
+  it('labels measured current outcomes only with complete assignment and observed protocol identity', () => {
+    expect(renderEvidence()).toContain('Current measured evidence');
+    for (const over of [
+      { protocolCommitted: false }, { expectedAssignments: 2 }, { missingGradeCount: 1 },
+      { tasks: [{ ...measured, resolved: null }] }, { tasks: [{ resolved: true }] },
+      { tasks: [{ ...measured, armMeta: { currentExecution: {
+        ...measured.armMeta.currentExecution, protocolIdentity: { status: 'mismatch' },
+      } } }] },
+    ]) {
+      const html = renderEvidence(over);
+      expect(html).toContain('Incomplete current evidence');
+      expect(html).not.toContain('<strong>Current measured evidence</strong>');
+    }
+  });
+
+  it('keeps synthetic and archived provenance visible even with successful graded rows', () => {
+    const fixture = renderEvidence({ tasks: [{ ...measured, armMeta: { ...measured.armMeta, synthetic: true } }] });
+    expect(fixture).toContain('Synthetic fixture evidence');
+    expect(fixture).toContain('do not measure current product performance');
+    const archive = renderEvidence({ source: 'import', missingGradeCount: 1 });
+    expect(archive).toContain('Historical archive evidence');
+    expect(archive).toContain('1 submissions await official grades');
+    for (const html of [fixture, archive, renderEvidence({ hasFrozenProtocol: false })]) {
+      expect(html).not.toContain('<strong>Current measured evidence</strong>');
+      expect(html).not.toContain('Real graded run');
+    }
   });
 });

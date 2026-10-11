@@ -10,6 +10,8 @@ export function currentProtocolFixture(runId = 'run-1', maxWallClockMs = 100): C
   return {
     schemaVersion: 1, runId, taskIds: ['t1'], seeds: [1], arms: [arm('papercusp'), arm('baseline')],
     aggregateBudgetUsd: 60, maxInFlightUsd: 3,
+    sampling: { unit: 'repository', taskRepositories: { t1: 'fixture-repo', 'withheld-1': 'withheld-repo' },
+      ci: 0.95, bootstrapSeed: 12345, bootstrapIterations: 10000 },
     priceSchedule: { version: 'frozen-prices-v1', rates: [{ model: 'configured-alias', inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.5, outputUsdPerMillion: 2 }] },
     grader: { family: 'official', version: 'pinned', imageDigest: 'fixture-image-digest' },
     context: { corpusHash: 'c'.repeat(64), memoryHash: 'd'.repeat(64), corpusRef: 'fixture:corpus', memoryRef: 'fixture:memory',

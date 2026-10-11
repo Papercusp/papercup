@@ -21,6 +21,8 @@ const FILES: Record<string, string> = {
   'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext', moduleResolution: 'bundler', strict: true } }),
   // Two same-named declarations: grep never chooses, so the answer unions both.
   'src/a.ts': 'export function target(n: number): number {\n  return n + 1;\n}\n',
+  'src/dependency.ts': 'export function helper(n: number) { return n + 1; }\n',
+  'src/compose.ts': 'import { helper } from "./dependency";\nexport function compose(n: number) {\n  return helper(n);\n}\n',
   'src/b.test.ts': 'function target(): string {\n  return "stub";\n}\nexport const fromStub = target();\n',
   // The barrel does not contain the word, so it is served as a re-export stub.
   'src/barrel.ts': 'export * from "./a";\nexport const unrelated = 1;\n',
@@ -105,6 +107,46 @@ describe('firstPartyCallers', () => {
     const noRg = firstPartyCallers({ ts, root, name: 'target', rgPath: join(root, 'no-such-rg') });
     expect(noRg.error).toMatch(/^ripgrep could not run/);
     expect(noRg.sites).toEqual([]);
+  });
+});
+
+describe('P007 first-party symbol/context/callees', () => {
+  it('refuses ambiguity and resolves the defining-file selector with actual source identity', () => {
+    const ambiguous = firstPartyCallers({ ts, root, op: 'symbol', name: 'target' });
+    expect(ambiguous.error).toMatch(/Ambiguous symbol.*file_path/);
+    expect(lines(ambiguous.sites)).toEqual(['src/a.ts:1', 'src/b.test.ts:1']);
+    const selected = firstPartyCallers({ ts, root, op: 'symbol', name: 'target', filePath: 'src/a.ts' });
+    expect(selected.error).toBeNull();
+    expect(lines(selected.sites)).toEqual(['src/a.ts:1']);
+    expect(selected.evidence!.siteIdentities[0]).toMatchObject({ sourcePath: 'src/a.ts', contentHash: expect.stringMatching(/^[a-f0-9]{64}$/), versionedSymbolId: expect.any(String) });
+    expect(selected.evidence!.relationships[0]).toMatchObject({ kind: 'definition', origin: 'compiler', runtimeExecution: 'unknown' });
+  });
+
+  it('returns the outgoing call site and loads its dependency as actual source rather than a re-export stub', () => {
+    const answer = firstPartyCallers({ ts, root, op: 'callees', name: 'compose' });
+    expect(answer.error).toBeNull();
+    expect(answer.intent).toBe('callees');
+    expect(lines(answer.sites)).toEqual(['src/compose.ts:3']);
+    expect(answer.sites[0]).toMatchObject({ name: 'helper', detail: expect.stringContaining('src/dependency.ts:1') });
+    expect(answer.evidence!.relationships[0]).toMatchObject({ kind: 'callees', origin: 'compiler', knowledge: 'observed' });
+    expect(answer.evidence!.sourceScope.supportingFiles[0].representation).toBe('full-source');
+  });
+
+  it('joins the declaration and outgoing source-site evidence in context', () => {
+    const answer = firstPartyCallers({ ts, root, op: 'context', name: 'compose' });
+    expect(answer.error).toBeNull();
+    expect(lines(answer.sites)).toEqual(['src/compose.ts:2', 'src/compose.ts:3']);
+    expect(answer.evidence!.relationships.map(r => r.kind)).toEqual(['definition', 'callees']);
+    expect(answer.evidence!.siteIdentities.every(s => s.contentHash && s.versionedSymbolId)).toBe(true);
+  });
+
+  it('does not certify a missing declaration or mismatched selector as an empty graph', () => {
+    for (const args of [{ name: 'neverWrittenAnywhere' }, { name: 'compose', filePath: 'src/a.ts' },
+      { name: 'compose', line1: 99 }]) {
+      const answer = firstPartyCallers({ ts, root, op: 'context', ...args });
+      expect(answer.error).toMatch(/No declaration/);
+      expect(answer.freshness.health).toBe('unhealthy');
+    }
   });
 });
 

@@ -350,6 +350,32 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  it.each([null, '   '])('refuses an explicit unmeasured evaluator SHA %s before any replay or persistence', async sha => {
+    const build = { sha, version: '0.0.0' };
+    const dispatchTool = vi.fn().mockResolvedValue({ ...passingReplay, evaluatorBuild: build });
+    const result = await emitScorecard(
+      emitArgs({ rerunRecipe: { ...RERUN_RECIPE, evaluatorBuild: build,
+        args: { ...RERUN_RECIPE.args, evaluatorBuild: build } } }),
+      { createdBy: 'su-grader' }, { dispatchTool },
+    );
+    expect(result).toMatchObject({ ok: false, code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining(sha === null ? 'unmeasured evaluator build' : 'requires a valid evaluator rerunRecipe') });
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(listScorecards).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses an args-only unmeasured evaluator identity', async () => {
+    const result = await emitScorecard(
+      emitArgs({ rerunRecipe: { ...RERUN_RECIPE, args: { ...RERUN_RECIPE.args,
+        evaluatorBuild: { sha: null, version: '0.0.0' } } } }),
+      { createdBy: 'su-grader' }, { dispatchTool: vi.fn().mockResolvedValue(passingReplay) },
+    );
+    expect(result).toMatchObject({ ok: false, code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining('unmeasured evaluator build') });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('refuses a pass-like card when the evaluator replay reports build drift', async () => {
     const dispatchTool = vi.fn().mockResolvedValue(driftedReplay);
 

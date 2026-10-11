@@ -1729,7 +1729,7 @@ describe('testing:run (integration)', () => {
     })).toEqual(readback.idsByFile);
   });
 
-  it('builds a fresh store-backed router request with the admin ledger reporter but without the foreground report path', () => {
+  it('builds a fresh store-backed router request with both the admin ledger reporter and retained JSON', () => {
     const request = buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
@@ -1750,10 +1750,12 @@ describe('testing:run (integration)', () => {
       join(REPO_ROOT, 'scripts', 'test-files.mjs'),
       'packages/example.test.ts',
       '--',
+      '--reporter=json',
       `--reporter=${join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts')}`,
+      `--outputFile=${request.detachedReportArtifacts?.[0]?.reportPath}`,
       '--testNamePattern=suite > --focused test',
     ]);
-    expect(request.args.some((arg) => arg.includes('papercusp-testing-run-'))).toBe(false);
+    expect(request.detachedReportArtifacts?.[0]?.reportPath).toContain('papercusp-testing-run-detached-');
     expect(request.env).toEqual({
       PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000',
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
@@ -1867,13 +1869,17 @@ describe('testing:run (integration)', () => {
     );
     await writeFile(join(root, 'packages', 'integration', 'vitest.integration.config.ts'), 'export default {}.\n');
     const files = ['packages/unit/src/unit.test.ts', 'packages/integration/src/integration.integration.test.ts'];
-    const request = buildDetachedMixedTestRunRequest({ groups: [{ root, files }] });
+    const request = buildDetachedMixedTestRunRequest({ groups: [
+      { root: REPO_ROOT, files: ['packages/managed.test.ts'] },
+      { root, files },
+    ] });
     const artifacts = request.detachedReportArtifacts ?? [];
-    expect(artifacts).toHaveLength(2);
+    expect(artifacts).toHaveLength(3);
+    expect(artifacts[0]).toMatchObject({ root: REPO_ROOT, routerReports: true });
 
     const reportPaths = artifacts.map((artifact) => artifact.reportPath);
     expect(new Set(reportPaths).size).toBe(reportPaths.length);
-    expect(artifacts.every((artifact) => artifact.root === root)).toBe(true);
+    expect(artifacts.slice(1).every((artifact) => artifact.root === root && !artifact.routerReports)).toBe(true);
 
     const script = request.args[1]!;
     const marker = 'const commands = ';
@@ -1887,7 +1893,7 @@ describe('testing:run (integration)', () => {
       expect(reportArg).toBeDefined();
       return reportArg!.slice('--outputFile='.length);
     });
-    expect(commandReportPaths).toHaveLength(2);
+    expect(commandReportPaths).toHaveLength(3);
     expect(new Set(commandReportPaths).size).toBe(commandReportPaths.length);
     expect(commandReportPaths).toEqual(expect.arrayContaining(reportPaths));
   });

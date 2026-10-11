@@ -118,6 +118,7 @@ type PortalRosterBrowserInput = {
   prompts?: boolean;
   overview?: boolean;
   hud?: boolean;
+  health?: boolean;
   harnesses?: { hive: string; selected: string; neighbor: string; foreign: string };
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
   markdownPreflight?: { value: string; heading: string };
@@ -135,7 +136,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -147,7 +148,29 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.overview ? `
+  const entry = input.health ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { parseAsString, useQueryState } from 'nuqs';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { configureOperatorUi } from '@papercusp/operator-ui/seam';
+    import { ADV_TAB_SURFACE_KINDS } from '@papercusp/operator-ui/adv-navigation';
+    import HealthTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/HealthTab.tsx'))};
+    configureOperatorUi({ advNavigation: { param: 'app', targets: ADV_TAB_SURFACE_KINDS } });
+    function Fixture() {
+      const [app] = useQueryState('app', parseAsString.withDefault('health'));
+      return React.createElement(React.Fragment, null,
+        app === 'health' ? React.createElement(HealthTab) : null,
+        React.createElement('output', { 'data-testid': 'health-destination' }, app));
+    }
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(Fixture))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.overview ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -308,8 +331,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans || input.docs || input.overview || input.hud || input.harnesses
-    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.overview || input.hud || input.harnesses) }) : undefined;
+  const boundary = input.inbox || input.plans || input.docs || input.overview || input.hud || input.health || input.harnesses
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.overview || input.hud || input.health || input.harnesses) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -344,7 +367,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   const css = result.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.overview
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.health
+    ? '/apps/operator-vite/src/components/adv/HealthTab.tsx' : input.overview
     ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.hud
     ? '/apps/operator/app/adv/hud/HudView.tsx' : input.harnesses
     ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.docs
@@ -570,10 +594,10 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
     page.on('pageerror', error => pageErrors.push(error.stack ?? error.message));
-    if (input.inbox || input.plans || input.hud || input.harnesses) page.on('response', response => {
+    if (input.inbox || input.plans || input.hud || input.health || input.harnesses) page.on('response', response => {
       const url = new URL(response.url());
       const name = url.searchParams.get('name');
-      const queryNames = input.harnesses ? ['harnessProjects.lite', 'workItems.byHarness']
+      const queryNames = input.health ? ['health.snapshot', 'health.history'] : input.harnesses ? ['harnessProjects.lite', 'workItems.byHarness']
         : [input.hud ? 'advRoster.list' : input.plans ? 'plans.list' : 'plans.attention'];
       if (!url.pathname.endsWith('/rest-query') || !queryNames.some(query => name?.startsWith(query))) return;
       const observation = { at: new Date().toISOString(), url: response.url(), name, args: url.searchParams.get('args'),
@@ -583,13 +607,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       }, error => {
         syncReads.push({ ...observation, error: String(error) });
       }).then(() => {
-        writeFileSync(join(evidence, input.harnesses ? 'portal-work-reads.json' : input.hud ? 'portal-hud-reads.json' : input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
+        writeFileSync(join(evidence, input.health ? 'portal-health-reads.json' : input.harnesses ? 'portal-work-reads.json' : input.hud ? 'portal-hud-reads.json' : input.plans ? 'portal-plans-reads.json' : 'portal-inbox-reads.json'),
           JSON.stringify(syncReads, null, 2));
       });
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
+    const url = new URL(input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
       : input.harnesses ? '/?app=work&scope=all&q=retained-shell-search'
       : input.docs ? '/?app=docs&q=retained-shell-search'
       : input.plans ? '/?app=plans&q=retained-shell-search'
@@ -601,6 +625,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       url.searchParams.set('docpath', input.docs.neighborDoc);
     }
     await page.goto(url.href);
+    if (input.health) {
+      const receipt = await runPrivateHealthPage(page, context, input, syncReads, syncReadCaptures);
+      assert.deepEqual(pageErrors, [], 'actual Health controls must complete without browser errors');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
     if (input.harnesses) {
       const receipt = await runPrivateHarnessesPage(page, context, input, syncReads, syncReadCaptures);
       assert.deepEqual(pageErrors, [], 'actual Work controls must complete without browser errors');
@@ -869,6 +900,119 @@ async function runPrivateHarnessesPage(page: Page, context: BrowserContext, inpu
     shellQueryPreserved: true, foreignExcluded: true, foreignRegistryControl: true,
     denialStatus: denied.status(), denialTransport: 'actual-private-work-external-host', selectionRetained: true,
     scope: 'Actual mounted HarnessesWorkspace and private workspace registry/dock reads; no hosted tenant, full-shell, work-item action or shipment acceptance' };
+}
+
+/** Actual Health reads and ack/unack; initial seeded readings are not collector proof. */
+async function runPrivateHealthPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput,
+  reads: Array<Record<string, unknown>>, pendingReads: Set<Promise<void>>) {
+  const card = page.locator('[data-panel="workItems"]');
+  await card.getByText('private-health-selected', { exact: true }).waitFor();
+  await page.locator('[data-panel="plans"]').getByText('private-health-neighbor', { exact: true }).waitFor();
+  assert.equal(await page.getByText('private-health-foreign', { exact: true }).count(), 0);
+  const expand = card.getByRole('button', { name: 'Work items', exact: true });
+  await expand.focus(); await page.keyboard.press('Enter');
+  await page.waitForURL(url => url.searchParams.get('healthPanel') === 'workItems');
+  assert.equal(await expand.getAttribute('aria-expanded'), 'true');
+  await card.getByText('private-health-transition', { exact: true }).waitFor();
+  const selectedUrl = page.url();
+  await page.reload();
+  await card.getByRole('button', { name: 'Work items', exact: true }).waitFor();
+  assert.equal(await card.getByRole('button', { name: 'Work items', exact: true }).getAttribute('aria-expanded'), 'true');
+  assert.equal(page.url(), selectedUrl);
+  await Promise.all([...pendingReads]);
+  const snapshot = reads.find(read => read.name === 'health.snapshot' && read.status === 200);
+  assert.ok(snapshot, 'Health must read the actual private sync endpoint');
+  const row = (snapshot.body as { rows: Array<{ workspaceId: string }> }).rows[0];
+  assert.equal(row.workspaceId, input.workspace, 'snapshot must belong to the private runtime workspace');
+  assert.ok(reads.some(read => read.name === 'health.history' && read.status === 200));
+  const states: unknown[] = [];
+  const assertUnchanged = async () => {
+    const rows = await getOrgPg().sql`SELECT workspace_id, panel, reason FROM harness_shared.system_health_acks
+      WHERE workspace_id IN (${input.workspace}, ${input.workspace + '-foreign'}) ORDER BY workspace_id, panel`;
+    states.push(rows);
+    writeFileSync(join(input.evidence, 'portal-health-ack-states.json'), JSON.stringify(states, null, 2));
+    assert.equal(rows.length, 0, 'denied or cancelled acknowledgement must not write either workspace');
+  };
+  await assertUnchanged();
+  await card.getByRole('button', { name: 'acknowledge…', exact: true }).click();
+  const reason = card.getByPlaceholder('why is this accepted?');
+  await reason.fill('ab');
+  const submit = card.getByRole('button', { name: 'acknowledge', exact: true });
+  assert.equal(await submit.isEnabled(), false, 'reason validation must prevent a too-short request');
+  await reason.fill('private-health-accepted-reason');
+  await context.route('**/api/agent-tools/health/ack', async route => {
+    const denied = await route.fetch({ headers: { ...route.request().headers(), origin: 'https://foreign-health.invalid' } });
+    assert.equal(denied.status(), 403);
+    await route.fulfill({ response: denied });
+  });
+  const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/agent-tools/health/ack');
+  await submit.focus(); await page.keyboard.press('Enter');
+  const denied = await responsePromise;
+  assert.equal(denied.status(), 403);
+  assert.equal(denied.request().postDataJSON().panel, 'workItems');
+  await card.locator('.pc-hcard__note').waitFor();
+  assert.equal(await submit.isEnabled(), true, 'denied request must restore the control');
+  await assertUnchanged();
+  await context.unroute('**/api/agent-tools/health/ack');
+  await card.getByRole('button', { name: 'cancel', exact: true }).click();
+  assert.equal(await reason.count(), 0);
+  await assertUnchanged();
+  const writes: Array<{ status: number; panel: string; body: unknown }> = [];
+  const act = async (mode: 'ack' | 'unack', control: ReturnType<Page['getByRole']>) => {
+    const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/agent-tools/health/' + mode,
+      { timeout: 90_000 });
+    await control.focus(); await page.keyboard.press('Enter');
+    const response = await responsePromise;
+    const panel = response.request().postDataJSON().panel;
+    writes.push({ status: response.status(), panel, body: await response.json() });
+    writeFileSync(join(input.evidence, 'portal-health-writes.json'), JSON.stringify(writes, null, 2));
+    assert.equal(response.status(), 200);
+    assert.equal(panel, 'workItems');
+  };
+  await card.getByRole('button', { name: 'acknowledge…', exact: true }).click();
+  await reason.fill('private-health-accepted-reason');
+  await act('ack', card.getByRole('button', { name: 'acknowledge', exact: true }));
+  await card.locator('.pc-hcard__ack').filter({ hasText: 'private-health-accepted-reason' }).waitFor({ timeout: 90_000 });
+  const ackRows = await getOrgPg().sql`SELECT workspace_id, panel, status, reason FROM harness_shared.system_health_acks
+    WHERE workspace_id IN (${input.workspace}, ${input.workspace + '-foreign'}) ORDER BY workspace_id, panel`;
+  states.push(ackRows);
+  assert.equal(ackRows.length, 1, 'successful ack must write only the selected workspace and panel');
+  assert.equal(ackRows[0].workspace_id, input.workspace);
+  assert.equal(ackRows[0].panel, 'workItems');
+  assert.equal(ackRows[0].status, 'warn');
+  assert.equal(ackRows[0].reason, 'private-health-accepted-reason');
+  await page.reload();
+  await card.locator('.pc-hcard__ack').filter({ hasText: 'private-health-accepted-reason' }).waitFor();
+  assert.equal(page.url(), selectedUrl);
+  await Promise.all([...pendingReads]);
+  const collectorReading = [...reads].reverse().find(read => read.name === 'health.snapshot' && read.status === 200
+    && (read.body as { rows?: Array<{ panels?: { workItems?: { data?: { needsHuman?: number } } } }> }).rows?.[0]?.panels?.workItems?.data?.needsHuman === 1);
+  assert.ok(collectorReading, 'positive ack must use the real Work-items collector with the single private needs-human condition');
+  await act('unack', card.getByRole('button', { name: 'un-acknowledge', exact: true }));
+  await card.locator('.pc-hcard__ack').waitFor({ state: 'hidden', timeout: 90_000 });
+  await assertUnchanged();
+  await page.reload();
+  await card.getByRole('button', { name: 'acknowledge…', exact: true }).waitFor();
+  assert.equal(await card.locator('.pc-hcard__ack').count(), 0);
+  assert.equal(page.url(), selectedUrl);
+  const hostDenied = await context.request.get(input.base + '/api/zero-harness/rest-query?name=health.snapshot&args=%7B%7D',
+    { headers: { host: 'foreign-health.invalid' } });
+  verifyPrivateHudHostDenial(hostDenied.status(), await hostDenied.text());
+  const link = card.getByRole('link', { name: 'Open Work', exact: true });
+  await link.focus(); await page.keyboard.press('Enter');
+  await page.waitForURL(url => url.searchParams.get('app') === 'work');
+  assert.equal(new URL(page.url()).searchParams.get('tab'), null);
+  assert.equal(new URL(page.url()).searchParams.get('ws'), input.workspace);
+  assert.equal(new URL(page.url()).searchParams.get('q'), 'retained-shell-search');
+  assert.equal(new URL(page.url()).searchParams.get('healthPanel'), 'workItems');
+  await page.reload();
+  await page.getByTestId('health-destination').filter({ hasText: /^work$/ }).waitFor();
+  return { workspace: input.workspace, authMethod: 'private-loopback-health-with-cookie',
+    snapshotRead: true, historyRead: true, keyboardExpansion: true, keyboardDrill: true, deepLinkReload: true,
+    shellQueryPreserved: true, foreignSeedExcluded: true, denialStatus: 403, deniedAckNoWrite: true,
+    denialControlRecovery: true, cancelledAckNoWrite: true, reasonValidation: true,
+    acknowledged: true, unacknowledged: true, ackReload: true, unackReload: true, workItemsCollectorNeedsHuman: 1,
+    scope: 'Actual HealthTab, private shared snapshot/history reads, native Host denial, Origin-denied acknowledgement and successful ack/unack through the maintained Work-items collector. Initial snapshot/history population and destination geometry are supplied; other collector accuracy, hosted tenant authorization and full Portal acceptance remain unmeasured' };
 }
 
 /** Actual ADV panel, merged docs read and anchored manual verification. */

@@ -316,6 +316,10 @@ export function askErrorMessage(
   switch (code) {
     case 'portal_chat_content_required':
       return 'Type a question first.';
+    case 'portal_chat_voice_turn_invalid':
+      return 'Papercup could not read that voice message. Try speaking again or type your question.';
+    case 'portal_chat_voice_turn_too_long':
+      return 'That voice message is too long to send. Try a shorter question or send it in parts.';
     case 'portal_chat_context_must_be_string':
       return 'Papercup could not read that request. Try again.';
     case 'portal_chat_context_too_long':

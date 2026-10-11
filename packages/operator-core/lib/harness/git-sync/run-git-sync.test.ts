@@ -3691,6 +3691,34 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('commits attributed root sources while a protected submodule worktree has an unchanged gitlink', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    const originalPointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
+    writeFileSync(join(subRepo, 'sub.txt'), 'pending protected submodule edit\n');
+    writeFileSync(join(repo, 'root-attributed.ts'), 'export const sourceVersion = 2;\n');
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      excludePaths: ['libs/sub/sub.txt'],
+      log: message => logs.push(message),
+      loadRoster: async () => [{
+        agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'update independent root source',
+        files: ['root-attributed.ts'],
+      }],
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(superOrigin, 'show', 'main:root-attributed.ts')).toBe('export const sourceVersion = 2;');
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(originalPointer);
+    expect(git(subRepo, 'rev-parse', 'HEAD')).toBe(originalPointer);
+    expect(readFileSync(join(subRepo, 'sub.txt'), 'utf8')).toBe('pending protected submodule edit\n');
+    expect(git(subRepo, 'status', '--porcelain')).toContain('sub.txt');
+    expect(git(repo, 'status', '--porcelain', 'root-attributed.ts')).toBe('');
+    expect(logs.join('\n')).not.toContain('deferring attributed source path(s)');
+  });
+
   it('falls back to one catch-all when the priority gitlink commit CAS is refused', async () => {
     const subRepo = join(repo, 'libs/sub');
     const initialSuperHead = git(superOrigin, 'rev-parse', 'main');

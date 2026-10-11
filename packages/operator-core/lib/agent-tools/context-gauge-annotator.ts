@@ -31,7 +31,6 @@ import {
   isContextGaugeEnabled,
 } from '../system-health/context-usage-cache';
 import { currentContextTokensSyncForOwner } from '../compaction-usage';
-import { selfCompactionAvailability } from '../events/await/psu-pty-discovery';
 
 /** The tool-result shape, derived from the annotator signature (no extra import). */
 type AnnotatedResult = Parameters<ResultAnnotator>[0];
@@ -64,8 +63,10 @@ export const contextGaugeAnnotator: ResultAnnotator = (result, ctx) => {
   const tokens = currentContextTokensSyncForOwner(ownerId);
   if (tokens == null) return result;
   const pct = contextUsagePct(tokens, usage.limit);
-  const selfCompactionAvailable =
-    pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT ? selfCompactionAvailability(ownerId).available : null;
+  // ResultAnnotator is a synchronous dispatch-hot-path seam. Host availability
+  // requires probing the psu-pty discovery file, so this ambient surface keeps
+  // it unknown and lets the async coord:inbox path render the precise affordance.
+  const selfCompactionAvailable: boolean | null = null;
   // EI-23761864550626068: the numerator above is `anchorTokens` = transcript bytes/4, a
   // heuristic — never provider-measured usage — so this gauge carries an explicit
   // count-evidence contract (`_meta._contextGaugeEvidence`) and, on the loud/critical bands

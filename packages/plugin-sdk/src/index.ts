@@ -1737,6 +1737,10 @@ export {
   PROVIDER_PUSH_UNSUBSCRIBE_CAPABILITY,
   PROVIDER_PUSH_HEADER_PATTERN,
   PROVIDER_DESTINATIONS,
+  PROVIDER_CREDENTIAL_KEY_PATTERN,
+  PROVIDER_CREDENTIAL_MAX_LENGTH,
+  providerCredentialValueIssue,
+  providerCredentialForHost,
 } from './provider';
 export type {
   ProviderDestination,
@@ -1746,6 +1750,8 @@ export type {
   ProviderOAuthDescriptor,
   ProviderOAuthIdentity,
   ProviderDescriptor,
+  ProviderSetupDescriptor,
+  ProviderCredentialField,
   ProviderSyncRequest,
   ProviderRecord,
   ProviderSyncPage,

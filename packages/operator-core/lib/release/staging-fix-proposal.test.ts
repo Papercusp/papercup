@@ -11,6 +11,8 @@ vi.mock('./repair-head-admission', async (importOriginal) => ({
 }));
 
 import type { FixPrecheckRunner } from './admission-fix-precheck';
+import { createFrozenCandidateQueue } from './frozen-candidate-repair-queue';
+import { scheduleStagingFixProposal } from './staging-fix-proposal-cli';
 import {
   chooseProposalPaths,
   createStagingFixProposalDeps,
@@ -26,6 +28,47 @@ const TIP = 'e'.repeat(40);
 const BUILT = 'b'.repeat(40);
 const RED = 'lib/x/red.test.ts';
 const SRC = 'lib/x/red.ts';
+
+describe('automatic proposal trigger (P-007)', () => {
+  const target = { workspaceId: 'workspace-test', installSlug: 'papercusp' };
+  function measuredQueue() {
+    const queue = createFrozenCandidateQueue({ candidate: CANDIDATE, base: null, nowMs: 1, failingTests: [RED] });
+    return { ...queue, phase: 'awaiting-fixer' as const, repairHead: REPAIR_HEAD,
+      signature: [{ kind: 'test-file' as const, id: RED, workspace: 'test-workspace', recipe: 'test:file', admittedRound: 1, measuredHead: REPAIR_HEAD }],
+      convergenceRounds: [{ round: 2, head: REPAIR_HEAD, failingCount: 1, atMs: 2 }] };
+  }
+
+  it('launches one precheck proposal for the measured red round and leaves the queue untouched', async () => {
+    const queue = measuredQueue();
+    const before = structuredClone(queue);
+    const claim = vi.fn(async (_key: string) => true);
+    const launch = vi.fn(async () => undefined);
+    expect(await scheduleStagingFixProposal(target, { reason: 'repair-in-progress', repairQueue: queue }, { claim, launch })).toBe(true);
+    expect(launch).toHaveBeenCalledWith(claim.mock.calls[0]![0]);
+    expect(queue).toEqual(before);
+  });
+
+  it('deduplicates an already claimed round without launching another worker', async () => {
+    const launch = vi.fn(async () => undefined);
+    expect(await scheduleStagingFixProposal(target, { reason: 'repair-in-progress', repairQueue: measuredQueue() },
+      { claim: async () => false, launch })).toBe(false);
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it.each(['pinned', 'diagnostic', 'unmeasured', 'green', 'unjudged-head'])('does not launch for %s evidence', async (scenario) => {
+    const queue = measuredQueue();
+    if (scenario === 'unmeasured') queue.convergenceRounds = [];
+    if (scenario === 'unjudged-head') queue.convergenceRounds[0]!.head = CANDIDATE;
+    const claim = vi.fn(async () => true);
+    const launch = vi.fn(async () => undefined);
+    await scheduleStagingFixProposal(target, { repairQueue: queue,
+      reason: scenario === 'green' ? 'advanced' : 'repair-in-progress',
+      ...(scenario === 'pinned' ? { candidateSource: 'pinned' } : {}),
+      ...(scenario === 'diagnostic' ? { diagnostic: 'candidate-pinned' } : {}) }, { claim, launch });
+    expect(claim).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+});
 
 const leg = (files: string[] = [RED], extra: Array<{ kind: 'lint-leg'; id: string }> = []) => ({
   leg: 'operator-core::test',

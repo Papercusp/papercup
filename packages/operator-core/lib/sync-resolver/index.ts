@@ -8677,10 +8677,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
   'evals.benchEstimate': {
-    argsSchema: z.object({ taskSetId: z.string().optional(), cap: z.number().optional() }),
+    argsSchema: z.object({ taskSetId: z.string().optional(), cap: z.number().optional(),
+      workspaceId: z.string().optional(), protocolRunId: z.string().optional(),
+      arm: z.string().optional(), seed: z.number().int().nonnegative().optional() }),
     resolve: async (args) => {
-      const { taskSetId, cap } = args as { taskSetId?: string; cap?: number };
-      const { estimateBenchLaunch } = await import('../external-bench/estimate');
+      const { taskSetId, cap, workspaceId, protocolRunId, arm, seed } = args as {
+        taskSetId?: string; cap?: number; workspaceId?: string; protocolRunId?: string; arm?: string; seed?: number;
+      };
+      const { estimateBenchLaunch, estimateCurrentBenchLaunch } = await import('../external-bench/estimate');
+      if (protocolRunId !== undefined) return [await estimateCurrentBenchLaunch({
+        workspaceId: workspaceId ?? 'benchmarks', protocolRunId, arm: arm ?? 'papercusp', seed: seed ?? 1,
+      })];
       return [estimateBenchLaunch({ taskSetId, cap })];
     },
   },

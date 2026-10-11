@@ -116,6 +116,92 @@ export interface ProviderDescriptor {
    * from a provider that did not declare it is refused.
    */
   membership?: ProviderMembershipDescriptor;
+  /**
+   * What the owner sets up by hand on the provider's Integrations card (plan
+   * cupboard-distributable-integrations-2026-10-10). Pure data: the host renders the fields,
+   * checks each value, stores it, and never hands it back.
+   */
+  setup?: ProviderSetupDescriptor;
+}
+
+/** Owner-performed setup a provider declares (cupboard-distributable-integrations P-001). */
+export interface ProviderSetupDescriptor {
+  /** Secrets the owner pastes (e.g. a bot token). Shown as masked fields; never readable back. */
+  credentials?: ProviderCredentialField[];
+}
+
+/**
+ * One paste-a-secret field (P-001). The descriptor carries only the field's shape, never a value.
+ * The host stores the value next to the provider's OAuth tokens and uses it in exactly two places:
+ * `host.fetch` injects it as `Authorization: Bearer <value>` for requests to `hosts`, and host-held
+ * ingress (a socket connection the host opens for the provider) reads it by `key`. Provider code
+ * never receives it, and no read surface returns it after it is saved.
+ */
+export interface ProviderCredentialField {
+  /** Stable key the value is stored under; lowercase, matches {@link PROVIDER_CREDENTIAL_KEY_PATTERN}. */
+  key: string;
+  /** Field label on the Integrations card. */
+  label: string;
+  /**
+   * Regular-expression source (no flags) the WHOLE value must match, e.g. `xoxb-[A-Za-z0-9-]+`.
+   * The page refuses a non-matching value before it is sent and the host refuses it again.
+   */
+  pattern?: string;
+  /** One line under the field, e.g. where in the vendor's console the value is found. */
+  help?: string;
+  /** https link with more help. */
+  helpUrl?: string;
+  /** Shape hint shown inside the empty field, e.g. `xoxb-…`. Never a real value. */
+  placeholder?: string;
+  /**
+   * Hosts whose `host.fetch` requests carry this value as a bearer token. Each must be allowed by
+   * `egressHosts` and claimed by no other credential or service credential. Omit for a value that
+   * only host-held ingress uses.
+   */
+  hosts?: string[];
+}
+
+/** Credential keys: lowercase, start with a letter, `-`/`_` allowed. */
+export const PROVIDER_CREDENTIAL_KEY_PATTERN = /^[a-z][a-z0-9_-]{0,62}$/;
+/** Longest value the host stores for one credential. */
+export const PROVIDER_CREDENTIAL_MAX_LENGTH = 4096;
+const PROVIDER_CREDENTIAL_PATTERN_MAX_LENGTH = 500;
+
+/**
+ * Why `value` is not acceptable for `field`, or null when it is. The ONE check both the
+ * Integrations page (before sending) and the host (before storing) run, so they cannot disagree.
+ * The value is trimmed first; callers store the trimmed value.
+ */
+export function providerCredentialValueIssue(field: Pick<ProviderCredentialField, 'label' | 'pattern'>, value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return `${field.label} is required`;
+  const trimmed = value.trim();
+  if (trimmed.length > PROVIDER_CREDENTIAL_MAX_LENGTH) {
+    return `${field.label} is longer than ${PROVIDER_CREDENTIAL_MAX_LENGTH} characters`;
+  }
+  // A stored value becomes an HTTP header; whitespace and control characters never belong in one.
+  if (/[\s\u0000-\u001f\u007f]/.test(trimmed)) return `${field.label} must not contain spaces or line breaks`;
+  if (field.pattern !== undefined) {
+    let matcher: RegExp;
+    try {
+      matcher = new RegExp(`^(?:${field.pattern})$`);
+    } catch {
+      return `${field.label} cannot be checked: the provider's format is invalid`;
+    }
+    if (!matcher.test(trimmed)) return `${field.label} does not have the expected format`;
+  }
+  return null;
+}
+
+/** The declared credential whose `hosts` include `hostname`, if any. */
+export function providerCredentialForHost(
+  descriptor: Pick<ProviderDescriptor, 'setup'>,
+  hostname: string,
+): ProviderCredentialField | null {
+  const host = hostname.toLowerCase();
+  for (const field of descriptor.setup?.credentials ?? []) {
+    if ((field.hosts ?? []).some((h) => h.toLowerCase() === host)) return field;
+  }
+  return null;
 }
 
 /** A provider's membership feed (plan generalized-integrations-google-migration-cupboard-workflows-2026-10-05, D-015.4). */
@@ -511,6 +597,12 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
   }
   if (d.push !== undefined) issues.push(...pushDescriptorIssues(d.push, capabilities.filter(isNonEmptyString)));
+  if (d.setup !== undefined) {
+    const serviceHosts = (Array.isArray(d.serviceCredentials) ? d.serviceCredentials : []).flatMap((c) =>
+      Array.isArray(c?.hosts) ? c.hosts.filter(isNonEmptyString) : [],
+    );
+    issues.push(...setupDescriptorIssues(d.setup, egress.filter(isNonEmptyString), serviceHosts));
+  }
   if (d.membership !== undefined) {
     const membership = d.membership as unknown;
     const identityProvider = membership && typeof membership === 'object' && !Array.isArray(membership)
@@ -543,6 +635,72 @@ function pushDescriptorIssues(push: unknown, capabilities: string[]): string[] {
       if (!capabilities.includes(required)) issues.push(`provider.push.handshake needs capability ${required}`);
     }
   }
+  return issues;
+}
+
+function setupDescriptorIssues(setup: unknown, egress: string[], serviceHosts: string[]): string[] {
+  if (!setup || typeof setup !== 'object' || Array.isArray(setup)) return ['provider.setup must be an object'];
+  const s = setup as Partial<ProviderSetupDescriptor>;
+  if (s.credentials === undefined) return [];
+  if (!Array.isArray(s.credentials) || s.credentials.length === 0) {
+    return ['provider.setup.credentials must list at least one field'];
+  }
+  const issues: string[] = [];
+  const keys: string[] = [];
+  const claimedHosts = new Map<string, string>();
+  for (const host of serviceHosts) claimedHosts.set(host.toLowerCase(), 'provider.serviceCredentials');
+  for (const [index, entry] of s.credentials.entries()) {
+    const at = `provider.setup.credentials[${index}]`;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      issues.push(`${at} must be an object`);
+      continue;
+    }
+    const field = entry as Partial<ProviderCredentialField> & Record<string, unknown>;
+    // A descriptor is published to the Cupboard; it may describe a secret but never carry one.
+    for (const forbidden of ['value', 'default', 'secret', 'token']) {
+      if (forbidden in field) issues.push(`${at}.${forbidden} is not allowed: a descriptor never carries a credential value`);
+    }
+    if (!isNonEmptyString(field.key) || !PROVIDER_CREDENTIAL_KEY_PATTERN.test(field.key)) {
+      issues.push(`${at}.key must match ${PROVIDER_CREDENTIAL_KEY_PATTERN}`);
+    } else {
+      keys.push(field.key);
+    }
+    if (!isNonEmptyString(field.label)) issues.push(`${at}.label must be a non-empty string`);
+    if (field.pattern !== undefined) {
+      if (!isNonEmptyString(field.pattern) || field.pattern.length > PROVIDER_CREDENTIAL_PATTERN_MAX_LENGTH) {
+        issues.push(`${at}.pattern must be a regular expression of at most ${PROVIDER_CREDENTIAL_PATTERN_MAX_LENGTH} characters`);
+      } else {
+        try {
+          new RegExp(field.pattern);
+        } catch {
+          issues.push(`${at}.pattern is not a valid regular expression`);
+        }
+      }
+    }
+    for (const text of ['help', 'placeholder'] as const) {
+      if (field[text] !== undefined && typeof field[text] !== 'string') issues.push(`${at}.${text} must be a string`);
+    }
+    if (field.helpUrl !== undefined && !isHttpsUrl(field.helpUrl)) issues.push(`${at}.helpUrl must be an https URL`);
+    if (field.hosts !== undefined) {
+      if (!Array.isArray(field.hosts) || field.hosts.length === 0) {
+        issues.push(`${at}.hosts must list at least one host when present`);
+        continue;
+      }
+      for (const host of field.hosts) {
+        if (!isNonEmptyString(host) || !PROVIDER_EGRESS_HOST_PATTERN.test(host.toLowerCase()) || host.startsWith('*.')) {
+          issues.push(`${at}.hosts entry '${String(host)}' is not a hostname`);
+          continue;
+        }
+        if (!providerEgressAllows(egress, host)) issues.push(`${at} host '${host}' is not in provider.egressHosts`);
+        const lower = host.toLowerCase();
+        const owner = claimedHosts.get(lower);
+        // One host, one injected credential: otherwise which token a request carries is ambiguous.
+        if (owner) issues.push(`${at} host '${host}' is already given a credential by ${owner}`);
+        else claimedHosts.set(lower, at);
+      }
+    }
+  }
+  for (const dup of duplicates(keys)) issues.push(`provider.setup.credentials repeats key "${dup}"`);
   return issues;
 }
 

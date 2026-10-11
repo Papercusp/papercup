@@ -67,6 +67,24 @@ const input: AdmissionPrecheckWorkerInput = {
 };
 
 describe('managed R6 admission pre-check runner (WI-10006003)', () => {
+  it('hands a proposal to the confined worker without reading or mutating admission state', async () => {
+    const proposalInput = { ...input, proposal: { candidate: 'a'.repeat(40), repairHead: 'b'.repeat(40) } };
+    const runProposal = vi.fn(async () => undefined);
+    const readQueue = vi.fn();
+    const transition = vi.fn();
+    const createRunner = vi.fn();
+    expect(await runAdmissionPrecheckWorker(proposalInput, {
+      getTask: async () => ({ state: 'running', confined: true }), runProposal,
+      readQueue, transition, createRunner,
+    })).toEqual({ status: 'proposed' });
+    expect(runProposal).toHaveBeenCalledWith(proposalInput);
+    expect(readQueue).not.toHaveBeenCalled();
+    expect(transition).not.toHaveBeenCalled();
+    expect(createRunner).not.toHaveBeenCalled();
+    expect(parseAdmissionPrecheckWorkerInput(JSON.stringify(proposalInput))).toEqual(proposalInput);
+    expect(parseAdmissionPrecheckWorkerInput(JSON.stringify({ ...proposalInput, proposal: { candidate: 'invalid', repairHead: 'b'.repeat(40) } }))).toBeNull();
+  });
+
   it('retains actual worker stdout and startup stderr after the launching descriptor closes', async () => {
     const root = mkdtempSync(join(tmpdir(), 'precheck-worker-log-'));
     let fd = -1;

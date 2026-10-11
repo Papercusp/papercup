@@ -181,6 +181,33 @@ describe('flipPlanFrontmatterStatus accepted YAML styles', () => {
 });
 
 describe('launchAcceptanceGraderForGate (D-006)', () => {
+  it('recruits for an audited ceremony tail while preserving the strict ship refusal and shipper exclusion', async () => {
+    const strict = { satisfied: false, code: 'plan_items_unfinished' };
+    const evaluate = vi.fn(async () => ({ satisfied: false, code: 'acceptance_ungraded' }));
+    const launch = vi.fn(async () => ({ state: 'launched' as const,
+      idempotencyKey: 'acceptance-grader:key', label: 'acceptance-grader:rubric:key' }));
+    const result = await launchAcceptanceGraderForGate('plan-a', strict,
+      { workspaceId: 'ws-test', harnessSlug: 'wrong-ambient', isSuperuser: true,
+        uiClientId: 'su-shipper' } as never, 'papercusp', launch as never, evaluate as never);
+    expect(evaluate).toHaveBeenCalledWith('plan-a', { harnessSlug: 'papercusp', gradingRecruitment: true });
+    expect(result?.state).toBe('launched');
+    expect(strict).toEqual({ satisfied: false, code: 'plan_items_unfinished' });
+    expect(launch.mock.calls).toHaveLength(1);
+    const ctx = (launch.mock.calls[0] as unknown as [string, Record<string, unknown>])[1];
+    expect(ctx.acceptanceShipperOwnerId).toBe('su-shipper');
+    expect(ctx.ownerId).toBe(ACCEPTANCE_GRADING_SWEEP_ACTOR);
+  });
+  it.each(['plan_items_unfinished', 'acceptance_bar_contract_not_ready', 'acceptance_unaudited',
+    'acceptance_not_recorded'])(
+    'does not recruit past implementation, BAR, audit or author refusal: %s', async code => {
+      const launch = vi.fn();
+      const evaluate = vi.fn(async () => ({ satisfied: false, code }));
+      expect(await launchAcceptanceGraderForGate('plan-a',
+        { satisfied: false, code: 'plan_items_unfinished' },
+        { workspaceId: 'ws-test' } as never, 'papercusp', launch as never, evaluate as never))
+        .toBeUndefined();
+      expect(launch).not.toHaveBeenCalled();
+    });
   it.each(['acceptance_ungraded', 'self_graded_only'])('launches once for %s', async (code) => {
     const launch = vi.fn(async () => ({
       state: 'launched' as const,

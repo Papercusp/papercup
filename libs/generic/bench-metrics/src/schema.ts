@@ -257,10 +257,10 @@ export interface ArmReport {
   budgetTokens: number | null;
   /** pass@1 = mean over tasks of (mean over seeds of resolved). The headline accuracy. */
   passAt1: number | null;
-  /** Bootstrap CI over tasks for pass@1 (task heterogeneity is the dominant noise). */
-  passAt1Ci: Interval;
-  /** Wilson interval on the pooled task×seed Bernoulli resolved-rate (cross-check). */
-  resolvedRateWilson: Interval;
+  /** Primary CI under the report's sampling policy; null means unmeasured. */
+  passAt1Ci: Interval | null;
+  /** Pooled Bernoulli diagnostic, not independent task/repository inference. */
+  resolvedRateWilson: Interval | null;
   /** pass@k / pass^k at the protocol k's (same k for every arm). */
   passAtK: PassAtKPoint[];
   passHatK: PassAtKPoint[];
@@ -274,6 +274,20 @@ export interface ArmDelta {
   baseline: ArmId;
   /** passAt1(treatment) − passAt1(baseline). Positive = treatment resolves more. */
   accuracyDelta: number | null;
+  /** Paired candidate-minus-baseline interval after collapsing seeds per task. */
+  accuracyDeltaCi: Interval | null;
+  uncertainty: {
+    status: 'measured' | 'missing-grade' | 'insufficient-independent-units' | 'unregistered-policy';
+    taskPairs: number;
+    independentUnits: number | null;
+    missingMeasurements: number;
+    baselineObservedAttempts: number;
+    treatmentObservedAttempts: number;
+    baselineAbsentAttempts: number;
+    treatmentAbsentAttempts: number;
+  };
+  /** False when either arm lacks observed, complete usage. */
+  efficiencyMeasured: boolean;
   /** costPerResolved ratio treatment/baseline (null if a denominator is 0). */
   costRatio: number | null;
   /** treatment cost as a fraction of baseline cost ("at Z% of the cost"). */
@@ -316,4 +330,15 @@ export interface SuiteReport {
   isoBudget: { ok: boolean; budgetTokens: number | null; violations: string[] };
   /** The k's the pass@k/pass^k protocol used (identical across arms). */
   protocolKs: number[];
+  sampling: {
+    unit: 'task' | 'repository' | 'unregistered';
+    taskPairs: number;
+    independentUnits: number | null;
+    seedPolicy: 'collapse-within-task';
+    assignedSeeds: number[] | null;
+    ci: number;
+    bootstrapSeed: number;
+    bootstrapIterations: number;
+    repositoryByTask: Record<string, string> | null;
+  };
 }

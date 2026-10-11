@@ -75,6 +75,7 @@ export async function estimateCurrentBenchLaunch(input: {
     const prereg = await io.readPrereg({ runId: input.protocolRunId }, db);
     if (!prereg) throw new Error('No registered protocol in this benchmark workspace.');
     const protocol = currentBenchmarkProtocolSchema.parse(prereg.config);
+    if (!protocol.sampling) throw new Error('The protocol lacks a frozen repository sampling policy.');
     const arm = protocol.arms.find(value => value.id === input.arm);
     if (!arm || !['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' || !protocol.seeds.includes(input.seed))
       throw new Error('Select a registered current Codex arm and seed.');

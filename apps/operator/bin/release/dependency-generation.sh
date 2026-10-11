@@ -1835,7 +1835,7 @@ dependency_generation_delete_prune_quarantines() {
 }
 
 dependency_generation_apply_retention() {
-  local generation_root="$1" integration_root="$2" retain_count="${3:-}" rc=0
+  local generation_root="$1" integration_root="$2" retain_count="${3:-}" skip_recorded_stores="${4:-}" rc=0
   dependency_generation_acquire_publish_lock "$generation_root" || return $?
   dependency_generation_refresh_retention_state_locked "$generation_root" "$integration_root" || rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -1845,7 +1845,7 @@ dependency_generation_apply_retention() {
   dependency_generation_delete_prune_quarantines
   if [ "$rc" -eq 0 ]; then
     dependency_generation_sweep_legacy_store "$generation_root" "$integration_root"
-    [ -n "$retain_count" ] || dependency_generation_sweep_recorded_stores "$generation_root" "$integration_root"
+    [ -n "$retain_count$skip_recorded_stores" ] || dependency_generation_sweep_recorded_stores "$generation_root" "$integration_root"
   fi
   return "$rc"
 }
@@ -3378,7 +3378,7 @@ dependency_generation_prepare_exact_ref_root() {
 
 dependency_generation_main() {
   local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only='' check_headroom=''
-  local remember_store='' retired_store='' current_root='' old_root='' record line registered=''
+  local remember_store='' retired_store='' skip_recorded_stores='' current_root='' old_root='' record line registered=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
   local predict_ref='' predict_verdict='' predict_rc=0 line
   local workspace_dirs=()
@@ -3394,6 +3394,7 @@ dependency_generation_main() {
       --predict-ref) predict_ref="$2"; shift 2 ;;
       --prune-only) prune_only='1'; shift ;;
       --retired-store) retired_store='1'; shift ;;
+      --no-recorded-store-cascade) skip_recorded_stores='1'; shift ;;
       --remember-store) remember_store="$2"; shift 2 ;;
       --check-headroom) check_headroom='1'; shift ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
@@ -3413,7 +3414,7 @@ dependency_generation_main() {
   integration_root="$(cd "$integration_root" && pwd -P)"
   build_root="$integration_root"
   if [ -n "$remember_store" ]; then
-    [ -z "$generation_root$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom$retired_store$predict_ref" ] \
+    [ -z "$generation_root$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom$retired_store$skip_recorded_stores$predict_ref" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || return 2
     current_root="$(dependency_generation_resolve_root "$integration_root")" || return $?
     [ -d "$current_root" ] && [ -d "$remember_store" ] || return 2
@@ -3431,6 +3432,7 @@ dependency_generation_main() {
     return $?
   fi
   [ -z "$retired_store" ] || [ -n "$prune_only" ] || return 2
+  [ -z "$skip_recorded_stores" ] || [ -n "$prune_only" ] || return 2
   # WI-10005931: git-sync fetches into the integration checkout, so its
   # filesystem is the one the percentage headroom reserve protects.
   dependency_generation_record_reserve_fs "$integration_root"
@@ -3489,9 +3491,10 @@ dependency_generation_main() {
       }
       # A retired store keeps actual pins and selector leases, without recency
       # copies which otherwise accumulate on every store migration.
-      dependency_generation_apply_retention "$generation_root" "$integration_root" 0
+      dependency_generation_apply_retention "$generation_root" "$integration_root" 0 "$skip_recorded_stores"
     else
-      dependency_generation_apply_retention "$generation_root" "$integration_root"
+      # The TS actor enumerates history itself; older callers keep the cascade.
+      dependency_generation_apply_retention "$generation_root" "$integration_root" '' "$skip_recorded_stores"
     fi
     return $?
   fi

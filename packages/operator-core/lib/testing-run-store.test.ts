@@ -638,6 +638,9 @@ describe('durable detached snapshot lifecycle', () => {
     { name: 'pruned snapshot ambiguous task', status: 'running', expected: null, legacy: true, expired: true, missing: true, ambiguous: true },
     { name: 'ended_unobserved retained PASS', status: 'running', expected: 'pass', taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved retained FAIL', status: 'error', expected: 'fail', failure: true, taskState: 'ended_unobserved', processExit: null },
+    { name: 'ended_unobserved router groups', status: 'running', expected: 'pass', routerReports: true, taskState: 'ended_unobserved', processExit: null },
+    { name: 'ended_unobserved missing router group', status: 'running', expected: 'error', routerReports: true, missingRouterGroup: true, taskState: 'ended_unobserved', processExit: null },
+    { name: 'ended_unobserved partial router group', status: 'running', expected: 'error', routerReports: true, partialRouterGroup: true, taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved pruned PASS', status: 'running', expected: 'pass', legacy: true, expired: true, missing: true, taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved pruned FAIL', status: 'running', expected: 'fail', failure: true, legacy: true, expired: true, missing: true, taskState: 'ended_unobserved', processExit: null },
     { name: 'ended_unobserved partial report', status: 'running', expected: 'error', partial: true, taskState: 'ended_unobserved', processExit: null },
@@ -656,6 +659,7 @@ describe('durable detached snapshot lifecycle', () => {
       inlineSelector?: boolean;
       taskState?: 'ended_unobserved' | 'running' | 'killed';
       processExit?: number | null;
+      routerReports?: boolean; missingRouterGroup?: boolean; partialRouterGroup?: boolean;
     };
     const { status } = options;
     const taskState = options.taskState ?? (options.cancelled ? 'killed' : 'exited');
@@ -667,9 +671,10 @@ describe('durable detached snapshot lifecycle', () => {
         args[0] === 'rev-parse' ? 'launch-sha\n' : '',
       );
       const { snapshot } = await store.startRunDurable(req({
-        requestedFiles: ['lib/saved.test.ts'],
+        requestedFiles: ['lib/saved.test.ts', ...(options.routerReports ? ['lib/second.test.ts'] : [])],
         detachedReportArtifacts: [{
           reportPath, root: '/tmp', testNamePattern: 'saved assertion',
+          ...(options.routerReports ? { routerReports: true } : {}),
           scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
         }],
       }), vi.fn(async () => []) as unknown as Sql);
@@ -685,6 +690,18 @@ describe('durable detached snapshot lifecycle', () => {
           assertionResults: [{ status: options.failure ? 'failed' : 'passed', fullName: 'saved assertion' }, { status: 'pending' }],
         }],
       }));
+      const siblingPath = reportPath.replace(/\.json$/, '.1.json');
+      if (options.routerReports && !options.missingRouterGroup) {
+        await writeFile(siblingPath, JSON.stringify({
+          success: true, numTotalTests: options.partialRouterGroup ? 2 : 1,
+          numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0,
+          testResults: [{
+            name: '/tmp/lib/second.test.ts', status: 'passed',
+            startTime: snapshot.startedAt, endTime: snapshot.startedAt + 25,
+            assertionResults: [{ status: 'passed', fullName: 'second assertion' }],
+          }],
+        }));
+      }
       const ledger: Record<string, unknown>[] = [];
       const writes: unknown[][] = [];
       const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -747,13 +764,14 @@ describe('durable detached snapshot lifecycle', () => {
         ]));
       }
       if (options.expected !== 'pass' && options.expected !== 'fail') {
+        if (options.routerReports) expect(writes).toHaveLength(0);
         await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
         return;
       }
       expect(recovered).toMatchObject({ exitCode: processExit, finishedAt: snapshot.startedAt + 25 });
       expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.task_ledger'))).toBe(false);
       if (taskState === 'ended_unobserved') expect(recovered!.output).toContain('process exit code was not observed');
-      expect(writes).toHaveLength(1);
+      expect(writes).toHaveLength(options.routerReports ? 2 : 1);
       expect(writes[0]![7]).toBe(snapshot.runId);
       expect(writes[0]![10]).toBe(options.legacy ? null : 'launch-sha');
       expect(writes[0]![15]).toBe(true);
@@ -762,6 +780,7 @@ describe('durable detached snapshot lifecycle', () => {
         root: '/tmp', passed: options.failure ? 0 : 1, skipped: 1, testNamePattern: 'saved assertion', worktreeDirty: true,
       });
       await expect(readFile(reportPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      if (options.routerReports) await expect(readFile(siblingPath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(reportDir, { recursive: true, force: true });
     }

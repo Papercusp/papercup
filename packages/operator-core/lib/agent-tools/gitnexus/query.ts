@@ -52,17 +52,26 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
  * GitNexus selectors (kind, file_path, uid, repo) do not apply to it.
  */
 async function firstPartyCallersAnswer(
-  args: { name?: string; kind?: string; file_path?: string; uid?: string; repo?: string; limit?: number; paths?: string[] },
+  args: { op?: string; name?: string; kind?: string; file_path?: string; line1?: number; uid?: string; repo?: string; limit?: number; paths?: string[] },
   ctx: { projectDir?: string },
 ): Promise<CodeIntelAnswer> {
   const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), FIRST_PARTY_CALLERS_DEFAULT_LIMIT);
+  const nativeOp = args.op === 'symbol' || args.op === 'callees' || args.op === 'context' ? args.op : 'callers';
+  if (nativeOp !== 'callers' && (args.uid || args.repo)) return {
+    backend: 'typescript-service', intent: nativeOp === 'callees' ? 'callees' : 'definition', query: args.name ?? '', sites: [],
+    truncation: { truncated: false, totalAvailable: null, continuation: null },
+    freshness: { health: 'unknown', indexedAt: null, indexedCommit: null, staleVsDisk: null }, latencyMs: 0,
+    error: 'Native symbol queries use the current workspace and file_path/line1/kind; GitNexus uid/repo selectors are unsupported.',
+  };
   const answer = await firstPartyCallersOffthread({
     vendorDir: LSP_VENDOR_DIR,
     root: resolveAgentWorkspaceRoot(ctx),
     name: args.name ?? '',
+    ...(nativeOp !== 'callers' ? { op: nativeOp, filePath: args.file_path, line1: args.line1, kind: args.kind } : {}),
     limit,
     ...(args.paths && args.paths.length > 0 ? { paths: args.paths } : {}),
   });
+  if (nativeOp !== 'callers') return answer;
   const ignored = (['kind', 'file_path', 'uid', 'repo'] as const).filter((k) => args[k] !== undefined);
   if (ignored.length === 0) return answer;
   const coverage = answer.coverage ?? {
@@ -86,6 +95,7 @@ async function firstPartyCallersAnswer(
 // deliberately refuses. That lets an agent receive the typed `useInstead`
 // guidance rather than a schema error with no redirect.
 const OP_VALUES = [
+  'context',
   ...GITNEXUS_FACADE_OPS,
   ...Object.keys(GITNEXUS_NOT_ROUTABLE),
 ] as [string, ...string[]];
@@ -93,7 +103,7 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | callers | callees | impact | health; refused intents return redirects. `callers` reads current source (TypeScript call hierarchy plus labelled unresolved calls), so empty means no call in any searched file. Other ops use the GitNexus index. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Missing/ambiguous symbols and backend failures carry errors.',
+    'Code topology: symbol | context | callers | callees | impact | health. Symbol/context/callees use current JS/TS compiler snapshots with defining-file disambiguation; context includes outgoing call sites. Callers retains labelled unresolved calls. Impact/health use the GitNexus index. Other languages and refused intents require their named native/structural routes. Sites are one-indexed and carry measured source versions; missing/ambiguous symbols and unsupported selectors carry errors.',
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
@@ -127,6 +137,7 @@ export default defineTool({
       .min(1)
       .optional()
       .describe('symbol/callees: defining file; picks one of several same-name symbols.'),
+    line1: z.number().int().min(1).optional().describe('Native symbol/context/callees: defining line to distinguish same-name declarations in one file.'),
     uid: z
       .string()
       .min(1)
@@ -153,7 +164,7 @@ export default defineTool({
       .array(z.string().min(1))
       .max(50)
       .optional()
-      .describe('callers only: repo-relative files/dirs to search. Default: whole repo.'),
+      .describe('Native symbol/context/callers/callees: repo-relative search files/dirs. Default: whole repo.'),
   }),
   async handler(args, ctx) {
     const op = args.op as string;
@@ -171,7 +182,7 @@ export default defineTool({
       if (refusal) return { data: scoped(refusal) };
     }
 
-    if (op === 'callers') return { data: scoped(await firstPartyCallersAnswer(args, ctx)) };
+    if (['callers', 'symbol', 'callees', 'context'].includes(op)) return { data: scoped(await firstPartyCallersAnswer(args, ctx)) };
 
     // The dispatcher is passed PER CALL rather than installed into the module
     // global by this handler. It closes over `ctx` — which carries the calling

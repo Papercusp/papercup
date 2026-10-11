@@ -6,7 +6,7 @@ import {
   type HostedUsageRecord, type HostedUsageScope, type HostedUsageStatement,
 } from './usage-statement';
 import type { PostgresHostedUsageStore } from './usage-store';
-import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering';
 
 export interface HostedUsageRead {
   readonly scope: HostedUsageScope;

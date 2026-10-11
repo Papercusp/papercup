@@ -155,7 +155,17 @@ LOCK="${VITE_BUILD_LOCK:-}"
 if [ -z "$LOCK" ]; then
   mkdir -p "$OUT_ROOT"
   LOCK_ROOT="$(cd "$OUT_ROOT" && pwd -P)"
-  LOCK_KEY="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$LOCK_ROOT")"
+  # sha256 of the resolved path. coreutils first (WI-10008303): a Node cold
+  # start costs whole seconds on a loaded host and sat in front of every
+  # default-lock build. The digest is byte-identical across all three, so a
+  # build on an older copy of this script still contends on the same lock file.
+  if command -v sha256sum >/dev/null 2>&1; then
+    LOCK_KEY="$(printf '%s' "$LOCK_ROOT" | sha256sum | cut -d' ' -f1)"
+  elif command -v shasum >/dev/null 2>&1; then
+    LOCK_KEY="$(printf '%s' "$LOCK_ROOT" | shasum -a 256 | cut -d' ' -f1)"
+  else
+    LOCK_KEY="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$LOCK_ROOT")"
+  fi
   LOCK="${TMPDIR:-/tmp}/papercup-operator-vite-build-${LOCK_KEY}.lock"
 fi
 DIST="$OUT_ROOT/dist"

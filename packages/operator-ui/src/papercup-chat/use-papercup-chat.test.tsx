@@ -130,6 +130,8 @@ describe('ported portal helpers (parity pt-refusal-state / pt-error-taxonomy / p
   });
 
   it('askErrorMessage is total over context and never leaks a raw code', () => {
+    expect(askErrorMessage('portal_chat_voice_turn_invalid', 'turn')).toMatch(/voice message.*speaking again or type/);
+    expect(askErrorMessage('portal_chat_voice_turn_too_long', 'turn')).toMatch(/voice message.*shorter question.*parts/);
     expect(askErrorMessage(null, 'turn')).toBe('That turn did not complete. Try asking again.');
     expect(askErrorMessage(null, 'conversation')).toBe('This conversation did not open. Try again.');
     expect(askErrorMessage(null, 'card')).toBe('That answer was not accepted. Try answering again.');

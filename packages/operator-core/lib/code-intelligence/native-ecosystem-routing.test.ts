@@ -58,7 +58,7 @@ describe('native baseline exposed semantic and packing handlers', () => {
 
   it('enumerates every admitted exposed operation even if the inventory omits one', () => {
     expect([...graphQuery.args.shape.op.options].sort()).toEqual([
-      'callers', 'callees', 'diagnostics', 'health', 'impact', 'implementations', 'references',
+      'callers', 'callees', 'context', 'diagnostics', 'health', 'impact', 'implementations', 'references',
       'rename-preview', 'structural-search', 'symbol', 'symbol-search', 'text-search',
     ].sort());
     expect(graphOperations.map(row => row.op).sort()).toEqual(['callers', 'callees', 'health', 'impact', 'symbol'].sort());
@@ -84,7 +84,7 @@ describe('native baseline against the exposed graph handler', () => {
   it('reports unknown indexed versions without assigning current-source identities', async () => {
     calls.indexed.mockResolvedValue({ backend: 'gitnexus', intent: 'callees', sites: [{ path: 'src/old.ts', line1: 2, kind: 'function' }],
       error: null, freshness: { health: 'healthy', indexedAt: null, indexedCommit: 'older-index', staleVsDisk: true } });
-    const out = await graphQuery.handler(graphQuery.args.parse({ op: 'callees', name: 'target' }),
+    const out = await graphQuery.handler(graphQuery.args.parse({ op: 'impact', name: 'target' }),
       { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer };
     expect(out.data.evidence!.sourceScope).toMatchObject({ repositoryId: null, identityKind: 'unknown', sourceFingerprint: null, supportingFiles: [] });
     expect(out.data.evidence!.siteIdentities).toEqual([{ siteIndex: 0, sourcePath: 'src/old.ts', contentHash: null, versionedSymbolId: null }]);
@@ -100,14 +100,22 @@ describe('native baseline against the exposed graph handler', () => {
     expect(out.data.evidence!.graphScope.sourceCompleteness).toBe('unverified');
   });
 
-  it.each(graphOperations)('$op selects the recorded $backend backend', async ({ op, backend }) => {
+  it.each(graphOperations)('$op selects the current admitted backend', async ({ op, backend }) => {
     const args = graphQuery.args.parse({ op, name: 'baselineTarget' });
     const out = await graphQuery.handler(args, { projectDir: '/baseline-repo' } as never) as {
       data: { backend: string };
     };
-    expect(out.data.backend).toBe(backend);
-    expect(calls.compiler).toHaveBeenCalledTimes(backend === 'typescript-service' ? 1 : 0);
-    expect(calls.indexed).toHaveBeenCalledTimes(backend === 'gitnexus' ? 1 : 0);
+    const native = ['callers', 'symbol', 'callees'].includes(op);
+    expect(out.data.backend).toBe(native ? 'typescript-service' : backend);
+    expect(calls.compiler).toHaveBeenCalledTimes(native ? 1 : 0);
+    expect(calls.indexed).toHaveBeenCalledTimes(native ? 0 : 1);
+  });
+
+  it('routes context and defining-file disambiguation to the existing compiler worker', async () => {
+    await graphQuery.handler(graphQuery.args.parse({ op: 'context', name: 'target', file_path: 'src/a.ts', line1: 3 }),
+      { projectDir: '/baseline-repo' } as never);
+    expect(calls.compiler).toHaveBeenCalledWith(expect.objectContaining({ op: 'context', name: 'target', filePath: 'src/a.ts', line1: 3 }));
+    expect(calls.indexed).not.toHaveBeenCalled();
   });
 
   it('reports a compiler failure through the same first-party route without substituting indexed evidence', async () => {

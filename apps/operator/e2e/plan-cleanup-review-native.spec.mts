@@ -101,7 +101,10 @@ test('native cleanup review selector opens an older packet with its actual findi
         reviewInventory: inventory.map((row: { runId: string; unresolved: number }) => ({ runId: row.runId, unresolved: row.unresolved })) }),
       contentType: 'application/json',
     });
-    await native('navigate', `${origin}/adv?tab=plans&scope=all&welcome=0&ws=${encodeURIComponent(workspace!)}`, '--json');
+    // The isolated runner serves the receipt's frozen frontend through Vite.
+    // The native dev bridge's SPA can predate that source receipt.
+    const frontend = process.env.OPERATOR_E2E_BASE_URL ?? origin;
+    await native('navigate', `${frontend}/adv?tab=plans&scope=all&welcome=0&ws=${encodeURIComponent(workspace!)}`, '--json');
     const selector = '[aria-label="Unresolved cleanup reviews"]';
     await ready(`!!document.querySelector(${JSON.stringify(selector)})`);
     await native('click', selector, '--json');

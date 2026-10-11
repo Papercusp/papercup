@@ -2472,6 +2472,13 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
     console.warn(`${orchestratorStdoutTag()} gate-health projection failed after terminal record: ${error instanceof Error ? error.message : error}`);
   });
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
+  // P-007: measured frozen reds also propose staging fixes in the existing finite worker.
+  // This never admits, changes repairHead, or delays the verdict for pre-check execution.
+  await import('../../release/staging-fix-proposal-cli').then(({ scheduleStagingFixProposal }) =>
+    scheduleStagingFixProposal(target, verdict)).catch((error) =>
+    console.warn(`${orchestratorStdoutTag()} staging proposal launch failed: ${String(error)}`));
+
+  // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
   // recording, which already happened above.
   if (

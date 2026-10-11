@@ -159,6 +159,32 @@
           }
         },
         "configSchema": { "type": "object" },
+        "setup": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Setup the owner performs by hand on the provider's Integrations card (cupboard-distributable-integrations-2026-10-10). Pure data: the host renders it, checks values, stores them host-side and never returns them.",
+          "properties": {
+            "credentials": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Paste-a-secret fields (P-001). Shown masked; each value must fully match `pattern`; stored next to OAuth tokens; injected by host.fetch only for `hosts` (which must be in egressHosts) or read by host-held ingress. A descriptor never carries a value.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["key", "label"],
+                "properties": {
+                  "key": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$" },
+                  "label": { "type": "string", "minLength": 1 },
+                  "pattern": { "type": "string", "minLength": 1, "maxLength": 500 },
+                  "help": { "type": "string" },
+                  "helpUrl": { "type": "string" },
+                  "placeholder": { "type": "string" },
+                  "hosts": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
         "membership": {
           "type": "object",
           "additionalProperties": false,

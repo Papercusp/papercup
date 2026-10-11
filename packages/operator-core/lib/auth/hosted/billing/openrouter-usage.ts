@@ -12,7 +12,7 @@ import { formatMicrosDecimal, splitMicrosDecimal } from '../../../cupboard/money
 import { PostgresHostedUsageStore, type HostedUsageAppendResult } from './usage-store';
 import { validateHostedUsageRecord, type HostedUsageRecord } from './usage-statement';
 import type { HostedUsageCollector } from './usage-service';
-import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering';
 import type { HostedBudgetExecutionGrant } from './budget-store';
 
 type Scope = Pick<HostedUsageRecord, 'controlWorkspaceId' | 'organizationId' | 'customerWorkspaceId'>;

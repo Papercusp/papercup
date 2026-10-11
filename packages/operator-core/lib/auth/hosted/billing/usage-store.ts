@@ -7,7 +7,7 @@
 import { withHostedServiceContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
-import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering';
 import { splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
 import type { HostedBudgetExecutionGrant, HostedBudgetRequest, PostgresHostedBudgetStore } from './budget-store';

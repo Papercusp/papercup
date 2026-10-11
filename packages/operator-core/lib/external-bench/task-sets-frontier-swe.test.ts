@@ -6,11 +6,46 @@ import {
   loadFrontierSweTaskSet,
   frontierSweRowToBenchTask,
   frontierSwePilotSubset,
+  frontierSweV2PilotStrata,
+  frontierSweTaskSetVersion,
   isFrontierSweTaskSet,
+  knownTaskSets,
   FRONTIER_SWE_TASK_SET_IDS,
+  FRONTIER_SWE_V2_SUITE_CATEGORIES,
   type FrontierSweTaskRow,
 } from './task-sets';
 import { loadBenchTaskSet } from './task-sets';
+import { FRONTIER_SWE_V2_SUITE_CATEGORIES as INGEST_SUITE_CATEGORIES } from './frontier-swe-ingest';
+
+const V2_COMMIT = 'da83f84f8fbcec3cbf0f2b17c98ebc811355c2df';
+const v2Row = (o: Partial<FrontierSweTaskRow> & Pick<FrontierSweTaskRow, 'instanceId' | 'suiteCategories'>): FrontierSweTaskRow => ({
+  prompt: `Do ${o.instanceId}.`,
+  dockerImage: `us-docker.pkg.dev/proximal-evals-public/${o.instanceId}@sha256:${'a'.repeat(64)}`,
+  verifierDockerImage: `us-docker.pkg.dev/proximal-evals-public/${o.instanceId}@sha256:${'b'.repeat(64)}`,
+  verifierEnvironmentMode: 'separate',
+  verifierCmd: 'bash /tests/test.sh',
+  rewardPath: '/logs/verifier/reward.txt',
+  rewardJsonPath: '/logs/verifier/reward.json',
+  solutionCmd: 'bash /solution/solve.sh',
+  agentTimeoutSec: 72000,
+  gpus: 0,
+  externalNeeds: [],
+  artifacts: [{ source: '/app/', exclude: ['.git'] }],
+  corpusVersion: 'v2',
+  upstreamCommit: V2_COMMIT,
+  ...o,
+});
+
+/** Overlapping multi-label strata: Scientific Computing is scarcest (1), Visual + AI must fall past reused tasks. */
+const V2_ROWS: FrontierSweTaskRow[] = [
+  v2Row({ instanceId: 'vis-impl', suiteCategories: ['Visual Reasoning', 'Implementation'], memoryMb: 4096 }),
+  v2Row({ instanceId: 'impl-only', suiteCategories: ['Implementation'], memoryMb: 8192 }),
+  v2Row({ instanceId: 'sci', suiteCategories: ['Scientific Computing'], memoryMb: 32768, verifierEnv: { MODE: 'eval' } }),
+  v2Row({ instanceId: 'perf-modal', suiteCategories: ['Performance Optimisation'], memoryMb: 4096, externalNeeds: ['modal-vm-runtime'] }),
+  v2Row({ instanceId: 'perf-local', suiteCategories: ['Performance Optimisation'], memoryMb: 16384 }),
+  v2Row({ instanceId: 'ai-gpu', suiteCategories: ['AI Research'], gpus: 1, verifierNetworkMode: 'no-network' }),
+  v2Row({ instanceId: 'vis-ai', suiteCategories: ['Visual Reasoning', 'AI Research'], memoryMb: 32768 }),
+];
 
 const ROWS: FrontierSweTaskRow[] = [
   {
@@ -81,18 +116,25 @@ const ROWS: FrontierSweTaskRow[] = [
 
 let dir: string;
 const prevEnv = process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL;
+const prevV2Env = process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_JSONL;
+const writeJsonl = (name: string, rows: FrontierSweTaskRow[]) => {
+  const path = join(dir, name);
+  writeFileSync(path, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  return path;
+};
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'frontier-swe-ts-'));
-  const path = join(dir, 'tasks.jsonl');
-  writeFileSync(path, ROWS.map((r) => JSON.stringify(r)).join('\n') + '\n');
-  process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL = path;
+  process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL = writeJsonl('tasks.jsonl', ROWS);
+  process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_JSONL = writeJsonl('tasks-v2.jsonl', V2_ROWS);
 });
 
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   if (prevEnv === undefined) delete process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL;
   else process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL = prevEnv;
+  if (prevV2Env === undefined) delete process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_JSONL;
+  else process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_JSONL = prevV2Env;
 });
 
 describe('isFrontierSweTaskSet', () => {
@@ -173,5 +215,109 @@ describe('loadBenchTaskSet routes FrontierSWE ids', () => {
 
   it('rejects frontier-swe-custom with no ids via the dispatcher', async () => {
     await expect(loadBenchTaskSet('frontier-swe-custom', [])).rejects.toThrow(/non-empty/);
+  });
+
+  it('resolves frontier-swe-v2 through the central dispatcher from the v2 corpus', async () => {
+    const tasks = await loadBenchTaskSet('frontier-swe-v2');
+    expect(tasks).toHaveLength(V2_ROWS.length);
+    expect(tasks.every((t) => t.graderMeta.corpusVersion === 'v2')).toBe(true);
+  });
+});
+
+describe('FrontierSWE v2 task sets (plan benchmark-coverage-frontierswe-v2-2026-10-10 P-003)', () => {
+  it('every id maps to exactly one corpus version', () => {
+    expect(frontierSweTaskSetVersion('frontier-swe')).toBe('v1');
+    expect(frontierSweTaskSetVersion('frontier-swe-cpu')).toBe('v1');
+    for (const id of ['frontier-swe-v2', 'frontier-swe-v2-cpu', 'frontier-swe-v2-pilot', 'frontier-swe-v2-custom']) {
+      expect(frontierSweTaskSetVersion(id)).toBe('v2');
+      expect(isFrontierSweTaskSet(id)).toBe(true);
+    }
+    expect(frontierSweTaskSetVersion('metr-hcast')).toBeNull();
+  });
+
+  it('the ingest validates against the same suite-category list the pilot stratifies on', () => {
+    expect(INGEST_SUITE_CATEGORIES).toBe(FRONTIER_SWE_V2_SUITE_CATEGORIES);
+  });
+
+  it('graderMeta carries the version tag and the separate-verifier contract; the brief stays clean', () => {
+    const t = frontierSweRowToBenchTask(V2_ROWS[2]);
+    expect(t.graderMeta).toMatchObject({
+      corpusVersion: 'v2',
+      upstreamCommit: V2_COMMIT,
+      verifierEnvironmentMode: 'separate',
+      verifierDockerImage: expect.stringMatching(/@sha256:b{64}$/),
+      verifierEnv: { MODE: 'eval' },
+      artifacts: [{ source: '/app/', exclude: ['.git'] }],
+      suiteCategories: ['Scientific Computing'],
+      externalNeeds: [],
+    });
+    expect(t.problemStatement).toBe('Do sci.');
+    // A legacy untagged v1 row reads as v1 + the shared in-container verifier.
+    expect(frontierSweRowToBenchTask(ROWS[0]).graderMeta).toMatchObject({
+      corpusVersion: 'v1',
+      verifierEnvironmentMode: 'shared',
+      artifacts: [],
+    });
+  });
+
+  it('frontier-swe-v2-pilot picks ONE DISTINCT task per suite category, scarcest first, cheapest within', () => {
+    const strata = frontierSweV2PilotStrata(V2_ROWS);
+    expect(strata.map((s) => [s.category, s.row.instanceId])).toEqual([
+      ['Implementation', 'vis-impl'],
+      ['Scientific Computing', 'sci'],
+      ['Performance Optimisation', 'perf-local'], // CPU-runnable beats the cheaper Modal-gated task
+      ['Visual Reasoning', 'vis-ai'], // vis-impl is already Implementation's pick → never reused
+      ['AI Research', 'ai-gpu'], // vis-ai already taken → falls to the GPU task
+    ]);
+    const ids = loadFrontierSweTaskSet('frontier-swe-v2-pilot').map((t) => t.instanceId);
+    expect(new Set(ids).size).toBe(FRONTIER_SWE_V2_SUITE_CATEGORIES.length);
+  });
+
+  it('frontier-swe-v2-pilot refuses a corpus that cannot cover every category', () => {
+    expect(() => frontierSweV2PilotStrata(V2_ROWS.filter((r) => r.instanceId !== 'sci'))).toThrow(
+      /no unused task in suite category 'Scientific Computing'/,
+    );
+    // Rows with no README categories (e.g. a v1-shaped row) cannot stratify at all.
+    expect(() => frontierSweV2PilotStrata(V2_ROWS.map((r) => ({ ...r, suiteCategories: undefined })))).toThrow(
+      /cannot cover all 5/,
+    );
+  });
+
+  it('frontier-swe-v2-cpu excludes GPU tasks AND tasks needing an external service', () => {
+    const ids = loadFrontierSweTaskSet('frontier-swe-v2-cpu').map((t) => t.instanceId).sort();
+    expect(ids).toEqual(['impl-only', 'perf-local', 'sci', 'vis-ai', 'vis-impl']);
+  });
+
+  it('frontier-swe-v2-custom filters the v2 corpus only', () => {
+    expect(loadFrontierSweTaskSet('frontier-swe-v2-custom', ['sci']).map((t) => t.instanceId)).toEqual(['sci']);
+    // git-to-zig exists only in the v1 fixture → a v2 custom set must not find it.
+    expect(() => loadFrontierSweTaskSet('frontier-swe-v2-custom', ['git-to-zig'])).toThrow(/FrontierSWE v2 corpus matched/);
+  });
+
+  it('v1 and v2 never mix: each loader refuses rows of the other version', () => {
+    process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL = writeJsonl('mixed-v1.jsonl', [...ROWS, V2_ROWS[0]]);
+    expect(() => loadFrontierSweTaskSet('frontier-swe')).toThrow(/1 row\(s\) of another corpus version \(vis-impl=v2\)/);
+    process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_JSONL = writeJsonl('mixed-v2.jsonl', [...V2_ROWS, ROWS[1]]);
+    expect(() => loadFrontierSweTaskSet('frontier-swe-v2')).toThrow(/git-to-zig=v1/);
+  });
+
+  it('a missing v2 corpus names the v2 ingest', () => {
+    process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_JSONL = join(dir, 'absent.jsonl');
+    expect(() => loadFrontierSweTaskSet('frontier-swe-v2')).toThrow(/ingest the v2 corpus/);
+  });
+
+  it('the launch listing derives every FrontierSWE count and labels v1 as history', () => {
+    const byId = new Map(knownTaskSets().map((s) => [s.id, s]));
+    expect(byId.get('frontier-swe-v2')?.count).toBe(V2_ROWS.length);
+    expect(byId.get('frontier-swe-v2-cpu')?.count).toBe(5);
+    expect(byId.get('frontier-swe-v2-pilot')?.count).toBe(5);
+    expect(byId.get('frontier-swe')?.count).toBe(ROWS.length);
+    for (const id of ['frontier-swe', 'frontier-swe-cpu', 'frontier-swe-pilot']) {
+      expect(byId.get(id)?.label).toMatch(/v1 history/);
+    }
+    // No FrontierSWE label hard-codes a task count (the count column is derived).
+    for (const s of knownTaskSets().filter((x) => x.id.startsWith('frontier-swe'))) {
+      expect(s.label).not.toMatch(/\b\d+ (ultra-long-horizon )?tasks\b/);
+    }
   });
 });

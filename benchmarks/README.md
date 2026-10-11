@@ -64,6 +64,14 @@ attempts or incomplete usage retains its outcome difference while withholding co
 efficiency. The pooled Wilson interval is a Bernoulli diagnostic, separate from
 repository inference.
 
+Evaluation labels imported snapshots as historical archive evidence and explicitly
+marked fixtures as synthetic evidence. A current configuration alone is incomplete
+evidence: the view requires the complete assigned outcome roster and recorded
+matching execution identity with committed preregistration receipts before labeling
+it current measured evidence. Missing grades and absent attempts stay visible.
+This label does not certify complete provider accounting or establish superiority;
+those require their separate measured records and withheld confirmation.
+
 ### Current launch prerequisites and verification
 
 Current generation uses `run-launcher.ts` and the authenticated

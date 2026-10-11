@@ -15,6 +15,7 @@ import { getExternalTriggerSource } from '../external-triggers/source-store';
 import { ensureBuiltinConnectionAdapters } from './builtin-connection-adapters';
 import { connectionAccessToken } from './connection-lifecycle';
 import { createHostFetch, HostFetchError } from './host-fetch';
+import { readProviderCredentialValue } from './provider-credentials';
 import { providerRegistry, type ProviderRegistry } from './provider-registry';
 
 export interface SourceHostFetchOptions {
@@ -43,9 +44,15 @@ export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOp
   // the connector driver failed every Google source with "no access token").
   ensureBuiltinConnectionAdapters();
   const allowed = opts.sourceIds ? new Set(opts.sourceIds) : null;
+  const registry = opts.registry ?? providerRegistry();
   return createHostFetch(opts.providerId, {
-    registry: opts.registry ?? providerRegistry(),
+    registry,
     fetchImpl: opts.fetchImpl,
+    // Owner-pasted setup credentials live in the same install's token store (P-001).
+    async pastedCredential(key) {
+      const registered = registry.get(opts.providerId);
+      return registered ? readProviderCredentialValue(registered.descriptor, opts.harness, key) : null;
+    },
     async resolveSource(sourceId) {
       if (allowed && !allowed.has(sourceId)) return null;
       const row = await getExternalTriggerSource(sql, opts.workspaceId, sourceId);

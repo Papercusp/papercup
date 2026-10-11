@@ -64,6 +64,27 @@ describe('interpretRestrictedHoldPreflight — fail closed', () => {
     const stdout = line({ verdict: 'admit' }) + line({ verdict: 'refuse', error: 'restricted_write_held', hint: 'held' });
     expect(interpretRestrictedHoldPreflight({ status: 3, stdout }).verdict).toBe('refuse');
   });
+
+  it('keeps the originating loader error as well as final frames without admitting', () => {
+    const stderr = 'Error [TransformError]: You installed esbuild for another platform.\n'
+      + 'Present @esbuild/linux-x64; required @esbuild/linux-arm64.\n'
+      + 'at nextLoad\nat AsyncLoaderHooksOnLoaderHookWorker.load\nNode.js v24.18.1';
+    const result = interpretRestrictedHoldPreflight({ status: 1, stdout: '', stderr });
+    expect(result).toMatchObject({ verdict: 'refuse', error: 'restricted_hold_state_unknown' });
+    expect(result.hint).toContain('Present @esbuild/linux-x64; required @esbuild/linux-arm64');
+    expect(result.hint).toContain('AsyncLoaderHooksOnLoaderHookWorker.load');
+  });
+
+  it('bounds noisy multiline and single-line failures while keeping both ends', () => {
+    for (const filler of ['x'.repeat(10000), 'noise\n'.repeat(2000)]) {
+      const result = interpretRestrictedHoldPreflight({ status: 1, stdout: '',
+        stderr: 'ORIGINATING_LOADER_FAILURE\n' + filler + '\nFINAL_LOADER_FRAME' });
+      expect(result).toMatchObject({ verdict: 'refuse', error: 'restricted_hold_state_unknown' });
+      expect(result.hint).toContain('ORIGINATING_LOADER_FAILURE');
+      expect(result.hint).toContain('FINAL_LOADER_FRAME');
+      expect(result.hint.length).toBeLessThan(4000);
+    }
+  });
 });
 
 describe('restrictedHoldPreflightSkipReason', () => {

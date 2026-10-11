@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import {
   FrontierSweIngestError,
+  frontierSweArtifactsOf,
   frontierSweExternalNeeds,
+  parseFrontierSweReadmeCategories,
   imageDigestOf,
   ingestFrontierSweCorpus,
   labelV1History,
@@ -240,5 +242,72 @@ describe('imageDigestOf', () => {
     expect(imageDigestOf(`${REGISTRY}/x@${AGENT_DIGEST}`)).toBe(AGENT_DIGEST);
     expect(imageDigestOf('ghcr.io/proximal-labs/frontier-swe/x:v1')).toBeNull();
     expect(imageDigestOf(undefined)).toBeNull();
+  });
+});
+
+describe('v2 grading contract fields (plan D-003, P-003)', () => {
+  /** A task.toml carrying the artifacts + [verifier.env] tables observed upstream (astronomy-toolkit). */
+  const contractToml = (name: string) =>
+    [
+      'schema_version = "1.3"',
+      'artifacts = [',
+      '  { source = "/app/", exclude = ["**/__pycache__/**", "**/.venv/**"] },',
+      ']',
+      v2TaskToml(name).replace('schema_version = "1.3"\n', '').replace(
+        '[verifier.environment]',
+        '[verifier.env]\nASTROMETRY_NUM_THREADS = "16"\nSEED = 20260811\n[verifier.environment]',
+      ),
+    ].join('\n');
+  const readme = (rows: string[]) =>
+    ['# FrontierSWE v2', '', '| # | Task | Category |', '|---|---|---|', ...rows].join('\n');
+
+  it('records separate-verifier mode, verifier env, artifacts and README suite categories', async () => {
+    const fs = memFs({
+      [join(ROOT, 'README.md')]: readme([
+        '| 01 | [Astronomy Toolkit](tasks/astronomy-toolkit/) | Visual Reasoning, Implementation |',
+        '| 02 | [Git to Zig](tasks/git-to-zig/) | Implementation |',
+      ]),
+      [t('astronomy-toolkit', 'task.toml')]: contractToml('astronomy-toolkit'),
+      [t('git-to-zig', 'task.toml')]: v2TaskToml('git-to-zig'),
+    });
+    const { rows } = await ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT }, fs);
+    const astro = rows.find((r) => r.instanceId === 'astronomy-toolkit')!;
+    expect(astro.verifierEnvironmentMode).toBe('separate');
+    expect(astro.verifierEnv).toEqual({ ASTROMETRY_NUM_THREADS: '16', SEED: '20260811' });
+    expect(astro.artifacts).toEqual([{ source: '/app/', exclude: ['**/__pycache__/**', '**/.venv/**'] }]);
+    expect(astro.suiteCategories).toEqual(['Visual Reasoning', 'Implementation']);
+    const zig = rows.find((r) => r.instanceId === 'git-to-zig')!;
+    expect(zig.artifacts).toEqual([]);
+    expect(zig.suiteCategories).toEqual(['Implementation']);
+  });
+
+  it('refuses a task missing from a README that has a task table', async () => {
+    const fs = memFs({
+      [join(ROOT, 'README.md')]: readme(['| 01 | [Git to Zig](tasks/git-to-zig/) | Implementation |']),
+      [t('git-to-zig', 'task.toml')]: v2TaskToml('git-to-zig'),
+      [t('orphan', 'task.toml')]: v2TaskToml('orphan'),
+    });
+    await expect(ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT }, fs)).rejects.toMatchObject({
+      problems: ['orphan: missing from the README task table (no suite category)'],
+    });
+  });
+
+  it('parses README categories and refuses an unknown category', () => {
+    expect(
+      parseFrontierSweReadmeCategories(readme(['| 07 | [X](tasks/x/) | Scientific Computing, AI Research |'])),
+    ).toEqual(new Map([['x', ['Scientific Computing', 'AI Research']]]));
+    expect(parseFrontierSweReadmeCategories('# no table')).toEqual(new Map());
+    expect(() => parseFrontierSweReadmeCategories(readme(['| 01 | [X](tasks/x/) | Robotics |']))).toThrow(
+      /unknown suite category: Robotics/,
+    );
+  });
+
+  it('normalizes string and table artifacts and rejects a sourceless entry', () => {
+    expect(frontierSweArtifactsOf(['/out/', { source: '/app/', exclude: ['*.tmp'] }])).toEqual([
+      { source: '/out/', exclude: [] },
+      { source: '/app/', exclude: ['*.tmp'] },
+    ]);
+    expect(frontierSweArtifactsOf(undefined)).toEqual([]);
+    expect(() => frontierSweArtifactsOf([{ exclude: [] }])).toThrow(/artifacts\[0\] has no string source/);
   });
 });

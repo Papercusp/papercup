@@ -49,8 +49,31 @@ describe('current frozen benchmark protocol', () => {
       (p: typeof base) => { p.aggregateBudgetUsd = 59; },
       (p: typeof base) => { p.exclusions = ['changed']; },
       (p: typeof base) => { p.stopping.maxAttemptsPerAssignment = 2; },
+      (p: typeof base) => { p.sampling!.taskRepositories.t1 = 'other-repository'; },
+      (p: typeof base) => { p.sampling!.bootstrapSeed = 17; },
+      (p: typeof base) => { p.sampling!.bootstrapIterations = 2000; },
+      (p: typeof base) => { p.sampling!.ci = 0.9; },
     ]) { const changed = structuredClone(base); mutate(changed); expect(computePreregHash(changed)).not.toBe(frozen); }
   });
+
+  it('requires frozen repository sampling for new launches while preserving older protocol reads', () => {
+    const protocol = currentProtocolFixture(); delete protocol.sampling;
+    expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(true);
+    expect(() => requireCurrentBenchmarkAssignment(protocol, { runId: 'run-1', armId: 'papercusp', taskId: 't1', seed: 1,
+      agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto', budget: { maxUsd: 3, maxWallClockMs: 100 } }))
+      .toThrow(/repository sampling/);
+  });
+
+  it.each(['missing-pilot', 'missing-confirmation', 'foreign-task', 'blank-repository', 'unknown-unit'])
+    ('refuses repository sampling defect %s', defect => {
+      const protocol = currentProtocolFixture(); const sampling = protocol.sampling!;
+      if (defect === 'missing-pilot') delete sampling.taskRepositories.t1;
+      if (defect === 'missing-confirmation') delete sampling.taskRepositories['withheld-1'];
+      if (defect === 'foreign-task') sampling.taskRepositories.foreign = 'repo';
+      if (defect === 'blank-repository') sampling.taskRepositories.t1 = '';
+      if (defect === 'unknown-unit') (sampling as { unit: string }).unit = 'seed';
+      expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
+    });
 });
 
 describe('canonicalJson', () => {

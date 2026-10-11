@@ -153,14 +153,14 @@ describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
   });
 
   it('renders a LOUD ⚠ action line in 80–89%', () => {
-    const line = renderBandedContextGauge(85, 100);
+    const line = renderBandedContextGauge(85, 100, true);
     expect(line).toContain('⚠ context: 85/100 (85%)');
     expect(line).toContain('session:request-compaction');
     expect(line).toMatch(/approaching your soft compaction limit/i);
   });
 
   it('renders a CRITICAL ⚠ urgent line at/above 90%', () => {
-    const line = renderBandedContextGauge(95, 100);
+    const line = renderBandedContextGauge(95, 100, true);
     expect(line).toContain('⚠ context: 95/100 (95%)');
     expect(line).toContain('CRITICAL');
     expect(line).toContain('session:request-compaction');
@@ -173,6 +173,14 @@ describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
     expect(line).toContain('self-compaction is unavailable');
     expect(line).toContain('next wake');
     expect(line).not.toContain('request-compaction');
+  });
+
+  it('keeps the continuation guidance generic when host availability is unknown', () => {
+    const line = renderBandedContextGauge(95, 100, null);
+    expect(line).toContain('CRITICAL');
+    expect(line).toContain("this session's supported continuation path");
+    expect(line).not.toContain('self-compaction is unavailable');
+    expect(line).not.toContain('session:request-compaction');
   });
 
   it('bands exactly on the rounded percent at each boundary', () => {

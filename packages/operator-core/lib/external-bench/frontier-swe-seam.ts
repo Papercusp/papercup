@@ -1,25 +1,27 @@
 /**
- * FrontierSWE's {@link CloneGradeSeam} (plan benchmark-suite-frontier-swe-2026-06-18 P-008) — the per-benchmark
- * clone/grade half that EVERY coordination-topology arm shares (the C5 fairness invariant: identical across
- * arms, differs across benchmarks). su-37e53a76's topology runtime drives the agent inside the container per the
- * arm's {@link CoordinationSpec}; THIS seam owns only the benchmark-specific lifecycle:
+ * FrontierSWE's {@link CloneGradeSeam} (plan benchmark-suite-frontier-swe-2026-06-18 P-008; v2 grading: plan
+ * benchmark-coverage-frontierswe-v2-2026-10-10 P-003 / D-003) — the per-benchmark clone/grade half that EVERY
+ * coordination-topology arm shares (the C5 fairness invariant: identical across arms, differs across benchmarks).
+ * su-37e53a76's topology runtime drives the agent inside the container per the arm's {@link CoordinationSpec};
+ * THIS seam owns only the benchmark-specific lifecycle:
  *
  *   clone(task)   → `docker run -d <image> sleep infinity` → a live container handle (the agent execs in and
  *                   works in /app; the task workspace is baked into the image). `--gpus all` for GPU tasks.
- *   grade(task,h) → run the task's OWN verifier (`tests/test.sh`) in the container, read `/logs/verifier/
- *                   reward.txt` → a continuous `score∈[0,1]`. We author NO verifier (D-001).
+ *   grade(task,h) → grade with the task's OWN verifier — v1: stage `tests/` into the arm container and run it
+ *                   there; v2: a FRESH container from the digest-pinned verifier image, artifacts copied over
+ *                   (D-003 §1-2) — and turn the reward into a continuous `score∈[0,1]`. We author NO verifier.
  *   teardown(h)   → `docker rm -f` (never-throw — always called, leak-free).
  *
- * Composes the existing FrontierSWE grader primitives (liveBuildVerifierCommand / liveReadReward /
- * parseFrontierSweReward), so the seam and the standalone OfficialGrader can never diverge. Subprocess is
- * INJECTED ({@link ProcExec}) → unit-testable with a fake docker, no daemon.
+ * grade() DELEGATES to {@link makeFrontierSweGrader} with the live primitives, so the seam and the standalone
+ * OfficialGrader run literally the same code path — reward precedence, version pinning and the separate verifier
+ * can never diverge between them. Subprocess is INJECTED ({@link ProcExec}) → unit-testable with a fake docker.
  */
 import type { CloneGradeSeam } from './coordination-topology';
 import type { BenchTask } from './types';
-import type { ProcExec } from './grader/swe-bench-pro';
+import type { GraderFs, ProcExec } from './grader/swe-bench-pro';
 import { liveProcExec } from './grader/index';
-import { liveBuildVerifierCommand, liveReadReward } from './grader/frontier-swe-live';
-import { parseFrontierSweReward } from './grader/frontier-swe';
+import { liveBuildVerifierCommand, livePrepareSeparateVerifier, liveReadReward } from './grader/frontier-swe-live';
+import { makeFrontierSweGrader, type FrontierSweGraderConfig } from './grader/frontier-swe';
 
 /** The opaque environment handle for a FrontierSWE task — a live Docker container the arm operated. */
 export interface FrontierSweEnvHandle {
@@ -29,8 +31,11 @@ export interface FrontierSweEnvHandle {
 }
 
 export interface FrontierSweSeamConfig {
-  /** Grader version pinned on results (repo commit / image-set tag). Required for reproducibility. */
-  version: string;
+  /**
+   * The v1 grader version pin (repo commit / image-set tag). Needed only for v1 (history) tasks — a v1 task graded
+   * without it is an error row. v2 tasks pin themselves from their corpus commit + verifier image digest.
+   */
+  version?: string;
   /** Inject a fake in tests; production uses the shell-free `liveProcExec` (execFile, no host shell). */
   exec?: ProcExec;
   /** Run the verifier in oracle mode (HARBOR_ORACLE_MODE=1) — the gold/positive control path. Default false. */
@@ -38,18 +43,42 @@ export interface FrontierSweSeamConfig {
   /** Extra `docker run` flags (e.g. resource limits) the driver wants applied uniformly. Default none. */
   extraRunArgs?: string[];
   /**
-   * The vendored Proximal-Labs/frontier-swe checkout (default PAPERCUSP_FRONTIER_SWE_DIR). At GRADE time the
-   * seam `docker cp`s `<repoDir>/tasks/<id>/tests` into the container at `/tests` (and `/solution` in oracle
-   * mode) — the task image bakes only `/app`; Harbor uploads tests/ at verify time, so we mirror that. Staging
-   * at GRADE time (post-agent) keeps the hidden tests away from the agent (anti-cheat). Confirmed against the
-   * real harness 2026-06-18: gold control → 0.985, empty → 0.0 (libexpat-to-x86asm).
+   * The vendored v1 Proximal-Labs/frontier-swe checkout (default PAPERCUSP_FRONTIER_SWE_DIR). For a v1 (shared)
+   * task the seam `docker cp`s `<repoDir>/tasks/<id>/tests` into the container at `/tests` at GRADE time (and
+   * `/solution` in oracle mode) — the v1 task image bakes only `/app`; Harbor uploads tests/ at verify time, so we
+   * mirror that. Staging post-agent keeps the hidden tests away from the agent (anti-cheat). Confirmed against the
+   * real harness 2026-06-18: gold control → 0.985, empty → 0.0 (libexpat-to-x86asm). v2 tasks need no staging:
+   * their verifier image owns `/tests` (D-003 §1).
    */
   repoDir?: string;
+  /** Override the separate-verifier lifecycle (tests); production uses {@link livePrepareSeparateVerifier}. */
+  prepareVerifierEnv?: FrontierSweGraderConfig['prepareVerifierEnv'];
 }
+
+/** The seam never reads host files through the grader — the reward is read out of a container. */
+const NO_HOST_FS: GraderFs = {
+  mkdtemp: async () => {
+    throw new Error('FrontierSWE seam: no host fs');
+  },
+  writeFile: async () => {
+    throw new Error('FrontierSWE seam: no host fs');
+  },
+  readFile: async () => '',
+  rm: async () => undefined,
+};
 
 /** Build FrontierSWE's CloneGradeSeam — supplied once to the shared topology runtime; every arm uses it identically. */
 export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): CloneGradeSeam<FrontierSweEnvHandle> {
   const exec = cfg.exec ?? liveProcExec;
+  const grader = makeFrontierSweGrader(
+    {
+      version: cfg.version,
+      prepareVerifierEnv: cfg.prepareVerifierEnv ?? livePrepareSeparateVerifier,
+      buildVerifierCommand: (ctx) => liveBuildVerifierCommand({ ...ctx, oracle: cfg.oracle }),
+      readReward: liveReadReward,
+    },
+    { exec, fs: NO_HOST_FS },
+  );
 
   return {
     modality: 'in-container',
@@ -72,10 +101,11 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
     },
 
     async grade(task: BenchTask, handle: FrontierSweEnvHandle) {
-      // Stage the hidden tests INTO the container at GRADE time (post-agent) — the image bakes only /app; Harbor
-      // uploads tests/ at verify time. Doing it here (not in clone) keeps /tests away from the agent (anti-cheat).
+      const separate = task.graderMeta?.['verifierEnvironmentMode'] === 'separate';
+      // v1 only: stage the hidden tests INTO the arm container at GRADE time (post-agent) — the v1 image bakes only
+      // /app; Harbor uploads tests/ at verify time. Doing it here (not in clone) keeps /tests away from the agent.
       const repoDir = cfg.repoDir ?? process.env.PAPERCUSP_FRONTIER_SWE_DIR;
-      if (repoDir) {
+      if (repoDir && !separate) {
         try {
           await exec('docker', ['cp', `${repoDir}/tasks/${handle.instanceId}/tests`, `${handle.containerId}:/tests`]);
           if (cfg.oracle) await exec('docker', ['cp', `${repoDir}/tasks/${handle.instanceId}/solution`, `${handle.containerId}:/solution`]);
@@ -83,40 +113,27 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
           return { resolved: null, score: null, graderStatus: 'error', detail: { stageTestsError: e instanceof Error ? e.message : String(e) } };
         }
       }
-      // Run the task's OWN verifier in the container, then read the reward back — reusing the grader primitives.
-      const { cmd, args, cwd, env } = liveBuildVerifierCommand({
-        instanceId: handle.instanceId,
-        envRef: handle.containerId,
-        task,
-        oracle: cfg.oracle,
-      });
-      let verifierExit = 0;
-      try {
-        const run = await exec(cmd, args, { cwd, env });
-        verifierExit = run.code;
-      } catch (e) {
-        return { resolved: null, score: null, graderStatus: 'error', detail: { verifierExecError: e instanceof Error ? e.message : String(e) } };
-      }
 
-      let raw;
-      try {
-        raw = await liveReadReward({ instanceId: handle.instanceId, envRef: handle.containerId, task, readFile: async () => '', exec });
-      } catch (e) {
+      const [g] = await grader.grade(
+        [{ modality: 'in-container', instanceId: handle.instanceId, envRef: handle.containerId, prefix: 'seam' }],
+        [task],
+      );
+      if (!g || g.graderError || g.score == null) {
+        // Verifier produced no valid verdict → infra, surfaced + excluded (C6), never a silent 0.
         return {
           resolved: null,
           score: null,
           graderStatus: 'error',
-          detail: { rewardReadError: e instanceof Error ? e.message : String(e), verifierExit },
+          detail: { graderError: g?.graderError ?? 'no grade row', graderVersion: g?.graderVersion ?? null, raw: g?.rawGraderOutput ?? null },
         };
       }
-
-      const g = parseFrontierSweReward(raw, handle.instanceId, 'seam', cfg.version);
-      if (g.graderError || g.score == null) {
-        // Verifier produced no numeric verdict → infra, surfaced + excluded (C6), never a silent 0.
-        return { resolved: null, score: null, graderStatus: 'error', detail: { graderError: g.graderError, raw: g.rawGraderOutput, verifierExit } };
-      }
       // A genuine capability outcome (incl. score 0). resolved = (score === 1) is degenerate for FrontierSWE.
-      return { resolved: g.resolved, score: g.score, graderStatus: g.resolved ? 'passed' : 'failed', detail: g.rawGraderOutput };
+      return {
+        resolved: g.resolved,
+        score: g.score,
+        graderStatus: g.resolved ? 'passed' : 'failed',
+        detail: { ...(g.rawGraderOutput as object), graderVersion: g.graderVersion },
+      };
     },
 
     async teardown(handle: FrontierSweEnvHandle): Promise<void> {

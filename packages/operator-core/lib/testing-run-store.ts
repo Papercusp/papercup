@@ -23,8 +23,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
-import { readFile, rm } from 'node:fs/promises';
-import { basename, isAbsolute, relative as pathRelative, posix } from 'node:path';
+import { readFile, readdir, rm } from 'node:fs/promises';
+import { basename, dirname, join, isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -951,11 +951,9 @@ export interface SpawnRequest {
    */
   workItemId?: string | null;
   /**
-   * JSON reports produced by detached Vitest commands that cannot load the
-   * Papercusp admin reporter (typically an independent checkout). The store
-   * ingests these on close, in the operator process where the tenant-scoped
-   * database handle is available. Managed commands keep their own reporter
-   * and must not provide an artifact here, or rows would be duplicated.
+   * JSON reports retained by detached Vitest commands. The store ingests
+   * missing file rows on close or after observer loss; its run-group lock and
+   * ledger check deduplicate reports from commands that also load the admin reporter.
    */
   detachedReportArtifacts?: DetachedReportArtifact[];
 }
@@ -963,6 +961,8 @@ export interface SpawnRequest {
 export interface DetachedReportArtifact {
   /** Absolute path to the child command's Vitest JSON output file. */
   reportPath: string;
+  /** The exact-file router may emit <base>.1.json, <base>.2.json, ... beside this report. */
+  routerReports?: boolean;
   /** Optional reporter sidecar with structured actual/expected assertion values. */
   failureDetailsPath?: string;
   /** Worktree root used to relativize file names from the report. */
@@ -978,6 +978,41 @@ export interface DetachedReportArtifact {
 
 interface PreparedDetachedReportArtifact extends DetachedReportArtifact {
   worktreeBefore: WorktreeGitSnapshot;
+}
+
+async function expandDetachedReportArtifacts(
+  artifacts: PreparedDetachedReportArtifact[],
+): Promise<PreparedDetachedReportArtifact[]> {
+  const expanded = await Promise.all(artifacts.map(async artifact => {
+    if (!artifact.routerReports) return [artifact];
+    // Only the UUID-bound output basename supplied at launch is trusted. Do
+    // not scan arbitrary reports or reconstruct their provenance from HEAD.
+    const name = basename(artifact.reportPath);
+    const stem = name.endsWith('.json') ? name.slice(0, -5) : name;
+    const siblings = (await readdir(dirname(artifact.reportPath))).filter(candidate => {
+      if (!candidate.startsWith(stem + '.') || !candidate.endsWith('.json')) return false;
+      return /^[1-9]\d*$/.test(candidate.slice(stem.length + 1, -5));
+    }).sort();
+    return [artifact, ...siblings.map(candidate => ({
+      ...artifact, reportPath: join(dirname(artifact.reportPath), candidate), routerReports: false,
+    }))];
+  }));
+  return expanded.flat();
+}
+
+function hasCompleteRouterReportCoverage(
+  artifacts: PreparedDetachedReportArtifact[],
+  requestedFiles: string[] | undefined,
+  reports: Array<{ rows: HarnessTestFileRow[] | null }>,
+): boolean {
+  if (!artifacts.some(artifact => artifact.routerReports)) return true;
+  const requested = requestedFilesFromValue(requestedFiles);
+  const rows = reports.flatMap(report => report.rows ?? []);
+  const measured = new Set(rows.map(row => row.filePath));
+  return requested !== null && requested.length > 0
+    && reports.every(report => report.rows !== null)
+    && rows.length === measured.size && measured.size === requested.length
+    && requested.every(file => measured.has(file));
 }
 
 function detachedArtifactsFromRow(snapshot: RunSnapshot, row: DurableRunSnapshotRow): PreparedDetachedReportArtifact[] {
@@ -1055,10 +1090,12 @@ async function reconcilePersistedReportArtifact(
   const artifacts = detachedArtifactsFromRow(snapshot, row);
   if (artifacts.length === 0) return snapshot;
   try {
-    const reports = await Promise.all(artifacts.map(async artifact => ({
+    const expanded = await expandDetachedReportArtifacts(artifacts);
+    const reports = await Promise.all(expanded.map(async artifact => ({
       artifact, rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root),
     })));
-    if (reports.some(report => report.rows === null)) return snapshot;
+    if (reports.some(report => report.rows === null)
+      || !hasCompleteRouterReportCoverage(artifacts, snapshot.requestedFiles, reports)) return snapshot;
     const recovered = await boundedOrgTxn(async tx => {
       const scopedSql = tx as unknown as SqlLike;
       // Sibling recovery readers share one transaction lock. Ingestion and the
@@ -1096,7 +1133,7 @@ async function reconcilePersistedReportArtifact(
       return reconciled;
     }, { client: sql as unknown as NonNullable<Parameters<typeof boundedOrgTxn>[1]>['client'],
       statementTimeoutMs: 3_000, lockTimeoutMs: 1_000 });
-    await Promise.all(artifacts.map(async artifact => {
+    await Promise.all(expanded.map(async artifact => {
       await rm(artifact.reportPath, { force: true }).catch(() => undefined);
       if (artifact.failureDetailsPath) await rm(artifact.failureDetailsPath, { force: true }).catch(() => undefined);
     }));
@@ -1237,8 +1274,18 @@ async function persistDetachedReportArtifacts(
   snapshot: RunSnapshot,
   artifacts: PreparedDetachedReportArtifact[],
 ): Promise<void> {
+  let expanded: PreparedDetachedReportArtifact[];
+  try {
+    expanded = await expandDetachedReportArtifacts(artifacts);
+    if (artifacts.some(artifact => artifact.routerReports)) {
+      const reports = await Promise.all(expanded.map(async artifact => ({
+        rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root),
+      })));
+      if (!hasCompleteRouterReportCoverage(artifacts, snapshot.requestedFiles, reports)) return;
+    }
+  } catch { return; } // Keep incomplete/unreadable evidence for a later recovery read.
   await Promise.all(
-    artifacts.map(async (artifact) => {
+    expanded.map(async (artifact) => {
       let consumed = false;
       try {
         const reportText = await readFile(artifact.reportPath, 'utf8');

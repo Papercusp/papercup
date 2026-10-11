@@ -8,10 +8,10 @@
  * Statistics (plan "Statistics" + "same pass@k protocol"):
  *  - pass@1 = mean over TASKS of (resolved-rate over that task's seeds), so every
  *    task is weighted equally regardless of how many seeds it has.
- *  - The CI on pass@1 is a bootstrap over tasks (task heterogeneity dominates).
+ *  - Primary intervals resample paired task means or whole frozen repositories.
  *  - pass@k / pass^k use the SAME k's for every arm (`protocolKs`).
- *  - Only rows that passed both generation and grading infra are scored;
- *    infra-error rows are counted separately, never as genuine fails.
+ *  - Absent/generation-failed assignments are zero outcomes; grader outages are
+ *    missing measurements and suppress primary estimates and intervals.
  */
 
 import type {
@@ -25,7 +25,7 @@ import type {
   PassAtKPoint,
 } from './schema';
 import { meanPassAtK } from './pass-k';
-import { wilsonInterval, bootstrapMeanCI } from './intervals';
+import { wilsonInterval, pairedBootstrapCI } from './intervals';
 import { accountTokens, verifyIsoBudget, isScored } from './cost';
 import { costAccuracyFrontier } from './pareto';
 import type { PriceTable } from './pricing';
@@ -48,6 +48,10 @@ export interface AggregateOpts {
   bootstrapSeed?: number;
   /** Bootstrap resamples. Default 10000. */
   bootstrapIterations?: number;
+  /** Frozen task -> repository mapping; whole repositories are resampled. */
+  repositoryByTask?: Readonly<Record<string, string>>;
+  /** Current protocols lacking a frozen policy remain readable but inconclusive. */
+  requireRegisteredSampling?: boolean;
   /** The treatment arm the deltas are computed against. Default 'papercusp' (SWE
    *  pilot); other benchmarks name their own (e.g. 'hive' for tau2's hive-vs-su). */
   treatmentArm?: ArmId;
@@ -55,6 +59,28 @@ export interface AggregateOpts {
 
 const DEFAULT_KS = [1, 3];
 const DEFAULT_SEED = 0xbe0c;
+
+function reportSampling(taskIds: readonly string[], opts: AggregateOpts): SuiteReport['sampling'] {
+  const repositories = opts.repositoryByTask;
+  if (repositories && (Object.keys(repositories).length !== taskIds.length ||
+      taskIds.some(id => !Object.hasOwn(repositories, id) || typeof repositories[id] !== 'string' || !repositories[id].trim()))) {
+    throw new Error('benchmark report: repository mapping must cover exactly the assigned tasks');
+  }
+  const unit = repositories ? 'repository' : opts.requireRegisteredSampling ? 'unregistered' : 'task';
+  return { unit, taskPairs: taskIds.length,
+    independentUnits: repositories ? new Set(taskIds.map(id => repositories[id])).size : unit === 'task' ? taskIds.length : null,
+    seedPolicy: 'collapse-within-task', assignedSeeds: opts.assignedSeeds ? [...opts.assignedSeeds] : null,
+    ci: opts.ci ?? 0.95, bootstrapSeed: opts.bootstrapSeed ?? DEFAULT_SEED,
+    bootstrapIterations: opts.bootstrapIterations ?? 10_000,
+    repositoryByTask: repositories ? { ...repositories } : null };
+}
+
+function pairedInterval(a: number[], b: number[], taskIds: readonly string[], sampling: SuiteReport['sampling']) {
+  if (sampling.independentUnits === null || sampling.independentUnits < 2) return null;
+  return pairedBootstrapCI(a, b, { ci: sampling.ci, seed: sampling.bootstrapSeed,
+    iterations: sampling.bootstrapIterations,
+    clusterIds: sampling.repositoryByTask ? taskIds.map(id => sampling.repositoryByTask![id]) : undefined }).delta;
+}
 
 /** Shared outcome-only projection; no pricing or statistical resampling is needed for exports. */
 export function summarizeAssignedOutcomes(rows: readonly {
@@ -124,21 +150,20 @@ export function aggregateArm(
   const outcomes = summarizeAssignedOutcomes(rows, opts);
   const { counts, missingMeasurements } = outcomes;
   const conditionalPassAt1 = outcomes.conditionalResolvedPct ?? 0;
+  const taskIds = opts.assignedTaskIds ?? [...new Set(rows.map(row => row.taskId))];
+  const sampling = reportSampling(taskIds, opts);
 
   // pass@1 = mean over tasks of c/n (== meanPassAtK at k=1); CI bootstrapped over tasks.
   const perTaskPass1 = counts.map((t) => t.c / t.n);
   const passAt1 = missingMeasurements > 0 ? null
     : perTaskPass1.length === 0 ? 0 : perTaskPass1.reduce((a, b) => a + b, 0) / perTaskPass1.length;
-  const passAt1Ci = bootstrapMeanCI(perTaskPass1, {
-    ci,
-    seed: opts.bootstrapSeed ?? DEFAULT_SEED,
-    iterations: opts.bootstrapIterations ?? 10_000,
-  });
+  const passAt1Ci = missingMeasurements ? null
+    : pairedInterval(perTaskPass1.map(() => 0), perTaskPass1, taskIds, sampling);
 
   // Pooled resolved-rate Wilson interval (cross-check on the raw Bernoulli stream).
   const pooledN = counts.reduce((a, t) => a + t.n, 0);
   const pooledC = counts.reduce((a, t) => a + t.c, 0);
-  const resolvedRateWilson = wilsonInterval(pooledC, pooledN, ci);
+  const resolvedRateWilson = missingMeasurements ? null : wilsonInterval(pooledC, pooledN, ci);
 
   const passAtK: PassAtKPoint[] = ks.map((k) => ({ k, ...meanPassAtK(counts, k) }));
   // pass^k (reliability) reuses meanPass over a "success = all k succeed" estimator.
@@ -222,6 +247,7 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
     throw new Error('buildSuiteReport: result outside frozen arm assignment');
   }
   const assignedTaskIds = opts.assignedTaskIds ?? [...new Set(rows.map(row => row.taskId))];
+  const sampling = reportSampling(assignedTaskIds, opts);
   const arms = armIds.map((arm) =>
     aggregateArm(
       rows.filter((r) => r.arm === arm),
@@ -247,23 +273,35 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   const byArm = new Map(arms.map((a) => [a.arm, a]));
   const treatment = byArm.get(treatmentArm);
   const deltas: ArmDelta[] = [];
-  if (treatment && treatment.passAt1 != null && treatment.attempts > 0 && !treatment.cost.missingMeasurements) {
-    const tPoint = rawPoints.find((p) => p.arm === treatmentArm)!;
+  if (treatment) {
+    const tPoint = rawPoints.find((p) => p.arm === treatmentArm);
+    const tOutcomes = summarizeAssignedOutcomes(rows.filter(row => row.arm === treatmentArm), { ...opts, assignedTaskIds });
     for (const a of arms) {
       if (a.arm === treatmentArm) continue;
-      if (a.passAt1 == null || a.attempts === 0 || a.cost.missingMeasurements) continue;
-      const bPoint = rawPoints.find((p) => p.arm === a.arm)!;
+      const bPoint = rawPoints.find((p) => p.arm === a.arm);
+      const bOutcomes = summarizeAssignedOutcomes(rows.filter(row => row.arm === a.arm), { ...opts, assignedTaskIds });
+      const missingMeasurements = tOutcomes.missingMeasurements + bOutcomes.missingMeasurements;
+      const status = missingMeasurements ? 'missing-grade' : sampling.unit === 'unregistered' ? 'unregistered-policy'
+        : sampling.independentUnits! < 2 ? 'insufficient-independent-units' : 'measured';
+      const efficiencyMeasured = !!tPoint && !!bPoint;
       deltas.push({
         suite,
         treatment: treatmentArm,
         baseline: a.arm,
-        accuracyDelta: treatment.passAt1 - a.passAt1,
+        accuracyDelta: treatment.passAt1 === null || a.passAt1 === null ? null : treatment.passAt1 - a.passAt1,
+        accuracyDeltaCi: status === 'measured' ? pairedInterval(
+          bOutcomes.counts.map(task => task.c / task.n), tOutcomes.counts.map(task => task.c / task.n), assignedTaskIds, sampling) : null,
+        uncertainty: { status, taskPairs: assignedTaskIds.length, independentUnits: sampling.independentUnits,
+          missingMeasurements, baselineObservedAttempts: a.attempts, treatmentObservedAttempts: treatment.attempts,
+          baselineAbsentAttempts: bOutcomes.absentAttempts, treatmentAbsentAttempts: tOutcomes.absentAttempts },
+        efficiencyMeasured,
         costRatio:
-          treatment.cost.costPerResolved !== null && a.cost.costPerResolved !== null && a.cost.costPerResolved !== 0
+          efficiencyMeasured && treatment.cost.costPerResolved !== null && a.cost.costPerResolved !== null && a.cost.costPerResolved !== 0
             ? treatment.cost.costPerResolved / a.cost.costPerResolved
             : null,
-        costFraction: bPoint.cost === 0 ? null : tPoint.cost / bPoint.cost,
-        paretoDominates: treatment.passAt1 >= a.passAt1 && tPoint.cost <= bPoint.cost && (treatment.passAt1 > a.passAt1 || tPoint.cost < bPoint.cost),
+        costFraction: !efficiencyMeasured || bPoint!.cost === 0 ? null : tPoint!.cost / bPoint!.cost,
+        paretoDominates: efficiencyMeasured && treatment.passAt1! >= a.passAt1! && tPoint!.cost <= bPoint!.cost &&
+          (treatment.passAt1! > a.passAt1! || tPoint!.cost < bPoint!.cost),
       });
     }
   }
@@ -284,5 +322,6 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
     deltas,
     isoBudget: { ok: iso.ok, budgetTokens: iso.budgetTokens, violations: iso.violations },
     protocolKs: ks,
+    sampling,
   };
 }
