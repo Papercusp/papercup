@@ -151,6 +151,13 @@ export async function upsertOwnedExternalTriggerSource(
                  WHEN data_sources.config @> '{"capabilityEnabled":false}'::jsonb THEN 'disabled'
                  ELSE EXCLUDED.status
                END,
+      -- The connect just re-read who the account is (a re-pasted token can belong to someone
+      -- else), so its label wins; every other accumulated config key is kept as it was.
+      config = CASE
+                 WHEN EXCLUDED.config->>'accountLabel' IS NOT NULL
+                   THEN data_sources.config || jsonb_build_object('accountLabel', EXCLUDED.config->'accountLabel')
+                 ELSE data_sources.config
+               END,
       destination_policy = CASE
                              WHEN data_sources.destination_policy = '{}'::jsonb THEN EXCLUDED.destination_policy
                              ELSE data_sources.destination_policy

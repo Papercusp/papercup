@@ -39,6 +39,7 @@ import {
   type OwnedExternalTriggerSourceRow,
 } from '../external-triggers/source-store';
 import { providerRegistry, readyProviderRegistry, type RegisteredProvider } from './provider-registry';
+import { fetchProviderIdentity } from './provider-identity';
 
 export interface ConnectionOwner {
   ownerUserId: string;
@@ -394,50 +395,15 @@ function descriptorGroupMembers(plugin: string): RegisteredProvider[] {
     .sort((a, b) => a.descriptor.id.localeCompare(b.descriptor.id));
 }
 
-function readJsonPath(value: unknown, path: string): unknown {
-  let current: unknown = value;
-  for (const segment of path.split('.')) {
-    if (!current || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
-}
-
-/** Account identity from the descriptor's identity endpoint, fetched by the host with the fresh token. */
+/** Account identity from the group's declared identity endpoint, fetched by the host with the fresh token. */
 async function resolveDescriptorAccount(
   members: RegisteredProvider[],
   errorPrefix: string,
   accessToken: string,
 ): Promise<ConnectionAccount> {
   const holder = members.find((entry) => entry.descriptor.oauth?.identity);
-  const identity = holder?.descriptor.oauth?.identity;
-  if (!holder || !identity) throw new Error(`${errorPrefix}_identity_endpoint_missing`);
-  const url = new URL(identity.url);
-  if (url.protocol !== 'https:' || !providerEgressAllows(holder.descriptor.egressHosts, url.hostname)) {
-    throw new Error(`${errorPrefix}_identity_endpoint_not_allowed`);
-  }
-  // POST + JSON body for identity endpoints that only answer a request body (a GraphQL API).
-  const post = identity.method === 'POST';
-  const response = await fetch(url, {
-    method: post ? 'POST' : 'GET',
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      accept: 'application/json',
-      ...(post ? { 'content-type': 'application/json' } : {}),
-    },
-    ...(post && identity.body !== undefined ? { body: identity.body } : {}),
-  });
-  if (!response.ok) throw new Error(`${errorPrefix}_identity_${response.status}`);
-  const body = (await response.json()) as unknown;
-  const id = readJsonPath(body, identity.idField);
-  if ((typeof id !== 'string' && typeof id !== 'number') || String(id).trim() === '') {
-    throw new Error(`${errorPrefix}_identity_unavailable`);
-  }
-  const display = identity.displayNameField ? readJsonPath(body, identity.displayNameField) : undefined;
-  return {
-    providerAccountId: String(id).trim(),
-    ...(typeof display === 'string' && display.trim() ? { displayName: display.trim() } : {}),
-  };
+  if (!holder) throw new Error(`${errorPrefix}_identity_endpoint_missing`);
+  return fetchProviderIdentity(holder.descriptor, accessToken, errorPrefix);
 }
 
 /** Adapter for a `provider:<group>` plugin built from the registered descriptors in that group. */

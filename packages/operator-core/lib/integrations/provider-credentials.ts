@@ -13,9 +13,12 @@
  *   - reports only whether each field is configured and when it was saved, never the value, its
  *     length, or a prefix;
  *   - hands the value to exactly two host paths: `host.fetch` (as a bearer token for the field's
- *     declared `hosts`) and host-held ingress (P-003). Provider code never receives it.
+ *     declared `hosts`) and host-held ingress (P-003). Provider code never receives it. The
+ *     account lookup on connect (D-016) is the host itself calling the package's identity endpoint
+ *     on one of the field's declared hosts, the same rule host.fetch follows.
  */
 import {
+  providerCredentialForHost,
   providerCredentialValueIssue,
   type ProviderCredentialField,
   type ProviderDescriptor,
@@ -24,9 +27,11 @@ import type postgres from 'postgres';
 import { fsTokenStorage } from '../oauth/storage-fs';
 import type { TokenStorage } from '../oauth/token';
 import {
+  DEFAULT_SOURCE_TOKEN_HARNESS,
   disconnectOwnedExternalTriggerSources,
   upsertOwnedExternalTriggerSource,
 } from '../external-triggers/source-store';
+import { fetchProviderIdentity, type ProviderAccountIdentity } from './provider-identity';
 
 const STORE_PREFIX = 'provider-setup:';
 const SAVED_AT_SUFFIX = '__saved_at';
@@ -152,6 +157,48 @@ export interface ProviderCredentialSourceOwner {
   ownerUserId: string;
 }
 
+export interface CredentialIdentityOptions {
+  harness?: string;
+  storage?: TokenStorage;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * The account a set of pasted credentials belongs to (plan cupboard-distributable-integrations-
+ * 2026-10-10 D-016). When the package declares an identity endpoint (`oauth.identity`) on a host
+ * one of its credentials is scoped to, the host asks that endpoint with that credential, exactly
+ * as the OAuth connect does with a fresh token. A credential is never sent to a host it does not
+ * declare, so a package without such a field gets no request and no label.
+ */
+async function credentialAccount(
+  descriptor: Pick<ProviderDescriptor, 'id' | 'setup' | 'oauth' | 'egressHosts'>,
+  opts: CredentialIdentityOptions,
+): Promise<{ account: ProviderAccountIdentity | null; error: string | null }> {
+  const identityUrl = descriptor.oauth?.identity?.url;
+  if (!identityUrl) return { account: null, error: null };
+  const errorPrefix = `provider_${descriptor.id.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`;
+  let hostname: string;
+  try {
+    hostname = new URL(identityUrl).hostname;
+  } catch {
+    return { account: null, error: `${errorPrefix}_identity_endpoint_invalid` };
+  }
+  const field = providerCredentialForHost(descriptor, hostname);
+  if (!field) return { account: null, error: null };
+  const secret = await readProviderCredentialValue(
+    descriptor,
+    opts.harness ?? DEFAULT_SOURCE_TOKEN_HARNESS,
+    field.key,
+    opts.storage,
+  );
+  if (!secret) return { account: null, error: null };
+  try {
+    return { account: await fetchProviderIdentity(descriptor, secret, errorPrefix, opts.fetchImpl), error: null };
+  } catch (error) {
+    return { account: null, error: error instanceof Error ? error.message : `${errorPrefix}_identity_failed` };
+  }
+}
+
 /**
  * Keep the owner's source for a credentials provider in step with what is stored (P-005).
  *
@@ -165,19 +212,29 @@ export interface ProviderCredentialSourceOwner {
 export async function syncProviderCredentialSource(
   sql: postgres.Sql,
   owner: ProviderCredentialSourceOwner,
-  descriptor: Pick<ProviderDescriptor, 'id'>,
+  descriptor: Pick<ProviderDescriptor, 'id' | 'setup' | 'oauth' | 'egressHosts'>,
   credentials: readonly ProviderCredentialStatus[],
+  opts: CredentialIdentityOptions = {},
 ): Promise<'connected' | 'disconnected'> {
   const credentialRef = providerSetupStoreKey(descriptor.id);
   if (credentials.length > 0 && credentials.every((field) => field.configured)) {
-    await upsertOwnedExternalTriggerSource(sql, {
+    const identity = await credentialAccount(descriptor, opts);
+    const source = await upsertOwnedExternalTriggerSource(sql, {
       workspaceId: owner.workspaceId,
       kind: descriptor.id,
       ownerUserId: owner.ownerUserId,
       credentialRef,
       status: 'connected',
+      ...(identity.account?.displayName ? { config: { accountLabel: identity.account.displayName } } : {}),
       createdBy: owner.ownerUserId,
     });
+    // A credential the provider's identity endpoint refuses still connects (its format passed), but
+    // the refusal is recorded on the source where the card reads it, never dropped.
+    if (identity.error) {
+      await sql`
+        UPDATE harness_shared.data_sources SET last_error = ${identity.error}, updated_at = now()
+         WHERE id = ${source.id}::uuid`;
+    }
     return 'connected';
   }
   await disconnectOwnedExternalTriggerSources(sql, owner.workspaceId, owner.ownerUserId, [descriptor.id], credentialRef);

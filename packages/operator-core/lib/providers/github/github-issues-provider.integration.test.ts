@@ -44,6 +44,8 @@ import {
   type RegisteredProvider,
 } from '../../integrations/provider-registry';
 import { descriptorConnectionAdapter, descriptorOAuthPlugin } from '../../integrations/connection-lifecycle';
+import { saveProviderCredentials, syncProviderCredentialSource } from '../../integrations/provider-credentials';
+import type { TokenStorage } from '../../oauth/token';
 import { setTicketSourceConfig } from '../../integrations/ticket-integrations';
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../../external-triggers/ingestion';
 import { VAULT_DATATYPES } from '../../personal-vault/live-sink';
@@ -449,6 +451,73 @@ describe('a freshly connected source syncs tickets without hand-written SQL (WI-
       vi.unstubAllGlobals();
       live.unregister(KIND);
     }
+  });
+
+  // D-016: a pasted personal access token gets the same label. The package declares the token for
+  // api.github.com, which is its identity host, so the host asks /user with the token. A re-pasted
+  // token for another account replaces the label; a token GitHub refuses still connects, with the
+  // refusal recorded on the source; a token scoped to another host is never sent to /user.
+  it('labels a personal-access-token connection with the token\'s login, re-labels on a new token, and records a refusal (P-010, D-016)', async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    const storage: TokenStorage = {
+      async read(plugin, harness) {
+        return { ...(store.get(`${plugin}@${harness}`) ?? {}) };
+      },
+      async update(plugin, harness, patch) {
+        const next = { ...(store.get(`${plugin}@${harness}`) ?? {}) };
+        for (const [key, value] of Object.entries(patch)) {
+          if (value === null) delete next[key];
+          else next[key] = value;
+        }
+        store.set(`${plugin}@${harness}`, next);
+      },
+    };
+    const TOKEN_HARNESS = 'github-pat-it';
+    const accounts: Record<string, { login: string; id: number }> = {
+      ghp_fixtureOctocatAAAAAAAAAAAA: { login: 'octocat', id: 583231 },
+      ghp_fixtureHubotBBBBBBBBBBBBBB: { login: 'hubot', id: 7 },
+    };
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get('authorization');
+      requests.push({ url: String(input), authorization });
+      const account = accounts[(authorization ?? '').replace(/^Bearer /, '')];
+      return account
+        ? Response.json(account)
+        : new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 });
+    }) as typeof fetch;
+    const descriptor = provider.descriptor;
+    const owner = { workspaceId: WS, ownerUserId: alice };
+    const paste = async (target: typeof descriptor, token: string) => {
+      const statuses = await saveProviderCredentials(target, TOKEN_HARNESS, { personal_access_token: token }, { storage });
+      return syncProviderCredentialSource(sql, owner, target, statuses, { harness: TOKEN_HARNESS, storage, fetchImpl });
+    };
+    const credentialSource = async () => {
+      const [row] = await sql<Array<{ config: Record<string, unknown>; status: string; last_error: string | null }>>`
+        SELECT config, status, last_error FROM harness_shared.data_sources
+         WHERE workspace_id = ${WS} AND kind = ${KIND} AND owner_user_id = ${alice}::uuid
+           AND credential_ref = ${`provider-setup:${KIND}`}`;
+      return row;
+    };
+
+    expect(await paste(descriptor, 'ghp_fixtureOctocatAAAAAAAAAAAA')).toBe('connected');
+    expect(requests).toEqual([{ url: 'https://api.github.com/user', authorization: 'Bearer ghp_fixtureOctocatAAAAAAAAAAAA' }]);
+    expect(await credentialSource()).toMatchObject({ config: { accountLabel: 'octocat' }, status: 'connected', last_error: null });
+
+    expect(await paste(descriptor, 'ghp_fixtureHubotBBBBBBBBBBBBBB')).toBe('connected');
+    expect(await credentialSource()).toMatchObject({ config: { accountLabel: 'hubot' }, status: 'connected', last_error: null });
+
+    expect(await paste(descriptor, 'ghp_fixtureRefusedCCCCCCCCCCCC')).toBe('connected');
+    expect(await credentialSource()).toMatchObject({ status: 'connected', last_error: 'provider_github_issues_identity_401' });
+
+    // A token declared for a different host is never sent to the identity endpoint.
+    requests.length = 0;
+    const otherHost = {
+      ...descriptor,
+      setup: { credentials: descriptor.setup!.credentials!.map((field) => ({ ...field, hosts: ['github.com'] })) },
+    };
+    expect(await paste(otherHost, 'ghp_fixtureOctocatAAAAAAAAAAAA')).toBe('connected');
+    expect(requests).toEqual([]);
   });
 });
 
