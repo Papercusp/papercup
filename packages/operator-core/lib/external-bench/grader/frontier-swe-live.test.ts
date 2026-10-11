@@ -89,6 +89,20 @@ describe('liveBuildVerifierCommand', () => {
     ]);
   });
 
+  it('v2 oracle: passes the per-run HARBOR_ORACLE_FLAG to the verifier (the v2 verifier checks the /app marker against it)', () => {
+    const r = liveBuildVerifierCommand({ instanceId: 'i', envRef: 'arm', verifierRef: 'v', task: v2Task(), oracle: true, oracleFlag: 'f00d' });
+    expect(r.args).toContain('HARBOR_ORACLE_FLAG=f00d');
+    expect(r.args).toContain('HARBOR_ORACLE_MODE=1');
+    // the env flags precede the container ref (docker exec option order)
+    expect(r.args.indexOf('HARBOR_ORACLE_FLAG=f00d')).toBeLessThan(r.args.indexOf('v'));
+  });
+
+  it('v2 oracle without a flag is REFUSED (it would be scored as an ordinary candidate); non-oracle never carries one', () => {
+    expect(() => liveBuildVerifierCommand({ instanceId: 'i', envRef: 'arm', verifierRef: 'v', task: v2Task(), oracle: true })).toThrow(/oracleFlag/);
+    const normal = liveBuildVerifierCommand({ instanceId: 'i', envRef: 'arm', verifierRef: 'v', task: v2Task(), oracleFlag: 'f00d' });
+    expect(normal.args.join(' ')).not.toContain('HARBOR_ORACLE');
+  });
+
   it('v2: refuses to verify inside the arm container, and refuses an unresolvable ${…} env template', () => {
     expect(() => liveBuildVerifierCommand({ instanceId: 'i', envRef: 'arm', verifierRef: 'arm', task: v2Task() })).toThrow(/inside the arm/);
     expect(() =>
@@ -150,8 +164,8 @@ describe('livePrepareSeparateVerifier (v2, D-003 §1-2)', () => {
     const i = (s: string) => flat.findIndex((f) => f.includes(s));
     expect(flat).toContain(`exec arm tar -C /app --exclude=**/.git/** --exclude=**/*.tmp -cf /tmp/pc-fswe-artifact-0.tar .`);
     // The verifier's own /app is EMPTIED before the arm's copy lands (never graded against a baked-in copy).
-    expect(i(`exec ${v} rm -rf -- /app`)).toBeGreaterThan(-1);
-    expect(i(`exec ${v} rm -rf -- /app`)).toBeLessThan(i(`exec ${v} tar -C /app -xf`));
+    expect(i(`exec -w / ${v} rm -rf -- /app`)).toBeGreaterThan(-1);
+    expect(i(`exec -w / ${v} rm -rf -- /app`)).toBeLessThan(i(`exec -w / ${v} tar -C /app -xf`));
     await env.release();
     expect(calls.at(-1)).toEqual(['rm', '-f', v]);
   });
@@ -221,7 +235,31 @@ describe('copyFrontierSweArtifact', () => {
   it('an artifact absent in the arm leaves the verifier path emptied', async () => {
     const { exec, calls } = fakeDocker({});
     expect(await copyFrontierSweArtifact(exec, 'arm', 'v', { source: '/app/out/', exclude: [] }, '/tmp/h', 1)).toBe('absent');
-    expect(calls.map((c) => c.join(' '))).toEqual(expect.arrayContaining(['exec v rm -rf -- /app/out', 'exec v mkdir -p /app/out']));
+    expect(calls.map((c) => c.join(' '))).toEqual(expect.arrayContaining(['exec -w / v rm -rf -- /app/out', 'exec -w / v mkdir -p /app/out']));
+  });
+
+  it('survives emptying the verifier image WORKDIR: every exec into the verifier runs from / (P-007 regression)', async () => {
+    // Model the real failure: once /app (the v2 image WORKDIR) is deleted, a docker exec that does not override
+    // its cwd dies before running anything — `chdir to cwd ("/app")`, exit 127.
+    const calls: string[][] = [];
+    let workdirGone = false;
+    const exec: ProcExec = async (_cmd, args) => {
+      calls.push(args);
+      const ok = { stdout: '', stderr: '', code: 0 };
+      if (args[0] !== 'exec') return ok;
+      const target = args[args[1] === '-w' ? 3 : 1];
+      if (target === 'arm') return args.includes('test') ? { ...ok, code: args.includes('-d') ? 0 : 1 } : ok;
+      if (args[1] !== '-w' && workdirGone) {
+        return { stdout: 'OCI runtime exec failed: chdir to cwd ("/app") set in config.json failed', stderr: '', code: 127 };
+      }
+      if (args.includes('rm') && args.includes('/app')) workdirGone = true;
+      if (args.includes('mkdir') && args.includes('/app')) workdirGone = false;
+      return ok;
+    };
+    await expect(copyFrontierSweArtifact(exec, 'arm', 'v', { source: '/app/', exclude: [] }, '/tmp/h', 0)).resolves.toBe('directory');
+    const verifierExecs = calls.filter((c) => c[0] === 'exec' && c.includes('v'));
+    expect(verifierExecs.length).toBeGreaterThan(0);
+    for (const c of verifierExecs) expect(c.slice(0, 3)).toEqual(['exec', '-w', '/']);
   });
 
   it('refuses a root, relative or ..-bearing source (it is rm -rf’d in the verifier)', async () => {

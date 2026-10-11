@@ -322,6 +322,11 @@ export interface FrontierSweGraderConfig {
     /** The matched {@link BenchTask} (its `graderMeta` carries the per-task `verifierCmd` / `rewardPath`). */
     task?: BenchTask;
     oracle?: boolean;
+    /**
+     * The per-run `HARBOR_ORACLE_FLAG` secret a v2 oracle run shares between `solve.sh` (which writes it to
+     * `/app/.harbor_oracle_marker`) and the verifier (which checks the marker against it). Oracle mode only.
+     */
+    oracleFlag?: string;
   }) => { cmd: string; args: string[]; cwd?: string; env?: Record<string, string> };
   /**
    * Read the reward the verifier wrote for one task, from `verifierRef`. For v2 it MUST return `files` (absent vs

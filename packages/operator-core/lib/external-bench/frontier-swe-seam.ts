@@ -41,6 +41,11 @@ export interface FrontierSweSeamConfig {
   exec?: ProcExec;
   /** Run the verifier in oracle mode (HARBOR_ORACLE_MODE=1) — the gold/positive control path. Default false. */
   oracle?: boolean;
+  /**
+   * The per-run `HARBOR_ORACLE_FLAG` secret for a v2 oracle run — the SAME value the driver passed to `solve.sh`.
+   * Required with `oracle` for v2 tasks (the verifier refuses to treat the run as gold without it).
+   */
+  oracleFlag?: string;
   /** Extra `docker run` flags (e.g. resource limits) the driver wants applied uniformly. Default none. */
   extraRunArgs?: string[];
   /**
@@ -72,13 +77,23 @@ const NO_HOST_FS: GraderFs = {
  * The protected set for one task: {@link FRONTIER_SWE_PROTECTED_PATHS} plus the task's optional
  * `graderMeta.protectedPaths` (verifier fixtures under /app; /app itself is the submission and cannot be
  * protected wholesale). A malformed declaration is `unverifiable`, never silently ignored.
+ *
+ * `oracle` (the gold control, P-007): the reference solution IS the attempt, and Harbor's oracle agent uploads it
+ * to `/solution` before running it, so `/solution` is the one protected path an oracle run legitimately writes.
+ * Every other protected path (the verifier, `/logs/verifier`, task fixtures) stays protected in oracle mode too.
  */
-export async function checkFrontierSweIntegrity(exec: ProcExec, task: BenchTask, containerId: string): Promise<EvidenceIntegrity> {
+export async function checkFrontierSweIntegrity(
+  exec: ProcExec,
+  task: BenchTask,
+  containerId: string,
+  opts: { oracle?: boolean } = {},
+): Promise<EvidenceIntegrity> {
+  const base = opts.oracle ? FRONTIER_SWE_PROTECTED_PATHS.filter((p) => p !== '/solution') : [...FRONTIER_SWE_PROTECTED_PATHS];
   const declared = task.graderMeta?.['protectedPaths'];
   if (declared !== undefined && !(Array.isArray(declared) && declared.every((p) => typeof p === 'string'))) {
-    return { verdict: 'unverifiable', protectedPaths: [...FRONTIER_SWE_PROTECTED_PATHS], error: 'graderMeta.protectedPaths must be an array of strings' };
+    return { verdict: 'unverifiable', protectedPaths: base, error: 'graderMeta.protectedPaths must be an array of strings' };
   }
-  return checkContainerEvidenceIntegrity(exec, containerId, [...FRONTIER_SWE_PROTECTED_PATHS, ...((declared as string[] | undefined) ?? [])]);
+  return checkContainerEvidenceIntegrity(exec, containerId, [...base, ...((declared as string[] | undefined) ?? [])]);
 }
 
 /** Build FrontierSWE's CloneGradeSeam — supplied once to the shared topology runtime; every arm uses it identically. */
@@ -88,7 +103,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
     {
       version: cfg.version,
       prepareVerifierEnv: cfg.prepareVerifierEnv ?? livePrepareSeparateVerifier,
-      buildVerifierCommand: (ctx) => liveBuildVerifierCommand({ ...ctx, oracle: cfg.oracle }),
+      buildVerifierCommand: (ctx) => liveBuildVerifierCommand({ ...ctx, oracle: cfg.oracle, oracleFlag: cfg.oracleFlag }),
       readReward: liveReadReward,
     },
     { exec, fs: NO_HOST_FS },
@@ -117,7 +132,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
     async grade(task: BenchTask, handle: FrontierSweEnvHandle) {
       // Pre-grade evidence integrity (P-020 / D-008) — FIRST, before v1 staging legitimately writes /tests and
       // /solution into this container. Tampering → 'invalid' (terminal, disclosed); an unreadable diff → 'error'.
-      const integrity = await checkFrontierSweIntegrity(exec, task, handle.containerId);
+      const integrity = await checkFrontierSweIntegrity(exec, task, handle.containerId, { oracle: cfg.oracle });
       if (integrity.verdict === 'tampered') return { resolved: null, score: null, graderStatus: 'invalid', detail: { integrity } };
       if (integrity.verdict === 'unverifiable') return { resolved: null, score: null, graderStatus: 'error', detail: { integrity } };
       const separate = task.graderMeta?.['verifierEnvironmentMode'] === 'separate';

@@ -40,10 +40,15 @@ const isSeparate = (task: BenchTask | undefined) => metaOf(task).verifierEnviron
 /**
  * Run the task's own verifier via `docker exec` in `verifierRef` — the separate verifier container (v2) or the
  * arm's own container (v1). v2 passes `[verifier.env]` and runs as root after ensuring `/logs/verifier` exists.
- * Oracle mode sets HARBOR_ORACLE_MODE=1. A `${…}` template in `[verifier.env]` is REFUSED (Harbor resolves those
- * from the host env; passing them through literally would grade with the wrong configuration).
+ * Oracle mode sets HARBOR_ORACLE_MODE=1 (the v1 convention). A v2 oracle run ALSO needs the per-run
+ * `HARBOR_ORACLE_FLAG` secret: v2 `solve.sh` writes it to `/app/.harbor_oracle_marker`, and the v2 verifier treats
+ * the run as the oracle only when that marker matches the flag in ITS env (e.g. spice-circuit-simulator-in-rust
+ * `verify.py detect_oracle`, read from its verifier image 2026-10-11). Without the flag a v2 gold run is silently
+ * scored as an ordinary candidate, so a separate-mode oracle call without `oracleFlag` is REFUSED.
+ * A `${…}` template in `[verifier.env]` is REFUSED (Harbor resolves those from the host env; passing them through
+ * literally would grade with the wrong configuration).
  */
-export const liveBuildVerifierCommand: FrontierSweGraderConfig['buildVerifierCommand'] = ({ envRef, verifierRef, task, oracle }) => {
+export const liveBuildVerifierCommand: FrontierSweGraderConfig['buildVerifierCommand'] = ({ envRef, verifierRef, task, oracle, oracleFlag }) => {
   const meta = metaOf(task);
   const verifierCmd = (meta.verifierCmd as string | undefined) ?? DEFAULT_VERIFIER_CMD;
   const args = ['exec'];
@@ -57,7 +62,13 @@ export const liveBuildVerifierCommand: FrontierSweGraderConfig['buildVerifierCom
       args.push('-e', `${k}=${v}`);
     }
   }
-  if (oracle) args.push('-e', 'HARBOR_ORACLE_MODE=1');
+  if (oracle) {
+    if (isSeparate(task) && !oracleFlag) {
+      throw new Error('a v2 (separate-mode) oracle run needs the per-run oracleFlag (HARBOR_ORACLE_FLAG) — without it the verifier scores the gold run as an ordinary candidate');
+    }
+    args.push('-e', 'HARBOR_ORACLE_MODE=1');
+    if (oracleFlag) args.push('-e', `HARBOR_ORACLE_FLAG=${oracleFlag}`);
+  }
   // `bash -lc <cmd>` runs in the CONTAINER's shell (not the host); docker is invoked shell-free via execFile.
   const inContainer = isSeparate(task) ? `mkdir -p /logs/verifier && ${verifierCmd}` : verifierCmd;
   args.push(verifierRef, 'bash', '-lc', inContainer);
@@ -107,7 +118,8 @@ export const liveReadReward: FrontierSweGraderConfig['readReward'] = async ({ ve
 /** Run a docker command and throw a labelled error on a non-zero exit. */
 async function docker(exec: ProcExec, args: string[], what: string): Promise<string> {
   const r = await exec('docker', args);
-  if (r.code !== 0) throw new Error(`${what} failed (docker ${args[0]} exit ${r.code}: ${r.stderr.slice(0, 300)})`);
+  // The OCI runtime's exec failure can land on stdout with an empty stderr — report whichever carries the reason.
+  if (r.code !== 0) throw new Error(`${what} failed (docker ${args[0]} exit ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(0, 300)})`);
   return r.stdout;
 }
 
@@ -135,29 +147,33 @@ export async function copyFrontierSweArtifact(
   index: number,
 ): Promise<'directory' | 'file' | 'absent'> {
   const src = artifactPath(artifact.source);
+  // Every exec INTO the verifier runs from `/`: emptying `src` can delete the image's WORKDIR (it IS /app for v2
+  // images), and docker exec then fails before running anything — `chdir to cwd ("/app") … no such file or
+  // directory`, exit 127 (measured 2026-10-11 on the spice-circuit-simulator-in-rust verifier image, P-007).
+  const inVerifier = (...cmd: string[]) => ['exec', '-w', '/', to, ...cmd];
   const isDir = await probePath(exec, from, '-d', src);
   const isFile = !isDir && (await probePath(exec, from, '-e', src));
-  await docker(exec, ['exec', to, 'rm', '-rf', '--', src], `empty ${src} in the verifier`);
+  await docker(exec, inVerifier('rm', '-rf', '--', src), `empty ${src} in the verifier`);
   if (isDir) {
     const inner = `/tmp/pc-fswe-artifact-${index}.tar`;
     const hostTar = join(hostDir, `artifact-${index}.tar`);
     await docker(exec, ['exec', from, 'tar', '-C', src, ...artifact.exclude.map((g) => `--exclude=${g}`), '-cf', inner, '.'], `tar ${src} in the arm`);
     await docker(exec, ['cp', `${from}:${inner}`, hostTar], `copy ${src} out of the arm`);
     await exec('docker', ['exec', from, 'rm', '-f', inner]);
-    await docker(exec, ['exec', to, 'mkdir', '-p', src], `recreate ${src} in the verifier`);
+    await docker(exec, inVerifier('mkdir', '-p', src), `recreate ${src} in the verifier`);
     await docker(exec, ['cp', hostTar, `${to}:${inner}`], `copy ${src} into the verifier`);
-    await docker(exec, ['exec', to, 'tar', '-C', src, '-xf', inner], `untar ${src} in the verifier`);
-    await exec('docker', ['exec', to, 'rm', '-f', inner]);
+    await docker(exec, inVerifier('tar', '-C', src, '-xf', inner), `untar ${src} in the verifier`);
+    await exec('docker', inVerifier('rm', '-f', inner));
     return 'directory';
   }
   if (isFile) {
     const hostFile = join(hostDir, `artifact-${index}.file`);
     await docker(exec, ['cp', `${from}:${src}`, hostFile], `copy ${src} out of the arm`);
-    await docker(exec, ['exec', to, 'mkdir', '-p', posix.dirname(src)], `create ${posix.dirname(src)} in the verifier`);
+    await docker(exec, inVerifier('mkdir', '-p', posix.dirname(src)), `create ${posix.dirname(src)} in the verifier`);
     await docker(exec, ['cp', hostFile, `${to}:${src}`], `copy ${src} into the verifier`);
     return 'file';
   }
-  if (!posix.extname(src)) await docker(exec, ['exec', to, 'mkdir', '-p', src], `recreate empty ${src} in the verifier`);
+  if (!posix.extname(src)) await docker(exec, inVerifier('mkdir', '-p', src), `recreate empty ${src} in the verifier`);
   return 'absent';
 }
 

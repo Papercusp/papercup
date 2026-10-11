@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { BenchTask } from './types';
 import type { ProcExec } from './grader/swe-bench-pro';
-import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
+import { checkFrontierSweIntegrity, makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
 
 function task(over: Record<string, unknown> = {}): BenchTask {
   return {
@@ -143,5 +143,31 @@ describe('makeFrontierSweCloneGradeSeam', () => {
     await expect(
       makeFrontierSweCloneGradeSeam({ version: 'v', exec: failing.exec }).teardown({ containerId: 'cid', image: 'i', instanceId: 't' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('checkFrontierSweIntegrity — oracle mode (the gold control, P-007)', () => {
+  /** A docker stub whose `diff` reports exactly what Harbor's oracle stage writes: /solution plus the /app marker. */
+  function diffExec(lines: string[]): ProcExec {
+    return async (_cmd, args) =>
+      args[0] === 'diff' ? { stdout: `${lines.join('\n')}\n`, stderr: '', code: 0 } : { stdout: '', stderr: '', code: 0 };
+  }
+  const oracleWrites = ['A /solution', 'A /solution/solve.sh', 'C /app', 'A /app/.harbor_oracle_marker'];
+
+  it('oracle mode tolerates the staged /solution (Harbor uploads it before running solve.sh)', async () => {
+    const r = await checkFrontierSweIntegrity(diffExec(oracleWrites), task(), 'cid', { oracle: true });
+    expect(r.verdict).toBe('clean');
+    expect(r.protectedPaths).not.toContain('/solution');
+  });
+
+  it('a non-oracle run that writes /solution is still tampered', async () => {
+    const r = await checkFrontierSweIntegrity(diffExec(oracleWrites), task(), 'cid');
+    expect(r.verdict).toBe('tampered');
+    expect(r.protectedPaths).toContain('/solution');
+  });
+
+  it('oracle mode keeps every OTHER protected path protected', async () => {
+    const r = await checkFrontierSweIntegrity(diffExec([...oracleWrites, 'A /logs/verifier/reward.txt']), task(), 'cid', { oracle: true });
+    expect(r.verdict).toBe('tampered');
   });
 });
