@@ -42,6 +42,8 @@ import { toIso } from '../_pg-timestamp';
 
 const DEFAULT_LIMIT = 30;
 const OUTPUT_TAIL_CHARS = 800;
+/** Inline budget for a bounded row's mutation diff; the full diff stays in the ledger row. */
+export const MUTANT_DIFF_INLINE_CHARS = 600;
 const NO_RUNS_RECORDED_REASON = 'no_runs_recorded' as const;
 
 /**
@@ -251,7 +253,18 @@ function projectTestingRun(row: unknown, outputTailChars: number): { row: Record
     const summary = Object.fromEntries(summaryKeys.map(key => [key, details[key]]));
     const omitted = { passedCaseTitlesOmitted: 0, failedCaseTitlesOmitted: 0,
       fieldsOmitted: Object.keys(details).filter(key => !summaryKeys.includes(key)
-        && key !== 'passedCaseTitles' && key !== 'failedCaseTitles') };
+        && key !== 'passedCaseTitles' && key !== 'failedCaseTitles' && key !== 'mutation') };
+    // The mutation descriptor is what makes a probe row auditable (plan
+    // mutation-probe-evidence-value-2026-10-11 R-1): keep every field inline and clip
+    // only the diff body, flagging the clip, rather than drop it into fieldsOmitted.
+    const mutation = details.mutation;
+    if (mutation && typeof mutation === 'object' && !Array.isArray(mutation)) {
+      const m = mutation as Record<string, unknown>;
+      const diff = typeof m.mutantDiff === 'string' ? m.mutantDiff : '';
+      summary.mutation = diff.length > MUTANT_DIFF_INLINE_CHARS
+        ? { ...m, mutantDiff: diff.slice(0, MUTANT_DIFF_INLINE_CHARS), mutantDiffTruncated: true }
+        : m;
+    }
     for (const key of ['passedCaseTitles', 'failedCaseTitles'] as const) {
       const titles = details[key];
       if (!Array.isArray(titles)) continue;

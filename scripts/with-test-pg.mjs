@@ -421,6 +421,8 @@ if (isolatedRuntime) {
     // to distinguish an expected mutant failure from an ordinary dirty run.
     'PAPERCUSP_MUTATION_PROBE', 'PAPERCUSP_MUTATION_PHASE',
     'PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', 'PAPERCUSP_MUTATION_PROBE_SUBJECT',
+    // What the probe mutated (libs/test-config/src/mutation-descriptor.ts).
+    'PAPERCUSP_MUTATION_DESCRIPTOR',
   ]);
   for (const key of Object.keys(childEnv)) {
     if (evidenceKeys.has(key)) continue;
