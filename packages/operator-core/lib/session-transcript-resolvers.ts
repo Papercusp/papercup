@@ -124,6 +124,47 @@ export async function readClosedCodexSessionUsage(sql: Sql, input: {
   } catch { return fail('the complete native source and canonical frontier could not be verified'); }
 }
 
+/** Exact native user input observed in a completed source turn. This proves
+ * recording in the native turn, not a provider request body or billed send.
+ * The host supplies the source indices; candidate text cannot select a ref. */
+export async function readClosedCodexTurnInput(sql: Sql, input: {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly codexHome: string;
+  readonly nativeTurnId: string; readonly recordIndex: number; readonly contentIndex: number;
+}): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeTurnId: string;
+  recordIndex: number; contentIndex: number; at: string; text: string } | null> {
+  const binding = { ...input };
+  if ([binding.workspaceId, binding.nativeSessionId, binding.codexHome, binding.nativeTurnId].some(v => typeof v !== 'string' || !v.trim()) ||
+      ![binding.recordIndex, binding.contentIndex].every(n => Number.isSafeInteger(n) && n >= 0)) return null;
+  try {
+    const source = await readCompleteCodexSource(binding);
+    const population = await readClosedCodexSessionUsage(sql, binding);
+    if (!population.ok || population.sourceSha256 !== source.sourceSha256 || population.file !== source.file ||
+        !population.nativeTurnIds.includes(binding.nativeTurnId)) return null;
+    // The canonical population proof already rejects malformed/partial records
+    // and foreign headers. Keep the complete record ordinal, including header.
+    const records = source.transcript.slice(0, -1).split('\n').map(line => JSON.parse(line));
+    const record = records[binding.recordIndex];
+    const payload = record?.payload, content = payload?.content?.[binding.contentIndex];
+    if (record?.type !== 'response_item' || payload?.type !== 'message' || payload.role !== 'user' ||
+        !Array.isArray(payload.content) || content?.type !== 'input_text' || typeof content.text !== 'string' || !content.text.length ||
+        typeof record.timestamp !== 'string' || !Number.isFinite(Date.parse(record.timestamp)) ||
+        payload.turn_id !== undefined && payload.turn_id !== binding.nativeTurnId) return null;
+    let active: string | null = null, started = false;
+    for (const row of records.slice(0, binding.recordIndex)) {
+      if (row.type === 'event_msg' && row.payload.type === 'task_started') {
+        active = typeof row.payload.turn_id === 'string' ? row.payload.turn_id : null;
+        started = active === binding.nativeTurnId;
+      }
+      if (row.type === 'turn_context') active = typeof row.payload.turn_id === 'string' ? row.payload.turn_id : null;
+      if (row.type === 'event_msg' && ['task_complete', 'turn_completed'].includes(row.payload.type)) active = null;
+    }
+    if (!started || active !== binding.nativeTurnId || !await source.unchanged()) return null;
+    return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
+      nativeTurnId: binding.nativeTurnId, recordIndex: binding.recordIndex, contentIndex: binding.contentIndex,
+      at: new Date(record.timestamp).toISOString(), text: content.text };
+  } catch { return null; }
+}
+
 /** Source-defined carry/recovery census within one host-allocated runtime home.
  * A latest adv_sessions.session_id is not the population: a carry can leave
  * multiple native transcripts behind. Bound and re-read the directory census,

@@ -20,9 +20,75 @@ import {
   __resetTranscriptResolverCaches,
   readClosedCodexSessionUsage,
   readClosedCodexRuntimeUsage,
+  readClosedCodexTurnInput,
 } from './session-transcript-resolvers';
 
 afterEach(() => __resetTranscriptResolverCaches());
+
+describe('source-bound closed Codex input', () => {
+  const session = '11111111-2222-3333-4444-555555555555', turn = 'private-input-turn';
+  const text = 'Dependency bytes π\nwith their exact whitespace.';
+  const source = () => [
+    { type: 'session_meta', payload: { id: session } },
+    { type: 'event_msg', payload: { type: 'task_started', turn_id: turn } },
+    { timestamp: '2026-10-11T00:00:01Z', type: 'response_item', payload: { type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: 'initial context' }, { type: 'input_text', text }] } },
+    { type: 'turn_context', payload: { turn_id: turn, model: 'configured-alias' } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 10 },
+      last_token_usage: { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } } } },
+    { type: 'event_msg', payload: { type: 'task_complete', turn_id: turn } },
+  ];
+  async function fixture(fault?: string) {
+    const rows = source();
+    if (fault === 'foreign-session') rows[0].payload.id = 'foreign-session';
+    if (fault === 'foreign-start') rows[1].payload.turn_id = 'foreign-turn';
+    if (fault === 'missing-start') rows[1].payload.type = 'unrelated';
+    if (fault === 'assistant') rows[2].payload.role = 'assistant';
+    if (fault === 'image') rows[2].payload.content![1].type = 'input_image';
+    if (fault === 'missing-text') delete (rows[2].payload.content![1] as { text?: string }).text;
+    if (fault === 'timestamp') rows[2].timestamp = 'unmeasured';
+    if (fault === 'after-close') { const message = rows.splice(2, 1)[0]; rows.push(message); }
+    if (fault === 'open-turn') rows.pop();
+    const transcript = rows.map(row => JSON.stringify(row) + '\n').join('');
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-source-input-'));
+    const dir = join(home, 'sessions', '2026', '10', '11'); await fs.mkdir(dir, { recursive: true });
+    const file = join(dir, `rollout-2026-10-11T00-00-00-${session}.jsonl`); await fs.writeFile(file, transcript);
+    const calls: unknown[][] = [];
+    const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      if (fault === 'source-mutated') await fs.appendFile(file, '{}\n');
+      return fault === 'missing-frontier' ? [] : [{ byte_offset: String(Buffer.byteLength(transcript) - (fault === 'partial-frontier' ? 1 : 0)),
+        parser_state: { initialized: true, fileGeneration: 0 } }];
+    }) as unknown as Sql;
+    const binding = { workspaceId: 'private-input-workspace', nativeSessionId: session, codexHome: home,
+      nativeTurnId: turn, recordIndex: fault === 'after-close' ? 5 : 2, contentIndex: 1 };
+    return { home, file, transcript, sql, binding, calls };
+  }
+  it('resolves the exact text block before turn_context through native start/closure and the canonical frontier', async () => {
+    const f = await fixture();
+    try {
+      expect(await readClosedCodexTurnInput(f.sql, f.binding)).toEqual({ file: f.file,
+        sourceSha256: createHash('sha256').update(f.transcript).digest('hex'), nativeSessionId: session, nativeTurnId: turn,
+        recordIndex: 2, contentIndex: 1, at: '2026-10-11T00:00:01.000Z', text });
+      expect(f.calls).toEqual([['private-input-workspace', f.file]]);
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it.each(['foreign-session', 'foreign-start', 'missing-start', 'assistant', 'image', 'missing-text', 'timestamp',
+    'after-close', 'open-turn', 'source-mutated', 'missing-frontier', 'partial-frontier'])
+  ('refuses %s input authority', async fault => {
+    const f = await fixture(fault);
+    try { expect(await readClosedCodexTurnInput(f.sql, f.binding)).toBeNull(); }
+    finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+  it('refuses foreign turns and unallocated record/block indices', async () => {
+    const f = await fixture();
+    try {
+      for (const changed of [{ nativeTurnId: 'another-turn' }, { recordIndex: 3 }, { contentIndex: 99 },
+        { recordIndex: -1 }, { contentIndex: 1.5 }])
+        expect(await readClosedCodexTurnInput(f.sql, { ...f.binding, ...changed })).toBeNull();
+    } finally { await fs.rm(f.home, { recursive: true, force: true }); }
+  });
+});
 
 describe('complete closed Codex source accounting', () => {
   const session = '11111111-2222-3333-4444-555555555555';
