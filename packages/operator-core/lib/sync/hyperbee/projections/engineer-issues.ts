@@ -42,6 +42,7 @@ import {
   RESOURCE_GOVERNOR_IDENTITY_INDEX,
   WATCHDOG_IDENTITY_INDEX,
 } from './work-items-replay-identity-indexes';
+import { isDistinctEntityCollision } from './distinct-entity-collision';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -223,30 +224,10 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
 // on the P-302 rig it refused ops for 10,070 distinct issue_ids, so no issue update
 // could ever land on a peer that already held the row. A missing `created_ts` (every
 // pre-688 op) now fails OPEN rather than being judged against an invented value.
-const COLLISION_CREATED_AT_TOLERANCE_MS = 5_000;
+// The check itself (isDistinctEntityCollision + its 5s tolerance) lives in
+// ./distinct-entity-collision.ts, shared with the harness-features projection
+// (scope-unique-identifiers-2026-07-26 P-015).
 const FEDERATED_TERMINAL_STATES = [...ANY_FAMILY_TERMINAL_STATES];
-
-/**
- * Does an incoming op carrying `incomingCreatedTs` name a DIFFERENT issue than the stored
- * row created at `existingCreatedTs`? The caller reads the stored row
- * ({@link distinctEntityCollisions}) and passes an op only when it carries a creation instant.
- *
- * WI-6327: an op WITHOUT an authoritative creation instant fails OPEN and is never judged.
- * Every op appended before mig 688 has a `created_at` fabricated at drain time (the capture
- * trigger never emitted one) which is indistinguishable from a genuine value — judging
- * those dropped 10,070 distinct ids on the P-302 rig. Only a carried `created_ts` is
- * trustworthy enough to refuse a write over.
- */
-function isDistinctEntityCollision(
-  incomingCreatedTs: number,
-  existingCreatedTs: number,
-): { collided: boolean; existingCreatedAtIso?: string } {
-  const incomingMs = Number(incomingCreatedTs);
-  const existingMs = Number(existingCreatedTs);
-  if (!Number.isFinite(incomingMs) || !Number.isFinite(existingMs)) return { collided: false };
-  if (Math.abs(incomingMs - existingMs) <= COLLISION_CREATED_AT_TOLERANCE_MS) return { collided: false };
-  return { collided: true, existingCreatedAtIso: new Date(existingMs).toISOString() };
-}
 
 /**
  * Migration 826 retired a bounded set of same-ID source rows by either merging

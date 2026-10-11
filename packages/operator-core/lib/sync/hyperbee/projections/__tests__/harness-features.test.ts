@@ -5,6 +5,7 @@ import {
   _testing,
   type HarnessFeatureRow,
 } from '../harness-features';
+import { COLLISION_CREATED_AT_TOLERANCE_MS, isDistinctEntityCollision } from '../distinct-entity-collision';
 
 function feature(over: Partial<HarnessFeatureRow> = {}): HarnessFeatureRow {
   return {
@@ -180,12 +181,7 @@ describe('harness_features projection', () => {
   });
 
   it('P-012: refuses an op whose id the workspace already keeps under another harness, instead of minting a twin', async () => {
-    const sql = Object.assign(
-      vi.fn(async (strings: TemplateStringsArray, ..._a: unknown[]) =>
-        statementText(strings).includes('harness_slug <>') ? [{ harness_slug: 'papercusp' }] : [],
-      ),
-      { json: vi.fn((x: unknown) => ({ __json: x })) },
-    );
+    const sql = sqlHolding([{ harness_slug: 'papercusp', created_ts: 1700000000000 }]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const p = buildHarnessFeaturesProjection({
@@ -197,12 +193,71 @@ describe('harness_features projection', () => {
       expect(sql).toHaveBeenCalledTimes(1);
       const [strings, ...values] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
       expect(statementText(strings)).not.toContain('INSERT');
-      // The read is scoped to this workspace and this id, under any OTHER harness.
-      expect(values).toEqual(['papercusp-workspace', 'WI-385', 'sheets']);
+      // The one read is scoped to this workspace and this id, under every harness.
+      expect(values).toEqual(['papercusp-workspace', 'WI-385']);
       expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain('P-012 resident-row refusal: feature_id=WI-385');
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // scope-unique-identifiers-2026-07-26 P-015 (D-019): the same-harness upsert is the
+  // ON CONFLICT target, so without this check a federated op for a DIFFERENT item that
+  // shares the WI- id (the D-005/D-006 residue) would overwrite the local item.
+  it('P-015: refuses a same-harness op whose created_ts names a DIFFERENT local item, and never upserts', async () => {
+    const sql = sqlHolding([{ harness_slug: 'sheets', created_ts: '1700000000000' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = buildHarnessFeaturesProjection({
+        workspaceId: 'papercusp-workspace',
+        harnessSlug: 'sheets',
+        sql: sql as never,
+      });
+      // One hour apart: a different item allocated the same id, not a re-delivery.
+      await p.writeToPg(feature({ feature_id: 'WI-10000294', created_ts: 1700003600000 }), { origin: 'remote', authorPubkey: '' });
+      expect(sql).toHaveBeenCalledTimes(1);
+      expect(sql.mock.calls.some((c) => statementText(c[0]).includes('INSERT'))).toBe(false);
+      const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain('P-015 distinct-entity refusal: feature_id=WI-10000294');
+      expect(logged).toContain('2023-11-14T22:13:20.000Z');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('P-015: a genuine re-delivery of the SAME item (created_ts within the 5s tolerance) still lands', async () => {
+    const sql = sqlHolding([{ harness_slug: 'sheets', created_ts: '1700000000000' }]);
+    const p = buildHarnessFeaturesProjection({
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'sheets',
+      sql: sql as never,
+    });
+    await p.writeToPg(feature({ feature_id: 'WI-10000294', created_ts: 1700000004000 }), { origin: 'remote', authorPubkey: '' });
+    expect(insertValues(sql)).toContain('WI-10000294');
+  });
+
+  it('P-015 / WI-6327: an op or a stored row without created_ts cannot be judged and fails open', async () => {
+    for (const [incoming, stored] of [[null, '1700000000000'], [1700003600000, null]] as const) {
+      const sql = sqlHolding([{ harness_slug: 'sheets', created_ts: stored }]);
+      const p = buildHarnessFeaturesProjection({
+        workspaceId: 'papercusp-workspace',
+        harnessSlug: 'sheets',
+        sql: sql as never,
+      });
+      await p.writeToPg(feature({ feature_id: 'WI-10000680', created_ts: incoming }), { origin: 'remote', authorPubkey: '' });
+      expect(insertValues(sql)).toContain('WI-10000680');
+    }
+  });
+
+  it('P-015: isDistinctEntityCollision is one shared check with a 5s tolerance (engineer-issues uses the same module)', () => {
+    expect(COLLISION_CREATED_AT_TOLERANCE_MS).toBe(5_000);
+    expect(isDistinctEntityCollision(1700000005000, 1700000000000)).toEqual({ collided: false });
+    expect(isDistinctEntityCollision(1700000005001, 1700000000000)).toEqual({
+      collided: true,
+      existingCreatedAtIso: '2023-11-14T22:13:20.000Z',
+    });
+    expect(isDistinctEntityCollision(Number.NaN, 1700000000000)).toEqual({ collided: false });
+    expect(isDistinctEntityCollision(1700000000000, Number('not-a-number'))).toEqual({ collided: false });
   });
 
   it('P-012: an op whose id no other harness holds in the workspace is written', async () => {
@@ -218,6 +273,16 @@ describe('harness_features projection', () => {
     expect(insertValues(sql)).toContain('WI-386');
   });
 });
+
+/** A fake `sql` whose existing-row read (the only SELECT writeToPg issues) returns `rows`. */
+function sqlHolding(rows: Array<{ harness_slug: string; created_ts: string | number | null }>) {
+  return Object.assign(
+    vi.fn(async (strings: TemplateStringsArray, ..._a: unknown[]) =>
+      statementText(strings).includes('SELECT harness_slug, created_ts') ? rows : [],
+    ),
+    { json: vi.fn((x: unknown) => ({ __json: x })) },
+  );
+}
 
 function statementText(strings: TemplateStringsArray | unknown): string {
   return Array.isArray(strings) ? (strings as readonly string[]).join('?') : String(strings);

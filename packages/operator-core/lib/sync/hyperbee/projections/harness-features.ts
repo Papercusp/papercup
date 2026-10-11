@@ -17,6 +17,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { readVerifiedAuthorGithubId } from '../../../work-items-admission';
 import { normalizeJsonbInput } from './_jsonb-input';
+import { isDistinctEntityCollision } from './distinct-entity-collision';
 import type postgres from 'postgres';
 import {
   projectionSql,
@@ -325,26 +326,48 @@ async function writeToPg(
       await projectionStatementFailed();
     }
   }
+  // One index-served read of every row this workspace keeps under the op's id (at most one
+  // once migration 1444's work_items_workspace_feature_id_uq holds) answers both refusals:
+  //
   // scope-unique-identifiers-2026-07-26 P-012 (D-002, D-012): a work-item id names ONE row per
-  // workspace (migration 1444's work_items_workspace_feature_id_uq). The upsert below
-  // arbitrates only the physical (harness_slug, feature_id) key, so an op whose id this
-  // workspace already keeps under ANOTHER harness would raise a deterministic 23505 there and
-  // pin this peer's merge cursor (WI-2142873 class). Such an op is a legacy peer's pre-1443
-  // twin, a retired-slug row, or a pre-P-010 WI- sequence collision, so it is refused, not
-  // landed: unlike engineer-issues' resident landing, a feature op carries no creation-time
-  // check that would stop it overwriting a DIFFERENT item that merely shares the id.
-  const resident = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.work_items
-     WHERE workspace_id = ${opts.workspaceId} AND feature_id = ${row.feature_id}
-       AND harness_slug <> ${row.harness_slug}
-     LIMIT 1`;
-  if (resident.length > 0) {
+  // workspace. The upsert below arbitrates only the physical (harness_slug, feature_id) key,
+  // so an op whose id this workspace already keeps under ANOTHER harness would raise a
+  // deterministic 23505 there and pin this peer's merge cursor (WI-2142873 class). Such an op
+  // is a legacy peer's pre-1443 twin, a retired-slug row, or a pre-P-010 WI- sequence
+  // collision, so it is refused, not landed.
+  //
+  // P-015 (D-019): a SAME-harness row is the upsert's own conflict target, and
+  // `ON CONFLICT ... DO UPDATE` would overwrite it whatever it is. When the op's carried
+  // created_ts names a DIFFERENT item than the stored row (the EI-13285 distinct-entity
+  // check, shared with engineer-issues), the two databases allocated one WI- id to two items
+  // (the D-005/D-006 residue: slot-0 ids, same-slot nodes, pre-1442 peers, restored copies).
+  // The op is refused and logged; the local item is never overwritten. An op or a stored row
+  // without created_ts cannot be judged and fails open (WI-6327).
+  const existing = await sql<{ harness_slug: string; created_ts: string | number | null }[]>`
+    SELECT harness_slug, created_ts FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId} AND feature_id = ${row.feature_id}`;
+  const resident = existing.find((r) => r.harness_slug !== row.harness_slug);
+  if (resident) {
     console.warn(
       `[harness-features projection] P-012 resident-row refusal: feature_id=${row.feature_id} ` +
         `(harness_slug=${row.harness_slug}) is already held in workspace ${opts.workspaceId} by ` +
-        `${resident[0]!.harness_slug}; refusing the op instead of minting a twin`,
+        `${resident.harness_slug}; refusing the op instead of minting a twin`,
     );
     return;
+  }
+  const sameHarness = existing.find((r) => r.harness_slug === row.harness_slug);
+  if (sameHarness && row.created_ts !== null && sameHarness.created_ts !== null) {
+    const collision = isDistinctEntityCollision(row.created_ts, Number(sameHarness.created_ts));
+    if (collision.collided) {
+      console.warn(
+        `[harness-features projection] P-015 distinct-entity refusal: feature_id=${row.feature_id} ` +
+          `(harness_slug=${row.harness_slug}) names a DIFFERENT local item — the stored row was created at ` +
+          `${collision.existingCreatedAtIso}, the incoming op claims created_ts=${row.created_ts}. ` +
+          `Two items were allocated the same id; the op is DROPPED (not applied) so the local item is ` +
+          `not overwritten. The authoring peer's own copy is unaffected.`,
+      );
+      return;
+    }
   }
   // WI-1612 (same class as WI-1572): ALWAYS write workspace_id explicitly from
   // opts.workspaceId (bound at projection-registration time, so it is already the
