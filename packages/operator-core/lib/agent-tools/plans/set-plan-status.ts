@@ -38,7 +38,9 @@ import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/i
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import {
   evaluatePlanAcceptanceGate,
+  messageWithAdditionalBlockers,
   type CitationDeployment,
+  type PlanAcceptanceGateVerdict,
   type PlanAcceptanceRepairAction,
 } from '../../plan-acceptance-gate';
 import { evidenceCurrentInputSchema, type EvidenceCurrentInput } from './spec-evidence-store';
@@ -188,6 +190,12 @@ const argsSchema = z
       .describe(
         "status='shipped' or 'superseded': pass the applicable gate with a reason recorded on the plan (`forcedPast`). A normal force reason retains the existing code-truth waiver and supersede unfinished-items waiver. Set acceptanceBarProofMetadata:true for a narrow ship waiver of only BAR proof inadequacy/staleness metadata; code-truth checks, other BAR codes, rubric gates, and independent gates still block.",
       ),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe(
+        "status='shipped' only: evaluate the ship gate and return every blocker (or wouldShip:true) without writing, recruiting a grader, or stamping anything.",
+      ),
   })
   .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
     message: 'pass `slug` or `slugs`',
@@ -202,6 +210,12 @@ const argsSchema = z
   ), {
     message: 'restoreShippedRevision requires one slug, status shipped, expectedCurrent, and no force',
     path: ['restoreShippedRevision'],
+  })
+  .refine((a) => !a.dryRun || (
+    normalizePlanStatus(a.status).status === 'shipped' && !a.restoreShippedRevision && a.expectedCurrent !== 'shipped'
+  ), {
+    message: "dryRun is only valid for a shipped target (not restoreShippedRevision, not expectedCurrent:'shipped')",
+    path: ['dryRun'],
   });
 
 type SetPlanStatusValue =
@@ -641,6 +655,35 @@ export function acceptanceGraderRefusalFields(
   };
 }
 
+/**
+ * P-001 (plan-verification-friction-reduction-2026-10-11): the `dryRun` ship preflight's
+ * response. Pure — the handler returns it BEFORE grader recruitment, the forced-past
+ * stamp, and the frontmatter write, so a preflight can never change anything. A refusal
+ * carries the gate verbatim (every blocker with its own repairAction) and a message that
+ * names the other failing checks; a pass reports wouldShip plus any waiver the real ship
+ * would record.
+ */
+export function shipGatePreflightResult(slug: string, gate: PlanAcceptanceGateVerdict) {
+  if (!gate.satisfied) {
+    return {
+      ...gate,
+      ok: false as const,
+      slug,
+      dryRun: true as const,
+      error: gate.code ?? 'acceptance_gate_failed',
+      message: messageWithAdditionalBlockers(gate.message, gate.blockers),
+    };
+  }
+  return {
+    ok: true as const,
+    slug,
+    dryRun: true as const,
+    wouldShip: true as const,
+    ...(gate.forcedPast ? { forcedPast: gate.forcedPast } : {}),
+    ...(gate.citationDeployment ? { citationDeployment: gate.citationDeployment } : {}),
+  };
+}
+
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
@@ -732,6 +775,10 @@ export default defineTool({
           const gate = await evaluatePlanAcceptanceGate(slug, {
             harnessSlug: subjectScope.harnessSlug,
             probeCitationDeployment: true,
+            // P-001 (plan-verification-friction-reduction-2026-10-11): report EVERY
+            // independent pre-grading blocker in one refusal instead of one per attempt.
+            // The primary code/message are unchanged, so grader recruitment is too.
+            collectAllBlockers: true,
             ...(args.current ? { current: args.current } : {}),
             ...(args.force ? { force: args.force } : {}),
             readGradingAuditDispatchSuppression: async (targetOwnerId) => {
@@ -748,6 +795,9 @@ export default defineTool({
               forcedBy: { ownerId: actor.ownerId, ownerLabel: actor.ownerLabel },
             };
           }
+          // P-001 preflight: report and return BEFORE any side effect — no grader
+          // recruitment, no forced-past stamp, no frontmatter write.
+          if (args.dryRun) return shipGatePreflightResult(slug, gate);
           if (!gate.satisfied) {
             const acceptanceGrader = await launchAcceptanceGraderForGate(
               slug, gate, ctx, harnessSlug, undefined, undefined, args.current,
@@ -765,6 +815,7 @@ export default defineTool({
               ok: false as const,
               slug,
               error: gate.code ?? 'acceptance_gate_failed',
+              message: messageWithAdditionalBlockers(gate.message, gate.blockers),
               ...acceptanceGraderRefusalFields(gate.repairAction, acceptanceGrader, sweep),
             };
           }

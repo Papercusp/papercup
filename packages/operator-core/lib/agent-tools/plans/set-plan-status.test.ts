@@ -6,6 +6,7 @@ import {
   normalizePlanStatus,
   flipPlanFrontmatterStatus,
   launchAcceptanceGraderForGate,
+  shipGatePreflightResult,
   shouldEvaluateAcceptanceGate,
   tidyFilingsForTerminalPlan,
   type TerminalPlanTidyDeps,
@@ -122,6 +123,55 @@ describe('set-plan-status BAR proof metadata force', () => {
       status: 'superseded',
       force: { reason: 'reason', acceptanceBarProofMetadata: true },
     }).success).toBe(false);
+  });
+});
+
+describe('set-plan-status dryRun ship preflight (plan-verification-friction-reduction-2026-10-11 P-001)', () => {
+  const parse = (over: Record<string, unknown>) =>
+    setPlanStatusTool.args.safeParse({ harness: 'papercusp', slug: 'plan-a', status: 'shipped', dryRun: true, ...over });
+
+  it('accepts dryRun only for a shipped target', () => {
+    expect(parse({}).success).toBe(true);
+    expect(parse({ status: 'done' }).success).toBe(true);
+    expect(parse({ status: 'superseded' }).success).toBe(false);
+    expect(parse({ status: 'ready' }).success).toBe(false);
+    expect(parse({ expectedCurrent: 'shipped' }).success).toBe(false);
+    expect(parse({
+      expectedCurrent: 'ready',
+      restoreShippedRevision: { seq: 1, contentHash: 'a'.repeat(64), expectedVersion: 2, expectedContentHash: 'b'.repeat(64) },
+    }).success).toBe(false);
+  });
+
+  it('a refused preflight carries every blocker and names the extra ones in its message', () => {
+    const repairAction = { kind: 'diagnostic', instruction: 'fix it' } as never;
+    const result = shipGatePreflightResult('plan-a', {
+      satisfied: false,
+      code: 'spec_proof_stale',
+      message: 'A clause is proven only at a superseded revision.',
+      repairAction,
+      blockers: [
+        { code: 'spec_proof_stale', message: 'A clause is proven only at a superseded revision.', repairAction },
+        { code: 'acceptance_rubric_missing', message: 'no rubric', repairAction },
+      ],
+    } as never);
+
+    expect(result).toMatchObject({ ok: false, slug: 'plan-a', dryRun: true, error: 'spec_proof_stale' });
+    if (result.ok) throw new Error('expected a refused preflight');
+    expect(result.message).toContain('A clause is proven only at a superseded revision.');
+    expect(result.message).toContain('ALSO FAILING: 1 more independent check(s) — acceptance_rubric_missing');
+    expect((result as { blockers?: unknown[] }).blockers).toHaveLength(2);
+    // A preflight never recruits: no grader lifecycle is attached to the response.
+    expect(result).not.toHaveProperty('acceptanceGrader');
+  });
+
+  it('a passing preflight reports wouldShip and the waiver a real ship would record', () => {
+    const forcedPast = { reason: 'owner waiver', checks: ['acceptance_unaudited'] };
+    expect(shipGatePreflightResult('plan-a', { satisfied: true, forcedPast } as never)).toEqual({
+      ok: true, slug: 'plan-a', dryRun: true, wouldShip: true, forcedPast,
+    });
+    expect(shipGatePreflightResult('plan-a', { satisfied: true } as never)).toEqual({
+      ok: true, slug: 'plan-a', dryRun: true, wouldShip: true,
+    });
   });
 });
 

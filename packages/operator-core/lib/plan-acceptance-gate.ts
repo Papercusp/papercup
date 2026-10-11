@@ -168,10 +168,35 @@ export type PlanAcceptanceGateWaivedCheck =
   | 'bar_snapshot_proof_inadequate'
   | 'bar_snapshot_proof_stale';
 
+/**
+ * One failing gate check with its own repair route
+ * (plan-verification-friction-reduction-2026-10-11 P-001, R-1).
+ */
+export interface PlanAcceptanceGateBlocker {
+  code: PlanAcceptanceGateCode;
+  message?: string;
+  repairAction: PlanAcceptanceRepairAction;
+}
+
 export interface PlanAcceptanceGateVerdict {
   /** The loaded operator build that produced this time-sensitive verdict. */
   buildProvenance: BuildInfo;
   satisfied: boolean;
+  /**
+   * P-001 (plan-verification-friction-reduction-2026-10-11, R-1): every failing check on a
+   * refusal, primary (`code`) first. Present on every refusal.
+   *
+   * With `collectAllBlockers` the gate keeps evaluating the independent pre-grading checks
+   * after the first failure: BAR contract, deliverable durability, items, code-truth audit,
+   * spec proof, independent verification, blind review, design evidence, and rubric
+   * existence and vetting. The grading-phase checks still run only once all of those pass,
+   * because a grading obligation cannot be worked before them.
+   *
+   * Without that option it has one entry, the first failure, as before. Measured over 14
+   * days before this: 865 ship attempts across 86 plans, because each refusal revealed only
+   * the next blocker.
+   */
+  blockers?: PlanAcceptanceGateBlocker[];
   /**
    * Why the gate did not apply (satisfied:true without a graded rubric).
    *
@@ -406,6 +431,17 @@ export interface PlanAcceptanceGateOpts {
    * moment the record needs to be permanent.
    */
   probeCitationDeployment?: boolean;
+  /**
+   * P-001 (plan-verification-friction-reduction-2026-10-11): keep evaluating the independent
+   * pre-grading checks after the first failure and report each one in `blockers`. The
+   * primary `code`/`message` are unchanged, so grader recruitment and the closure observation
+   * read the same verdict either way.
+   *
+   * Opt-in for the reason `probeCitationDeployment` is: a refused plan would otherwise run
+   * every later check (including forked git blob measurement in the audit leg) on the sync
+   * resolver's per-plan hot read. Only the ship door (`plans:set-plan-status`) sets it.
+   */
+  collectAllBlockers?: boolean;
   /** Read whether a pending meta-scorecard's owner is paused before dispatch can settle it. */
   readGradingAuditDispatchSuppression?: (targetOwnerId?: string | null) => Promise<GradingAuditDispatchSuppression | null>;
 }
@@ -715,6 +751,17 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // deferred refusal permanent and the re-grade unrecruitable. Carry the BAR's verdict
   // rather than re-deriving the cohort fingerprint here, so there is one staleness judgment.
   let barStaleGradingScorecardId: string | null = null;
+  // P-001 (plan-verification-friction-reduction-2026-10-11): refusals from the independent
+  // pre-grading checks, in the gate's advertised order, so the first stays the primary
+  // `code`. `refuse` records one and answers whether to stop now (the default first-failure
+  // mode) or keep evaluating (`collectAllBlockers`).
+  const preGradingRefusals: PlanAcceptanceGateVerdictWithoutBuildProvenance[] = [];
+  const refuse = (verdict: PlanAcceptanceGateVerdictWithoutBuildProvenance): boolean => {
+    preGradingRefusals.push(verdict);
+    return opts.collectAllBlockers !== true;
+  };
+  const collectedRefusal = (): PlanAcceptanceGateVerdictWithoutBuildProvenance =>
+    withPreGradingBlockers(planSlug, preGradingRefusals, opts, subject);
 
   // Exemptions: a rubric-template plan does not get an acceptance rubric of its own
   // (infinite regress), and a scheduled template INSTANCE is an auto-generated
@@ -832,13 +879,13 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       nonCodeItemProofs = barLifecycle.nonCodeItemProofs ?? [];
       barContractApplicable = barLifecycle.applicable;
       if (expectedApplicable && !barLifecycle.applicable) {
-        return {
+        if (refuse({
           satisfied: false, code: 'acceptance_bar_contract_not_ready',
           acceptanceBarLifecycle: barLifecycle,
           message: `plan '${planSlug}' has original requirements but no verifiable requirement contract. ` +
             'Adopt the complete original requirement set and its work mappings before shipment; an as-built rubric or disclosure cannot replace it. This is not waived by force.',
-        };
-      }
+        })) return collectedRefusal();
+      } else {
       const proofMetadataCodes = opts.force?.acceptanceBarProofMetadata
         ? barLifecycle.codes.filter((code): code is 'bar_snapshot_proof_inadequate' | 'bar_snapshot_proof_stale' =>
             code === 'bar_snapshot_proof_inadequate' || code === 'bar_snapshot_proof_stale')
@@ -860,7 +907,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         };
         const gradingMissing = barLifecycle.codes.includes('bar_snapshot_grading_missing');
         const gradingStale = barLifecycle.codes.includes('bar_snapshot_grading_stale');
-        if (!gradingMissing && !gradingStale) return refusal;
+        if (!gradingMissing && !gradingStale) {
+          if (refuse(refusal)) return collectedRefusal();
+        } else {
         // A missing OR stale grading recruits an independent grader. Let it run
         // only after the BAR's pre-grading obligations pass, while retaining this
         // ship refusal through every later success path. In the stale case the
@@ -877,9 +926,17 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         // P-038: the pre-grading verdict IS the explanation of this refusal — the ship-phase
         // codes include grading/author-verdict obligations nobody can work yet. Return it
         // instead of discarding it, and lead the message with the repair that unblocks.
-        if (!preGrading.satisfied) return preGradingBlockedRefusal(refusal, preGrading);
-        requireCurrentBarGrading = gradingStale;
-        if (gradingStale) barStaleGradingScorecardId = barLifecycle.staleGradingScorecardId;
+        if (!preGrading.satisfied) {
+          // The ship refusal deferred above is a grading-phase obligation; it no longer
+          // applies once pre-grading itself refuses, which is what this records.
+          deferredBarShipRefusal = undefined;
+          if (refuse(preGradingBlockedRefusal(refusal, preGrading))) return collectedRefusal();
+        } else {
+          requireCurrentBarGrading = gradingStale;
+          if (gradingStale) barStaleGradingScorecardId = barLifecycle.staleGradingScorecardId;
+        }
+        }
+      }
       }
     }
   } catch (error) {
@@ -921,7 +978,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const deliverableDurability = evaluateEphemeralDeliverableDurability(planContent ?? '');
   if (!deliverableDurability.satisfied) {
     const listed = locateEphemeralDeliverableReferences(planContent ?? '', deliverableDurability.references).join(', ');
-    return {
+    if (refuse({
       satisfied: false,
       code: 'ephemeral_deliverable_unbacked',
       message:
@@ -930,7 +987,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `record it in the plan as \`durable source: <path>\` (or \`work-item: EI-/WI-id\`). An Artifact URL, ` +
         `scratch path, or loopback preview alone is not a grader-readable deliverable. This refusal is not waived by ` +
         `force: { reason }.`,
-    };
+    })) return collectedRefusal();
   }
 
   const itemGate = await getFlag(FLAGS.PLAN_ITEM_COMPLETION_GATE, 'system').catch(() => true);
@@ -951,7 +1008,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           forcedChecks.push('plan_items_unfinished');
         } else {
           const list = unfinished.map((i) => `${i.itemId} (${i.status})`).join(', ');
-          return {
+          if (refuse({
             satisfied: false,
             code: 'plan_items_unfinished',
             message:
@@ -960,7 +1017,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `with a reason: plans:set-status { slug:'${planSlug}', item:'<P-NNN>', status:'dropped', ` +
               `note:'<why this was departed from>' }. Departing from the plan is legitimate; departing from it ` +
               `silently is what this refuses. To ship anyway, pass force:{ reason } — it is recorded on the plan.`,
-          };
+          })) return collectedRefusal();
         }
       }
     }
@@ -972,8 +1029,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     if (!audit) {
       if (force) {
         forcedChecks.push('acceptance_unaudited');
-      } else {
-        return {
+      } else if (refuse({
           satisfied: false,
           code: 'acceptance_unaudited',
           message:
@@ -983,7 +1039,8 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
             `Citations are resolved against the real tree, so a path that does not exist is refused. Gaps inside ` +
             `the plan's scope get fixed or dropped with a reason; bugs outside it go in \`findings\` with a filed ` +
             `work-item ref. To ship without one, pass force:{ reason } — it is recorded on the plan.`,
-        };
+        })) {
+        return collectedRefusal();
       }
     } else {
       // D-006/D-007: a pass is NOT a full-plan snapshot. Resolve the latest entry
@@ -1104,8 +1161,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       if (stale.length > 0) {
         if (force) {
           forcedChecks.push('audit_coverage_stale');
-        } else {
-          return {
+        } else if (refuse({
             satisfied: false,
             code: 'audit_coverage_stale',
             message:
@@ -1114,15 +1170,15 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `forward mechanically with its original auditedSha/auditedAt, so do not resubmit unchanged items. ` +
               `If no items are listed on a future check, no new audit pass is required. To ship anyway, pass ` +
               `force:{ reason }.`,
-          };
+          })) {
+          return collectedRefusal();
         }
       }
 
       if (broken.length > 0) {
         if (force) {
           forcedChecks.push('audit_citations_unresolved');
-        } else {
-          return {
+        } else if (refuse({
             satisfied: false,
             code: 'audit_citations_unresolved',
             message:
@@ -1130,7 +1186,8 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `longer resolve against the tree — ${broken.slice(0, 5).join('; ')}` +
               `${broken.length > 5 ? ` (+${broken.length - 5} more)` : ''}. Re-run plans:audit for ONLY the ` +
               `listed items; all other item audits carry forward unchanged. To ship anyway, pass force:{ reason }.`,
-          };
+          })) {
+          return collectedRefusal();
         }
       }
 
@@ -1181,7 +1238,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         requirementDroppedTargets = realization.droppedTargets;
         if (!realization.ok) {
             const lines = realization.unrealized.map(describeUnrealized);
-            return {
+            if (refuse({
               satisfied: false,
               code: 'requirement_unrealized',
               message:
@@ -1195,7 +1252,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
                 `absorbed — correct its disposition to 'rejected'/'open' via plans:audit { phase:'activation' } ` +
                 `so the record stops claiming otherwise. Unfulfilled requirements are not waived by force; ` +
                 `a follow-on task or disclosure is not fulfillment of the original promise.`,
-            };
+            })) return collectedRefusal();
         }
       }
     }
@@ -1229,13 +1286,13 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const code = specCoverage.code ?? 'spec_proof_stale';
       if (force) {
         forcedChecks.push(code);
-      } else {
-        return {
+      } else if (refuse({
           satisfied: false,
           code,
           message: specCoverage.message ?? `plan '${planSlug}' has spec clauses proven only at a superseded revision.`,
           specCoverage,
-        };
+        })) {
+        return collectedRefusal();
       }
     }
   }
@@ -1251,12 +1308,12 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       planSlug,
       harnessSlug: planHarnessSlug,
     });
-    if (!independentVerification.satisfied) {
-      return {
-        satisfied: false,
-        code: independentVerification.code ?? 'independent_verification_missing',
-        message: independentVerification.message ?? `plan '${planSlug}' lacks independent verification of live evidence.`,
-      };
+    if (!independentVerification.satisfied && refuse({
+      satisfied: false,
+      code: independentVerification.code ?? 'independent_verification_missing',
+      message: independentVerification.message ?? `plan '${planSlug}' lacks independent verification of live evidence.`,
+    })) {
+      return collectedRefusal();
     }
   }
 
@@ -1267,12 +1324,12 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // Not waivable by force (D-039 (5)): an independence check, like the door above.
   if (planHarnessSlug) {
     const blindReview = await evaluateBlindReviewGate({ planSlug, harnessSlug: planHarnessSlug });
-    if (!blindReview.satisfied) {
-      return {
-        satisfied: false,
-        code: blindReview.code ?? 'blind_review_missing',
-        message: blindReview.message ?? `plan '${planSlug}' has no blind gap review for its current revision.`,
-      };
+    if (!blindReview.satisfied && refuse({
+      satisfied: false,
+      code: blindReview.code ?? 'blind_review_missing',
+      message: blindReview.message ?? `plan '${planSlug}' has no blind gap review for its current revision.`,
+    })) {
+      return collectedRefusal();
     }
   }
 
@@ -1283,13 +1340,15 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       const outcomes = await planDesignEvidenceGate(planSlug, planHarnessSlug);
       const blocked = outcomes.filter(outcome =>
         (outcome.status === 'unsatisfied' || outcome.status === 'unavailable') && outcome.enforced);
-      if (blocked.length) return {
+      if (blocked.length && refuse({
         satisfied: false,
         code: blocked.some(row => row.status === 'unsatisfied') ? 'design_evidence_unsatisfied' : 'design_evidence_unavailable',
         message: blocked.map(row => row.status === 'not-applicable' ? '' : row.report).join('\n\n'),
-      };
+      })) return collectedRefusal();
     } catch (error) {
-      return { satisfied: false, code: 'design_evidence_unavailable', message: `Design shipment proof could not be read: ${error instanceof Error ? error.message : String(error)}` };
+      if (refuse({ satisfied: false, code: 'design_evidence_unavailable', message: `Design shipment proof could not be read: ${error instanceof Error ? error.message : String(error)}` })) {
+        return collectedRefusal();
+      }
     }
   }
 
@@ -1298,6 +1357,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // owner ruling, and collapsing both families into one switch would make the override
   // far broader than the one that was actually authorised.
   if (!rubricGate) {
+    if (preGradingRefusals.length > 0) return collectedRefusal();
     return {
       satisfied: true,
       skipped: 'flag-off',
@@ -1309,8 +1369,10 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const rubrics = await getAcceptanceRubricsForPlan(planSlug, {
     ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
   });
+  // Rubric existence/uniqueness: every later check needs exactly ONE rubric, so collect
+  // mode records the refusal and stops here with everything gathered so far.
   if (rubrics.length === 0) {
-    return {
+    refuse({
       satisfied: false,
       code: 'acceptance_rubric_missing',
       message:
@@ -1322,17 +1384,19 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `(a pure investigation may pass classRef:'plan-class-investigation' with criteria:[] — D-009). ` +
         `It activates immediately (no ratification); then a ` +
         `NON-implementer grades it (scorecards:emit) and the ship succeeds.`,
-    };
+    });
+    return collectedRefusal();
   }
   if (rubrics.length > 1) {
-    return {
+    refuse({
       satisfied: false,
       code: 'acceptance_rubric_ambiguous',
       message:
         `plan '${planSlug}' cannot be marked shipped: it has multiple active acceptance rubrics ` +
         `(${rubrics.map((candidate) => `'${candidate.rubricId}'`).join(', ')}). ` +
         'Retire all but one contract before shipping; the gate fails closed when one subject plan has competing rubrics.',
-    };
+    });
+    return collectedRefusal();
   }
   const rubric = rubrics[0];
 
@@ -1364,26 +1428,26 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     // meta-rubric at all cannot run the flow, so the check disables rather than
     // deadlocking every ship on a missing prerequisite (recorded as a plan Decision).
     const metaRubric = await getRubric(META_ACCEPTANCE_RUBRIC_ID);
-    if (metaRubric) {
-      // EI-21827040531672903: a FAILED revision read must not be spelled the same way
-      // as "no revision". The old `currentRevision == null || …` short-circuited TRUE
-      // on the null a transient DB error produced, silently widening the check from
-      // "attested at the CURRENT revision" to "any vetted card that ever existed" and
-      // rendering no refusal, so nothing recorded the degradation. Refuse instead: an
-      // unreadable revision is a retryable infrastructure fault, not a pass.
-      const revisionRead = await readRubricPlanRevision(rubric.rubricId);
-      if (!revisionRead.ok) {
-        return {
-          satisfied: false,
-          code: 'acceptance_rubric_revision_unreadable',
-          rubricId: rubric.rubricId,
-          message:
-            `plan '${planSlug}' cannot be marked shipped right now: the current revision of acceptance rubric ` +
-            `'${rubric.rubricId}' could not be read, so the gate cannot confirm the vetting attestation covers ` +
-            `what ships. This is an infrastructure fault, not a missing step — nothing about the plan is wrong. ` +
-            `Retry the ship; if it persists, the rubric plan-row read is failing and that is the thing to fix.`,
-        };
-      }
+    // EI-21827040531672903: a FAILED revision read must not be spelled the same way
+    // as "no revision". The old `currentRevision == null || …` short-circuited TRUE
+    // on the null a transient DB error produced, silently widening the check from
+    // "attested at the CURRENT revision" to "any vetted card that ever existed" and
+    // rendering no refusal, so nothing recorded the degradation. Refuse instead: an
+    // unreadable revision is a retryable infrastructure fault, not a pass. In collect
+    // mode the vetting evaluation is skipped (it needs the revision) and the barrier
+    // below stops before grading.
+    const revisionRead = metaRubric ? await readRubricPlanRevision(rubric.rubricId) : null;
+    if (revisionRead && !revisionRead.ok && refuse({
+      satisfied: false,
+      code: 'acceptance_rubric_revision_unreadable',
+      rubricId: rubric.rubricId,
+      message:
+        `plan '${planSlug}' cannot be marked shipped right now: the current revision of acceptance rubric ` +
+        `'${rubric.rubricId}' could not be read, so the gate cannot confirm the vetting attestation covers ` +
+        `what ships. This is an infrastructure fault, not a missing step — nothing about the plan is wrong. ` +
+        `Retry the ship; if it persists, the rubric plan-row read is failing and that is the thing to fix.`,
+    })) return collectedRefusal();
+    if (metaRubric && revisionRead?.ok) {
       const currentRevision = revisionRead.revision;
       // Keep the ship-time gate on the same vetting policy as rubrics:get,
       // scorecards:emit, and bind. Reuse the already-read meta-rubric and revision
@@ -1426,7 +1490,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         const candidateDiagnostic = vettingStatus.diagnosis
           ? ` Candidate diagnostics: ${vettingStatus.diagnosis}.`
           : '';
-        return {
+        if (refuse({
           satisfied: false,
           code: 'acceptance_rubric_unvetted',
           rubricId: rubric.rubricId,
@@ -1452,14 +1516,19 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           ...(vettingStatus.gradingAuditDispatchSuppressed
             ? { gradingAuditDispatchSuppressed: vettingStatus.gradingAuditDispatchSuppressed }
             : {}),
-        };
-      }
-      if (vettingStatus.required && current) {
+        })) return collectedRefusal();
+      } else if (vettingStatus.required && current) {
         vettingAttestedAt = current.createdAt;
         if (vettingStatus.vettedUnderWaiver) vettedUnderWaiver = vettingStatus.vettedUnderWaiver;
       }
     }
   }
+
+  // P-001 collect-mode barrier: every independent pre-grading check (contract, items,
+  // audit, citations, realization, spec coverage, verification, review, design, rubric
+  // existence + vetting) has now run. Grading is the LAST step of the flow and only
+  // meaningful once all of those pass, so collect mode returns the full set here.
+  if (preGradingRefusals.length > 0) return collectedRefusal();
 
   // A qualifying grading: complete (every criterion rated), agent-emitted (synthesized
   // floors are excluded by listScorecards' default), against THIS rubric.
@@ -2009,6 +2078,50 @@ export function planAcceptanceRepairAction(
   return { kind: 'diagnostic', nextVerb: diagnostic, instruction };
 }
 
+/**
+ * P-001 (plan-verification-friction-reduction-2026-10-11): the primary refusal (the first
+ * collected, so `code`/`message` match first-failure mode) carrying every collected
+ * refusal as a blocker with its own repair route. Pure apart from the repair router.
+ */
+function withPreGradingBlockers(
+  planSlug: string,
+  refusals: readonly PlanAcceptanceGateVerdictWithoutBuildProvenance[],
+  opts: PlanAcceptanceGateOpts,
+  subject: { status?: string | null; harnessSlug?: string },
+): PlanAcceptanceGateVerdictWithoutBuildProvenance {
+  const [primary] = refusals;
+  if (!primary) throw new Error('withPreGradingBlockers: no refusal was collected');
+  const repairOpts = { ...opts, harnessSlug: subject.harnessSlug ?? opts.harnessSlug };
+  return {
+    ...primary,
+    blockers: refusals.flatMap((refusal) => refusal.code
+      ? [{
+          code: refusal.code,
+          ...(refusal.message ? { message: refusal.message } : {}),
+          repairAction: planAcceptanceRepairAction(planSlug, refusal, repairOpts, subject.status),
+        }]
+      : []),
+  };
+}
+
+/**
+ * P-001: the ship door's response message — the primary message, followed by one line
+ * naming every other failing check, so a caller reading only `message` still learns that
+ * the plan has more than one blocker. The gate's own `message` is left unchanged for the
+ * closure observation.
+ */
+export function messageWithAdditionalBlockers(
+  message: string | undefined,
+  blockers: readonly PlanAcceptanceGateBlocker[] | undefined,
+): string | undefined {
+  const rest = (blockers ?? []).slice(1);
+  if (rest.length === 0) return message;
+  const tail =
+    `ALSO FAILING: ${rest.length} more independent check(s) — ${rest.map((b) => b.code).join(', ')}. ` +
+    'Each is listed with its own message and repairAction in blockers[]; repair them together before retrying.';
+  return message ? `${message}\n\n${tail}` : tail;
+}
+
 export async function evaluatePlanAcceptanceGate(
   planSlug: string,
   opts: PlanAcceptanceGateOpts = {},
@@ -2020,11 +2133,16 @@ export async function evaluatePlanAcceptanceGate(
   // The fingerprint is read BEFORE evaluation starts, never beside it.
   const observation = isCanonicalClosureGateCall(opts) ? await beginPlanClosureObservation(planSlug) : null;
   const verdict = await evaluatePlanAcceptanceGateWithoutBuildProvenance(planSlug, opts, subject);
+  const repairAction = planAcceptanceRepairAction(
+    planSlug, verdict, { ...opts, harnessSlug: subject.harnessSlug ?? opts.harnessSlug }, subject.status,
+  );
   const result: PlanAcceptanceGateVerdict = {
     ...verdict,
-    repairAction: planAcceptanceRepairAction(
-      planSlug, verdict, { ...opts, harnessSlug: subject.harnessSlug ?? opts.harnessSlug }, subject.status,
-    ),
+    repairAction,
+    // P-001: every refusal names its blockers; a first-failure refusal has exactly one.
+    ...(!verdict.satisfied && !verdict.blockers && verdict.code
+      ? { blockers: [{ code: verdict.code, ...(verdict.message ? { message: verdict.message } : {}), repairAction }] }
+      : {}),
     buildProvenance: getBuildInfo(),
   };
   await observation?.record(subject.harnessSlug, result);
