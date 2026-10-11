@@ -153,18 +153,33 @@ export function extractMapRefusalCodes(docText: string): string[] {
 const MAX_EXPECT_STATEMENT_LINES = 40;
 
 /**
+ * Start of an assertion statement: `expect(`, an assertion helper named by convention
+ * (`expectRefused(`, `assertCode(`), or node's `assert(` / `assert.equal(`.
+ */
+const ASSERTION_CALL = /\b(?:expect|assert)(?:[A-Z_]\w*)?(?:\.\w+)?\(/;
+/** A line that DEFINES an assertion helper rather than calling one. */
+const ASSERTION_HELPER_DEFINITION =
+  /\bfunction\s+(?:expect|assert)\w*\s*\(|\b(?:const|let|var)\s+(?:expect|assert)\w*\s*=/;
+
+/**
  * True when `testText` asserts on `code`: the quoted literal appears inside an
- * `expect(` statement. The statement runs from the `expect(` line until its parentheses
- * balance on a line that ends the statement, so a code deep inside a multi-line
- * `toMatchObject({ … })` counts. A code that only appears in fixture construction
- * before the `expect(` does not.
+ * assertion statement — `expect(…)`, an `expect*`/`assert*` helper call, or node's
+ * `assert`. The statement runs from the call until its parentheses balance on a line
+ * that ends the statement, so a code deep inside a multi-line `toMatchObject({ … })`
+ * counts. A code that only appears in fixture construction, or in a helper's own
+ * definition line, does not.
  */
 export function testAssertsOnCode(testText: string, code: string): boolean {
   const quoted = [`'${code}'`, `"${code}"`, '`' + code + '`'];
   const lines = testText.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
-    const at = lines[i]!.indexOf('expect(');
-    if (at < 0) continue;
+    // On a helper's definition line, look only past the definition head, so the
+    // helper's own name/defaults never count but an inline `expect(` in its body does.
+    const def = ASSERTION_HELPER_DEFINITION.exec(lines[i]!);
+    const from = def ? def.index + def[0].length : 0;
+    const rel = lines[i]!.slice(from).search(ASSERTION_CALL);
+    if (rel < 0) continue;
+    const at = from + rel;
     let depth = 0;
     const end = Math.min(lines.length, i + MAX_EXPECT_STATEMENT_LINES);
     for (let j = i; j < end; j += 1) {

@@ -125,6 +125,23 @@ describe('testAssertsOnCode', () => {
     const t = "expect(result.ok).toBe(false);\nconst next = { code: 'zz_alpha_refused' };";
     expect(testAssertsOnCode(t, 'zz_alpha_refused')).toBe(false);
   });
+
+  it('CALIBRATION: counts a literal passed to an expect*/assert* helper (EI-25652573114035984)', () => {
+    expect(testAssertsOnCode("expectRefused(result, 'zz_alpha_refused');", 'zz_alpha_refused')).toBe(true);
+    expect(testAssertsOnCode("assertRefusal(\n  result,\n  'zz_alpha_refused',\n);", 'zz_alpha_refused')).toBe(true);
+    expect(testAssertsOnCode("assert.equal(result.code, 'zz_alpha_refused');", 'zz_alpha_refused')).toBe(true);
+    const inlineBody = "const expectOk = (r: Result) => expect(r).toMatchObject({ code: 'zz_alpha_refused' });";
+    expect(testAssertsOnCode(inlineBody, 'zz_alpha_refused')).toBe(true);
+  });
+
+  it('CONTROL: a helper definition line and look-alike names do not count', () => {
+    const definition = "function expectRefused(r: Result, code = 'zz_alpha_refused') {\n  return r;\n}";
+    expect(testAssertsOnCode(definition, 'zz_alpha_refused')).toBe(false);
+    const arrow = "const assertCode = (r: Result) => r.code === 'zz_alpha_refused';";
+    expect(testAssertsOnCode(arrow, 'zz_alpha_refused')).toBe(false);
+    expect(testAssertsOnCode("const v = expected(input, 'zz_alpha_refused');", 'zz_alpha_refused')).toBe(false);
+    expect(testAssertsOnCode("assertion(input, 'zz_alpha_refused');", 'zz_alpha_refused')).toBe(false);
+  });
 });
 
 describe('findUnregisteredDoorCodes', () => {
