@@ -230,6 +230,18 @@ describe('the Asana package declares an Asana ticket provider', () => {
     });
   });
 
+  // cupboard-distributable-integrations-2026-10-10 P-009: an owner without an OAuth app can paste a
+  // personal access token instead; the host sends it as the bearer on Asana's API host only.
+  it('offers a personal access token as an alternative to OAuth, sent only to Asana’s API host', async () => {
+    const descriptor = await adapter.describe();
+    expect(descriptor.setup?.credentials).toEqual([
+      expect.objectContaining({ key: 'personalAccessToken', label: 'Personal access token', hosts: ['app.asana.com'] }),
+    ]);
+    for (const field of descriptor.setup?.credentials ?? []) {
+      for (const host of field.hosts ?? []) expect(descriptor.egressHosts).toContain(host);
+    }
+  });
+
   // A token gets 403 from any endpoint its grant does not cover. WI-10008135: the bug drill could not
   // create its Asana project (no projects:write). WI-10008209: even with every granular scope, the
   // sync's first call (GET /events) and the sections read have no granular scope at all, so every
