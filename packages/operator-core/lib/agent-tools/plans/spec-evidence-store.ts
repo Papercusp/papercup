@@ -10,8 +10,8 @@ import ts from 'typescript';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
 import {
-  MAX_RECORDED_PASSED_CASES,
   parseTestRunExecutionDetails,
+  passedCaseTitlesIncomplete,
   stableRecordedRuntimeEnvironment,
 } from '@papercusp/test-config/execution-details';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
@@ -1320,7 +1320,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         parsedRunExecution.passed > 0 &&
         passedCaseTitles !== undefined &&
         passedCaseTitles.length === parsedRunExecution.passed &&
-        passedCaseTitles.length < MAX_RECORDED_PASSED_CASES &&
+        !passedCaseTitlesIncomplete(parsedRunExecution) &&
         !declaredTestCases.some((title) => hasMatchingDeclaredCaseTitle(title, passedCaseTitles))
       ) {
         return {
@@ -3400,6 +3400,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     : {}),
                   ...(parsedTestRunExecution.passedCaseTitles !== undefined
                     ? { passedCaseTitles: [...parsedTestRunExecution.passedCaseTitles] }
+                    : {}),
+                  ...(passedCaseTitlesIncomplete(parsedTestRunExecution)
+                    ? { passedCaseTitlesIncomplete: true }
                     : {}),
                   ...(parsedTestRunExecution.testLayer !== undefined || canonicalOperationalAdapterLayer({
                     framework: row.test_run_framework, source: row.test_run_source,
