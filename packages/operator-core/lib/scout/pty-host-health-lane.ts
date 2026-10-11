@@ -51,7 +51,10 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // WI-10003875: a claude quota latch the native transcript proved was the
     // model's own prose, dismissed so wakes resume — a detector false positive
     // that self-healed, worth counting but not a final failure.
-    kind === 'quota-block-dismissed-transcript-echo'
+    kind === 'quota-block-dismissed-transcript-echo' ||
+    // WI-6554700010008412: a codex quota latch released at the provider's
+    // stated reset so the next deferred wake can run.
+    kind === 'quota-block-expired-at-reset'
   ) return 'recovered';
 
   if (
