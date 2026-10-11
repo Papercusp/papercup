@@ -61,6 +61,12 @@ export interface ReleaseArtifact {
   url: string;
   size: number;
   sha256: string;
+  /** Measured built SPA identity, bound by the cutter to this artifact's bytes. */
+  desktopInterface?: {
+    kind: 'legacy' | 'portal-candidate' | 'unknown';
+    spaIndexSha256: string | null;
+    entryBundle: string | null;
+  };
   /**
    * Set when the artifact was pulled from the channel after it shipped (e.g. it
    * failed a license scan, or its object is missing from the bucket). The row

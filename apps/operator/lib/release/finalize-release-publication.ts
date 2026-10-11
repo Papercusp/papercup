@@ -21,6 +21,7 @@ import { computeReleaseCompleteness } from './release-completeness';
 import { incompleteDesktopScopeRefusal } from './release-owner-approval';
 import { partialScopeApprovalDirectiveId } from './release-partial-scope';
 import { defaultReporterReleaseDeps, publishReporterRelease } from './reporter-release';
+import { assertPublicDesktopInterface } from '../../../../papercusp-desktop/bin/lib/spa-freshness.js';
 
 export interface HeadProbeResult {
   status: number;
@@ -106,6 +107,10 @@ export async function assertRecordedReleaseScopeApproved(
   workspaceId: string,
   readDirective: (id: number) => Promise<OwnerDirectiveRow | null> = getOwnerDirective,
 ): Promise<number | null> {
+  assertPublicDesktopInterface();
+  for (const artifact of row.artifacts) {
+    if (artifact.desktopInterface) assertPublicDesktopInterface({ desktopInterface: artifact.desktopInterface });
+  }
   const completeness = computeReleaseCompleteness(row.artifacts);
   if (completeness.complete) return null;
   const directiveId = partialScopeApprovalDirectiveId(row.notes);
@@ -125,6 +130,7 @@ export async function preflightReleasePublication(
   opts: ReleaseScopePreflightOptions,
   deps: { sql?: Sql } = {},
 ): Promise<{ artifactCount: number; completeDesktopScope: boolean; approvalDirectiveId: number | null }> {
+  assertPublicDesktopInterface();
   const sql = deps.sql ?? postgres(getHarnessAdminUrl(), { max: 1 });
   const ownsSql = !deps.sql;
   try {
@@ -166,6 +172,10 @@ export async function verifyReleasePublication(
   baseUrl: string,
   head: HeadProbe = fetchHead,
 ): Promise<PublicationProof> {
+  assertPublicDesktopInterface();
+  for (const artifact of row.artifacts) {
+    if (artifact.desktopInterface) assertPublicDesktopInterface({ desktopInterface: artifact.desktopInterface });
+  }
   if (row.artifacts.length === 0) {
     throw new Error(`release ${row.version} (${row.channel}) has no recorded artifacts`);
   }
