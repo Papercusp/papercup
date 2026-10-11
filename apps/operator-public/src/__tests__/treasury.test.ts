@@ -25,6 +25,7 @@ import {
   type CumulativePaymentVoucher,
 } from '@papercusp/operator-core/lib/p2p/microcharge.ts';
 import { revenueSplitManifest } from '@papercusp/operator-core/lib/p2p/revenue-settlement.ts';
+import { authorizeTreasuryTransfer } from '@papercusp/operator-core/lib/p2p/treasury-controls.ts';
 import { perUseRollup } from '@papercusp/operator-core/lib/cupboard/ledger-p2p-bridge.ts';
 import type { CommerceEvent } from '@papercusp/operator-core/lib/p2p/commerce-events.ts';
 import { identityPerUseOfferTerms, type IdentityPerUseOfferTerms } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer.ts';
@@ -35,6 +36,7 @@ import {
   signReconciliationRequest,
 } from '@papercusp/operator-core/lib/cupboard/reconciliation-hmac.ts';
 import { buildApi } from '../routes/index.ts';
+import { resolveTreasuryConfig } from '../routes/treasury.ts';
 import type { SafeTreasuryAdapter } from '../treasury-adapter.ts';
 import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
@@ -681,15 +683,27 @@ describe('component author payouts on the existing settlement resource', () => {
     expect(await verifyLedgerStream(h.db, 'treasury.transfers')).toMatchObject({ ok: true, unchainedCount: 0 });
   });
 
-  it('binds each author into the signed transfer identity even when wallet and amount are identical', async () => {
+  it('binds the author into otherwise identical authorization and records distinct payout proofs', async () => {
     const { adapter, submitTransfer } = fakeTreasuryAdapter();
     const h = await prepared({}, adapter);
-    h.raw.prepare('UPDATE wallet_bindings SET wallet_address = ? WHERE principal_id = ?').run(ALICE, 'gh:12');
+    // Verified wallet enrollment is one-to-one. Exercise the payee-only digest
+    // counterfactual at its writer, then route authors with valid bindings.
+    expect(() => h.raw.prepare('UPDATE wallet_bindings SET wallet_address = ? WHERE principal_id = ?')
+      .run(ALICE, 'gh:12')).toThrow(/UNIQUE constraint/);
+    const policy = resolveTreasuryConfig(h.env, adapter);
+    if (!policy.ok) throw new Error(policy.detail);
+    const request = { role: 'settlement' as const, token: STABLECOIN, recipient: TREASURY,
+      amountMicros: 250n, settlementReceiptHash: 'same-receipt', policyApproved: true };
+    const first = authorizeTreasuryTransfer(policy.config, { ...request, payeeId: 'gh:11' });
+    const second = authorizeTreasuryTransfer(policy.config, { ...request, payeeId: 'gh:12' });
+    if (!first.ok || !second.ok) throw new Error('valid authorization control refused');
+    expect(first.safeTxHash).not.toBe(second.safeTxHash);
+    expect(authorizeTreasuryTransfer(policy.config, { ...request, payeeId: 'gh:11' })).toEqual(first);
     const response = await payout(h);
     expect(response.status).toBe(200);
     const body = await response.json() as { transfers: Array<{ payeeId: string; safeTxHash: string; proofEventId: string }> };
     expect(submitTransfer.mock.calls.map(([transfer]) => [transfer.recipient, transfer.amountMicros]))
-      .toEqual([[ALICE, 250n], [ALICE, 250n]]);
+      .toEqual([[ALICE, 250n], [BOB, 250n]]);
     expect(body.transfers.map((transfer) => transfer.payeeId)).toEqual(['gh:11', 'gh:12']);
     expect(new Set(body.transfers.map((transfer) => transfer.safeTxHash)).size).toBe(2);
     expect(new Set(body.transfers.map((transfer) => transfer.proofEventId)).size).toBe(2);
