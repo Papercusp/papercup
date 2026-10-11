@@ -172,10 +172,12 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       slug,
       content: edit1Body,
       expectedHash: hash1,
+      // This test deliberately replaces its own generated starter template.
+      allowShrink: true,
       rationale: 'P-028 e2e: first scripted edit — adds a Now block.',
     });
     expect(edit1.status).toBe(200);
-    expect((edit1.json as { ok?: boolean }).ok ?? false).toBe(true);
+    expect((edit1.json as { ok?: boolean }).ok ?? false, JSON.stringify(edit1.json)).toBe(true);
     const hash2 = (edit1.json as { contentHash?: string }).contentHash;
     expect(hash2).toBeTruthy();
     expect(hash2).not.toBe(hash1);
@@ -193,7 +195,7 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       rationale: 'P-028 e2e: flip P-001 to wip — agent is picking it up.',
     });
     expect(edit2.status).toBe(200);
-    expect((edit2.json as { ok?: boolean }).ok ?? false).toBe(true);
+    expect((edit2.json as { ok?: boolean }).ok ?? false, JSON.stringify(edit2.json)).toBe(true);
 
     // ── 4. plans:revisions — expect 3 entries (origin + 2 edits)
     //      newest-first, with rationales intact.
