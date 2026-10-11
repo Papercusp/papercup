@@ -476,13 +476,40 @@ describe('P-005 goal owner report truth checks', () => {
       expect(summary).toEqual({ cost: 'unread', ownerWalls: 'unread', corrections: 'no-baseline' });
       const text = describeGoalOwnerReportTruthViolations(GOAL, violations);
       expect(text).toContain(`GOAL owner report for ${GOAL} contradicts measured goal state; nothing was sent.`);
-      expect(text).toContain('4. OWNER-WALLED names WI-10005042 by id only');
+      expect(text).toContain('4. OWNER-WALLED names WI-10005042 without a concrete owner action');
     });
 
     it('passes the truthful version of the same report and summarizes what it established', () => {
       const { violations, summary } = checkGoalOwnerReportTruth(fields(), inputs());
       expect(violations).toEqual([]);
       expect(summary).toEqual({ cost: 'cited-measured', ownerWalls: 'all-listed-with-action', corrections: 'no-baseline' });
+    });
+
+    it.each([
+      'work-item:WI-10004856: UNKNOWN: exact action absent',
+      'WI-10004856 [needs-human]: UNKNOWN: exact action absent',
+      'work-item:WI-10004856: open this work item for the exact owner action',
+      'work-item:WI-10004856: unknown',
+      'work-item:WI-10004856',
+    ])('does not certify an owner-action placeholder: %s', (ownerWalled) => {
+      const { violations, summary } = checkGoalOwnerReportTruth(
+        fields({ ownerWalled }),
+        inputs({ ownerWalls: [walls[0]!] }),
+      );
+      expect(violations).toEqual([
+        expect.objectContaining({ check: 'owner-walled', kind: 'wall-without-action',
+          ref: 'WI-10004856', expected: walls[0]!.action }),
+      ]);
+      expect(summary.ownerWalls).not.toBe('all-listed-with-action');
+    });
+
+    it('keeps a concrete action that mentions an unknown value', () => {
+      const { violations, summary } = checkGoalOwnerReportTruth(
+        fields({ ownerWalled: 'work-item:WI-10004856: choose a domain or record that the domain is unknown' }),
+        inputs({ ownerWalls: [walls[0]!] }),
+      );
+      expect(violations).toEqual([]);
+      expect(summary.ownerWalls).toBe('all-listed-with-action');
     });
 
     it('refuses an open owner wall the report omits, quoting its recorded action', () => {

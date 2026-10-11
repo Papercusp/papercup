@@ -540,7 +540,7 @@ export function workItemRefsIn(text: string | null | undefined): string[] {
 }
 
 /**
- * Split an ownerWalled section into entries and flag those that are only ids. "WI-10004856,
+ * Split an ownerWalled section into entries and flag those without a concrete action. "WI-10004856,
  * WI-10004875, WI-10005042" and "WI-10004856/4875/5042" name no action for the owner;
  * "hud P-003 route (solo/fleet/drop)" does.
  */
@@ -552,8 +552,14 @@ export function walledEntries(text: string | null | undefined): { entry: string;
     .filter((entry) => entry && !/^(?:none|nothing|n\/a)\.?$/i.test(entry))
     .map((entry) => {
       const hasRef = workItemRefsIn(entry).length > 0;
-      const residue = entry.replace(WORK_ITEM_REF, ' ').replace(/[^A-Za-z]+/g, ' ').trim();
-      return { entry, bare: hasRef && residue.split(/\s+/).filter((word) => word.length > 1).length === 0 };
+      // A transport prefix, status label or the draft's lookup instruction is
+      // not an owner action. Keep the match exact so concrete asks that mention
+      // an unknown value remain valid (EI-25697679635517900).
+      const residue = entry.replace(/\bwork-item:\s*/gi, ' ')
+        .replace(/\[(?:needs-human|needs_human)\]/gi, ' ')
+        .replace(WORK_ITEM_REF, ' ').replace(/[^A-Za-z]+/g, ' ').trim().toLowerCase();
+      const placeholder = /^(?:unknown(?: exact action absent)?|exact action absent|open this work item for the exact owner action)$/.test(residue);
+      return { entry, bare: hasRef && (placeholder || residue.split(/\s+/).filter((word) => word.length > 1).length === 0) };
     });
 }
 
@@ -662,7 +668,7 @@ export function checkGoalOwnerReportTruth(
           kind: 'wall-without-action',
           ref: wall.ref,
           expected: wall.action,
-          message: `OWNER-WALLED names ${wall.ref} by id only; say what the owner must do: ${wallActionHint(wall.action)}.`,
+          message: `OWNER-WALLED names ${wall.ref} without a concrete owner action; say what the owner must do: ${wallActionHint(wall.action)}.`,
         });
       }
     }
@@ -676,7 +682,7 @@ export function checkGoalOwnerReportTruth(
           kind: 'wall-without-action',
           ref,
           expected: null,
-          message: `OWNER-WALLED names ${ref} by id only; say what the owner must do about it.`,
+          message: `OWNER-WALLED names ${ref} without a concrete owner action; say what the owner must do about it.`,
         });
       }
     }
