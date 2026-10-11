@@ -506,7 +506,9 @@ export async function replayResolvedWorkloadEvidence(
     })),
     Promise.all([...receiptRefs].map(async ref => {
       const rows = await io.readObservations(ref, binding).catch(() => null);
-      if (!Array.isArray(rows)) { unresolvedRefs.push(ref); return []; }
+      if (!Array.isArray(rows) || rows.some(row => row?.metadata?.receiptRef !== ref)) {
+        unresolvedRefs.push(ref); return [];
+      }
       return structuredClone(rows);
     })),
   ]);

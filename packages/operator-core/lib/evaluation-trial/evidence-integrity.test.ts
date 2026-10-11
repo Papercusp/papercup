@@ -275,6 +275,21 @@ describe('declared workload completion integrity', () => {
     expect(reads).toEqual([]);
   });
 
+  it('never borrows an observation returned under a different authority reference', async () => {
+    const { input, resolver } = resolutionFixture();
+    input.evidence.trajectory.forEach((row, index) => { row.metadata!.receiptRef = `authority:step-${index}`; });
+    const authority = structuredClone(input.evidence.trajectory);
+    const sealed = sealEvidence(input.evidence); input.manifest = sealed.manifest; input.envelope = sealed.envelope;
+    const reader = { ...resolver, readObservations: async (ref: string) => {
+      // Every candidate has an exact counterpart, but two source refs are swapped.
+      const index = Number(ref.split('-').at(-1));
+      return [authority[index === 0 ? 1 : index === 1 ? 0 : 2]];
+    } };
+    const report = await replayResolvedWorkloadEvidence(input, reader);
+    expect(report.ok).toBe(false);
+    expect(report.integrity.findings.map(row => row.kind)).toContain('artifact-missing');
+  });
+
   it.each(['wrong-bytes', 'retrieved-only', 'wrong-consumer', 'foreign-run', 'foreign-binding', 'missing-receipt', 'duplicate-input'])
     ('refuses context delivery defect %s', defect => {
       const { preserved, verify } = fixture(); const input = preserved.trajectory[0];
