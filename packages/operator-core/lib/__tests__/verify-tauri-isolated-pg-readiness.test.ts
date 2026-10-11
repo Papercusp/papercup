@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
 const repo = resolve(import.meta.dirname, '../../../..');
@@ -12,6 +13,11 @@ const start = source.indexOf('  ISOLATED_PG_ELAPSED=0\n');
 const end = source.indexOf('  ISOLATED_PG_READY_LINE=', start);
 if (start < 0 || end < 0) throw new Error('Isolated PG readiness loop was not found');
 const loop = source.slice(start, end);
+const bootScript = source.match(/<<'PGBOOT'\n([\s\S]*?)\nPGBOOT/)?.[1];
+const stageReporter = bootScript?.match(
+  /function classifyStartupStage\(message\) \{[\s\S]*?\n\}\n\nfunction reportStartupStage\(message, observedStages\) \{[\s\S]*?\n\}/,
+)?.[0];
+if (!stageReporter) throw new Error('Isolated PG startup stage reporter was not found');
 
 function run(mode: string, window = 2) {
   const dir = mkdtempSync(resolve(tmpdir(), 'tauri-pg-readiness-'));
@@ -49,6 +55,32 @@ echo 'READY_VERIFIED'
 }
 
 describe('native isolated PG readiness parent', () => {
+  it('retains bounded startup-stage breadcrumbs without copying raw Postgres logs', () => {
+    const lines: string[] = [];
+    const report = runInNewContext(
+      `(() => { ${stageReporter}; return reportStartupStage; })()`,
+      { console: { log: (line: string) => lines.push(String(line)) } },
+    ) as (message: string, observedStages: Set<string>) => void;
+    const observed = new Set<string>();
+    report('preload: (none)', observed);
+    report('initialising data dir at /private/run', observed);
+    report('initialising data dir at /private/run', observed);
+    report('starting postgres on localhost:1234', observed);
+    report('pg: database system is ready to accept connections', observed);
+    report('creating database papercusp', observed);
+    report('apply 000-baseline.sql', observed);
+    report('pg: /private/path should not be copied', observed);
+
+    expect(lines).toEqual([
+      'PG_STAGE stage=preload-ready',
+      'PG_STAGE stage=initdb',
+      'PG_STAGE stage=postmaster-start',
+      'PG_STAGE stage=postmaster-ready',
+      'PG_STAGE stage=database-create',
+    ]);
+    expect(bootScript).toContain('console.log(`PG_PROGRESS migration=${message.slice(6)}`)');
+  });
+
   it('keeps an advancing migration boot alive past the initial deadline, then accepts ready', () => {
     const result = run('advancing-ready');
     expect(result).toEqual(expect.stringContaining('READY_VERIFIED'));
