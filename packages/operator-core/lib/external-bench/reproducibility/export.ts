@@ -13,6 +13,26 @@ import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
 import { buildRunReports, getRollout, getPrereg, listRunResults } from './store';
 import { listFleetRunsFull, getCoordTrace } from './fleet';
 import type { DbScope } from './db';
+import { buildCampaignBundle, campaignEntryFromRollout, writeCampaignBundle, type LabelCorrectionInput } from './campaign-bundle';
+
+/**
+ * P-022 / D-009: write a run as a DATED campaign bundle (every task's trace pointer + scorer output, with a
+ * completeness verdict and raw/corrected label-error aggregates). Reuses exportRunBundle's PG reads; the
+ * P-016 reproducer layout written by exportRunBundle is unchanged. Local/repo only — nothing is published.
+ */
+export async function exportCampaignBundle(
+  runId: string,
+  opts: { repoRoot?: string; completedAt?: string | Date; labelCorrections?: LabelCorrectionInput[] } & DbScope = {},
+): Promise<{ root: string; files: string[]; complete: boolean; missing: number }> {
+  const scope: DbScope = { sql: opts.sql, workspaceId: opts.workspaceId };
+  const results = await listRunResults({ runId, ...scope });
+  const entries = [];
+  for (const r of results) entries.push(campaignEntryFromRollout(r, await getRollout(r.rolloutId, scope)));
+  const bundle = buildCampaignBundle({ campaignId: runId, completedAt: opts.completedAt ?? new Date(), entries,
+    labelCorrections: opts.labelCorrections, meta: { source: 'pg', runId } });
+  const files = writeCampaignBundle(bundle, opts.repoRoot ?? REPO_ROOT);
+  return { root: bundle.root, files, complete: bundle.manifest.complete, missing: bundle.manifest.missing.length };
+}
 
 /** Path-safe slug for a benchmark task id (instance ids carry slashes/colons). */
 function slug(taskId: string): string {
