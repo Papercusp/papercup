@@ -83,7 +83,7 @@ test('native Inbox acknowledgement removes only the selected message after refre
 
   const sourceReceipt = JSON.parse(await readFile(sourceReceiptPath, 'utf8')) as Record<string, unknown>;
   const run = promisify(execFile);
-  const mcpCall = fileURLToPath(new URL('../scripts/mcp-call.mjs', import.meta.url));
+  const mcpCall = fileURLToPath(new URL('../../../scripts/mcp-call.mjs', import.meta.url));
   const evidence: Record<string, unknown> = {
     schemaVersion: 'native-inbox-ack-persistence-receipt-v1',
     startedAt: new Date().toISOString(),
