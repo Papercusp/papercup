@@ -1,6 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import { admitArm, ARM_ADMISSIONS, type ArmAdmission } from './fair-comparison-admission';
 import { astGrepSyntaxIndex } from './ast-grep-facade';
+import { LspDaemonAnswerCache, type MeasuredLspInputs } from './lsp-daemon-cache';
+import type { LspDaemonAnswer } from './lsp-daemon-protocol';
+import { unmeasuredSourceEvidence } from './contracts';
+
+describe('native managed cache current-source contract', () => {
+  it('invalidates source generations and removes deleted relationships at an unchanged cursor', async () => {
+    let fingerprint = 'generation-one';
+    let present = true;
+    const scope = (): MeasuredLspInputs => ({ measured: true, root: '/fixture', fingerprint,
+      entries: present ? 1 : 0, bytes: present ? 20 : 0, files: present ? ['target.ts'] : [],
+      externalReferenceCandidates: [] });
+    const revision = { measured: true as const, identity: 'fixture-service' };
+    const cache = new LspDaemonAnswerCache({ prepare: async () => revision, current: () => revision }, async () => scope());
+    const producer = async (): Promise<LspDaemonAnswer> => {
+      const answer: LspDaemonAnswer = { backend: 'lsp-adapter', intent: 'definition', query: '/fixture/consumer.ts',
+        sites: present ? [{ path: 'target.ts', line1: fingerprint === 'generation-one' ? 1 : 2, kind: 'function' }] : [],
+        truncation: { truncated: false, totalAvailable: present ? 1 : 0, continuation: null },
+        freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+      const evidence = unmeasuredSourceEvidence(answer,
+        { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+      return { ...answer, evidence: { ...evidence, sourceScope: { ...evidence.sourceScope, sourceFingerprint: fingerprint } } };
+    };
+    const request = { workspaceId: 'native-contract', op: 'symbol' as const,
+      args: { file: '/fixture/consumer.ts', rootPath: '/fixture', line1: 1, character: 5 } };
+    const query = () => cache.query(request, 'typescript', '/fixture', new AbortController().signal, producer);
+    expect((await query()).sites[0]?.line1).toBe(1);
+    expect((await query()).daemonCache?.state).toBe('hit');
+    fingerprint = 'generation-two';
+    const edited = await query();
+    expect(edited.daemonCache?.state).toBe('miss');
+    expect(edited.sites).toEqual((await producer()).sites);
+    expect(edited.sites[0]?.line1).toBe(2);
+    present = false; fingerprint = 'generation-deleted';
+    const deleted = await query();
+    expect(deleted.daemonCache?.state).toBe('miss');
+    expect(deleted.sites).toEqual([]);
+    expect((await query()).sites).toEqual([]);
+  });
+});
 
 // Production integration must not inherit the comparison's incumbent exemption.
 const permissive: ArmAdmission = {
@@ -12,7 +51,7 @@ describe('native syntax intent admission', () => {
   it('refuses an unadmitted grammar instead of reporting a trustworthy empty', async () => {
     // Persisted or untyped callers still reach this producer guard, even when
     // the public tool's closed language enum rejects the request earlier.
-    const answer = await astGrepSyntaxIndex({ language: 'cpp' as never, paths: ['unsupported.cpp'] });
+    const answer = await astGrepSyntaxIndex({ language: 'cpp' as never, rootPath: '.', paths: ['unsupported.cpp'] });
     expect(answer.error).toContain('unsupported syntax-index language');
     expect(answer.sites).toEqual([]);
     expect(answer.freshness.health).toBe('unknown');

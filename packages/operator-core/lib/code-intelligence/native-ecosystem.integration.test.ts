@@ -1,5 +1,5 @@
 /** P-001 baseline proof through the actual handler, compiler and forked worker. */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,51 @@ import { runLspDaemonServer } from './lsp-daemon-server';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import type { CodeIntelAnswer } from './contracts';
 import { admitArm } from './fair-comparison-admission';
+import { LspDaemonAnswerCache } from './lsp-daemon-cache';
+import type { LspDaemonAnswer } from './lsp-daemon-protocol';
+import { unmeasuredSourceEvidence } from './contracts';
+
+describe('native managed cache filesystem reconciliation', () => {
+  it('reconciles missed dependency edits and deletes without changing the query cursor', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-cache-contract-'));
+    const target = join(project, 'target.ts');
+    writeFileSync(target, 'function target() {}\n');
+    writeFileSync(join(project, 'consumer.ts'), 'target();\n');
+    const revision = { measured: true as const, identity: 'fixture-source-producer' };
+    const cache = new LspDaemonAnswerCache({ prepare: async () => revision, current: () => revision });
+    // This independent producer isolates filesystem/cache reconciliation.
+    // The pinned integration suite separately exercises the managed compiler.
+    const producer = async (): Promise<LspDaemonAnswer> => {
+      const source = existsSync(target) ? readFileSync(target, 'utf8') : null;
+      const answer: LspDaemonAnswer = { backend: 'lsp-adapter', intent: 'definition', query: 'consumer.ts',
+        sites: source === null ? [] : [{ path: 'target.ts', line1: source.startsWith('\n') ? 2 : 1, kind: 'function' }],
+        truncation: { truncated: false, totalAvailable: source === null ? 0 : 1, continuation: null },
+        freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+      const evidence = unmeasuredSourceEvidence(answer,
+        { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+      return { ...answer, evidence: { ...evidence, sourceScope: { ...evidence.sourceScope, sourceFingerprint: source ?? 'deleted' } } };
+    };
+    const request = { workspaceId: 'native-cache-contract', op: 'symbol' as const,
+      args: { file: join(project, 'consumer.ts'), rootPath: project, line1: 1, character: 5 } };
+    const query = () => cache.query(request, 'typescript', project, new AbortController().signal, producer);
+    try {
+      expect((await query()).sites[0]?.line1).toBe(1);
+      expect((await query()).daemonCache?.state).toBe('hit');
+      const stamp = statSync(target);
+      writeFileSync(target, '\nfunction target() {}');
+      utimesSync(target, stamp.atime, stamp.mtime);
+      const edited = await query();
+      expect(edited.daemonCache?.state).toBe('miss');
+      expect(edited.sites).toEqual((await producer()).sites);
+      expect(edited.sites[0]?.line1).toBe(2);
+      rmSync(target);
+      const deleted = await query();
+      expect(deleted.daemonCache?.state).toBe('miss');
+      expect(deleted.sites).toEqual([]);
+      expect((await query()).sites).toEqual([]);
+    } finally { cache.clear(); rmSync(project, { recursive: true, force: true }); }
+  });
+});
 
 const baseline = JSON.parse(readFileSync(fileURLToPath(new URL(
   '../../../../docs/evidence/native-code-intelligence-baseline-2026-10-09.json', import.meta.url,
