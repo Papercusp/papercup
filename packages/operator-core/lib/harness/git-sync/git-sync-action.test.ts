@@ -4735,7 +4735,9 @@ describe('clean sync outcome', () => {
       if (savedHard === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
       else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
     }
-  }, 2_000);
+    // Fake timers drive every timeout above, so this wall-clock cap only bounds real
+    // setup and promise-chain work; 2s was exceeded under gate load (EI-25303530017814636).
+  }, 15_000);
 });
 
 describe('P-010/P-012 merge-conflict path', () => {
