@@ -130,7 +130,32 @@
     "taskId": "0mv456110481ijyrlpq",
     "log": "/tmp/tutorial-d047-source-rematerialize-20261011T1817.log",
     "result": "Source-only restoration completed with exit 0. No artifact rebuild or test replay occurred. The existing .papercusp-release.json exactly matches the original releaseMetadata record above.",
-    "limits": "This restores retained committed inputs for subsequent work; it does not identify the historical deletion actor, reproduce the original checkout identity, prove current runtime acceptance, or establish shipment. The deletion cause remains open on the owned work item."
+    "limits": "This restores retained committed inputs for subsequent work; it does not identify the historical deletion actor, reproduce the original checkout identity, prove current runtime acceptance, or establish shipment. The deletion cause remains open on the owned work item.",
+    "scratchCleanupGuard": {
+      "observedAt": "2026-10-11T18:48:22Z",
+      "rootCause": "The generic age-only cleanup invoked by test startup bypassed the maintained committed-source collector and its dependent-artifact holds. Verifier source receipts were also ignored.",
+      "historicalAttribution": "The regression proves this cleanup can delete retained sources. It does not identify the process that deleted the original candidate directories.",
+      "fix": "Leave the existing committed-source namespace and verifier-source directories to their maintained custody mechanisms. Preserve clones before their owner marker is written; continue collecting expired ordinary scratch and symlinks.",
+      "source": {
+        "path": "libs/test-config/src/hermetic-tmpdir.ts",
+        "sha256": "2eeaf35cc427e9a98c06819f60e4f424371baf807c4ebb76be5fef34284b0c12"
+      },
+      "regression": {
+        "path": "libs/test-config/src/hermetic-tmpdir.test.ts",
+        "sha256": "25945aa85d71f755948f4d45aaa2e9ac271bed0377722b13b6c69c894cfa5ab6"
+      },
+      "before": {
+        "log": "/tmp/tutorial-custody-sweep-before-20261011T1841.log",
+        "sha256": "61ecc5f0610c352cbc394566783d610dddea01f6cc7fe1eb9054c5080de1bebd",
+        "result": "Selected regression failed: three directories removed where only one unowned scratch directory should have been removed. Both retained source directories were deleted. The other 34 cases were unselected."
+      },
+      "after": {
+        "log": "/tmp/tutorial-custody-sweep-final-20261011T1848.log",
+        "sha256": "2fae6e0da7ddd79049ccfda4ec953ee1002a5b49d3addcc7b05c2c1247d48c92",
+        "result": "Complete conventional suite passed 35 tests with zero skips, including source custody, clone-before-marker, expired symlink cleanup and native Node import.",
+        "qualification": "Working-tree test proof with uncommitted source changes; no immutable commit, full affected-suite or shipment proof is claimed."
+      }
+    }
   },
   "limitations": [
     "The private runtime and databases were shut down after acceptance. A new functional run needs freshly prepared private configuration.",
