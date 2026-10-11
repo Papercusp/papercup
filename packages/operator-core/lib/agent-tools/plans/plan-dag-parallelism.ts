@@ -20,7 +20,7 @@ export interface PlanCodeScope {
 /** P-013: source-backed suggestions only. This reader cannot claim or assign work. */
 export function nativePlanGraphAdvice(items: readonly Pick<PlanItem, 'id' | 'storedStatus' | 'blockedBy'>[], scope: PlanCodeScope,
   evidence: CodeIntelSourceEvidence | undefined, coverage: ReadonlyMap<string, PlanItemCoverage>, slug: string,
-  fileClaims: { status: 'measured' | 'unknown'; held: readonly { path: string; owner: string; intent: string }[] } = { status: 'unknown', held: [] }) {
+  fileClaims: { status: 'measured' | 'unknown'; held: readonly { path: string; owner: string; intent: string; coordinationDomain?: string }[] } = { status: 'unknown', held: [] }) {
   const active = items.filter(item => !['done', 'dropped'].includes(item.storedStatus));
   const byId = new Map(active.map(item => [item.id, item]));
   const tasks = scope.taskPaths.filter(task => byId.has(task.itemId));
@@ -58,7 +58,7 @@ export function nativePlanGraphAdvice(items: readonly Pick<PlanItem, 'id' | 'sto
   }
   return { status: measured ? 'measured' as const : 'unknown' as const,
     sourceFingerprint: evidence?.sourceScope.sourceFingerprint ?? null,
-    scope: { paths: evidence?.sourceScope.paths ?? [], taskPaths: tasks },
+    scope: { repositoryId: evidence?.sourceScope.repositoryId ?? null, paths: evidence?.sourceScope.paths ?? [], taskPaths: tasks },
     ordering, proposedOrder: remaining.size ? [] : proposedOrder, cyclesOrConflicts: [...remaining], overlaps,
     ownership: tasks.map(task => ({ itemId: task.itemId, coverage: coverage.get(`${slug}#${task.itemId}`) ?? null })),
     fileClaims,

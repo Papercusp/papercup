@@ -23,14 +23,14 @@ describe('native P013 planning advice', () => {
   it('orders a producer before its consumer while preserving inputs and authoritative peer claims', () => {
     const peer = { ref: 'plan#P-002', directlyClaimed: true, directHolder: 'peer', workers: ['peer'], links: [{ workItemId: 'WI-42', holder: 'peer', activity: 'progressing' }] } as PlanItemCoverage;
     const coverage = new Map([['plan#P-002', peer]]);
-    const claims = { status: 'measured' as const, held: [{ path: 'shared.ts', owner: 'peer', intent: 'WI-42' }] };
+    const claims = { status: 'measured' as const, held: [{ path: 'shared.ts', owner: 'peer', intent: 'WI-42', coordinationDomain: '/fixture' }] };
     const original = structuredClone({ items, scope, peer, claims });
     const advice = nativePlanGraphAdvice(items, scope, evidence(), coverage, 'plan', claims);
     expect(advice.proposedOrder).toEqual(['P-002', 'P-001']);
     expect(advice.ordering).toContainEqual({ producer: 'P-002', consumer: 'P-001', sourcePath: 'consumer.ts', targetPath: 'producer.ts', kind: 'callees' });
     expect(advice.overlaps).toEqual([{ items: ['P-001', 'P-002'], paths: ['shared.ts'] }]);
     expect(advice.ownership[1].coverage?.directHolder).toBe('peer');
-    expect(advice.fileClaims.held[0]).toEqual({ path: 'shared.ts', owner: 'peer', intent: 'WI-42' });
+    expect(advice.fileClaims.held[0]).toEqual({ path: 'shared.ts', owner: 'peer', intent: 'WI-42', coordinationDomain: '/fixture' });
     expect({ items, scope, peer, claims }).toEqual(original);
   });
   it('does not infer source ordering from an unmeasured graph or mismatched source hashes', () => {
