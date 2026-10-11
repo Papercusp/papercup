@@ -195,6 +195,10 @@ export interface TaskRunResult {
   /** Arm-specific detail; OPAQUE to scoring, published for reproducibility.
    *  Baseline C: { n, selectedCandidate, candidates:[{tokensIn,tokensOut,verifierPass,score}], verifierTokens }. */
   armMeta?: Record<string, unknown> | null;
+  /** Structured scorer output the grade step returned (e.g. an integrity verdict, the reward source, the
+   *  grader's raw report). OPAQUE to scoring; retained so a campaign bundle can hold each task's scorer
+   *  output beside its trace. Absent when the grade step returned none. */
+  graderDetail?: unknown;
 
   // ── reproducibility slice (P-010 — referenced here by id/hash/ref) ────────
   /** Exact model id, e.g. 'claude-opus-4-8[1m]'. */
