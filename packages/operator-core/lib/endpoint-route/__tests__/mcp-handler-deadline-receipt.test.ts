@@ -806,6 +806,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
 
       vi.useRealTimers();
       releasePendingBackfill();
+      await vi.waitFor(() => expect(backfillOrder).toEqual(['timeout-start', 'timeout-finished']));
       const response = await responsePromise;
       expect(response.isError).toBe(true);
       expect(textOf(response)).toContain('request_timeout');
