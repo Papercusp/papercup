@@ -48,6 +48,7 @@ import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
 import type { BridgeTickInput, BridgeTickOutcome } from '../../sync/pot-git/github-bridge-tick';
 import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
 import { GitSyncLeaseLostError } from './git-sync-lease-fence';
+import { TURN_HOLD_INTENT } from '../../personal-vault/git-sync-hold';
 // WI-5960: NOT mocked — the real implementation, so the invariant test below
 // pins the ACTUAL cross-module agreement (a mock would just assert against
 // itself and could drift silently alongside a real-code regression).
@@ -549,6 +550,8 @@ let unsafeCallCount = 0;
 /** One-shot routine activity-write failure keyed by the marker phase under test. */
 let rejectGitSyncActivityPhaseOnce: string | null = null;
 let rejectTemplateOnce: Error | null = null;
+/** Rows (or a failure) for the turn-scoped hold read, the only query naming `session_turn_journal`. */
+let turnHoldRows: Row[] | Error = [];
 /** Every `sql.unsafe(text, params)` write, in order. */
 const unsafeCalls: Array<{ text: string; params: unknown[] }> = [];
 /** EI-18799539619330782: every tagged-template READ, with its interpolated values —
@@ -563,6 +566,9 @@ const fakeSql = Object.assign(
       const error = rejectTemplateOnce;
       rejectTemplateOnce = null;
       return Promise.reject(error);
+    }
+    if (text.includes('session_turn_journal')) {
+      return turnHoldRows instanceof Error ? Promise.reject(turnHoldRows) : Promise.resolve(turnHoldRows);
     }
     if (text.includes("'last_content_fixer'")) return Promise.resolve(contentFixerRows as unknown as Row[]);
     if (text.includes("'last_resolver'")) return Promise.resolve(resolverRows as unknown as Row[]);
@@ -1084,6 +1090,7 @@ beforeEach(() => {
   unsafeCallCount = 0;
   rejectGitSyncActivityPhaseOnce = null;
   rejectTemplateOnce = null;
+  turnHoldRows = [];
   registryProjects = [{ slug: 'papercup', path: repoDir }];
   ambientRegistryProjects = null;
   loadHarnessRegistryMock.mockClear();
@@ -5707,6 +5714,64 @@ describe('EI-438 content-guard kill-switch flag', () => {
     expect(runGitSyncOpts().contentDetectors).toEqual([]);
     expect(loopbackFetchMock).not.toHaveBeenCalled();
     expect(escalationUpserts().filter((u) => u.params[1] === 'git-sync-content')).toEqual([]);
+  });
+});
+
+describe('git-sync-turn-scoped-commit-hold: turn-hold census leg wiring (R-3, R-5)', () => {
+  const heldPath = 'packages/operator-core/lib/mid-turn-edit.ts';
+  const turnRow = { repo_root: null, file: heldPath, agent_id: 'su-mid-turn', work_item_id: null, ts: '2026-10-11T04:00:00.000Z' };
+  const turnReads = () => templateCalls.filter((c) => c.text.includes('session_turn_journal'));
+  const passedHoldings = (): Array<Record<string, unknown>> =>
+    ((runGitSyncMock.mock.calls[0]?.[1] as { liveLockHoldings?: Array<Record<string, unknown>> })?.liveLockHoldings ?? []);
+
+  it('flag ON (default): a path edited during a live turn reaches runGitSync as a held path', async () => {
+    turnHoldRows = [turnRow];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(getFlagMock).toHaveBeenCalledWith('papercusp-git-sync-turn-hold', 'papercup');
+    expect(turnReads().length).toBeGreaterThan(0);
+    expect(passedHoldings()).toContainEqual(
+      expect.objectContaining({ path: heldPath, owner: 'su-mid-turn', intent: TURN_HOLD_INTENT, heldSince: turnRow.ts }),
+    );
+  });
+
+  it('flag OFF (kill-switch): the census has no turn-holds leg, so the path is not held', async () => {
+    getFlagMock.mockImplementation(
+      async (key: string) => key !== 'papercusp-git-sync-derived-attribution' && key !== 'papercusp-git-sync-turn-hold',
+    );
+    turnHoldRows = [turnRow];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(turnReads()).toEqual([]);
+    expect(runGitSyncMock).toHaveBeenCalledOnce();
+    expect(passedHoldings().map((h) => h.path)).not.toContain(heldPath);
+  });
+
+  it('fails closed: an unreadable turn-hold read skips the tick and commits nothing', async () => {
+    turnHoldRows = new Error('turn journal unreachable');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(turnReads().length).toBeGreaterThan(0);
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(allRoutinePatches()).toContainEqual(
+        expect.objectContaining({
+          last_status: 'skipped',
+          last_skip_reason: 'live-lock-read-failed',
+          last_error: expect.stringContaining('turn journal unreachable'),
+        }),
+      );
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
   });
 });
 
