@@ -35980,7 +35980,7 @@
       "guidance": {
         "when": "Use for lifecycle changes. Prefer work_items:complete for terminal evidence. For blocked, first use work_items:set_blocker (event/gate/runtime/human) or work_items:link { rel:\"blocks\" }; bare blocked is refused. Before `force:true`, read terminalOwner/ref. If work_items:complete times out, first re-read work_items:get; if the item is still open, retry the exact same completion payload (including assumptions). If you use work_items:set_state as the fallback, carry the same assumptions declaration and pass completionRef too. Shape: an ARRAY of facts:assert keys — assumptions: [\"my-fact-key\"] (note the brackets, even for a single key) — or the bare literal assumptions: \"none\".",
         "notWhen": "Never on non-work or human-audience rows, not even needs-human: data or a person's job.",
-        "chaining": "work_items:claim → work_items:set_blocker or work_items:link → work_items:set_state; terminal writes use completionRef + assumptions."
+        "chaining": "work_items:link records internal dependency readiness (no separate blocked-state write); work_items:set_blocker parks external blockers; terminal writes use completionRef + assumptions."
       }
     },
     {
