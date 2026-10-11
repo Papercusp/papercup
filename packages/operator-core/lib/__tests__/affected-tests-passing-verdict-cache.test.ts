@@ -1541,7 +1541,7 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
         ['package-lock.json', '{"lockfileVersion":3}\n'],
         ['README.md', 'unrelated root doc\n'],
         ['scripts/affected-tests.mjs', "import './lib/runtime.mjs';\n"],
-        ['scripts/lib/runtime.mjs', 'export const runtime = 1;\n'],
+        ['scripts/lib/runtime.mjs', 'export const runtime = 1;\nconst child = "import schema from \'./child-only.ts\';";\n'],
         ['scripts/unrelated-maintenance.mjs', 'export const unrelated = 1;\n'],
         ['scripts/pc-heavy.sh', '#!/bin/sh\n'],
         ['libs/test-config/package.json', '{"exports":{}}\n'],
