@@ -4383,7 +4383,160 @@
      "summary": "plan lane agent-capacity-and-cost-gcp-2026-09-30#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "gcpSizeGuideEvidenceQualification": {
+    "schemaVersion": "personal-evidence-qualification-v1",
+    "status": "committed-item-with-unproved-manual-and-universal-acceptance",
+    "auditedAt": "2026-10-11",
+    "auditor": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "evidenceRefs": [
+     "WI-10005820#thread-post:1173886"
+    ],
+    "storedEvidenceQualification": {
+     "author": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+     "chars": 5907,
+     "sha256": "a845280f16880c48abea1c9e5c5bbfbb131cb3edb963e7bddfde0defb3bc7dcd"
+    },
+    "sourceQualification": {
+     "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+     "inspectedVersion": 166,
+     "inspectedContentHash": "6d14cd7f2b6454e7dc496c00c23b734b461ea6e5c34b37ef09f0b4bba104f46d",
+     "originalRowVersion": 143,
+     "note": "This dated qualification supplements the original blocked snapshot; it does not replace the captured source, disposition, dependency snapshot or population boundaries."
+    },
+    "canonicalItemQualification": {
+     "workItem": "WI-10004389",
+     "observedState": "done",
+     "observedAssignee": null,
+     "observedCompletionAuthority": "COMMITTED",
+     "observedSourceItemState": "done",
+     "observedSourceEffectiveState": "done",
+     "observedUnresolvedBlockers": [],
+     "observedAtRef": "WI-10005820#thread-post:1173886",
+     "dependency": {
+      "workItem": "WI-10004388",
+      "item": "P-012",
+      "observedState": "done",
+      "observedCompletionAuthority": "COMMITTED"
+     },
+     "authorityQualification": "Retain the observed committed item authority. Scoped missing evidence bindings and unproved broader outcomes do not reopen or undo that authority."
+    },
+    "contractQualification": {
+     "spec": {
+      "id": "GCPCAP-P-013-exempt",
+      "revision": 1,
+      "contentHash": "b795f0fec9a1eb82e3a5138d0099730615a9ac352986724fd930f82114e34fb7",
+      "automated": false,
+      "lifecycle": "exempt",
+      "requiredEvidence": [
+       "live"
+      ],
+      "requiredTestLayers": [],
+      "acceptedBy": null,
+      "acceptedAt": null,
+      "acceptanceRef": null
+     },
+     "requiredOutcome": "The exemption explanation names a measurement investigation and owner review. Literal R1 requires every published count to trace to a real same-count GCP run with zero OOM.",
+     "bindingRead": "The exact WI-10004389 lookup and exact spec lookup both returned count0 with truncatedByLimit=false. This is scoped binding evidence, not global evidence absence.",
+     "requirementsRead": "Full current R1-R5 and D054 were independently read in the stored audit.",
+     "measurementQualification": "The focused model and source assertions do not independently audit each cited same-count GCP run or establish the required manual live outcome."
+    },
+    "inspectedFoundation": [
+     "The guide derives own-VM and pooled assigned counts from recorded active-capacity inputs and DUTY, handles lower-bound capacity, reads the absent-count hosted default and supplies dated GCP cost inputs.",
+     "Unit assertions cover inverse sizing, pooled arithmetic, hosted x86 size-table parity and picks, refusal controls and generated-document drift.",
+     "The guide explicitly commits no customer price. Sep30/Oct1 catalog inputs are dated evidence, not newly verified market prices.",
+     "The current README documents maintained VM drivers and minted JOIN_BODY; D054's scratch-only statement is historical.",
+     "Hosted expectedAgents sizing has measured x86 limits 15/68/158 and refuses counts outside 1..158. This source qualification is distinct from a new provider or portal reproduction."
+    ],
+    "relatedItemQualification": {
+     "completionMappedTo": {
+      "workItem": "WI-10006494",
+      "observedState": "done",
+      "observedCompletionAuthority": "COMMITTED",
+      "original26Of26Evidence": "historical"
+     },
+     "formerDeferrals": [
+      {
+       "workItem": "WI-10006497",
+       "observedState": "done",
+       "observedCompletionAuthority": "COMMITTED"
+      },
+      {
+       "workItem": "WI-10006498",
+       "observedState": "done",
+       "observedCompletionAuthority": "COMMITTED"
+      }
+     ],
+     "portalItem": {
+      "workItem": "WI-10006977",
+      "observedState": "done",
+      "observedCompletionAuthority": "COMMITTED",
+      "proofQualification": "Stored form/browser proof was read; this audit performed no independent portal or Tauri reproduction."
+     },
+     "peerLane": {
+      "workItem": "WI-10007031",
+      "observedState": "open",
+      "observedAssignee": "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002",
+      "observedCompletionAuthority": null,
+      "qualification": "The authored checkpoint corrects the old main-frozen prerequisite story. This audit did not take the peer lane or perform provider/live-host actions."
+     },
+     "observedAtRef": "WI-10005820#thread-post:1173886"
+    },
+    "focusedTestEvidence": {
+     "date": "2026-10-11",
+     "rerunDuringJsonAddition": false,
+     "command": "npm run test:file -- scripts/agent-capacity/size-guide.test.ts scripts/agent-capacity/cost-model.test.ts",
+     "exitCode": 0,
+     "passed": 28,
+     "skipped": 0,
+     "matched": 2,
+     "requested": 2,
+     "runnerHead": "53a4f7e33386c2c4a43abab36fc67693d5d97320",
+     "receipts": [
+      {
+       "id": 21046915,
+       "path": "scripts/agent-capacity/size-guide.test.ts",
+       "status": "PASS",
+       "passed": 13
+      },
+      {
+       "id": 21046914,
+       "path": "scripts/agent-capacity/cost-model.test.ts",
+       "status": "PASS",
+       "passed": 15
+      }
+     ],
+     "source": "local",
+     "branch": "staging",
+     "workspace": "papercusp-workspace",
+     "harness": "papercusp",
+     "isScratchConfig": false,
+     "receiptRoot": null,
+     "runGroup": null,
+     "worktreeDirty": true,
+     "scopeQualification": "Exact ledger rows were independently read twice and then by primary keys, resolving the runner's initial scope warning. Named test files were clean before and after. The output reports committed-source substitutions for three unrelated resource-governor modules; this does not certify a clean whole import graph or a manual live outcome."
+    },
+    "stableNamedSourcePins": {
+     "scripts/agent-capacity/size-guide.ts": "f6c2f03d3df1aa13ea80b445cb684605d6d0801c690d52145f67a81084732753",
+     "scripts/agent-capacity/size-guide.test.ts": "ac3820546cbba9fa0c691438e0a89ec7f72ad436fea7f4ce76eafa1f30afae61",
+     "scripts/agent-capacity/SIZE-GUIDE.md": "ff44c370c7896f5ac8fffebdd6e64c05bb5a09fa1bc9ed05b4326f55103b4f18",
+     "scripts/agent-capacity/README.md": "fec717f4ac57095810cca9e158c03d61a9ca6e9190710e56dfdee90782f32c05",
+     "scripts/agent-capacity/cost-model.ts": "ced27799b9599825a266b6273704fcc0dba6c5fdf4a25595b7dc2701c5737ef1",
+     "scripts/agent-capacity/cost-model.test.ts": "905bd51fd15ea57a728ece82d737ecc697160cc5faf81d2d8ca93d1ec8637e54",
+     "scripts/agent-capacity/gcp-rails.ts": "b9263a54d62d9acdae77534135db6c85ed5a2baaa12fb9c2d9002a80bda07cdf",
+     "packages/operator-core/lib/auth/hosted/hosted-vm-size.ts": "137f3fde430c21a094532cbe964764260e9888b6d5f5ff0a6e6eea122deb5dfb",
+     "packages/operator-core/lib/auth/hosted/first-workspace.ts": "8cd2a49976b66b10c62bc1400042f7b173e70390647d0f38179bbadad20384c3"
+    },
+    "pinQualification": "Nine named SHA256 pins matched before and after the saved focused run despite advancing HEAD, and were rechecked before this JSON addition. Named pins do not establish whole-import-graph identity.",
+    "unprovedAcceptance": [
+     "Independent same-count, zero-OOM GCP measurement provenance for every published count.",
+     "The exempt spec's required live evidence and owner review.",
+     "An independently reproduced current portal/Tauri and provider/live-host outcome.",
+     "Customer pricing or newly verified market prices.",
+     "Whole-import-graph cleanliness, the whole PERSONAL audit and final shipment."
+    ],
+    "scopeBoundary": "Only the existing GCP P-013 row receives this additive qualification. Preserve the original200/172UNKNOWN population, historical rows, check ledgers and owner walls. No LIVE_GATE_OPS, provider/mainnet/Safe action, killed-goal renewal, generic pull or shipment claim."
+   }
   },
   {
    "id": "WI-10004390",
