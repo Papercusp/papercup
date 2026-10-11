@@ -19,7 +19,7 @@ import { createTextCollector } from '../child-output';
 import { absCgroupDir, parseProcCgroup, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { linuxPpidFromProcStat, linuxProcessIdentityFromStat, readProcessIdentity } from '../process-identity';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
-import ts from 'typescript';
+import type * as Ts from 'typescript';
 
 const replayScopeProbeArgv = ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'];
 
@@ -388,6 +388,10 @@ export interface ReplayOracleInput {
   readonly levels: readonly number[];
   readonly requestTimeoutMs: number;
   readonly tsconfigPath: string;
+  /** Independently selected before freezing; defaults to this freezer's compiler. */
+  readonly compilerEntry?: string;
+  /** Canonical, predeclared package tree containing the compiler and its dependencies. */
+  readonly compilerPackageRoot?: string;
   readonly definition: ReplayCorpus['cursor'];
   readonly references: ReplayCorpus['cursor'];
   /** Additional runtime binaries and loaded daemon/config source whose drift invalidates qualification. */
@@ -403,9 +407,13 @@ function insideReplayRoot(root: string, path: string): boolean {
   return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../');
 }
 
-/** Read the existing Git populations, including initialized nested submodules and
- * nonignored new source. No checkout/index/branch mutation is involved. */
-export function replayRepositorySources(root: string): string[] {
+/** Read the root and tracked submodule populations, including nonignored new
+ * files. Match dependency_generation_is_foreign_checkout's product boundary:
+ * an untracked embedded repository/worktree is a separate source tree. Report
+ * every excluded boundary so a capture can retain its explicit population. */
+export function replayRepositorySources(root: string, options: {
+  onExcludedRepository?: (path: string) => void;
+} = {}): string[] {
   const files = new Set<string>();
   const visit = (directory: string) => {
     const git = (args: string[]) => execFileSync('git', ['-C', directory, ...args],
@@ -420,8 +428,22 @@ export function replayRepositorySources(root: string): string[] {
       if (entry.startsWith('160000 ')) visit(path);
       else files.add(relative(root, path));
     }
-    for (const path of git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean))
-      files.add(relative(root, resolve(directory, path)));
+    for (const entry of git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) {
+      const path = resolve(directory, entry);
+      if (!insideReplayRoot(root, path)) throw new Error(`escaping-replay-source:${path}`);
+      // Git collapses untracked embedded repositories to a trailing-slash
+      // directory. It is not a file, nor a tracked gitlink we may recurse into.
+      if (entry.endsWith('/')) {
+        if (!lstatSync(path).isDirectory() || realpathSync(path) !== path ||
+            !existsSync(join(path, '.git')))
+          throw new Error(`unsupported-replay-repository-boundary:${path}`);
+        const top = execFileSync('git', ['-C', path, 'rev-parse', '--show-toplevel'],
+          { encoding: 'utf8', timeout: 30_000 });
+        if (realpathSync(top.trim()) !== path)
+          throw new Error(`unsupported-replay-repository-boundary:${path}`);
+        options.onExcludedRepository?.(relative(root, path));
+      } else files.add(relative(root, path));
+    }
   };
   visit(root);
   return [...files].sort();
@@ -483,6 +505,51 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
   const tsconfigPath = relocate(input.tsconfigPath);
   const definition = { ...input.definition, file: relocate(input.definition.file) };
   const references = { ...input.references, file: relocate(input.references.file) };
+  // An external entry is admissible only with its independently selected whole
+  // package tree. Reuse runtime freezing and the existing isolated copy layout.
+  let compilerEntry: string | undefined;
+  let compilerPackageRoot: string | undefined;
+  let compilerSourceRoot: string | undefined;
+  const compilerPaths = new Map<string, string>();
+  const compilerDirectories = new Map<string, ReturnType<typeof replaySourceAdmissionStat>>();
+  let compilerHashes: Record<string, string> = {};
+  if (input.compilerPackageRoot !== undefined) {
+    const root = input.compilerPackageRoot;
+    if (!input.compilerEntry || !isAbsolute(root) || realpathSync(root) !== resolve(root) ||
+        !statSync(root).isDirectory() || !statSync(join(root, 'package.json')).isFile())
+      throw new Error('replay-compiler-package-declaration-invalid');
+    compilerSourceRoot = root;
+    compilerPackageRoot = insideReplayRoot(donor, root) ? resolve(target, relative(donor, root)) :
+      join(target, '.replay-runtime', replayHash(root));
+    const pending = [root];
+    while (pending.length) {
+      const path = pending.pop()!;
+      const info = replaySourceAdmissionStat(path);
+      if (!insideReplayRoot(root, realpathSync(path))) throw new Error(`escaping-replay-compiler-package:${path}`);
+      if (info.isDirectory()) {
+        compilerDirectories.set(path, info);
+        for (const entry of readdirSync(path).sort()) {
+          if (entry === '.git') throw new Error(`unsupported-replay-compiler-package:${path}`);
+          pending.push(join(path, entry));
+        }
+      } else if (info.isFile() || info.isSymbolicLink()) {
+        compilerPaths.set(path, resolve(compilerPackageRoot, relative(root, path)));
+      } else throw new Error(`unsupported-replay-compiler-package:${path}`);
+    }
+    compilerHashes = freezeReplayRuntimeFiles([root], { nativeDependencies: () => [] });
+  }
+  if (input.compilerEntry !== undefined) {
+    if (!isAbsolute(input.compilerEntry)) throw new Error('replay-semantic-compiler-entry-absolute');
+    const source = realpathSync(input.compilerEntry);
+    if (compilerSourceRoot) {
+      if (!insideReplayRoot(compilerSourceRoot, input.compilerEntry) || !insideReplayRoot(compilerSourceRoot, source) ||
+          !compilerHashes[source]) throw new Error(`escaping-replay-compiler-entry:${source}`);
+      compilerEntry = resolve(compilerPackageRoot!, relative(compilerSourceRoot, source));
+    } else {
+      if (!insideReplayRoot(donor, source)) throw new Error(`escaping-replay-compiler-entry:${source}`);
+      compilerEntry = resolve(target, relocate(source));
+    }
+  }
   const plugin = input.semanticCompletionPlugin;
   const pluginPaths = new Map<string, string>();
   let semanticCompletionPlugin: SemanticCompletionPluginDeclaration | undefined;
@@ -506,7 +573,12 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
   // phase has its own copy admission; source and external runtime bytes used
   // to bypass it entirely. Apparent sizes include sparse files; per-entry
   // overhead conservatively covers directories and the two source manifests.
-  const paths = replayPackageRuntimeSources(donor, (options.enumerateSources ?? replayRepositorySources)(donor));
+  const excludedRepositories: string[] = [];
+  const repositorySources = options.enumerateSources ? options.enumerateSources(donor) :
+    replayRepositorySources(donor, { onExcludedRepository: path => excludedRepositories.push(path) });
+  const sourcePopulation = { policy: options.enumerateSources ? 'caller-declared-files-v1' :
+    'git-root-and-tracked-submodules-v1', excludedRepositories: excludedRepositories.sort() };
+  const paths = replayPackageRuntimeSources(donor, repositorySources);
   const sources = new Set<string>();
   for (const path of paths) {
     const source = resolve(donor, path);
@@ -520,6 +592,7 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     sources.add(source);
   }
   for (const file of input.runtimeFiles) sources.add(resolve(donor, file));
+  for (const file of compilerPaths.keys()) sources.add(file);
   const admittedFiles = new Map<string, ReturnType<typeof replaySourceAdmissionStat>>();
   let sourceBytes = 8192;
   for (const source of sources) {
@@ -556,8 +629,10 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
     if (before.isSymbolicLink()) {
       const link = readlinkSync(source);
       const resolved = realpathSync(source);
-      if (!insideReplayRoot(donor, resolved)) throw new Error(`escaping-replay-symlink:${source}`);
-      symlinkSync(isAbsolute(link) ? resolve(target, relative(donor, resolved)) : link, out);
+      const root = compilerPaths.has(source) ? compilerSourceRoot! : donor;
+      const destinationRoot = compilerPaths.has(source) ? compilerPackageRoot! : target;
+      if (!insideReplayRoot(root, resolved)) throw new Error(`escaping-replay-symlink:${source}`);
+      symlinkSync(isAbsolute(link) ? resolve(destinationRoot, relative(root, resolved)) : link, out);
       hashes[relative(target, out)] = replayHash(`symlink:${readlinkSync(out)}`);
     } else if (before.isFile()) {
       const bytes = readFileSync(source);
@@ -583,7 +658,7 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
   }
   // Keep the completed phase even if a later dependency/containment phase fails.
   writeFileSync(join(target, '.replay-source-capture.json'), JSON.stringify({ runId: input.runId,
-    donor, rootPath: target, sourceFiles: hashes, absent, loadedRuntime: 'unmeasured' }, null, 2), { flag: 'wx' });
+    donor, rootPath: target, sourcePopulation, sourceFiles: hashes, absent, loadedRuntime: 'unmeasured' }, null, 2), { flag: 'wx' });
   options.onProgress?.({ phase: 'dependencies-copy-started', completed: 0, total: 1 });
   (options.snapshotDependencies ?? ((root, out) => {
     execFileSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'snapshot-locked', root, out, 'copy'],
@@ -594,9 +669,27 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
     throw new Error('replay-dependencies-not-independent-copies');
   hashes[relative(target, dependencyStamp)] = replayHash(readFileSync(dependencyStamp));
   options.onProgress?.({ phase: 'dependencies-copied', completed: 1, total: 1 });
+  for (const [source, out] of compilerPaths) {
+    if (!existsSync(out)) copy(source, out);
+    const original = admittedFiles.get(source)!;
+    const copied = lstatSync(out, { bigint: true });
+    if (original.isSymbolicLink() !== copied.isSymbolicLink() || original.isFile() !== copied.isFile() ||
+        (original.mode & 0o777n) !== (copied.mode & 0o777n))
+      throw new Error(`replay-compiler-copy-layout-mismatch:${source}`);
+    if (original.isSymbolicLink()) {
+      const link = readlinkSync(source);
+      const expected = isAbsolute(link) ? resolve(compilerPackageRoot!, relative(compilerSourceRoot!, realpathSync(source))) : link;
+      if (readlinkSync(out) !== expected) throw new Error(`replay-compiler-copy-layout-mismatch:${source}`);
+      hashes[relative(target, out)] = replayHash(`symlink:${expected}`);
+    } else {
+      if (replayFileHash(out, Buffer.allocUnsafe(64 * 1024)) !== compilerHashes[source])
+        throw new Error(`replay-compiler-copy-byte-mismatch:${source}`);
+      hashes[relative(target, out)] = compilerHashes[source];
+    }
+  }
   const runtimeFiles = input.runtimeFiles.map(file => {
     const source = resolve(donor, file);
-    const out = pluginPaths.get(source) ?? (insideReplayRoot(donor, source) ? resolve(target, relative(donor, source)) :
+    const out = compilerPaths.get(source) ?? pluginPaths.get(source) ?? (insideReplayRoot(donor, source) ? resolve(target, relative(donor, source)) :
       join(target, '.replay-runtime', replayHash(source), basename(source)));
     if (!existsSync(out)) copy(source, out);
     return out;
@@ -625,12 +718,32 @@ DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom
       if (checked % 4096 === 0) options.onProgress?.({ phase: 'symlinks-checked', completed: checked, total: checked });
     }
   }
+  // Added/deleted package members invalidate the complete-tree declaration too.
+  for (const [path, before] of [...compilerDirectories, ...[...compilerPaths.keys()].map(path =>
+    [path, admittedFiles.get(path)!] as const)]) {
+    const after = replaySourceAdmissionStat(path);
+    if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key =>
+      before[key as keyof typeof before] !== after[key as keyof typeof after]))
+      throw new Error(`changed-during-replay-compiler-copy:${path}`);
+  }
+  const compilerRuntimeFiles = Object.keys(compilerHashes).map(file =>
+    resolve(compilerPackageRoot!, relative(compilerSourceRoot!, file)));
+  if (!options.enumerateSources) {
+    const finalExcluded: string[] = [];
+    const finalSources = replayRepositorySources(donor, { onExcludedRepository: path => finalExcluded.push(path) });
+    if (JSON.stringify(finalSources) !== JSON.stringify(repositorySources) ||
+        JSON.stringify(finalExcluded.sort()) !== JSON.stringify(sourcePopulation.excludedRepositories))
+      throw new Error('changed-during-replay-source-population');
+  }
   const manifestPath = join(target, '.replay-source-snapshot.json');
   const manifest = JSON.stringify({ schemaVersion: 'lsp-replay-source-snapshot-v1', donor, rootPath: target,
-    sourceFiles: hashes, absent, dependencyIsolation: 'independent-copy-under-install-mutex',
+    sourcePopulation, sourceFiles: hashes, absent, dependencyIsolation: 'independent-copy-under-install-mutex',
     loadedRuntime: 'unmeasured' }, null, 2);
   writeFileSync(manifestPath, manifest, { flag: 'wx' });
-  return { ...input, rootPath: target, tsconfigPath, definition, references, runtimeFiles: [...runtimeFiles, dependencyStamp, manifestPath],
+  return { ...input, rootPath: target, tsconfigPath, definition, references,
+    runtimeFiles: [...new Set([...runtimeFiles, ...compilerRuntimeFiles, dependencyStamp, manifestPath])],
+    ...(compilerEntry ? { compilerEntry } : {}),
+    ...(compilerPackageRoot ? { compilerPackageRoot } : {}),
     ...(semanticCompletionPlugin ? { semanticCompletionPlugin } : {}),
     sourceSnapshot: { manifestPath, sha256: replayHash(manifest) } };
 }
@@ -664,9 +777,26 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
   onProgress?: (progress: ReplayOracleProgress) => void;
 }): { config: DaemonReplayConfig; sourceCount: number } {
   const tsconfigPath = resolve(input.rootPath, input.tsconfigPath);
+  const require = createRequire(import.meta.url);
+  if (input.compilerEntry !== undefined && !isAbsolute(input.compilerEntry))
+    throw new Error('replay-semantic-compiler-entry-absolute');
+  const compilerEntry = realpathSync(input.compilerEntry ?? require.resolve('typescript'));
+  if (!statSync(compilerEntry).isFile()) throw new Error('replay-semantic-compiler-entry-invalid');
+  const compilerPaths = [compilerEntry];
+  // Capture the executable shim and maintained delegate BEFORE loading either.
+  // Matching versions alone cannot establish matching library path identity.
+  if (/require\(["']@typescript\/old["']\)/.test(readFileSync(compilerEntry, 'utf8')))
+    compilerPaths.push(realpathSync(createRequire(compilerEntry).resolve('@typescript/old')));
+  const compilerEntries: Record<string, string> = {};
+  for (const file of compilerPaths) {
+    if (input.sourceSnapshot && !insideReplayRoot(realpathSync(input.rootPath), file))
+      throw new Error(`snapshot-input-escape:${file}`);
+    compilerEntries[file] = replayFileHash(file, Buffer.allocUnsafe(64 * 1024));
+  }
+  const ts = require(compilerEntry) as typeof Ts;
   if (ts.version !== SEMANTIC_COMPLETION_TYPESCRIPT_VERSION)
     throw new Error('replay-semantic-compiler-version-unsupported');
-  const loadedInputs = new Map<string, string>();
+  const loadedInputs = new Map<string, string>(Object.entries(compilerEntries));
   // Capture the very bytes handed to the compiler, not a later disk read.
   // Match TypeScript's BOM decoding while retaining the original byte hash.
   const readCompilerInput = (file: string): string | undefined => {
@@ -684,7 +814,7 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
     if (bytes[0] === 255 && bytes[1] === 254) return bytes.toString('utf16le', 2);
     return bytes.toString('utf8', bytes[0] === 239 && bytes[1] === 187 && bytes[2] === 191 ? 3 : 0);
   };
-  const fatal: ts.Diagnostic[] = [];
+  const fatal: Ts.Diagnostic[] = [];
   const parsed = ts.getParsedCommandLineOfConfigFile(tsconfigPath, undefined,
     { ...ts.sys, readFile: readCompilerInput, onUnRecoverableConfigFileDiagnostic: error => fatal.push(error) });
   if (!parsed || fatal.length) throw new Error(fatal.map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n')).join('\n'));
@@ -694,28 +824,14 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
   if (parsed.projectReferences?.length) throw new Error('replay-semantic-project-references-unsupported');
   const roots = [...new Set(parsed.fileNames.map(file => resolve(file)))].sort();
   if (!roots.length) throw new Error('replay-semantic-configured-roots-empty');
-  const compilerEntry = createRequire(import.meta.url).resolve('typescript');
-  const compilerPaths = [compilerEntry];
-  // The maintained TypeScript package is an executable compatibility shim.
-  // Binding just that shim or its package metadata would omit the real compiler.
-  if (/require\(["']@typescript\/old["']\)/.test(readFileSync(compilerEntry, 'utf8')))
-    compilerPaths.push(createRequire(compilerEntry).resolve('@typescript/old'));
-  const compilerEntries: Record<string, string> = {};
-  for (const file of compilerPaths) {
-    const absolute = resolve(file);
-    if (input.sourceSnapshot && !insideReplayRoot(input.rootPath, absolute))
-      throw new Error(`snapshot-input-escape:${absolute}`);
-    compilerEntries[absolute] = replayFileHash(absolute, Buffer.allocUnsafe(64 * 1024));
-    loadedInputs.set(absolute, compilerEntries[absolute]);
-  }
   options.onProgress?.({ phase: 'config-parsed', completed: 0, total: roots.length });
   const host = ts.createCompilerHost(parsed.options);
   host.readFile = readCompilerInput;
   const program = ts.createProgram({ rootNames: roots, options: parsed.options, host });
   options.onProgress?.({ phase: 'compiler-loaded', completed: program.getSourceFiles().length, total: program.getSourceFiles().length });
   const checker = program.getTypeChecker();
-  const canonical = (symbol: ts.Symbol | undefined): ts.Symbol | undefined => {
-    const seen = new Set<ts.Symbol>();
+  const canonical = (symbol: Ts.Symbol | undefined): Ts.Symbol | undefined => {
+    const seen = new Set<Ts.Symbol>();
     while (symbol && symbol.flags & ts.SymbolFlags.Alias && !seen.has(symbol)) { seen.add(symbol); symbol = checker.getAliasedSymbol(symbol); }
     return symbol;
   };
@@ -726,7 +842,7 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
   // they are not candidate reference sites. Their drift invalidates the oracle.
   for (const source of program.getSourceFiles()) if (!loadedInputs.has(resolve(source.fileName)))
     throw new Error(`unmeasured-compiler-input:${source.fileName}`);
-  const configFile = parsed.options.configFile as (ts.SourceFile & { extendedSourceFiles?: string[] }) | undefined;
+  const configFile = parsed.options.configFile as (Ts.SourceFile & { extendedSourceFiles?: string[] }) | undefined;
   if (!configFile) throw new Error('replay-semantic-config-declaration-missing');
   const configFiles = [...new Set([tsconfigPath, ...(configFile.extendedSourceFiles ?? []).map(file => resolve(file))])].sort();
   const projectFiles = [...new Set([...program.getSourceFiles().map(source => resolve(source.fileName)), ...configFiles])].sort();
@@ -754,8 +870,8 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
     const lines = source.getLineStarts();
     if (cursor.line1 < 1 || cursor.line1 > lines.length) throw new Error('oracle cursor line outside source');
     const offset = lines[cursor.line1 - 1] + cursor.character;
-    let identifier: ts.Identifier | undefined;
-    const visit = (node: ts.Node) => {
+    let identifier: Ts.Identifier | undefined;
+    const visit = (node: Ts.Node) => {
       if (offset < node.getStart(source) || offset >= node.end) return;
       if (ts.isIdentifier(node)) identifier = node;
       else ts.forEachChild(node, visit);
@@ -765,7 +881,7 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
     if (!symbol || !symbol.declarations?.length) throw new Error(`unresolved source oracle:${cursor.file}`);
     return symbol;
   };
-  const site = (node: ts.Node) => ({ path: relative(input.rootPath, node.getSourceFile().fileName).replaceAll('\\', '/'),
+  const site = (node: Ts.Node) => ({ path: relative(input.rootPath, node.getSourceFile().fileName).replaceAll('\\', '/'),
     line1: node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1 });
   const unique = (sites: ReplayOracle['sites']) => [...new Map(sites.map(site => [JSON.stringify(site), site])).values()]
     .sort((a, b) => a.path.localeCompare(b.path) || (a.line1 ?? 0) - (b.line1 ?? 0));
@@ -775,7 +891,7 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
   const references: { path: string; line1: number }[] = [];
   options.onProgress?.({ phase: 'oracle-resolved', completed: 0, total: sourceFiles.length });
   for (const [index, source] of sourceFiles.entries()) {
-    const visit = (node: ts.Node) => {
+    const visit = (node: Ts.Node) => {
       if (ts.isIdentifier(node)) {
         let symbol = canonical(checker.getSymbolAtLocation(node));
         // In `const [{ hot }] = await Promise.all([import('./source')])`,
