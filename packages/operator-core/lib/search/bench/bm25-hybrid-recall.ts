@@ -90,6 +90,123 @@ export interface CallAttribution {
   loopDelayMaxMs?: number;
   /** `/proc/pressure/io` some avg10 at call start. */
   psiIoAvg10?: number;
+  /** D-030: what the bench's own backends waited on during the call. See {@link summarizeWaitSamples}. */
+  waits?: WaitProfile;
+  /** D-030: on-CPU time of the bench's backends over the call (`/proc/<pid>/schedstat`, summed). */
+  pgCpuMs?: number;
+  /** D-030: run-queue wait of those backends: runnable, but waiting for a CPU. */
+  pgRunqMs?: number;
+  /** D-030: run-queue wait of the bench process's main thread over the call. */
+  clientRunqMs?: number;
+  /**
+   * D-030: backends of this process that did not exist before the call: the pool opened a
+   * connection for it. Their schedstat counts from zero, so connection setup is in pgCpuMs.
+   */
+  pgBackendsBorn?: number;
+}
+
+/** One pg_stat_activity row of an active bench backend, sampled during a timed call (D-030). */
+export interface WaitSample {
+  waitEventType: string | null;
+  waitEvent: string | null;
+}
+
+/** One poll of the wait sampler: when it ran (ms, any monotonic clock) and the active backends it saw. */
+export interface WaitPoll {
+  atMs: number;
+  samples: readonly WaitSample[];
+}
+
+/**
+ * D-030: what the bench's own backends were doing while a timed call ran. Counts are samples, so
+ * a key's share is its share of sampled backend-time, not of wall time.
+ */
+export interface WaitProfile {
+  /** Polls taken, including those that found no active backend (client, transit, between statements). */
+  polls: number;
+  /** Active-backend samples across all polls. */
+  activeSamples: number;
+  /** Samples per {@link waitEventKey}. */
+  byEvent: Record<string, number>;
+  /** Largest gap between consecutive polls: well above the interval, the sampler itself was stalled. */
+  maxPollGapMs: number | null;
+}
+
+/**
+ * The profile key of one sample. An active backend with no wait event is on a CPU or queued for
+ * one: 'CPU' (schedstat's run-queue wait splits the two). Otherwise `<type>:<event>`, e.g.
+ * `IO:DataFileRead`, `LWLock:BufferMapping`, `IPC:BufferIO`, `Lock:relation`.
+ */
+export function waitEventKey(s: WaitSample): string {
+  if (!s.waitEventType) return 'CPU';
+  return s.waitEvent ? `${s.waitEventType}:${s.waitEvent}` : s.waitEventType;
+}
+
+export function summarizeWaitSamples(polls: readonly WaitPoll[]): WaitProfile {
+  const byEvent: Record<string, number> = {};
+  let activeSamples = 0;
+  let maxGap: number | null = null;
+  for (const [i, p] of polls.entries()) {
+    for (const s of p.samples) {
+      const k = waitEventKey(s);
+      byEvent[k] = (byEvent[k] ?? 0) + 1;
+      activeSamples += 1;
+    }
+    if (i > 0) {
+      const gap = p.atMs - polls[i - 1]!.atMs;
+      if (maxGap === null || gap > maxGap) maxGap = gap;
+    }
+  }
+  return { polls: polls.length, activeSamples, byEvent, maxPollGapMs: maxGap === null ? null : round1(maxGap) };
+}
+
+/** Sum wait profiles (e.g. over the tail calls of one pass). */
+export function mergeWaitProfiles(profiles: readonly WaitProfile[]): WaitProfile {
+  const byEvent: Record<string, number> = {};
+  let polls = 0;
+  let activeSamples = 0;
+  let maxGap: number | null = null;
+  for (const p of profiles) {
+    polls += p.polls;
+    activeSamples += p.activeSamples;
+    for (const [k, n] of Object.entries(p.byEvent)) byEvent[k] = (byEvent[k] ?? 0) + n;
+    if (p.maxPollGapMs !== null && (maxGap === null || p.maxPollGapMs > maxGap)) maxGap = p.maxPollGapMs;
+  }
+  return { polls, activeSamples, byEvent, maxPollGapMs: maxGap };
+}
+
+/** `/proc/<pid>/schedstat`: nanoseconds on a CPU, nanoseconds runnable but waiting for one. */
+export interface Schedstat {
+  cpuNs: number;
+  runqNs: number;
+}
+
+/** Parse `/proc/<pid>/schedstat` ("<on-cpu ns> <run-queue ns> <timeslices>"); null if malformed. */
+export function parseSchedstat(text: string | null | undefined): Schedstat | null {
+  const m = /^\s*(\d+)\s+(\d+)(\s+\d+)?\s*$/.exec(text ?? '');
+  return m ? { cpuNs: Number(m[1]), runqNs: Number(m[2]) } : null;
+}
+
+/**
+ * Summed schedstat deltas, in ms, over the pids present in BOTH snapshots: a backend that appeared
+ * or exited mid-call is left out rather than counted from zero (a recycled pid would otherwise add
+ * another process's whole lifetime).
+ */
+export function schedstatDeltaMs(
+  before: ReadonlyMap<number, Schedstat>,
+  after: ReadonlyMap<number, Schedstat>,
+): { cpuMs: number; runqMs: number; pids: number } {
+  let cpuNs = 0;
+  let runqNs = 0;
+  let pids = 0;
+  for (const [pid, b] of before) {
+    const a = after.get(pid);
+    if (!a || a.cpuNs < b.cpuNs || a.runqNs < b.runqNs) continue;
+    cpuNs += a.cpuNs - b.cpuNs;
+    runqNs += a.runqNs - b.runqNs;
+    pids += 1;
+  }
+  return { cpuMs: round1(cpuNs / 1e6), runqMs: round1(runqNs / 1e6), pids };
 }
 
 /**
@@ -119,12 +236,23 @@ export interface AttributionSummary {
   pgReadMs: number;
   /** 1 - pgExecMs / lexicalMs: the lexical leg's time spent outside statement execution. */
   outsideExecShare: number | null;
+  /** D-030: summed over the calls that recorded them; absent when none did (an artifact before D-030). */
+  pgCpuMs?: number;
+  pgRunqMs?: number;
+  clientRunqMs?: number;
+  waits?: WaitProfile;
 }
 
 export function summarizeAttribution(observations: readonly ArmObservation[]): AttributionSummary {
   const with_ = observations.filter((o) => o.attrib && o.legMs && 'lexical:lexical' in o.legMs);
   const lexicalMs = round1(with_.reduce((s, o) => s + (o.legMs!['lexical:lexical'] ?? 0), 0));
   const pgExecMs = round1(with_.reduce((s, o) => s + o.attrib!.pgExecMs, 0));
+  const sumOf = (k: 'pgCpuMs' | 'pgRunqMs' | 'clientRunqMs'): number | undefined => {
+    const xs = with_.map((o) => o.attrib![k]).filter((v): v is number => typeof v === 'number');
+    return xs.length ? round1(xs.reduce((s, v) => s + v, 0)) : undefined;
+  };
+  const waits = with_.map((o) => o.attrib!.waits).filter((w): w is WaitProfile => !!w);
+  const sched = { pgCpuMs: sumOf('pgCpuMs'), pgRunqMs: sumOf('pgRunqMs'), clientRunqMs: sumOf('clientRunqMs') };
   return {
     calls: with_.length,
     wallMs: round1(with_.reduce((s, o) => s + o.latencyMs, 0)),
@@ -132,7 +260,27 @@ export function summarizeAttribution(observations: readonly ArmObservation[]): A
     pgExecMs,
     pgReadMs: round1(with_.reduce((s, o) => s + o.attrib!.pgReadMs, 0)),
     outsideExecShare: lexicalMs > 0 ? Math.round((1 - pgExecMs / lexicalMs) * 1000) / 1000 : null,
+    ...Object.fromEntries(Object.entries(sched).filter(([, v]) => v !== undefined)),
+    ...(waits.length ? { waits: mergeWaitProfiles(waits) } : {}),
   };
+}
+
+/**
+ * D-030: the slowest calls of one pass, slowest first, with what they waited on: the calls a p95
+ * over `observations` rests on (the top 5%, at least `min`). Only calls that recorded attribution
+ * are listed; `count` says how many were eligible.
+ */
+export function tailAttribution(
+  observations: readonly ArmObservation[],
+  min = 3,
+): { count: number; calls: Array<{ latencyMs: number; lexicalMs: number | null; attrib: CallAttribution }> } {
+  const with_ = observations.filter((o): o is ArmObservation & { attrib: CallAttribution } => !!o.attrib);
+  const n = Math.max(min, Math.ceil(observations.length * 0.05));
+  const calls = [...with_]
+    .sort((a, b) => b.latencyMs - a.latencyMs)
+    .slice(0, n)
+    .map((o) => ({ latencyMs: o.latencyMs, lexicalMs: o.legMs?.['lexical:lexical'] ?? null, attrib: o.attrib }));
+  return { count: with_.length, calls };
 }
 
 /**
@@ -199,6 +347,18 @@ export type Verdict = 'pass' | 'fail' | 'invalid';
 export const LATENCY_P95_CEILING_MS: Readonly<Record<string, number>> = {
   work_item: 200,
   session_turn: 400,
+};
+
+/**
+ * R-18 clause (c), D-029: the cold paired pass's BM25-arm p95 may not exceed these, so a cold
+ * call users would call slow still fails the bar even when legacy is slower still. About 1.6x
+ * and 1.7x the highest cold p95 measured on the current search path (634 / 689.1 ms, five runs
+ * on 2026-10-11), inside the 3.4x run-to-run swing D-028 measured on this host. Judged on every
+ * run, dump overlap or not. A source with no entry has no cold ceiling.
+ */
+export const COLD_LATENCY_P95_CEILING_MS: Readonly<Record<string, number>> = {
+  work_item: 1000,
+  session_turn: 1200,
 };
 
 /**
@@ -353,6 +513,7 @@ export function summarizeSource(
         LATENCY_P95_CEILING_MS[source] ?? null,
         dumpOverlap,
         warmRepeat ? { summary: warmRepeat, problems: warmRepeatProblems } : null,
+        COLD_LATENCY_P95_CEILING_MS[source] ?? null,
       );
   const steadyProblems = steadyMine ? steadyPassProblems(steadyMine, minPairs) : [];
   return {
@@ -411,12 +572,16 @@ export interface WarmRepeatPass {
  * Without one (`warm` null: an artifact written before D-028) the ceiling judges the paired p95
  * as D-027 did: only when `dumpOverlap` is `false`, or `undefined` (an artifact written before
  * D-027); with a dump overlapping (`true`) or unchecked (`null`) the ceiling is `invalid`.
+ *
+ * `coldCeilingMs` (D-029) bounds the paired p95 absolutely on every run, dump or not: a breach
+ * is `fail` and outranks an unsound warm-repeat pass. `null` means no cold ceiling.
  */
 export function judgeLatency(
   arms: Record<Arm, ArmSummary>,
   ceilingMs: number | null = null,
   dumpOverlap: boolean | null | undefined = undefined,
   warm: WarmRepeatPass | null = null,
+  coldCeilingMs: number | null = null,
 ): LatencyJudgment {
   const bm25 = arms.bm25.latencyP95Ms;
   const legacy = arms.legacy.latencyP95Ms;
@@ -424,20 +589,29 @@ export function judgeLatency(
     return { verdict: 'invalid', reason: 'an arm has no latency samples' };
   }
   const warmP95 = warm?.summary.latencyP95Ms ?? null;
+  const coldBreach = coldCeilingMs != null && bm25 > coldCeilingMs
+    ? `the cold paired BM25 p95 ${bm25} ms exceeds the ${coldCeilingMs} ms cold ceiling (D-029)`
+    : null;
   if (bm25 > legacy) {
     const judged = warm ? warmP95 : bm25;
     const what = warm ? `the warm-repeat p95 ${warmP95} ms also exceeds` : 'it also exceeds';
     const ceiling = ceilingMs != null && judged != null && judged > ceilingMs ? `; ${what} the ${ceilingMs} ms ceiling` : '';
-    return { verdict: 'fail', reason: `BM25-arm p95 ${bm25} ms exceeds legacy p95 ${legacy} ms${ceiling}` };
+    const cold = coldBreach ? `; ${coldBreach}` : '';
+    return { verdict: 'fail', reason: `BM25-arm p95 ${bm25} ms exceeds legacy p95 ${legacy} ms${ceiling}${cold}` };
   }
   const relative = `BM25-arm p95 ${bm25} ms <= legacy p95 ${legacy} ms`;
-  if (ceilingMs == null) return { verdict: 'pass', reason: `${relative} (no absolute ceiling for this source)` };
+  if (coldBreach) return { verdict: 'fail', reason: `${relative}, but ${coldBreach}` };
+  const coldOk = coldCeilingMs != null ? `cold paired BM25 p95 ${bm25} ms <= the ${coldCeilingMs} ms cold ceiling (D-029)` : null;
+  if (ceilingMs == null) {
+    return { verdict: 'pass', reason: `${relative}${coldOk ? `; ${coldOk}` : ''} (no absolute ceiling for this source)` };
+  }
   if (warm) {
     if (warm.problems.length > 0 || warmP95 == null) {
       const why = warm.problems.length ? warm.problems.join('; ') : 'it has no latency samples';
-      return { verdict: 'invalid', reason: `${relative}; the ${ceilingMs} ms ceiling is not judged: the warm-repeat pass is unsound: ${why} (D-028)` };
+      const coldPart = coldOk ? `; ${coldOk}` : '';
+      return { verdict: 'invalid', reason: `${relative}${coldPart}; the ${ceilingMs} ms ceiling is not judged: the warm-repeat pass is unsound: ${why} (D-028)` };
     }
-    const cold = `cold paired p95 ${bm25} ms reported, not judged (D-028)`;
+    const cold = coldOk ?? `cold paired p95 ${bm25} ms reported, not judged (D-028)`;
     if (warmP95 > ceilingMs) {
       return { verdict: 'fail', reason: `${relative}, but the warm-repeat BM25 p95 ${warmP95} ms exceeds the ${ceilingMs} ms ceiling; ${cold}` };
     }

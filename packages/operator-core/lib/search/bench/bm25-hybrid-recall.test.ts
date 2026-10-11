@@ -6,13 +6,20 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  COLD_LATENCY_P95_CEILING_MS,
   LATENCY_P95_CEILING_MS,
   RECALL_K,
   armOrder,
   callAttribution,
   dumpOverlapOf,
   judgeLatency,
+  mergeWaitProfiles,
+  parseSchedstat,
+  schedstatDeltaMs,
   summarizeAttribution,
+  summarizeWaitSamples,
+  tailAttribution,
+  waitEventKey,
   legDurations,
   overallLatencyVerdict,
   overallVerdict,
@@ -296,7 +303,7 @@ describe('R-18 warm-repeat pass: the ceiling judges it; the cold paired p95 is r
     expect(s.arms.bm25.latencyP95Ms).toBe(600);
     expect(s.latency).toEqual({
       verdict: 'pass',
-      reason: 'BM25-arm p95 600 ms <= legacy p95 8000 ms; warm-repeat BM25 p95 250 ms <= the 400 ms ceiling; cold paired p95 600 ms reported, not judged (D-028)',
+      reason: 'BM25-arm p95 600 ms <= legacy p95 8000 ms; warm-repeat BM25 p95 250 ms <= the 400 ms ceiling; cold paired BM25 p95 600 ms <= the 1200 ms cold ceiling (D-029)',
     });
   });
 
@@ -304,7 +311,7 @@ describe('R-18 warm-repeat pass: the ceiling judges it; the cold paired p95 is r
     const s = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, warm(30, 401));
     expect(s.latency).toEqual({
       verdict: 'fail',
-      reason: 'BM25-arm p95 100 ms <= legacy p95 4000 ms, but the warm-repeat BM25 p95 401 ms exceeds the 400 ms ceiling; cold paired p95 100 ms reported, not judged (D-028)',
+      reason: 'BM25-arm p95 100 ms <= legacy p95 4000 ms, but the warm-repeat BM25 p95 401 ms exceeds the 400 ms ceiling; cold paired BM25 p95 100 ms <= the 1200 ms cold ceiling (D-029)',
     });
     expect(summarizeSource('work_item', timed(30, 4000, 100), 20, null, warm(30, 201, 'work_item')).latency.verdict).toBe('fail');
     expect(summarizeSource('work_item', timed(30, 4000, 100), 20, null, warm(30, 200, 'work_item')).latency.verdict).toBe('pass');
@@ -331,7 +338,7 @@ describe('R-18 warm-repeat pass: the ceiling judges it; the cold paired p95 is r
     expect(tooFew.warmRepeatProblems).toEqual(['only 5 warm-repeat call(s); at least 20 are needed']);
     expect(tooFew.latency).toEqual({
       verdict: 'invalid',
-      reason: 'BM25-arm p95 100 ms <= legacy p95 4000 ms; the 400 ms ceiling is not judged: the warm-repeat pass is unsound: only 5 warm-repeat call(s); at least 20 are needed (D-028)',
+      reason: 'BM25-arm p95 100 ms <= legacy p95 4000 ms; cold paired BM25 p95 100 ms <= the 1200 ms cold ceiling (D-029); the 400 ms ceiling is not judged: the warm-repeat pass is unsound: only 5 warm-repeat call(s); at least 20 are needed (D-028)',
     });
     const legacyEngine = summarizeSource('session_turn', turnsTimed(30, 4000, 100), 20, null, warm(30, 10, 'session_turn', 'legacy'));
     expect(legacyEngine.latency.verdict).toBe('invalid');
@@ -367,6 +374,57 @@ describe('R-18 warm-repeat pass: the ceiling judges it; the cold paired p95 is r
     expect(judgeLatency(arms, 400, true, { summary: summarizeArm(warm(30, 401), 'bm25'), problems: [] }).verdict).toBe('fail');
     expect(judgeLatency(arms, 400, true, { summary: summarizeArm(warm(30, 399), 'bm25'), problems: [] }).verdict).toBe('pass');
     expect(judgeLatency(arms, null, true, { summary: summarizeArm(warm(30, 999), 'bm25'), problems: [] }).verdict).toBe('pass');
+  });
+});
+
+describe('R-18 cold-pass ceiling: a slow cold call fails even when legacy is slower (D-029)', () => {
+  const warm = steadyCalls;
+
+  it('pins the cold ceilings at 1,000 ms (work_item) and 1,200 ms (session_turn)', () => {
+    expect(COLD_LATENCY_P95_CEILING_MS).toEqual({ work_item: 1000, session_turn: 1200 });
+  });
+
+  it('fails a 5 s cold session_turn p95 that the relative bound and the warm-repeat ceiling both pass', () => {
+    // The gap the outside-lineage review named: with legacy at 8.3 s, D-019 alone lets a 5 s cold call through.
+    const s = summarizeSource('session_turn', turnsTimed(30, 8300, 5000), 20, null, warm(30, 200));
+    expect(s.latency).toEqual({
+      verdict: 'fail',
+      reason: 'BM25-arm p95 5000 ms <= legacy p95 8300 ms, but the cold paired BM25 p95 5000 ms exceeds the 1200 ms cold ceiling (D-029)',
+    });
+  });
+
+  it('judges the boundary inclusively on each source', () => {
+    expect(summarizeSource('work_item', timed(30, 4000, 1000), 20, null, warm(30, 100, 'work_item')).latency.verdict).toBe('pass');
+    expect(summarizeSource('work_item', timed(30, 4000, 1001), 20, null, warm(30, 100, 'work_item')).latency.verdict).toBe('fail');
+    expect(summarizeSource('session_turn', turnsTimed(30, 4000, 1200), 20, null, warm(30, 100)).latency.verdict).toBe('pass');
+    expect(summarizeSource('session_turn', turnsTimed(30, 4000, 1201), 20, null, warm(30, 100)).latency.verdict).toBe('fail');
+  });
+
+  it('is a fail, not invalid, when the warm-repeat pass is also unsound', () => {
+    const s = summarizeSource('session_turn', turnsTimed(30, 8000, 1500), 20, null, warm(5, 10));
+    expect(s.latency.verdict).toBe('fail');
+    expect(s.latency.reason).toContain('exceeds the 1200 ms cold ceiling (D-029)');
+  });
+
+  it('is judged when a dump overlapped the paired pass', () => {
+    const s = summarizeSource('session_turn', dumped(turnsTimed(30, 8000, 1500), true), 20, null, warm(30, 100));
+    expect(s.dumpOverlap).toBe(true);
+    expect(s.latency.verdict).toBe('fail');
+  });
+
+  it('names a cold breach beside a relative-bound failure', () => {
+    const s = summarizeSource('work_item', timed(30, 1100, 1200), 20, null, warm(30, 100, 'work_item'));
+    expect(s.latency).toEqual({
+      verdict: 'fail',
+      reason: 'BM25-arm p95 1200 ms exceeds legacy p95 1100 ms; the cold paired BM25 p95 1200 ms exceeds the 1000 ms cold ceiling (D-029)',
+    });
+  });
+
+  it('judgeLatency applies no cold ceiling unless one is given', () => {
+    const arms = summarizeSource('session_turn', turnsTimed(30, 8000, 5000)).arms;
+    const pass = { summary: summarizeArm(warm(30, 100), 'bm25'), problems: [] };
+    expect(judgeLatency(arms, 400, false, pass).verdict).toBe('pass');
+    expect(judgeLatency(arms, 400, false, pass, 1200).verdict).toBe('fail');
   });
 });
 
@@ -600,5 +658,102 @@ describe('helpers', () => {
     ];
     expect(rankOf(hits, 'work_item', 'X')).toBe(2);
     expect(rankOf(hits, 'work_item', 'Y')).toBeNull();
+  });
+});
+
+describe('R-18 tail attribution: wait events and scheduler time (D-030)', () => {
+  it('keys a sample with no wait event as CPU, otherwise <type>:<event>', () => {
+    expect(waitEventKey({ waitEventType: null, waitEvent: null })).toBe('CPU');
+    expect(waitEventKey({ waitEventType: 'IO', waitEvent: 'DataFileRead' })).toBe('IO:DataFileRead');
+    expect(waitEventKey({ waitEventType: 'LWLock', waitEvent: null })).toBe('LWLock');
+  });
+
+  it('counts active samples per wait event, polls with no active backend, and the largest poll gap', () => {
+    const p = summarizeWaitSamples([
+      { atMs: 0, samples: [] },
+      { atMs: 20, samples: [{ waitEventType: null, waitEvent: null }] },
+      { atMs: 40, samples: [{ waitEventType: 'IO', waitEvent: 'DataFileRead' }, { waitEventType: null, waitEvent: null }] },
+      { atMs: 1_240, samples: [{ waitEventType: 'IPC', waitEvent: 'BufferIO' }] },
+    ]);
+    expect(p).toEqual({
+      polls: 4,
+      activeSamples: 4,
+      byEvent: { CPU: 2, 'IO:DataFileRead': 1, 'IPC:BufferIO': 1 },
+      // A 1.2 s gap at a 20 ms interval: the sampler itself was stalled, so the profile is thin there.
+      maxPollGapMs: 1_200,
+    });
+    expect(summarizeWaitSamples([])).toEqual({ polls: 0, activeSamples: 0, byEvent: {}, maxPollGapMs: null });
+  });
+
+  it('merges profiles by summing counts and keeping the largest gap', () => {
+    const merged = mergeWaitProfiles([
+      { polls: 3, activeSamples: 2, byEvent: { CPU: 2 }, maxPollGapMs: 25 },
+      { polls: 5, activeSamples: 4, byEvent: { CPU: 1, 'Lock:relation': 3 }, maxPollGapMs: null },
+    ]);
+    expect(merged).toEqual({ polls: 8, activeSamples: 6, byEvent: { CPU: 3, 'Lock:relation': 3 }, maxPollGapMs: 25 });
+  });
+
+  it('parses /proc/<pid>/schedstat and refuses a malformed line rather than reading zeros', () => {
+    expect(parseSchedstat('1661933408 569036164 5719')).toEqual({ cpuNs: 1_661_933_408, runqNs: 569_036_164 });
+    expect(parseSchedstat('723026 30708 2\n')).toEqual({ cpuNs: 723_026, runqNs: 30_708 });
+    expect(parseSchedstat('')).toBeNull();
+    expect(parseSchedstat(null)).toBeNull();
+    expect(parseSchedstat('not a schedstat')).toBeNull();
+  });
+
+  it('sums schedstat deltas in ms over pids present before and after; a new, gone or recycled pid is left out', () => {
+    const before = new Map([
+      [1, { cpuNs: 1_000_000, runqNs: 0 }],
+      [2, { cpuNs: 5_000_000, runqNs: 2_000_000 }],
+      [3, { cpuNs: 9_000_000_000, runqNs: 9_000_000_000 }],
+      [4, { cpuNs: 1, runqNs: 1 }],
+    ]);
+    const after = new Map([
+      [1, { cpuNs: 301_000_000, runqNs: 700_000_000 }],
+      [2, { cpuNs: 5_000_000, runqNs: 2_000_000 }],
+      // pid 3 recycled: counters went backwards, so it is not this backend any more.
+      [3, { cpuNs: 10, runqNs: 10 }],
+      // pid 4 exited (absent); pid 5 appeared mid-call.
+      [5, { cpuNs: 999_000_000, runqNs: 999_000_000 }],
+    ]);
+    expect(schedstatDeltaMs(before, after)).toEqual({ cpuMs: 300, runqMs: 700, pids: 2 });
+  });
+
+  it('summarizeAttribution sums schedstat and wait profiles only over calls that recorded them', () => {
+    const withWaits = (latencyMs: number, extra: Partial<NonNullable<ArmObservation['attrib']>>): ArmObservation => ({
+      ...obs(1, 'bm25', latencyMs),
+      legMs: { 'lexical:lexical': latencyMs - 5 },
+      attrib: { pgExecMs: 1, pgReadMs: 0, pgBlksRead: 0, pgCalls: 1, ...extra },
+    });
+    const s = summarizeAttribution([
+      withWaits(100, { pgCpuMs: 40, pgRunqMs: 10, clientRunqMs: 2, waits: { polls: 5, activeSamples: 4, byEvent: { CPU: 4 }, maxPollGapMs: 21 } }),
+      withWaits(900, { pgCpuMs: 60, pgRunqMs: 700, waits: { polls: 40, activeSamples: 38, byEvent: { CPU: 30, 'IO:DataFileRead': 8 }, maxPollGapMs: 30 } }),
+      // Recorded before D-030: no schedstat, no waits. It still counts toward calls and wall time.
+      withWaits(50, {}),
+    ]);
+    expect(s.calls).toBe(3);
+    expect(s.pgCpuMs).toBe(100);
+    expect(s.pgRunqMs).toBe(710);
+    expect(s.clientRunqMs).toBe(2);
+    expect(s.waits).toEqual({ polls: 45, activeSamples: 42, byEvent: { CPU: 34, 'IO:DataFileRead': 8 }, maxPollGapMs: 30 });
+    // An artifact with no D-030 data carries none of the fields, rather than zeros.
+    const old = summarizeAttribution([withWaits(50, {})]);
+    expect(old).not.toHaveProperty('pgCpuMs');
+    expect(old).not.toHaveProperty('waits');
+  });
+
+  it('tailAttribution lists the slowest attributed calls, slowest first: top 5%, at least `min`', () => {
+    const calls: ArmObservation[] = Array.from({ length: 60 }, (_, i) => ({
+      ...obs(1, 'bm25', 10 + i),
+      legMs: { 'lexical:lexical': 5 + i },
+      attrib: { pgExecMs: i, pgReadMs: 0, pgBlksRead: 0, pgCalls: 1 },
+    }));
+    calls.push({ ...obs(1, 'bm25', 5_000) }); // slowest, but unattributed: not listed
+    const t = tailAttribution(calls);
+    expect(t.count).toBe(60);
+    expect(t.calls.map((c) => c.latencyMs)).toEqual([69, 68, 67, 66]); // ceil(61 * 5%) = 4
+    expect(t.calls[0]!.lexicalMs).toBe(64);
+    expect(tailAttribution(calls.slice(0, 10)).calls).toHaveLength(3);
+    expect(tailAttribution([]).calls).toEqual([]);
   });
 });

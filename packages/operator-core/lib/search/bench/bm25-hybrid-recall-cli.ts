@@ -21,14 +21,18 @@
  * query and reused, so the cosine leg is identical. Fused recall is read before any
  * rerank (R-13 is about fusion, not the cross-encoder).
  *
- * R-18 (D-019, D-020, D-024, D-025, D-028). Per source the candidates split into three
+ * R-18 (D-019, D-020, D-024, D-025, D-028, D-029). Per source the candidates split into three
  * disjoint samples: P (paired), W (warm-up), S (steady). The paired alternating pass over P
- * gives R-13 and D-019's relative bound. Then the warm-repeat pass over P (D-028): per query,
+ * gives R-13, D-019's relative bound and D-029's looser cold ceiling (1,000 / 1,200 ms). Then
+ * the warm-repeat pass over P (D-028): per query,
  * the BM25-arm call once untimed (it loads the call's pages) and once timed; the absolute
  * ceilings judge that pass's p95. Then, per source, an untimed BM25-only warm-up over W and a
  * timed BM25-only pass over S, whose queries no earlier pass has run (reported only, D-026).
  * pg_stat_statements deltas around the timed passes say how much of each lexical statement's
- * time was block reads.
+ * time was block reads. D-030: on every attributed call a reserved connection samples this
+ * process's active backends' wait events every --wait-sample-ms (default 20; 0 = off), and
+ * /proc/<pid>/schedstat deltas split their time into on-CPU and run-queue wait;
+ * attribution[source].pairedBm25Tail lists the calls the cold p95 rests on.
  *
  * READ-ONLY against PG. Writes the JSON artifact and a Markdown summary beside it.
  * Exit 0 = pass, 1 = fail or invalid, 2 = could not run.
@@ -43,9 +47,14 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 import {
   ARMS,
+  COLD_LATENCY_P95_CEILING_MS,
   LATENCY_P95_CEILING_MS,
   callAttribution,
+  parseSchedstat,
+  schedstatDeltaMs,
   summarizeAttribution,
+  summarizeWaitSamples,
+  tailAttribution,
   MIN_PAIRS_PER_SOURCE,
   RECALL_K,
   armOrder,
@@ -64,8 +73,11 @@ import {
   type CallAttribution,
   type PairResult,
   type QueryStyle,
+  type Schedstat,
   type StatementDelta,
   type StatementStat,
+  type WaitPoll,
+  type WaitProfile,
 } from './bm25-hybrid-recall';
 
 const PLAN = 'bm25-lexical-search-evoke-adoption-2026-10-10';
@@ -120,6 +132,66 @@ function firstLine(file: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Default wait-sampler interval (D-030); `--wait-sample-ms 0` turns the sampler off. */
+const WAIT_SAMPLE_MS = 20;
+
+/**
+ * D-030: this process's own backends. The org pools tag every connection
+ * `pcusp:<label>:p<pid>` (libs/db connection.ts pgAppName), so the pattern matches this process's
+ * pools only, never a peer's. Runs on the sampler's reserved connection, which excludes itself.
+ */
+function ownBackendPattern(): string {
+  return `pcusp:%:p${process.pid}`;
+}
+
+async function ownBackendPids(conn: Sql): Promise<number[]> {
+  const rows = await conn<{ pid: number }[]>`
+    SELECT pid FROM pg_stat_activity
+     WHERE application_name LIKE ${ownBackendPattern()} AND pid <> pg_backend_pid()`;
+  return rows.map((r) => r.pid);
+}
+
+function readSchedstats(pids: readonly (number | 'self')[]): Map<number, Schedstat> {
+  const out = new Map<number, Schedstat>();
+  for (const pid of pids) {
+    const s = parseSchedstat(firstLine(`/proc/${pid}/schedstat`));
+    if (s) out.set(pid === 'self' ? process.pid : pid, s);
+  }
+  return out;
+}
+
+/**
+ * D-030: poll pg_stat_activity for this process's active backends every `intervalMs` until the
+ * returned stop function is called. Each poll awaits the previous one, so a slow poll delays the
+ * next instead of stacking; a stalled sampler shows as a large `maxPollGapMs`.
+ */
+function startWaitSampler(conn: Sql, intervalMs: number): () => Promise<WaitProfile | undefined> {
+  let stopped = false;
+  let failed = false;
+  const polls: WaitPoll[] = [];
+  const pattern = ownBackendPattern();
+  const loop = (async () => {
+    while (!stopped) {
+      const atMs = performance.now();
+      try {
+        const rows = await conn<{ t: string | null; e: string | null }[]>`
+          SELECT wait_event_type AS t, wait_event AS e FROM pg_stat_activity
+           WHERE application_name LIKE ${pattern} AND state = 'active' AND pid <> pg_backend_pid()`;
+        polls.push({ atMs, samples: rows.map((r) => ({ waitEventType: r.t, waitEvent: r.e })) });
+      } catch {
+        failed = true;
+        return;
+      }
+      if (!stopped) await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  })();
+  return async () => {
+    stopped = true;
+    await loop;
+    return failed || polls.length === 0 ? undefined : summarizeWaitSamples(polls);
+  };
 }
 
 async function hostSnapshot(pg: Sql): Promise<HostSnapshot> {
@@ -215,6 +287,7 @@ async function sampleCandidates(sql: Sql, source: SourceName, workspaceId: strin
 async function main(): Promise<number> {
   const perSource = Number(argValue('--pairs') ?? '60');
   const seed = argValue('--seed') ?? 'r13-20261011';
+  const waitSampleMs = Number(argValue('--wait-sample-ms') ?? String(WAIT_SAMPLE_MS));
   const out = argValue('--out') ?? `docs/evidence/bm25-hybrid-recall-${new Date().toISOString().slice(0, 10)}.json`;
   const sourceNames = (argValue('--sources') ?? 'work_item,session_turn')
     .split(',')
@@ -330,6 +403,14 @@ async function main(): Promise<number> {
     return m ? Number(m[1]) : undefined;
   };
 
+  // D-030: a reserved connection for the wait sampler and the backend-pid lookup, so neither
+  // borrows a pool connection from the call being timed, and both exclude themselves.
+  const sampler =
+    waitSampleMs > 0
+      ? await (pg as unknown as { reserve(): Promise<Sql & { release(): void }> }).reserve().catch(() => null)
+      : null;
+  if (waitSampleMs > 0 && !sampler) console.warn('[r18] wait sampler unavailable: per-call waits not recorded');
+
   /**
    * One hybrid call for `p` with the flag set for `arm`, through the search:semantic path. With
    * `attribute`, the call is bracketed (outside the timed window) by statement snapshots, and the
@@ -346,6 +427,11 @@ async function main(): Promise<number> {
     const dump = await dumpActive(pg);
     const snapBefore = track ? await statementSnapshot(pg, lexicalIds) : null;
     const psi = track ? psiIoAvg10() : undefined;
+    // D-030: this process's backends (pool connections persist across calls) and their
+    // schedstat, read outside the timed window; then the wait sampler runs over the call.
+    const backendPids = track && sampler ? await ownBackendPids(sampler).catch(() => [] as number[]) : [];
+    const schedBefore = track ? readSchedstats([...backendPids, 'self']) : null;
+    const stopSampler = track && sampler ? startWaitSampler(sampler, waitSampleMs) : null;
     const loop = track ? monitorEventLoopDelay({ resolution: 10 }) : null;
     loop?.enable();
     const cpu0 = process.cpuUsage();
@@ -367,6 +453,26 @@ async function main(): Promise<number> {
     const latencyMs = Math.round((performance.now() - t0) * 10) / 10;
     const cpu = process.cpuUsage(cpu0);
     loop?.disable();
+    const waits = stopSampler ? await stopSampler() : undefined;
+    let sched: Pick<CallAttribution, 'pgCpuMs' | 'pgRunqMs' | 'clientRunqMs' | 'pgBackendsBorn'> = {};
+    if (schedBefore) {
+      // The pool opens a connection when none is idle (measured on run 11: about half the
+      // calls), so the call's backend can be born mid-call. A pid in the after-list but not the
+      // before-list did not exist before the call, so its whole lifetime counts from zero.
+      const pidsAfter = sampler ? await ownBackendPids(sampler).catch(() => backendPids) : backendPids;
+      const born = pidsAfter.filter((pid) => !backendPids.includes(pid));
+      const schedAfter = readSchedstats([...backendPids, ...born, 'self']);
+      const self = new Map([...schedBefore].filter(([pid]) => pid === process.pid));
+      const backends = new Map([...schedBefore].filter(([pid]) => pid !== process.pid));
+      for (const pid of born) backends.set(pid, { cpuNs: 0, runqNs: 0 });
+      const pgDelta = schedstatDeltaMs(backends, schedAfter);
+      const selfDelta = schedstatDeltaMs(self, schedAfter);
+      sched = {
+        ...(pgDelta.pids > 0 ? { pgCpuMs: pgDelta.cpuMs, pgRunqMs: pgDelta.runqMs } : {}),
+        ...(selfDelta.pids > 0 ? { clientRunqMs: selfDelta.runqMs } : {}),
+        ...(sampler ? { pgBackendsBorn: born.length } : {}),
+      };
+    }
     // Per-leg time from the engine's own instrument, so an R-18 tail can be attributed to
     // a leg instead of inferred (WI-6554700010008520).
     const legMs = legDurations(legs);
@@ -379,6 +485,8 @@ async function main(): Promise<number> {
           clientCpuMs: Math.round((cpu.user + cpu.system) / 100) / 10,
           ...(loop ? { loopDelayMaxMs: Math.round(loop.max / 1e5) / 10 } : {}),
           ...(psi !== undefined ? { psiIoAvg10: psi } : {}),
+          ...sched,
+          ...(waits ? { waits } : {}),
         };
       }
     }
@@ -450,6 +558,7 @@ async function main(): Promise<number> {
   } finally {
     if (envBefore === undefined) delete process.env[envVar];
     else process.env[envVar] = envBefore;
+    sampler?.release();
   }
   const pairedStatements = snapshotDelta(stmtBeforePaired, stmtAfterPaired);
 
@@ -490,11 +599,13 @@ async function main(): Promise<number> {
     verdict,
     // R-18: the paired BM25 arm's end-to-end p95 against the legacy arm's (D-019), and the
     // warm-repeat pass's BM25 p95 (sources[].warmRepeat.latencyP95Ms) under the per-source
-    // ceiling (D-020, D-028). The cold paired p95 is reported against the ceiling, not judged;
-    // sources[].dumpOverlap stays recorded (D-027).
+    // ceiling (D-020, D-028). The cold paired p95 is judged against the looser cold ceiling
+    // (coldLatencyCeilingsMs, D-029) on every run; sources[].dumpOverlap stays recorded (D-027).
     latencyRequirement: 'R-18',
-    latencyDecisions: ['D-019', 'D-020', 'D-021', 'D-026', 'D-027', 'D-028'],
+    latencyDecisions: ['D-019', 'D-020', 'D-021', 'D-026', 'D-027', 'D-028', 'D-029', 'D-030'],
+    waitSampleMs,
     latencyCeilingsMs: LATENCY_P95_CEILING_MS,
+    coldLatencyCeilingsMs: COLD_LATENCY_P95_CEILING_MS,
     // D-028: right after the paired pass, per query of P, the BM25-arm call untimed then timed.
     warmRepeatPass: {
       perSource: perSourceCount(warmPairs),
@@ -529,6 +640,8 @@ async function main(): Promise<number> {
     // hold each call). outsideExecShare = the lexical leg's time outside statement execution.
     attribution: Object.fromEntries(sourceNames.map((s) => [s, {
       pairedBm25: summarizeAttribution(pairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
+      // D-030: the calls the cold p95 rests on, with their waits and schedstat deltas.
+      pairedBm25Tail: tailAttribution(pairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
       pairedLegacy: summarizeAttribution(pairs.filter((p) => p.source === s).flatMap((p) => (p.arms.legacy ? [p.arms.legacy] : []))),
       steady: summarizeAttribution(steadyPairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
       warmRepeat: summarizeAttribution(warmPairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
@@ -579,7 +692,8 @@ function renderMarkdown(a: {
 }): string {
   const steadyRows = a.sources.map((s) => {
     const ceiling = LATENCY_P95_CEILING_MS[s.source];
-    return `| ${s.source} | ${s.warmRepeat?.scored ?? 0} | ${s.warmRepeat?.latencyP50Ms ?? '-'} | ${s.warmRepeat?.latencyP95Ms ?? '-'} | ${s.warmRepeatReadCalls ?? '?'} | ${ceiling ?? '-'} | ${s.arms.bm25.latencyP95Ms ?? '-'} | ${s.steady?.latencyP95Ms ?? '-'} | ${s.latency.verdict} |`;
+    const coldCeiling = COLD_LATENCY_P95_CEILING_MS[s.source];
+    return `| ${s.source} | ${s.warmRepeat?.scored ?? 0} | ${s.warmRepeat?.latencyP50Ms ?? '-'} | ${s.warmRepeat?.latencyP95Ms ?? '-'} | ${s.warmRepeatReadCalls ?? '?'} | ${ceiling ?? '-'} | ${s.arms.bm25.latencyP95Ms ?? '-'} | ${coldCeiling ?? '-'} | ${s.steady?.latencyP95Ms ?? '-'} | ${s.latency.verdict} |`;
   });
   const stmtRows = (label: string, d: StatementDelta[] | string) =>
     typeof d === 'string'
@@ -609,11 +723,12 @@ function renderMarkdown(a: {
     `Plan ${PLAN}, requirement R-13. Generated ${a.generatedAt} at commit ${a.commit ?? 'unknown'}.`,
     `Both arms ran in one process on the identical sample (fingerprint \`${a.sampleFingerprint}\`).`,
     `Recall is fused (RRF) recall@${a.recallK} before any rerank. Verdict: **${a.verdict}**.`,
-    `Latency (R-18; D-019, D-020, D-021, D-028) is the p95 of the whole hybrid call with every timed query embedded before timing. ` +
-      `On the paired cold pass the BM25 arm must not exceed legacy; the warm-repeat pass (each paired query's BM25-arm call run ` +
-      `untimed, then timed) must stay under its source ceiling ` +
-      `(${Object.entries(LATENCY_P95_CEILING_MS).map(([s, ms]) => `${s} ${ms} ms`).join(', ')}). The cold paired p95 and the ` +
-      `steady pass (D-024, D-025: novel queries on a disjoint sample) are reported, not judged. Verdict: **${a.latencyVerdict}**.`,
+    `Latency (R-18; D-019, D-020, D-021, D-028, D-029) is the p95 of the whole hybrid call with every timed query embedded before timing. ` +
+      `On the paired cold pass the BM25 arm must not exceed legacy and must stay under its cold ceiling ` +
+      `(${Object.entries(COLD_LATENCY_P95_CEILING_MS).map(([s, ms]) => `${s} ${ms} ms`).join(', ')}); the warm-repeat pass ` +
+      `(each paired query's BM25-arm call run untimed, then timed) must stay under its source ceiling ` +
+      `(${Object.entries(LATENCY_P95_CEILING_MS).map(([s, ms]) => `${s} ${ms} ms`).join(', ')}). The ` +
+      `steady pass (D-024, D-025: novel queries on a disjoint sample) is reported, not judged. Verdict: **${a.latencyVerdict}**.`,
     ``,
     `| source | arm | recall@${a.recallK} | MRR@${a.recallK} | zero-hit | p50 ms | p95 ms | engine |`,
     `|---|---|---|---|---|---|---|---|`,
@@ -629,7 +744,7 @@ function renderMarkdown(a: {
     ``,
     `Repeats with block reads is an upper bound from pg_stat_statements deltas (peers running the same statement also count).`,
     ``,
-    `| source | warm repeats | warm p50 ms | warm p95 ms | repeats with block reads | ceiling ms | cold paired BM25 p95 ms | steady p95 ms | R-18 |`,
+    `| source | warm repeats | warm p50 ms | warm p95 ms | repeats with block reads | ceiling ms | cold paired BM25 p95 ms | cold ceiling ms | steady p95 ms | R-18 |`,
     `|---|---|---|---|---|---|---|---|---|`,
     ...steadyRows,
     ``,
