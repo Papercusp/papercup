@@ -22,6 +22,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { gatherOnDesktopSessions } from '../../desktop-window-liveness';
 
 // vi.mock factories are hoisted above module-level consts — vi.hoisted() is the
 // sanctioned way to share spies with them (a bare `const` here hits the TDZ).
@@ -50,7 +51,9 @@ const {
   selfWakeMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
-  desktopSessionsMock: vi.fn(async (..._a: unknown[]) => ({ owners: new Set<string>() })),
+  desktopSessionsMock: vi.fn<typeof gatherOnDesktopSessions>(async () => ({
+    owners: new Set<string>(), sessionIds: new Set<string>(), advSessionIds: new Set<number>(), windowSignalUnknown: false,
+  })),
   // EI-21488009366204518: the targeted-miss session-log death leg.
   endedSessionsMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   // WI-10006738: the oracle's positive ended-session leg (latest adv_session ended).
@@ -266,11 +269,9 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
   });
 
   it('surfaces on-desktop awaited substep timings in the presence diagnostics', async () => {
-    desktopSessionsMock.mockImplementation(async (opts: {
-      onDiagnostic?: (diagnostic: { name: string; elapsedMs: number; status: 'ok' | 'error' }) => void;
-    }) => {
-      opts.onDiagnostic?.({ name: 'findLiveHost', elapsedMs: 12, status: 'error' });
-      return { owners: new Set<string>() };
+    desktopSessionsMock.mockImplementation(async (opts) => {
+      opts?.onDiagnostic?.({ name: 'findLiveHost', elapsedMs: 12, status: 'error' });
+      return { owners: new Set<string>(), sessionIds: new Set<string>(), advSessionIds: new Set<number>(), windowSignalUnknown: false };
     });
     const diagnostics: PresenceSnapshotDiagnostic[] = [];
 
