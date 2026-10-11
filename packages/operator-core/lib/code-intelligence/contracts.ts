@@ -208,6 +208,25 @@ export interface CodeIntelSourceFile {
 export type CodeIntelRelationshipKind = CodeIntelIntent | 'imports' | 'inheritance' | 'members'
   | 'field-read' | 'field-write' | 'overrides';
 
+export interface CodeIntelVersionedSite {
+  readonly site: SymbolSite;
+  readonly contentHash: string;
+  readonly versionedSymbolId: string | null;
+}
+
+/** Paths refer to call-site indices, in walk order. Call edges retain their original direction. */
+export interface CodeIntelTraversal {
+  readonly direction: 'upstream' | 'downstream' | 'both' | 'forward';
+  readonly maxDepth: number;
+  readonly maxPaths: number;
+  readonly start: CodeIntelVersionedSite;
+  readonly target?: CodeIntelVersionedSite;
+  readonly paths: readonly { readonly siteIndices: readonly number[]; readonly walk: 'forward' | 'reverse' }[];
+  readonly truncationReasons: readonly ('depth' | 'paths' | 'sites' | 'nodes')[];
+  /** Unresolved calls prevent a negative result from proving absence. */
+  readonly outcome: 'found' | 'not-found-in-scope' | 'incomplete';
+}
+
 export interface CodeIntelSourceEvidence {
   readonly schemaVersion: 1;
   readonly sourceScope: {
@@ -240,8 +259,10 @@ export interface CodeIntelSourceEvidence {
     readonly origin: 'compiler' | 'syntax' | 'index' | 'unknown';
     readonly knowledge: 'observed' | 'inferred' | 'unknown';
     readonly runtimeExecution: 'unknown';
+    readonly binding?: 'direct' | 'indirect' | 'dynamic' | 'unresolved';
+    readonly source?: CodeIntelVersionedSite;
     /** Same repository as sourceScope; measured from the same compiler program. */
-    readonly target?: { readonly site: SymbolSite; readonly contentHash: string; readonly versionedSymbolId: string | null };
+    readonly target?: CodeIntelVersionedSite;
   }[];
 }
 
@@ -273,6 +294,7 @@ export interface CodeIntelAnswer {
   readonly freshness: Freshness;
   /** Omission on a legacy backend is unmeasured; never fill hashes from a later disk read. */
   readonly evidence?: CodeIntelSourceEvidence;
+  readonly traversal?: CodeIntelTraversal;
   /**
    * Scope of the evidence, independently of health, freshness and output limits.
    * Omission on a legacy producer means unmeasured, never source completeness.
@@ -317,6 +339,7 @@ export type CodeIntelIntent =
   | 'callers'
   | 'callees'
   | 'impact'
+  | 'trace'
   | 'rename-preview'
   | 'diagnostics'
   /**
