@@ -187,6 +187,16 @@ describe('contamination policy — building blocks', () => {
     expect(priced.filter((id) => !MODEL_TRAINING_CUTOFFS[id]).sort()).toEqual(unsourced);
   });
 
+  it('gpt-6-luna — the initial-benchmark model (D-014) — carries its vendor knowledge cutoff 2026-05-18', () => {
+    // Hand-copied from developers.openai.com/api/docs/models/gpt-6-luna.md (read 2026-10-11), not from the
+    // code under test. benchmark-coverage-frontierswe-v2-2026-10-10#D-014 splits the 34 v2 tasks into 6
+    // exposed (v1-carried) and 28 post-cutoff against exactly this date, so a drifted row silently re-labels them.
+    const fact = trainingCutoffFor('gpt-6-luna');
+    expect(fact).toMatchObject({ trainingDataCutoff: '2026-05-18', vendorTerm: 'knowledge cutoff' });
+    expect(fact?.source).toContain('developers.openai.com/api/docs/models/gpt-6-luna');
+    expect(trainingCutoffFor('openai/gpt-6-luna:max')?.trainingDataCutoff).toBe('2026-05-18');
+  });
+
   it('refuses a malformed pinned cutoff instead of silently labelling', () => {
     expect(() => armContamination({ modelId: MODEL, assignedTaskIds: ['t'], rows: [], trainingCutoffOverride: 'soon' })).toThrow(/not YYYY-MM/);
   });
