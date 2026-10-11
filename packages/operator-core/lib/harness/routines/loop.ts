@@ -1526,14 +1526,14 @@ export const HOST_RECOVERY_ROUTE_WINDOW_MS = 6 * 60 * 60 * 1000;
  * The budget is enforced by the write itself, not by a read before it: the row is updated only
  * while `metadata.stalled_host_recovery` holds fewer than `max` routes inside the window, and
  * the RETURNING row is the verdict. `false` means the budget is spent (or the loop is no longer
- * armed), and the caller disarms instead. Two sweeps racing on one row cannot both overspend.
+ * armed). A spent budget must retain a recovery wall, never erase the loop obligation.
  */
 export async function routeStalledLoopToHostRecovery(
   sql: Sql,
   routineId: string,
   reason: string,
   condition: string,
-  opts: { max?: number; windowMs?: number } = {},
+  opts: { max?: number; windowMs?: number; deferFire?: boolean } = {},
 ): Promise<{ routed: boolean }> {
   const max = opts.max ?? HOST_RECOVERY_ROUTE_MAX;
   const windowMs = opts.windowMs ?? HOST_RECOVERY_ROUTE_WINDOW_MS;
@@ -1545,6 +1545,7 @@ export async function routeStalledLoopToHostRecovery(
              COALESCE((metadata->'stalled_host_recovery'->>'count')::int, 0) AS route_count
         FROM harness_shared.routines
        WHERE id = ${routineId} AND active = TRUE
+       FOR UPDATE
     ), budget AS (
       SELECT id, now_ms,
              (window_start_ms IS NULL OR now_ms - window_start_ms >= ${windowMs}) AS window_expired,
@@ -1552,7 +1553,7 @@ export async function routeStalledLoopToHostRecovery(
         FROM cur
     )
     UPDATE harness_shared.routines AS r
-       SET next_fire_at = now(),
+       SET next_fire_at = CASE WHEN ${opts.deferFire === true} THEN r.next_fire_at ELSE now() END,
            metadata = COALESCE(r.metadata, '{}'::jsonb)
                     || jsonb_build_object(
                          'loop_rearmed_reason', ${reason}::text,
@@ -1573,6 +1574,39 @@ export async function routeStalledLoopToHostRecovery(
     RETURNING r.id
   `;
   return { routed: rows.length > 0 };
+}
+
+/** Retain an unhealthy owner's obligation on its existing routine. The guard owns
+ * the bounded retry; the owner page carries any prerequisite it cannot repair.
+ * This CAS cannot undo loop:end, and an unchanged wall cannot slide its probe
+ * forever into the future or page on every sweep. */
+export async function retainStalledLoopRecoveryWall(
+  sql: Sql,
+  routineId: string,
+  wall: { ownerId: string; condition: string; reason: string; remedy: string },
+): Promise<{ retained: boolean; changed: boolean }> {
+  const rows = await sql<Array<{ changed: boolean }>>`
+    WITH cur AS (
+      SELECT id, metadata, next_fire_at,
+             (metadata #>> '{stalled_host_recovery,wall,reason}') IS DISTINCT FROM ${wall.reason} AS changed
+        FROM harness_shared.routines
+       WHERE id = ${routineId} AND active = TRUE AND target_owner_id = ${wall.ownerId}
+       FOR UPDATE
+    )
+    UPDATE harness_shared.routines AS r
+       SET metadata = jsonb_set(COALESCE(r.metadata, '{}'::jsonb), '{stalled_host_recovery}',
+             COALESCE(r.metadata->'stalled_host_recovery', '{}'::jsonb) || jsonb_build_object(
+               'wall', jsonb_build_object('ownerId', ${wall.ownerId}::text, 'responsible', 'stalled-loops-guard',
+                 'condition', ${wall.condition}::text, 'reason', ${wall.reason}::text, 'remedy', ${wall.remedy}::text,
+                 'observedAt', now()::text))),
+           next_fire_at = CASE WHEN NOT cur.changed AND cur.next_fire_at > now()
+                AND cur.next_fire_at <> 'infinity'::timestamptz THEN cur.next_fire_at
+             ELSE now() + (${HOST_RECOVERY_ROUTE_WINDOW_MS}::bigint * interval '1 millisecond') END,
+           updated_at = now()
+      FROM cur WHERE r.id = cur.id AND r.active = TRUE AND r.target_owner_id = ${wall.ownerId}
+    RETURNING cur.changed
+  `;
+  return { retained: rows.length > 0, changed: rows[0]?.changed === true };
 }
 
 /**
