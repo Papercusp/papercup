@@ -177,22 +177,38 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
         (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name);
       const name = declaration && (ts.isFunctionDeclaration(declaration) || ts.isClassDeclaration(declaration)) ? declaration.name?.text : null;
       if (name) {
-        const graph = await deps.graph(root, name, implementation.path, brief.scope.paths, Math.min(2_000, remaining()));
-        const scope = graph.evidence?.sourceScope;
-        if (!graph.error && scope?.repositoryId && scope.supportingFiles.length
+        // Compiler enrichment is optional. Reserve time to recheck the captured
+        // source and finish the brief; worker termination can outlast its deadline.
+        const compilerMs = Math.max(0, Math.min(2_000, deadline - Date.now() - 250));
+        let graph: CodeIntelAnswer | null = null;
+        let compilerTimer: ReturnType<typeof setTimeout> | undefined;
+        if (compilerMs > 0) {
+          try {
+            graph = await Promise.race([
+              deps.graph(root, name, implementation.path, brief.scope.paths, compilerMs).catch(() => null),
+              new Promise<null>(resolve => { compilerTimer = setTimeout(() => resolve(null), compilerMs); }),
+            ]);
+          } finally { clearTimeout(compilerTimer); }
+        }
+        const scope = graph?.evidence?.sourceScope;
+        if (graph && !graph.error && scope?.repositoryId && scope.supportingFiles.length
           && scope.supportingFiles.every(file => texts.has(file.path) && file.contentHash === hash(texts.get(file.path)!))) {
           brief.graph = { status: 'measured', consumers: graph.sites.filter((site, index) => texts.has(site.path)
             && graph.evidence?.relationships.some(edge => edge.siteIndex === index && edge.knowledge === 'observed'))
             .map(site => `${site.path}:${site.line1 ?? '?'}`),
             relationships: (graph.evidence?.relationships ?? []).slice(0, 8).map(edge => `${edge.knowledge}:${edge.kind}:${edge.source?.site.path ?? '?'}->${edge.target?.site.path ?? '?'}`) };
           if (graph.truncation.truncated) brief.exclusions.push('Additional compiler sites omitted by the bounded query.');
-        } else brief.graph.reason = graph.error?.slice(0, 180) ?? 'Compiler evidence is unavailable or outside the measured task files.';
+        } else brief.graph.reason = graph?.error?.slice(0, 180) ?? (graph
+          ? 'Compiler evidence is unavailable or outside the measured task files.'
+          : 'Compiler enrichment exceeded its remaining budget or was unavailable.');
       } else brief.graph.reason = 'No named function or class in the bounded implementation scope.';
     } else brief.graph.reason = 'No supported implementation in the stored task scope.';
+    remaining();
     const final = await Promise.all([...texts.keys()].map(async path => {
       if (!inside(root, await realpath(join(root, path)))) throw new Error('task source escaped during capture');
       return [path, hash(await readFile(join(root, path), 'utf8'))];
     }));
+    remaining();
     if (hash(JSON.stringify(final)) !== before) throw new Error('task source changed during compiler capture; re-read the brief');
     brief.status = 'current';
     brief.exclusions.push('Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution.');
@@ -205,12 +221,12 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
   }
 }
 
-export async function getClaimTimeTaskBrief(ref: Ref): Promise<{ taskBrief: TaskBrief } | null> {
+export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
   const payload = ref.workItem?.payload as { paths?: unknown } | null;
   if (!ref.workItem?.id || !Array.isArray(payload?.paths) || payload.paths.length === 0) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return { taskBrief: await Promise.race([buildTaskBrief(ref), new Promise<TaskBrief>(resolve => {
+    return { taskBrief: await Promise.race([buildTaskBrief(ref, deps), new Promise<TaskBrief>(resolve => {
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
         graph: { status: 'unknown', consumers: [], relationships: [] }, exclusions: ['Task brief exceeded its bounded read deadline.'],

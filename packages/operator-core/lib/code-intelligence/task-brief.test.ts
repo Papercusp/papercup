@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildTaskBrief, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { buildTaskBrief, getClaimTimeTaskBrief, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
 import type { CodeIntelAnswer } from './contracts';
 
 const dirs: string[] = [];
@@ -58,6 +58,39 @@ describe('P012 bounded scoped task briefs', () => {
     deps.pack = async (...args) => { const result = await pack(...args); writeFileSync(join(root, 'target.ts'), 'changed'); return result; };
     const brief = await buildTaskBrief({ workItem: { id: 'WI-task', harness: 'h', payload: { paths: ['target.ts'] } } }, deps);
     expect(brief).toMatchObject({ status: 'unknown', files: [], excerpts: [], sourceFingerprint: null });
+  });
+  it('preserves verified source when optional compiler enrichment misses the remaining brief budget', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "CURRENT_SOURCE"; }');
+    const deps = depsFor(root), pack = deps.pack;
+    // Advance the wall clock after packing to reproduce the measured nearly-full
+    // source budget without sleeping or changing the source oracle.
+    const clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(clock);
+    deps.pack = async (...args) => { const packed = await pack(...args); now.mockReturnValue(clock + 5_500); return packed; };
+    deps.graph = vi.fn(() => new Promise<CodeIntelAnswer>(() => {}));
+    try {
+      const result = await getClaimTimeTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h',
+        payload: { paths: ['target.ts'] } } }, deps);
+      expect(result?.taskBrief.status).toBe('current');
+      expect(result?.taskBrief.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(result?.taskBrief.files).toEqual([expect.objectContaining({ path: 'target.ts' })]);
+      expect(JSON.stringify(result?.taskBrief.excerpts)).toContain('CURRENT_SOURCE');
+      expect(result?.taskBrief.graph.status).toBe('unknown');
+      expect(result?.taskBrief.graph.reason).toMatch(/budget|unavailable/);
+      expect(vi.mocked(deps.graph).mock.calls[0]![4]).toBeLessThan(500);
+    } finally { now.mockRestore(); }
+  }, 10_000);
+  it('keeps scoped source current after compiler failure but still rejects a concurrent source edit', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "CURRENT_SOURCE"; }');
+    const deps = depsFor(root);
+    const ref = { workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h', payload: { paths: ['target.ts'] } } };
+    deps.graph = async () => { throw new Error('compiler unavailable'); };
+    const current = await buildTaskBrief(ref, deps);
+    expect(current.status).toBe('current'); expect(JSON.stringify(current.excerpts)).toContain('CURRENT_SOURCE');
+    expect(current.graph.status).toBe('unknown');
+    deps.graph = async () => { writeFileSync(join(root, 'target.ts'), 'export function target() { return "CHANGED"; }');
+      throw new Error('compiler unavailable'); };
+    expect(await buildTaskBrief(ref, deps)).toMatchObject({ status: 'unknown', files: [], excerpts: [], sourceFingerprint: null });
   });
   it('clamps the packer subprocess budget and exposes refusal as unknown with recovery', async () => {
     const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export const x = 1;'); const deps = depsFor(root);
