@@ -75,6 +75,40 @@
     "acceptanceTaskId": "0mv2zua6eub49n6xokb",
     "acceptanceLogPath": ".papercusp/scratch/bash-563c3668-af7.log",
     "acceptanceOutPath": "/tmp/pui-acceptance-7534f/candidates/source-47a681df756563cd9f260b00bb3ad9e20527f796/pui-47a6-cache-guard-2256.acceptance.json",
-    "state": "running at launch; consult durable task ledger for current state"
+    "state": "terminal failed exit 1 at 2026-10-10T23:48:47.153Z; scripted/Codex/Claude exit 0, OMP exit 1 with missing operator-process acceptance; full verdict refused"
+  },
+  "projectSelectionPreflight": {
+    "plane": "local current-build fixture against retained installed binary; no native inference",
+    "binarySha256": "e0cfc371fb1289595da1c0246a124cdbf68880c3386405c3cedd928d480d1d0f",
+    "failedRun": {
+      "taskId": "0mv406seg1f82nfcdz1",
+      "testRunId": 21084115,
+      "logPath": ".papercusp/scratch/bash-5ef23d7a-f47.log",
+      "logSha256": "dcc8d1ebb81d112037fb422c90cb3a139bf6a47f48bee1f7f3512fe159647493",
+      "exitCode": 1,
+      "terminalAt": "2026-10-11T15:59:54.223Z",
+      "result": "1 failed / 91 skipped; project selection timed out with Connection: Unavailable after Connected; cause unconfirmed"
+    },
+    "passingRun": {
+      "taskId": "0mv40s9zc1wygful1lv",
+      "testRunId": 21088335,
+      "logPath": ".papercusp/scratch/bash-1bb92d60-432.log",
+      "logSha256": "61d816735b76a2fd3911939ffe56c4da1f90ffb8ba08ba80714081209995385d",
+      "exitCode": 0,
+      "terminalAt": "2026-10-11T16:15:45.480Z",
+      "result": "1 passed / 91 skipped; project papercusp selected, Runtime rendered, zero native launch responses and zero native events",
+      "ledgerCommit": "c9a2ecca438781185a40b89374cc93dae30e4516",
+      "ledgerWorktreeDirty": true,
+      "testFileSha256": "a2fca49b928e9f38fec96b490bafc592a42c662311cadcb36b5b93077069bd96",
+      "operatorFixtureSha256": "b35ea28d5632a09a30ff975a38c5dd27a49c1ce3297f762fc6ad70176428e847",
+      "sourceMapPath": "/tmp/pui-acceptance-7534f/omp-context-20261011-1611/source-map.json",
+      "sourceMapSha256": "392da6a6d48ef806f6c912d27e73884d261fe9f271cdf238c971d78a5949d8f4"
+    },
+    "limitations": [
+      "The successful preflight checks identity and project response bodies before typing; these reads may warm server caches. It does not establish the cause of the earlier disconnect.",
+      "The fixture source and setup driver changed after this passing run; its source hashes above identify the bytes it tested.",
+      "No native restart/approval, serving-account identity, immutable full-candidate acceptance, BAR adequacy, independent grading, final Avi approval or public shipment is established."
+    ],
+    "nextAction": "Verify the focused OMP operator-process restart/approval journey with the same connection/query render waits; preserve original full-candidate refused verdict."
   }
 }
