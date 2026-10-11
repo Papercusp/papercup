@@ -164,6 +164,7 @@ export function stewardSeedToolNames(listings?: readonly { name: string }[]): st
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
+import { PAPERCUSP_MCP_SERVER } from './papercusp-mcp-servers';
 import { promptsDir } from './prompt-assembly';
 import { PSU_CACHE_BOUNDARY } from './inference-gateway/cache-policy';
 import { sessionClaudeConfigDir, sessionMcpDir } from '@papercusp/orchestrator/session-launch-dirs';
@@ -1039,7 +1040,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   // (PAPERCUSP_MCP_PROXY_BASE), else the operator base unchanged. Survives a :3070 deploy restart.
   const base = resolveAgentMcpBaseUrl(input.operatorBaseUrl);
   const mcpUrl = `${base}/api/mcp?${params.toString()}`;
-  const mcpJsonContents = JSON.stringify({ mcpServers: { papercusp: { type: 'http', url: mcpUrl } } }, null, 2);
+  const mcpJsonContents = JSON.stringify({ mcpServers: { [PAPERCUSP_MCP_SERVER]: { type: 'http', url: mcpUrl } } }, null, 2);
 
   return {
     role: input.role,
@@ -1758,7 +1759,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const mcpJsonContents = JSON.stringify(
     {
       mcpServers: {
-        papercusp: {
+        [PAPERCUSP_MCP_SERVER]: {
           url: mcpUrlStr,
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         },

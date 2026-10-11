@@ -100,18 +100,30 @@ describe('native DAO viewport launch contract', () => {
       throw failure;
     }
   }
-  function verifier(exitCode = 0) {
+  function verifier(exitCode = 0, importsExitCode = 0) {
     const dir = mkdtempSync(join(tmpdir(), 'dao-native-launch-'));
     const script = join(dir, 'verifier.sh'), log = join(dir, 'boots.log');
+    const imports = join(dir, 'imports.log');
+    // This unit measures shell ordering and viewport arguments. The real module
+    // graph is preflighted by the maintained native journey; running that graph
+    // in every stubbed launch made this unit expire before its first boot.
+    // Intercept only the exact import-check command; all other Node calls run.
+    writeFileSync(join(dir, 'node'), '#!/usr/bin/env bash\nset -eu\n'
+      + 'if [ "$#" -eq 4 ] && [ "$1" = --import ] && [ "$2" = tsx ] && [ "$3" = "$DAO_NATIVE_IMPORT_ENTRY" ] && [ "$4" = --check-imports ]; then\n'
+      + '  printf "%s|%s\\n" "$3" "$4" >> "$DAO_NATIVE_IMPORT_LOG"\n  exit ' + importsExitCode + '\nfi\n'
+      + 'exec "$DAO_NATIVE_REAL_NODE" "$@"\n', { mode: 0o700 });
     writeFileSync(script, '#!/usr/bin/env bash\nset -eu\nprintf "%s|%s|%s|%s|%s|%s|%s\\n" "$VERIFY_TAURI_WINDOW" "$DAO_WORKBENCH_VIEWPORT" "$VERIFY_TAURI_ISOLATED_DB" "$VERIFY_TAURI_ISOLATED_SEED" "$*" "$PAPERCUSP_TEST_RUN_WORKSPACE" "$PAPERCUSP_TEST_RUN_HARNESS" >> "$DAO_NATIVE_BOOT_LOG"\nexit ' + exitCode + '\n', { mode: 0o700 });
     cleanup = () => rmSync(dir, { recursive: true, force: true });
-    return { log, env: { ...process.env, TAURI_SURFACE_VERIFY_SUITE_VERIFIER: script, DAO_NATIVE_BOOT_LOG: log,
+    return { log, imports, env: { ...process.env, TAURI_SURFACE_VERIFY_SUITE_VERIFIER: script, DAO_NATIVE_BOOT_LOG: log,
+      PATH: dir + ':' + process.env.PATH, DAO_NATIVE_REAL_NODE: process.execPath,
+      DAO_NATIVE_IMPORT_ENTRY: join(root, 'scripts/tauri-surface-verify-dao-workbench.mts'), DAO_NATIVE_IMPORT_LOG: imports,
       DAO_WORKBENCH_HARNESS_EVIDENCE_ROOT: join(dir, 'evidence'),
       PAPERCUSP_TEST_RUN_WORKSPACE: 'dao-native-ledger-fixture', PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' } };
   }
   it('boots separate isolated desktop and narrow windows through the maintained verifier', async () => {
     const fixture = verifier();
     await launch(fixture.env);
+    expect(readFileSync(fixture.imports, 'utf8').trim()).toBe(fixture.env.DAO_NATIVE_IMPORT_ENTRY + '|--check-imports');
     const boots = readFileSync(fixture.log, 'utf8').trim().split('\n');
     expect(boots).toHaveLength(2);
     expect(boots[0]).toMatch(/^1440x1000\|1440x1000\|1\|ready\|/);
@@ -131,6 +143,12 @@ describe('native DAO viewport launch contract', () => {
     await expect(launch(fixture.env))
       .rejects.toMatchObject({ code: 17 });
     expect(readFileSync(fixture.log, 'utf8').trim().split('\n')).toHaveLength(1);
+  }, 50_000);
+  it('stops before either native boot when the maintained import check fails', async () => {
+    const fixture = verifier(0, 23);
+    await expect(launch(fixture.env)).rejects.toMatchObject({ code: 23 });
+    expect(readFileSync(fixture.imports, 'utf8').trim()).toBe(fixture.env.DAO_NATIVE_IMPORT_ENTRY + '|--check-imports');
+    expect(existsSync(fixture.log)).toBe(false);
   }, 50_000);
   it('refuses an unscoped result ledger before booting a native window', async () => {
     const fixture = verifier();

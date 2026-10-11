@@ -15,6 +15,7 @@ import { evaluateSessionConfinement } from './capability-envelope/session-confin
 import type { BlindReviewBrief } from './blind-review-brief';
 import { BLIND_REVIEW_TOOL } from './blind-review-gate';
 import {
+  BLIND_GAP_REVIEW_ACCOUNT,
   BLIND_GAP_REVIEW_ACTOR,
   BLIND_REVIEWER_TOOL_CEILING,
   blindReviewerConfinement,
@@ -172,7 +173,12 @@ describe('mintBlindGapReviewer', () => {
     expect(d.loadBrief).toHaveBeenCalledWith({ workspaceId: 'ws-1', planSlug: SLUG, harnessSlug: 'papercusp' });
     expect(d.handler).toHaveBeenCalledTimes(1);
     const [args, ctx] = d.handler.mock.calls[0] as unknown as [Record<string, unknown>, Record<PropertyKey, unknown>];
-    expect(args).toEqual({ brief: result.kickoff, harness: 'papercusp', headless: true });
+    expect(args).toEqual({ brief: result.kickoff, harness: 'papercusp', headless: true, account: 'auto' });
+    // The reviewer routes through the gateway pool, never the box's own system login: a
+    // revoked/limited 'default' login killed every reviewer on its first turn
+    // (WI-6554700010008650). Pinned to the literal so the constant cannot drift silently.
+    expect(BLIND_GAP_REVIEW_ACCOUNT).toBe('auto');
+    expect(args.account).not.toBe('default');
     // The caller's identity must not leak into the launch: the door rejects the author's lineage.
     expect(ctx.ownerId).toBe(BLIND_GAP_REVIEW_ACTOR);
     expect(ctx.isSuperuser).toBe(false);

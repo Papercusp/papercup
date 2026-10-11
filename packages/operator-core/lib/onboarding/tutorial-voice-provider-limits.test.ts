@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../integration-credentials', () => ({ readAdmittedElevenLabsIntegrationCredential: vi.fn() }));
 import { readAdmittedElevenLabsIntegrationCredential } from '../integration-credentials';
 import { createElevenLabsTutorialVoiceLimitVerifier, readReservedElevenLabsTutorialCredential,
@@ -17,6 +17,7 @@ function options() {
 const verify = (reader: ReturnType<typeof createElevenLabsTutorialVoiceLimitVerifier>) =>
   reader(null as never, null as never);
 beforeEach(() => { read.mockReset(); read.mockResolvedValue(admitted); });
+afterEach(() => { vi.restoreAllMocks(); });
 describe('server tutorial signed URL issuer', () => {
   const reservation = { ok: true as const, reservationId: '11111111-1111-4111-8111-111111111111',
     maximumSeconds: 120, providerLimitRef: 'elevenlabs:restricted:tutorial' };
@@ -67,6 +68,42 @@ describe('server tutorial signed URL issuer', () => {
     expect(await t.issue()).toEqual({ ok: false, reason: 'unavailable' });
     expect(t.transport).toHaveBeenCalledOnce(); expect(t.store.recordProviderConversation).not.toHaveBeenCalled();
   });
+  it.each([1, 2, 3])('honors kill-switch transition at check %i without losing remote exposure', async check => {
+    const s = setup();
+    let calls = 0;
+    s.disabled.mockImplementation(async () => ++calls === check);
+    expect(await s.issue()).toEqual({ ok: false, reason: 'disabled' });
+    expect(s.store.reserve).toHaveBeenCalledTimes(check === 1 ? 0 : 1);
+    expect(s.store.beginIssuance).toHaveBeenCalledTimes(check === 3 ? 1 : 0);
+    expect(s.transport).toHaveBeenCalledTimes(check === 3 ? 1 : 0);
+    expect(s.store.recordProviderConversation).toHaveBeenCalledTimes(check === 3 ? 1 : 0);
+  });
+  it('does not reserve or attempt provider issuance for an already cancelled request', async () => {
+    const s = setup(); s.controller.abort();
+    expect(await s.issue()).toEqual({ ok: false, reason: 'unavailable' });
+    expect(s.events).toEqual([]);
+    expect(read).not.toHaveBeenCalled();
+  });
+  it.each(['response', 'receipt', 'kill-switch'] as const)(
+    'retains remote identity but never delivers a URL expired during %s', async stage => {
+      let now = 1_800_000_000_000;
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      const s = setup();
+      const expire = () => { now += 15 * 60 * 1000; };
+      if (stage === 'response') s.transport.mockImplementationOnce(async () => {
+        expire(); return Response.json({ signed_url: signedUrl });
+      });
+      if (stage === 'receipt') s.store.recordProviderConversation.mockImplementationOnce(async () => {
+        expire(); return true;
+      });
+      if (stage === 'kill-switch') {
+        let calls = 0;
+        s.disabled.mockImplementation(async () => { if (++calls === 3) expire(); return false; });
+      }
+      expect(await s.issue()).toEqual({ ok: false, reason: 'unavailable' });
+      expect(s.transport).toHaveBeenCalledOnce();
+      expect(s.store.recordProviderConversation).toHaveBeenCalledWith(reservation.reservationId, 'attempt-one', 'conv-one');
+    });
   it.each([
     signedUrl.replace('api.elevenlabs.io', 'untrusted.test'),
     signedUrl.replace('agent_id=tutorial', 'agent_id=other'),

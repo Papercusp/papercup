@@ -583,6 +583,40 @@ const OWNER = 'pui-agent-chat-e2e-owner';
 const REAL_PLAN = 'pui-native-acceptance-plan';
 const REAL_APPROVAL_WORK_ITEM = 'EI-90000006';
 const execFileAsync = promisify(execFile);
+let operatorProcessBundleDir: string | undefined;
+let operatorProcessBundlePath: string | undefined;
+
+function buildOperatorProcessBundle(): string {
+  if (operatorProcessBundlePath && existsSync(operatorProcessBundlePath)) return operatorProcessBundlePath;
+  const startedAt = performance.now();
+  const bundleDir = mkdtempSync(path.join(tmpdir(), 'pui-operator-process-bundle-'));
+  const bundlePath = path.join(bundleDir, 'operator-process.mjs');
+  const entry = path.join(REPO_ROOT, 'packages', 'operator-core', 'lib', 'pui-e2e', 'operator-process.mts');
+  const script = path.join(REPO_ROOT, 'apps', 'operator', 'bin', 'bundle-host.sh');
+  const result = spawnSync('bash', [script, entry, bundlePath, 'development'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 300_000,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  if (result.error || result.status !== 0 || !existsSync(bundlePath)) {
+    rmSync(bundleDir, { recursive: true, force: true });
+    throw new Error(
+      `PUI operator fixture bundle failed (status=${result.status}, signal=${result.signal}):\n${output.slice(-8_000)}`,
+      { cause: result.error },
+    );
+  }
+  operatorProcessBundleDir = bundleDir;
+  operatorProcessBundlePath = bundlePath;
+  console.info('PUI_OPERATOR_PROCESS_BUNDLE_READY', JSON.stringify({
+    entry: path.relative(REPO_ROOT, entry), bundlePath,
+    bundleSha256: createHash('sha256').update(readFileSync(bundlePath)).digest('hex'),
+    buildMs: Math.round(performance.now() - startedAt), runner: 'bundle-host.sh',
+    runtime: 'plain-node', tsxLoader: false,
+  }));
+  return bundlePath;
+}
 
 // Opt-in diagnosis uses the actual worker (including cold module evaluation),
 // preserves every console warning, and writes no request bodies or credentials.
@@ -1706,6 +1740,7 @@ async function stopEngines(): Promise<void> {
 
 beforeAll(async () => {
   vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
+  if (scriptedEngine.real) operatorProcessBundlePath = buildOperatorProcessBundle();
   bin = ensurePuiBinary();
   binarySha256 = createHash('sha256').update(readFileSync(bin)).digest('hex');
   home = mkdtempSync(path.join(tmpdir(), 'pui-agent-chat-e2e-'));
@@ -2176,6 +2211,9 @@ afterAll(async () => {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
+      if (operatorProcessBundleDir) rmSync(operatorProcessBundleDir, { recursive: true, force: true });
+      operatorProcessBundleDir = undefined;
+      operatorProcessBundlePath = undefined;
       if (home) rmSync(home, { recursive: true, force: true });
     },
   ]);
@@ -5666,8 +5704,13 @@ async function startOperatorProcess(port = 0) {
   // its reporter and DROPPED this journey's verdict (WI-10004247 runs D-F).
   // Keep the text, but not in stack-frame shape.
   const inertOutput = () => output.replace(/^(\s*)at /gm, '$1| at ');
-  const child = fork(path.join(__dirname, 'operator-process.mts'), [], {
-    cwd: REPO_ROOT, execArgv: ['--import', 'tsx'],
+  const bundlePath = operatorProcessBundlePath;
+  if (!bundlePath || !existsSync(bundlePath)) {
+    throw new Error('PUI operator fixture bundle must be built before the test cases start');
+  }
+  const processStartupStartedAt = performance.now();
+  const child = fork(bundlePath, [], {
+    cwd: REPO_ROOT, execArgv: [],
     env: { ...process.env, PUI_OPERATOR_FIXTURE_WORKSPACE: WORKSPACE, PUI_OPERATOR_FIXTURE_PORT: String(port) },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
@@ -5737,6 +5780,11 @@ async function startOperatorProcess(port = 0) {
       }
       expect(ready, inertOutput()).toBeDefined();
     }, { timeout: 120_000, interval: 100 });
+    const startupMs = Math.round(performance.now() - processStartupStartedAt);
+    console.info('PUI_OPERATOR_PROCESS_READY', JSON.stringify({
+      pid: ready!.pid, instanceId: ready!.instanceId, port: ready!.port,
+      startupMs, runtime: 'plain-node-bundle',
+    }));
     // The IPC announcement proves listen() completed; exercise the exact
     // bounded identity route the client needs before spending a PTY deadline.
     await verifyOperatorProcessIdentity(ready!.port);
@@ -5751,12 +5799,14 @@ async function startOperatorProcess(port = 0) {
       startupError: startupError ? redactSensitiveText(startupError.message) : null,
       diagnosticLevels: diagnostics.slice(-10).map(({ level }) => level),
       output: inertOutput().slice(-8_000),
+      startupMs: Math.round(performance.now() - processStartupStartedAt),
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
     }));
     await stop().catch(() => {});
     throw error;
   }
-  return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
+  return { ...ready!, startupMs: Math.round(performance.now() - processStartupStartedAt),
+    events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
 }
 
 function cleanupErrorText(error: unknown): string {
@@ -7635,6 +7685,23 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       if (verifyViewState) await verifyOperatorProcessViewState(first.port);
       await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
       await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      // Observe the client's own cold request; never warm the catalog with a
+      // preparatory REST call. Duplicate ESM loading formerly stalled this
+      // request for 30s and starved the three-second identity probe.
+      const accountStatus = () => first.diagnostics.find(({ args }) =>
+          args[0] === 'PUI_OPERATOR_CONFIG_REQUEST_END'
+          && (args[1] as { toolName?: string } | undefined)?.toolName === 'accounts:status');
+      await vi.waitFor(() => expect(accountStatus(),
+        'the installed client must finish its cold account-status request').toBeDefined(),
+      { timeout: 40_000, interval: 100 });
+      // This completed span and its historical maximum cannot improve with
+      // another wait. Fail immediately rather than spending 40s retrying it.
+      const span = accountStatus()!.args[1] as {
+        status: number; durationMs: number; eventLoopDelayMaxMsSinceReady: number;
+      };
+      expect(span.status).not.toBe(408);
+      expect(span.durationMs).toBeLessThan(3_000);
+      expect(span.eventLoopDelayMaxMsSinceReady).toBeLessThan(3_000);
       expect(first.descriptors.size).toBe(0);
       expect(first.events).toEqual([]);
       expect(first.responses).toEqual([]);

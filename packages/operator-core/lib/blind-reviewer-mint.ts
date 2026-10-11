@@ -24,6 +24,14 @@ import type { BlindReviewBrief } from './blind-review-brief';
 export const BLIND_GAP_REVIEW_ACTOR = 'system:blind-gap-review';
 
 /**
+ * Account the reviewer launches on: the gateway pool, like the acceptance grader and the
+ * grading audit (GRADING_AUDIT_ACCOUNT). Omitting it falls back to launch-agent's
+ * 'default' — the box's own system login — so one revoked or rate-limited login killed
+ * every reviewer on its first turn while gateway launches kept working (WI-6554700010008650).
+ */
+export const BLIND_GAP_REVIEW_ACCOUNT = 'auto' as const;
+
+/**
  * Everything a blind reviewer may call. Each entry carries why it is here; nothing in this
  * list returns plan artifacts.
  */
@@ -131,6 +139,9 @@ export async function mintBlindGapReviewer(
     userId: null,
     [confinementKey]: blindReviewerConfinement(input.slug),
   };
-  const launch = await handler({ brief: kickoff, harness: input.harness, headless: true }, systemCtx as never);
+  const launch = await handler(
+    { brief: kickoff, harness: input.harness, headless: true, account: BLIND_GAP_REVIEW_ACCOUNT },
+    systemCtx as never,
+  );
   return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq };
 }

@@ -34,6 +34,7 @@ import {
   resolveSpawnPathDirs,
 } from './backend-bin-resolve.mjs';
 import { papercuspPathForWorkspace } from './papercusp-root';
+import { PAPERCUSP_MCP_SERVER } from './papercusp-mcp-servers';
 // EI-10938: resolve the workspace's home CHECKOUT for a no-slug launch.
 import { detectPapercupRoot, hasPapercupMarkers } from './harness/register-papercusp';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
@@ -419,7 +420,7 @@ export async function buildConsoleEnvelope(
     mcpJsonContents = JSON.stringify(
       {
         mcpServers: {
-          papercusp: {
+          [PAPERCUSP_MCP_SERVER]: {
             url: mcpUrl,
             headers: token ? { Authorization: `Bearer ${token}` } : {},
           },

@@ -415,6 +415,32 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     )).toBe('structural');
   });
 
+  it('lets the primary error code outrank unrelated secondary failure text', () => {
+    const mixedMessage =
+      'The extraction script treated dev:session_detail as an MCP content envelope; ' +
+      'code:run returned the typed root. A separate tools:invoke attempt was refused with ' +
+      'superuser_native_session_verifier_unavailable.';
+
+    expect(classifyToolError('structured_result_shape', 'error', mixedMessage)).toBe('caller');
+    expect(classifyToolError(
+      'superuser_native_session_verifier_unavailable',
+      'error',
+      'A separate script note mentions structured_result_shape typed-root caller misuse.',
+    )).toBe('transient');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'code:run',
+      errorCode: 'structured_result_shape',
+      status: 'error',
+      message: mixedMessage,
+      reproduced: true,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'The code:run result is the dev:session_detail typed root.',
+        actual: 'The script attempted to read an MCP content/text envelope.',
+      },
+    }).class).toBe('caller');
+  });
+
   it('keeps invalid MCP credentials caller-side but classifies native verifier unavailability as transient', () => {
     expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_invalid_bearer')).toBe('caller');
     expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
@@ -908,6 +934,17 @@ describe('SQL generators are driven by the table (structural check; real-PG pari
     expect(sqlCase).toContain('error_code = ANY');
     expect(sqlCase).toContain('exceeded timeout');
     expect(sqlCase).toContain('openai_embed_failed_429');
+  });
+
+  it('emits the specific structured-result code before the verifier message branch', () => {
+    const sqlCase = toolErrorClassSqlCase(fakeSql);
+    const structuredResultCode = sqlCase.indexOf('error_code = ANY({structured_result_shape}');
+    const verifierMessage = sqlCase.indexOf(
+      'error_message ~* (^|[^A-Za-z0-9_])superuser_native_session_verifier_unavailable',
+    );
+
+    expect(structuredResultCode).toBeGreaterThanOrEqual(0);
+    expect(verifierMessage).toBeGreaterThan(structuredResultCode);
   });
 
   it('toolErrorFingerprintSqlCase fingerprints exactly the FINGERPRINTED classes', () => {

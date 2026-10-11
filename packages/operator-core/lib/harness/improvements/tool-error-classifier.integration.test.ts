@@ -44,6 +44,33 @@ afterAll(async () => {
 });
 
 describe('generated SQL CASE ↔ classifyToolError parity (P-011)', () => {
+  it('prefers the primary exact error code over a conflicting secondary message match', async () => {
+    const sql = db.adminSql;
+    const rows = await sql<{ ord: number; error_code: string; klass: string }[]>`
+      SELECT mixed.ord, mixed.error_code, ${toolErrorClassSqlCase(sql)} AS klass
+        FROM (VALUES
+          (
+            1,
+            'structured_result_shape'::text,
+            'error'::text,
+            'code:run returned a typed root; secondary text: superuser_native_session_verifier_unavailable'::text
+          ),
+          (
+            2,
+            'superuser_native_session_verifier_unavailable'::text,
+            'error'::text,
+            'secondary script text mentions structured_result_shape typed root'::text
+          )
+        ) AS mixed(ord, error_code, status, error_message)
+       ORDER BY mixed.ord
+    `;
+
+    expect(rows).toEqual([
+      { ord: 1, error_code: 'structured_result_shape', klass: 'caller' },
+      { ord: 2, error_code: 'superuser_native_session_verifier_unavailable', klass: 'transient' },
+    ]);
+  });
+
   it('classifies every corpus row identically in SQL and TS', async () => {
     const sql = db.adminSql;
     const rows = await sql<{ idx: number; error_code: string | null; status: string; error_message: string | null; klass: string }[]>`

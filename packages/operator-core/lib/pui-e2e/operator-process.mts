@@ -5,24 +5,18 @@
 import { createAdaptorServer } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { Session as InspectorSession } from 'node:inspector';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SuSessionHost } from '../su-session-host';
-
-// These workspace TypeScript entrypoints are CommonJS under tsx. Resolve
-// their exports with Node's CJS loader rather than relying on named-export
-// inference across an ESM child-process entrypoint.
-const require = createRequire(import.meta.url);
-const { app } =
-  require('../../../../apps/operator/bin/host-app') as typeof import('../../../../apps/operator/bin/host-app');
-const { getRegisteredSuSessionHost } = require('../su-session-host') as typeof import('../su-session-host');
-const { getAdvSession } = require('../adv-sessions') as typeof import('../adv-sessions');
-const { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } =
-  require('@papercusp/chat-protocol') as typeof import('@papercusp/chat-protocol');
-const { observeAttachResponse } = require('./attach-observation') as typeof import('./attach-observation');
+// Use the production host builder's module graph. Opaque createRequire loads
+// would escape the bundle and resolve relative to its private output directory.
+import { app } from '../../../../apps/operator/bin/host-app';
+import { getRegisteredSuSessionHost } from '../su-session-host';
+import { getAdvSession } from '../adv-sessions';
+import { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } from '@papercusp/chat-protocol';
+import { observeAttachResponse } from './attach-observation';
 
 if (
   !process.send ||

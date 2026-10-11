@@ -50,6 +50,7 @@ import { join, basename } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listAllProjectedTools } from '@papercusp/tooldef';
+import { PAPERCUSP_MCP_SERVER_NAMES } from '../papercusp-mcp-servers';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
@@ -1859,8 +1860,9 @@ function addSessionPartToolAlias(
 }
 
 /**
- * Resolve the two client-mangled Papercusp MCP spellings persisted by Codex
- * and Claude to the live projected catalog's canonical `group:verb` name.
+ * Resolve the client-mangled Papercusp MCP spellings persisted by Codex and
+ * Claude (one each per server name in `PAPERCUSP_MCP_SERVER_NAMES`) to the
+ * live projected catalog's canonical `group:verb` name.
  *
  * This is intentionally NOT `normalizeMcpName`: that helper is tolerant for
  * dispatch and can turn an unknown or separator-ambiguous transcript value
@@ -1890,25 +1892,29 @@ function sessionPartToolAliases(
   const ambiguous = new Set<string>();
   for (const entry of catalog) {
     const canonical = entry.expose?.mcp?.name;
-    // Plugin projections use their own namespaced forms; the two aliases this
+    // Plugin projections use their own namespaced forms; the aliases this
     // repair covers are the core `group:verb` MCP projections only.
     if (typeof canonical !== 'string' || !canonical.includes(':')) continue;
 
-    // Claude's mcp wrapper removes `:` but preserves `-`; Codex's function
-    // name sanitizer removes both separators before parseCodexParts joins the
-    // namespace and function with a dot.
-    addSessionPartToolAlias(
-      aliases,
-      ambiguous,
-      `mcp__papercusp-su__${canonical.replace(/:/g, '_')}`,
-      canonical,
-    );
-    addSessionPartToolAlias(
-      aliases,
-      ambiguous,
-      `mcp__papercusp_su.${canonical.replace(/[:-]/g, '_')}`,
-      canonical,
-    );
+    // One Claude and one Codex spelling per server name the writers register
+    // under (`papercusp` for spawned agents, `papercusp-su` for interactive su).
+    // Claude's mcp wrapper removes `:` but preserves `-` in both server and
+    // tool; Codex's sanitizer turns `-` into `_` in both before
+    // parseCodexParts joins namespace and function with a dot.
+    for (const server of PAPERCUSP_MCP_SERVER_NAMES) {
+      addSessionPartToolAlias(
+        aliases,
+        ambiguous,
+        `mcp__${server}__${canonical.replace(/:/g, '_')}`,
+        canonical,
+      );
+      addSessionPartToolAlias(
+        aliases,
+        ambiguous,
+        `mcp__${server.replace(/-/g, '_')}.${canonical.replace(/[:-]/g, '_')}`,
+        canonical,
+      );
+    }
   }
   return aliases;
 }

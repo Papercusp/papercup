@@ -146,6 +146,7 @@
     "archiveSha256": "6d98c2ef536329b2feb3fb00fac6b881a8e9f3e8f1dffc5229c0bc0f33127964",
     "failedRun": {
       "taskId": "0mv43457r1b0r4hzcza",
+      "testRunId": 21091790,
       "logPath": ".papercusp/scratch/bash-c21b7bb6-92b.log",
       "logSha256": "41566cb1953f16738e4aee889dba0adb8ec6627ae1aca6315d9c6e68c256f4ac",
       "terminalAt": "2026-10-11T17:21:54.799Z",
@@ -170,14 +171,33 @@
       "testName": "operator OS cold startup verifies identity before native launch",
       "checks": "Both observer conditions must finish the installed client's own accounts:status request with wall time and measured HTTP loop delay below 3000ms; no REST prewarming or native launch.",
       "taskId": "0mv43udy21yvq76y63p",
+      "testRunId": 21098100,
       "logPath": ".papercusp/scratch/bash-ed82bef9-c65.log",
+      "logSha256": "29b3a34152fb3566bf624f28873fcc9aa277caa8099a603c2ad33aafd9af840f",
       "state": "terminal failed exit 1 at 2026-10-11T17:42:39.962Z; both cold controls selected, 2 failed / 92 skipped; initial identity and account-status complete but remaining startup loop stalls exceed the guard",
       "observations": [
         { "observer": false, "initialIdentityMs": 34, "accountStatusMs": 94, "accountStatusCode": 200, "eventLoopMaxMs": 7683.964927 },
         { "observer": true, "initialIdentityMs": 39, "accountStatusMs": 151, "accountStatusCode": 200, "eventLoopMaxMs": 6144.655359 }
       ],
-      "remainingCpuAttribution": "New profiles locate synchronous ESM waits in plans:attention's readInbox/readAckedMsgIds lazy import and telemetry defaultGoalRehydrator. Cycle-safe repair remains open.",
+      "remainingCpuAttribution": "New profiles locate synchronous ESM waits in plans:attention's readInbox/readAckedMsgIds lazy import and telemetry defaultGoalRehydrator. Redundant attention imports are removed; intentional telemetry cycles remain lazy. The acceptance fixture is being aligned with the served operator's bundled loader.",
+      "profiles": [
+        { "path": "/tmp/pui-acceptance-7534f/cold-identity-repair-20261011-1736/timing/operator-1749256-97efea1f-7855-46bd-9fea-3381130cdc5d.json", "sha256": "efd011a59fa336962ddd95c7a497134c1022af75708270c440cc13da6fc244a2" },
+        { "path": "/tmp/pui-acceptance-7534f/cold-identity-repair-20261011-1736/timing/operator-1860399-d6fc9b9e-7403-4061-ac58-c127fd93caee.json", "sha256": "d2c0f7413ec58c47669726b1fbfda9b9131acb453996ec0af40aeeb161d36390" }
+      ],
       "detectorCorrection": "Wait only for request completion; assert its immutable wall/loop measurements once, without retrying a historical maximum for 40 seconds."
+    },
+    "bundledRecurrence": {
+      "rootCause": "The private acceptance child used tsx source loading while the served operator uses the maintained esbuild bundle under plain Node; source-loader stalls are not proof of a shipped bundled-host stall.",
+      "productionSource": "apps/operator/scripts/systemd/papercup-staging-api.service.d/95-bundled-entry.conf",
+      "builder": "apps/operator/bin/bundle-host.sh",
+      "sharedBuildInputs": "apps/operator/bin/bundle-host-common.sh",
+      "fixtureEntry": "packages/operator-core/lib/pui-e2e/operator-process.mts",
+      "repair": "Reuse the existing fixture bundle helper and production builder; static imports let the builder inline app, host registry and observation into one graph; fork with no tsx loader and emit the exact bundle hash.",
+      "taskId": "0mv44noa4xkyul619i5",
+      "logPath": ".papercusp/scratch/bash-22f1a53d-149.log",
+      "deadline": "2026-10-11T18:14:10.304Z",
+      "state": "running; process identity/cgroup liveness and advancing runner output verified; terminal result not yet adopted",
+      "limitations": "Both cold controls only; no native launch, approval, restart or immutable full-candidate verdict."
     },
     "repairSourceSha256": {
       "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts": "8f0a9b2e44a550dcc4fda414f22f25bcbb8511089084c4b404a3e420a83133b2",

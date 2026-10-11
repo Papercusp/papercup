@@ -145,11 +145,17 @@ export const INFRA_TRANSIENT_MESSAGE_PATTERN =
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.
- * The precedence mirrors the historical hand-written logic exactly, with the
- * one intended correction that an `invalid_args:`-prefixed message classifies
- * `caller` regardless of its error_code (the drift that motivated P-011).
+ * Keep the specific structured_result_shape code ahead of generic transient
+ * prose, while leaving mcp_auth_failed later so a specific verifier diagnostic
+ * can still refine that wrapper code. The P-011 invalid_args message rule also
+ * handles generic handler_error rows.
  */
 export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
+  {
+    class: 'caller',
+    errorCodes: ['structured_result_shape'],
+    why: 'code:run diagnosed a script reading an MCP content envelope instead of the returned typed root; this specific caller code must outrank unrelated secondary error text',
+  },
   {
     class: 'transient',
     errorCodes: ['timeout'],
@@ -175,7 +181,6 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'compile_error',
       'quota_exceeded', 'harness_required', 'checkpoint_conflict', 'checkpoint_replace_would_drop_rows',
       'checkpoint_merge_would_evict_rows',
-      'structured_result_shape',
       'flush-required', 'rubric-not-found', 'reviewer_model_not_allowed',
       'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
       'tenant_scope_required', 'positive_control_tenant_scope_required',
@@ -299,7 +304,7 @@ function compileRulePatterns(): { rule: ToolErrorRule; re: RegExp | null }[] {
 const COMPILED_RULES = compileRulePatterns();
 
 /**
- * Pure: classify one tool failure by walking `TOOL_ERROR_RULES` in order and
+ * Pure: classify one tool failure by walking the shared table in order and
  * returning the first rule whose error_code / status / message matches; falls
  * back to `structural`. This is the TS half of the single source — the SQL CASE
  * (`toolErrorClassSqlCase`) is generated from the same table.
