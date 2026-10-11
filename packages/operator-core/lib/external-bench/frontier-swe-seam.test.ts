@@ -77,6 +77,84 @@ describe('makeFrontierSweCloneGradeSeam', () => {
     expect(calls.find((c) => c[0] === 'run')).toContain('--gpus');
   });
 
+  it('an oracle clone puts HARBOR_ORACLE_FLAG in the container env at `docker run` so the image entrypoint runs its oracle stage', async () => {
+    const { exec, calls } = fakeDocker({});
+    await makeFrontierSweCloneGradeSeam({ version: 'v', exec, oracle: true, oracleFlag: 'f00dfeed' }).clone(task());
+    const run = calls.find((c) => c[0] === 'run')!;
+    const i = run.indexOf('HARBOR_ORACLE_FLAG=f00dfeed');
+    expect(i).toBeGreaterThan(0);
+    expect(run[i - 1]).toBe('-e');
+    expect(i).toBeLessThan(run.indexOf('sleep')); // a `docker run` option, not an argument to the command
+  });
+
+  it('a non-oracle clone (agent rollout / empty control) never carries the oracle flag, even if one is configured', async () => {
+    for (const cfg of [{}, { oracle: false, oracleFlag: 'f00dfeed' }, { oracle: true }]) {
+      const { exec, calls } = fakeDocker({});
+      await makeFrontierSweCloneGradeSeam({ version: 'v', exec, ...cfg }).clone(task());
+      expect(calls.find((c) => c[0] === 'run')!.join(' ')).not.toContain('HARBOR_ORACLE');
+    }
+  });
+
+  describe('agent-container network policy (WI-6554700010008591)', () => {
+    const runOf = async (over: Record<string, unknown>, cfg: { allowlistNetwork?: string } = {}) => {
+      const { exec, calls } = fakeDocker({});
+      await makeFrontierSweCloneGradeSeam({ version: 'v', exec, ...cfg }).clone(task(over));
+      return calls.find((c) => c[0] === 'run')!;
+    };
+    /** The value of a `docker run` option, asserting it precedes the image (an option, not a command argument). */
+    const optionValue = (run: string[], flag: string, image = 'ghcr.io/proximal-labs/frontier-swe/cranelift-codegen-opt:v6') => {
+      const i = run.indexOf(flag);
+      if (i < 0) return undefined;
+      expect(i).toBeLessThan(run.indexOf(image));
+      return run[i + 1];
+    };
+
+    it("a v2 'no-network' task's agent container has no network", async () => {
+      const run = await runOf({ networkMode: 'no-network' });
+      expect(optionValue(run, '--network')).toBe('none');
+      expect(run).toContain('PX_TASK_NETWORK_MODE=no-network');
+    });
+
+    it("a v2 'allowlist' task gets NO egress by default — the host-side model loop needs no model host in the container", async () => {
+      const run = await runOf({ networkMode: 'allowlist' });
+      expect(optionValue(run, '--network')).toBe('none');
+      expect(run).toContain('PX_TASK_NETWORK_MODE=allowlist');
+    });
+
+    it("an arm that runs its model client in-container attaches the supplied egress-restricted network for 'allowlist'", async () => {
+      const run = await runOf({ networkMode: 'allowlist' }, { allowlistNetwork: 'bench-model-egress' });
+      expect(optionValue(run, '--network')).toBe('bench-model-egress');
+      // ...but never for a 'no-network' task: the allowlist network is still egress.
+      const offline = await runOf({ networkMode: 'no-network' }, { allowlistNetwork: 'bench-model-egress' });
+      expect(optionValue(offline, '--network')).toBe('none');
+    });
+
+    it('a task with no declared mode (v1 history) keeps its historical run: no network flag, no PX_TASK env', async () => {
+      for (const over of [{}, { networkMode: null }]) {
+        const run = await runOf(over);
+        expect(run).not.toContain('--network');
+        expect(run.join(' ')).not.toContain('PX_TASK_NETWORK_MODE');
+      }
+    });
+
+    it('fails CLOSED: an unknown or malformed declared mode throws and never starts an unrestricted container', async () => {
+      for (const networkMode of ['public', 'host', '', 7]) {
+        const { exec, calls } = fakeDocker({});
+        await expect(makeFrontierSweCloneGradeSeam({ version: 'v', exec }).clone(task({ networkMode }))).rejects.toThrow(/network/);
+        expect(calls.some((c) => c[0] === 'run')).toBe(false);
+      }
+    });
+
+    it('refuses extraRunArgs that would override the network policy', () => {
+      const { exec } = fakeDocker({});
+      for (const flag of [['--network', 'host'], ['--network=bridge'], ['--net', 'host'], ['--net=host']]) {
+        expect(() => makeFrontierSweCloneGradeSeam({ version: 'v', exec, extraRunArgs: ['--cpus', '8', ...flag] })).toThrow(/network/);
+      }
+      // A non-network flag that merely contains the substring is fine.
+      expect(() => makeFrontierSweCloneGradeSeam({ version: 'v', exec, extraRunArgs: ['--network-alias', 'x'] })).not.toThrow();
+    });
+  });
+
   it('clone throws on a missing image or a failed docker run', async () => {
     const { exec } = fakeDocker({});
     const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec });

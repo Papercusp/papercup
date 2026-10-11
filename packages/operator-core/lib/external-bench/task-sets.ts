@@ -32,6 +32,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { BenchTask } from './types';
+import { admitByFrontierSweControls, frontierSweV2ControlsPath, readFrontierSweControlLedger } from './frontier-swe-control-ledger';
 import { SWE_BENCH_PRO_V1_PIN } from './swe-bench-pro-pin';
 import { gaiaTaskToBenchTask, loadGaiaValidation } from './gaia/dataset';
 import { gdpvalPilotSubset, gdpvalTaskToBenchTask, loadGdpvalTasks } from './gdpval/dataset';
@@ -838,8 +839,17 @@ export function frontierSweTaskSetVersion(taskSetId: string): 'v1' | 'v2' | null
  * - v2 (`frontier-swe-v2*`): `frontier-swe-v2` = the full corpus; `frontier-swe-v2-pilot` = one distinct task
  *   per upstream suite category ({@link frontierSweV2PilotStrata}); `frontier-swe-v2-cpu` = no GPU and no external
  *   service ({@link frontierSweCpuRunnable}); `frontier-swe-v2-custom` = `taskIds`.
+ *
+ * Every v2 set is then CONTROL-GATED (P-007, FSWE-P007-GOLD / FSWE-P007-EMPTY): a task is kept only if the
+ * published control ledger ({@link frontierSweV2ControlsPath}) shows a full-reward gold and a zero empty control at
+ * its own corpus commit + image ({@link admitByFrontierSweControls}). `opts.controls: 'ignore'` is for the controls
+ * runner alone — it must load the tasks it is about to measure. v1 history is never gated.
  */
-export function loadFrontierSweTaskSet(taskSetId: string, taskIds?: string[]): BenchTask[] {
+export function loadFrontierSweTaskSet(
+  taskSetId: string,
+  taskIds?: string[],
+  opts: { controls?: 'enforce' | 'ignore' } = {},
+): BenchTask[] {
   const version = frontierSweTaskSetVersion(taskSetId);
   if (!version) throw new Error(`"${taskSetId}" is not a FrontierSWE task set`);
   const rows = readFrontierSweJsonl(version === 'v2' ? frontierSweV2TaskSetPath() : frontierSweTaskSetPath(), version);
@@ -859,6 +869,19 @@ export function loadFrontierSweTaskSet(taskSetId: string, taskIds?: string[]): B
     if (want.size === 0) throw new Error(`task set "${taskSetId}" requires a non-empty taskIds list`);
     tasks = tasks.filter((t) => want.has(t.instanceId));
     if (tasks.length === 0) throw new Error(`no tasks in the ${label} corpus matched the custom taskIds`);
+  }
+  if (version === 'v2' && (opts.controls ?? 'enforce') === 'enforce') {
+    const ledgerPath = frontierSweV2ControlsPath();
+    const { admitted, excluded } = admitByFrontierSweControls(tasks, readFrontierSweControlLedger(ledgerPath));
+    if (admitted.length === 0) {
+      const sample = excluded.slice(0, 3).map((x) => `${x.instanceId}: ${x.reasons.join('+')}`).join('; ');
+      throw new Error(
+        `no ${label} task in "${taskSetId}" has a full-reward gold and a zero empty control at its corpus version ` +
+          `(${excluded.length} excluded — ${sample}). Run scripts/frontier-swe-controls.ts and publish its results.jsonl ` +
+          `rows to ${ledgerPath} (P-007, FSWE-P007-GOLD / FSWE-P007-EMPTY).`,
+      );
+    }
+    tasks = admitted;
   }
   return tasks;
 }

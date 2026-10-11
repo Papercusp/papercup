@@ -46,8 +46,19 @@ export interface FrontierSweSeamConfig {
    * Required with `oracle` for v2 tasks (the verifier refuses to treat the run as gold without it).
    */
   oracleFlag?: string;
-  /** Extra `docker run` flags (e.g. resource limits) the driver wants applied uniformly. Default none. */
+  /**
+   * Extra `docker run` flags (e.g. resource limits) the driver wants applied uniformly. Default none. A network
+   * flag here is REFUSED: the agent container's network is the task's declared policy
+   * ({@link frontierSweAgentNetworkArgs}), never a per-driver override.
+   */
   extraRunArgs?: string[];
+  /**
+   * The docker network to attach an agent container to for a v2 `network_mode = "allowlist"` task, for an arm
+   * that runs its model client INSIDE the container. It must already restrict egress to the model endpoints —
+   * the seam neither creates nor audits it. Unset (the default, and correct for the host-side model loop in
+   * frontier-swe-runagent.ts) → `--network none`.
+   */
+  allowlistNetwork?: string;
   /**
    * The vendored v1 Proximal-Labs/frontier-swe checkout (default PAPERCUSP_FRONTIER_SWE_DIR). For a v1 (shared)
    * task the seam `docker cp`s `<repoDir>/tasks/<id>/tests` into the container at `/tests` at GRADE time (and
@@ -97,7 +108,44 @@ export async function checkFrontierSweIntegrity(
 }
 
 /** Build FrontierSWE's CloneGradeSeam — supplied once to the shared topology runtime; every arm uses it identically. */
+/** A `docker run` flag that would set or add a network — the policy below owns that decision. */
+const NETWORK_FLAG = /^--net(work)?(=|$)/;
+
+/**
+ * The agent container's network flags for one task (WI-6554700010008591). A v2 task declares
+ * `[environment].network_mode`, and upstream (px-eval / Harbor) enforces it on the agent sandbox:
+ *
+ *   - `no-network` → no egress at all.
+ *   - `allowlist`  → egress ONLY to the configured model endpoints. Every allowlist task's preflight asserts that
+ *     google.com, github.com and the task's own toolchain origin are UNREACHABLE, so an open container both
+ *     breaks that contract and lets an agent fetch answers or toolchains the task deliberately baked offline.
+ *
+ * frontier-swe-runagent.ts runs the model loop on the HOST (the gateway) and only `docker exec`s tools into the
+ * container, so the container needs no model host: `--network none` satisfies `allowlist` (zero hosts is a subset
+ * of the allowlist). An arm that runs a model client INSIDE the container passes `allowlistNetwork` instead.
+ *
+ * Fail closed: a declared mode this function does not know THROWS — never a silent unrestricted run. A task with
+ * no declared mode (v1 history rows) keeps its historical unrestricted run. `PX_TASK_NETWORK_MODE` mirrors
+ * px-eval's sandbox env so the image's own preflight checks the same policy we applied.
+ */
+export function frontierSweAgentNetworkArgs(task: BenchTask, opts: { allowlistNetwork?: string } = {}): string[] {
+  const raw = task.graderMeta?.['networkMode'];
+  if (raw === undefined || raw === null) return [];
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    throw new Error(`FrontierSWE clone: task ${task.instanceId} has a malformed networkMode (${JSON.stringify(raw)}) — refusing to guess a network policy`);
+  }
+  const mode = raw.trim();
+  const env = ['-e', `PX_TASK_NETWORK_MODE=${mode}`];
+  if (mode === 'no-network' || mode === 'none') return ['--network', 'none', ...env];
+  if (mode === 'allowlist') return ['--network', opts.allowlistNetwork?.trim() || 'none', ...env];
+  throw new Error(`FrontierSWE clone: task ${task.instanceId} declares network_mode '${mode}', which this seam cannot enforce — refusing an unrestricted run`);
+}
+
 export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): CloneGradeSeam<FrontierSweEnvHandle> {
+  const netOverride = cfg.extraRunArgs?.find((a) => NETWORK_FLAG.test(a));
+  if (netOverride) {
+    throw new Error(`FrontierSWE seam: extraRunArgs may not set the network (${netOverride}) — the task's declared network_mode decides it`);
+  }
   const exec = cfg.exec ?? liveProcExec;
   const grader = makeFrontierSweGrader(
     {
@@ -116,9 +164,16 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
       const image = task.graderMeta?.['dockerImage'] as string | undefined;
       if (!image) throw new Error(`FrontierSWE clone: task ${task.instanceId} has no dockerImage in graderMeta`);
       const gpus = Number(task.graderMeta?.['gpus'] ?? 0);
-      const runArgs = ['run', '-d'];
+      const runArgs = ['run', '-d', ...frontierSweAgentNetworkArgs(task, { allowlistNetwork: cfg.allowlistNetwork })];
       if (gpus > 0) runArgs.push('--gpus', 'all');
       if (cfg.extraRunArgs?.length) runArgs.push(...cfg.extraRunArgs);
+      // v2 oracle stage: every v2 image's ENTRYPOINT (entrypoint.sh, run once at container init) gates its oracle
+      // setup on HARBOR_ORACLE_FLAG — it creates an agent-owned /solution and, for some tasks, stages reference
+      // material there (fitness-recap copies /root/tests/reference/src → /solution/reference-src, which solve.sh
+      // then needs). px-eval sets the flag in the SANDBOX env, so it must be on `docker run`, not only on the
+      // solve.sh exec; without it the gold control fails on missing reference material, not on the solution.
+      // Agent rollouts (oracle=false) never carry it, so they never see a /solution.
+      if (cfg.oracle && cfg.oracleFlag) runArgs.push('-e', `HARBOR_ORACLE_FLAG=${cfg.oracleFlag}`);
       // Keep the container alive so the topology runtime can exec the agent into the baked-in /app workspace.
       runArgs.push(image, 'sleep', 'infinity');
       const r = await exec('docker', runArgs);

@@ -17,6 +17,7 @@ import {
 } from './task-sets';
 import { loadBenchTaskSet } from './task-sets';
 import { FRONTIER_SWE_V2_SUITE_CATEGORIES as INGEST_SUITE_CATEGORIES } from './frontier-swe-ingest';
+import { admitByFrontierSweControls, readFrontierSweControlLedger } from './frontier-swe-control-ledger';
 
 const V2_COMMIT = 'da83f84f8fbcec3cbf0f2b17c98ebc811355c2df';
 const v2Row = (o: Partial<FrontierSweTaskRow> & Pick<FrontierSweTaskRow, 'instanceId' | 'suiteCategories'>): FrontierSweTaskRow => ({
@@ -124,13 +125,43 @@ const writeJsonl = (name: string, rows: FrontierSweTaskRow[]) => {
   return path;
 };
 
+const prevControlsEnv = process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL;
+
+/** A control row as scripts/frontier-swe-controls.ts writes it, at the fixture's own version by default. */
+const control = (
+  row: FrontierSweTaskRow,
+  mode: 'gold' | 'empty',
+  score: number | null,
+  o: { graderStatus?: string; finishedAt?: string; corpusCommit?: string; dockerImage?: string } = {},
+) => ({
+  instanceId: row.instanceId,
+  mode,
+  graderStatus: o.graderStatus ?? (score === null ? 'error' : score >= 1 ? 'passed' : 'failed'),
+  score,
+  finishedAt: o.finishedAt ?? '2026-10-11T16:00:00.000Z',
+  corpusCommit: o.corpusCommit ?? row.upstreamCommit,
+  dockerImage: o.dockerImage ?? row.dockerImage,
+});
+const passingControls = (rows: FrontierSweTaskRow[]) => rows.flatMap((r) => [control(r, 'gold', 1), control(r, 'empty', 0)]);
+const writeControls = (rows: unknown[]) => {
+  const path = join(dir, `controls-${Math.random().toString(36).slice(2)}.jsonl`);
+  writeFileSync(path, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL = path;
+  return path;
+};
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'frontier-swe-ts-'));
   process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL = writeJsonl('tasks.jsonl', ROWS);
   process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_JSONL = writeJsonl('tasks-v2.jsonl', V2_ROWS);
+  // Every v2 set is control-gated (P-007): the shared fixture publishes passing controls for every v2 row so the
+  // set-shape tests below test set shape; the control-gating block replaces the ledger per case.
+  writeControls(passingControls(V2_ROWS));
 });
 
 afterEach(() => {
+  if (prevControlsEnv === undefined) delete process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL;
+  else process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL = prevControlsEnv;
   rmSync(dir, { recursive: true, force: true });
   if (prevEnv === undefined) delete process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL;
   else process.env.PAPERCUSP_BENCH_FRONTIER_SWE_JSONL = prevEnv;
@@ -344,5 +375,73 @@ describe('FrontierSWE v2 task sets (plan benchmark-coverage-frontierswe-v2-2026-
     for (const s of knownTaskSets().filter((x) => x.id.startsWith('frontier-swe'))) {
       expect(s.label).not.toMatch(/\b\d+ (ultra-long-horizon )?tasks\b/);
     }
+  });
+});
+
+describe('FrontierSWE v2 control gating (P-007: FSWE-P007-GOLD@1, FSWE-P007-EMPTY@1, acceptance R-5)', () => {
+  const [A, B, C] = V2_ROWS; // vis-impl, impl-only, sci — all CPU-runnable
+  const others = V2_ROWS.slice(3);
+  const ids = (setId = 'frontier-swe-v2') => loadFrontierSweTaskSet(setId).map((t) => t.instanceId);
+
+  it('FSWE-P007-GOLD: a task whose gold control scores below full reward is not in any scored v2 set', () => {
+    writeControls([...passingControls(others), ...passingControls([B, C]), control(A, 'gold', 0.98), control(A, 'empty', 0)]);
+    expect(ids()).not.toContain(A.instanceId);
+    expect(ids('frontier-swe-v2-cpu')).not.toContain(A.instanceId);
+    expect(ids()).toEqual(expect.arrayContaining([B.instanceId, C.instanceId]));
+  });
+
+  it('FSWE-P007-EMPTY: a task whose empty control earns any reward is not in any scored v2 set', () => {
+    writeControls([...passingControls(others), ...passingControls([A, C]), control(B, 'gold', 1), control(B, 'empty', 0.01)]);
+    expect(ids()).not.toContain(B.instanceId);
+    expect(() => loadFrontierSweTaskSet('frontier-swe-v2-custom', [B.instanceId])).toThrow(/impl-only: empty-above-zero/);
+  });
+
+  it('R-5: a task with no control evidence, or only an errored control, stays out (fail closed)', () => {
+    writeControls([...passingControls(others), control(A, 'gold', 1) /* no empty row */, control(B, 'gold', null), control(B, 'empty', 0)]);
+    const got = ids();
+    for (const t of [A, B, C]) expect(got).not.toContain(t.instanceId);
+    const { excluded } = admitByFrontierSweControls(
+      [A, B, C].map(frontierSweRowToBenchTask),
+      readFrontierSweControlLedger(process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL!),
+    );
+    expect(excluded.map((x) => [x.instanceId, x.reasons])).toEqual([
+      [A.instanceId, ['no-empty-control']],
+      [B.instanceId, ['gold-control-error']],
+      [C.instanceId, ['no-gold-control', 'no-empty-control']],
+    ]);
+  });
+
+  it('evidence counts only at the task’s own version: another corpus commit or image is no evidence', () => {
+    writeControls([
+      ...passingControls([B, C, ...others]),
+      control(A, 'gold', 1, { corpusCommit: 'f'.repeat(40) }),
+      control(A, 'empty', 0, { dockerImage: `${A.dockerImage.split('@')[0]}@sha256:${'c'.repeat(64)}` }),
+    ]);
+    expect(ids()).not.toContain(A.instanceId);
+  });
+
+  it('the latest re-run of a control supersedes the earlier verdict, in either direction', () => {
+    const base = passingControls([B, C, ...others]);
+    writeControls([...base, control(A, 'gold', 0, { finishedAt: '2026-10-11T16:43:00Z' }), control(A, 'gold', 1, { finishedAt: '2026-10-11T17:30:00Z' }), control(A, 'empty', 0)]);
+    expect(ids()).toContain(A.instanceId);
+    writeControls([...base, control(A, 'gold', 1, { finishedAt: '2026-10-11T16:43:00Z' }), control(A, 'gold', 0.5, { finishedAt: '2026-10-11T17:30:00Z' }), control(A, 'empty', 0)]);
+    expect(ids()).not.toContain(A.instanceId);
+  });
+
+  it('with no ledger at all, a scored v2 set refuses to load and names the ledger to publish', () => {
+    process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL = join(dir, 'absent-controls.jsonl');
+    expect(() => loadFrontierSweTaskSet('frontier-swe-v2-cpu')).toThrow(/absent-controls\.jsonl.*FSWE-P007-GOLD/);
+  });
+
+  it("controls:'ignore' (the controls runner) loads tasks regardless of their controls; v1 history is never gated", () => {
+    process.env.PAPERCUSP_BENCH_FRONTIER_SWE_V2_CONTROLS_JSONL = join(dir, 'absent-controls.jsonl');
+    expect(loadFrontierSweTaskSet('frontier-swe-v2-cpu', undefined, { controls: 'ignore' })).toHaveLength(5);
+    expect(loadFrontierSweTaskSet('frontier-swe')).toHaveLength(ROWS.length);
+  });
+
+  it('a corrupt ledger line throws instead of silently becoming missing evidence', () => {
+    const path = writeControls(passingControls(V2_ROWS));
+    writeFileSync(path, '{"instanceId":"vis-impl","mode":"gold"\n', { flag: 'a' });
+    expect(() => loadFrontierSweTaskSet('frontier-swe-v2')).toThrow(/controls-.*\.jsonl:\d+ is not JSON/);
   });
 });
