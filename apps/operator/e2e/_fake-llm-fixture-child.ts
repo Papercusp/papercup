@@ -1,7 +1,7 @@
 import { loadHarnessRegistry } from '../../../packages/operator-core/lib/harness-registry';
 import { runAcceptanceBarMigrationInDatabase } from '../../../packages/operator-core/lib/acceptance-bar-migration';
 import { checkPlanStartable } from '../../../packages/operator-core/lib/agent-tools/plans/plan-start-gate';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, getOrgPgApp } from '@papercusp/db-org';
 
 // Compiled by the maintained host recipe before the disposable rig boots.
 // No runtime TS loader or handwritten replacement for the migration/gate.
@@ -36,11 +36,24 @@ try {
     throw new Error('Unknown isolated fixture operation');
   }
 } finally {
-  await sql.end();
+  console.error('plan-fixture stage=pools:end:start');
+  // The canonical migration uses withWorkspace(), whose default connection
+  // is the distinct org-app singleton. This one-shot child owns both pools;
+  // ending only the admin pool leaves the migration's app sockets alive.
+  await Promise.all([
+    sql.end(),
+    ...(operation === 'plan' ? [getOrgPgApp().sql.end()] : []),
+  ]);
+  console.error('plan-fixture stage=pools:end:done resources=' + JSON.stringify(process.getActiveResourcesInfo()));
+  // This diagnostic cannot keep the child alive. If it fires, some other
+  // referenced resource survived the pool we actually closed.
+  setTimeout(() => {
+    console.error('plan-fixture stage=post-cleanup resources=' + JSON.stringify(process.getActiveResourcesInfo()));
+  }, 1000).unref();
 }
 }
 
-void main().catch(error => {
+export const fixtureChildCompletion = main().catch(error => {
   console.error(error);
   process.exitCode = 1;
 });
