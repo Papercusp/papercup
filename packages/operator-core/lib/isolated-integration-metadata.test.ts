@@ -3,13 +3,14 @@ import { expect, it, vi } from 'vitest';
 import { ChildProcess, execFileSync, fork, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
 import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
-import { portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot } from '../test/private-http-workspace-preflight';
+import { createPrivateHealthSnapshot, portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle, resolvePreparedPrivateApiBundle } from '../test/private-http-workspace-preflight';
+import { PANEL_ORDER } from './system-health/types';
 import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
@@ -85,6 +86,45 @@ it('selects exact HUD workspace reads among global subscriptions and rejects mis
     .toThrow('foreign owner');
   // Reload evidence must stand alone; the prior epoch cannot rescue a global-only reload.
   expect(() => verifyPrivateHudCapturedRoster([scoped, global].slice(1), scope)).toThrow('exact workspace');
+});
+
+it('builds complete private Health seeds with isolated selected and foreign markers', () => {
+  const selected = createPrivateHealthSnapshot('selected-workspace', false, 123);
+  const foreign = createPrivateHealthSnapshot('foreign-workspace', true, 123);
+  expect(Object.keys(selected.panels).sort()).toEqual([...PANEL_ORDER].sort());
+  expect(Object.keys(foreign.panels).sort()).toEqual([...PANEL_ORDER].sort());
+  expect(selected).toMatchObject({ workspaceId: 'selected-workspace', evaluatedAt: 123, overall: 'warn' });
+  expect(selected.panels.workItems).toMatchObject({ key: 'workItems', status: 'warn', summary: 'private-health-selected',
+    data: null, link: { href: '/adv?tab=harnesses' } });
+  expect(selected.panels.plans).toMatchObject({ status: 'warn', summary: 'private-health-neighbor' });
+  expect(selected.panels.deploy).toMatchObject({ status: 'unknown', summary: 'private-health-unmeasured' });
+  expect(foreign.workspaceId).toBe('foreign-workspace');
+  expect(Object.values(foreign.panels).map(panel => panel.summary)).toEqual(PANEL_ORDER.map(() => 'private-health-foreign'));
+});
+
+it('rejects an incomplete API graph before private allocation and reuses only the exact prepared artifact', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-api-preflight-'));
+  const bin = join(root, 'apps/operator/bin');
+  const prepare = join(root, 'proof/prepare'), execute = join(root, 'proof/execute');
+  try {
+    mkdirSync(bin, { recursive: true }); mkdirSync(prepare, { recursive: true });
+    symlinkSync(resolve(import.meta.dirname, '../../../node_modules'), join(root, 'node_modules'), 'dir');
+    // The same executable build boundary, with a tiny real esbuild graph.
+    writeFileSync(join(bin, 'bundle-host.sh'), `cd "$(dirname "$0")/.."\nnode -e 'require("esbuild").buildSync({entryPoints:[process.argv[1]],outfile:process.argv[2],bundle:true,platform:"node",format:"esm"})' "$1" "$2"\n`);
+    writeFileSync(join(bin, 'hono-host.ts'), 'export { ready } from "./missing.ts";\n');
+    expect(() => preparePrivateOperatorApiBundle(root, prepare)).toThrow();
+    expect(readFileSync(join(prepare, 'operator-api-build.log'), 'utf8')).toContain('Could not resolve');
+    writeFileSync(join(bin, 'missing.ts'), 'export const ready = true;\n');
+    const artifact = preparePrivateOperatorApiBundle(root, prepare);
+    expect(resolvePreparedPrivateApiBundle(['--prepared-api-sha=' + artifact.sha256], execute)).toBe(artifact.path);
+    expect(resolvePreparedPrivateApiBundle([], execute)).toBeUndefined();
+    expect(() => resolvePreparedPrivateApiBundle(['--prepared-api-sha=' + artifact.sha256,
+      '--prepared-api-sha=' + artifact.sha256], execute)).toThrow('exactly one');
+    expect(() => resolvePreparedPrivateApiBundle(['--prepared-api-sha=invalid'], execute)).toThrow('SHA256');
+    writeFileSync(artifact.path, 'changed artifact\n');
+    expect(() => resolvePreparedPrivateApiBundle(['--prepared-api-sha=' + artifact.sha256], execute))
+      .toThrow('changed after preflight');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it('checks private socket capacity in bytes before runtime allocation, including multibyte scratch roots', () => {

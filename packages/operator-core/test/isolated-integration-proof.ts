@@ -263,6 +263,7 @@ export async function isolatedIntegrationSourceFiles(root: string, commit: strin
 
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
+  prepare?: (evidenceDir: string) => Promise<void> | void;
   execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
 }): Promise<string> {
   const { root, filePath } = options;
@@ -286,6 +287,7 @@ export async function recordIsolatedIntegrationProof(options: {
           workspaceId: resolveTestRunWorkspaceId(),
           harnessSlug: resolveTestRunHarnessSlug(), files };
         await writeFile(join(ctx.evidenceDir, 'source.json'), JSON.stringify(source), { flag: 'wx' });
+        await options.prepare?.(ctx.evidenceDir);
       } else if (ctx.phase === 'execute') {
         await options.execute(child => {
           assert.ok(!observedChild, 'one lifecycle per run');
@@ -346,6 +348,11 @@ export async function recordIsolatedIntegrationProof(options: {
         lifecycle.ended = ended;
         await writeFile(join(ctx.evidenceDir, 'lifecycle.json'), JSON.stringify(lifecycle), { flag: 'wx' });
       } else {
+        // A failed preparation allocated no worker or private database.
+        if (!observedChild) {
+          assert.ok(!lifecycle && !ended);
+          return { ok: true };
+        }
         assert.ok(lifecycle && ended && observedChild?.exitCode !== null);
         assert.ok(!existsSync(lifecycle.runtimeRoot) && !existsSync(lifecycle.dataDir));
       }

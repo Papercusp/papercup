@@ -1,12 +1,34 @@
 /** Registry preflight shared by standalone private HTTP workers and their cheap guard. */
 import assert from 'node:assert/strict';
-import { realpathSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
+import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-health/types';
+
+/** Complete, typed private Health seed; nullable data remains per-panel typed. */
+export function createPrivateHealthSnapshot(workspaceId: string, foreign: boolean, evaluatedAt: number): SystemHealth {
+  const panel = <K extends PanelKey>(key: K): SystemHealth['panels'][K] => ({ key, label: PANEL_LABELS[key],
+    status: key === 'workItems' || key === 'plans' ? 'warn' : 'unknown',
+    summary: foreign ? 'private-health-foreign' : key === 'workItems' ? 'private-health-selected'
+      : key === 'plans' ? 'private-health-neighbor' : 'private-health-unmeasured',
+    metrics: [], data: null,
+    ...(key === 'workItems' ? { link: { label: 'Work', href: '/adv?tab=harnesses' } } : {}),
+  });
+  return { workspaceId, evaluatedAt, overall: 'warn', crossMonitor: { queenAlive: true, overwatchAlive: null }, panels: {
+    queen: panel('queen'), bees: panel('bees'), workItems: panel('workItems'), workFeed: panel('workFeed'),
+    loops: panel('loops'), tokens: panel('tokens'), watchdog: panel('watchdog'), deploy: panel('deploy'),
+    plans: panel('plans'), escalations: panel('escalations'), autonomy: panel('autonomy'),
+    observations: panel('observations'), improvements: panel('improvements'), infra: panel('infra'),
+    suFleet: panel('suFleet'), coordination: panel('coordination'), overwatch: panel('overwatch'),
+    scout: panel('scout'), memory: panel('memory'), toolEfficiency: panel('toolEfficiency'), contextInjection: panel('contextInjection'),
+  } };
+}
 
 /** Read the same declared corpus as the real Docs API before allocating PG. */
 export async function preparePrivateDocsBrowserDocuments(repoRoot: string, selection = {
@@ -38,6 +60,37 @@ export function preparePrivateRosterSocketRoot(scratchRoot = tmpdir()) {
   assert.ok(Buffer.byteLength(socket) < 104,
     'Private roster scratch root exceeds native socket capacity; select a shorter task-owned TMPDIR before private PG');
   return socket;
+}
+
+/** Compile the native API before allocating PG, retaining the exact artifact
+ * that the private worker will run instead of reading the shared graph again. */
+export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string) {
+  const path = join(evidenceDir, 'hono-host.mjs');
+  try {
+    const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
+      { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 240_000 });
+    writeFileSync(join(evidenceDir, 'operator-api-build.log'), output);
+  } catch (error: any) {
+    writeFileSync(join(evidenceDir, 'operator-api-build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
+    throw error;
+  }
+  const sha256 = createHash('sha256').update(readFileSync(path)).digest('hex');
+  const receipt = { path, sha256 };
+  writeFileSync(join(evidenceDir, 'operator-api-preflight.json'), JSON.stringify(receipt));
+  return receipt;
+}
+
+/** A worker may reuse only the artifact from its own original prepare phase. */
+export function resolvePreparedPrivateApiBundle(argv: readonly string[], evidenceDir: string) {
+  const values = argv.filter(value => value.startsWith('--prepared-api-sha='));
+  if (!values.length) return undefined;
+  assert.equal(values.length, 1, 'Pass exactly one prepared API digest');
+  const sha256 = values[0].slice('--prepared-api-sha='.length);
+  assert.match(sha256, /^[a-f0-9]{64}$/, 'Prepared API digest must be SHA256');
+  const path = join(dirname(evidenceDir), 'prepare', 'hono-host.mjs');
+  assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), sha256,
+    'Prepared private API changed after preflight');
+  return path;
 }
 
 /** Isolated workers intentionally discard PAPERCUSP_* ambient settings.

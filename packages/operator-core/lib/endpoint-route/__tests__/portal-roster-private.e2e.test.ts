@@ -3,7 +3,7 @@ import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
+import { preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 import { buildPortalRosterBrowser, retainPortalResponse, verifyPortalOverviewNavigation, verifyPrivateDocsBrowserMount, verifyPrivateHarnessesBrowserMount, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateWorkspaceBrowserMount } from '../../../test/portal-roster-browser-fixture';
 
 const root = resolve(import.meta.dirname, '../../../../..');
@@ -40,6 +40,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await verifyPrivateWorkspaceBrowserMount({ portalSourceRoot: portalSource,
       selected: 'brainstorm-selected', neighbor: 'brainstorm-neighbor', brainstorm: true }, { brainstormHydration: true });
+    let preparedApi: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -49,7 +50,9 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx', 'apps/operator/app/harness/harness.css',
         'apps/operator/app/harness/brainstorm/BrainstormFull.tsx', 'apps/operator/app/harness/brainstorm/WriteView.tsx',
         'apps/operator/app/harness/brainstorm/MapView.tsx', 'apps/operator/app/harness/brainstorm/CanvasView.tsx',
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -62,7 +65,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           'ROSTER_WORK_BROWSER_PROOF', 'ROSTER_HEALTH_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
           process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
-          '--portal-source=' + portalSource],
+          '--portal-source=' + portalSource, '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
