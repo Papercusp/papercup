@@ -8,6 +8,42 @@ import { describe, expect, it } from 'vitest';
 import { nativeCliCall, nativeCliTestTimeout } from './native-cli.fixture';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
+const taskBriefItem = process.env.NATIVE_TASK_BRIEF_ITEM;
+
+describe.runIf(Boolean(baseUrl && taskBriefItem))('native P012 required BAR real CLI claim and resume', () => {
+  it('attributes claim/resume source to the held task and registered repository', () => {
+    const identity = call('coord:whoami', {});
+    const item = call('work_items:get', { id: taskBriefItem, harness: 'papercusp',
+      projection: { pick: ['results[].workItem.id', 'results[].workItem.assignee', 'results[].workItem.payload.paths'] } });
+    const subject = item.results[0].workItem;
+    // A current-build acceptance run may idempotently claim only its own task.
+    // This test creates no work items and does not steal another session's lane.
+    expect(subject.assignee).toBe(identity.ownerId);
+    const route = call('dev:pipeline_position', { path: 'packages/operator-core/lib/code-intelligence/task-brief.ts',
+      testClass: 'operator-api', projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] } });
+    expect(route.currentBuildTestRoute.readiness).toBe('ready');
+    expect(route.servingRuntimes.some((row: { runtime: string; containsChange: boolean | null }) =>
+      row.runtime === 'staging-operator' && row.containsChange === true)).toBe(true);
+    const claimed = call('work_items:claim', { row: `${taskBriefItem},self,papercusp`,
+      projection: { pick: ['taskBrief'] } });
+    const brief = claimed.taskBrief;
+    expect(brief?.status, JSON.stringify(claimed)).toBe('current');
+    expect(brief.repository.workspaceId).toBe(identity.workspaceId);
+    expect(brief.recover).toMatchObject({ tool: 'code:pack', args: { rootPath: brief.repository.rootPath } });
+    expect(brief.scope.paths.length).toBeGreaterThan(0);
+    expect(brief.scope.paths.every((path: string) => subject.payload.paths.includes(path))).toBe(true);
+    for (const file of brief.files) {
+      expect(file.sha256).toBe(createHash('sha256').update(readFileSync(join(brief.repository.rootPath, file.path))).digest('hex'));
+    }
+    const resumed = call('work_items:get', { id: taskBriefItem, harness: 'papercusp', resume: true,
+      projection: { pick: ['results[].resume.taskBrief'] } });
+    const refreshed = resumed.results[0].resume.taskBrief;
+    expect(refreshed?.status, JSON.stringify(resumed)).toBe('current');
+    expect(refreshed.repository).toEqual(brief.repository);
+    expect(refreshed.sourceFingerprint).toBe(brief.sourceFingerprint);
+    expect(refreshed.scope.paths).toEqual(brief.scope.paths);
+  }, nativeCliTestTimeout(['coord:whoami', 'work_items:get', 'dev:pipeline_position', 'work_items:claim', 'work_items:get']));
+});
 
 describe.runIf(Boolean(baseUrl))('native P017 required BAR real CLI runtime provenance', () => {
   it('identifies a containing current-build artifact and keeps a newer private source distinct', async () => {
