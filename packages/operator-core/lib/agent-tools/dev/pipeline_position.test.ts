@@ -52,6 +52,22 @@ describe('dev:pipeline_position accepted-source contract (WI-10007982)', () => {
   });
 });
 
+describe('native P017 pipeline source-runtime view', () => {
+  it('preserves exact repository and bound source/runtime identity without the large pipeline digest', async () => {
+    const digest = 'a'.repeat(64);
+    const acceptedSource = { expectedSha256: digest, observedSha256: digest, matches: true,
+      deployedContains: false, runtimeContainment: { 'staging-operator': true, 'release-operator': false } };
+    const servingRuntimes = [{ runtime: 'release-operator', buildSha: 'b'.repeat(40), containsChange: false },
+      { runtime: 'staging-operator', buildSha: 'c'.repeat(40), containsChange: true }];
+    vi.mocked(gitPipelinePosition).mockResolvedValue({ repoRoot: '/native-fixture', submodule: null,
+      acceptedSource, servingRuntimes, gate: { ownerBrief: 'x'.repeat(20_000) } } as unknown as PipelinePosition);
+    const args = tool.args.parse({ path: 'target.ts', expectedSourceSha256: digest, view: 'source-runtime' });
+    const result = await tool.handler(args, {} as never) as { data: Record<string, unknown> };
+    expect(result.data).toEqual({ repoRoot: '/native-fixture', submodule: null, acceptedSource, servingRuntimes });
+    expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'target.ts', expectedSourceSha256: digest }));
+  });
+});
+
 describe('dev:pipeline_position role allowlist', () => {
   it('is available to every execution/judgment role the cross-role note points at', () => {
     const roles = new Set(tool.agentRoles ?? []);
