@@ -82,9 +82,11 @@ async function syncSource(req: Request, entry: RegisteredProvider, credentials: 
   await syncProviderCredentialSource(getOrgPg().sql, { workspaceId: activeWorkspaceId(), ownerUserId: user.id }, entry.descriptor, credentials);
 }
 
-async function invalidate(req: Request): Promise<void> {
-  const user = await getSessionUserOrDefault(req.headers).catch(() => null);
-  if (user) void notifySyncInvalidate(TICKET_INTEGRATIONS_QUERY, { workspaceId: activeWorkspaceId(), userId: user.id }).catch(() => {});
+// The page's query key is { userId } (workspace is server-derived), so a notify
+// scoped { workspaceId, userId } never matched it. The unscoped notify is the one
+// that refreshes the page; the bus publishes a repeat on a trailing edge rather
+// than dropping it (WI-6554700010008519).
+function invalidate(): void {
   void notifySyncInvalidate(TICKET_INTEGRATIONS_QUERY).catch(() => {});
 }
 
@@ -118,7 +120,7 @@ const save = defineTool({
       const entry = await provider(ctx.params.providerId);
       const credentials = await saveProviderCredentials(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, body.values);
       await syncSource(req, entry, credentials);
-      await invalidate(req);
+      invalidate();
       return Response.json({ ok: true, providerId: entry.descriptor.id, credentials });
     } catch (error) {
       return failure(error);
@@ -137,7 +139,7 @@ const clear = defineTool({
       const entry = await provider(ctx.params.providerId);
       const credentials = await clearProviderCredential(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, ctx.params.key ?? '');
       await syncSource(req, entry, credentials);
-      await invalidate(req);
+      invalidate();
       return Response.json({ ok: true, providerId: entry.descriptor.id, credentials });
     } catch (error) {
       return failure(error);

@@ -109,7 +109,10 @@ describe('provider OAuth client routes', () => {
 
     const read = await (await get('fixture-tickets')).text();
     expect(read).not.toContain(SECRET);
-    expect(mocks.invalidate).toHaveBeenCalledWith('integrations.tickets', { workspaceId: 'ws-test', userId: 'user-1' });
+    // The page's query key is { userId }; a { workspaceId, userId } notify can never
+    // match it, so the route sends the unscoped refresh only (WI-6554700010008519).
+    expect(mocks.invalidate).toHaveBeenCalledWith('integrations.tickets');
+    expect(mocks.invalidate.mock.calls.filter(([name]) => name === 'integrations.tickets').every(([, args]) => args === undefined)).toBe(true);
   });
 
   it('PUT refuses a bad value by name without echoing it, and writes nothing', async () => {

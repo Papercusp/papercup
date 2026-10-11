@@ -66,8 +66,11 @@ async function scope(req: Request) {
   return { workspaceId: activeWorkspaceId(), ownerUserId: user.id };
 }
 
-function invalidate(workspaceId: string, ownerUserId: string): void {
-  void notifySyncInvalidate(TICKET_INTEGRATIONS_QUERY, { workspaceId, userId: ownerUserId }).catch(() => {});
+// The page's query key is { userId } (workspace is server-derived), so a notify
+// scoped { workspaceId, userId } never matched it. The unscoped notify is the one
+// that refreshes the page; the bus publishes a repeat on a trailing edge rather
+// than dropping it (WI-6554700010008519).
+function invalidate(): void {
   void notifySyncInvalidate(TICKET_INTEGRATIONS_QUERY).catch(() => {});
 }
 
@@ -117,7 +120,7 @@ const config = defineTool({
     try {
       const s = await scope(req);
       const result = await setTicketSourceConfig(getOrgPg().sql, { ...s, sourceId: ctx.params.sourceId ?? '', patch: body.patch });
-      invalidate(s.workspaceId, s.ownerUserId);
+      invalidate();
       return Response.json({ ok: true, ...result });
     } catch (error) {
       return failure(error);
@@ -146,7 +149,7 @@ const addRule = defineTool({
         workKind: text(body.workKind),
         createdBy: `owner:${s.ownerUserId}`,
       });
-      invalidate(s.workspaceId, s.ownerUserId);
+      invalidate();
       return Response.json({ ok: true, ...result });
     } catch (error) {
       return failure(error);
@@ -168,7 +171,7 @@ const disableRule = defineTool({
         sourceId: ctx.params.sourceId ?? '',
         ruleId: ctx.params.ruleId ?? '',
       });
-      invalidate(s.workspaceId, s.ownerUserId);
+      invalidate();
       return Response.json({ ok: true, rule });
     } catch (error) {
       return failure(error);
@@ -199,8 +202,8 @@ function packFailure(error: unknown): Response {
   return failure(error);
 }
 
-function invalidatePack(workspaceId: string, ownerUserId: string): void {
-  invalidate(workspaceId, ownerUserId);
+function invalidatePack(workspaceId: string): void {
+  invalidate();
   void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
 }
 
@@ -222,7 +225,7 @@ const setPackInputs = defineTool({
         inputs: body.inputs,
         configuredBy: s.ownerUserId,
       });
-      invalidatePack(s.workspaceId, s.ownerUserId);
+      invalidatePack(s.workspaceId);
       return Response.json({
         ok: true,
         installationId: installed.id,
@@ -259,7 +262,7 @@ const armPack = defineTool({
         reviewedBy: s.ownerUserId,
       });
       if (!result.ok) return Response.json(result, { status: ARM_REFUSAL_STATUS[result.error] ?? 409 });
-      invalidatePack(s.workspaceId, s.ownerUserId);
+      invalidatePack(s.workspaceId);
       return Response.json(result);
     } catch (error) {
       return packFailure(error);

@@ -121,7 +121,10 @@ describe('provider credential routes', () => {
     // A later read still never returns it.
     const read = await (await invoke('GET', BASE, new Request('http://127.0.0.1/x'), { providerId: 'fixture-chat' })).text();
     expect(read).not.toContain(STORED_VALUE);
-    expect(mocks.invalidate).toHaveBeenCalledWith('integrations.tickets', { workspaceId: 'ws-test', userId: 'user-1' });
+    // The page's query key is { userId }; a { workspaceId, userId } notify can never
+    // match it, so the route sends the unscoped refresh only (WI-6554700010008519).
+    expect(mocks.invalidate).toHaveBeenCalledWith('integrations.tickets');
+    expect(mocks.invalidate.mock.calls.filter(([name]) => name === 'integrations.tickets').every(([, args]) => args === undefined)).toBe(true);
   });
 
   it('PUT with one bad value stores nothing and names the field, without echoing the value', async () => {

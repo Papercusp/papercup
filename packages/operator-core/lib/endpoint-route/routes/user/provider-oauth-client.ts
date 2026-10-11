@@ -14,8 +14,6 @@
  * whose provider summaries carry the same status.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { getSessionUserOrDefault } from '../../../auth';
-import { activeWorkspaceId } from '../../../workspace-registry';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { ProviderRegistryNotReadyError, readyProviderRegistry, type RegisteredProvider } from '../../../integrations/provider-registry';
@@ -79,9 +77,11 @@ async function oauthProvider(providerId: string | undefined): Promise<{ entry: R
   return { entry, ref };
 }
 
-async function invalidate(req: Request): Promise<void> {
-  const user = await getSessionUserOrDefault(req.headers).catch(() => null);
-  if (user) void notifySyncInvalidate(TICKET_INTEGRATIONS_QUERY, { workspaceId: activeWorkspaceId(), userId: user.id }).catch(() => {});
+// The page's query key is { userId } (workspace is server-derived), so a notify
+// scoped { workspaceId, userId } never matched it. The unscoped notify is the one
+// that refreshes the page; the bus publishes a repeat on a trailing edge rather
+// than dropping it (WI-6554700010008519).
+function invalidate(): void {
   void notifySyncInvalidate(TICKET_INTEGRATIONS_QUERY).catch(() => {});
 }
 
@@ -117,7 +117,7 @@ const save = defineTool({
         { clientId: body.clientId, clientSecret: body.clientSecret },
         { requireSecret: !entry.descriptor.oauth?.pkce },
       );
-      await invalidate(req);
+      invalidate();
       return Response.json({ ok: true, providerId: entry.descriptor.id, oauthClient });
     } catch (error) {
       return failure(error);
