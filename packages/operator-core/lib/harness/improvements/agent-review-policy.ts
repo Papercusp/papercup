@@ -1487,6 +1487,111 @@ export function agentReviewPendingAdmissionSql(
   )`;
 }
 
+/**
+ * Narrow, server-only authority for REVISION ADOPTION (bug-queue-legitimacy D-008):
+ * claim one exact content revision whose submitter is someone else, so the adopter can
+ * rebind and revise it. The intake-stage floor otherwise admits a revision-requested row
+ * only for its CURRENT submitter, and adoption must claim before it rebinds (the claim CAS
+ * is what makes a concurrent adopter lose). Minted only by adoptAgentReviewRevision after
+ * the orphan proof; the writer re-derives the snapshot from the row it claims, and the SQL
+ * twin re-checks it in the UPDATE, so a resubmit, regrade, round bump or rebind between
+ * mint and write invalidates it. It grants nothing beyond the intake-stage revision leg.
+ */
+export interface AgentReviewRevisionAdoptionAdmission {
+  readonly itemId: string;
+  readonly adopter: string;
+  readonly harnessSlug: string;
+  /** The payload `agentReview.submittedBy` the adopter is taking the revision from. */
+  readonly previousSubmitter: string;
+  readonly round: number;
+}
+
+const revisionAdoptionAdmissions = new WeakSet<object>();
+
+function adoptableContentRevision(review: AgentReviewState | null): review is AgentReviewState {
+  return (
+    review !== null &&
+    review.status === 'revision-requested' &&
+    review.revisionKind !== 'reproduction' &&
+    review.submittedBy !== LEGACY_AGENT_REVIEW_SUBMITTER
+  );
+}
+
+export function mintAgentReviewRevisionAdoptionAdmission(input: {
+  itemId: string;
+  adopter: string;
+  harnessSlug: string;
+  review: AgentReviewState;
+}): AgentReviewRevisionAdoptionAdmission | null {
+  const itemId = input.itemId.trim();
+  const adopter = input.adopter.trim();
+  const harnessSlug = input.harnessSlug.trim();
+  const review = input.review;
+  if (
+    !itemId ||
+    !adopter ||
+    !harnessSlug ||
+    !adoptableContentRevision(review) ||
+    !review.submittedBy.trim() ||
+    review.submittedBy === adopter ||
+    !Number.isInteger(review.round) ||
+    review.round < 1
+  ) {
+    return null;
+  }
+  const admission = Object.freeze({ itemId, adopter, harnessSlug, previousSubmitter: review.submittedBy, round: review.round });
+  revisionAdoptionAdmissions.add(admission);
+  return admission;
+}
+
+export function isAgentReviewRevisionAdoptionAdmission(value: unknown): value is AgentReviewRevisionAdoptionAdmission {
+  return typeof value === 'object' && value !== null && revisionAdoptionAdmissions.has(value);
+}
+
+export function matchesAgentReviewRevisionAdoptionAdmission(
+  value: unknown,
+  item: { id: string; harness?: string | null; payload: unknown },
+  adopter: string,
+): value is AgentReviewRevisionAdoptionAdmission {
+  if (
+    !isAgentReviewRevisionAdoptionAdmission(value) ||
+    value.itemId !== item.id ||
+    value.adopter !== adopter ||
+    value.harnessSlug !== item.harness
+  ) {
+    return false;
+  }
+  // Re-derived from the row the writer is about to claim, not trusted from the mint.
+  const current = readAgentReviewState(item.payload);
+  return (
+    adoptableContentRevision(current) &&
+    current.submittedBy === value.previousSubmitter &&
+    current.submittedBy !== adopter &&
+    current.round === value.round
+  );
+}
+
+/**
+ * Intake-stage exception for an already-validated revision adoption: the UPDATE must
+ * still see the exact content revision (status, submitter, round) the adopter's orphan
+ * proof inspected. Every other claim floor, the admission floor included, stays in force.
+ */
+export function agentReviewRevisionAdoptionSql(
+  sql: OrgSql,
+  value: unknown,
+  payloadCol: 'payload' | 'target.payload' = 'payload',
+) {
+  if (!isAgentReviewRevisionAdoptionAdmission(value)) return sql`FALSE`;
+  const review = sql`(COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) -> 'agentReview')`;
+  return sql`(
+    ${review} ->> 'status' = 'revision-requested'
+    AND ${review} ->> 'submittedBy' = ${value.previousSubmitter}
+    AND ${review} ->> 'round' = ${String(value.round)}
+    AND ${review} ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
+    AND ${value.previousSubmitter} <> ${value.adopter}
+  )`;
+}
+
 export interface AgentReviewCandidate {
   kind: string;
   origin?: string | null;

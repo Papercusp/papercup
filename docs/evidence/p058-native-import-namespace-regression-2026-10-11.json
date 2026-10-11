@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
-  "framework": "node:test",
+  "framework": "node",
   "name": "P058 packaged boot import namespace regression suite",
   "command": ["node", "--test", "--test-global-setup=test/monorepo-host-preflight.mjs", "test/verify-sidecar-bundle-spa-layout.test.js"],
   "cwd": "papercusp-desktop",

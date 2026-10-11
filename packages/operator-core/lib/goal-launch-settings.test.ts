@@ -60,8 +60,11 @@ vi.mock('./agent-tools/coordination/escalations', () => ({
     return {};
   },
 }));
-vi.mock('./goals/holder', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./goals/holder')>()),
+// EI-25642470052572430: this suite exercises the launch decisions above the
+// holder reader, not its presence-oracle graph (covered by holder.test.ts).
+// importOriginal pulls that graph back through agent-mcp before publishing the
+// spy, leaving the dynamic reader in a circular module initialization.
+vi.mock('./goals/holder', () => ({
   resolveGoalHolders: goalHoldersMock,
 }));
 // The launch-time spend measurement (D-011 clause 3 / stewardship D-014). The gate

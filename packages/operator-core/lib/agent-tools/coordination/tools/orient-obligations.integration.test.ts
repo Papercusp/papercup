@@ -38,6 +38,15 @@ afterEach(() => vi.restoreAllMocks());
 
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
+  // The agenda's steady-state deadline must not include creating/migrating
+  // the fixture's separate locks database. Exercise the real dependency
+  // during setup, just as the host prepares its stores before serving reads.
+  const waitingOnStarted = performance.now();
+  await expect(obligationReader.defaultAgentObligationReaderDeps().waitingOn(WS, OWNER))
+    .resolves.toEqual([]);
+  console.info('ORIENT_OBLIGATIONS_PREFLIGHT ' + JSON.stringify({
+    waitingOnPrepared: true, elapsedMs: performance.now() - waitingOnStarted,
+  }));
   await insertGoalRow(fx.admin, {
     id: GOAL,
     installSlug: 'papercusp',
@@ -107,6 +116,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     // at a host runtime. Keep its established null fallback deterministic;
     // the real PostgreSQL agenda providers below remain enabled.
     const pipeline = vi.spyOn(pipelineHealth, 'fetchOrientPipeline').mockResolvedValue(null);
+    const agendaRead = vi.spyOn(obligationReader, 'readAgentObligationAgenda');
     const ids = [`consult-proceed-${RUN}`, `consult-history-${RUN}`];
     const history = {
       answer: 'Reuse the existing routing seam.',
@@ -137,6 +147,9 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       // control: an empty or disconnected agenda must not prove retirement.
       expect(read.goalPortfolio?.goal.id).toBe(GOAL);
       expect(read.obligations.evaluations.map(entry => entry.ruleId)).toContain('goal-plan-placement');
+      expect(agendaRead).toHaveBeenCalledTimes(1);
+      const canonical = await agendaRead.mock.results[0].value;
+      expect(canonical.degradedSources.filter(source => source.includes('waiting-on'))).toEqual([]);
       expect(read.obligations.evaluations.map(entry => entry.family)).not.toContain('consult-reconciliation');
       expect(JSON.stringify(read.obligations)).not.toContain('consult:reconcile');
       const after = await fx.admin`

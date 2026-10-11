@@ -59,6 +59,70 @@ function zFor(ci: number): number {
   return z;
 }
 
+/** A sufficient finite-sample power bound, not a fitted estimate of power. */
+export interface PairedClusterPowerPlan {
+  method: 'paired-repository-hoeffding-v1';
+  independenceAssumption: 'independent-repositories-arbitrary-within-repository-dependence';
+  pairedTasks: number;
+  independentRepositories: number;
+  /** 1 / sum(repository task weights squared); imbalance reduces information. */
+  effectiveRepositories: number;
+  requiredEffectiveRepositories: number;
+  minimumEqualSizeRepositories: number;
+  minimumEffect: number;
+  alpha: number;
+  targetPower: number;
+  nullCriticalValue: number;
+  detectableEffectBound: number;
+  powerLowerBound: number;
+  meetsTarget: boolean;
+}
+
+/**
+ * Plan a two-sided paired task-weighted outcome test before observing results.
+ * Each task contributes candidate-minus-control in [-1,1], after seed collapse.
+ * Repository aggregates may have arbitrary internal dependence; repositories
+ * must be independent. With weights w, Hoeffding gives
+ * P(|estimate - expectation| >= t) <= 2 exp(-t² / (2 sum(w²))).
+ * A true positive effect d therefore has power at least
+ * 1 - exp(-(d - critical)² / (2 sum(w²))) when d > critical.
+ * This conservative test is distinct from the reporting bootstrap; its bound
+ * is not a guarantee of power for a bootstrap or McNemar rejection rule.
+ * Seeds do not enter clusterSizes and cannot manufacture independent units.
+ */
+export function pairedRepositoryPowerPlan(
+  clusterSizes: readonly number[],
+  opts: { minimumEffect: number; alpha: number; power: number },
+): PairedClusterPowerPlan {
+  const { minimumEffect, alpha, power } = opts;
+  const pairedTasks = clusterSizes.reduce((sum, size) => sum + size, 0);
+  if (!clusterSizes.length || clusterSizes.some(size => !Number.isSafeInteger(size) || size <= 0) ||
+      !Number.isSafeInteger(pairedTasks) || !Number.isFinite(minimumEffect) || minimumEffect <= 0 || minimumEffect > 1 ||
+      !Number.isFinite(alpha) || alpha <= 0 || alpha >= 1 || !Number.isFinite(power) || power <= 0 || power >= 1) {
+    throw new Error('pairedRepositoryPowerPlan: positive integer task counts and valid effect, alpha and power required');
+  }
+  const squaredWeights = clusterSizes.reduce((sum, size) => sum + (size / pairedTasks) ** 2, 0);
+  const alphaFactor = Math.sqrt(Math.log(2 / alpha));
+  const powerFactor = Math.sqrt(-Math.log1p(-power));
+  const requiredEffectiveRepositories = 2 * ((alphaFactor + powerFactor) / minimumEffect) ** 2;
+  if (!Number.isFinite(requiredEffectiveRepositories) || requiredEffectiveRepositories > Number.MAX_SAFE_INTEGER) {
+    throw new Error('pairedRepositoryPowerPlan: required repository count exceeds the supported planning range');
+  }
+  const nullCriticalValue = Math.sqrt(2 * squaredWeights) * alphaFactor;
+  const detectableEffectBound = Math.sqrt(2 * squaredWeights) * (alphaFactor + powerFactor);
+  const powerLowerBound = minimumEffect > nullCriticalValue
+    ? -Math.expm1(-((minimumEffect - nullCriticalValue) ** 2) / (2 * squaredWeights)) : 0;
+  const effectiveRepositories = 1 / squaredWeights;
+  return {
+    method: 'paired-repository-hoeffding-v1',
+    independenceAssumption: 'independent-repositories-arbitrary-within-repository-dependence',
+    pairedTasks, independentRepositories: clusterSizes.length, effectiveRepositories, requiredEffectiveRepositories,
+    minimumEqualSizeRepositories: Math.ceil(requiredEffectiveRepositories), minimumEffect, alpha, targetPower: power,
+    nullCriticalValue, detectableEffectBound, powerLowerBound,
+    meetsTarget: effectiveRepositories >= requiredEffectiveRepositories,
+  };
+}
+
 /**
  * Wilson score interval for a binomial proportion p̂ = successes / n.
  *

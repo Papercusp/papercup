@@ -80,6 +80,7 @@ const LINEAR = {
   statusMapping: 'provider-defined',
   requiredConfig: ['teamIds'],
   connectHref: '/api/oauth/start?provider=linear&return=%2Fsettings%2Fintegrations',
+  credentials: [],
 };
 const ASANA = {
   id: 'asana',
@@ -89,6 +90,7 @@ const ASANA = {
   statusMapping: 'sections',
   requiredConfig: ['projectGids'],
   connectHref: '/api/oauth/start?provider=asana&return=%2Fsettings%2Fintegrations',
+  credentials: [],
 };
 
 function source(overrides: Record<string, unknown> = {}) {

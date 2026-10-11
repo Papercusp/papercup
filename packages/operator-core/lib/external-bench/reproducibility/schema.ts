@@ -25,6 +25,7 @@ import type {
   PriceTable,
 } from '@papercusp/bench-metrics';
 import { z } from 'zod';
+import { pairedRepositoryPowerPlan } from '@papercusp/bench-metrics';
 import { canonicalJson } from './canonical-json';
 
 const pin = z.string().trim().min(1);
@@ -124,6 +125,34 @@ export const currentBenchmarkProtocolSchema = z.object({
   }
 });
 export type CurrentBenchmarkProtocol = z.infer<typeof currentBenchmarkProtocolSchema>;
+
+/** Recompute a withheld design from frozen controls; this authorizes no runs. */
+export function planCurrentBenchmarkConfirmation(config: unknown) {
+  const protocol = currentBenchmarkProtocolSchema.parse(config);
+  if (!protocol.sampling) throw new Error('Confirmation planning requires the frozen repository mapping.');
+  const confirmation = protocol.confirmation;
+  if (confirmation.method !== 'paired-repository-hoeffding-v1') {
+    throw new Error('Confirmation planning requires the paired-repository-hoeffding-v1 rejection rule.');
+  }
+  if (confirmation.plannedPairedTasks !== confirmation.taskIds.length) {
+    throw new Error('Confirmation planning requires the exact selected withheld roster, not an unspecified subset.');
+  }
+  const counts = new Map<string, number>();
+  for (const taskId of confirmation.taskIds) {
+    const repository = protocol.sampling.taskRepositories[taskId];
+    counts.set(repository, (counts.get(repository) ?? 0) + 1);
+  }
+  const repositories = [...counts].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([repository, pairedTasks]) => ({ repository, pairedTasks }));
+  const generationAssignments = confirmation.taskIds.length * confirmation.seeds.length * protocol.arms.length;
+  if (!Number.isSafeInteger(generationAssignments)) throw new Error('Confirmation assignment count is not representable.');
+  return {
+    ...pairedRepositoryPowerPlan(repositories.map(entry => entry.pairedTasks), confirmation),
+    runId: protocol.runId, repositories, seedsPerTask: confirmation.seeds.length,
+    arms: protocol.arms.map(arm => arm.id), generationAssignments,
+    inferenceAuthorized: false as const,
+  };
+}
 
 /** Historical string-arm configs retain their semantics; current controls must validate in full. */
 export function currentProtocolFromConfig(config: Record<string, unknown>): CurrentBenchmarkProtocol | null {

@@ -45,6 +45,8 @@
  * @see judge-view.ts — the derived view replay reproduces
  */
 
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '../external-bench/reproducibility/canonical-json';
 import { sealEvidence, type EvidenceManifest, type PreservedEvidence } from './evidence';
 import { computeTrialIdentity, type TrialIdentity } from './identity';
 import {
@@ -72,7 +74,20 @@ export type IntegrityFailureKind =
   /** Fewer steps than the manifest recorded: a partial trajectory. */
   | 'trajectory-truncated'
   /** The step indices are not a complete 0..n-1 run: a trajectory with a hole. */
-  | 'trajectory-hole';
+  | 'trajectory-hole'
+  | 'completion-contract-invalid'
+  | 'completion-artifact-missing'
+  | 'durable-transition-missing'
+  | 'context-delivery-mismatch'
+  | 'downstream-outcome-missing';
+
+/** Frozen completion criteria, supplied by the existing workload's declaration. */
+export interface WorkloadCompletionRequirements {
+  artifacts: Array<{ id: string; minBytes: number; sha256?: string }>;
+  transitions: Array<{ id: string; subjectRef: string; from: string; to: string }>;
+  context: Array<{ id: string; consumer: string; sha256: string }>;
+  downstream: { id: string; value: string | number | boolean; graderRef: string };
+}
 
 /** One concrete integrity fault, with enough detail to act on. */
 export interface IntegrityFinding {
@@ -92,6 +107,8 @@ export interface IntegrityReport {
   partsChecked: number;
   /** The root hash recomputed from the resolved evidence. */
   recomputedRootHash: string;
+  /** Present only for a declared workload completion check. */
+  completionRequirementsHash?: string;
 }
 
 /** What `verifyEvidence` is given. */
@@ -112,6 +129,72 @@ export interface VerifyEvidenceInput {
    * recorded it" stay distinguishable.
    */
   unresolvedRefs?: string[];
+  /** Exit status is never a substitute for these declared outcome observations. */
+  completionRequirements?: WorkloadCompletionRequirements;
+}
+
+const textPresent = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+
+/** Checks resolved observations; callers must resolve receipts from their authority. */
+function verifyWorkloadCompletion(input: VerifyEvidenceInput, findings: IntegrityFinding[]): string {
+  const requirements = input.completionRequirements!;
+  const requirementsHash = sha256(canonicalJson(requirements));
+  const validNames = (rows: Array<{ id: string }>) => rows.every(row => textPresent(row.id)) && new Set(rows.map(row => row.id)).size === rows.length;
+  const digestValid = (value: string) => /^[a-f0-9]{64}$/.test(value);
+  if (!requirements.artifacts.length || !requirements.transitions.length ||
+      ![requirements.artifacts, requirements.transitions, requirements.context].every(validNames) ||
+      requirements.artifacts.some(row => !Number.isSafeInteger(row.minBytes) || row.minBytes < 1 || row.sha256 !== undefined && !digestValid(row.sha256)) ||
+      requirements.transitions.some(row => ![row.subjectRef, row.from, row.to].every(textPresent) || row.from === row.to) ||
+      requirements.context.some(row => !textPresent(row.consumer) || !digestValid(row.sha256)) ||
+      !textPresent(requirements.downstream.id) || !textPresent(requirements.downstream.graderRef) ||
+      !['string', 'number', 'boolean'].includes(typeof requirements.downstream.value) ||
+      typeof requirements.downstream.value === 'number' && !Number.isFinite(requirements.downstream.value)) {
+    findings.push({ kind: 'completion-contract-invalid', detail: 'Completion needs nonempty artifact/transition criteria and valid context/outcome criteria.' });
+    return requirementsHash;
+  }
+  if (!input.trial || !input.expectedIdentity?.bindingComplete || !input.envelope?.contentHash) {
+    findings.push({ kind: 'identity-mismatch', detail: 'Workload completion requires a sealed envelope, trial and complete independently expected identity.' });
+    return requirementsHash;
+  }
+  // Bind observations to this exact run as well as its comparable configuration.
+  const observed = (metadata: Record<string, unknown> | null | undefined) =>
+    metadata?.trialBindingHash === input.expectedIdentity!.bindingHash && metadata.runId === input.trial!.lineage.runId && textPresent(metadata.receiptRef);
+  for (const required of requirements.artifacts) {
+    const matches = input.evidence.artifacts.filter(artifact => artifact.id === required.id);
+    const artifact = matches[0];
+    if (matches.length !== 1 || !artifact || !Number.isSafeInteger(artifact.bytes) || artifact.bytes < required.minBytes ||
+        !digestValid(artifact.sha256) || required.sha256 !== undefined && artifact.sha256 !== required.sha256) {
+      findings.push({ kind: 'completion-artifact-missing', part: required.id, detail: 'Required completion artifact is missing, duplicated, empty or differs from its declared content.' });
+    }
+  }
+  let latestRequiredInput = -1;
+  for (const required of requirements.context) {
+    const matches = input.evidence.trajectory.filter(step => step.kind === 'input' && step.role === required.consumer &&
+      step.metadata?.contextId === required.id && observed(step.metadata) && sha256(step.content) === required.sha256);
+    if (matches.length !== 1) {
+      findings.push({ kind: 'context-delivery-mismatch', part: required.id, detail: 'Required context bytes lack a unique sealed input for the declared consumer and run.' });
+    } else latestRequiredInput = Math.max(latestRequiredInput, matches[0].index);
+  }
+  let latestRequiredTransition = -1;
+  for (const required of requirements.transitions) {
+    const matches = input.evidence.trajectory.filter(step => {
+      if (step.kind !== 'tool-result' || !observed(step.metadata)) return false;
+      const transition = step.metadata?.durableTransition as Record<string, unknown> | undefined;
+      return transition?.id === required.id && transition.subjectRef === required.subjectRef && transition.from === required.from && transition.to === required.to;
+    });
+    if (matches.length !== 1 || matches[0].index <= latestRequiredInput) {
+      findings.push({ kind: 'durable-transition-missing', part: required.id, detail: 'Required durable transition lacks a unique run-bound receipt after the required input.' });
+    } else latestRequiredTransition = Math.max(latestRequiredTransition, matches[0].index);
+  }
+  const results = input.evidence.trajectory.filter(step => {
+    if (step.kind !== 'tool-result' || !observed(step.metadata) || step.index <= Math.max(latestRequiredInput, latestRequiredTransition)) return false;
+    const outcome = step.metadata?.workloadOutcome as Record<string, unknown> | undefined;
+    return outcome?.id === requirements.downstream.id && outcome.value === requirements.downstream.value && outcome.graderRef === requirements.downstream.graderRef;
+  });
+  if (results.length !== 1) findings.push({ kind: 'downstream-outcome-missing', part: requirements.downstream.id,
+    detail: 'Required downstream graded outcome lacks a unique run-bound receipt after the required context and transitions.' });
+  return requirementsHash;
 }
 
 /**
@@ -259,11 +342,13 @@ export function verifyEvidence(input: VerifyEvidenceInput): IntegrityReport {
     }
   }
 
+  const completionRequirementsHash = input.completionRequirements ? verifyWorkloadCompletion(input, findings) : undefined;
   return {
     ok: findings.length === 0,
     findings,
     partsChecked: expectedParts.size,
     recomputedRootHash: recomputed.rootHash,
+    ...(completionRequirementsHash === undefined ? {} : { completionRequirementsHash }),
   };
 }
 
@@ -294,6 +379,7 @@ export function replayTrialEvidence(input: {
   envelope?: Pick<EvidenceEnvelope, 'contentHash'>;
   expectedIdentity?: TrialIdentity;
   unresolvedRefs?: string[];
+  completionRequirements?: WorkloadCompletionRequirements;
   storedJudgeView?: CompactJudgeView;
   policy?: JudgeViewPolicy;
 }): ReplayReport {
@@ -303,6 +389,7 @@ export function replayTrialEvidence(input: {
     manifest: input.manifest,
     evidence: input.evidence,
     envelope: input.envelope,
+    completionRequirements: input.completionRequirements,
     trial: input.trial,
     expectedIdentity: input.expectedIdentity,
     unresolvedRefs: input.unresolvedRefs,

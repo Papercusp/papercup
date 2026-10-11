@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { sealEvidence, type PreservedEvidence } from './evidence';
-import { replayTrialEvidence, verifyEvidence } from './integrity';
+import { replayTrialEvidence, verifyEvidence, type WorkloadCompletionRequirements } from './integrity';
+import { createHash } from 'node:crypto';
 import { deriveJudgeView } from './judge-view';
 import { EVALUATION_TRIAL_CONTRACT_VERSION, computeTrialIdentity } from './identity';
 import type { EvaluationTrial } from './schema';
@@ -105,5 +106,106 @@ describe('evidence sealing and replay integrity', () => {
 
     expect(replay.ok).toBe(true);
     expect(replay.judgeViewReproduced).toBe(true);
+  });
+});
+
+describe('declared workload completion integrity', () => {
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  const context = 'Permitted frozen context: dependency A is ready.';
+  const requirements = (): WorkloadCompletionRequirements => ({
+    artifacts: [{ id: 'answer.txt', minBytes: 1, sha256: hash('answer') }],
+    transitions: [{ id: 'finish', subjectRef: 'WI-fixture', from: 'wip', to: 'done' }],
+    context: [{ id: 'dependency-context', consumer: 'solver', sha256: hash(context) }],
+    downstream: { id: 'answer-correctness', value: true, graderRef: 'deterministic-answer-v1' },
+  });
+  function fixture() {
+    const t = trial();
+    const identity = computeTrialIdentity(t);
+    const metadata = { trialBindingHash: identity.bindingHash, runId: t.lineage.runId, receiptRef: 'fixture:resolved-ledger-receipt' };
+    const preserved: PreservedEvidence = { privacy: 'internal', artifacts: [
+      { id: 'answer.txt', mediaType: 'text/plain', bytes: 6, sha256: hash('answer'), ref: 'fixture:answer' },
+    ], trajectory: [
+      { index: 0, kind: 'input', role: 'solver', content: context, metadata: { ...metadata, contextId: 'dependency-context' } },
+      { index: 1, kind: 'tool-result', name: 'work_items:get', content: 'durable done state', metadata: {
+        ...metadata, durableTransition: { id: 'finish', subjectRef: 'WI-fixture', from: 'wip', to: 'done' },
+      } },
+      { index: 2, kind: 'tool-result', name: 'deterministic-answer-grader', content: 'correct', metadata: {
+        ...metadata, workloadOutcome: { id: 'answer-correctness', value: true, graderRef: 'deterministic-answer-v1' },
+      } },
+    ] };
+    const verify = (value = preserved, completion = requirements()) => {
+      // Re-sealing mutations isolates completion semantics from generic corruption.
+      const sealed = sealEvidence(value);
+      return verifyEvidence({ trial: t, expectedIdentity: identity, evidence: value, manifest: sealed.manifest,
+        envelope: sealed.envelope, completionRequirements: completion });
+    };
+    return { preserved, verify };
+  }
+
+  it('checks artifacts, actual input bytes, durable transitions and downstream outcome together', () => {
+    const { verify } = fixture();
+    expect(verify()).toMatchObject({ ok: true, findings: [] });
+    expect(verify().completionRequirementsHash).toMatch(/^[a-f0-9]{64}$/);
+    const changed = requirements(); changed.downstream.value = false;
+    expect(verify(undefined, changed).completionRequirementsHash).not.toBe(verify().completionRequirementsHash);
+  });
+
+  it('refuses a process-exit-zero record even when its own evidence is correctly sealed', () => {
+    const { verify } = fixture();
+    const exited: PreservedEvidence = { privacy: 'internal', artifacts: [], trajectory: [
+      { index: 0, kind: 'tool-result', name: 'process', content: 'exit=0', metadata: { exitCode: 0 } },
+    ] };
+    expect(verify(exited).findings.map(f => f.kind)).toEqual(expect.arrayContaining([
+      'completion-artifact-missing', 'context-delivery-mismatch', 'durable-transition-missing', 'downstream-outcome-missing',
+    ]));
+  });
+
+  it.each(['wrong-bytes', 'retrieved-only', 'wrong-consumer', 'foreign-run', 'foreign-binding', 'missing-receipt', 'duplicate-input'])
+    ('refuses context delivery defect %s', defect => {
+      const { preserved, verify } = fixture(); const input = preserved.trajectory[0];
+      if (defect === 'wrong-bytes') input.content += 'changed';
+      if (defect === 'retrieved-only') input.kind = 'tool-result';
+      if (defect === 'wrong-consumer') input.role = 'another-solver';
+      if (defect === 'foreign-run') input.metadata!.runId = 'another-run';
+      if (defect === 'foreign-binding') input.metadata!.trialBindingHash = 'foreign';
+      if (defect === 'missing-receipt') delete input.metadata!.receiptRef;
+      if (defect === 'duplicate-input') preserved.trajectory.push({ ...input, index: 3 });
+      expect(verify().findings.map(f => f.kind)).toContain('context-delivery-mismatch');
+    });
+
+  it.each(['missing-artifact', 'empty-artifact', 'wrong-artifact', 'duplicate-artifact', 'wrong-transition', 'transition-before-input', 'wrong-outcome', 'outcome-before-transition'])
+    ('refuses declared completion defect %s', defect => {
+      const { preserved, verify } = fixture();
+      if (defect === 'missing-artifact') preserved.artifacts = [];
+      if (defect === 'empty-artifact') preserved.artifacts[0].bytes = 0;
+      if (defect === 'wrong-artifact') preserved.artifacts[0].sha256 = hash('wrong');
+      if (defect === 'duplicate-artifact') preserved.artifacts.push({ ...preserved.artifacts[0] });
+      if (defect === 'wrong-transition') preserved.trajectory[1].metadata!.durableTransition = { id: 'finish', subjectRef: 'WI-other', from: 'wip', to: 'done' };
+      if (defect === 'wrong-outcome') preserved.trajectory[2].metadata!.workloadOutcome = { ...requirements().downstream, value: false };
+      if (defect === 'transition-before-input') {
+        [preserved.trajectory[0], preserved.trajectory[1]] = [preserved.trajectory[1], preserved.trajectory[0]];
+        preserved.trajectory.forEach((step, index) => { step.index = index; });
+      }
+      if (defect === 'outcome-before-transition') {
+        [preserved.trajectory[1], preserved.trajectory[2]] = [preserved.trajectory[2], preserved.trajectory[1]];
+        preserved.trajectory.forEach((step, index) => { step.index = index; });
+      }
+      expect(verify().ok).toBe(false);
+    });
+
+  it('refuses an empty completion contract or an unbound trial', () => {
+    const { preserved, verify } = fixture(); const empty = requirements(); empty.artifacts = [];
+    expect(verify(undefined, empty).findings.map(f => f.kind)).toContain('completion-contract-invalid');
+    const sealed = sealEvidence(preserved);
+    expect(verifyEvidence({ evidence: preserved, manifest: sealed.manifest, envelope: sealed.envelope,
+      completionRequirements: requirements() }).findings.map(f => f.kind)).toContain('identity-mismatch');
+  });
+
+  it('preserves completion checks through the existing replay entry point', () => {
+    const { preserved } = fixture(); preserved.artifacts = [];
+    const sealed = sealEvidence(preserved); const t = trial();
+    expect(replayTrialEvidence({ trial: t, expectedIdentity: computeTrialIdentity(t), evidence: preserved,
+      manifest: sealed.manifest, envelope: sealed.envelope, completionRequirements: requirements() }).integrity.findings
+      .map(f => f.kind)).toContain('completion-artifact-missing');
   });
 });

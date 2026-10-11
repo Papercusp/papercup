@@ -299,7 +299,8 @@ function buildAnswer(
       sourceCompleteness: 'unverified',
       limitations: [
         'Searched files are the source files ripgrep finds containing the name as a whole word; gitignored, hidden and node_modules paths are not searched.',
-        'Unattributed sites are syntactic calls the checker did not link to a declaration of this name; each says why.',
+        parts.intent && parts.intent !== 'callers' ? 'Native symbol/context/callees require one selected declaration; ambiguous or unsupported declarations carry an error.'
+          : 'Unattributed sites are syntactic calls the checker did not link to a declaration of this name; each says why.',
         'A site is a line: two calls on one line are one site.',
         ...(parts.limitations ?? []),
       ],

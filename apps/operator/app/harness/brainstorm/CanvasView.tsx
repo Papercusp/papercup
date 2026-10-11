@@ -57,11 +57,12 @@ export function CanvasView({ slug }: Props) {
   useEffect(() => {
     saveRef.current = debounce(async (s: SceneFile) => {
       try {
-        await fetch(`/api/harness/${slug}/brainstorm-canvas`, {
+        const response = await fetch(`/api/harness/${slug}/brainstorm-canvas`, {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ scene: s }),
         });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       } catch (e: any) {
         toast.error(`Canvas save failed: ${e?.message ?? e}`);
       }

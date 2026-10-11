@@ -26,6 +26,8 @@ import {
 } from './provider-registry';
 import { createSourceHostFetch } from './source-host-fetch';
 import { descriptorOAuthPlugin } from './connection-lifecycle';
+import { providerCredentialStatus, type ProviderCredentialStatus } from './provider-credentials';
+import type { TokenStorage } from '../oauth/token';
 import {
   DEFAULT_SOURCE_TOKEN_HARNESS,
   listOwnedExternalTriggerSources,
@@ -105,6 +107,11 @@ export interface TicketProviderSummary {
   requiredConfig: string[];
   /** Starts the existing OAuth flow for this provider and lands back on this page. */
   connectHref: string;
+  /**
+   * The paste-a-secret fields the provider declares (`setup.credentials`) and whether each is
+   * configured. Status only: never a stored value. Empty when the provider declares none.
+   */
+  credentials: ProviderCredentialStatus[];
 }
 
 export interface TicketSourceSummary {
@@ -141,6 +148,8 @@ export interface TicketIntegrationsScope {
 
 export interface TicketIntegrationsDeps {
   registry?: ProviderRegistry;
+  /** Where pasted provider credentials are read from. Production: the OAuth token store. */
+  credentialStorage?: TokenStorage;
   /** host.fetch bound to exactly one source. Production: createSourceHostFetch. */
   hostFetchFor?: (
     sql: postgres.Sql,
@@ -209,7 +218,7 @@ function configSchemaOf(descriptor: ProviderDescriptor): Record<string, unknown>
   return isPlainObject(schema) ? schema : null;
 }
 
-function summarizeProvider(entry: RegisteredProvider): TicketProviderSummary {
+function summarizeProvider(entry: RegisteredProvider, credentials: ProviderCredentialStatus[]): TicketProviderSummary {
   const d = entry.descriptor;
   const schema = configSchemaOf(d);
   const properties = isPlainObject(schema?.properties) ? schema.properties : {};
@@ -221,6 +230,7 @@ function summarizeProvider(entry: RegisteredProvider): TicketProviderSummary {
     statusMapping: 'sectionCategories' in properties ? 'sections' : 'provider-defined',
     requiredConfig: missingRequiredJsonSchemaKeys(schema, {}),
     connectHref: ticketConnectHref(d),
+    credentials,
   };
 }
 
@@ -247,7 +257,7 @@ function reportedConfig(schema: Record<string, unknown> | null, config: Record<s
 export async function ticketIntegrationsOverview(
   sql: postgres.Sql,
   scope: TicketIntegrationsScope,
-  deps: Pick<TicketIntegrationsDeps, 'registry'> = {},
+  deps: Pick<TicketIntegrationsDeps, 'registry' | 'credentialStorage'> = {},
 ): Promise<TicketIntegrationsOverview> {
   const providers = ticketProviders(await requestRegistry(deps));
   const byKind = new Map(providers.map((entry) => [entry.descriptor.id, entry]));
@@ -297,7 +307,14 @@ export async function ticketIntegrationsOverview(
       rules: rules.filter((rule) => rule.dataSourceId === source.id),
     };
   });
-  return { providers: providers.map(summarizeProvider), sources };
+  // Pasted credentials live under the harness the connect link writes tokens to, the same one the
+  // credentials route reads and writes.
+  const summaries = await Promise.all(
+    providers.map(async (entry) =>
+      summarizeProvider(entry, await providerCredentialStatus(entry.descriptor, DEFAULT_SOURCE_TOKEN_HARNESS, deps.credentialStorage)),
+    ),
+  );
+  return { providers: summaries, sources };
 }
 
 interface OwnedTicketSource {

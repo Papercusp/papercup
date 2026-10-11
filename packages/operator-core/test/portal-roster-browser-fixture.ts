@@ -119,6 +119,7 @@ type PortalRosterBrowserInput = {
   overview?: boolean;
   hud?: boolean;
   health?: boolean;
+  brainstorm?: boolean;
   harnesses?: { hive: string; selected: string; neighbor: string; foreign: string };
   docs?: { harness: string; selectedDoc: string; neighborDoc: string; selectedHeading: string; neighborHeading: string };
   markdownPreflight?: { value: string; heading: string };
@@ -136,7 +137,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'brainstorm' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -224,7 +225,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
         React.createElement(React.Fragment, null, React.createElement(HarnessesWorkspace), React.createElement(Toaster)))) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
-  ` : input.docs ? `
+  ` : input.docs || input.brainstorm ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -233,7 +234,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import { MarkdownPreview } from ${JSON.stringify(join(operatorRoot, 'app/_components/MarkdownEditor.tsx'))};
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
       React.createElement(React.Fragment, null,
-        React.createElement(AdvHarnessPanelPage, { panel: 'docs' }),
+        React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.brainstorm ? 'brainstorm' : 'docs')} }),
         ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'})) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
@@ -331,8 +332,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans || input.docs || input.overview || input.hud || input.health || input.harnesses
-    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.overview || input.hud || input.health || input.harnesses) }) : undefined;
+  const boundary = input.inbox || input.plans || input.docs || input.brainstorm || input.overview || input.hud || input.health || input.harnesses
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.brainstorm || input.overview || input.hud || input.health || input.harnesses) }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -371,7 +372,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     ? '/apps/operator-vite/src/components/adv/HealthTab.tsx' : input.overview
     ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.hud
     ? '/apps/operator/app/adv/hud/HudView.tsx' : input.harnesses
-    ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.docs
+    ? '/apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx' : input.brainstorm
+    ? '/apps/operator/app/harness/brainstorm/BrainstormFull.tsx' : input.docs
     ? '/apps/operator/app/adv/harnesses/AdvDocsTab.tsx' : input.plans
     ? '/apps/operator/app/_components/plans/PlansPane.tsx' : input.inbox
     ? '/apps/operator/app/_components/inbox/InboxPane.tsx' : input.prompts
@@ -408,7 +410,7 @@ export async function verifyPrivateHarnessesBrowserMount(input: Parameters<typeo
   return verifyPrivateWorkspaceBrowserMount(input);
 }
 
-async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
+export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
   const built = await buildPortalRosterBrowser(input);
   const browser = await chromium.launch({ channel: process.env.PORTAL_BROWSER_CHANNEL ?? 'chrome', headless: true });
   const server = createServer((request, response) => {
@@ -458,7 +460,7 @@ async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof build
     // replaceState even when the component itself initialized correctly.
     await page.goto(`http://127.0.0.1:${address.port}/${input.harnesses ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
     try { await (input.harnesses ? page.getByTestId('pot-workspace-cards')
-      : page.getByRole('region', { name: 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
+      : page.getByRole('region', { name: input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
     if (input.markdownPreflight) {
       try { await page.getByRole('heading', { name: input.markdownPreflight.heading, exact: true }).waitFor({ timeout: 15_000 }); }
@@ -487,6 +489,14 @@ async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeof build
     }
     assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
     if (!input.harnesses) assert.match(await page.locator('body').innerText(), /Select a /);
+    if (input.brainstorm) {
+      // This preflight mounts the actual no-selection panel and compiles the
+      // real lazy editor graph. It does not claim editor/API persistence.
+      for (const module of ['BrainstormFull', 'WriteView', 'MapView', 'CanvasView', 'BrainstormChat']) {
+        assert.ok([...built.originals.keys()].some(path => path.endsWith(`/app/harness/brainstorm/${module}.tsx`)),
+          `Brainstorm preflight must compile the real ${module} module`);
+      }
+    }
     return { sourceCount: built.originals.size, mounted: true };
   } finally {
     await browser.close();

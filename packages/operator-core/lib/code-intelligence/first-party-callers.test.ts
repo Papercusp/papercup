@@ -138,6 +138,22 @@ describe('P007 first-party symbol/context/callees', () => {
     expect(lines(answer.sites)).toEqual(['src/compose.ts:2', 'src/compose.ts:3']);
     expect(answer.evidence!.relationships.map(r => r.kind)).toEqual(['definition', 'callees']);
     expect(answer.evidence!.siteIdentities.every(s => s.contentHash && s.versionedSymbolId)).toBe(true);
+    const capped = firstPartyCallers({ ts, root, op: 'context', name: 'compose', limit: 1 });
+    expect(capped.truncation).toEqual({ truncated: true, totalAvailable: 2, continuation: null });
+    expect(capped.evidence!.siteIdentities).toHaveLength(1);
+  });
+
+  it('re-resolves the outgoing target version after a dependency edit at an unchanged call site', () => {
+    const before = firstPartyCallers({ ts, root, op: 'callees', name: 'compose' });
+    const dependency = FILES['src/dependency.ts']!;
+    try {
+      writeFileSync(join(root, 'src/dependency.ts'), `\n${dependency}`);
+      const after = firstPartyCallers({ ts, root, op: 'callees', name: 'compose' });
+      expect(after.error).toBeNull();
+      expect(lines(after.sites)).toEqual(['src/compose.ts:3']);
+      expect(after.sites[0].detail).toContain('src/dependency.ts:2');
+      expect(after.evidence!.sourceScope.sourceFingerprint).not.toBe(before.evidence!.sourceScope.sourceFingerprint);
+    } finally { writeFileSync(join(root, 'src/dependency.ts'), dependency); }
   });
 
   it('does not certify a missing declaration or mismatched selector as an empty graph', () => {

@@ -43,6 +43,7 @@ import { Select, type SelectOption } from '../../harness/Select';
 import { isExternalWebUrl, openExternalWebUrl } from '../../_components/ExternalLinkProvider';
 import { isDesktop } from '@/lib/ipc-status-tauri';
 import { SlackSetupCard } from './SlackSetupCard';
+import { ProviderCredentialsForm } from './ProviderCredentialsForm';
 
 export const PANELS = ['scope', 'mapping', 'rules'] as const;
 type Panel = (typeof PANELS)[number];
@@ -251,6 +252,7 @@ function ProviderCard({
           {sources.length > 0 ? 'Connect another account' : `Connect ${provider.displayName}`}
         </Button>
       </div>
+      <ProviderCredentialsForm providerId={provider.id} displayName={provider.displayName} credentials={provider.credentials} />
       {sources.length === 0 ? (
         <p style={muteText}>No {provider.displayName} account connected.</p>
       ) : (

@@ -208,4 +208,16 @@ describe('task-level disjointness (Layer 2)', () => {
       ReportSetFirewallError,
     );
   });
+
+  it('the frontier-swe rationale restates NO task / bucket counts — they are derived from the corpus (plan benchmark-coverage-frontierswe-v2-2026-10-10 D-003 §5)', () => {
+    // A hand-written "17 tasks (5/9/3)" drifted from the corpus (v1 is 7/7/3; v2 is 34 tasks, 19/8/7). The counts
+    // live in the ingested corpus and the report derives them; prose that restates them is a second, stale copy.
+    const fs = REPORT_ON_SUITES.find((s) => s.id === 'frontier-swe')!;
+    const countClaim =
+      /\b\d+\s*(?:ultra-long-horizon\s+)?tasks?\b|\b\d+\s+(?:implementation|performance|perf|research|ML-research)\b|\b\d+\s*\/\s*\d+\s*\/\s*\d+\b/i;
+    // The detector must still recognise the exact shape it replaced, or this guard passes vacuously.
+    expect('17 ultra-long-horizon tasks (5 implementation / 9 performance / 3 ML-research)').toMatch(countClaim);
+    expect(fs.rationale).not.toMatch(countClaim);
+    expect(fs.title).not.toMatch(countClaim);
+  });
 });

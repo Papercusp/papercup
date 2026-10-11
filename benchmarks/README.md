@@ -64,6 +64,38 @@ attempts or incomplete usage retains its outcome difference while withholding co
 efficiency. The pooled Wilson interval is a Bernoulli diagnostic, separate from
 repository inference.
 
+For a conservative withheld confirmation design, set the existing
+`confirmation.method` to `paired-repository-hoeffding-v1`, select the exact
+disjoint withheld task roster (`plannedPairedTasks` equals its length), and call
+`planCurrentBenchmarkConfirmation(protocol)` from the reproducibility schema
+module. It derives repository task weights, a two-sided rejection threshold and
+a finite-sample power lower bound from the frozen effect, alpha and target power.
+It assumes independent repositories and permits arbitrary dependence within each
+repository. Scores are seed-collapsed candidate-minus-control in [-1,1]. Reject
+the zero-mean null only when the absolute task-weighted difference exceeds
+`nullCriticalValue`; the power guarantee belongs to this rule, not the reporting
+bootstrap. An imbalanced roster reduces effective repositories; extra seeds do
+not increase them. `meetsTarget:false` explicitly means the roster does not meet
+this sufficient planning bound, not that an observed null proves equivalence.
+This bound can be demanding: preserve the insufficiency if the suite lacks enough
+independent repositories. The helper never authorizes confirmation inference.
+
+Current workload trials reuse the canonical `evaluation-trial` evidence seal and
+`verifyEvidence` / `replayTrialEvidence`. Freeze `completionRequirements` with the
+workload configuration: required artifact IDs and minimum bytes, durable state
+transitions, exact context hashes and consuming actor, and a downstream graded
+outcome. Resolve artifact content and receipt authority before constructing the
+preserved evidence. Input steps carry the consumed bytes and `contextId`;
+tool-result metadata carries the observed `durableTransition` or `workloadOutcome`.
+Each observation binds `trialBindingHash`, `runId` and a resolved `receiptRef`.
+The validator requires context before transitions and the downstream result after
+them, rejects missing/duplicated/foreign observations, and returns the declaration
+hash as `completionRequirementsHash`. A receipt reference alone does not prove its
+authenticity; the workload resolver must read its authoritative record. A sealed
+exit-zero trajectory does not satisfy workload completion. Synthetic validator
+tests establish these checks, while actual workload artifacts remain separately
+required for measured acceptance.
+
 Evaluation labels imported snapshots as historical archive evidence and explicitly
 marked fixtures as synthetic evidence. A current configuration alone is incomplete
 evidence: the view requires the complete assigned outcome roster and recorded

@@ -118,6 +118,16 @@ describe('native baseline against the exposed graph handler', () => {
     expect(calls.indexed).not.toHaveBeenCalled();
   });
 
+  it('refuses unsupported index selectors on native operations before either backend runs', async () => {
+    const out = await graphQuery.handler(graphQuery.args.parse({ op: 'context', name: 'target', uid: 'Function:old' }),
+      { projectDir: '/baseline-repo' } as never) as { data: import('./contracts').CodeIntelAnswer };
+    expect(out.data.error).toContain('selectors are unsupported');
+    expect(out.data.evidence!.graphScope.basis).toBe('compiler-project');
+    expect(out.data.evidence!.sourceScope.sourceFingerprint).toBeNull();
+    expect(calls.compiler).not.toHaveBeenCalled();
+    expect(calls.indexed).not.toHaveBeenCalled();
+  });
+
   it('reports a compiler failure through the same first-party route without substituting indexed evidence', async () => {
     calls.compiler.mockResolvedValue({ backend: 'typescript-service', sites: [], error: 'compiler unavailable',
       freshness: { health: 'unhealthy', indexedAt: null, indexedCommit: null, staleVsDisk: null } });

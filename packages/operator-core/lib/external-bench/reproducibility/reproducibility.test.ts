@@ -9,10 +9,46 @@ import { canonicalJson } from './canonical-json';
 import { computePreregHash } from './prereg';
 import { rolloutIdFor } from './emit';
 import { fleetRunIdFor } from './fleet';
-import { currentBenchmarkProtocolSchema, requireCurrentBenchmarkAssignment } from './schema';
+import { currentBenchmarkProtocolSchema, planCurrentBenchmarkConfirmation, requireCurrentBenchmarkAssignment } from './schema';
 import { currentProtocolFixture } from './_protocol-test-fixture';
 
 describe('current frozen benchmark protocol', () => {
+  it('derives withheld power from exact repository counts, never pilot tasks or repeated seeds', () => {
+    const protocol = currentProtocolFixture();
+    protocol.confirmation.method = 'paired-repository-hoeffding-v1';
+    protocol.confirmation.taskIds = ['withheld-1', 'withheld-2'];
+    protocol.confirmation.plannedPairedTasks = 2;
+    protocol.sampling!.taskRepositories['withheld-2'] = 'another-repo';
+    const base = planCurrentBenchmarkConfirmation(protocol);
+    expect(base).toMatchObject({ independentRepositories: 2, effectiveRepositories: 2, pairedTasks: 2,
+      seedsPerTask: 1, generationAssignments: 4, meetsTarget: false, inferenceAuthorized: false });
+    expect(base.repositories).toEqual([{ repository: 'another-repo', pairedTasks: 1 }, { repository: 'withheld-repo', pairedTasks: 1 }]);
+    protocol.confirmation.seeds = [2, 3, 4];
+    const repeated = planCurrentBenchmarkConfirmation(protocol);
+    expect(repeated.generationAssignments).toBe(12);
+    expect(repeated.effectiveRepositories).toBe(base.effectiveRepositories);
+    expect(repeated.powerLowerBound).toBe(base.powerLowerBound);
+    expect(repeated.detectableEffectBound).toBe(base.detectableEffectBound);
+    protocol.sampling!.taskRepositories['withheld-2'] = 'withheld-repo';
+    expect(planCurrentBenchmarkConfirmation(protocol).independentRepositories).toBe(1);
+  });
+
+  it('refuses an unbound method, repository mapping or unspecified confirmation subset', () => {
+    const protocol = currentProtocolFixture();
+    expect(() => planCurrentBenchmarkConfirmation(protocol)).toThrow(/rejection rule/);
+    protocol.confirmation.method = 'paired-repository-hoeffding-v1';
+    delete protocol.sampling;
+    expect(() => planCurrentBenchmarkConfirmation(protocol)).toThrow(/repository mapping/);
+    protocol.sampling = currentProtocolFixture().sampling;
+    protocol.confirmation.taskIds.push('withheld-2');
+    protocol.sampling!.taskRepositories['withheld-2'] = 'withheld-repo';
+    expect(() => planCurrentBenchmarkConfirmation(protocol)).toThrow(/unspecified subset/);
+    protocol.confirmation.plannedPairedTasks = 2;
+    expect(() => planCurrentBenchmarkConfirmation(protocol)).not.toThrow();
+    protocol.confirmation.taskIds[1] = 't1';
+    expect(() => planCurrentBenchmarkConfirmation(protocol)).toThrow(/withheld/);
+  });
+
   it('binds a complete declared assignment to the configured launch and equal generation cap', () => {
     const protocol = currentProtocolFixture();
     expect(requireCurrentBenchmarkAssignment(protocol, { runId: 'run-1', armId: 'papercusp', taskId: 't1', seed: 1,

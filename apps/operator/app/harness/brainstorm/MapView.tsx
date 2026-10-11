@@ -183,12 +183,17 @@ function MapInner({ slug }: Props) {
   }, [brainstormRow, brainstormRows]);
 
   const persist = useMemo(() =>
-    debounce((tree: Tree) => {
-      fetch(`/api/harness/${slugRef.current}/brainstorm-mindmap`, {
+    debounce(async (tree: Tree) => {
+      try {
+        const response = await fetch(`/api/harness/${slugRef.current}/brainstorm-mindmap`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ tree }),
-      }).catch((e) => toast.error(`Mindmap save failed: ${e?.message ?? e}`));
+        });
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      } catch (e: any) {
+        toast.error(`Mindmap save failed: ${e?.message ?? e}`);
+      }
     }, 500), []);
 
   useEffect(() => {

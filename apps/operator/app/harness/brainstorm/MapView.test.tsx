@@ -6,8 +6,20 @@
 // native React Flow shape). Those pure functions are exported and tested here;
 // the ReactFlow canvas render itself is e2e territory.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, render } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { toast } from 'sonner';
+vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ phase: 'staging', mindmap: null }] }) }));
+vi.mock('sonner', () => ({ toast: { error: vi.fn() } }));
+vi.mock('@xyflow/react', async importOriginal => ({
+  ...await importOriginal<typeof import('@xyflow/react')>(),
+  ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
+  ReactFlow: () => null,
+  useReactFlow: () => ({ fitView: vi.fn() }),
+}));
 import {
+  MapView,
   normalize,
   meToTree,
   repairTree,
@@ -16,6 +28,29 @@ import {
   kindAccent,
   seedTree,
 } from './MapView';
+
+beforeEach(() => { vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+describe('MapView save responses', () => {
+  it.each([403, 500])('reports a resolved HTTP %i save rejection', async status => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('private save denied', { status })));
+    render(<MapView slug="h" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(fetch).toHaveBeenCalledWith('/api/harness/h/brainstorm-mindmap', expect.objectContaining({ method: 'PUT' }));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('private save denied'));
+  });
+
+  it('accepts a successful mindmap save without a failure alert', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ok":true}', { status: 200 })));
+    render(<MapView slug="h" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+});
 
 describe('isReactFlowTree', () => {
   it('accepts a native tree whose nodes carry numeric positions', () => {

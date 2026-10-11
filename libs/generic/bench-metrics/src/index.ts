@@ -39,9 +39,11 @@ export {
   bootstrapMeanCI,
   meanStderr,
   pairedBootstrapCI,
+  pairedRepositoryPowerPlan,
   mcnemarExact,
   type Interval,
   type PairedComparison,
+  type PairedClusterPowerPlan,
   type McNemarResult,
 } from './intervals';
 export { dominates, paretoFrontier, costAccuracyFrontier, type Direction } from './pareto';

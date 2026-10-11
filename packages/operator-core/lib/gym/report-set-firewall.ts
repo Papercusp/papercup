@@ -132,7 +132,7 @@ export const REPORT_ON_SUITES: readonly BenchSet[] = Object.freeze([
     usage: 'report-on',
     title: 'FrontierSWE (Proximal Labs; ultra-long-horizon implementation / perf-eng / ML-research)',
     rationale:
-      '17 ultra-long-horizon tasks (5 implementation / 9 performance / 3 ML-research), hours→tens-of-hours, 5 trials/task, CONTINUOUS [0,1] score (no model fully solves the implementation tasks). M2 in-container + own-scorer (each task ships its own scorer: a Rust benchmark-runner + *.expected fixtures); headline = mean@5/best@5 + AVG-RANK/dominance across a coordination-topology arm pool. Third-party-authored + self-grading → NEVER a gym tuning target (D-005) (plan benchmark-suite-frontier-swe-2026-06-18).',
+      'Ultra-long-horizon tasks (hours→tens-of-hours) in coarse implementation / performance / ML-research buckets, 5 trials/task, CONTINUOUS [0,1] score (no model fully solves the implementation tasks). Task and bucket counts are DERIVED from the ingested corpus (task-sets + report/frontier-report), never restated here. v2 (Proximal-Labs/frontier-swe-v2, the current corpus) grades each task in a SEPARATE digest-pinned verifier image; v1 (in-container own-scorer) is HISTORY and never aggregates with v2 (plan benchmark-coverage-frontierswe-v2-2026-10-10 R-1 / D-003). Headline = mean@5/best@5 + AVG-RANK/dominance across a coordination-topology arm pool. Third-party-authored + self-grading → NEVER a gym tuning target (D-005) (plan benchmark-suite-frontier-swe-2026-06-18).',
   },
 ]);
 

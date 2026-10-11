@@ -89,6 +89,7 @@ export {
   type IntegrityReport,
   type ReplayReport,
   type VerifyEvidenceInput,
+  type WorkloadCompletionRequirements,
 } from './integrity';
 
 export {

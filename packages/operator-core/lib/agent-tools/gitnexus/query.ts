@@ -107,7 +107,7 @@ export default defineTool({
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
-      'Use lsp:query for compiler semantics and scoped rg for literals/current source; runtime diagnosis needs state/log tools. Use gitnexus.context or trace for known-symbol intents outside this operation set, with source corroboration.',
+      'Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.',
     chaining:
     'op:"symbol" to locate the symbol → op:"callers"/"callees" for its edges → op:"impact" for the change radius. If results look stale, op:"health" reports structured list_repos freshness. If you need references, diagnostics, text search, or another refused intent, pass that intent as `op` to receive its concrete useInstead redirect.',
   },
@@ -136,13 +136,13 @@ export default defineTool({
       .string()
       .min(1)
       .optional()
-      .describe('symbol/callees: defining file; picks one of several same-name symbols.'),
+      .describe('symbol/context/callees: defining file; picks one of several same-name symbols.'),
     line1: z.number().int().min(1).optional().describe('Native symbol/context/callees: defining line to distinguish same-name declarations in one file.'),
     uid: z
       .string()
       .min(1)
       .optional()
-      .describe('symbol/callees: exact uid from an ambiguity error candidate.'),
+      .describe('GitNexus index uid; unsupported by native symbol/context/callees. Use file_path/line1 for native disambiguation.'),
     direction: z
       .enum(['upstream', 'downstream', 'both'])
       .optional()
@@ -168,10 +168,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const op = args.op as string;
+    const native = ['callers', 'symbol', 'callees', 'context'].includes(op);
     const scoped = (answer: CodeIntelAnswer) => answer.evidence ? answer : { ...answer,
       evidence: unmeasuredSourceEvidence(answer, { repositoryId: null, identityKind: 'unknown',
-        paths: op === 'callers' ? args.paths ?? ['.'] : [],
-        basis: op === 'callers' ? 'compiler-project' : 'indexed-code' }, [
+        paths: native ? args.paths ?? (args.file_path ? [args.file_path] : ['.']) : [],
+        basis: native ? 'compiler-project' : 'indexed-code' }, [
         'The producer supplied no measured repository/content snapshot. Resolve source versions before treating these sites as source-backed relationships.',
         'A repository selector and current disk contents do not identify the indexed source snapshot.',
       ]) };
@@ -182,7 +183,7 @@ export default defineTool({
       if (refusal) return { data: scoped(refusal) };
     }
 
-    if (['callers', 'symbol', 'callees', 'context'].includes(op)) return { data: scoped(await firstPartyCallersAnswer(args, ctx)) };
+    if (native) return { data: scoped(await firstPartyCallersAnswer(args, ctx)) };
 
     // The dispatcher is passed PER CALL rather than installed into the module
     // global by this handler. It closes over `ctx` — which carries the calling
