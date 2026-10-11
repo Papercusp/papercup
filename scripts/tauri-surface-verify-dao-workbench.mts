@@ -16,7 +16,7 @@ import { DEFAULT_PLAN_ADMISSION_POLICY } from '../packages/operator-core/lib/age
 import { readPlanAdmissionGovernanceSnapshot } from '../packages/operator-core/lib/agent-tools/plans/plan-admission-governance-store.ts';
 import { getPlanRow } from '../packages/operator-core/lib/agent-tools/plans/source.ts';
 import { readNativeHostHealth } from './fixtures/dao-workbench-identity.mjs';
-import { WORKBENCH_FIELD_SELECTOR, workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from './lib/dao-workbench-controls.ts';
+import { WORKBENCH_FIELD_SELECTOR, workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from './lib/dao-workbench-controls.mts';
 import { DAO_SECTIONS } from '../apps/operator-vite/src/components/dao/dao-navigation.ts';
 
 if (process.argv.includes('--check-imports')) {
