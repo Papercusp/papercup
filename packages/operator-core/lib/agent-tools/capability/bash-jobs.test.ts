@@ -1083,7 +1083,26 @@ describe('preflight attribution snapshot (EI-21257218038249358)', () => {
     await waitForStatus(job.id);
     const final = getJob(job.id)!;
     const output = readJobOutput(final);
-    const logContent = readFileSync(final.logPath, 'utf8');
+    // job.status flips terminal synchronously in the close handler, but the
+    // snapshot and the operator's normalized JOB END reach the file through an
+    // async WriteStream. Under gate load a read taken right after the status flip
+    // saw the runner's raw JOB END (offset 47) and the snapshot (offset 282) but
+    // not the operator's later marker (gate run 762a13a6, 382606c4). Wait, with a
+    // deadline, for the flush; a real ordering bug (JOB END written before the
+    // snapshot) never satisfies the wait and still fails the assertions below.
+    const readLog = (): string => (existsSync(final.logPath) ? readFileSync(final.logPath, 'utf8') : '');
+    const flushDeadline = Date.now() + 10_000;
+    let logContent = readLog();
+    while (
+      Date.now() < flushDeadline &&
+      !(
+        logContent.indexOf(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX) >= 0 &&
+        logContent.lastIndexOf(JOB_LOG_END_MARKER_PREFIX) > logContent.indexOf(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX)
+      )
+    ) {
+      await new Promise((r) => setTimeout(r, 25));
+      logContent = readLog();
+    }
     const snapshotAt = logContent.indexOf(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX);
     // The transient-service runner may already have written a raw marker. The
     // operator's later normalized marker is authoritative and must follow its
