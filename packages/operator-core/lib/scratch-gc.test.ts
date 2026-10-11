@@ -1010,9 +1010,9 @@ describe('deferred scratch quota recovery', () => {
       expect(JSON.stringify(result.content)).toContain(spillPath);
       expect(scansAtWrite).toEqual([1, 1, 1]);
       expect(rootReads).toBe(1);
-      expect(phaseRows[0]).toEqual({ quotaWaitMs: 0, refreshWaitMs: 25, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 });
-      expect(phaseRows.slice(1)).toEqual(Array(2).fill({ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }));
-      expect(doorPhases).toEqual([{ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }]);
+      expect(phaseRows[0]).toMatchObject({ quotaWaitMs: 0, refreshWaitMs: 25, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 });
+      expect(phaseRows.slice(1)).toMatchObject(Array(2).fill({ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }));
+      expect(doorPhases).toMatchObject([{ quotaWaitMs: 25, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 25 }]);
       expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 3 * 512 + spill.length);
     } finally {
       releaseRead();
@@ -1338,7 +1338,7 @@ describe('deferred scratch quota recovery', () => {
         onTiming: (row) => { phases.push(row); throw new Error('observer failure'); } }, async () => {
         clock = 70; throw failure;
       })).rejects.toBe(failure);
-      expect(phases).toEqual([{ quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 70, totalMs: 70 }]);
+      expect(phases).toMatchObject([{ quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 70, totalMs: 70 }]);
       expect(scratchUsageBytes('ws-Q')).toBe(0);
     } finally { now.mockRestore(); }
   });
@@ -1664,6 +1664,7 @@ describe('deferred scratch quota recovery', () => {
         workspaceId,
         filePath: join(makeRunDir(workspaceId, 'mutex', UUID(42), 16), 'waiter.bin'),
         bytes: 1,
+        captureSubphaseTimings: true,
         onTiming: (row) => {
           timings.push(row);
           if (row.progress?.mutexWaitOwner) observedWait();
@@ -1679,6 +1680,10 @@ describe('deferred scratch quota recovery', () => {
       releaseHolder();
       await holder;
       await waiter;
+      expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs).toMatchObject({
+        'fs-mutex-admission.root-mkdir': expect.any(Number),
+        'fs-mutex-admission.reader-drain': expect.any(Number),
+      });
     } finally {
       if (timeout) clearTimeout(timeout);
       releaseHolder();
