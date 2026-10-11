@@ -67,16 +67,14 @@ describe('decideSlugScope', () => {
   });
 
   it('no production caller wraps the decider: the decider is the only gate', () => {
-    // slug-scope.ts re-exports requireUnambiguousSlugScope as a TEMPORARY identity shim
-    // (WI-6554700010008411) only because git-sync committed this file ahead of audit.ts.
-    // The invariant that matters is that no caller depends on a wrapper.
+    // decideSlugScope refuses ambiguity itself; the old requireUnambiguousSlugScope wrapper
+    // is gone and must not come back as a second gate a caller could forget.
     const root = path.resolve(__dirname, '..');
     const callers = (fs.readdirSync(root, { recursive: true }) as string[])
       .filter((rel) => rel.endsWith('.ts') && !rel.endsWith('.test.ts'))
-      .filter((rel) => !rel.endsWith(path.join('plans', 'slug-scope.ts')))
       .filter((rel) => fs.readFileSync(path.join(root, rel), 'utf8').includes('requireUnambiguousSlugScope'));
     expect(callers).toEqual([]);
-    expect(slugScope.requireUnambiguousSlugScope({ status: 'resolved' }, 'ws')).toEqual({ status: 'resolved' });
+    expect('requireUnambiguousSlugScope' in slugScope).toBe(false);
   });
 });
 
