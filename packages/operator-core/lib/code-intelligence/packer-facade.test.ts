@@ -75,6 +75,8 @@ describe('native P010 change report contract', () => {
       const stale = await nativeChangeReport(args, { symbol: 'target', file: 'target.ts' }, { exec, graph });
       expect(stale.report.freshness).toBe('unmeasured');
       expect(stale.report.limitations).toContain('Source changed during analysis: target.ts.');
+      expect(stale.report.testReach).toMatchObject({ status: 'unknown', tests: [], paths: [],
+        executionCoverage: 'unmeasured', gapSuggestion: null });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -87,6 +89,35 @@ describe('native P010 change report contract', () => {
       await expect(nativeChangeReport({ rootPath: root, include: ['*.ts'] },
         { symbol: 'target', file: '../other/target.ts' }, { graph })).rejects.toThrow(/repository-relative/);
       expect(graph).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps unresolved, truncated, disconnected and compiler-failed test reach unknown', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-test-reach-unit-'));
+    const source = 'export function target() { return 1; }\n';
+    writeFileSync(join(root, 'target.ts'), source);
+    const contentHash = createHash('sha256').update(source).digest('hex');
+    const answer: CodeIntelAnswer = { backend: 'typescript-service', intent: 'impact', query: 'target', sites: [],
+      truncation: { truncated: false, totalAvailable: 0, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+    const evidence = unmeasuredSourceEvidence(answer, { repositoryId: 'fixture', identityKind: 'registry', paths: ['.'], basis: 'compiler-project' }, []);
+    const start = { site: { path: 'target.ts', line1: 1, kind: 'function' as const, name: 'target' }, contentHash, versionedSymbolId: 'target-id' };
+    const complete: CodeIntelAnswer = { ...answer, evidence: { ...evidence, sourceScope: { ...evidence.sourceScope,
+      sourceFingerprint: 'inputs', supportingFiles: [{ path: 'target.ts', contentHash, language: 'typescript', representation: 'full-source' }] } },
+      traversal: { direction: 'downstream', maxDepth: 5, maxPaths: 20, start, paths: [], truncationReasons: [], outcome: 'not-found-in-scope' } };
+    const exec: ExecFn = async () => ({ stdout: '' });
+    const run = (result: CodeIntelAnswer) => nativeChangeReport({ rootPath: root, include: ['target.ts'] },
+      { symbol: 'target', file: 'target.ts' }, { exec, graph: async () => result });
+    try {
+      const negative = await run(complete);
+      expect(negative.report.testReach).toMatchObject({ status: 'not-found-in-scope', tests: [], executionCoverage: 'unmeasured' });
+      expect(negative.report.testReach.gapSuggestion).toContain('run the baseline suite');
+      for (const degraded of [
+        { ...complete, error: 'compiler unavailable' },
+        { ...complete, truncation: { ...complete.truncation, truncated: true } },
+        { ...complete, traversal: { ...complete.traversal!, outcome: 'incomplete' as const } },
+        { ...complete, traversal: { ...complete.traversal!, paths: [{ siteIndices: [42], walk: 'reverse' as const }] } },
+      ]) expect((await run(degraded)).report.testReach).toMatchObject({ status: 'unknown', gapSuggestion: null });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

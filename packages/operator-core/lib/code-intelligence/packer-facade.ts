@@ -537,6 +537,15 @@ export interface NativeChangeReport {
   readonly changed: readonly { path: string; line1: number | null; patch: string }[];
   readonly consumers: readonly SymbolSite[];
   readonly relevantTests: readonly SymbolSite[];
+  readonly testReach: {
+    readonly symbol: string;
+    readonly file: string;
+    readonly status: 'found' | 'not-found-in-scope' | 'unknown';
+    readonly tests: readonly SymbolSite[];
+    readonly paths: readonly { testPath: string; siteIndices: readonly number[]; walk: 'forward' | 'reverse' }[];
+    readonly executionCoverage: 'unmeasured';
+    readonly gapSuggestion: string | null;
+  };
   readonly recheck: readonly { path: string; reason: string }[];
   readonly sourceFingerprint: string;
   readonly freshness: 'first-read' | 'unchanged' | 'changed' | 'unmeasured';
@@ -624,7 +633,43 @@ export async function nativeChangeReport(args: PackerArgs, subject: ChangeReport
     } catch { measured = false; limitations.push(`Source is no longer readable: ${file.path}.`); }
   }
   const sourceFingerprint = hash.digest('hex');
-  return { answer, report: { subject, changed, consumers, relevantTests, recheck, sourceFingerprint,
+  // Per-symbol reach reuses the compiler's versioned paths. Never turn an
+  // unresolved callback, bounded negative or source drift into a test-gap claim.
+  const relationships = new Map(answer.evidence?.relationships.map(edge => [edge.siteIndex, edge]) ?? []);
+  const testPaths = new Set(relevantTests.map(site => site.path));
+  const sourceHashes = new Map(answer.evidence?.sourceScope.supportingFiles.map(file => [file.path, file.contentHash]) ?? []);
+  const reachPaths: { testPath: string; siteIndices: readonly number[]; walk: 'forward' | 'reverse' }[] = [];
+  let rejectedReachPath = false;
+  for (const path of answer.traversal?.paths ?? []) {
+    const edges = path.siteIndices.map(index => relationships.get(index));
+    if (!path.siteIndices.length || !path.siteIndices.every((index, offset) => {
+      const edge = relationships.get(index);
+      const from = path.walk === 'reverse' ? edge?.target : edge?.source;
+      const previous = offset ? (path.walk === 'reverse' ? edges[offset - 1]?.source : edges[offset - 1]?.target)
+        : answer.traversal?.start;
+      return edge?.origin === 'compiler' && edge.knowledge === 'observed' && edge.binding === 'direct'
+        && Boolean(edge.source?.versionedSymbolId && edge.target?.versionedSymbolId)
+        && from?.versionedSymbolId === previous?.versionedSymbolId
+        && sourceHashes.get(edge.source!.site.path) === edge.source!.contentHash
+        && sourceHashes.get(edge.target!.site.path) === edge.target!.contentHash
+        && Boolean(answer.sites[index])
+        && /^[a-f0-9]{64}$/.test(edge.source?.contentHash ?? '') && /^[a-f0-9]{64}$/.test(edge.target?.contentHash ?? '');
+    })) { rejectedReachPath = true; continue; }
+    for (const testPath of new Set(path.siteIndices.map(index => answer.sites[index]?.path).filter(file => file && testPaths.has(file))))
+      reachPaths.push({ testPath: testPath!, siteIndices: [...path.siteIndices], walk: path.walk });
+  }
+  const completeReach = measured && !answer.error && Boolean(answer.traversal)
+    && answer.traversal?.outcome !== 'incomplete' && !answer.truncation.truncated && !rejectedReachPath;
+  const reachStatus = measured && !answer.error && reachPaths.length ? 'found'
+    : completeReach ? 'not-found-in-scope' : 'unknown';
+  const testReach: NativeChangeReport['testReach'] = { symbol: subject.symbol, file: subject.file,
+    status: reachStatus, tests: measured && !answer.error
+      ? relevantTests.filter(site => reachPaths.some(path => path.testPath === site.path)) : [],
+    paths: measured && !answer.error ? reachPaths : [], executionCoverage: 'unmeasured',
+    gapSuggestion: reachStatus === 'not-found-in-scope'
+      ? `No static test reach for ${subject.symbol} was found in the requested scope; add a calling test and run the baseline suite.` : null };
+  limitations.push('Static test reach suggests tests to run; it does not establish executed coverage or passing tests.');
+  return { answer, report: { subject, changed, consumers, relevantTests, testReach, recheck, sourceFingerprint,
     freshness: !measured ? 'unmeasured' : !subject.previousFingerprint ? 'first-read'
       : subject.previousFingerprint === sourceFingerprint ? 'unchanged' : 'changed',
     provenance: { ...git, runtime: getBuildInfo(), graph: answer.evidence }, limitations: [...new Set(limitations)],
