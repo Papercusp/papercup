@@ -99,6 +99,131 @@ export function testReferencesInstrument(testBody: string, testPath: string, ins
   return false;
 }
 
+/**
+ * R-10 drift marker (4): a no-instrument declaration is a claim that no program measured the
+ * evidence. A script path, a run id or captured output anywhere in the evidence record says a
+ * program did, so the two contradict and the declaration cannot stand.
+ *
+ * Scanned: `evidenceRef`, the top-level `testRunId`, and every key/string under `details` except
+ * the declaration itself and the server-stamped measurement keys (`measurementPin`,
+ * `currentMeasurement`, `declaredConfiguration`) and the schema-validated `adequacy` metadata.
+ *
+ * Boundaries: an evidence artifact (`docs/evidence/*.json`), a tool read (`plans:verification-health`),
+ * a work-item / thread / scorecard ref and an ordinary source module (`lib/foo.ts`, which an honest
+ * code-reading observation cites) are NOT scripts. Scripts are: anything under `scripts/`,
+ * `.papercusp/scratch/`, `/tmp/` or `~/`; a test file; a file whose extension is a script language
+ * (sh, bash, zsh, py, mjs, cjs, mts, cts, sql, pl, rb); a `.js` file named with a directory.
+ */
+const UNSCANNED_DETAIL_KEYS: ReadonlySet<string> = new Set([
+  'instrument',
+  'measurementPin',
+  'currentMeasurement',
+  'declaredConfiguration',
+  'adequacy',
+]);
+/** Detail keys (lower-cased, `_`/`-` removed) whose non-empty value is a run id. */
+const RUN_ID_KEYS: ReadonlySet<string> = new Set(['runid', 'runids', 'testrun', 'testrunid', 'testrunids', 'rungroup', 'rungroupid']);
+/** Detail keys (normalised as above) whose non-empty value is captured program output. */
+const CAPTURED_OUTPUT_KEYS: ReadonlySet<string> = new Set([
+  'capturedoutput',
+  'output',
+  'outputtail',
+  'rawoutput',
+  'commandoutput',
+  'consoleoutput',
+  'stdout',
+  'stderr',
+  'log',
+  'logs',
+]);
+const SCRIPT_EXT_RE = /\.(sh|bash|zsh|py|mjs|cjs|mts|cts|sql|pl|rb)$/i;
+const RUN_ID_TEXT_RE =
+  /\b(?:test[-_ ]?run(?:[-_ ]?id)?|run[-_ ]?(?:group[-_ ]?)?id|run\s*#)\s*[#:=-]?\s*\d+|\brun\s+\d{4,}\b/i;
+const TOKEN_SPLIT_RE = /[\s"'`()[\]{}<>,;=|]+/;
+const MAX_SCANNED_STRINGS = 500;
+
+function normaliseKey(key: string): string {
+  return key.toLowerCase().replace(/[-_]/g, '');
+}
+
+function nonEmpty(value: unknown): boolean {
+  if (value === null || value === undefined || value === false) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return true;
+}
+
+/** Is this whitespace/punctuation-delimited token a path to a script? (exported for the boundary test) */
+export function isScriptPathToken(token: string): boolean {
+  const t = token.replace(/^[:@]+/, '').replace(/(?::\d+){1,2}$/, '').replace(/[.:]+$/, '');
+  if (!t) return false;
+  if (t.startsWith('/tmp/') || t.startsWith('~/') || t.includes(SCRATCH_PREFIX)) return true;
+  if (/(?:^|\/)scripts\/[^/]+/.test(t)) return true;
+  if (TEST_FILE_RE.test(t)) return true;
+  if (SCRIPT_EXT_RE.test(t)) return true;
+  return /\/[^/]+\.js$/i.test(t);
+}
+
+function scriptPathIn(text: string): string | null {
+  for (const token of text.split(TOKEN_SPLIT_RE)) if (isScriptPathToken(token)) return token;
+  return null;
+}
+
+/**
+ * The first program trace in a no-instrument binding's evidence record, as a human-readable
+ * "<what> (<where>)" string, or null when the record names none.
+ */
+export function evidenceRecordProgramTrace(binding: {
+  evidenceRef?: string | undefined;
+  testRunId?: number | null | undefined;
+  details?: Record<string, unknown> | undefined;
+}): string | null {
+  if (binding.testRunId !== null && binding.testRunId !== undefined) {
+    return `a run id (testRunId ${binding.testRunId})`;
+  }
+  if (typeof binding.evidenceRef === 'string') {
+    const script = scriptPathIn(binding.evidenceRef);
+    if (script) return `a script path (evidenceRef names "${script}")`;
+    const run = RUN_ID_TEXT_RE.exec(binding.evidenceRef);
+    if (run) return `a run id (evidenceRef names "${run[0]}")`;
+  }
+  let scanned = 0;
+  const walk = (value: unknown, path: string, depth: number): string | null => {
+    if (scanned >= MAX_SCANNED_STRINGS) return null;
+    if (typeof value === 'string') {
+      scanned += 1;
+      const script = scriptPathIn(value);
+      if (script) return `a script path (${path} names "${script}")`;
+      const run = RUN_ID_TEXT_RE.exec(value);
+      if (run) return `a run id (${path} names "${run[0]}")`;
+      return null;
+    }
+    if (depth >= 6 || value === null || typeof value !== 'object') return null;
+    const entries = Array.isArray(value) ? value.map((v, i) => [String(i), v] as const) : Object.entries(value);
+    for (const [key, child] of entries) {
+      const childPath = Array.isArray(value) ? `${path}[${key}]` : `${path}.${key}`;
+      if (!Array.isArray(value)) {
+        const norm = normaliseKey(key);
+        if (RUN_ID_KEYS.has(norm) && nonEmpty(child)) return `a run id (${childPath})`;
+        if (CAPTURED_OUTPUT_KEYS.has(norm) && nonEmpty(child)) return `captured output (${childPath})`;
+      }
+      const hit = walk(child, childPath, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  for (const [key, value] of Object.entries(binding.details ?? {})) {
+    if (UNSCANNED_DETAIL_KEYS.has(key)) continue;
+    const norm = normaliseKey(key);
+    if (RUN_ID_KEYS.has(norm) && nonEmpty(value)) return `a run id (details.${key})`;
+    if (CAPTURED_OUTPUT_KEYS.has(norm) && nonEmpty(value)) return `captured output (details.${key})`;
+    const hit = walk(value, `details.${key}`, 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 async function blobExists(git: GitRunner, repo: string, commit: string, rel: string): Promise<boolean> {
   try {
     await git(repo, ['cat-file', '-e', `${commit}:${rel}`]);
@@ -124,7 +249,12 @@ async function locateRepo(git: GitRunner, root: string, rel: string): Promise<{ 
 }
 
 export async function instrumentProvenanceRefusal(
-  binding: { evidenceKind: string; details?: Record<string, unknown> | undefined },
+  binding: {
+    evidenceKind: string;
+    evidenceRef?: string | undefined;
+    testRunId?: number | null | undefined;
+    details?: Record<string, unknown> | undefined;
+  },
   asCommitted: { commitSha: string; repoPrefix: string | null } | undefined,
   deps: InstrumentProvenanceDeps,
 ): Promise<InstrumentProvenanceRefusal | null> {
@@ -142,6 +272,17 @@ export async function instrumentProvenanceRefusal(
     }
     if (!reason) {
       return refusal('instrument_undeclared', `details.instrument = { none: true } needs a non-empty reason. ${DECLARE_HINT}`, raw);
+    }
+    // R-10 drift marker (4): "no instrument" is contradicted by a program trace in the record.
+    const trace = evidenceRecordProgramTrace(binding);
+    if (trace) {
+      return refusal(
+        'instrument_undeclared',
+        `details.instrument declares none:true, but the evidence record names ${trace}. A script, a run or captured output means a program produced this evidence: ` +
+          'cite that program as details.instrument = { path, testPath } (committed instrument + the committed test that imports it), ' +
+          'or, if the observation genuinely used no program, remove the script/run/output from the record.',
+        raw,
+      );
     }
     return null;
   }
