@@ -1527,8 +1527,10 @@ async function openAgentChat(pane: PuiPane): Promise<void> {
 
 async function completeNewSessionSetup(pane: PuiPane): Promise<void> {
   await pane.waitFor('New session — 1 Context');
+  await pane.waitFor('Connection: Connected');
   pane.write('/');
   pane.write(HARNESS);
+  await pane.waitFor(`Project search: ${HARNESS}`);
   pane.enter(); // finish search, not a launch
   await pane.waitFor(`> ${HARNESS}`);
   pane.enter(); // explicitly choose this project's stable identity
@@ -7648,7 +7650,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         timeout: 15_000, maxBuffer: 32_000,
         env: { PATH: process.env.PATH, HOME: home, PUI_OPERATOR: `http://127.0.0.1:${first.port}` },
       }).then(({ stdout, stderr }) => ({ output: redactSensitiveText(stdout + stderr) }))
-        .catch((doctorError) => ({ error: redactSensitiveText(cleanupErrorText(doctorError)) }));
+        .catch((doctorError) => ({
+          error: redactSensitiveText(cleanupErrorText(doctorError)),
+          output: redactSensitiveText(String(doctorError?.stdout ?? '') + String(doctorError?.stderr ?? '')),
+        }));
       console.info('PUI_OPERATOR_CONTEXT_PREFLIGHT_FAILURE', JSON.stringify({
         diagnostics: first.diagnostics, screen: pane.failureScreen(),
         frames, probe, doctor, responses: first.responses, output: first.output(),
