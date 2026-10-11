@@ -1101,11 +1101,13 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // EI-22767271786772554: a canonical red at a DISTINCT repair head is durable in
     // convergenceRounds even after the queue moves back to awaiting-fixer. The public
     // result must project that judgment instead of inferring "not-judged" from phase.
+    const priorQueue = await deps.readFrozenRepairQueue!();
+    expect(priorQueue).not.toBeNull();
     queue = {
-      ...queue!,
+      ...priorQueue!,
       repairHead: movingTip,
       convergenceRounds: [
-        ...(queue?.convergenceRounds ?? []),
+        ...(priorQueue?.convergenceRounds ?? []),
         {
           round: 2,
           head: movingTip,
@@ -1513,7 +1515,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const measured: string[] = [];
     deps.runGateAtRef = async (head) => {
       measured.push(head);
-      if (outcome === "unavailable") return null;
+      if (outcome === "unavailable") throw new Error("verification unavailable");
       if (outcome === "superseded" && measured.length === 1 && cell.queue) {
         cell.queue = {
           ...cell.queue, repairHead: newer,
@@ -1983,7 +1985,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       attempts: 1,
       fixerSpawnId: "fixer-1",
     });
-    expect(queue?.dispatchReservation).toBeUndefined();
+    expect((await deps.readFrozenRepairQueue!())?.dispatchReservation).toBeUndefined();
   });
 
   it("renews the frozen-repair reservation throughout a slow dispatch", async () => {
@@ -8425,6 +8427,7 @@ describe("runGreenCheckpoint", () => {
       unmeasured: 0,
       alarms: [],
       offReasons: [],
+      recorder: null,
       headline: "per-file reuse: 7 of 10 candidate file(s) reused",
     };
 
@@ -9667,6 +9670,12 @@ describe("evaluateDeployStaleness (silent-drought alarm)", () => {
 // already tested above with stub deps; these cover the pure pieces of the heavy
 // path that don't need a real suite-run.
 describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () => {
+  it("prevents optional Git index writes in repair tasks and preserves an explicit caller policy", () => {
+    expect(buildGreenCheckpointEnv(null, {}).GIT_OPTIONAL_LOCKS).toBe("0");
+    expect(buildGreenCheckpointEnv(null, { GIT_OPTIONAL_LOCKS: "" }).GIT_OPTIONAL_LOCKS).toBe("0");
+    expect(buildGreenCheckpointEnv(null, { GIT_OPTIONAL_LOCKS: "1" }).GIT_OPTIONAL_LOCKS).toBe("1");
+  });
+
   it("admits only canonical execution substrate and explicit gate-owned values", () => {
     const src = {
       PATH: "/usr/bin",
