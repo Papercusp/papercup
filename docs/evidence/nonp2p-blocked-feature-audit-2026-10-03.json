@@ -3971,7 +3971,137 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-011 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "retroactivePayoutEvidenceQualification": {
+    "auditKind": "PERSONAL P-011 dated evidence qualification; existing disposition preserved",
+    "auditor": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "parentWorkItem": "WI-10005820",
+    "evidenceRefs": [
+     "thread-post:1173691",
+     "thread-post:1173696",
+     "thread-post:1173711"
+    ],
+    "evidenceObservedAt": "2026-10-11T06:49:46.260Z",
+    "sourceSnapshot": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "version": 178,
+     "contentHash": "0a5f185d4d820f31a574fa78b30797a5313a8bb75bbf7ebc3f96b95c090d33d3",
+     "item": "P-011",
+     "status": "blocked",
+     "dependency": "P-010",
+     "qualification": "Dated later source observation; original version100 row and canonical unresolved values remain historical and unchanged."
+    },
+    "governingClause": {
+     "id": "AUTO-BAR-R-22-P-011",
+     "revision": 2,
+     "hash": "9e4a3ad7481e83476952fc78d3a79b8ab09563457624faf7229e31e10f513989",
+     "sourceRubricRevision": 1,
+     "barHash": "15a61ac1b66a8cc9e14ff813889cc5376922e37ac1d88db41191703ba13714c8",
+     "condition": "A retroactive payout round pays each capability author the share computed from the usage ledger.",
+     "requiredTestFile": "packages/operator-core/lib/p2p/contributor-payouts.test.ts",
+     "requiredTestFileExists": false,
+     "qualification": "Exact named detector absent in the audited canonical tree; passing foundation suites do not satisfy this payout-round condition."
+    },
+    "draftClause": {
+     "id": "AUTO-REQ-M-001-P-011",
+     "revision": 1,
+     "hash": "2592a5c0cc8529047175ab74421ba895ffabf595f46cc21bbf7bd6d61aa95db1",
+     "authority": "draft"
+    },
+    "clauseBindingObservation": {
+     "reads": 2,
+     "countPerRead": 0,
+     "limitPerRead": 100,
+     "truncatedByLimitPerRead": false,
+     "qualification": "Two exact selected-clause reads returned no evidence bindings; this is not an absence claim over the whole plan."
+    },
+    "rubricObservation": {
+     "revision": 10,
+     "criteriaHash": "3c56d18afb9061e7202304e9e226dfc0943b0154ed16108bc4cca50fbed1c903",
+     "barSetHash": "077351639048de549d84a3e3d3c30808b518cb0c9798820290bd8ecee6014182",
+     "vettingState": "unvetted",
+     "vettingSatisfied": false,
+     "vettingReason": "stale-attestation",
+     "attestedRevision": 9,
+     "attestationIssueId": "EI-25654648644801146",
+     "qualification": "Dated registry observation; historical source rubric1 remains unavailable and revision10 does not replace or establish acceptance under it."
+    },
+    "focusedFoundationProof": {
+     "command": "npm run test:file -- packages/operator-core/lib/p2p/revenue-settlement.test.ts packages/operator-core/lib/p2p/metering-ledger.test.ts packages/operator-core/lib/p2p/metering-ledger.property.test.ts packages/operator-core/lib/p2p/treasury-controls.test.ts packages/operator-core/lib/cupboard/commerce-ledger.test.ts",
+     "commitSha": "eca672ed6e929c5d9411312cadaba57a98bc7cc0",
+     "exitCode": 0,
+     "filesPassed": 5,
+     "testsPassed": 98,
+     "testsSkipped": 0,
+     "testRunIds": [
+      21043707,
+      21043708,
+      21043709,
+      21043710,
+      21043711
+     ],
+     "ledgerSource": "local",
+     "ledgerStatusPerRun": "pass",
+     "ledgerWorktreeDirtyPerRun": true,
+     "ledgerIsScratchConfigPerRun": false,
+     "ledgerRereadByExactIds": true,
+     "namedSourceAndTestPinsStableBeforeAfter": true,
+     "sourceAndTestSha256": {
+      "packages/operator-core/lib/p2p/revenue-settlement.ts": "a42b5d89ffa0733b5ddf363273425fae193847e6b9aa56aefcc99b94b570ba85",
+      "packages/operator-core/lib/p2p/revenue-settlement.test.ts": "12a6f2031611660c2e1898d9120f5105386fbe584e12bde2e44256591d27fdd4",
+      "packages/operator-core/lib/p2p/metering-ledger.ts": "d066c78a0a9a9ff102ee7d56a99691135af17d390b1c958a0335b9e1cca46f2d",
+      "packages/operator-core/lib/p2p/metering-ledger.test.ts": "bfb83d10e8b7c722427298d042744148c0b5f3bded43d4a3a2a86cc554fba6ae",
+      "packages/operator-core/lib/p2p/metering-ledger.property.test.ts": "383279991e9d9784862e3676cca97c103aa7bf0e473c48030d1f3068fd234bab",
+      "packages/operator-core/lib/p2p/treasury-controls.ts": "6342ec69b5fbe7660bf5357b15987e7fe935791abf7b04129d6d36f6d1916ab7",
+      "packages/operator-core/lib/p2p/treasury-controls.test.ts": "5c0ad63abc1bd95667cb86fbc1c55d4b96c46db3ff3e255ea5a19eac0af210d7",
+      "packages/operator-core/lib/cupboard/commerce-ledger.ts": "85a4db249b2a21a41c026eecedb4e530c08a528bfd47ae721dfff873646317f5",
+      "packages/operator-core/lib/cupboard/commerce-ledger.test.ts": "67cc13fca919e971b66413a642ed338a26d052715ca1160937259499834f5fbf"
+     },
+     "qualification": "Saved local foundation proof only; no rerun for this evidence edit. Named test paths were clean before/after, but the exact ledger worktreeDirty field is true. Stable nine-file pins do not prove the full import graph or a clean candidate; no cause is inferred for the dirty field."
+    },
+    "implementationFindings": [
+     "Revenue settlement computes integer-micro component shares from exact dependency pins and equal dependency units coalesced by author; treasury controls route reconciled allocations to verified wallets. These are reusable foundations, not a verified retroactive payout round.",
+     "Metering records per-host/fleet spend and capped per-attested-user donations; it does not establish the required retroactive capability-author round.",
+     "Commerce payout.created accepts supplied creatorId and amount and records paid/failed lifecycle; the audited path does not derive that amount from adoption/outcome usage."
+    ],
+    "prerequisiteObservation": {
+     "observedAt": "2026-10-11T06:48Z",
+     "P011": {
+      "id": "WI-10004295",
+      "state": "blocked",
+      "assignee": null,
+      "completionAuthority": null
+     },
+     "P010": {
+      "id": "WI-10004294",
+      "state": "open",
+      "assignee": null,
+      "completionAuthority": null
+     },
+     "P019": {
+      "id": "WI-10004283",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "qualification": "Shallow state and authority observation only; inherited clipped completion/checkpoint prose is not independent proof. Correction thread-post:1173696 governs."
+     },
+     "DAO034": {
+      "plan": "shared-pot-dao-cupboard-v1-2026-09-04",
+      "version": 263,
+      "contentHash": "27543eb34607ae95f32122de2338dc8b5fefc3cc3755e3773eff540c764dcb45",
+      "item": "P-034",
+      "storedStatus": "done",
+      "effectiveStatus": "done",
+      "qualification": "Complete item text/metadata read is a plan-status observation. WI-2146854 completion, real Safe/testnet deployment, signatures, capital and shipment were not independently qualified."
+     }
+    },
+    "limitations": [
+     "P-011 acceptance remains unproved: the required retroactive usage-derived author payout round and its named detector are not established by these foundation tests.",
+     "Original row values, every other audit row, original200/172 UNKNOWN boundaries, archive1160078, carried checks/walls and both existing pending Avi conversations remain preserved.",
+     "No provider payout, Safe/chain execution, mainnet, runtime adoption, gate result, full-plan acceptance or shipment is established.",
+     "This qualification does not renew the killed residue goal or revise the pending private-preview contents-review requirement."
+    ]
+   }
   },
   {
    "id": "WI-10004296",
@@ -4005,7 +4135,60 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-012 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "charterGovernanceEvidenceQualification": {
+    "qualifiedAt": "2026-10-11T08:10:36.534Z",
+    "qualifiedBy": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "auditRef": "thread-post:1173809",
+    "status": "source-and-prerequisite-qualified-acceptance-unproved",
+    "currentSource": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "version": 178,
+     "contentHash": "0a5f185d4d820f31a574fa78b30797a5313a8bb75bbf7ebc3f96b95c090d33d3",
+     "item": "P-012",
+     "effectiveStatus": "blocked",
+     "remainingContract": "Charter text, treasury rules as ratified policy, reputation derived from the evidence ledger, and actual dogfooding of Papercusp governance. Verify each against the as-built at activation.",
+     "dependency": "P-002 / WI-10004286 remains needs-human, unassigned, with no terminal completion authority. Its current source requires the counsel brief and owner selection of counsel and budget."
+    },
+    "acceptanceAuthority": {
+     "reviewRef": "thread-post:1173794",
+     "qualification": "The current revision10 independently audited acceptance rubric and active R23@2 are construction/contract authority. They do not establish P012 outcome acceptance. Historical rubric1 remains unavailable; draft M001@1 is not substituted for accepted authority."
+    },
+    "asBuilt": {
+     "launchPreparation": "Full dao-launch.ts and dao-launch-store.ts read: persisted, exact-revision reviewed drafts describe intended organization/governance/funding/legal/banking preparation. They never confer membership, enact policy, verify a provider or move funds. projectDaoLaunch always returns fundingActive:false and treasuryBalance:null, including preparationReady:true.",
+     "reputation": "Full DaoExecution.tsx and DaoWorkspaceDetails.tsx read: the reputation section selects done/shipped work records and explicitly says they establish neither a reputation score nor equity allocation. This inspected view is not evidence-ledger-derived reputation proof.",
+     "admission": "Full plan-admission-policy.ts, governance-round.ts and plan-admission-certificate-source.ts read: policy mode defaults to enforce; finalization uses an explicit weighted electorate; the production source independently resolves owner policy/roster, authenticates ballots and reconstructs the exact finalization. Source presence does not establish a ratified Papercusp charter or actual governance dogfood.",
+     "treasury": "Full treasury-controls.ts read: bounded role allowlists/caps and distinct automation/owner signers; routing requires a matching Safe deployment record, reconciled settlement and explicit mainnet-capital approval. The source defines controls and prerequisite validation, not observed deployment or a ratified treasury policy.",
+     "bridge": "Full onchain-governance-bridge.ts read: exact current independently authenticated finalization and approved action commitment are required; only treasury-transfer/settlement-batch mirror on-chain through an injected submitter. This is source qualification, not an executed chain transaction."
+    },
+    "daoPrerequisites": {
+     "plan": "shared-pot-dao-cupboard-v1-2026-09-04",
+     "version": 263,
+     "contentHash": "27543eb34607ae95f32122de2338dc8b5fefc3cc3755e3773eff540c764dcb45",
+     "P001": "P-001 / WI-2145104: plan and item say done, but completion authority is proposed. Stored completion exists; the plan status does not satisfy committed-completion authority.",
+     "P003": "P-003 / WI-2146328: done/committed with stored completion. Current weighted finalization source was read; current runtime adoption, the full receipt and governance dogfood were not independently accepted in this unit.",
+     "P023": "P-023 / WI-2145126: done/committed. Its complete exact summary verifies a pure Safe/Zodiac-style treasury control model and explicitly no chain side effect. Recorded two-test success is historical; it does not establish the deployment required by the current P-023 text.",
+     "P024": "P-024 / WI-2145127: done/committed with stored completion. Full current one-way bridge source read. Real submitter, durable mirror ledger and actual chain execution are not established.",
+     "P037": "P-037 / WI-2146857: done/committed; complete exact summary read. It reports production certificate wiring and focused historical unit verification, alongside historical affected-radius failures. This is not a current full-suite verdict, actual Papercusp governance dogfood or shipment."
+    },
+    "sourceFingerprints": {
+     "packages/operator-core/lib/dao-launch.ts": "13cafc5ed8d00160d5c389984d596aa81cf9e6e718295dd487ad29980d66fad9",
+     "packages/operator-core/lib/dao-launch-store.ts": "ac71130b803985368942bb303064c08289b2ddc8be556acc0b11b92654ec04fe",
+     "apps/operator-vite/src/components/dao/DaoExecution.tsx": "739609ff5ab86bb225cd5260583cae2abda188e364a1b10046c05620a7927971",
+     "apps/operator-vite/src/components/dao/DaoWorkspaceDetails.tsx": "dfed51adf120eef76388e890b7a1a122eebf7d7f19cd567bbf3d78c644dbb7c0",
+     "packages/operator-core/lib/p2p/treasury-controls.ts": "6342ec69b5fbe7660bf5357b15987e7fe935791abf7b04129d6d36f6d1916ab7",
+     "packages/operator-core/lib/p2p/onchain-governance-bridge.ts": "571cc51b6043e885ccaa768745a0b5a36eb992b5840b9778f4478119fdf319a9",
+     "packages/operator-core/lib/agent-tools/plans/plan-admission-policy.ts": "d7d68eedd587c81a571f4321154e50fe17c1b24e5229b0ab456d426027b1bd43",
+     "packages/operator-core/lib/agent-tools/plans/governance-round.ts": "411400db8bfb38fff7c5eef51668f96b4515d2f21c5f0b015fc3423c1985fd53",
+     "packages/operator-core/lib/agent-tools/plans/plan-admission-certificate-source.ts": "6bf737cc95827c2c6c851b1874301cf34d1d52a492f173bb93bbab80de64d393"
+    },
+    "verification": "Read current plan items, exact seven-item state/authority fields, complete P023/P037 receipt summaries and nine full source modules. No saved foundation-test replay, fresh runtime journey or code change. Validate additive JSON readback and exact inverse against the pre-edit bytes.",
+    "limitations": [
+     "P012 acceptance remains unproved. Narrow source discovery is not a global absence proof for charter, ratified treasury policy, evidence-ledger reputation or dogfood records.",
+     "Original row values and all other audit rows, original200/172 UNKNOWN boundaries, archive1160078, carried checks and two existing pending Avi conversations remain preserved.",
+     "No LIVE_GATE_OPS, provider action, Safe/mainnet execution, current full-suite acceptance, killed-residue-goal renewal or shipment."
+    ]
+   }
   },
   {
    "id": "WI-10004298",
