@@ -29,6 +29,35 @@ import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot }
 import { evaluateServingRuntime } from '../serving-runtimes';
 import { evaluateAcceptedSourceContainment } from '../git-pipeline-position';
 import type { SourceRuntimeProvenance } from './source-runtime-provenance';
+import type { NativeChangeReport } from './packer-facade';
+
+describe('native P011 required BAR registered per-symbol static test reach', () => {
+  it('suggests the compiler-resolved calling test and reports a scoped gap after its reference is removed', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-test-reach-compiler-'));
+    const call = async () => (await codePack.handler(codePack.args.parse({ op: 'diff', rootPath: project,
+      include: ['*.ts'], explain: { symbol: 'changedTarget', file: 'target.ts', paths: ['.'], phase: 'pre-edit' } }),
+    { projectDir: project } as never) as { data: { answer: CodeIntelAnswer; report: NativeChangeReport } }).data;
+    try {
+      writeFileSync(join(project, 'target.ts'), 'export function changedTarget() { return 1; }\n');
+      writeFileSync(join(project, 'bridge.ts'), 'import { changedTarget as alias } from "./target";\nexport function bridge() { return alias(); }\n');
+      writeFileSync(join(project, 'reference.test.ts'), 'import { bridge } from "./bridge";\nexport function referenceTest() { return bridge(); }\n');
+      writeFileSync(join(project, 'other.ts'), 'export function changedTarget() { return 2; }\n');
+      writeFileSync(join(project, 'unrelated.test.ts'), 'import { changedTarget } from "./other";\nexport function unrelatedTest() { return changedTarget(); }\n');
+      const before = await call();
+      expect(before.answer.error).toBeNull();
+      expect(before.report.testReach).toMatchObject({ symbol: 'changedTarget', file: 'target.ts', status: 'found',
+        tests: [expect.objectContaining({ path: 'reference.test.ts' })], executionCoverage: 'unmeasured', gapSuggestion: null });
+      expect(before.report.testReach.paths).toEqual([expect.objectContaining({ testPath: 'reference.test.ts', walk: 'reverse', siteIndices: [0, 1] })]);
+      expect(before.report.testReach.tests.some(site => site.path === 'unrelated.test.ts')).toBe(false);
+      writeFileSync(join(project, 'reference.test.ts'), 'export function referenceTest() { return 1; }\n');
+      const after = await call();
+      expect(after.answer.error).toBeNull();
+      expect(after.report.testReach).toMatchObject({ status: 'not-found-in-scope', tests: [], paths: [], executionCoverage: 'unmeasured' });
+      expect(after.report.testReach.gapSuggestion).toContain('run the baseline suite');
+      expect(after.report.sourceFingerprint).not.toBe(before.report.sourceFingerprint);
+    } finally { rmSync(project, { recursive: true, force: true }); }
+  }, 120_000);
+});
 
 describe('native P015 required BAR compiler dependency proof', () => {
   it('requires re-verification after a compiler-resolved dependency changes or disappears', async () => {

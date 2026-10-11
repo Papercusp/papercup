@@ -31,6 +31,9 @@ export const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const FUTURE_SKEW_MS = 5 * 60 * 1000;
 /** Hard cap on files visited by one suggestion walk — a bound, never a verdict. */
 export const MAX_VISITED_FILES = 20000;
+/** Evidence stays bounded independently of the add-only selection walk. */
+export const MAX_DEPENDENCY_PATH_DEPTH = 64;
+export const MAX_DEPENDENCY_PATHS = 100;
 
 const RESOLVE_EXTS = ["", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 const JS_TO_TS = new Map([
@@ -298,6 +301,9 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
   const rejected = [];
   const seen = new Set();
   const queue = [];
+  const provenance = new Map();
+  const dependencyPaths = [];
+  let pathsTruncated = false;
   const packageNameAt = packageNameReader(readSource);
   let truncated = false;
   for (const file of changed) {
@@ -308,6 +314,7 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
     }
     seen.add(file);
     queue.push(file);
+    provenance.set(file, { changed: file, files: [file], hops: [] });
   }
   let queueIndex = 0;
   while (queueIndex < queue.length) {
@@ -321,6 +328,14 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
       }
       acceptedImporters.add(edge.importer);
       accepted.push({ importer: edge.importer, imported: edge.imported });
+      const parent = provenance.get(file);
+      if (parent && !parent.files.includes(edge.importer) && parent.hops.length < MAX_DEPENDENCY_PATH_DEPTH) {
+        const path = { changed: parent.changed, consumer: edge.importer,
+          files: [...parent.files, edge.importer], hops: [...parent.hops, { ...edge }] };
+        provenance.set(edge.importer, path);
+        if (dependencyPaths.length < MAX_DEPENDENCY_PATHS) dependencyPaths.push(path);
+        else pathsTruncated = true;
+      } else if (!parent || parent.hops.length >= MAX_DEPENDENCY_PATH_DEPTH) pathsTruncated = true;
       if (seen.size >= MAX_VISITED_FILES) {
         truncated = true;
         continue;
@@ -334,6 +349,8 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
   return {
     status: "applied",
     suggestedFiles: [...acceptedImporters],
+    dependencyPaths,
+    pathsTruncated,
     accepted,
     rejected,
     truncated,
@@ -434,6 +451,8 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
     rejected: result.rejected.length,
     rejectedReasons: [...new Set(result.rejected.map((r) => r.reason))].sort(),
     truncated: Boolean(result.truncated),
+    dependencyPaths: result.dependencyPaths ?? [],
+    pathsTruncated: Boolean(result.pathsTruncated),
     index: result.index ?? null,
     ageMs: Number.isFinite(ageMs) ? ageMs : null,
   };

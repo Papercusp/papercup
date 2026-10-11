@@ -4995,6 +4995,11 @@ function resolveAffected(changed) {
   // EVERY run, including absent/stale/disabled (gitnexus-deterministic-integration P-001): the
   // P-008 snapshot went dormant for days while this line stayed silent on `unavailable`.
   errSync(formatSuggestionLine(graphReport, merged.added, graphReport.source ?? null));
+  // Reuse the validated offline walk for behavioral-strand diagnostics. A path
+  // explains an added dependency; it is neither executed coverage nor a verdict.
+  for (const path of graphReport.dependencyPaths ?? [])
+    errSync(`GRAPH_DEPENDENCY_PATH ${JSON.stringify(path)}`);
+  if (graphReport.pathsTruncated) errSync('GRAPH_DEPENDENCY_PATHS truncated=true selection=preserved');
 
   // Walk reverse-deps transitively
   const affected = new Set(directlyChanged);

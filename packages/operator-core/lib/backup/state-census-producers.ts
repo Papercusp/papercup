@@ -21,6 +21,7 @@ import { papercuspRoot } from '../papercusp-root';
 import { parseCodexCliRef } from '../inference-gateway/codex-cli-bridge';
 import { codexAuthPath } from '../inference-gateway/codex-oauth-proxy';
 import { readPlanTemplateDirForInstall } from '../cupboard/plan-template-store';
+import { REAP_TAIL_MAX_BYTES, verifyReapTailReceipt } from '../task-manager/reap-archive';
 
 /** Compose independent writers without traversing the same physical root twice. */
 export function installedRootCensusProducers() {
@@ -51,6 +52,37 @@ export function runtimeRetainedCensusProducer() {
     { kind: 'path', root: root.id, name: 'crash-reports', classification: 'state', producer: 'fatal-diagnostics', descendants: true },
     { kind: 'path', root: root.id, name: 'snapshot-fold-checkpoints', classification: 'state', producer: 'hyperbee-own-compaction', descendants: true },
   ];
+  return { roots: [root], declarations };
+}
+
+/** task-reconcile-action archives under OS home, independently of papercuspRoot().
+ * Directory shape proves containers only; tails need a ledger identity or writer receipt. */
+export async function reapArchiveCensusProducer(home = homedir(), retainedTaskIds: readonly string[] = []) {
+  const root: CensusRoot = { id: 'reap-archive-home', path: join(home, '.papercusp') };
+  const declarations: CensusDeclaration[] = [];
+  const archive = join(root.path, 'reap-archive');
+  try { if (!(await lstat(archive)).isDirectory()) return { roots: [root], declarations }; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { roots: [root], declarations }; throw error; }
+  const add = (name: string) => declarations.push({ kind: 'path', root: root.id, name,
+    classification: 'state', producer: 'task-reconcile-reap-tail-archive' });
+  add('reap-archive');
+  const identities = new Set(retainedTaskIds.filter(id => id.length > 0 && !/[\\/\0]/.test(id) && id !== '.' && id !== '..'));
+  for (const entry of await readdir(archive, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(entry.name)) continue;
+    const date = new Date(`${entry.name}T00:00:00Z`);
+    if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== entry.name) continue;
+    add(`reap-archive/${entry.name}`);
+    for (const tail of await readdir(join(archive, entry.name), { withFileTypes: true })) {
+      if (!tail.isFile() || !tail.name.endsWith('.tail.log')) continue;
+      const name = `reap-archive/${entry.name}/${tail.name}`;
+      const metadata = await lstat(join(root.path, name));
+      if (!metadata.isFile() || metadata.size > REAP_TAIL_MAX_BYTES) continue;
+      const taskId = tail.name.slice(0, -'.tail.log'.length);
+      const receiptVerified = await verifyReapTailReceipt(join(root.path, name), taskId, entry.name);
+      if (receiptVerified || identities.has(taskId)) add(name);
+      if (receiptVerified) add(`${name}.receipt.json`);
+    }
+  }
   return { roots: [root], declarations };
 }
 
@@ -146,6 +178,28 @@ export async function templateStoreCensusProducer(path = papercuspRoot(), expect
     if (!entry.isDirectory() || !/^[A-Za-z0-9._-]+$/.test(entry.name)) continue;
     const name = `templates/${entry.name}`;
     const files = await readdir(join(path, name), { withFileTypes: true });
+    // Historical Save Template wrote <slug>/<semver>/papercusp.json.
+    // Validate its identity before declaring only the writer's exact metadata.
+    if (/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(entry.name)) for (const version of files) {
+      if (!version.isDirectory() || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version.name)) continue;
+      const bundle = `${name}/${version.name}`;
+      const children = await readdir(join(path, bundle), { withFileTypes: true });
+      if (!children.some(child => child.name === 'papercusp.json' && child.isFile())) continue;
+      let manifest;
+      try { manifest = JSON.parse(await readFile(join(path, bundle, 'papercusp.json'), 'utf8')); }
+      catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+      if (manifest?.name !== entry.name || manifest?.version !== version.name || manifest?.kind !== 'template') continue;
+      if (!declarations.some(declaration => declaration.name === name)) add(name);
+      add(bundle);
+      for (const child of children) {
+        if (child.isFile() && ['papercusp.json', 'SPEC.md', 'AGENTS.md', 'README.md', '.published.json'].includes(child.name)) add(`${bundle}/${child.name}`);
+        if (child.name !== '.harness' || !child.isDirectory()) continue;
+        add(`${bundle}/.harness`);
+        for (const config of await readdir(join(path, bundle, '.harness'), { withFileTypes: true })) {
+          if (config.isFile() && ['config.json', 'validation-contract.md'].includes(config.name)) add(`${bundle}/.harness/${config.name}`);
+        }
+      }
+    }
     // install-template-core requires this manifest before copying into the store.
     if (!files.some(file => file.name === 'template.yaml' && file.isFile())) continue;
     add(name);

@@ -23,6 +23,73 @@ import { identityKeychainCensusProducer, anchorSecretCensusProducer, runtimeReta
 import { peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, stripRangeCacheCensusProducer, virtualenvCacheDeclaration, affectedTestCacheCensusProducer } from './state-census-producers';
 import { planTemplateStoreCensusProducer, historicalGitBlobIdentityResolver, workspaceTemplateStoreCensusProducer } from './state-census-producers';
 import { execFileSync } from 'node:child_process';
+import { reapArchiveCensusProducer } from './state-census-producers';
+import { archiveReapTail, REAP_TAIL_MAX_BYTES } from '../task-manager/reap-archive';
+
+describe('reaper archive writer census', () => {
+  it('verifies writer receipts after ledger GC and exposes corrupt, mismatched and linked receipts', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'reap-receipt-'));
+    try {
+      const source = join(home, 'source.log');
+      await writeFile(source, Buffer.alloc(REAP_TAIL_MAX_BYTES + 20, 'x'));
+      const tail = await archiveReapTail('expired-task', source, home, new Date('2026-10-11T12:00:00Z'));
+      expect((await readFile(tail)).length).toBe(REAP_TAIL_MAX_BYTES);
+      const receiptPath = `${tail}.receipt.json`;
+      const original = await readFile(receiptPath, 'utf8');
+      const names = async () => (await reapArchiveCensusProducer(home, [])).declarations.map(row => row.name);
+      expect(await names()).toContain('reap-archive/2026-10-11/expired-task.tail.log');
+      expect(await names()).toContain('reap-archive/2026-10-11/expired-task.tail.log.receipt.json');
+      await writeFile(tail, Buffer.alloc(REAP_TAIL_MAX_BYTES, 'y'));
+      expect(await names()).not.toContain('reap-archive/2026-10-11/expired-task.tail.log');
+      await writeFile(tail, Buffer.alloc(REAP_TAIL_MAX_BYTES, 'x'));
+      await writeFile(receiptPath, original.replace('expired-task', 'another-task'));
+      expect(await names()).not.toContain('reap-archive/2026-10-11/expired-task.tail.log');
+      await writeFile(receiptPath, 'null');
+      expect(await names()).not.toContain('reap-archive/2026-10-11/expired-task.tail.log');
+      await writeFile(source, original);
+      await rm(receiptPath);
+      await symlink(source, receiptPath);
+      expect(await names()).not.toContain('reap-archive/2026-10-11/expired-task.tail.log');
+      await expect(archiveReapTail('../escape', source, home)).rejects.toThrow('Invalid reaper task id');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it('requires retained task identity, regular files and the writer size bound for tails', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'reap-census-'));
+    try {
+      const archive = join(home, '.papercusp', 'reap-archive', '2026-10-11');
+      await mkdir(archive, { recursive: true });
+      await writeFile(join(archive, 'known.tail.log'), 'tail');
+      await writeFile(join(archive, 'unknown.tail.log'), 'tail');
+      await writeFile(join(archive, 'large.tail.log'), Buffer.alloc(128 * 1024 + 1));
+      await symlink(join(archive, 'known.tail.log'), join(archive, 'linked.tail.log'));
+      await mkdir(join(archive, 'directory.tail.log'));
+      const result = await reapArchiveCensusProducer(home, ['known', 'large', 'linked', 'directory', '../unknown']);
+      expect(result.declarations.map(row => row.name)).toEqual([
+        'reap-archive', 'reap-archive/2026-10-11', 'reap-archive/2026-10-11/known.tail.log',
+      ]);
+      expect(result.declarations.every(row => !row.descendants)).toBe(true);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it('uses OS home and leaves links, invalid dates and unproven tails as residue', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'reap-census-'));
+    try {
+      const archive = join(home, '.papercusp', 'reap-archive');
+      await mkdir(join(archive, '2026-10-11'), { recursive: true });
+      await mkdir(join(archive, '2026-02-30'));
+      await mkdir(join(archive, 'unexpected'));
+      await writeFile(join(archive, '2026-10-11', 'unknown.tail.log'), 'fixture');
+      await symlink(join(archive, '2026-10-11'), join(archive, '2026-10-12'));
+      const producer = await reapArchiveCensusProducer(home);
+      expect(producer.roots[0].path).toBe(join(home, '.papercusp'));
+      expect(producer.declarations.map(row => row.name)).toEqual(['reap-archive', 'reap-archive/2026-10-11']);
+      expect(producer.declarations.every(row => !row.descendants)).toBe(true);
+      const otherHome = join(home, 'other');
+      await mkdir(join(otherHome, '.papercusp'), { recursive: true });
+      await symlink(archive, join(otherHome, '.papercusp', 'reap-archive'));
+      expect((await reapArchiveCensusProducer(otherHome)).declarations).toEqual([]);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+});
 
 afterEach(() => vi.clearAllMocks());
 describe('secret census producer adapters', () => {
@@ -117,6 +184,25 @@ describe('secret census producer adapters', () => {
       expect(writer).toContain("existsSync(join(srcDir, 'template.yaml'))");
       const store = await readFile(new URL('../cupboard/template-store.ts', import.meta.url), 'utf8');
       expect(store).toContain("papercuspPath('templates')");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('recognizes historical versioned metadata only with matching identity and regular paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'legacy-template-census-'));
+    try {
+      const valid = join(root, 'templates', 'legacy', '0.1.0');
+      await mkdir(join(valid, '.harness'), { recursive: true });
+      await writeFile(join(valid, 'papercusp.json'), JSON.stringify({ name: 'legacy', version: '0.1.0', kind: 'template' }));
+      for (const file of ['SPEC.md', 'README.md', '.published.json', 'unexpected.ts', '.harness/config.json', '.harness/unexpected.ts']) await writeFile(join(valid, file), 'fixture');
+      await symlink(join(valid, 'SPEC.md'), join(valid, 'AGENTS.md'));
+      await symlink(join(valid, 'SPEC.md'), join(valid, '.harness/validation-contract.md'));
+      for (const version of ['0.2.0', 'invalid']) {
+        await mkdir(join(root, 'templates', 'legacy', version), { recursive: true });
+        await writeFile(join(root, 'templates', 'legacy', version, 'papercusp.json'), JSON.stringify({ name: 'wrong', version, kind: 'template' }));
+      }
+      await symlink(valid, join(root, 'templates', 'legacy', '0.3.0'));
+      const result = await templateStoreCensusProducer(root);
+      expect(result.declarations.map(entry => entry.name).sort()).toEqual(['templates', 'templates/legacy', 'templates/legacy/0.1.0', ...['papercusp.json', 'SPEC.md', 'README.md', '.published.json', '.harness', '.harness/config.json'].map(file => `templates/legacy/0.1.0/${file}`)].sort());
+      expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it('preserves completed setup credentials without claiming copied source or unknown homes', async () => {

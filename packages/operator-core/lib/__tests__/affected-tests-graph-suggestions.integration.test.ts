@@ -144,6 +144,11 @@ describe('native P-009 regular snapshot handover (source producer â†’ refresh â†
     for (const name of base.names) expect(got.names.has(name), `baseline workspace ${name} lost`).toBe(true);
     expect(got.names.has(IMPORTER_WS)).toBe(true);
     expect(got.line).toMatch(/status=applied accepted=1 rejected=0 added=.*@papercusp\/backup/);
+    const pathLines = got.stderr.split('\n').filter(line => line.startsWith('GRAPH_DEPENDENCY_PATH '));
+    expect(pathLines).toHaveLength(1);
+    const evidence = JSON.parse(pathLines[0]!.slice('GRAPH_DEPENDENCY_PATH '.length));
+    expect(evidence).toMatchObject({ changed: IMPORTED, consumer: IMPORTER, files: [IMPORTED, IMPORTER],
+      hops: [{ imported: IMPORTED, importer: IMPORTER, importerSha256: snapshot.edges[0].importerSha256 }] });
     // A newer optional graph index cannot invalidate the source producer's own identity.
     const idle = await refreshDependencySnapshot({ ...input, currentIndexCommit: 'a'.repeat(40), prev: refreshed.next }, deps);
     expect(idle).toMatchObject({ ran: false, next: { status: 'fresh' } });

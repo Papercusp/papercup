@@ -410,6 +410,25 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(calls.some((call) => call.name === 'sessions:record-prompt-origin')).toBe(false);
   });
 
+  it('the captured cold-loop-wake tail with no envelope is not captured after a fresh loop-fire', async () => {
+    writeMachineRow({
+      origin: 'loop-fire',
+      sha256: sha256Normalized('the complete cold-loop-wake payload'),
+      ts: Date.now() - 560,
+    });
+    const prompt =
+      'or it (that reflex is exactly how conclusions get lost across cold wakes).\n' +
+      'If the goal is DONE or you are blocked, call loop:end instead of leaving the loop spinning.';
+    const ctx = contextOf(
+      await runHook({ prompt, session_id: 'native-session-cold-loop-tail' }),
+    );
+
+    expect(ctx).toContain('UNVERIFIED partial loop-fire input');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(0);
+    expect(calls.some((call) => call.name === 'sessions:record-prompt-origin')).toBe(false);
+  });
+
   it('a plain owner prompt shortly after loop-fire remains capturable', async () => {
     writeMachineRow({
       origin: 'loop-fire',

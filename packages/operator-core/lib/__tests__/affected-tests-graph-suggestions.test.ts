@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import {
   GRAPH_SNAPSHOT_SCHEMA,
   MAX_VISITED_FILES,
+  MAX_DEPENDENCY_PATH_DEPTH,
   buildSnapshot,
   computeGraphSuggestions,
   extractSpecifiers,
@@ -118,6 +119,45 @@ describe('snapshot location + status line (gitnexus-deterministic-integration P-
 });
 
 describe('graph-dependency-suggestions — pure module', () => {
+  it('retains only source-validated hop hashes and drops the path after a consumer edit', () => {
+    const sources: Record<string, string> = {
+      'target.ts': 'export const target = 1;',
+      'middle.ts': 'import { target } from "./target"; export const middle = target;',
+      'middle.test.ts': 'import { middle } from "./middle"; export const test = middle;',
+    };
+    const readSource = (path: string) => sources[path] ?? null;
+    const { snapshot } = buildSnapshot({ index: INDEX, now: NOW, readSource, edges: [
+      { importer: 'middle.ts', imported: 'target.ts' },
+      { importer: 'middle.test.ts', imported: 'middle.ts' },
+    ] });
+    const input = { changed: ['target.ts'], snapshot, now: NOW, readSource };
+    const positive = suggestFromSnapshot(input);
+    expect(positive.dependencyPaths?.find(path => path.consumer === 'middle.test.ts')).toEqual({
+      changed: 'target.ts', consumer: 'middle.test.ts', files: ['target.ts', 'middle.ts', 'middle.test.ts'],
+      hops: snapshot.edges,
+    });
+    sources['middle.ts'] = 'export const middle = 1;';
+    const stale = suggestFromSnapshot(input);
+    expect(stale.suggestedFiles).toEqual([]);
+    expect(stale.dependencyPaths).toEqual([]);
+    expect(unionSuperset(['baseline.test.ts'], stale.suggestedFiles).names).toContain('baseline.test.ts');
+  });
+
+  it('bounds path evidence without narrowing deep dependency selection', () => {
+    const sources: Record<string, string> = {};
+    const edges = [];
+    for (let index = 1; index <= MAX_DEPENDENCY_PATH_DEPTH + 2; index++) {
+      const importer = `file${index}.ts`, imported = `file${index - 1}.ts`;
+      sources[importer] = `import "./file${index - 1}";`;
+      edges.push({ importer, imported });
+    }
+    const readSource = (path: string) => sources[path] ?? null;
+    const { snapshot } = buildSnapshot({ edges, index: INDEX, now: NOW, readSource });
+    const walk = suggestFromSnapshot({ changed: ['file0.ts'], snapshot, now: NOW, readSource });
+    expect(walk.suggestedFiles).toHaveLength(MAX_DEPENDENCY_PATH_DEPTH + 2);
+    expect(walk.pathsTruncated).toBe(true);
+    expect(walk.dependencyPaths?.every(path => path.hops.length <= MAX_DEPENDENCY_PATH_DEPTH)).toBe(true);
+  });
   it('rejects a malformed snapshot as a whole, with a reason', () => {
     expect(parseSnapshot('not json')).toEqual({ ok: false, reason: 'unparseable' });
     expect(parseSnapshot(JSON.stringify({ schema: 'other' }))).toEqual({ ok: false, reason: 'schema-mismatch' });

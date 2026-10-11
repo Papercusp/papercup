@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { publishR11SnapshotBytes, readR11SnapshotBytes, r11JournalDirectory, r11PreservationRoots, r11DiskAllocations } from './r11-window-snapshot';
+import { captureR11JournalBoundary, publishR11SnapshotBytes, readR11SnapshotBytes, r11JournalDirectory, r11PreservationRoots, r11DiskAllocations } from './r11-window-snapshot';
 import { inspectGovernorSource } from '../../../../scripts/check-resource-governor-enforcement.mjs';
+import { executeGovernedByteProcess } from '../../../../scripts/lib/governed-test-process.mjs';
 import { buildR11JournalCapturePlan, buildR11SystemdRunArgs, buildR11TargetQuery, buildR11TimerSpecs, evaluateR11Snapshots, R11_JOURNAL_MAX_BYTES, scheduleR11Timers, selectR11StageRows, type R11Snapshot } from './r11-window-snapshot';
 
 const at = '2026-10-03T03:00:00.000Z';
@@ -200,6 +201,35 @@ describe('R-11 journal producer bounds', () => {
   const now = () => Date.parse(at);
   const success = { status: 0, signal: null, stdout: '', stderr: '', actualDemand: {} };
 
+  it('records unchanged live identities at T1 and rejects stopped, changed or late observations', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'r11-boundary-'));
+    const show = `ActiveState=active\nNRestarts=0\nMainPID=123\nInvocationID=${'a'.repeat(32)}\nExecMainStartTimestamp=${at}\n`;
+    const captures = ['bg', 'bg-all', 'sidecar-anchored'].map((name) => {
+      const path = join(directory, name);
+      writeFileSync(path, `${name}\n`);
+      return { unit: name, path, show };
+    });
+    const prepared = { specs, sinceMs: now(), captures };
+    const execute = vi.fn(async () => ({ ...success, stdout: show }));
+    const boundary = () => now() + end;
+    try {
+      const proof = await captureR11JournalBoundary(prepared, at, specs[1].at, execute, boundary);
+      expect(proof.files.map((file) => file.bytes)).toEqual([3, 7, 17]);
+      expect(proof.files.every((file) => /^[a-f0-9]{64}$/.test(file.sha256))).toBe(true);
+      for (const broken of [show.replace('active', 'inactive'), show.replace('MainPID=123', 'MainPID=456'),
+        show.replace('NRestarts=0', 'NRestarts=1')]) {
+        await expect(captureR11JournalBoundary(prepared, at, specs[1].at,
+          async () => ({ ...success, stdout: broken }), boundary)).rejects.toThrow('identity changed');
+      }
+      await expect(captureR11JournalBoundary(prepared, at, specs[1].at, execute,
+        () => boundary() + 60_001)).rejects.toThrow('missed T1');
+      await expect(captureR11JournalBoundary(prepared, at, specs[1].at, execute,
+        () => boundary() - 1)).rejects.toThrow('missed T1');
+      expect(buildR11SystemdRunArgs(specs[1], paths, { ...runtime, preparedJournalsPath: '/receipt.json' }))
+        .toContain('/receipt.json');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('prepares three bounded producers before T0 and adopts them without starting replacements', async () => {
     const preparationSpecs = buildR11TimerSpecs(snapshot('T0', 2 * 3600_000, []));
     const identity = `SubState=running\nResult=success\nNRestarts=0\nMainPID=123\nInvocationID=${'a'.repeat(32)}\nExecMainStartTimestamp=${new Date(now() - 1000).toISOString()}\n`;
@@ -245,7 +275,7 @@ describe('R-11 journal producer bounds', () => {
   it('uses an independent frozen stop timer plus time and file-size limits for every follower', () => {
     const plan = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now());
     expect(plan.deadline).toBe('2026-10-04T03:00:00.000Z');
-    expect(plan.expiryCommand).toContain(`--on-calendar=${specs[1].at}`);
+    expect(plan.expiryCommand).toContain('--on-calendar=2026-10-04 03:10:00 UTC');
     expect(plan.expiryCommand.slice(-3)).toEqual(plan.captures.map(({ unit }) => `${unit}.service`));
     for (const follower of plan.captures) {
       expect(follower.command).toContain('--property=RuntimeMaxSec=86400');
@@ -255,6 +285,16 @@ describe('R-11 journal producer bounds', () => {
     expect(plan.captures[2].command.slice(-2)).toEqual(['-n', '1']);
     expect(plan.captures[1].command).toContain('--no-tail');
     expect(plan.captures[1].command).toContain(`--since=@${Date.parse(at) / 1000}`);
+  });
+
+  it('uses a calendar accepted by systemd for the bounded post-T1 tail', async () => {
+    const plan = buildR11JournalCapturePlan(specs, runtime.journalDirectory, now());
+    const calendar = plan.expiryCommand.find((arg) => arg.startsWith('--on-calendar='))!.slice('--on-calendar='.length);
+    const result = await executeGovernedByteProcess('systemd-analyze', ['calendar', calendar], new Uint8Array(),
+      { namespace: 'r11-window-snapshot', timeoutMs: 30_000, maxBuffer: 1024 * 1024 });
+    expect(result.error).toBeFalsy();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('2026-10-04 03:10:00');
   });
 
   it('rejects an expired window before starting anything and shows bounds in a dry run', async () => {

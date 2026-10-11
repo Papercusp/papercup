@@ -15,6 +15,27 @@ import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-
 import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot } from '../agent-tools/plans/spec-evidence-store';
 import { sourceRuntimeProvenance } from './source-runtime-provenance';
 
+describe('native P011 required BAR add-only validated test selection', () => {
+  it('keeps baseline tests when a hashed dependency path is accepted, stale or unavailable', () => {
+    const now = Date.now();
+    const sources: Record<string, string> = { 'target.ts': 'export const target = 1;',
+      'target.test.ts': 'import { target } from "./target"; export const tested = target;' };
+    const { snapshot } = produceSnapshotFromSource({ files: Object.keys(sources),
+      headCommit: 'a'.repeat(40), now, readSource: (path: string) => sources[path] ?? null });
+    const input = { changed: ['target.ts'], now, readSource: (path: string) => sources[path] ?? null };
+    const baseline = ['baseline.test.ts', 'guard.test.ts'];
+    const valid = suggestFromSnapshot({ ...input, snapshot });
+    expect(valid.dependencyPaths).toEqual([expect.objectContaining({ changed: 'target.ts', consumer: 'target.test.ts',
+      files: ['target.ts', 'target.test.ts'], hops: [expect.objectContaining({ importerSha256: expect.stringMatching(/^[a-f0-9]{64}$/) })] })]);
+    expect(unionSuperset(baseline, valid.suggestedFiles).names).toEqual([...baseline, 'target.test.ts']);
+    sources['target.test.ts'] = 'export const tested = 1;';
+    for (const degraded of [suggestFromSnapshot({ ...input, snapshot }), suggestFromSnapshot({ ...input, snapshot: null })]) {
+      expect(degraded.suggestedFiles).toEqual([]);
+      expect(unionSuperset(baseline, degraded.suggestedFiles).names).toEqual(baseline);
+    }
+  });
+});
+
 describe('native P015 required BAR dependent proof currentness', () => {
   it('invalidates proof after a dependent edit while preserving its requirement and test identity', async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'native-proof-contract-')));

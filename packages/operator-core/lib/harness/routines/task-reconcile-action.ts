@@ -32,6 +32,7 @@ import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks, listLiveTasks, listTasks, markStranded, residueTaskId } from '../../task-manager/store';
+import { archiveReapTail } from '../../task-manager/reap-archive';
 import {
   consultAnswerFacts,
   consultSettlement,
@@ -881,23 +882,7 @@ function nodeReapEffects(): ReapEffects {
   return {
     async archiveTail(d: ReapDecision): Promise<string | null> {
       if (!d.logPath) return null;
-      const { mkdir, open, writeFile } = await import('node:fs/promises');
-      const { homedir } = await import('node:os');
-      const { join } = await import('node:path');
-      const dir = join(homedir(), '.papercusp', 'reap-archive', new Date().toISOString().slice(0, 10));
-      await mkdir(dir, { recursive: true });
-      const dest = join(dir, `${d.taskId}.tail.log`);
-      const fh = await open(d.logPath, 'r');
-      try {
-        const { size } = await fh.stat();
-        const len = Math.min(size, 128 * 1024);
-        const buf = Buffer.alloc(len);
-        await fh.read(buf, 0, len, size - len);
-        await writeFile(dest, buf);
-      } finally {
-        await fh.close();
-      }
-      return dest;
+      return archiveReapTail(d.taskId, d.logPath);
     },
     async stopUnit(scopeUnit: string): Promise<boolean> {
       const { execFile } = await import('node:child_process');

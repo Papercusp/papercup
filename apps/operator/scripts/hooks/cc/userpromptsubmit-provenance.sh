@@ -147,9 +147,13 @@ def is_machine_surface(s):
 
 PARTIAL_LOOP_FIRE_WINDOW_MS = 120_000
 PARTIAL_LOOP_FIRE_FOOTER_RE = re.compile(
+    r'(?:'
     r'Before you END this turn you MUST refresh this carry-note'
     r'[\s\S]*?'
     r'loop:checkpoint\s*\{\s*did,\s*left,\s*insight,\s*next\s*\}'
+    r'|that reflex is exactly how conclusions get lost across cold wakes\)\.\s*'
+    r'If the goal is DONE or you are blocked, call loop:end instead of leaving the loop spinning\.'
+    r')'
 )
 
 def normalize(s):
