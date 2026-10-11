@@ -299,6 +299,75 @@ function defaultApplyMembership(
   return applyDataSourceMembership(sql, { workspaceId: source.workspaceId, sourceId: source.id, ...input });
 }
 
+/**
+ * Records a provider handed back (a sync page's, or an `ingress.normalize` result's, D-009) must
+ * each carry a declared datatype and a native id; anything else is a transient provider fault.
+ */
+export function assertProviderRecords(
+  records: unknown,
+  provider: Pick<RegisteredProvider, 'descriptor'>,
+): asserts records is ProviderRecord[] {
+  if (!Array.isArray(records)) {
+    throw new ProviderSyncFailure({ kind: 'transient', message: `provider ${provider.descriptor.id} returned no record list` });
+  }
+  const declared = new Set(provider.descriptor.datatypes);
+  for (const record of records as Array<Partial<ProviderRecord> | null>) {
+    if (!record || typeof record.nativeId !== 'string' || !record.nativeId || !declared.has(record.datatype as string)) {
+      throw new ProviderSyncFailure({
+        kind: 'transient',
+        message: `provider ${provider.descriptor.id} returned a record with an undeclared datatype or empty native id`,
+      });
+    }
+  }
+}
+
+/** What admitting one record did: stored/delivered, already delivered, or refused by datatype validation. */
+export type ConnectorRecordAdmission = 'admitted' | 'deduped' | 'rejected';
+
+export interface ConnectorRecordAdmissionDeps {
+  ingest?: (sql: postgres.Sql, input: IngestExternalTriggerInput) => Promise<IngestExternalTriggerResult>;
+  sinksFor?: (sql: postgres.Sql, source: ConnectorSourceRow, datatype: string) => Promise<ExternalTriggerSink[]>;
+  /** Per-pass sink cache keyed by datatype, so a page of N records resolves its sinks once. */
+  sinkCache?: Map<string, ExternalTriggerSink[]>;
+}
+
+/**
+ * Admit one provider record for a source. This is the ONE admission path for descriptor providers
+ * (D-009): a synced page's records and a socket-delivered envelope's records both come through
+ * here, so the dedupe key, the datatype sinks and trigger bindings behave identically whichever
+ * way a record arrived.
+ */
+export async function admitConnectorRecord(
+  sql: postgres.Sql,
+  input: { source: ConnectorSourceRow; providerId: string; record: ProviderRecord },
+  deps: ConnectorRecordAdmissionDeps = {},
+): Promise<ConnectorRecordAdmission> {
+  const { source, providerId, record } = input;
+  const ingest = deps.ingest ?? ((db, args) => ingestExternalTriggerEvent(db, args));
+  const sinksFor = deps.sinksFor ?? defaultSinksFor;
+  let sinks = deps.sinkCache?.get(record.datatype);
+  if (!sinks) {
+    sinks = await sinksFor(sql, source, record.datatype);
+    deps.sinkCache?.set(record.datatype, sinks);
+  }
+  const result = await ingest(sql, {
+    workspaceId: source.workspaceId,
+    sourceId: source.id,
+    source: providerId,
+    event: record.event,
+    externalId: record.nativeId,
+    datatypeId: record.datatype,
+    adapterPayload: record.payload,
+    normalize: (payload) => payload as Record<string, unknown>,
+    occurredAt: record.occurredAt ?? null,
+    dedupeKey: connectorRecordDedupeKey(source.id, record),
+    additionalSinks: sinks,
+  });
+  if (result.validationErrors?.length) return 'rejected';
+  if (result.deliveries.length > 0 && result.deliveries.every((d) => d.deduped)) return 'deduped';
+  return 'admitted';
+}
+
 function assertPage(page: unknown, provider: RegisteredProvider): asserts page is ProviderSyncPage {
   const p = page as Partial<ProviderSyncPage> | null;
   if (
@@ -309,15 +378,7 @@ function assertPage(page: unknown, provider: RegisteredProvider): asserts page i
   ) {
     throw new ProviderSyncFailure({ kind: 'transient', message: `provider ${provider.descriptor.id} returned a malformed sync page` });
   }
-  const declared = new Set(provider.descriptor.datatypes);
-  for (const record of p.records) {
-    if (!record || typeof record.nativeId !== 'string' || !record.nativeId || !declared.has(record.datatype)) {
-      throw new ProviderSyncFailure({
-        kind: 'transient',
-        message: `provider ${provider.descriptor.id} returned a record with an undeclared datatype or empty native id`,
-      });
-    }
-  }
+  assertProviderRecords(p.records, provider);
   if (p.membership !== undefined) {
     if (!provider.descriptor.membership) {
       throw new ProviderSyncFailure({
@@ -364,6 +425,25 @@ export async function listDueConnectorSources(
        AND (sync_next_attempt_at IS NULL OR sync_next_attempt_at <= now())
        ${sourceIds ? sql`AND id::text = ANY(${sql.array([...sourceIds])}::text[])` : sql``}
      ORDER BY sync_wake_requested_at NULLS LAST, sync_next_attempt_at NULLS FIRST, id`;
+}
+
+/**
+ * Sources of the given provider kinds the driver still advances, whether or not a sync pass is
+ * due: host-held socket ingress (D-009) keeps a connection open for each of them.
+ */
+export async function listActiveConnectorSources(
+  sql: postgres.Sql,
+  workspaceId: string,
+  kinds: readonly string[],
+): Promise<ConnectorSourceRow[]> {
+  if (kinds.length === 0) return [];
+  return sql<ConnectorSourceRow[]>`
+    SELECT ${SOURCE_COLUMNS(sql)}
+      FROM harness_shared.data_sources
+     WHERE workspace_id = ${workspaceId}
+       AND kind = ANY(${sql.array([...kinds])}::text[])
+       AND status = ANY(${sql.array([...CONNECTOR_SYNC_STATUSES])}::text[])
+     ORDER BY id`;
 }
 
 async function acquireLease(
@@ -672,27 +752,12 @@ async function syncSource(
       outcome.pages += 1;
       // Admit every record durably BEFORE the cursor that covers it is committed.
       for (const record of page.records) {
-        let sinks = sinkCache.get(record.datatype);
-        if (!sinks) {
-          sinks = await deps.sinksFor(sql, working, record.datatype);
-          sinkCache.set(record.datatype, sinks);
-        }
-        const result = await deps.ingest(sql, {
-          workspaceId: source.workspaceId,
-          sourceId: source.id,
-          source: provider.descriptor.id,
-          event: record.event,
-          externalId: record.nativeId,
-          datatypeId: record.datatype,
-          adapterPayload: record.payload,
-          normalize: (payload) => payload as Record<string, unknown>,
-          occurredAt: record.occurredAt ?? null,
-          dedupeKey: connectorRecordDedupeKey(source.id, record),
-          additionalSinks: sinks,
-        });
-        if (result.validationErrors?.length) outcome.rejected += 1;
-        else if (result.deliveries.length > 0 && result.deliveries.every((d) => d.deduped)) outcome.deduped += 1;
-        else outcome.admitted += 1;
+        const admission = await admitConnectorRecord(
+          sql,
+          { source: working, providerId: provider.descriptor.id, record },
+          { ingest: deps.ingest, sinksFor: deps.sinksFor, sinkCache },
+        );
+        outcome[admission] += 1;
       }
       // A membership snapshot lands before the cursor that covers it commits; a full replace
       // is idempotent, so a replayed page converges (D-015.4).
