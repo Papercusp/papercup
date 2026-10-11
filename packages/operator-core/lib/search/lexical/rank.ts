@@ -33,6 +33,7 @@ import type { PendingQuery, Row, Sql } from 'postgres';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { RRF_K_DEFAULT } from '@papercusp/rrf';
 import { BM25_CORPORA, bm25Corpus, renderBm25TextExpr, type Bm25Corpus, type Bm25CorpusTable } from './corpora';
 
 /** A postgres.js SQL fragment, spliced with `${fragment}` into a tagged template. */
@@ -163,6 +164,22 @@ export async function lexicalLeg(sql: Sql, req: LexicalLegRequest): Promise<Lexi
     match: req.legacy.match,
     order: sql`${req.legacy.score} DESC`,
   };
+}
+
+/**
+ * One leg's reciprocal-rank-fusion term, as a SELECT-list expression: `1 / (k + rank)` for
+ * rows the leg matches, ranked by `score` among them (best first), else 0. Summing a lexical
+ * term and a vector term fuses the legs by POSITION ONLY, so the fused order cannot depend on
+ * a leg's score scale: BM25's unbounded score and ts_rank's [0,1) fuse identically. Use it
+ * wherever a call site would otherwise add a lexical score and a cosine with weights
+ * (plan bm25-lexical-search-evoke-adoption-2026-10-10 D-004). The window covers every row
+ * the query returns before LIMIT, so the WHERE clause must admit both legs' candidates.
+ */
+export function rrfTerm(sql: Sql, matched: SqlFragment, score: SqlFragment): SqlFragment {
+  const k = sql.unsafe(String(RRF_K_DEFAULT));
+  return sql`(CASE WHEN ${matched}
+                THEN 1.0 / (${k} + rank() OVER (ORDER BY (CASE WHEN ${matched} THEN ${score} END) DESC NULLS LAST))
+                ELSE 0 END)`;
 }
 
 export type Bm25HealthStatus = 'ok' | 'degraded' | 'off';
