@@ -1278,6 +1278,49 @@ describe('listSpecEvidence timestamp normalization', () => {
     });
   });
 
+  it('reads mutation descriptors and calibration from the scoped ledger rather than binder prose', async () => {
+    const mutation = {
+      schemaVersion: 1, probeInvocationId: 'invocation-001', leg: 'mutant', mode: 'copy-out',
+      subjectPath: 'src/guard.ts', mutateExpression: 's/reject/accept/', againstCommit: null,
+      subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+      mutantDiff: '-reject\n+accept', mutantDiffTruncated: false,
+      testCommandSha256: 'c'.repeat(64), testFileSha256: 'd'.repeat(64),
+    };
+    const execution = {
+      schemaVersion: 1, root: '/repo', filePath: 'test/a.test.ts', runGroupId: null,
+      workspaceId: 'ws', harnessSlug: 'papercusp', testNamePattern: null,
+      passed: 0, failed: 1, skipped: 0, collectionFailed: false, mutationPhase: 'mutant',
+      commitSha: 'e'.repeat(40), worktreeDirty: false, failedCaseTitles: ['guard > rejects'], mutation,
+    };
+    h.rows = [{
+      id: 2, work_item_id: 'WI-2', plan_slug: 'plan-one', spec_id: 'SPEC-2',
+      spec_revision: 1, current_revision: 1, spec_fingerprint: 'spec', spec_is_current: true,
+      evidence_kind: 'mutation', evidence_ref: 'mutant', details: { mutation: { probeInvocationId: 'forged' } },
+      source_fingerprint: null, test_fingerprint: null, fixture_fingerprint: null,
+      rubric_fingerprint: null, environment_fingerprint: null, coverage_evidence_ref: null,
+      test_run_id: 47, test_run_present: true, test_run_file_path: execution.filePath,
+      test_run_source: 'mutation-probe', test_run_status: 'fail',
+      test_run_commit_sha: execution.commitSha, test_run_worktree_dirty: false,
+      test_run_execution_details: execution, mutation_execution_details: execution, mutation_failure_tail: null,
+      mutation_baseline_id: 46, mutation_baseline_status: 'pass',
+      mutation_baseline_execution_details: { ...execution, passed: 1, failed: 0,
+        mutationPhase: 'baseline', failedCaseTitles: [], mutation: { ...mutation, leg: 'baseline' } },
+      observed_at: '2026-10-11T16:35:00.000Z', created_at: '2026-10-11T16:36:00.000Z',
+    }];
+    const read = async () => (await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] }))[0];
+    expect((await read()).testRunProvenance).toMatchObject({ mutation, mutationBaseline: {
+      testRunId: 46, status: 'pass', passed: 1, failed: 0, mutation: { ...mutation, leg: 'baseline' },
+    } });
+    h.rows[0].mutation_baseline_execution_details = { malformed: true };
+    expect((await read()).testRunProvenance?.mutationBaseline).toBeNull();
+    const query = h.queries.find(query => query.sql.includes('SELECT b.id'))?.sql ?? '';
+    for (const fence of ['baseline.workspace_id = tr.workspace_id',
+      'baseline.harness_slug = tr.harness_slug', 'baseline.file_path = tr.file_path',
+      "baseline.source = 'mutation-probe'", "baseline.status = 'pass'",
+      "baseline.execution_details->'mutation'->>'probeInvocationId'",
+      "baseline.execution_details->'mutation'->>'subjectBeforeSha256'"]) expect(query).toContain(fence);
+  });
+
   it('projects canonical test-run status, counts, passed titles, and runtime layer to the evaluator', async () => {
     h.rows = [{
       id: 2, work_item_id: 'WI-2', plan_slug: 'plan-one', spec_id: 'SPEC-2',
