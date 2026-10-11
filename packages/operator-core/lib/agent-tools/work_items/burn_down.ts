@@ -22,7 +22,11 @@ import {
   type WorkItemKind,
 } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
-import { countsTowardBurnDown, isWorkItemCompletionAuthority } from '../../work-item-completion-authority';
+import {
+  countsTowardBurnDown,
+  isAbandonmentCloseState,
+  isWorkItemCompletionAuthority,
+} from '../../work-item-completion-authority';
 import { classifyTerminalOwner } from '../../completion-audit';
 import { resolveSelfRef } from '../coordination/self-marker';
 import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
@@ -340,7 +344,11 @@ export interface BurnDownResult {
 }
 
 export type CohortBucket = 'terminal' | 'parked' | 'in-flight' | 'unclaimed' | 'missing';
-export type CohortEvidenceVerdict = 'verified' | 'incomplete' | 'missing' | 'not-applicable';
+/**
+ * `disposition-recorded`: an abandonment close (dropped/closed/deprecated) whose reason is
+ * recorded. It settles without verification evidence by design (WI-6554700010008454).
+ */
+export type CohortEvidenceVerdict = 'verified' | 'incomplete' | 'missing' | 'disposition-recorded' | 'not-applicable';
 
 export interface CohortAuditRow {
   id: string;
@@ -435,15 +443,28 @@ export function buildCohortAudit(requestedIds: readonly string[], items: readonl
       // correctly used the new authority path.
       const missingLegacyCompletionRef =
         item.completionAuthority === null && !item.terminalCompletionRef;
-      evidenceVerdict = !hasEvidence || missingLegacyCompletionRef
-        ? 'missing'
-        : hasVerification && countsTowardBurnDown(item.completionAuthority, true)
-          ? 'verified'
-          : 'incomplete';
-      reopenRecommended = evidenceVerdict !== 'verified';
-      recommendation = reopenRecommended
-        ? 'reopen and require structured verification evidence before counting terminal'
-        : null;
+      if (isAbandonmentCloseState(item.state)) {
+        // WI-6554700010008454: a drop/close settles the lifecycle without claiming code
+        // landed (work_items:complete's abandoned-close rule), and its disposition lands in
+        // terminal_completion_ref — never in structured verification evidence. Demanding
+        // verifiedHow/testsRun here recommended reopening every legitimate drop.
+        const hasDisposition = Boolean(item.terminalCompletionRef?.trim()) || hasEvidence;
+        evidenceVerdict = hasDisposition ? 'disposition-recorded' : 'missing';
+        reopenRecommended = !hasDisposition;
+        recommendation = reopenRecommended
+          ? 'record the disposition (why it was dropped or closed) before counting terminal'
+          : null;
+      } else {
+        evidenceVerdict = !hasEvidence || missingLegacyCompletionRef
+          ? 'missing'
+          : hasVerification && countsTowardBurnDown(item.completionAuthority, true)
+            ? 'verified'
+            : 'incomplete';
+        reopenRecommended = evidenceVerdict !== 'verified';
+        recommendation = reopenRecommended
+          ? 'reopen and require structured verification evidence before counting terminal'
+          : null;
+      }
     }
     return {
       id,
@@ -2170,7 +2191,7 @@ export default defineTool({
           state: z.string().nullable(),
           bucket: z.enum(['terminal', 'parked', 'in-flight', 'unclaimed', 'missing']),
           closureKind: z.string().nullable(),
-          evidenceVerdict: z.enum(['verified', 'incomplete', 'missing', 'not-applicable']),
+          evidenceVerdict: z.enum(['verified', 'incomplete', 'missing', 'disposition-recorded', 'not-applicable']),
           completionRef: z.string().nullable(),
           terminalOwner: z.string().nullable(),
           reopenRecommended: z.boolean(),

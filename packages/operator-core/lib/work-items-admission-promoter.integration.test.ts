@@ -1256,9 +1256,10 @@ describe('work-item admission promoter (real Postgres)', () => {
         admission: string;
         payload: { admissionMerge?: { canonicalId?: string } } | null;
         terminal_reason: string | null;
+        terminal_completion_ref: string | null;
       }>
     >`
-      SELECT wi.feature_id, wi.status, wi.admission, wi.payload, wi.terminal_reason
+      SELECT wi.feature_id, wi.status, wi.admission, wi.payload, wi.terminal_reason, wi.terminal_completion_ref
         FROM harness_shared.work_items wi ORDER BY feature_id`;
     expect(rows[0]).toMatchObject({ feature_id: 'WI-1', status: 'open', admission: 'admitted' });
     for (const [index, row] of rows.slice(1).entries()) {
@@ -1267,7 +1268,11 @@ describe('work-item admission promoter (real Postgres)', () => {
         status: 'dropped',
         admission: 'admitted',
         terminal_reason: expect.stringContaining('duplicate of WI-1'),
+        // WI-6554700010008454: the disposition also lands on the canonical drop column,
+        // which is the only one WorkItem readers (the burn-down cohort audit) can see.
+        terminal_completion_ref: expect.stringContaining('duplicate of WI-1'),
       });
+      expect(row.terminal_completion_ref).toBe(row.terminal_reason);
       expect(row.payload).toMatchObject({
         admissionMerge: {
           schemaVersion: 2,

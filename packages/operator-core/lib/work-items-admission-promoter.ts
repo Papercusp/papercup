@@ -4146,6 +4146,10 @@ async function persistApprovedAdmissionMerge(
            admitted_by = COALESCE(admitted_by, ${input.actor}),
            condition_key = NULL,
            terminal_reason = ${`duplicate of ${input.canonicalId} (${input.actor} ${input.runId})`},
+           -- WI-6554700010008454: terminal_completion_ref is the canonical disposition column
+           -- for a drop (work_items:complete writes it; WorkItem exposes it). terminal_reason
+           -- keeps the 'duplicate of <id>' convention that ideation-backlog-adjudication reads.
+           terminal_completion_ref = ${`duplicate of ${input.canonicalId} (${input.actor} ${input.runId})`},
            terminal_owner = ${input.actor},
            closed_ts = ${input.nowMs},
            payload = (

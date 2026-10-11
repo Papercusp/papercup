@@ -762,6 +762,68 @@ describe('work_items:burn_down', () => {
     ]);
   });
 
+  it('judges abandonment closes on their recorded disposition, not on verification evidence (WI-6554700010008454)', () => {
+    const droppedWithReason = item({
+      id: 'WI-dropped-reason',
+      state: 'dropped',
+      terminalOwner: 'su-1',
+      completionAuthority: 'proposed',
+      terminalCompletionRef: 'Obsolete on the current build: the subject path was removed',
+      terminalCompletionEvidence: null,
+    });
+    const closedTriageReject = item({
+      id: 'EI-closed-reject',
+      state: 'closed',
+      terminalOwner: 'Queen',
+      completionAuthority: 'proposed',
+      terminalCompletionRef: 'Triage decision: reject — replay succeeded on the serving build',
+      terminalCompletionEvidence: null,
+    });
+    const droppedSilently = item({
+      id: 'EI-dropped-silent',
+      state: 'dropped',
+      terminalOwner: 'system:work-item-admission-promoter',
+      completionAuthority: null,
+      terminalCompletionRef: '   ',
+      terminalCompletionEvidence: null,
+    });
+    const resolvedAssertionOnly = item({
+      id: 'WI-resolved-bare',
+      state: 'resolved',
+      terminalOwner: 'su-2',
+      completionAuthority: 'proposed',
+      terminalCompletionRef: 'fixed it',
+      terminalCompletionEvidence: null,
+    });
+    const audit = buildCohortAudit(
+      ['WI-dropped-reason', 'EI-closed-reject', 'EI-dropped-silent', 'WI-resolved-bare'],
+      [droppedWithReason, closedTriageReject, droppedSilently, resolvedAssertionOnly],
+    );
+    expect(audit).toMatchObject({ requested: 4, found: 4, missing: 0, reopenRecommended: 2 });
+    expect(audit.rows).toEqual([
+      expect.objectContaining({
+        id: 'WI-dropped-reason', closureKind: 'dropped', evidenceVerdict: 'disposition-recorded',
+        reopenRecommended: false, recommendation: null,
+      }),
+      expect.objectContaining({
+        id: 'EI-closed-reject', closureKind: 'closed', evidenceVerdict: 'disposition-recorded',
+        reopenRecommended: false, recommendation: null,
+      }),
+      // A whitespace-only ref is not a disposition: the drop still has to say why.
+      expect.objectContaining({
+        id: 'EI-dropped-silent', closureKind: 'dropped', evidenceVerdict: 'missing',
+        reopenRecommended: true,
+        recommendation: expect.stringContaining('record the disposition'),
+      }),
+      // A resolved close claims a fix, so it still owes structured verification evidence.
+      expect.objectContaining({
+        id: 'WI-resolved-bare', closureKind: 'resolved', evidenceVerdict: 'missing',
+        reopenRecommended: true,
+        recommendation: expect.stringContaining('structured verification evidence'),
+      }),
+    ]);
+  });
+
   it('wires the tool to list work-items and workspace-scoped presence', async () => {
     mockListWorkItems.mockResolvedValue([item({ id: 'WI-live', assignee: 'su-live' })]);
     mockListPresence.mockResolvedValue([
