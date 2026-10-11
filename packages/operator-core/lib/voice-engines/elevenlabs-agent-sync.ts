@@ -176,7 +176,7 @@ export interface ElevenLabsAgentSyncResult {
  * https://elevenlabs.io/docs/eleven-agents/api-reference/agents/get
  * https://elevenlabs.io/docs/eleven-agents/customization/authentication
  */
-export async function readElevenLabsAgentDuration(def: Pick<ElevenLabsAgentDefinition, 'maxDurationSeconds'>,
+export async function readElevenLabsAgentDuration(def: Pick<ElevenLabsAgentDefinition, 'maxDurationSeconds' | 'allowSessionOverrides'>,
   deps: { apiKey: string; agentId: string; fetch: typeof fetch; signal: AbortSignal }):
   Promise<{ agentId: string; maximumSeconds: number } | null> {
   if (!deps.apiKey || !deps.agentId.trim() || deps.signal.aborted
@@ -195,6 +195,14 @@ export async function readElevenLabsAgentDuration(def: Pick<ElevenLabsAgentDefin
       || !Number.isSafeInteger(duration) || duration <= 0 || duration > def.maxDurationSeconds
       || auth?.enable_auth !== true || !Array.isArray(auth.allowlist) || auth.allowlist.length !== 0
       || (auth.shareable_token !== null && auth.shareable_token !== undefined && auth.shareable_token !== '')) return null;
+    if (def.allowSessionOverrides === false) {
+      const overrides = body?.platform_settings?.overrides?.conversation_config_override;
+      // Match the explicit immutable switches written by buildAgentConfig.
+      // Missing switches cannot attest the tutorial's server-owned prompt.
+      if (overrides?.agent?.prompt?.prompt !== false
+        || overrides?.agent?.first_message !== false || overrides?.agent?.language !== false
+        || overrides?.tts?.voice_id !== false) return null;
+    }
     return { agentId: deps.agentId, maximumSeconds: duration };
   } catch {
     // Provider bodies and transport errors may contain secrets. Fail closed

@@ -67,6 +67,29 @@ describe('provider duration evidence for tutorial admission', () => {
       during.abort(); return Response.json(valid());
     }), during.signal)).toBeNull();
   });
+
+  it('requires explicit provider immutability for a tutorial definition on every read', async () => {
+    const response = () => ({ ...valid(), platform_settings: {
+      ...(buildAgentConfig({ ...PAPERCUP_FRONT_AGENT, allowSessionOverrides: false }, []).platform_settings as object),
+      auth: valid().platform_settings.auth } });
+    const readImmutable = (payload: unknown) => readElevenLabsAgentDuration(
+      { maxDurationSeconds: 180, allowSessionOverrides: false },
+      { apiKey: KEY, agentId: 'tutorial', fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload)),
+        signal: new AbortController().signal });
+    expect(await readImmutable(response())).toEqual({ agentId: 'tutorial', maximumSeconds: 60 });
+    expect(await readImmutable(valid())).toBeNull();
+    for (const path of [['agent', 'prompt', 'prompt'], ['agent', 'first_message'],
+      ['agent', 'language'], ['tts', 'voice_id']]) {
+      for (const value of [true, undefined, 'false', null]) {
+        const payload = response();
+        const switches = (payload.platform_settings as any).overrides.conversation_config_override;
+        let target = switches;
+        for (const part of path.slice(0, -1)) target = target[part!];
+        target[path.at(-1)!] = value;
+        expect(await readImmutable(payload)).toBeNull();
+      }
+    }
+  });
 });
 
 interface FakeOpts { failToolCreate?: boolean; failAgentPatch?: number }
