@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "scope-unique-identifiers-2026-07-26 live database evidence for R-1, R-3 and the R-11 fail-open population",
-  "framework": "sql",
+  "framework": "operational",
   "command": [
     "dev:pg_query",
     "SELECT indexname, indexdef, now() FROM pg_indexes WHERE schemaname='harness_shared' AND indexname='work_items_workspace_feature_id_uq'",
