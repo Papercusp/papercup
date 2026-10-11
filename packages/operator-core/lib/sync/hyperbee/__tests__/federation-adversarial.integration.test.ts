@@ -491,8 +491,8 @@ describe('federation adversarial — wrong tableTag is silently dropped', () => 
         swarmBinding: BINDING,
         swarmOverride: makeSwarm(testnet.bootstrap),
         verifyBindingOverride: async (_pk, _login, uid) => (uid === idA.userId ? 'verified' : 'fail'),
-        applyOverride: (op) => {
-          applyB ??= buildFeatureApply(dbB.sql, handleB!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyB ??= buildFeatureApply(dbB.sql, ctx.ownLogKeyHex);
           return applyB(op);
         },
         mergePollMs: 0,
@@ -832,8 +832,8 @@ describe('federation adversarial — no cross-instance duplication', () => {
         swarmBinding: BINDING,
         swarmOverride: makeSwarm(testnet.bootstrap),
         verifyBindingOverride: async (_pk, _login, uid) => (uid === idA.userId ? 'verified' : 'fail'),
-        applyOverride: (op) => {
-          applyB ??= buildFeatureApply(dbB.sql, handleB!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyB ??= buildFeatureApply(dbB.sql, ctx.ownLogKeyHex);
           return applyB(op);
         },
         mergePollMs: 0,

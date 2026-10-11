@@ -411,8 +411,8 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         swarmOverride: swarmA,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idB.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyA ??= buildPeerApply(dbA.sql, handleA!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyA ??= buildPeerApply(dbA.sql, ctx.ownLogKeyHex);
           return applyA(op);
         },
         mergePollMs: 0,
@@ -436,8 +436,8 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         swarmOverride: swarmB,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idA.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyB ??= buildPeerApply(dbB.sql, handleB!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyB ??= buildPeerApply(dbB.sql, ctx.ownLogKeyHex);
           return applyB(op);
         },
         mergePollMs: 0,
@@ -663,8 +663,8 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         harnessSlug: HARNESS_SLUG,
         swarmBinding: BINDING,
         swarmOverride: swarmA,
-        applyOverride: (op) => {
-          applyA ??= buildPeerApply(dbA.sql, handleA!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyA ??= buildPeerApply(dbA.sql, ctx.ownLogKeyHex);
           return applyA(op);
         },
         mergePollMs: 0,
@@ -808,7 +808,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         swarmOverride: swarmA,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idB.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
+        applyOverride: (op, ctx) => {
           // The REAL per-harness scoped apply (harness_slug guard + hive-home remap
           // set), threading A's per-peer `sql` seam and the shared hive-home.
           applyA ??= buildHarnessProjectionApply({
@@ -816,7 +816,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
             harnessSlug: A_SLUG,
             potHomeSlug: HIVE_HOME,
             sql: dbA.sql,
-            ownLogKeyHex: handleA!.ownLog.keyHex,
+            ownLogKeyHex: ctx.ownLogKeyHex,
           });
           return applyA(op);
         },
@@ -839,13 +839,13 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         swarmOverride: swarmB,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idA.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
+        applyOverride: (op, ctx) => {
           applyB ??= buildHarnessProjectionApply({
             workspaceId: WORKSPACE_ID,
             harnessSlug: B_SLUG, // B's features projection is scoped HERE…
             potHomeSlug: HIVE_HOME, // …and only hive_* projections rebind to this.
             sql: dbB.sql,
-            ownLogKeyHex: handleB!.ownLog.keyHex,
+            ownLogKeyHex: ctx.ownLogKeyHex,
           });
           return applyB(op);
         },
@@ -1128,13 +1128,13 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         swarmOverride: swarmA,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idB.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
+        applyOverride: (op, ctx) => {
           applyA ??= buildHarnessProjectionApply({
             workspaceId: WORKSPACE_ID,
             harnessSlug: A_SLUG,
             potHomeSlug: HIVE_HOME,
             sql: dbA.sql,
-            ownLogKeyHex: handleA!.ownLog.keyHex,
+            ownLogKeyHex: ctx.ownLogKeyHex,
           });
           return applyA(op);
         },
@@ -1148,6 +1148,10 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         await closeHarnessStore({ workspaceRoot: rootA, harnessSlug: A_SLUG });
       });
 
+      // A is fully booted here; capture its key now so B's apply closure reads no handle
+      // (WI-6554700010008569 guard: applyOverride closures never read `.ownLog`).
+      const aOwnLogKeyHex = handleA.ownLog.keyHex;
+
       // ── Boot B: DIFFERENT member slug B_SLUG. B is the receiver whose STEP 1 fires:
       //    A's announce (origin=A_SLUG) is out of B's own/rebind scope, so B falls into
       //    `if (!inScope)` and admits A by membership identity. ──
@@ -1159,13 +1163,13 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         swarmOverride: swarmB,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idA.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
+        applyOverride: (op, ctx) => {
           applyB ??= buildHarnessProjectionApply({
             workspaceId: WORKSPACE_ID,
             harnessSlug: B_SLUG,
             potHomeSlug: HIVE_HOME,
             sql: dbB.sql,
-            ownLogKeyHex: handleB!.ownLog.keyHex,
+            ownLogKeyHex: ctx.ownLogKeyHex,
             // WI-259 P-002 seam: mirror boot.ts's admit-time map. Boot stamps
             // admittedIdentities[A's log_core_key] = A's device_pubkey (boot.ts:1009) and
             // resolveAuthorDevice reads it back by sourceLogKeyHex (boot.ts:607). A REMOTE
@@ -1173,7 +1177,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
             // (projection.ts:266) = A's ownLog.keyHex here; resolving that to A's seeded
             // member device is exactly what the live handle does once it admits A (STEP 1
             // above proves the admit fired, so this map is populated identically in prod).
-            resolveAuthorDevice: (k) => (k === handleA!.ownLog.keyHex ? idA.devicePubkey : null),
+            resolveAuthorDevice: (k) => (k === aOwnLogKeyHex ? idA.devicePubkey : null),
           });
           return applyB(op);
         },
@@ -1418,8 +1422,8 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         swarmOverride: swarmMember,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idOwner.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyMember ??= buildPeerApply(dbMember.sql, handleMember!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyMember ??= buildPeerApply(dbMember.sql, ctx.ownLogKeyHex);
           return applyMember(op);
         },
         mergePollMs: 0,
@@ -1642,13 +1646,13 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         swarmOverride: swarmA,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idB.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
+        applyOverride: (op, ctx) => {
           applyA ??= buildHarnessProjectionApply({
             workspaceId: WORKSPACE_ID,
             harnessSlug: A_SLUG,
             potHomeSlug: HIVE_HOME,
             sql: dbA.sql,
-            ownLogKeyHex: handleA!.ownLog.keyHex,
+            ownLogKeyHex: ctx.ownLogKeyHex,
           });
           return applyA(op);
         },

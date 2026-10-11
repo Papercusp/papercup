@@ -660,8 +660,8 @@ async function bootTwoDeviceHive(wsId: string, hiveHome: string): Promise<{
       announceIdentityOverride: idB.override,
       verifyBindingOverride: verifyFor(idA.userId),
       hlcClock: clockB,
-      applyOverride: (op) => {
-        applyB ??= buildPeerApply(dbB.adminSql, wsId, hiveHome, peerB.handle.ownLog.keyHex, clockB);
+      applyOverride: (op, ctx) => {
+        applyB ??= buildPeerApply(dbB.adminSql, wsId, hiveHome, ctx.ownLogKeyHex, clockB);
         return applyB(op);
       },
     },

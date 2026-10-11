@@ -363,8 +363,8 @@ async function bootTwoPeers(dbTag: string): Promise<TwoPeers> {
     swarmOverride: swarmA,
     verifyBindingOverride: async (_pk, _login, userId) =>
       userId === idB.userId ? 'verified' : 'fail',
-    applyOverride: (op) => {
-      applyA ??= buildPeerApply(dbA.sql, handleA!.ownLog.keyHex);
+    applyOverride: (op, ctx) => {
+      applyA ??= buildPeerApply(dbA.sql, ctx.ownLogKeyHex);
       return applyA(op);
     },
     mergePollMs: 0,
@@ -388,8 +388,8 @@ async function bootTwoPeers(dbTag: string): Promise<TwoPeers> {
     swarmOverride: swarmB,
     verifyBindingOverride: async (_pk, _login, userId) =>
       userId === idA.userId ? 'verified' : 'fail',
-    applyOverride: (op) => {
-      applyB ??= buildPeerApply(dbB.sql, handleB!.ownLog.keyHex);
+    applyOverride: (op, ctx) => {
+      applyB ??= buildPeerApply(dbB.sql, ctx.ownLogKeyHex);
       return applyB(op);
     },
     mergePollMs: 0,

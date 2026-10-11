@@ -795,8 +795,8 @@ describe('SIDECAR fresh-joiner FULL CHAIN — TOPIC-bound joiner: admit → rost
           announceIdentityOverride: idOwner.override,
           verifyBindingOverride: async (_pk, _login, userId) =>
             userId === idJoiner.userId ? 'verified' : 'fail',
-          applyOverride: (op) => {
-            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, owner.handle.ownLog.keyHex);
+          applyOverride: (op, ctx) => {
+            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, ctx.ownLogKeyHex);
             return ownerApply(op);
           },
         },

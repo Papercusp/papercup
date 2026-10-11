@@ -395,8 +395,8 @@ export class CompositionRig {
       swarmBinding: binding,
       swarmOverride: mkSwarm(),
       verifyBindingOverride: async (_pk, _login, userId) => (userId === idB.userId ? 'verified' : 'fail'),
-      applyOverride: (op) => {
-        applyA ??= buildCellApply(dbA.adminSql, handleA!.ownLog.keyHex, schemaOpts, this.extraProjections, hlcA);
+      applyOverride: (op, ctx) => {
+        applyA ??= buildCellApply(dbA.adminSql, ctx.ownLogKeyHex, schemaOpts, this.extraProjections, hlcA);
         return applyA(op);
       },
       mergePollMs: 0,
@@ -417,8 +417,8 @@ export class CompositionRig {
       swarmBinding: binding,
       swarmOverride: mkSwarm(),
       verifyBindingOverride: async (_pk, _login, userId) => (userId === idA.userId ? 'verified' : 'fail'),
-      applyOverride: (op) => {
-        applyB ??= buildCellApply(dbB.adminSql, handleB!.ownLog.keyHex, schemaOpts, this.extraProjections, hlcB);
+      applyOverride: (op, ctx) => {
+        applyB ??= buildCellApply(dbB.adminSql, ctx.ownLogKeyHex, schemaOpts, this.extraProjections, hlcB);
         return applyB(op);
       },
       mergePollMs: 0,
