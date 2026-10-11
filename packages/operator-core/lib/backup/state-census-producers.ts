@@ -149,6 +149,16 @@ export async function cliSetupHomeCensusProducer(path = papercuspRoot()) {
     if (files.some(file => file.name === 'auth.json' && file.isFile())) {
       declarations.push({ kind: 'path', root: root.id, name: `${name}/auth.json`, classification: 'secret', producer: 'account-link-cli-completed-login' });
     }
+    // Installed Codex device-auth startup writes this exact log even when the
+    // network request fails. Preserve it; neither foreign siblings nor tmp
+    // descendants inherit ownership from the setup directory.
+    if (files.some(file => file.name === 'log' && file.isDirectory())) {
+      declarations.push({ kind: 'path', root: root.id, name: `${name}/log`, classification: 'state', producer: 'account-link-cli-device-auth-log' });
+      const logs = await readdir(join(path, name, 'log'), { withFileTypes: true });
+      if (logs.some(file => file.name === 'codex-login.log' && file.isFile())) {
+        declarations.push({ kind: 'path', root: root.id, name: `${name}/log/codex-login.log`, classification: 'state', producer: 'account-link-cli-device-auth-log' });
+      }
+    }
   }
   return { roots: [root], declarations };
 }

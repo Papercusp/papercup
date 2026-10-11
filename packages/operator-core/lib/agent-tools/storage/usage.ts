@@ -29,9 +29,20 @@ export default defineTool({
   args: z.object({
     category: z.enum(STORAGE_CATEGORY_IDS).optional().describe('One known storage category id; omit to inspect all categories.'),
   }).optional(),
-  async handler(args) {
-    const { computeStorageUsage, sumStorageUsageTotalBytes } = await import('../../storage/usage');
-    const categories = await computeStorageUsage({ categoryId: args?.category });
+  async handler(args, ctx) {
+    const { computeStorageUsage, sumStorageUsageTotalBytes, STORAGE_READ_BUDGET_MS } = await import('../../storage/usage');
+    // A nested code:run/recipes:run gives child handlers the parent's absolute
+    // foreground deadline. Keep storage work within that window, leaving a second
+    // for dispatch/result shaping; otherwise this child can remain in flight after
+    // its recipe has already returned script_timeout.
+    const parentDeadlineAtMs = ctx.deadlineAtMs;
+    const deadlineMs = typeof parentDeadlineAtMs === 'number' && Number.isFinite(parentDeadlineAtMs)
+      ? Math.min(Date.now() + STORAGE_READ_BUDGET_MS, parentDeadlineAtMs - 1_000)
+      : undefined;
+    const categories = await computeStorageUsage({
+      categoryId: args?.category,
+      ...(deadlineMs === undefined ? {} : { deadlineMs }),
+    });
     const totalBytes = sumStorageUsageTotalBytes(categories);
     return { data: { ok: true, totalBytes, categories } };
   },

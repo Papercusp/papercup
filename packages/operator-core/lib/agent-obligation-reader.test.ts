@@ -720,6 +720,30 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
     expect(result.planSlugs).toEqual(['plan-a', 'open-plan']);
   });
 
+  it('does not request acceptance repair for a superseded worklist plan', async () => {
+    const abandoned = worklistPlan('superseded-plan', closure('open'));
+    abandoned.status = 'superseded';
+    const planAcceptance = vi.fn(async () => ({
+      satisfied: false,
+      code: 'acceptance_bar_contract_not_ready' as const,
+      message: 'bar_snapshot_rubric_unresolved',
+    }));
+    const result = await read(
+      withWorklist([abandoned, worklistPlan('active-plan', closure('open'), 2)]),
+      { planAcceptance },
+    );
+
+    expect(result.planSlugs).toEqual(['plan-a', 'active-plan']);
+    expect(planAcceptance).not.toHaveBeenCalledWith('ws', 'superseded-plan');
+    expect(result.agenda.evaluations.some(row => row.scope.planSlug === 'superseded-plan')).toBe(false);
+    expect(result.agenda.primary).toContainEqual(expect.objectContaining({
+      family: 'independent-verification',
+      scope: expect.objectContaining({ planSlug: 'active-plan' }),
+      status: 'due',
+      action: expect.objectContaining({ kind: 'repair' }),
+    }));
+  });
+
   it.each(['open', 'partial', 'unknown'] as const)(
     'keeps a worklist plan whose closure is %s in scope',
     async (state) => {
@@ -851,6 +875,42 @@ describe('default planAcceptance dep serves the persisted gate verdict (D-039, W
     expect(spies.readPlanClosureObservations).toHaveBeenCalledWith({ workspaceId: 'ws', planSlugs: ['plan-a'] });
     expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
     expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+  });
+
+  it.each(['fresh', 'stale', 'absent'] as const)(
+    'keeps a declared superseded plan out of the actionable agenda with a %s gate observation',
+    async (status) => {
+      const spies = mockObservation(status === 'fresh'
+        ? { planSlug: 'plan-a', planStatus: 'superseded', status,
+            gate: { satisfied: false, code: 'acceptance_bar_contract_not_ready' }, observedAt: NOW.toISOString() }
+        : { planSlug: 'plan-a', planStatus: 'superseded', status, detail: 'old verdict is unavailable' });
+      const result = await readAgentObligationAgenda({
+        workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+        deps: deps({ planAcceptance: defaultAgentObligationReaderDeps().planAcceptance }),
+      });
+
+      const obligation = result.agenda.evaluations.find(row => row.family === 'independent-verification')!;
+      expect(obligation).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
+      expect(obligation.reason).toContain('superseded');
+      expect(obligation.action).toBeUndefined();
+      expect(result.agenda.primary.some(row => row.family === 'independent-verification')).toBe(false);
+      expect(result.degradedSources).toEqual([]);
+      expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
+      expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not suppress author repair for an active plan with the same contract refusal', async () => {
+    const spies = mockObservation({ planSlug: 'plan-a', planStatus: 'active', status: 'fresh',
+      gate: { satisfied: false, code: 'acceptance_bar_contract_not_ready' }, observedAt: NOW.toISOString() });
+    const result = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({ planAcceptance: defaultAgentObligationReaderDeps().planAcceptance }),
+    });
+    expect(result.agenda.primary).toContainEqual(expect.objectContaining({
+      family: 'independent-verification', status: 'due', action: expect.objectContaining({ kind: 'repair' }),
+    }));
+    expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
   });
 
   it.each(['stale', 'absent'] as const)('rejects a %s observation and refreshes it in the background', async (status) => {

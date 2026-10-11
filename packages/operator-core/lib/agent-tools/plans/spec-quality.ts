@@ -277,6 +277,20 @@ function implementationCouplingReason(behavior: string): string | null {
   const sourcePresence = specBehaviorImplementationPresenceReason(behavior);
   if (sourcePresence) return sourcePresence;
   if (/\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i.test(behavior)) return 'names an implementation file';
+  const internalRouteCall =
+    /\b(?:call(?:s|ed)?|invoke(?:s|d)?|route(?:s|d)?|wire(?:s|d)?)\b[^.\n]{0,160}\/(?:admin|internal|oauth|api)(?:\/[A-Za-z0-9._~-]+)*/i.exec(behavior);
+  if (internalRouteCall) {
+    return 'prescribes an internal route ' + JSON.stringify(internalRouteCall[0].trim());
+  }
+  const operationReference = /\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\s+(?:op|operation)\b/i.exec(behavior);
+  if (operationReference) {
+    return 'names an internal operation ' + JSON.stringify(operationReference[0]);
+  }
+  const existingSurfaceReuse =
+    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:page|screen|route|endpoint|component|handler|operation|op|module|service)\b/i.exec(behavior);
+  if (existingSurfaceReuse) {
+    return 'prescribes reuse of an existing implementation surface ' + JSON.stringify(existingSurfaceReuse[0].trim());
+  }
   const constructReference =
     /\b(?:function|class|method|variable|private field|implementation detail)\s+(`[^`]+`|'[^']+'|"[^"]+"|[A-Za-z_$][A-Za-z0-9_$]*)/gi;
   for (const match of behavior.matchAll(constructReference)) {
@@ -439,8 +453,9 @@ export function evaluatePlanSpecQuality(input: {
   }
   // A sourceBar pin makes this clause a projection of the canonical acceptance
   // BAR, repeated once for each mapped plan item. It is not an independently
-  // authored item contract. Grade item quality on unpinned clauses; acceptance
-  // rubric writes separately validate new or meaning-changed BAR projections.
+  // authored item contract, so item coverage, atomicity, and falsifiability use
+  // unpinned item clauses. The first-party implementation-independence rubric
+  // applies to active behavior text, so that criterion also checks BAR copies.
   const isProjectedBar = (clause: SpecClauseRevision) => clause.sourceBar != null;
   const isUnpinnedAutoBar = (clause: SpecClauseRevision) =>
     !clause.sourceBar && clause.specId.startsWith('AUTO-BAR-');
@@ -616,20 +631,21 @@ export function evaluatePlanSpecQuality(input: {
           )
         : pass(`${itemBehavioral.length} independent item behavior clause(s) state falsifiable outcomes.${projectionEvidence}`);
 
-  const couplingFailures = itemBehavioral
+  const couplingFailures = behavioral
     .map((clause) => ({ clause, reason: implementationCouplingReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
+  const implementationIndependenceCoverage =
+    ' ' + behavioral.length + ' active/accepted behavior clause(s) inspected, including ' +
+    behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).';
   ratings['implementation-independence'] =
     behavioral.length === 0
       ? notApplicable('0 behavioral clause(s) are available for implementation-independence evaluation.')
-      : itemBehavioral.length === 0
-        ? notApplicable('Only AUTO-BAR projections are present; they are not independent item contracts.')
       : couplingFailures.length
         ? fail(
             couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
             'Describe externally observable behavior instead of filenames or internal constructs.',
           )
-        : pass(`No independent item clause is coupled to an obvious implementation filename or construct.${projectionEvidence}`);
+        : pass('No active/accepted behavior clause is coupled to an obvious implementation filename or construct.' + implementationIndependenceCoverage);
 
   const invalidExemptionSpecIds = exemptions
     .filter((clause) => !validExplicitExemption(clause))

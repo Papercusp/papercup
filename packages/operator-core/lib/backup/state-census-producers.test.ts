@@ -302,14 +302,27 @@ describe('secret census producer adapters', () => {
       for (const name of names) await mkdir(join(parent, name), { recursive: true });
       await writeFile(join(parent, names[0], 'auth.json'), 'opaque credential');
       await writeFile(join(parent, names[0], 'source.ts'), 'source');
+      await mkdir(join(parent, names[0], 'log'));
+      await writeFile(join(parent, names[0], 'log', 'codex-login.log'), 'login diagnostic');
+      await writeFile(join(parent, names[0], 'log', 'foreign.log'), 'foreign');
       await symlink(join(parent, names[0]), join(parent, '.codex-setup-link-1234abcd'));
       const result = await cliSetupHomeCensusProducer(root);
       expect(result.declarations.map(entry => [entry.name, entry.classification])).toEqual([
         [`deploy-credentials/${names[0]}`, 'state'],
         [`deploy-credentials/${names[0]}/auth.json`, 'secret'],
+        [`deploy-credentials/${names[0]}/log`, 'state'],
+        [`deploy-credentials/${names[0]}/log/codex-login.log`, 'state'],
         [`deploy-credentials/${names[1]}`, 'state'],
       ]);
       expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+      await rm(join(parent, names[0], 'log', 'codex-login.log'));
+      await symlink(join(parent, names[0], 'auth.json'), join(parent, names[0], 'log', 'codex-login.log'));
+      expect((await cliSetupHomeCensusProducer(root)).declarations.map(entry => entry.name))
+        .not.toContain(`deploy-credentials/${names[0]}/log/codex-login.log`);
+      await rm(join(parent, names[0], 'log'), { recursive: true });
+      await symlink(join(parent, names[1]), join(parent, names[0], 'log'));
+      expect((await cliSetupHomeCensusProducer(root)).declarations.map(entry => entry.name))
+        .not.toContain(`deploy-credentials/${names[0]}/log`);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it('retains exact pacing and gym sidefiles while leaving unknown siblings and links visible', async () => {

@@ -39,6 +39,34 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
   afterAll(async () => { await db?.cleanup(); });
   beforeEach(async () => { await db.adminSql`TRUNCATE papercusp_auth.tutorial_voice_reservations`; });
 
+  it('confines reservation and global-policy privileges to the hosted service', async () => {
+    const table = 'papercusp_auth.tutorial_voice_reservations';
+    for (const role of ['harness_app', 'harness_zero', 'harness_admin', 'hosted_app', 'hosted_service']) {
+      const [privileges] = await db.adminSql`SELECT
+        has_table_privilege(${role}, ${table}, 'SELECT') AS can_read,
+        has_table_privilege(${role}, ${table}, 'INSERT') AS can_insert,
+        has_table_privilege(${role}, ${table}, 'UPDATE') AS can_update_all,
+        has_table_privilege(${role}, ${table}, 'DELETE') AS can_delete,
+        has_table_privilege(${role}, ${table}, 'TRUNCATE') AS can_truncate,
+        has_function_privilege(${role}, 'papercusp_auth.lock_tutorial_voice_global_flags()', 'EXECUTE') AS can_read_policy`;
+      expect(privileges).toEqual({ can_read: role === 'hosted_service',
+        can_insert: role === 'hosted_service', can_update_all: false,
+        can_delete: false, can_truncate: false, can_read_policy: role === 'hosted_service' });
+      const columns = await db.adminSql`SELECT column_name,
+        has_column_privilege(${role}, ${table}, column_name, 'UPDATE') AS can_update
+        FROM information_schema.columns
+        WHERE table_schema = 'papercusp_auth' AND table_name = 'tutorial_voice_reservations'
+        ORDER BY column_name`;
+      expect(columns.length).toBeGreaterThan(0);
+      expect(columns.filter(column => column.can_update).map(column => column.column_name))
+        .toEqual(role === 'hosted_service'
+          ? ['issuance_attempt_id', 'provider_conversation_id', 'provider_final_ref'] : []);
+    }
+    const [security] = await db.adminSql`SELECT relrowsecurity, relforcerowsecurity
+      FROM pg_class WHERE oid = ${table}::regclass`;
+    expect(security).toEqual({ relrowsecurity: true, relforcerowsecurity: true });
+  });
+
   it('locks persisted global policy through admission and refuses absent or malformed authority', async () => {
     await expect(readGlobalFlagOverridesForUpdate(db.adminSql))
       .rejects.toThrow('flag_override_lock_requires_transaction');

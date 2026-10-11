@@ -204,7 +204,7 @@ describe('migration 1273 — replay safety + the index/EXPLAIN probe (SPEC-P002-
   it('session_turns specs mirror migration 1273 and tool_result index stays online-built', () => {
     const migration = readFileSync(M1273, 'utf8').replace(/\s+/g, ' ');
     // Stage 'windows' indexes live in migration 1334 (pinned in session-turn-windows.integration.test.ts).
-    for (const spec of SESSION_SEARCH_INDEXES.filter((s) => s.table === SESSION_TURNS_TABLE && s.stage !== 'windows')) {
+    for (const spec of SESSION_SEARCH_INDEXES.filter((s) => s.table === SESSION_TURNS_TABLE)) {
       expect(migration).toContain(spec.name);
       // The migration splits the DDL over string literals; compare the definition body.
       expect(migration.replace(/' \|\| '/g, '')).toContain(spec.definition);

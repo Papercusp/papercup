@@ -49,7 +49,7 @@ describe('authority SQL lock failures (real PostgreSQL, EI-25380637492003672)', 
       max: 1,
       prepare: false,
       onnotice: () => {},
-      connection: { lock_timeout: '200ms', statement_timeout: '2s' },
+      connection: { lock_timeout: 200, statement_timeout: 2000 },
     });
     blocker = postgres(db.url, { max: 1, prepare: false, onnotice: () => {} });
     connection.sql = reader;

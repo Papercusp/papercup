@@ -73,6 +73,25 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
+  it('detects inline promisified starts and pins the checkpoint liveness bypass', () => {
+    const inline = "await promisify(execFile)('systemctl', ['--user', 'is-active', unit], { timeout: 5_000 });";
+    expect(inspectGovernorSource(inline)).toContain('resource-start-outside-admission');
+
+    const path = 'packages/operator-core/lib/release/checkpoint-qualification-transaction.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = path + '::resource-start-outside-admission';
+    const entry = BYPASS_REGISTRY.get(key);
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(entry?.disposition).toBe('bypass');
+    expect(entry?.matchesSource?.(source)).toBe(true);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true })).toEqual([]);
+
+    const addedStart = source + "\nspawn('unreviewed', []);";
+    expect(scanInventory([[path, addedStart]], { migrations: ['P-016'], validateRegistry: true })).toContain(
+      path + ':resource-start-outside-admission',
+    );
+  });
+
   it('does not count a caller-supplied callback named for a start verb as a start', () => {
     // A pacing/retry wrapper takes the operation as a callback and starts nothing
     // itself; the real child process is started by the caller it wraps, at a site

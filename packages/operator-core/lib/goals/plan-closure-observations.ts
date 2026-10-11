@@ -58,9 +58,10 @@ export interface PlanClosureFingerprint {
   metaScorecardWatermark: string | null;
 }
 
-export type PlanClosureObservationRead =
+export type PlanClosureObservationRead = (
   | { planSlug: string; status: 'fresh'; gate: PlanClosureGateFields; observedAt: string }
-  | { planSlug: string; status: 'stale' | 'absent' | 'ambiguous'; detail: string };
+  | { planSlug: string; status: 'stale' | 'absent' | 'ambiguous'; detail: string }
+) & { /** Current canonical lifecycle, independent of the recorded gate's freshness. */ planStatus?: string };
 
 export interface QualifiedPlanClosureRef { planSlug: string; harnessSlug: string }
 type PlanClosureSubject = string | QualifiedPlanClosureRef;
@@ -82,6 +83,7 @@ export function isCanonicalClosureGateCall(opts: PlanAcceptanceGateOpts): boolea
 interface FingerprintRow {
   plan_slug: string;
   harness_slug: string;
+  plan_status: string | null;
   matches: number;
   fingerprint: PlanClosureFingerprint;
   fingerprint_matches: boolean | null;
@@ -105,7 +107,7 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
   if (slugs.length === 0) return [];
   return sql<FingerprintRow[]>`
     WITH subject AS (
-      SELECT p.plan_slug, p.harness_slug, p.version, p.acceptance_bar_epoch,
+      SELECT p.plan_slug, p.harness_slug, p.status AS plan_status, p.version, p.acceptance_bar_epoch,
              count(*) OVER (PARTITION BY p.plan_slug)::int AS matches
         FROM harness_shared.harness_plans AS p
        WHERE p.workspace_id = ${workspaceId}
@@ -118,7 +120,7 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
          AND r.template_data ->> 'kind' = 'acceptance'
          AND r.template_data ->> 'subjectPlan' = ANY(${slugs}::text[])
     ), current_fp AS (
-      SELECT s.plan_slug, s.harness_slug, s.matches,
+      SELECT s.plan_slug, s.harness_slug, s.plan_status, s.matches,
              jsonb_build_object(
                'planVersion', s.version::text,
                'acceptanceBarEpoch', s.acceptance_bar_epoch,
@@ -160,7 +162,7 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
              ) AS fingerprint
         FROM subject AS s
     )
-    SELECT fp.plan_slug, fp.harness_slug, fp.matches, fp.fingerprint,
+    SELECT fp.plan_slug, fp.harness_slug, fp.plan_status, fp.matches, fp.fingerprint,
            (o.fingerprint = fp.fingerprint) AS fingerprint_matches,
            o.satisfied, o.code, o.skipped, o.message, o.rubric_id, o.graded_by,
            o.fingerprint AS observed_fingerprint, o.observed_at
@@ -191,7 +193,7 @@ export function judgePlanClosureObservation(
   planSlug: string,
   rows: readonly (Pick<FingerprintRow,
     'matches' | 'fingerprint' | 'fingerprint_matches' | 'satisfied' | 'code' | 'skipped' | 'message' |
-    'observed_fingerprint' | 'observed_at'> & Partial<Pick<FingerprintRow, 'rubric_id' | 'graded_by'>>)[],
+    'observed_fingerprint' | 'observed_at'> & Partial<Pick<FingerprintRow, 'rubric_id' | 'graded_by' | 'plan_status'>>)[],
   now: Date,
   maxAgeMs = PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS,
 ): PlanClosureObservationRead {
@@ -202,14 +204,16 @@ export function judgePlanClosureObservation(
     return { planSlug, status: 'ambiguous', detail: `plan slug '${planSlug}' resolves in ${Math.max(rows.length, rows[0].matches)} harnesses` };
   }
   const row = rows[0];
+  const lifecycle = row.plan_status == null ? {} : { planStatus: row.plan_status };
   if (row.observed_at == null || row.satisfied == null) {
-    return { planSlug, status: 'absent', detail: `no acceptance-gate verdict has been recorded for '${planSlug}' yet` };
+    return { planSlug, ...lifecycle, status: 'absent', detail: `no acceptance-gate verdict has been recorded for '${planSlug}' yet` };
   }
   const observedAt = new Date(row.observed_at);
   if (row.fingerprint_matches !== true) {
     const changed = changedFingerprintKeys(row.observed_fingerprint, row.fingerprint);
     return {
       planSlug,
+      ...lifecycle,
       status: 'stale',
       detail: `the recorded acceptance-gate verdict for '${planSlug}' (${observedAt.toISOString()}) predates a change to ${changed.join(', ') || 'its inputs'}`,
     };
@@ -218,12 +222,14 @@ export function judgePlanClosureObservation(
   if (!Number.isFinite(ageMs) || ageMs > maxAgeMs) {
     return {
       planSlug,
+      ...lifecycle,
       status: 'stale',
       detail: `the recorded acceptance-gate verdict for '${planSlug}' is ${Math.round(ageMs / 1000)}s old (max ${Math.round(maxAgeMs / 1000)}s)`,
     };
   }
   return {
     planSlug,
+    ...lifecycle,
     status: 'fresh',
     gate: {
       satisfied: row.satisfied,

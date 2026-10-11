@@ -53,6 +53,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { getEncoding } from 'js-tiktoken';
 
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -514,6 +515,48 @@ export interface PackArtifact {
   readonly path: string | null;
   readonly preview: string;
   readonly provenance: PackProvenance;
+  /** P021: captured retrieval evidence; inference/model usage is not measured. */
+  readonly bundle?: {
+    readonly kind: 'captured-source';
+    readonly sourcePaths: readonly string[] | null;
+    readonly sha256: string;
+    readonly truncated: boolean;
+    readonly totalChars: number;
+    readonly retainedChars: number;
+    readonly tokens: { readonly tokenizer: 'o200k_base'; readonly source: number | null;
+      readonly measuredPrefix: number; readonly measuredChars: number; readonly retained: number; readonly budget: number };
+    readonly expansion: { readonly tool: 'capability:read'; readonly args: { readonly file_path: string;
+      readonly byte_offset: 0; readonly byte_limit: 4096 }; readonly sha256: string };
+    readonly limitations: readonly string[];
+  };
+}
+
+let packTokenizer: ReturnType<typeof getEncoding> | undefined;
+/** Preserve an exact source prefix and count it with the maintained tokenizer.
+ * Large documents retain unknown totals; never report an extrapolation as tokens. */
+function packPreview(document: string, path: string, selected: readonly string[] | null) {
+  const tokenizer = packTokenizer ??= getEncoding('o200k_base');
+  const budget = DEFAULT_RESOURCE_BUDGET.resultTokensMax;
+  const prefix = (chars: number) => document.slice(0, chars > 0 && /[\uD800-\uDBFF]/.test(document[chars - 1]) ? chars - 1 : chars);
+  let low = 0, high = Math.min(document.length, PACK_PREVIEW_CHARS);
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (tokenizer.encode(prefix(mid), [], []).length <= budget) low = mid;
+    else high = mid - 1;
+  }
+  const preview = prefix(low);
+  const measured = prefix(Math.min(document.length, 16_384));
+  const measuredPrefix = tokenizer.encode(measured, [], []).length;
+  const sha256 = createHash('sha256').update(document).digest('hex');
+  const bundle: NonNullable<PackArtifact['bundle']> = { kind: 'captured-source', sourcePaths: selected, sha256,
+    truncated: preview.length < document.length, totalChars: document.length, retainedChars: preview.length,
+    tokens: { tokenizer: 'o200k_base', source: measured.length === document.length ? measuredPrefix : null,
+      measuredPrefix, measuredChars: measured.length, retained: tokenizer.encode(preview, [], []).length, budget },
+    expansion: { tool: 'capability:read', args: { file_path: path, byte_offset: 0, byte_limit: 4096 }, sha256 },
+    limitations: ['Captured source text is retrieval evidence; it does not establish runtime execution or inferred architecture.',
+      ...(measured.length < document.length ? ['Total source tokens are unknown beyond the measured 16,384-character prefix.'] : []),
+      ...(selected === null ? ['Source path enumeration could not be parsed; no completeness claim is made.'] : [])] };
+  return { preview, bundle };
 }
 
 export interface PackerResult {
@@ -891,6 +934,6 @@ export async function packerFacade(
       latencyMs: Date.now() - started,
       error: null,
     },
-    artifact: { path, preview: document.slice(0, PACK_PREVIEW_CHARS), provenance },
+    artifact: { path, ...packPreview(document, path, selected), provenance },
   };
 }

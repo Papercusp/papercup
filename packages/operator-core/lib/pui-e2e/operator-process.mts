@@ -7,6 +7,9 @@ import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { Session as InspectorSession } from 'node:inspector';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { SuSessionHost } from '../su-session-host';
 
 // These workspace TypeScript entrypoints are CommonJS under tsx. Resolve
@@ -39,6 +42,30 @@ const send = (message: unknown) => {
 // time alone cannot distinguish an awaited database read from a blocked loop.
 const requestLoopDelay = monitorEventLoopDelay({ resolution: 10 });
 requestLoopDelay.enable();
+// Reuse the suite's opt-in CPU-profile directory for this separate OS child.
+// The Vitest worker's profile cannot identify code blocking this HTTP loop.
+const timingDirectory = process.env.PUI_TIMING_DIR;
+const timingInspector = timingDirectory ? new InspectorSession() : null;
+async function profileCommand(method: string): Promise<unknown> {
+  return new Promise((resolve, reject) => timingInspector!.post(method, (error, result) => {
+    if (error) reject(error);
+    else resolve(result);
+  }));
+}
+if (timingInspector) {
+  timingInspector.connect();
+  await profileCommand('Profiler.enable');
+  await profileCommand('Profiler.start');
+}
+async function finishTimingProfile(): Promise<void> {
+  if (!timingInspector || !timingDirectory) return;
+  const { profile } = await profileCommand('Profiler.stop') as { profile: unknown };
+  timingInspector.disconnect();
+  mkdirSync(timingDirectory, { recursive: true });
+  const profilePath = join(timingDirectory, `operator-${process.pid}-${instanceId}.json`);
+  writeFileSync(profilePath, JSON.stringify({ instanceId, pid: process.pid, profile }));
+  send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_CPU_PROFILE', { path: profilePath }] });
+}
 const sendAndFlush = async (message: unknown): Promise<void> => {
   if (!process.connected) return;
   await new Promise<void>((resolve, reject) => {
@@ -104,6 +131,7 @@ const server = createAdaptorServer({
           step: configStep,
           method: request.method,
           pathname,
+          toolName: runTool?.name,
           at: new Date(configStartedAt).toISOString(),
         }],
       });
@@ -159,6 +187,7 @@ const server = createAdaptorServer({
           step: configStep,
           method: request.method,
           pathname,
+          toolName: runTool?.name,
           status: response.status,
           durationMs: Date.now() - configStartedAt,
           eventLoopDelayMaxMsSinceReady: requestLoopDelay.max / 1e6,
@@ -307,6 +336,7 @@ async function stop({ endSessions = true }: { endSessions?: boolean } = {}): Pro
     }
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await finishTimingProfile();
     const { drainDetached } = require('../detached-imports') as typeof import('../detached-imports');
     await drainDetached();
     const { stopInvalidationListener } = require('../sync-sse') as typeof import('../sync-sse');

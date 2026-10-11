@@ -1077,6 +1077,8 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
 
 export interface IndependentVerificationProviderInput extends ProviderBase {
   planSlug: string;
+  /** Canonically observed lifecycle disposition, rather than incomplete prerequisites. */
+  notApplicableReason?: string;
   read: ProviderRead<{
     /** The persisted canonical gate verdict (D-039), never an inline gate run. */
     gate: PlanClosureGateFields;
@@ -1132,10 +1134,12 @@ export function independentVerificationObligation(input: IndependentVerification
   if (!observed || !observed.gradeable) {
     return defineAgentObligation({
       ...common,
-      title: `Plan ${input.planSlug} is not ready for independent verification`,
+      title: input.notApplicableReason
+        ? `Plan ${input.planSlug} has no independent-verification duty`
+        : `Plan ${input.planSlug} is not ready for independent verification`,
       episode: `not-gradeable:${input.sourceGeneration}`,
       status: 'not-applicable',
-      reason: 'implementation, completion audit, or acceptance rubric prerequisites are not complete',
+      reason: input.notApplicableReason ?? 'implementation, completion audit, or acceptance rubric prerequisites are not complete',
       causalRank: 2,
       applicableDemand: 0,
       evidence: [evidence(`plan:${input.planSlug}`, input.observedAt, input.sourceGeneration, 'not gradeable')],

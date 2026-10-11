@@ -35,6 +35,7 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
       version bigint NOT NULL DEFAULT 1,
+      status text NOT NULL DEFAULT 'active',
       acceptance_bar_epoch integer,
       template text,
       template_data jsonb,
@@ -101,6 +102,17 @@ async function read(now = new Date()) {
 }
 
 describe('plan closure observations (D-032)', () => {
+  it('reads canonical supersession beside stale and absent acceptance verdicts', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    await db.sql`UPDATE harness_shared.harness_plans SET status = 'superseded', version = version + 1
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    expect(await read()).toMatchObject({ status: 'stale', planStatus: 'superseded' });
+
+    await db.sql`DELETE FROM harness_shared.plan_closure_observations
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    expect(await read()).toMatchObject({ status: 'absent', planStatus: 'superseded' });
+  });
+
   it('keeps qualified same-slug verdicts distinct while the legacy bare slug stays ambiguous', async () => {
     const secondHarness = 'second-harness';
     await db.sql`INSERT INTO harness_shared.harness_plans

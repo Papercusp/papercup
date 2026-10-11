@@ -74,4 +74,10 @@ describe('native P014 compiler interface change evidence', () => {
     writeFileSync(join(root, 'tool.ts'), 'import { readApi } from "./target";\nfunction defineTool<T>(value: T) { return value; }\nexport const tool = defineTool({ name: "read-api", returns: "prose only", handler: readApi });\n');
     expect(query(root).interfaces?.registrations[0]).toMatchObject({ factoryAuthority: 'unverified', responseValidator: null });
   });
+  it('keeps spread overrides unknown instead of attributing a replaced literal implementation', () => {
+    const root = fixture();
+    writeFileSync(join(root, 'tool.ts'), 'import { defineTool } from "@papercusp/agent-mcp";\nimport { readApi } from "./target";\nconst override = { name: "other", handler: () => 0 };\nexport const tool = defineTool({ name: "read-api", handler: readApi, ...override });\n');
+    expect(query(root).interfaces?.registrations[0]).toMatchObject({ name: null, kind: 'unknown',
+      implementation: null, requestValidator: null, responseValidator: null, runtimeRegistered: 'unmeasured' });
+  });
 });

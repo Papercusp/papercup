@@ -32,6 +32,39 @@ import { createHash } from 'node:crypto';
 import { defineTool, lookupByMcpName, projectedToolCallContract } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 
+describe('native P021 required BAR bounded source pack expansion', () => {
+  it('retains a bounded actual source preview and recovers omitted evidence from its captured artifact after the source changes', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'native-source-bundle-'));
+    let artifactPath: string | null = null;
+    const source = `${'// source text 你好🙂\n'.repeat(500)}export const omittedEvidence = "OMITTED_NATIVE_EVIDENCE";\n`;
+    try {
+      writeFileSync(join(project, 'target.ts'), source);
+      const response = await codePack.handler(codePack.args.parse({ op: 'pack', rootPath: project, include: ['target.ts'] }),
+        { projectDir: project } as never) as { data: import('./packer-facade').PackerResult };
+      expect(response.data.answer.error, JSON.stringify(response.data.answer)).toBeNull();
+      const artifact = response.data.artifact!, bundle = artifact.bundle!;
+      artifactPath = artifact.path;
+      expect(bundle).toMatchObject({ kind: 'captured-source', sourcePaths: ['target.ts'], truncated: true,
+        expansion: { tool: 'capability:read' } });
+      expect(artifact.preview).not.toContain('OMITTED_NATIVE_EVIDENCE');
+      expect(bundle.tokens.retained).toBeGreaterThan(0);
+      expect(bundle.tokens.retained).toBeLessThanOrEqual(bundle.tokens.budget);
+      writeFileSync(join(project, 'target.ts'), 'export const replacement = true;\n');
+      // Expansion is of the captured evidence, not a silently re-run query over
+      // today's source. Its full hash stays stable after the source moves.
+      const captured = readFileSync(bundle.expansion.args.file_path, 'utf8');
+      expect(captured).toContain('OMITTED_NATIVE_EVIDENCE');
+      expect(captured).not.toContain('replacement = true');
+      expect(createHash('sha256').update(captured).digest('hex')).toBe(bundle.sha256);
+      expect(bundle.expansion.sha256).toBe(bundle.sha256);
+      expect(artifact.provenance.denyGlobs).toContain('**/.env');
+    } finally {
+      if (artifactPath) rmSync(artifactPath, { force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
 describe('native P014 required BAR registered interface consumer mismatch', () => {
   it('joins the real compiler report to a registered result contract and exposes a removed field to its typed and runtime client', async () => {
     const project = mkdtempSync(join(tmpdir(), 'native-interface-contract-'));

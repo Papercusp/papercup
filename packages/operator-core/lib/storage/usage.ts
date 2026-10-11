@@ -30,7 +30,7 @@ const QUERY_TIMEOUT_CAP_MS = 4000;
  * composed `code:run` foreground budget is 50s; leave room for dispatch and
  * shaping while still allowing several slow-but-useful catalog reads.
  */
-const STORAGE_READ_BUDGET_MS = 30_000;
+export const STORAGE_READ_BUDGET_MS = 30_000;
 
 /**
  * The budget used when this runs OFF the read path — from the

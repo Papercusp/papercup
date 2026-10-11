@@ -130,7 +130,12 @@ import { isWorkItemCompletionAuthority, type WorkItemCompletionAuthority } from 
 // NOT re-exported — the leaf is the import site for anyone who needs the decision itself.
 import { classifySettledCompletionEvidence } from './work-item-settled-completion-evidence';
 import { liveDriveTerminalRefusal } from './turn-provenance/owner-visible-surface-acceptance';
-import { readExternalBlockers, updateExternalBlockerHistory, type ExternalBlockerRecord } from './external-blockers';
+import {
+  activeExternalBlockers,
+  readExternalBlockers,
+  updateExternalBlockerHistory,
+  type ExternalBlockerRecord,
+} from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { clearGoalClaimedIfMatches, noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
@@ -4171,7 +4176,22 @@ export async function setWorkItemState(
   if (!opts.force && (isUnblockingTransition || isCompletingTransition)) {
     const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
     const block = await planItemLaneBlockReason(wi).catch(() => null);
-    if (block && block.effectiveStatus !== 'done' && block.effectiveStatus !== 'dropped') {
+    // The plan item can be blocked solely because its latest note mirrors this
+    // work-item's own external blocker. Clearing that blocker transitions the
+    // work-item before the post-transition plan reflection runs, so refusing here
+    // would make the two safe writes circular. Open that one edge only when the
+    // guard proves the plan-side block is attributed to this same item and no
+    // active typed external blocker remains on the work-item.
+    const attributedBlockCanClear =
+      block?.effectiveStatus === 'blocked' &&
+      block.blockAttributedToWorkItemId === id &&
+      activeExternalBlockers(wi.payload).length === 0;
+    if (
+      block &&
+      block.effectiveStatus !== 'done' &&
+      block.effectiveStatus !== 'dropped' &&
+      !attributedBlockCanClear
+    ) {
       const verb = isUnblockingTransition ? 'unblocking' : 'completing';
       const stateDesc = isUnblockingTransition ? `is blocked, and its` : `is not settled, and its`;
       throw new Error(

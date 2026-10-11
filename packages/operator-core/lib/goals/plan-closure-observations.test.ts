@@ -61,6 +61,25 @@ describe('judgePlanClosureObservation', () => {
     });
   });
 
+  it.each(['fresh', 'stale', 'absent'] as const)(
+    'retains current lifecycle independently of a %s historical gate', (status) => {
+      const read = judgePlanClosureObservation('p', [row({
+        plan_status: 'superseded',
+        ...(status === 'stale' ? { fingerprint_matches: false } : {}),
+        ...(status === 'absent' ? { observed_at: null, satisfied: null } : {}),
+      })], NOW);
+      expect(read).toMatchObject({ status, planStatus: 'superseded' });
+    },
+  );
+
+  it('does not assign a lifecycle to an ambiguous cross-harness slug', () => {
+    const read = judgePlanClosureObservation('p', [
+      row({ matches: 2, plan_status: 'superseded' }), row({ matches: 2, plan_status: 'active' }),
+    ], NOW);
+    expect(read.status).toBe('ambiguous');
+    expect(read.planStatus).toBeUndefined();
+  });
+
   it('reads stale on a fingerprint change and names what changed', () => {
     const current = { ...FP, planVersion: '37', scorecardWatermark: '1790830000000000' };
     const read = judgePlanClosureObservation('p', [row({ fingerprint: current, fingerprint_matches: false })], NOW);

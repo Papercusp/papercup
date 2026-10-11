@@ -14,7 +14,8 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { getEncoding } from 'js-tiktoken';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -525,6 +526,32 @@ describe('provenance states what the pack actually is', () => {
     // able to blow the caller's context budget.
     expect(r.artifact!.preview.length).toBeLessThanOrEqual(4096);
     expect(r.artifact!.provenance.chars).toBeGreaterThan(400_000);
+    expect(r.artifact!.bundle).toMatchObject({ truncated: true, tokens: { source: null },
+      expansion: { tool: 'capability:read', args: { file_path: '/scratch/pack.xml' } } });
+  });
+
+  it('P021 recovers omitted literal source through the hash-bound artifact and measures retained Unicode tokens', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-pack-bundle-'));
+    const body = `<file path="a.ts">// literal <|endoftext|> is source, not a control token\n${'const λ = "你好🙂";\n'.repeat(600)}OMITTED_LITERAL_SOURCE</file>`;
+    const path = join(root, 'pack.xml');
+    try {
+      const packed = await packerFacade('pack', BASE, stubEffects({ writeArtifact: async document => {
+        writeFileSync(path, document); return path;
+      } }, body));
+      const artifact = packed.artifact!, bundle = artifact.bundle!;
+      expect(bundle.sourcePaths).toEqual(['a.ts']);
+      expect(bundle.truncated).toBe(true);
+      expect(artifact.preview).not.toContain('OMITTED_LITERAL_SOURCE');
+      expect(body.startsWith(artifact.preview)).toBe(true);
+      expect(artifact.preview).not.toMatch(/[\uD800-\uDBFF]$/);
+      expect(bundle.tokens.retained).toBe(getEncoding('o200k_base').encode(artifact.preview, [], []).length);
+      expect(bundle.tokens.retained).toBeLessThanOrEqual(bundle.tokens.budget);
+      const expanded = readFileSync(bundle.expansion.args.file_path, 'utf8');
+      expect(expanded).toBe(body);
+      expect(expanded).toContain('OMITTED_LITERAL_SOURCE');
+      expect(createHash('sha256').update(expanded).digest('hex')).toBe(bundle.expansion.sha256);
+      expect(bundle.tokens.source).toBe(getEncoding('o200k_base').encode(body, [], []).length);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('a pack at the byte ceiling reports truncated:true', async () => {

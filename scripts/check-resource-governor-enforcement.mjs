@@ -376,9 +376,15 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
  */
 export const RESOURCE_GOVERNOR_SCANNER_PATH =
   "scripts/check-resource-governor-enforcement.mjs";
+const INLINE_PROMISIFIED_RESOURCE_START =
+  /\bpromisify\s*\(\s*(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\)\s*\(/;
 function resourceStartCallCount(source) {
   const code = stripCommentsAndStrings(source);
-  return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length;
+  const directStarts = [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length;
+  const inlinePromisifiedStarts = [
+    ...code.matchAll(new RegExp(INLINE_PROMISIFIED_RESOURCE_START.source, "g")),
+  ].length;
+  return directStarts + inlinePromisifiedStarts;
 }
 
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
@@ -848,6 +854,23 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     disposition: "semantic",
     reason:
       "P-016 reviewed semantic disposition for packages/operator-core/lib/p2p/sandbox/os-user-isolation.ts: its finite sandbox drill subprocess is finite diagnostic/correlation state, not a resident resource queue; entries are consumed, evicted, or bounded by the caller's in-flight workload and start no independent resident work.",
+  },
+  {
+    path: "packages/operator-core/lib/release/checkpoint-qualification-transaction.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for checkpoint-qualification-transaction.ts: its sole process start is a timeout-bounded, awaited systemctl is-active probe for the unit of an already-recorded runner. It reads release/checkpoint control metadata, creates no worker or resident queue, and must remain available while productive capacity is pressured.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("await promisify(execFile)('systemctl', ['--user', 'is-active', unit], {") &&
+        source.includes("timeout: 5_000,") &&
+        source.includes("if (!unit) return 'unknown';") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
   },
   {
     path: "packages/operator-core/lib/release/checkpoint-required-ancestor.ts",
@@ -2928,6 +2951,7 @@ function isLocalCallbackBinding(code, name) {
 }
 function hasResourceStart(code) {
   if (START_NON_VERB.test(code)) return true;
+  if (INLINE_PROMISIFIED_RESOURCE_START.test(code)) return true;
   for (const verb of START_VERBS) {
     if (!new RegExp(`\\b${verb}\\s*\\(`).test(code)) continue;
     if (isLocalCallbackBinding(code, verb)) continue;

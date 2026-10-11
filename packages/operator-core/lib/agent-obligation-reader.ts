@@ -60,6 +60,12 @@ export const AGENT_OBLIGATION_PORTFOLIO_PROJECTION = {
  */
 export const PLAN_CONTEXT_MAX = 8;
 
+/** A lifecycle disposition is not a synthetic acceptance verdict. */
+export type PlanAcceptanceObligationRead = PlanClosureGateFields | {
+  notApplicable: 'superseded';
+  reason: string;
+};
+
 export interface AgentObligationReaderDeps {
   goalSubject: (workspaceId: string, ownerId: string) => Promise<string | null>;
   planSlugs: (workspaceId: string, ownerId: string) => Promise<string[]>;
@@ -98,7 +104,7 @@ export interface AgentObligationReaderDeps {
    * observation rejects — an `unknown` read — and starts the single-flight background
    * re-evaluation that refreshes it.
    */
-  planAcceptance: (workspaceId: string, planSlug: string) => Promise<PlanClosureGateFields>;
+  planAcceptance: (workspaceId: string, planSlug: string) => Promise<PlanAcceptanceObligationRead>;
   /**
    * Undispositioned owner directives (`pending` + `open`) for this workspace.
    *
@@ -334,7 +340,7 @@ export async function readAgentObligationAgenda(input: {
     boundedRead(
       'plan-acceptance:' + planSlug,
       deps.planAcceptance(input.workspaceId, planSlug),
-      null as PlanClosureGateFields | null,
+      null as PlanAcceptanceObligationRead | null,
       sourceTimeoutMs,
     );
   const ownAcceptancePromises = ownPlanSlugs.map(readAcceptance);
@@ -348,7 +354,7 @@ export async function readAgentObligationAgenda(input: {
   // this wave still starts immediately and runs concurrently, and the one new
   // dependency edge (portfolio -> its own plans' acceptance) is intrinsic.
   const worklistAcceptancePromise = portfolioPromise.then(async (portfolioOutcome) => {
-    const empty = { planSlugs: [] as string[], acceptances: [] as ReadOutcome<PlanClosureGateFields | null>[] };
+    const empty = { planSlugs: [] as string[], acceptances: [] as ReadOutcome<PlanAcceptanceObligationRead | null>[] };
     const budget = PLAN_CONTEXT_MAX - ownPlanSlugs.length;
     if (budget <= 0) return empty;
     const seen = new Set(ownPlanSlugs);
@@ -356,6 +362,9 @@ export async function readAgentObligationAgenda(input: {
       const slug = entry.slug?.trim();
       if (!slug || seen.has(slug)) return false;
       seen.add(slug);
+      // Abandoned plans do not owe acceptance, even if an old gate is still red.
+      // Exclude them before spending the bounded acceptance-read budget.
+      if (entry.status?.trim().toLowerCase() === 'superseded') return false;
       // `closure: null` means the question does not arise yet (the plan is not
       // administratively complete). Per D-012 that is NEVER a reading of
       // "closed", so such a plan stays in scope.
@@ -664,6 +673,17 @@ export async function readAgentObligationAgenda(input: {
     }
     const gate = outcome.value;
     const generation = agentObligationSourceGeneration({ planSlug, gate });
+    if ('notApplicable' in gate) {
+      return {
+        workspaceId: input.workspaceId,
+        ownerId: input.ownerId,
+        planSlug,
+        observedAt,
+        sourceGeneration: generation,
+        notApplicableReason: gate.reason,
+        read: { status: 'known', value: null },
+      };
+    }
     return {
       workspaceId: input.workspaceId,
       ownerId: input.ownerId,
@@ -1009,6 +1029,13 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       const { readPlanClosureObservations, refreshPlanClosureObservations } =
         await import('./goals/plan-closure-observations');
       const observation = (await readPlanClosureObservations({ workspaceId, planSlugs: [planSlug] })).get(planSlug);
+      // Lifecycle comes from the current canonical row in the SAME query. A
+      // superseded plan needs no gate refresh or acceptance repair, including
+      // when the historical verdict is absent or stale. Ambiguity remains unknown.
+      if (observation?.status !== 'ambiguous' && observation?.planStatus === 'superseded') {
+        return { notApplicable: 'superseded' as const,
+          reason: `plan '${planSlug}' is superseded; independent acceptance is not applicable` };
+      }
       if (observation?.status === 'fresh') return observation.gate;
       if (observation?.status !== 'ambiguous') refreshPlanClosureObservations([planSlug]);
       throw new Error(observation?.detail ?? `no acceptance-gate observation was read for '${planSlug}'`);

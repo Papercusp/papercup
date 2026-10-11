@@ -1260,6 +1260,84 @@ describe('EI-13715 — unblock-past-a-live-plan-gate guard', () => {
     expect(after?.state).toBe('open');
   });
 
+  it('ALLOWS an unblock through a sole plan block attributed to this work-item after its external blockers clear', async () => {
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'self-attributed plan block',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively blocked',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+      blockAttributedToWorkItemId: feat.id,
+    });
+    const after = await wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' });
+    expect(after?.state).toBe('open');
+  });
+
+  it('ALLOWS completing through the same work-item-attributed plan block after external blockers clear', async () => {
+    const bug = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'self-attributed plan block completion',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-9' } },
+    });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively blocked',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+      blockAttributedToWorkItemId: bug.id,
+    });
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      harness: 'papercup',
+      by: 'agB',
+      completionRef: 'fixed',
+      skipCompletionGate: true,
+    });
+    expect(after?.state).toBe('done');
+  });
+
+  it('keeps the plan gate closed when a typed external blocker is still active', async () => {
+    const activeBlocker = {
+      kind: 'runtime',
+      ref: 'runtime:dependency',
+      summary: 'Dependency is still unavailable',
+      status: 'active',
+      createdAt: '2026-10-01T00:00:00.000Z',
+      createdBy: 'agA',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    };
+    const feat = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'self-attributed plan block with active dependency',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: {
+        plan_item: { plan_slug: 'a-plan', item_id: 'P-9' },
+        externalBlockers: [activeBlocker],
+      },
+    });
+    await wi.setWorkItemState(feat.id, 'blocked', { harness: 'papercup', by: 'agA' });
+    planItemLaneBlockReasonMock.mockResolvedValueOnce({
+      reason: 'plan-item a-plan#P-9 is effectively blocked',
+      planSlug: 'a-plan',
+      itemId: 'P-9',
+      effectiveStatus: 'blocked',
+      blockAttributedToWorkItemId: feat.id,
+    });
+    await expect(wi.setWorkItemState(feat.id, 'todo', { harness: 'papercup', by: 'agB' })).rejects.toThrow(
+      /a-plan#P-9.*STILL.*effectively 'blocked'/s,
+    );
+    expect((await wi.getWorkItem(feat.id, 'papercup'))?.state).toBe('blocked');
+  });
+
   it('ALLOWS the unblock when the plan-item is already terminal (done/dropped) — stale residue, not a live gate', async () => {
     const feat = await wi.createWorkItem({
       kind: 'feature',

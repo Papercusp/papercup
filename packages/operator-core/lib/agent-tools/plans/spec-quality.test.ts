@@ -136,6 +136,9 @@ describe('evaluatePlanSpecQuality', () => {
       expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
       expect(result.ratings.falsifiability.rating).toBe('pass');
       expect(result.ratings['implementation-independence'].rating).toBe('pass');
+      expect(result.ratings['implementation-independence'].evidence).toContain(
+        'including 3 sourceBar-pinned acceptance BAR projection(s)',
+      );
       expect(result.verdict).toBe('pass');
       expect(result.details.atomicityClauseDiagnostics).toHaveLength(6);
       expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === 'AUTO-BAR-R-1-P-001'))
@@ -452,6 +455,63 @@ describe('evaluatePlanSpecQuality', () => {
 
     expect(result.ratings['implementation-independence'].rating).toBe('fail');
     expect(result.ratings['implementation-independence'].evidence).toContain('"class OrientationState"');
+  });
+
+  it.each([
+    {
+      label: 'internal routes and page reuse',
+      behavior:
+        'The Settings → Integrations UI calls the existing routes (/admin/triggers/slack/manifest, /admin/triggers/slack/connect, /api/oauth/start) and extends the existing page.',
+      expected: 'internal route',
+    },
+    {
+      label: 'a named internal operation',
+      behavior: 'The Settings → Integrations UI invokes the configure-slack-bugs op.',
+      expected: 'internal operation',
+    },
+    {
+      label: 'an existing-page reuse mandate',
+      behavior: 'The integration setup flow extends the existing page.',
+      expected: 'existing implementation surface',
+    },
+    {
+      label: 'an explicit implementation construct in a BAR projection',
+      behavior: 'A class IntegrationSettingsRouter is declared once.',
+      expected: 'class IntegrationSettingsRouter',
+    },
+  ])('checks active sourceBar behavior for implementation coupling: $label', ({ behavior, expected }) => {
+    const sourceBar = {
+      barKey: 'R-2',
+      barHash: '8b52c24e019f47c5453bdd6afb90c9cb276ceae2e2855ac6f0e3703f0737d669',
+      barSetHash: '687b538a16ba79bec9c1216f1c64d9d479c209891511ef79106e692ee8850417',
+      rubricSlug: 'acceptance-simplify-integration-setup-2026-10-10',
+      rubricRevision: 1,
+      evidencePlane: 'tree' as const,
+    };
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [
+        clause({
+          specId: 'AUTO-BAR-R-2-P-001',
+          sourceValId: null,
+          sourceBar,
+          behavior,
+        }),
+        clause({
+          specId: 'CONTRACT-P-001',
+          sourceValId: 'VAL-CONTRACT-P-001',
+          behavior: 'The integrations screen reports whether each provider is connected.',
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const rating = result.ratings['implementation-independence'];
+    expect(rating.rating).toBe('fail');
+    expect(rating.evidence).toContain('AUTO-BAR-R-2-P-001');
+    expect(rating.evidence).toContain(expected);
   });
 
   it('rejects a bare camelCase function reference in implementation-independence', () => {
