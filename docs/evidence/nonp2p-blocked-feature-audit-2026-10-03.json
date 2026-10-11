@@ -6991,7 +6991,111 @@
      "summary": "plan lane voice-final-public-release-2026-10-01#P-002 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "voiceP002EvidenceQualification": {
+    "status": "current-live-clause-unbound-real-acoustic-acceptance-unestablished",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004758",
+    "auditProofs": [
+     "WI-10005820#comment:1174336",
+     "WI-10005820#comment:1174337",
+     "WI-10005820#comment:1174346"
+    ],
+    "sourceAuthority": {
+     "plan": "voice-final-public-release-2026-10-01",
+     "version": 38,
+     "contentHash": "ce2eea820d85e77d5d53e6581daffb2d7eab2d314bdb58dea6c03ce3a9745496",
+     "planState": "ready",
+     "item": "P-002",
+     "workItemState": "blocked",
+     "assignee": null,
+     "checkpoint": null,
+     "hasCompletionEvidence": false,
+     "dependency": "P-001 remains the canonical direct dependency; no child claim, state or hold was changed.",
+     "ownerProvenanceReuse": "Prior row42 voiceP001EvidenceQualification and SELF proof1174322 retain the independently verified D-005/D-006 real-mic meaning and D-010 final two-tier P-009 release hold. D-009 is an agent-authored dated coverage ruling, not an owner waiver."
+    },
+    "specs": {
+     "specId": "AUTO-BAR-R-2-P-002",
+     "revision": 3,
+     "lifecycleStatus": "accepted",
+     "contentHash": "f6f96a84f15d62d3c97bed6df2487c9ad6e73e29cf196d1f07f48c69d455ec44",
+     "rubric": "acceptance-voice-final-public-release-2026-10-01",
+     "rubricRevision": 2,
+     "barHash": "ea7da19985246edc648eae63f156d0d0399c9e9ae756920b2f6dfeeedddf925d",
+     "barSetHash": "f9142b477e9898d2d79f853a09b19f69f99063c202174da349cc31e2ef7f021f",
+     "evidencePlane": "live",
+     "requiredProof": "Signed-in public portal, actual microphone and audible reply for each supported configured hosted engine; consent/permission, PTT hold/release, always-on/off, transcript/audio hashes, test identity, runtime/artifact and timestamp, plus denial/retry/interruption. Automated or synthetic tests cannot substitute.",
+     "ratingBoundary": "Missing per-engine or acoustic evidence is unknown. Observed missing consent/lifecycle/approved placement/accessibility or exposed excluded desktop-local route is broken. This audit did not measure those current hosted failures."
+    },
+    "bindingQualification": {
+     "scope": "Two fresh separate exact queries: specIds=[AUTO-BAR-R-2-P-002] and workItemIds=[WI-10004758], each limit100/detail full.",
+     "clauseEvidence": [],
+     "workItemEvidence": [],
+     "clauseCount": 0,
+     "workItemCount": 0,
+     "truncatedByLimit": false,
+     "limitation": "The empty binding plane does not establish absence of historical work, an actual hosted malfunction, or absence of evidence elsewhere."
+    },
+    "foundationQualification": {
+     "plan": "portal-voice-parity-and-release-2026-09-08",
+     "version": 69,
+     "contentHash": "691f39cfbca4fe9be0a701a228437395c8120f5c1b85c58c9245b01375bac77e",
+     "planState": "draft",
+     "item": "P-031",
+     "itemState": "todo",
+     "workItem": "WI-10001112",
+     "workItemState": "open",
+     "assignee": null,
+     "completionAuthority": null,
+     "governingDecisions": [
+      "D-007",
+      "D-009",
+      "D-011"
+     ],
+     "retainedBoundary": "Hosted voice remains server-brokered; desktop-local STT/TTS is excluded. Preference absence means auto, explicit unconfigured engines do not silently fall back. Independent grading, author verdict and exact deployed-runtime acceptance remain required.",
+     "datedReview": "Latest emitted SELF-author preparation/reconciliation posts1153748/1153761/1153812 and checkpoint preserve Portal source-authority denial and incomplete outside construction coverage. These dated records do not certify current hosted implementation or acceptance."
+    },
+    "receiptQualification": {
+     "testTenantRefusal": {
+      "path": ".papercusp/scratch/d006-portal-run6-receipt.json",
+      "sha256": "8d44a09c85421f569b91c1dc74f24e36eec820b7d931819f4743971759cb64cf",
+      "recordedAt": "2026-10-06T18:43:21.843Z",
+      "observedRecord": "Session preflight200; GET and POST chat403 portal_chat_workspace_not_selected; Connecting voice control and empty alert; timestamped cleanup. This independently corroborates the retained dated refusal receipt.",
+      "limit": "D-009 identifies the account as having no workspace and limits this leg to refusal coverage. No conversation, microphone-denial request or spoken round trip was established. The receipt does not verify the later WI-10006841 repair or a current hosted failure."
+     },
+     "desktopSynthetic": {
+      "path": "docs/evidence/voice-final-public-release-2026-10-01/r4-rig-run7-2026-10-11.json",
+      "sha256": "7c6cc8f88a3aa95490c62b6798585ce733417eb865ac5a4e2f048ed718124412",
+      "specId": "AUTO-BAR-R-4-P-004",
+      "sourceCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+      "recordedProof": "The isolated Tauri receipt records11/11 synthetic tests and passed preparation/boot/assertion. Its disclosures exclude acoustic self-audio and hosted credential/tenant/spend isolation.",
+      "limit": "Receipt read only; no rerun or independent runtime certification. Synthetic desktop R-4 proof is outside the actual-mic hosted R-2 acceptance plane."
+     },
+     "hostedBoundaries": {
+      "path": "docs/evidence/voice-final-public-release-2026-10-01/r7-hosted-boundaries-run7-2026-10-11.json",
+      "sha256": "7eee500473c11199c0e1251b43681814764279420163f5b6a2a28fd68cbde667",
+      "specId": "AUTO-BAR-R-7-P-004",
+      "sourceCommit": "777c92572df145f634fee48e4d8a3541371b4198",
+      "recordedProof": "The receipt records hosted auth, advertised-engine, spend/tenant and LiveKit-room boundary cases. It reports hosted ElevenLabs unavailable and LiveKit available during that run.",
+      "limit": "Receipt read only; no current runtime/provider remeasurement. Its explicit disclosure leaves spoken round trip and microphone denial to the guided session. R-7 boundary proof does not fulfill R-2."
+     }
+    },
+    "sourceAndAcceptanceLimits": {
+     "localCheckout": "portal/ source and the R-2 portal/ evidence destination are absent in this canonical checkout; this bounded local absence does not establish current hosted failure.",
+     "unmeasured": [
+      "Current hosted source/build/credential/engine identity and per-mode runtime behavior",
+      "Actual signed-in public microphone-to-audible-reply journey and retained owner/acoustic acceptance",
+      "Independent complete Portal acceptance, final release hold fulfillment and exact shipment"
+     ],
+     "disposition": "Retain requires-further-qualification; relevant current requirements remain unresolved. No duplicate, obsolete, superseded, accepted or shipped disposition."
+    },
+    "auditBoundary": {
+     "historicalFields": "All172 prior rows, original version23 fields, qualifications, population and exclusions are preserved.",
+     "queueReconciliation": "Whole PERSONAL audit and200-versus172 reconciliation remain OPEN. Archive1160078, separate Phone9/R68 and repair WI-10005218 remain unresolved.",
+     "ownerWalls": "Residue-authority and private-preview questions were already asked; their last saved answers remain open/null and were not re-read for this addition.",
+     "actions": "Only this additive row43 qualification; no child claim/state/hold, product source/test, native/provider/Actions/LIVE_GATE_OPS, killed-goal revival or shipment changes."
+    }
+   }
   },
   {
    "id": "WI-10004759",
