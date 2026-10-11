@@ -10,7 +10,7 @@ import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '.
 import { readAcceptanceGradingSettlement, type AcceptanceGradingSettlement } from './acceptance-grading-authority';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
-import { listWorkItems, type WorkItem } from './work-items';
+import { commentWorkItem, getWorkItemThreadWindow, listWorkItems, type WorkItem } from './work-items';
 import { reserveAcceptanceReviewTarget, type AcceptanceReviewReservationRef } from './coord/condition-upsert';
 import type { GraderEligibility, GraderEscalation } from './consult/acceptance-grader-select';
 // Type-only: erased at runtime, so it does NOT pull the oracle eagerly — the
@@ -276,6 +276,12 @@ export type AcceptanceGraderLifecycle = {
    * unavailable (EI-24032136322947460); absent for launch-receipt dedupes.
    */
   existingWorkItemAssignee?: string | null;
+  /**
+   * WI-6554700010008552: when the gate refused independent_verification_missing and
+   * this lifecycle deduped onto a grading REQUEST, whether the re-observation section
+   * now sits on that request's thread. Absent when there was no section to carry.
+   */
+  verificationBriefOnRequest?: 'appended' | 'already-present' | 'failed';
   idempotencyKey: string;
   label: string;
   launch?: unknown;
@@ -1600,6 +1606,42 @@ export function carriedIndependentVerificationBrief(ctx: unknown): string {
   return typeof raw === 'string' ? raw.trim() : '';
 }
 
+/** Author of the re-observation comment carried onto a deduped grading request. */
+export const ACCEPTANCE_GRADER_RECRUITER_ACTOR = 'system:acceptance-grader';
+
+/** How many of a request's latest posts are searched for an identical section. */
+const VERIFICATION_BRIEF_THREAD_WINDOW = 50;
+
+/**
+ * WI-6554700010008552: post the ship gate's independent-verification section on a
+ * grading request the recruiter deduped onto, unless an identical section is already
+ * among its latest posts. A section whose gaps changed (a rebind, a new bar) differs
+ * in text and is posted again, so the newest post is the one to follow.
+ * Throws when the request does not exist.
+ */
+export async function appendIndependentVerificationBriefToRequest(
+  requestId: string,
+  brief: string,
+  scope: { harness?: string; workspaceId?: string },
+  deps: { readThread?: typeof getWorkItemThreadWindow; comment?: typeof commentWorkItem } = {},
+): Promise<'appended' | 'already-present'> {
+  const window = await (deps.readThread ?? getWorkItemThreadWindow)(
+    requestId,
+    VERIFICATION_BRIEF_THREAD_WINDOW,
+    scope.harness,
+  );
+  if (!window) throw new Error(`grading request ${requestId} not found`);
+  if (window.posts.some((post) => typeof post.body === 'string' && post.body.includes(brief))) {
+    return 'already-present';
+  }
+  const post = await (deps.comment ?? commentWorkItem)(requestId, brief, ACCEPTANCE_GRADER_RECRUITER_ACTOR, {
+    ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+    ...(scope.harness ? { harness: scope.harness } : {}),
+  });
+  if (!post) throw new Error(`grading request ${requestId} not found`);
+  return 'appended';
+}
+
 /** The union of the carried cohort-stale ids, trimmed and de-duplicated (WI-10003286). */
 export function carriedStaleGradingCardIds(ctx: unknown): string[] {
   const carrier = (ctx ?? {}) as AcceptanceShipperCarrier;
@@ -2512,6 +2554,7 @@ export async function resolveAcceptanceGrader(
       ...args: Parameters<typeof reserveAcceptanceReviewTarget>
     ) => Promise<AcceptanceReviewReservationRef & { created: boolean }>;
     readIneligibleHolders?: typeof prodReadIneligibleGradingHolders;
+    appendVerificationBrief?: typeof appendIndependentVerificationBriefToRequest;
     nowMs?: () => number;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
@@ -2625,12 +2668,33 @@ export async function resolveAcceptanceGrader(
         );
       }
       if (existingGradingRequest) {
+        // WI-6554700010008552: a request filed before the gate began refusing
+        // independent_verification_missing carries no re-observation section, so whoever
+        // takes it grades the rubric and binds nothing — and the next retry refuses
+        // again. A fresh launch carries the section in its brief; carry it onto the
+        // request we deduped onto. Fail open: the dedupe itself still stands.
+        const verificationBrief = carriedIndependentVerificationBrief(ctx);
+        const verificationBriefOnRequest = verificationBrief
+          ? await (deps.appendVerificationBrief ?? appendIndependentVerificationBriefToRequest)(
+              existingGradingRequest.id,
+              verificationBrief,
+              { harness: plan.row.harnessSlug ?? undefined, workspaceId: plan.row.workspaceId },
+            ).catch((err: unknown) => {
+              console.warn(
+                `[acceptance-grader] could not carry the independent-verification brief onto ` +
+                  `${existingGradingRequest?.id} for plan ${planSlug}: ` +
+                  `${err instanceof Error ? err.message : String(err)}`,
+              );
+              return 'failed' as const;
+            })
+          : undefined;
         return {
           state: 'deduped',
           idempotencyKey: '',
           label: '',
           existingWorkItemId: existingGradingRequest.id,
           existingWorkItemAssignee: existingGradingRequest.assignee ?? null,
+          ...(verificationBriefOnRequest ? { verificationBriefOnRequest } : {}),
         };
       }
 

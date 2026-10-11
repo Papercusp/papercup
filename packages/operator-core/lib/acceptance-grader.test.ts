@@ -20,6 +20,8 @@ import {
   resolveAcceptanceGraderDiscoveryExtraExclusions,
   resolveAcceptanceGrader,
   resolveShipperId,
+  appendIndependentVerificationBriefToRequest,
+  ACCEPTANCE_GRADER_RECRUITER_ACTOR,
   selectableGraderLiveness,
   spentGradingCascadeAnswer,
   gradingCascadeWalkedToExhaustion,
@@ -2419,6 +2421,140 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect(discover).not.toHaveBeenCalled();
     expect(openCascade).not.toHaveBeenCalled();
     expect(launch).not.toHaveBeenCalled();
+  });
+
+  describe('carrying the independent-verification section onto a deduped request (WI-6554700010008552)', () => {
+    const BRIEF = 'INDEPENDENT VERIFICATION — do this BEFORE scorecards:emit. 1 live/deployed outcome bar(s)';
+    const openRequest = () =>
+      vi.fn(async () => [
+        {
+          id: 'WI-grading-open',
+          kind: 'task',
+          state: 'open',
+          title: 'Independent acceptance grade: plan ship-the-thing',
+          summary: 'Use scorecards:emit as the non-lineage grader.',
+          createdBy: 'su-delegator',
+          assignee: null,
+          createdAt: new Date(NOW - 5 * 60_000).toISOString(),
+          lastProgressAt: null,
+        },
+      ]);
+    const briefCtx = { ...baseCtx, acceptanceIndependentVerificationBrief: `  ${BRIEF}\n` } as never;
+
+    it('appends the carried section to the request it deduped onto, and still launches nothing', async () => {
+      const launch = freshLaunch();
+      const appendVerificationBrief = vi.fn(async () => 'appended' as const);
+      const result = await resolveAcceptanceGrader('ship-the-thing', briefCtx, {
+        ...deps(launch),
+        listWork: openRequest() as never,
+        discover: vi.fn() as never,
+        appendVerificationBrief,
+      });
+      expect(result).toMatchObject({
+        state: 'deduped',
+        existingWorkItemId: 'WI-grading-open',
+        verificationBriefOnRequest: 'appended',
+      });
+      // Trimmed exactly as a fresh launch's brief is, and scoped to the plan's row.
+      expect(appendVerificationBrief).toHaveBeenCalledTimes(1);
+      expect(appendVerificationBrief).toHaveBeenCalledWith('WI-grading-open', BRIEF, {
+        harness: 'papercusp',
+        workspaceId: 'ws-test',
+      });
+      expect(launch).not.toHaveBeenCalled();
+    });
+
+    it('touches nothing when the gate carried no section (a grading-code refusal)', async () => {
+      const appendVerificationBrief = vi.fn(async () => 'appended' as const);
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: openRequest() as never,
+        discover: vi.fn() as never,
+        appendVerificationBrief,
+      });
+      expect(result.state).toBe('deduped');
+      expect(appendVerificationBrief).not.toHaveBeenCalled();
+      expect('verificationBriefOnRequest' in result).toBe(false);
+    });
+
+    it('a failed append is reported, not thrown: the dedupe still stands', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const launch = freshLaunch();
+      const result = await resolveAcceptanceGrader('ship-the-thing', briefCtx, {
+        ...deps(launch),
+        listWork: openRequest() as never,
+        discover: vi.fn() as never,
+        appendVerificationBrief: vi.fn(async () => {
+          throw new Error('thread store down');
+        }),
+      });
+      expect(result).toMatchObject({
+        state: 'deduped',
+        existingWorkItemId: 'WI-grading-open',
+        verificationBriefOnRequest: 'failed',
+      });
+      expect(launch).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('WI-grading-open'));
+      warn.mockRestore();
+    });
+
+    describe('appendIndependentVerificationBriefToRequest', () => {
+      const post = (body: string) => ({ id: 1, thread_id: 't', author_id: 'x', body, created_ts: '2026-10-11T00:00:00Z' });
+      const window = (bodies: string[]) => ({ posts: bodies.map(post), total: bodies.length, topics: [], createdAt: '' });
+
+      it('posts the section as the recruiter when the thread lacks it', async () => {
+        const readThread = vi.fn(async () => window(['an unrelated comment']));
+        const comment = vi.fn(async () => post(BRIEF));
+        await expect(
+          appendIndependentVerificationBriefToRequest(
+            'WI-grading-open',
+            BRIEF,
+            { harness: 'papercusp', workspaceId: 'ws-test' },
+            { readThread: readThread as never, comment: comment as never },
+          ),
+        ).resolves.toBe('appended');
+        expect(readThread).toHaveBeenCalledWith('WI-grading-open', 50, 'papercusp');
+        expect(comment).toHaveBeenCalledWith('WI-grading-open', BRIEF, ACCEPTANCE_GRADER_RECRUITER_ACTOR, {
+          workspaceId: 'ws-test',
+          harness: 'papercusp',
+        });
+      });
+
+      it('does not post twice: an identical section already on the thread is left alone', async () => {
+        const comment = vi.fn();
+        await expect(
+          appendIndependentVerificationBriefToRequest(
+            'WI-grading-open',
+            BRIEF,
+            { harness: 'papercusp' },
+            { readThread: vi.fn(async () => window([`prefix\n${BRIEF}`])) as never, comment: comment as never },
+          ),
+        ).resolves.toBe('already-present');
+        expect(comment).not.toHaveBeenCalled();
+      });
+
+      it('a section whose gaps changed is posted again', async () => {
+        const comment = vi.fn(async () => post(`${BRIEF}\n- bar 2`));
+        await expect(
+          appendIndependentVerificationBriefToRequest(
+            'WI-grading-open',
+            `${BRIEF}\n- bar 2`,
+            {},
+            { readThread: vi.fn(async () => window([BRIEF])) as never, comment: comment as never },
+          ),
+        ).resolves.toBe('appended');
+        expect(comment).toHaveBeenCalledTimes(1);
+      });
+
+      it('throws when the request does not exist', async () => {
+        await expect(
+          appendIndependentVerificationBriefToRequest('WI-gone', BRIEF, {}, {
+            readThread: vi.fn(async () => null) as never,
+            comment: vi.fn() as never,
+          }),
+        ).rejects.toThrow('WI-gone');
+      });
+    });
   });
 
   it('a blocked acceptance-grading task suppresses duplicate dispatch while unrelated plan work does not', async () => {
