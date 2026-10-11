@@ -227,30 +227,24 @@ export function refreshProjectRootFiles({ api, snapshot, projects }: {
  * The files a scoped verdict about `named` depends on, drawn from the project's program:
  *
  *   - the named files themselves;
- *   - files that textually reference a type/interface/class/enum a named file exports — the gate's
- *     cause-aware widening (EI-18756182128903253) attributes their regressions to the caller, so
- *     they must be checked, not just parsed;
- *   - direct importers of a named file, whose breakage the CLI run would have reported.
- *
- * The residual against a full compile is a TRANSITIVE importer (through a barrel or a package
- * entry point) whose error does not mention an exported type name. The green-checkpoint's bare
- * run still judges those; the gate banner says so.
+ *   - resolved importers of a named module, including aliases and transitive barrels.
+ * Comments, strings and unrelated same-name declarations do not establish a dependency.
  *
  * @param {{
  *   root: string,
  *   named: Iterable<string>,
  *   programFiles: readonly string[],
- *   typeNames: Set<string>,
  *   readText: (absFile: string) => string | null,
+ *   configFile?: string,
  * }} opts
  * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
  */
-export function checkedSetFor({ root, named, programFiles, typeNames, readText }: {
+export function checkedSetFor({ root, named, programFiles, readText, configFile }: {
     root: string;
     named: Iterable<string>;
     programFiles: readonly string[];
-    typeNames: Set<string>;
     readText: (absFile: string) => string | null;
+    configFile?: string;
 }): {
     files: string[];
     named: number;
@@ -258,6 +252,41 @@ export function checkedSetFor({ root, named, programFiles, typeNames, readText }
     importers: number;
     namedNotInProgram: string[];
 };
+/**
+ * Shared CLI/service attribution (EI-25720784739215773). Resolve actual import/export edges
+ * with TypeScript, then walk reverse edges from the changed modules. Aliases, namespace
+ * imports, inferred callbacks, barrels and cycles retain provenance; comments, strings and
+ * unrelated local declarations cannot invent it. No second compiler program is created.
+ * Companion declarations and their executable source share a module identity.
+ *
+ * @param {{ root: string, named: Iterable<string>, candidates: Iterable<string>,
+ *   readText?: (absFile: string) => string | null, configFile?: string }} opts
+ * @returns {Set<string>} Absolute candidate paths depending on a named module.
+ */
+export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile }: {
+    root: string;
+    named: Iterable<string>;
+    candidates: Iterable<string>;
+    readText?: (absFile: string) => string | null;
+    configFile?: string;
+}): Set<string>;
+/**
+ * A dependency is check scope, not diagnostic causality. Attribute only a diagnostic whose
+ * actual or contextual type resolves to a type exported by a changed module. Binding symbols
+ * preserves renamed imports and inferred callback/object fixtures without blaming unrelated
+ * errors in the same importer (EI-25720784739215773).
+ *
+ * @param {{root: string, named: Iterable<string>, candidates: Iterable<string>,
+ *   output: string, configFile?: string}} opts
+ * @returns {Set<string>} Absolute diagnostic paths with changed-type provenance.
+ */
+export function diagnosticFilesDependingOnChangedTypes({ root, named, candidates, output, configFile }: {
+    root: string;
+    named: Iterable<string>;
+    candidates: Iterable<string>;
+    output: string;
+    configFile?: string;
+}): Set<string>;
 /**
  * Restrict a baseline map to the files a service run actually judged. Without this every
  * baselined file outside the checked set reads as "improved to 0" and the report lists hundreds

@@ -72,6 +72,7 @@ import harnessJoinLink from './harness/join-link';
 import harnessBindingClaim from './harness/binding-claim';
 import harnessClaimStatus from './harness/claim-status';
 import potPolicy from './pot/policy-set';
+import potHiring from './pot/hiring';
 import potRateState from './pot/rate-state';
 import harnessContributors from './harness/contributors';
 import harnessContributorUsage from './harness/contributor-usage';
@@ -677,6 +678,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessBindingClaim as AnyRoute[]),
   ...flatten(harnessClaimStatus as AnyRoute[]),
   ...flatten(potPolicy as AnyRoute[]),
+  ...flatten(potHiring as AnyRoute[]),
   ...flatten(potRateState as AnyRoute[]),
   ...flatten(harnessContributors as AnyRoute[]),
   ...flatten(harnessContributorUsage as AnyRoute[]),

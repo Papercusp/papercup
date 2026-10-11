@@ -36,7 +36,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { parseTestRunExecutionDetails, RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 import { toIso } from '../_pg-timestamp';
 
@@ -81,6 +81,7 @@ const testingRunResultSchema = z
     root: z.string().nullable(),
     executionDetails: z.object({
       schemaVersion: z.literal(1),
+      testLayer: z.enum(RECORDED_TEST_LAYERS).optional(),
       passed: z.number().int().nonnegative(),
       failed: z.number().int().nonnegative(),
       skipped: z.number().int().nonnegative(),
@@ -248,7 +249,7 @@ function projectTestingRun(row: unknown, outputTailChars: number): { row: Record
   const details = r.executionDetails as Record<string, unknown> | null | undefined;
   let executionProjection: Record<string, unknown> = {};
   if (details && JSON.stringify(details).length > 1_400) {
-    const summaryKeys = ['schemaVersion', 'passed', 'failed', 'skipped', 'collectionFailed', 'testNamePattern',
+    const summaryKeys = ['schemaVersion', 'testLayer', 'passed', 'failed', 'skipped', 'collectionFailed', 'testNamePattern',
       'passedCaseTitlesTruncated'];
     const summary = Object.fromEntries(summaryKeys.map(key => [key, details[key]]));
     const omitted = { passedCaseTitlesOmitted: 0, failedCaseTitlesOmitted: 0,
@@ -362,7 +363,7 @@ export default defineTool({
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
-      'Each row: { id, workspaceId, harnessSlug, root, executionDetails, executionDetailsUnavailableReason?, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. executionDetails returns validated measured case counts, selector and saved case titles; null means unavailable, not zero executed cases. When unavailable, executionDetailsUnavailableReason distinguishes not-recorded (SQL NULL/missing), invalid-or-unsupported (stored metadata rejected by this reader), and row-mismatch (valid metadata names a different file or run group). Bounded responses may omit titles and report executionDetailsBounded; payloadTier:"full" preserves complete saved details. outputTail is populated only for fail/error rows and is truncated.',
+      'Each row: { id, workspaceId, harnessSlug, root, executionDetails, executionDetailsUnavailableReason?, filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. id is the durable testRunId for evidence binding; workspaceId/harnessSlug report the stored scope and may be null. root is the parser-validated absolute checkout root captured in execution_details, or null for legacy/malformed rows. executionDetails returns validated measured case counts, the runtime-recorded testLayer (unit|integration|e2e|llm|browser) when present (never inferred from a path), selector and saved case titles; null means unavailable, not zero executed cases. When unavailable, executionDetailsUnavailableReason distinguishes not-recorded (SQL NULL/missing), invalid-or-unsupported (stored metadata rejected by this reader), and row-mismatch (valid metadata names a different file or run group). Bounded responses may omit titles and report executionDetailsBounded; payloadTier:"full" preserves complete saved details. outputTail is populated only for fail/error rows and is truncated.',
       '`runGroup` is the canonical exact run_group_id input selector; `runGroupId` is accepted as a compatibility alias because output rows expose the same value as runGroupId. If both are supplied, runGroup wins.',
       '`testRunIds` is an exact primary-key selector for evidence-lineage lookups; when supplied without an explicit `latestPerFile`, it defaults to `latestPerFile:false` so every requested receipt remains visible, including multiple attempts for one file. Set `latestPerFile:true` only when intentionally collapsing the selected IDs.',
       '{ count, total, truncatedByLimit, latestPerFile, runs, groups } — `runs` is the row list and `groups` is present for rollups.',

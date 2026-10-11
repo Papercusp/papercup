@@ -1,11 +1,11 @@
 import type { DaoWorkspaceView, DaoRead } from '@papercusp/operator-core/lib/dao-workspace-types';
 import RouteLink from '@/app/_components/RouteLink';
-import { Table, type TableColumn } from '@/app/harness/Table';
 import type { DaoSection } from './dao-navigation';
 import DaoGovernance from './DaoGovernance';
 import DaoPolicyEditor from './DaoPolicyEditor';
 import DaoFinance from './DaoFinance';
 import DaoExecution from './DaoExecution';
+import PeopleViews from './people/PeopleViews';
 
 function ReadState({ read }: { read: DaoRead<unknown> | undefined }) {
   return read?.status === 'error' ? <p role="alert">{read.message}</p> : null;
@@ -20,30 +20,15 @@ export default function DaoWorkspaceDetails({ section, view, loading, error, onC
   if (error) return <div className="dao-notice" role="alert">{error}</div>;
   if (!view || view.status === 'not-joined') return <section className="dao-card"><h2>Connect to this DAO</h2><p>Join its published projects to access organization records. Directory discovery alone does not grant membership or voting rights.</p></section>;
   const projects = view.projects?.status === 'ready' ? view.projects.value : [];
-  const members = view.members?.status === 'ready' ? view.members.value : [];
   const governance = view.governance?.status === 'ready' ? view.governance.value : null;
   const policy = view.policy?.status === 'ready' ? view.policy.value : null;
-  const memberColumns: TableColumn<(typeof members)[number]>[] = [
-    { key: 'contributor', header: 'Contributor', headerStyle: { padding: '12px', color: 'var(--fg-mute)', fontWeight: 500 },
-      cellStyle: { padding: '12px', borderBottom: '1px solid var(--border)' },
-      render: member => <><strong>{member.displayName || member.username}</strong><small>{member.username}</small></> },
-    { key: 'binding', header: 'Membership binding', headerStyle: { padding: '12px', color: 'var(--fg-mute)', fontWeight: 500 },
-      cellStyle: { padding: '12px', borderBottom: '1px solid var(--border)' }, render: member => member.bindingStatus },
-    { key: 'devices', header: 'Bound devices', headerStyle: { padding: '12px', color: 'var(--fg-mute)', fontWeight: 500 },
-      cellStyle: { padding: '12px', borderBottom: '1px solid var(--border)' }, render: member => member.devices },
-  ];
   const policyAvailable = view.policy?.status === 'ready';
   const rounds = governance?.events.filter(event => event.kind === 'round-open') ?? [];
   const operations = '/adv?slug=' + encodeURIComponent(view.localHomeSlug!);
 
   if (section === 'reputation' || section === 'work' || section === 'jobs' || section === 'inbox') return <><ReadState read={view.projects} /><DaoExecution key={view.directoryId} view={view} section={section} /></>;
 
-  if (section === 'members') return <section className="dao-card">
-    <h2>Admitted contributors</h2><ReadState read={view.members} />
-    {members.length ? <div className="dao-table-wrap"><Table ariaLabel="Admitted contributors" columns={memberColumns}
-      rows={members} getRowKey={member => member.id} /></div> : view.members?.status === 'ready' ? <p>No admitted contributor records are available.</p> : null}
-    <RouteLink className="dao-action" href={operations + '&tab=harnesses'}>Open contributor work</RouteLink>
-  </section>;
+  if (section === 'members') return <><ReadState read={view.members} /><PeopleViews view={view} onRefresh={onChanged} /></>;
 
   if (['proposals', 'vote', 'delegation', 'records'].includes(section)) return <div className="dao-overview-grid">
     {section === 'delegation' ? <DaoPolicyEditor view={view} onChanged={onChanged} /> : null}

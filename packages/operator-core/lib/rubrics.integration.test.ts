@@ -2189,6 +2189,30 @@ describe('list / get / search over written rubrics', () => {
     expect(ids).toContain('rubric-page-501');
   });
 
+  it('filters acceptance rubrics by subjectPlan before the bounded page limit', async () => {
+    const targetPlan = 'acceptance-subject-past-page-cap';
+    await insertRubricPlan('acceptance-page-target', {
+      data: { ...rubricData, kind: 'acceptance', subjectPlan: targetPlan },
+    });
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      SELECT ${activeWorkspaceId()}, 'papercusp', 'acceptance-page-noise-' || lpad(series.id::text, 3, '0'),
+             '', md5('acceptance-page-noise-' || lpad(series.id::text, 3, '0')), 1,
+             'Acceptance page noise ' || series.id::text, 'active',
+             '2026-06-20', '2026-06-20', 'queen-1', false, 'rubric',
+             ${JSON.stringify({ ...rubricData, kind: 'acceptance' })}::text::jsonb ||
+               jsonb_build_object('subjectPlan', 'another-plan-' || series.id::text),
+             NULL, 'local'
+        FROM generate_series(1, 501) AS series(id)`;
+    const page = await rubrics.listRubricsPage({ kind: 'acceptance', subjectPlan: targetPlan, limit: 1 });
+
+    expect(page.rubrics.map((rubric) => rubric.rubricId)).toEqual(['acceptance-page-target']);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextOffset).toBeNull();
+  });
+
   it('list filters by status and by characteristic', async () => {
     expect((await rubrics.listRubrics({ status: 'active' })).map((r) => r.rubricId)).toEqual(['active-a']);
     expect((await rubrics.listRubrics({ characteristic: 'memory-recall' })).map((r) => r.rubricId)).toEqual([

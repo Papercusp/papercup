@@ -110,6 +110,10 @@ export interface ClaudeAccount {
    * REFERENCE the host resolves, never the secret — safe to persist/federate.
    */
   credentialRef: string;
+  /** Native provider rejected this credential. Re-registration clears it after repair. */
+  credentialFailure?: { observedAt: number; ownerId: string } | null;
+  /** Fences delayed host events from a credential registered/repaired later. */
+  credentialUpdatedAt?: number;
   /** Optional human label. */
   label?: string;
   /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress.
@@ -411,6 +415,8 @@ export function registerAccount(
               ...a,
               provider,
               credentialRef,
+              credentialFailure: null,
+              credentialUpdatedAt: now,
               label: input.label ?? a.label,
               egress: input.egress ?? a.egress,
               egressPool: input.egressPool ?? a.egressPool,
@@ -429,6 +435,7 @@ export function registerAccount(
     egressPool: input.egressPool,
     ...(input.meteredPolicy ? { meteredPolicy: input.meteredPolicy } : {}),
     addedAt: now,
+    credentialUpdatedAt: now,
     boundTo: [],
     rate: freshRate(),
   };
@@ -700,11 +707,21 @@ export function accountReadingStatus(
 
 /** Is the account usable right now (not currently paused)? */
 export function isAvailable(account: ClaudeAccount, now: number): boolean {
+  if (account.credentialFailure) return false;
   // Tolerate a partially-hydrated row (e.g. a hand-written pool JSON with `rate: {}`): a MISSING
   // pausedUntil means "never paused", NOT "paused forever" — `undefined <= now` is false, which
   // made the codex CLI-bridge account read permanently unavailable (WI-3068). loadAccountPool
   // normalizes rows on read; this is the last-line guard for rows built outside that path.
   return (account.rate?.pausedUntil ?? 0) <= now;
+}
+
+/** Failures survive rate resets. Old/replayed events cannot re-block a repaired credential. */
+export function recordAccountCredentialFailure(pool: AccountPool, id: string, observedAt: number, ownerId: string): AccountPool {
+  if (!Number.isFinite(observedAt)) return pool;
+  const account = getAccount(pool, id);
+  if (!account || observedAt <= (account.credentialUpdatedAt ?? account.addedAt) ||
+      observedAt <= (account.credentialFailure?.observedAt ?? 0)) return pool;
+  return { accounts: pool.accounts.map((a) => a.id === id ? { ...a, credentialFailure: { observedAt, ownerId } } : a) };
 }
 
 /**
@@ -762,7 +779,7 @@ export interface SelectOpts {
  */
 export function selectAccountByHeadroom(pool: AccountPool, now: number, opts: SelectOpts = {}): ClaudeAccount | undefined {
   const { exclude = [], availableOnly = true, preferUnbound = false } = opts;
-  let candidates = pool.accounts.filter((a) => !exclude.includes(a.id));
+  let candidates = pool.accounts.filter((a) => !a.credentialFailure && !exclude.includes(a.id));
   if (availableOnly) candidates = candidates.filter((a) => isAvailable(a, now));
   if (candidates.length === 0) return undefined;
 
@@ -982,6 +999,7 @@ export function usageWalledUntil(a: ClaudeAccount, now: number): number {
  * penalty streak.
  */
 export function isSpawnEligible(a: ClaudeAccount, now: number, policy: ScalePolicy = DEFAULT_SCALE_POLICY): boolean {
+  if (a.credentialFailure) return false;
   if (effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL) return false;
   return !isSustainedlyLimited(a, now, policy);
 }
@@ -1017,7 +1035,7 @@ export function anyAccountAvailable(pool: AccountPool, now: number): boolean {
  */
 export function selectAccountByDrain(pool: AccountPool, now: number, opts: SelectOpts = {}): ClaudeAccount | undefined {
   const { exclude = [], availableOnly = true, eligible = (a: ClaudeAccount, t: number) => !accountFull(a, t) } = opts;
-  let candidates = pool.accounts.filter((a) => !exclude.includes(a.id));
+  let candidates = pool.accounts.filter((a) => !a.credentialFailure && !exclude.includes(a.id));
   if (availableOnly) candidates = candidates.filter((a) => eligible(a, now));
   if (candidates.length === 0) return undefined;
 
@@ -1139,6 +1157,7 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
     return v;
   };
   const healthKeyOf = (a: ClaudeAccount, t: number): number => {
+    if (a.credentialFailure) return Infinity;
     let key = healthKeyCache.get(a.id);
     if (key !== undefined) return key;
     key = accountLoadKey({

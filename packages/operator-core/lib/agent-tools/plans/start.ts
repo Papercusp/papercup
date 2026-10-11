@@ -859,6 +859,8 @@ export default defineTool({
             );
             if (writeResult.kind === 'busy') {
               promotedBlockError = 'plan_locked';
+            } else if (writeResult.kind === 'refused') {
+              promotedBlockError = writeResult.value.code;
             } else if (!writeResult.value.ok) {
               promotedBlockError = writeResult.value.error;
             } else {

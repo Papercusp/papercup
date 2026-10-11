@@ -528,6 +528,14 @@ export interface BashJob {
   timeoutMs?: number;
   /** Epoch ms of that deadline (`startedAt + timeoutMs`). */
   deadlineAt?: number;
+  /** Observed operator-side phases. A pipe byte is not proof that the payload
+   *  started: confined jobs record their own unit/payload phases in logPath. */
+  phaseTiming?: {
+    spawnRequestedAt: number;
+    spawnReturnedAt: number;
+    clientSpawnedAt: number | null;
+    firstPipeByteAt: number | null;
+  };
 }
 
 const JOBS = new Map<string, BashJob>();
@@ -2640,6 +2648,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // EI-16635 / P-002: startBackground jobs are durable whether the caller asks
   // for immediate background return or waits through the bounded response
   // window, so the sandbox path (when enabled) must not die-with-parent.
+  const spawnRequestedAt = Date.now();
   const child = spawnShell(
     opts.command,
     opts.cwd,
@@ -2651,14 +2660,18 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     id,
     opts.sandboxBuildOpts,
   );
+  const spawnReturnedAt = Date.now();
   // A service can finish before the job object and redactor are fully assembled.
   // Keep stdout/stderr flowing from the instant spawn returns, then replay the
   // tiny early prefix through the normal redaction/output path below.
   const earlyOutput: Array<{ stream: 'stdout' | 'stderr'; chunk: Buffer }> = [];
+  let firstPipeByteAt: number | null = null;
   const captureEarlyStdout = (b: Buffer): void => {
+    if (b.length && firstPipeByteAt === null) firstPipeByteAt = Date.now();
     earlyOutput.push({ stream: 'stdout', chunk: Buffer.from(b) });
   };
   const captureEarlyStderr = (b: Buffer): void => {
+    if (b.length && firstPipeByteAt === null) firstPipeByteAt = Date.now();
     earlyOutput.push({ stream: 'stderr', chunk: Buffer.from(b) });
   };
   child.stdout?.on('data', captureEarlyStdout);
@@ -2687,8 +2700,31 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     scopeUnit: enrolment.scopeUnit,
     timeoutMs: effectiveTimeoutMs,
     deadlineAt: Date.now() + effectiveTimeoutMs,
+    phaseTiming: {
+      spawnRequestedAt,
+      spawnReturnedAt,
+      clientSpawnedAt: null,
+      firstPipeByteAt,
+    },
   };
   JOBS.set(id, job);
+  child.once('spawn', () => {
+    job.phaseTiming!.clientSpawnedAt = Date.now();
+  });
+  // Log metadata only: never insert lifecycle diagnostics into command output
+  // or count them as workload bytes. Null means the phase was not observed.
+  const appendPhaseTiming = (): void => {
+    const timing = job.phaseTiming!;
+    try {
+      job.logStream?.write(
+        `\n[capability:bash] JOB TIMING: spawn_requested_at=${timing.spawnRequestedAt}` +
+        ` spawn_returned_at=${timing.spawnReturnedAt} client_spawned_at=${timing.clientSpawnedAt}` +
+        ` first_pipe_byte_at=${timing.firstPipeByteAt} ended_at=${job.endedAt}\n`,
+      );
+    } catch {
+      /* diagnostics must not change the command result */
+    }
+  };
 
   // The confined runner owns command bytes, while this append-only stream owns
   // operator diagnostics and the FINAL normalized marker. A runner marker can
@@ -2769,8 +2805,17 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // Attach before recording/enrolling the job. A transient service can execute
   // an immediate command and close before the later setup work yields; listeners
   // attached after that close lose its stdout/stderr entirely.
-  const onStdoutData = (b: Buffer): void => appendRawOutput(stdoutDecoder.write(b));
-  const onStderrData = (b: Buffer): void => appendRawOutput(stderrDecoder.write(b));
+  const markPipeByte = (b: Buffer): void => {
+    if (b.length && job.phaseTiming!.firstPipeByteAt === null) job.phaseTiming!.firstPipeByteAt = Date.now();
+  };
+  const onStdoutData = (b: Buffer): void => {
+    markPipeByte(b);
+    appendRawOutput(stdoutDecoder.write(b));
+  };
+  const onStderrData = (b: Buffer): void => {
+    markPipeByte(b);
+    appendRawOutput(stderrDecoder.write(b));
+  };
   child.stdout?.removeListener('data', captureEarlyStdout);
   child.stderr?.removeListener('data', captureEarlyStderr);
   child.stdout?.on('data', onStdoutData);
@@ -2863,6 +2908,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     flushRedactor();
     flushStreamLineCap();
     job.responseStream = undefined;
+    appendPhaseTiming();
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
     // raw `cat`/Read of `logPath` (bypassing bash_output's own `status` field)
@@ -2926,6 +2972,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     flushRedactor();
     flushStreamLineCap();
     job.responseStream = undefined;
+    // The redactor may retain a payload suffix. Terminal metadata must follow
+    // that suffix or it splits otherwise contiguous command bytes in the log.
+    appendPhaseTiming();
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
     const terminalMarker = formatJobLogEndMarker(job.status, job.exitCode, job.endedAt);

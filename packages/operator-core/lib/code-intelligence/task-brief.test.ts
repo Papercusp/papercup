@@ -2,10 +2,52 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildTaskBrief, getClaimTimeTaskBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { buildTaskBrief, getClaimTimeTaskBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
 import type { CodeIntelAnswer } from './contracts';
 
 const dirs: string[] = [];
+describe('P018 scoped incident hypotheses', () => {
+  it('keeps observed failures and static candidates distinct from proven causation', () => {
+    const failures = [{ testRunId: 42, path: 'target.test.ts', status: 'fail' as const, commit: 'a'.repeat(40), logSha256: 'b'.repeat(64) }];
+    const input = { workItemId: 'WI-task', harness: 'h', paths: ['target.test.ts', 'consumer.ts'], failures,
+      consumers: ['consumer.ts:2', 'outside.ts:3'], recentChanges: ['c'.repeat(40), 'untrusted'] };
+    const original = structuredClone(input), brief = taskIncidentBrief(input);
+    expect(brief).toMatchObject({ status: 'measured', cause: 'unknown', runtimeExecution: 'unmeasured', workRecord: 'WI-task',
+      failures, candidates: [{ path: 'target.test.ts', basis: 'failed-test', causation: 'unverified' },
+        { path: 'consumer.ts', basis: 'static-relationship', causation: 'unverified' }], recentChanges: ['c'.repeat(40)] });
+    expect(brief.recover).toEqual({ tool: 'testing:runs', args: { testRunIds: [42], harness: 'h' } }); expect(input).toEqual(original);
+    expect(JSON.stringify(brief)).not.toContain('outside.ts');
+  });
+  it('does not turn a missing ledger read or an out-of-scope error into a cause', () => {
+    const scope = { workItemId: 'WI-task', harness: 'h', paths: ['target.ts'], consumers: ['target.ts:1'], recentChanges: [] };
+    expect(taskIncidentBrief({ ...scope, failures: null })).toMatchObject({ status: 'unknown', cause: 'unknown', candidates: [] });
+    expect(taskIncidentBrief({ ...scope, failures: null }).recover).toEqual({ tool: 'work_items:get', args: { id: 'WI-task', harness: 'h' } });
+    expect(taskIncidentBrief({ ...scope, failures: [{ testRunId: 7, path: '../outside.test.ts', status: 'error', commit: null, logSha256: null }] }))
+      .toMatchObject({ status: 'measured', cause: 'unknown', failures: [], candidates: [] });
+  });
+  it('keeps the exact registered test scope and a stalled optional ledger read bounded', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    writeFileSync(join(root, 'target.test.ts'), 'import { target } from "./target"; target();');
+    const deps = depsFor(root); deps.failures = vi.fn(() => new Promise<never>(() => {}));
+    const brief = await buildTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h',
+      payload: { rootPath: '/untrusted', paths: ['target.ts', 'target.test.ts'] } } }, deps);
+    expect(deps.failures).toHaveBeenCalledWith({ workspaceId: 'w', harness: 'h', root, paths: ['target.test.ts'] });
+    expect(brief.status).toBe('current'); expect(brief.incident).toMatchObject({ status: 'unknown', cause: 'unknown' });
+    expect(JSON.stringify(brief).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+  });
+  it('rejects a source edit during the incident read before publishing a current brief', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    const deps = depsFor(root); deps.failures = async () => {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      writeFileSync(join(root, 'target.ts'), 'export function target() { return 2; }');
+      return [];
+    };
+    const brief = await buildTaskBrief({ workspaceId: 'w', workItem: { id: 'WI-task', harness: 'h',
+      payload: { paths: ['target.ts'] } } }, deps);
+    expect(brief).toMatchObject({ status: 'unknown', sourceFingerprint: null, files: [] });
+    expect(brief.incident).toBeUndefined();
+  });
+});
 const fixture = () => { const dir = mkdtempSync(join(tmpdir(), 'task-brief-')); dirs.push(dir); return dir; };
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));
 const answer = (paths: string[]): CodeIntelAnswer => ({ backend: 'repomix', intent: 'pack', query: 'fixture',

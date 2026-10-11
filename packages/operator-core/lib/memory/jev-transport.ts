@@ -33,6 +33,7 @@ import {
 } from '@papercusp/decision-model';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { Agent } from 'undici';
+import { observeFallback as recordFallback } from '../degradation/fallback-observations';
 
 /**
  * How long an idle Jev socket is kept. api.typesafe.ai (Cloudflare) was measured on
@@ -81,8 +82,12 @@ export function fetchVia(dispatcher: Agent): FetchLike {
   return (url, { deadline: _deadline, ...init }) => globalThis.fetch(url, { ...init, dispatcher } as RequestInit);
 }
 
-function reportTransportEvent(event: WorkerTransportEvent): void {
-  if (event.kind === 'worker-lost') {
+export function reportTransportEvent(event: WorkerTransportEvent, observeFallback: typeof recordFallback = recordFallback): void {
+  if (event.kind === 'decision') {
+    observeFallback('jev-worker-transport', { eligible: 1,
+      applied: event.path === 'worker' && event.completed ? 1 : 0,
+      reason: `${event.path}-${event.completed ? 'completed' : 'failed'}` });
+  } else if (event.kind === 'worker-lost') {
     console.warn(`[jev-transport] transport worker died (${event.failures} so far): ${event.error}`);
   } else {
     console.warn(`[jev-transport] ${event.reason}; Jev calls now run on the calling thread (P-008 fallback)`);
@@ -95,7 +100,7 @@ export function jevWorkerTransport(): WorkerTransport {
     state.worker = createWorkerTransport({
       keepAliveIdleMs: JEV_KEEPALIVE_IDLE_MS,
       fallback: (url, init) => fetchVia(jevDispatcher())(url, init),
-      onEvent: reportTransportEvent,
+      onEvent: (event) => reportTransportEvent(event),
     });
   }
   return state.worker;

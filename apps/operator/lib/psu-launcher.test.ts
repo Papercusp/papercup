@@ -6566,6 +6566,17 @@ describe("psu-launcher arg parsing", () => {
     expect(direct).not.toContain("papercusp-codex-gateway");
   });
 
+  it("codexGatewayConfigPatch replaces an explicit root provider and preserves profile selectors", () => {
+    const current = 'model_provider = "openai"\n[profiles.direct]\nmodel_provider = "openai"\n';
+    const auto = codexGatewayConfigPatch(current, null, { gatewayOn: true });
+    const root = auto.split('[profiles.direct]', 1)[0];
+    expect(root.match(/^model_provider\s*=/gm)).toHaveLength(1);
+    expect(root).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(auto).toContain('[profiles.direct]\nmodel_provider = "openai"');
+    expect(codexGatewayConfigPatch(auto, null, { gatewayOn: true })).toBe(auto);
+    expect(codexGatewayConfigPatch(current)).toBe(current);
+  });
+
   it("accountPinnable: gates on gatewayOn + pool membership + session-override (mirrors resolveAccountPin)", () => {
     const base = {
       gatewayOn: true,

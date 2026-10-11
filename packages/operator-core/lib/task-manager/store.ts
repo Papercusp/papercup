@@ -128,8 +128,6 @@ export interface RegisterTaskOptions {
   /** Pre-mint the id (the chokepoint needs it to build the scope name before the
    *  row exists). Must satisfy `isValidTaskId`. */
   taskId?: string;
-  /** Exact identities, filtered before the result cap. Empty means no matches. */
-  taskIds?: string[];
   /** Reserve the scope unit at register time so the UNIQUE index catches a
    *  double-launch before the fork rather than after. */
   reserveScope?: boolean;
@@ -857,6 +855,8 @@ export interface ListTasksFilter {
   coordOwnerId?: string;
   /** Match one exact task-ledger row by its durable task id. */
   taskId?: string;
+  /** Exact identities, filtered before the result cap. Empty means no matches. */
+  taskIds?: string[];
   /** Match one exact systemd scope/service unit before the result limit is applied. */
   scopeUnit?: string;
   /** Match one exact systemd InvocationID stored in terminal provenance. */

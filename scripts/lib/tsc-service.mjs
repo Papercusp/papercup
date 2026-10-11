@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { dirname, join, relative, resolve } from 'node:path';
+import ts from 'typescript';
 
 /** Set to `0` to force the full CLI compile (the A/B control, and the escape hatch). */
 export const TSC_SERVICE_ENV = 'PAPERCUSP_TSC_SERVICE';
@@ -409,31 +410,22 @@ export async function refreshProjectRootFiles({ api, snapshot, projects }) {
  * The files a scoped verdict about `named` depends on, drawn from the project's program:
  *
  *   - the named files themselves;
- *   - files that textually reference a type/interface/class/enum a named file exports — the gate's
- *     cause-aware widening (EI-18756182128903253) attributes their regressions to the caller, so
- *     they must be checked, not just parsed;
- *   - direct importers of a named file, whose breakage the CLI run would have reported.
- *
- * The residual against a full compile is a TRANSITIVE importer (through a barrel or a package
- * entry point) whose error does not mention an exported type name. The green-checkpoint's bare
- * run still judges those; the gate banner says so.
+ *   - resolved importers of a named module, including aliases and transitive barrels.
+ * Comments, strings and unrelated same-name declarations do not establish a dependency.
  *
  * @param {{
  *   root: string,
  *   named: Iterable<string>,
  *   programFiles: readonly string[],
- *   typeNames: Set<string>,
  *   readText: (absFile: string) => string | null,
+ *   configFile?: string,
  * }} opts
  * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
  */
-export function checkedSetFor({ root, named, programFiles, typeNames, readText }) {
+export function checkedSetFor({ root, named, programFiles, readText, configFile }) {
   const rootPrefix = `${resolve(root)}/`;
   const namedAbs = new Set([...named].map((file) => resolve(root, file)));
-  const namedKeys = new Set([...namedAbs].flatMap(moduleKeysFor));
-  const namedTails = new Set([...namedKeys].map((key) => key.split('/').slice(-2).join('/')));
-  const escaped = [...typeNames].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const typePattern = escaped.length > 0 ? new RegExp(`\\b(?:${escaped.join('|')})\\b`) : null;
+  const dependent = filesDependingOnChangedModules({ root, named: namedAbs, candidates: programFiles, readText, configFile });
 
   const files = [];
   let namedCount = 0;
@@ -448,18 +440,153 @@ export function checkedSetFor({ root, named, programFiles, typeNames, readText }
       namedCount += 1;
       continue;
     }
-    const content = readText(abs);
-    if (content === null) continue;
-    if (typePattern?.test(content)) {
-      files.push(abs);
-      typeReferencing += 1;
-    } else if (importsAnyModule(content, abs, namedKeys, namedTails)) {
+    if (dependent.has(abs)) {
       files.push(abs);
       importers += 1;
     }
   }
   const namedNotInProgram = [...namedAbs].filter((abs) => !inProgram.has(abs)).map((abs) => relative(root, abs));
   return { files, named: namedCount, typeReferencing, importers, namedNotInProgram };
+}
+
+/**
+ * Shared CLI/service attribution (EI-25720784739215773). Resolve actual import/export edges
+ * with TypeScript, then walk reverse edges from the changed modules. Aliases, namespace
+ * imports, inferred callbacks, barrels and cycles retain provenance; comments, strings and
+ * unrelated local declarations cannot invent it. No second compiler program is created.
+ * Companion declarations and their executable source share a module identity.
+ *
+ * @param {{ root: string, named: Iterable<string>, candidates: Iterable<string>,
+ *   readText?: (absFile: string) => string | null, configFile?: string }} opts
+ * @returns {Set<string>} Absolute candidate paths depending on a named module.
+ */
+export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile }) {
+  const base = resolve(root);
+  const inside = (file) => file.startsWith(`${base}/`) && !file.includes('/node_modules/');
+  const identity = (file) => file.replace(SOURCE_EXTENSION, '');
+  const targets = new Set([...named].map((file) => identity(resolve(base, file))));
+  const candidateAbs = [...candidates].map((file) => resolve(base, file)).filter(inside);
+  if (targets.size === 0) return new Set();
+  const optionsByConfig = new Map();
+  const configsByDir = new Map();
+  const optionsFor = (file) => {
+    const dir = dirname(file);
+    if (!configsByDir.has(dir)) configsByDir.set(dir, configFile
+      ? resolve(base, configFile) : ts.findConfigFile(dir, ts.sys.fileExists));
+    const config = configsByDir.get(dir);
+    if (!optionsByConfig.has(config)) {
+      const options = config
+        ? ts.parseJsonConfigFileContent(ts.readConfigFile(config, ts.sys.readFile).config ?? {},
+          { ...ts.sys, readDirectory: () => [] }, dirname(config), undefined, config).options
+        : { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, allowJs: true };
+      optionsByConfig.set(config, { options, cache: ts.createModuleResolutionCache(base, (s) => s, options) });
+    }
+    return optionsByConfig.get(config);
+  };
+  const reverse = new Map();
+  // This request-local module census grows only once per resolved repository file.
+  // Set iteration visits newly resolved modules without retaining duplicate import edges.
+  const moduleFiles = new Set(candidateAbs);
+  for (const file of moduleFiles) {
+    const text = readText ? readText(file) : ts.sys.readFile(file);
+    if (text == null) continue;
+    const { options, cache } = optionsFor(file);
+    for (const imp of ts.preProcessFile(text, true, true).importedFiles) {
+      const resolved = ts.resolveModuleName(imp.fileName, file, options, ts.sys, cache).resolvedModule;
+      if (!resolved || !inside(resolved.resolvedFileName)) continue;
+      const key = identity(resolved.resolvedFileName);
+      if (!reverse.has(key)) reverse.set(key, new Set());
+      reverse.get(key).add(identity(file));
+      moduleFiles.add(resolved.resolvedFileName);
+    }
+  }
+  const reachable = new Set(targets);
+  for (const module of reachable) {
+    for (const importer of reverse.get(module) ?? []) {
+      reachable.add(importer);
+    }
+  }
+  return new Set(candidateAbs.filter((file) => reachable.has(identity(file)) && !targets.has(identity(file))));
+}
+
+/**
+ * A dependency is check scope, not diagnostic causality. Attribute only a diagnostic whose
+ * actual or contextual type resolves to a type exported by a changed module. Binding symbols
+ * preserves renamed imports and inferred callback/object fixtures without blaming unrelated
+ * errors in the same importer (EI-25720784739215773).
+ *
+ * @param {{root: string, named: Iterable<string>, candidates: Iterable<string>,
+ *   output: string, configFile?: string}} opts
+ * @returns {Set<string>} Absolute diagnostic paths with changed-type provenance.
+ */
+export function diagnosticFilesDependingOnChangedTypes({ root, named, candidates, output, configFile }) {
+  const base = resolve(root);
+  const names = [...named].map((file) => resolve(base, file));
+  const dependent = filesDependingOnChangedModules({ root, named: names, candidates, configFile });
+  if (dependent.size === 0) return new Set();
+  const config = configFile ? resolve(base, configFile) : ts.findConfigFile(base, ts.sys.fileExists);
+  const configured = config ? ts.parseJsonConfigFileContent(ts.readConfigFile(config, ts.sys.readFile).config ?? {},
+    { ...ts.sys, readDirectory: () => [] }, dirname(config), undefined, config).options : {};
+  const options = { ...configured, noEmit: true, noLib: true, types: [], allowJs: true };
+  const host = ts.createCompilerHost(options);
+  // We bind the relevant repository symbols, not third-party packages or a second full check.
+  const cache = ts.createModuleResolutionCache(base, (s) => s, options);
+  host.resolveModuleNameLiterals = (literals, file) => literals.map((literal) => {
+    const result = ts.resolveModuleName(literal.text, file, options, ts.sys, cache);
+    const resolved = result.resolvedModule;
+    return resolved?.resolvedFileName.startsWith(`${base}/`) && !resolved.resolvedFileName.includes('/node_modules/')
+      ? result : { resolvedModule: undefined };
+  });
+  const program = ts.createProgram([...names, ...dependent], options, host);
+  const checker = program.getTypeChecker();
+  const targetKeys = new Set(names.map((file) => file.replace(SOURCE_EXTENSION, '')));
+  const targets = new Set();
+  const unalias = (symbol) => symbol?.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+  for (const file of program.getSourceFiles()) {
+    if (!targetKeys.has(file.fileName.replace(SOURCE_EXTENSION, ''))) continue;
+    const module = checker.getSymbolAtLocation(file);
+    if (!module) continue;
+    for (const symbol of checker.getExportsOfModule(module)) {
+      const original = unalias(symbol);
+      if (original?.declarations?.some((d) => targetKeys.has(d.getSourceFile().fileName.replace(SOURCE_EXTENSION, ''))
+        && (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d) || ts.isClassDeclaration(d) || ts.isEnumDeclaration(d)))) targets.add(original);
+    }
+  }
+  const carriesTarget = (type, seen = new Set()) => {
+    if (!type || seen.has(type)) return false;
+    seen.add(type);
+    if (targets.has(unalias(type.symbol)) || targets.has(unalias(type.aliasSymbol))) return true;
+    const parts = type.isUnionOrIntersection() ? type.types : [];
+    const args = type.flags & ts.TypeFlags.Object && type.objectFlags & ts.ObjectFlags.Reference
+      ? checker.getTypeArguments(type) : [];
+    return [...parts, ...args].some((part) => carriesTarget(part, seen));
+  };
+  const attributed = new Set();
+  for (const line of String(output).split('\n')) {
+    const match = /^(.+)\((\d+),(\d+)\):\s*error TS\d+:/.exec(line);
+    if (!match) continue;
+    const path = resolve(base, match[1]);
+    if (!dependent.has(path)) continue;
+    const file = program.getSourceFile(path);
+    if (!file) continue;
+    const lineIndex = Number(match[2]) - 1;
+    if (lineIndex < 0 || lineIndex >= file.getLineStarts().length) continue;
+    const pos = file.getPositionOfLineAndCharacter(lineIndex, Number(match[3]) - 1);
+    let node = file;
+    const descend = (parent) => ts.forEachChild(parent, (child) => {
+      if (child.getFullStart() <= pos && pos < child.getEnd()) { node = child; descend(child); }
+    });
+    descend(file);
+    // Diagnostic locations include the object itself, a variable name, or a nested property.
+    // Stop before the surrounding function/file can lend an unrelated contextual signature.
+    for (let current = node, depth = 0; current && depth < 4 && !ts.isSourceFile(current); current = current.parent, depth += 1) {
+      const context = ts.isExpression(current) ? checker.getContextualType(current) : undefined;
+      const receiver = ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)
+        ? checker.getTypeAtLocation(current.expression) : undefined;
+      if (carriesTarget(context) || carriesTarget(receiver) || carriesTarget(checker.getTypeAtLocation(current))) { attributed.add(path); break; }
+    }
+  }
+  return attributed;
 }
 
 /**
@@ -582,8 +709,8 @@ export function formatTscServiceBanner(response, { routedAway = [] } = {}) {
       `typeReferencing=${response.counts.typeReferencing} importers=${response.counts.importers} ` +
       `errors=${response.errorCount} queuedMs=${response.queuedMs} checkMs=${response.checkMs} ` +
       `snapshotAgeMs=${response.snapshotAgeMs}`,
-    `   (shared typecheck service: judged your files, files referencing their exported types, and their direct ` +
-      `importers — not the whole project. A transitive importer is judged by the bare run; ` +
+    `   (shared typecheck service: judged your files and resolved importers, including barrels ` +
+      `— not the whole project. Unrelated files are judged by the bare run; ` +
       `${TSC_SERVICE_ENV}=0 forces the full compile.)`,
   ];
   const routed = new Set([...routedAway].map((file) => String(file).replace(/^\.\//, '')));

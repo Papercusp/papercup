@@ -693,7 +693,7 @@ export default defineTool({
     notWhen:
       "Not for P-NNN item status (use plans:set-status) or legacy plans without frontmatter (use plans:set-frontmatter). `learnings` applies only to superseded; shipped has code-truth and rubric gates.",
     chaining:
-      "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: implementation → as-built acceptance rubric → `plans:audit { phase:'completion', items:[...] }` → peer grade → shipped/`done`. Re-audit after semantic edits, not cosmetic ones.",
+      "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: implementation → as-built acceptance rubric → `plans:audit { phase:'completion', items:[...] }` → peer grade → `status:'shipped', dryRun:true` for a read-only all-blockers preflight (no status write, forced-past stamp or grader recruitment) → repair → shipped/`done`. Re-audit after semantic edits, not cosmetic ones.",
   },
   capability: 'plans:write',
   // Idempotent-completion (backend-reliability-100pct-2026-07-03 W6/P-007):
@@ -999,6 +999,7 @@ export default defineTool({
           },
         );
 
+        if (result.kind === 'refused') return { slug, error: result.value.code, ...result.value };
         if (result.kind === 'busy') {
           return {
             ok: false as const,

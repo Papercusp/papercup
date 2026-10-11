@@ -221,6 +221,8 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
         VALUES (${WS}, ${HARNESS}, ${id}, 'Neutral queue item', 'Current fixture', 'bug',
           'open', ${JSON.stringify(payload)}::text::jsonb, ${extra.plan ?? null}, ${index}, ${index})`;
     };
+    // More stable refusals than the 25-row scan window must not hide the eligible tail.
+    for (let i = 0; i < 30; i++) await revision(`WI-STABLE-HEAD-${i}`, i - 30, 'su-ghost');
     await revision('WI-SYNTH', 0, 'system:stranded-tool-failure-sweep');
     await revision('WI-UNMEASURED', 1, 'su-ghost');
     await revision('WI-LIVE', 2, 'su-live');
@@ -260,11 +262,18 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
       return row as { taken_by: string | null; payload: Record<string, Record<string, unknown>> };
     };
 
-    // Scan 1: the fresh same-round stamp is skipped by SQL, the p2p row by the filter.
+    const head = await adoptNextAgentReviewRevision({ ...scope, filter: buildP2pLaneFence() }, adoptDeps as never);
+    expect(head).toMatchObject({
+      adopted: false, scanned: 25, refusals: { 'not-submitter:liveness-unknown': 25 },
+    });
+    expect((await payloadOf('WI-ORPHAN')).taken_by).toBeNull();
+
+    // The next scan skips the stamped full page, then reaches the eligible tail.
+    // The fresh same-round stamp is skipped by SQL, the p2p row by the filter.
     const first = await adoptNextAgentReviewRevision({ ...scope, filter: buildP2pLaneFence() }, adoptDeps as never);
     expect(first).toMatchObject({
-      adopted: true, workItem: { id: 'WI-ORPHAN' }, scanned: 6,
-      refusals: { 'not-submitter:authority-unknown': 1, 'not-submitter:liveness-unknown': 3, 'not-submitter': 1 },
+      adopted: true, workItem: { id: 'WI-ORPHAN' }, scanned: 11,
+      refusals: { 'not-submitter:authority-unknown': 1, 'not-submitter:liveness-unknown': 8, 'not-submitter': 1 },
     });
     expect((await payloadOf('WI-SYNTH')).payload.agentReviewAdoptionProbe)
       .toMatchObject({ reason: 'not-submitter:authority-unknown', round: 2 });
@@ -272,6 +281,10 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
       const probe = (await payloadOf(id)).payload.agentReviewAdoptionProbe;
       expect(probe).toMatchObject({ reason: 'not-submitter:liveness-unknown', round: 2 });
       expect(Date.parse(String(probe?.at))).toBeGreaterThan(Date.now() - 60_000);
+    }
+    for (let i = 0; i < 30; i++) {
+      expect((await payloadOf(`WI-STABLE-HEAD-${i}`)).payload.agentReviewAdoptionProbe)
+        .toMatchObject({ reason: 'not-submitter:liveness-unknown', round: 2 });
     }
     // A live submitter is TRANSIENT: nothing is stamped, so the row keeps being re-checked.
     expect((await payloadOf('WI-LIVE')).payload.agentReviewAdoptionProbe).toBeUndefined();

@@ -37,7 +37,7 @@ import { recordWorkspaceHostSignals, upsertWorkspaceHost, upsertWorkspaceHostCon
 import { HostedWorkspaceConnectorClient } from '../../workspace-host/hosted-connector-client';
 import { HostedWorkspaceHostSessionAdapter } from '../../workspace-host/hosted-session-host';
 import type { HostedConnectorBinding } from '../../endpoint-route/hosted-workspace-connector';
-import { preparePublicManualHostedDelegation, publicManualHostedPhaseRecorder, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
+import { assertPublicManualHostedRuntimeBudget, preparePublicManualHostedDelegation, publicManualHostedPhaseRecorder, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
 import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, revokeHostedSession, rotateHostedSession } from '../../auth/hosted-session';
 import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
 import { withHostedServiceContext, withWorkspace } from '@papercusp/db-org';
@@ -109,9 +109,9 @@ async function loadPortalFixtureModules(portalRoot: string, phase = publicManual
     return { ...loaded.default, ...loaded };
   };
   const { loadHostedTestUserKit, cleanupHostedTestResources } = await phase('portal-fixture-module-import',
-    () => sourceImport(join(portalRoot, 'e2e/hosted-test-user.ts')));
+    () => sourceImport(join(portalRoot, 'e2e/hosted-test-user.ts')), 10_000);
   const { resolveServedRelease } = await phase('portal-served-artifact-import',
-    () => sourceImport(join(portalRoot, 'e2e/served-artifact.ts')));
+    () => sourceImport(join(portalRoot, 'e2e/served-artifact.ts')), 10_000);
   return { loadHostedTestUserKit, cleanupHostedTestResources, resolveServedRelease };
 }
 
@@ -329,6 +329,41 @@ function manualCleanupEvidence(failures: { step: string; error: unknown }[]) {
 }
 
 describe('public manual fixture cleanup evidence', () => {
+  it('times out a stalled read-only phase and runs owned cleanup before the runner timeout', async () => {
+    vi.useFakeTimers();
+    const phases: unknown[] = [];
+    const cleanup = vi.fn();
+    const phase = publicManualHostedPhaseRecorder(value => phases.push(value));
+    const pending = (async () => {
+      try { await phase('read-only-import', () => new Promise<never>(() => {}), 100); }
+      finally { cleanup(); }
+    })();
+    const rejected = expect(pending).rejects.toThrow('hosted_fixture_phase:read-only-import');
+    try {
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(phases).toEqual([
+        expect.objectContaining({ stage: 'read-only-import', state: 'running' }),
+        expect.objectContaining({ stage: 'read-only-import', state: 'failed' }),
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+  it('requires enough time on every runtime for the complete case and cleanup before creating a TEST user', () => {
+    const create = vi.fn();
+    const start = (deadlines: Array<string | undefined>) => {
+      const budget = assertPublicManualHostedRuntimeBudget(deadlines, 1000);
+      create();
+      return budget;
+    };
+    for (const deadlines of [[], ['invalid'], ['111000', undefined], ['111000', '110999']]) {
+      expect(() => start(deadlines)).toThrow(/hosted_fixture_runtime_(deadline_required|budget_insufficient)/);
+    }
+    expect(create).not.toHaveBeenCalled();
+    expect(start(['111000', '112000'])).toEqual({ remainingMs: 110000, workMs: 90000, cleanupMs: 20000 });
+    expect(create).toHaveBeenCalledOnce();
+  });
   it('persists the running phase before an operation that never settles', async () => {
     const root = mkdtempSync(join(tmpdir(), 'manual-phase-evidence-'));
     const file = join(root, 'stage.json');
@@ -676,13 +711,14 @@ async function assertHostedOperatorConnector(portalRoot: string, config: {
 }, cookie: string, workspace: string) {
   const loaded = await import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'apps/host/src/operator-relay.ts')).href);
   const relay = { ...loaded.default, ...loaded };
-  const host = await relay.resolveRelayHost(config, cookie, workspace);
-  const ticket = await relay.mintOperatorTicket(config, cookie, workspace, host);
+  const boundedFetch = (url: string, init: RequestInit) => fetch(url, { ...init, signal: AbortSignal.timeout(5000) });
+  const host = await relay.resolveRelayHost(config, cookie, workspace, boundedFetch);
+  const ticket = await relay.mintOperatorTicket(config, cookie, workspace, host, boundedFetch);
   const channel = await relay.OperatorRelayChannel.open(config, ticket);
   try {
     // GET only: prove real ticket admission, http.ready, request forwarding and
     // response framing without creating a conversation or invoking a model.
-    const response: Response = await channel.fetch('/api/agent-config', { method: 'GET', headers: {} });
+    const response: Response = await channel.fetch('/api/agent-config', { method: 'GET', headers: {}, signal: AbortSignal.timeout(5000) });
     await response.body?.cancel();
     if (!response.ok) throw new Error(`hosted_fixture_operator_preflight:${response.status}`);
     return { hostId: host.hostId, routeLabel: host.routeLabel, status: response.status };
@@ -692,10 +728,10 @@ async function assertHostedOperatorConnector(portalRoot: string, config: {
 async function ownHostedOperatorConnector(portalRoot: string, user: { workspaceId?: string },
   cookie: string, operatorOrigin: string, phase = publicManualHostedPhaseRecorder(() => {})) {
   assertHostedFixtureOperatorOrigin(operatorOrigin);
-  const loaded = await phase('connector-fixture-module-import', () => import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'e2e/hosted-test-user.ts')).href));
+  const loaded = await phase('connector-fixture-module-import', () => import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'e2e/hosted-test-user.ts')).href), 10_000);
   const fixture = { ...loaded.default, ...loaded };
   const controlWorkspace = fixture.isolatedHostedWorkspaceContext(process.env);
-  const relayModule = await phase('connector-relay-module-import', () => import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'apps/host/src/operator-relay.ts')).href));
+  const relayModule = await phase('connector-relay-module-import', () => import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'apps/host/src/operator-relay.ts')).href), 10_000);
   const config = ({ ...relayModule.default, ...relayModule }).relayConfig(process.env);
   if (!config) throw new Error('hosted_fixture_relay_configuration_missing');
   const workspace = user.workspaceId!;
@@ -712,20 +748,10 @@ async function ownHostedOperatorConnector(portalRoot: string, user: { workspaceI
   const delegation = await phase('connector-delegation-verification', () => preparePublicManualHostedDelegation({ controlPlaneWorkspaceId: controlWorkspace,
     organizationId: host.organization, customerWorkspaceId: workspace, hostId: host.id, connectionId: host.connection },
   fn => withWorkspace(controlWorkspace, fn), operatorOrigin, expectedSha.trim()));
-  // Read the retained production policy before enrolling: the fixture manager
-  // verified the private host, while the compiled control plane supplies admission.
-  try {
-    const hostedModule = await phase('connector-frozen-policy-import', () => import(/* @vite-ignore */ pathToFileURL(join(
-      frozenRoot, 'apps/operator/bin/hosted-handler.ts',
-    )).href));
-    const hostedPolicy = { ...hostedModule.default, ...hostedModule };
-    const hosting = await phase('connector-frozen-policy-read', () => hostedPolicy.readHostedWorkspaceHosting({ controlPlaneWorkspaceId: controlWorkspace,
-      organizationId: host.organization, customerWorkspaceId: workspace, hostId: host.id }));
-    if (!hosting) throw new Error('hosted_fixture_verified_delegation_required');
-  } catch (error) {
-    await delegation.close();
-    throw error;
-  }
+  // The retained compiled handler reads production hosting policy during the
+  // WebSocket upgrade and refuses unverified delegation with HTTP 503. Exercise
+  // that admission below; importing the entire frozen server in Vitest adds an
+  // unrelated module graph and can hang before either admission or cleanup.
   const headers = { cookie, host: config.publicHost, origin: config.publicOrigin,
     'x-papercusp-workspace': workspace, 'content-type': 'application/json' };
   const binding = { hostId: host.id, routeLabel, transport: 'websocket' };
@@ -771,7 +797,7 @@ async function ownHostedOperatorConnector(portalRoot: string, user: { workspaceI
     }));
     const socketUrl = new URL('/api/hosted/connectors/socket', config.controlPlaneOrigin);
     socketUrl.protocol = socketUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-    transport = await phase('connector-websocket-binding', () => connectHostedOperatorFixture({ url: socketUrl.href, publicHost: config.publicHost,
+    transport = await phase('connector-compiled-policy-admission', () => connectHostedOperatorFixture({ url: socketUrl.href, publicHost: config.publicHost,
       bearer: registered.bearer, binding: registered.binding, operatorOrigin }));
     await phase('connector-signal-persistence', () => recordWorkspaceHostSignals({ workspaceId: controlWorkspace, hostId: host.id,
       tunnelStatus: { hostedConnector: { routeLabel, transport: 'websocket', generation: registered.binding.generation } } }));
@@ -919,6 +945,10 @@ describe('public manual Portal fixture preparation', () => {
         writeFileSync(receiptFile, serializePortalEvidence(receipt), { mode: 0o600 });
         console.log(`HOSTED_READINESS_PHASE ${JSON.stringify(value)} receipt=${receiptFile}`);
       });
+      receipt.runtimeBudget = await phase('runtime-budget-preflight', async () => assertPublicManualHostedRuntimeBudget([
+        process.env.PAPERCUSP_TEST_HOSTED_RUNTIME_DEADLINE_EPOCH_MS,
+        process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS,
+      ]));
       const { metadata } = await phase('artifact-preflight', () => verifyPortalRuntimePreconditions(candidateRoot));
       Object.assign(receipt, { buildId: metadata.buildId, sourceRootDigest: metadata.sourceRootDigest });
       expect(new URL(origin).protocol).toBe('https:');
@@ -930,20 +960,22 @@ describe('public manual Portal fixture preparation', () => {
       expect(existsSync(join(integrationRoot, 'apps/operator/scripts/systemd/portal-hosted-launcher.ts'))).toBe(true);
       const originalIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
       process.env.PAPERCUSP_INTEGRATION_ROOT = integrationRoot;
-      const { loadHostedTestUserKit, cleanupHostedTestResources, resolveServedRelease } = await loadPortalFixtureModules(portalRoot, phase);
+      let modules: Awaited<ReturnType<typeof loadPortalFixtureModules>> | undefined;
       // Only creation and GET history cross the compiled API. No turn endpoint
       // receives a POST, so this preflight cannot start the model engine.
-      const { request } = await phase('playwright-library-import', () => import('playwright'));
-      const api = await phase('http-client-preparation', () => request.newContext({ ignoreHTTPSErrors: true }));
-      let user: Awaited<ReturnType<Awaited<ReturnType<typeof loadHostedTestUserKit>>['create']>> | undefined;
+      let api: import('@playwright/test').APIRequestContext | undefined;
+      let user: { workspaceId?: string; cookie: (origin: string) => { name: string; value: string }; cleanup: (reason: string) => Promise<void> } | undefined;
       let connector: Awaited<ReturnType<typeof ownHostedOperatorConnector>> | undefined;
       let failure: unknown;
       try {
-        const kit = await phase('frozen-hosted-kit-import', () => loadHostedTestUserKit(portalRoot));
+        modules = await loadPortalFixtureModules(portalRoot, phase);
+        const { request } = await phase('playwright-library-import', () => import('playwright'), 10_000);
+        api = await phase('http-client-preparation', () => request.newContext({ ignoreHTTPSErrors: true, timeout: 5000 }));
+        const kit = await phase('frozen-hosted-kit-import', () => modules!.loadHostedTestUserKit(portalRoot), 10_000);
         const journeyStartedAt = new Date();
         const document = await phase('compiled-document', () => api.get(origin));
         expect(document.status()).toBe(200);
-        const served = resolveServedRelease({ html: await document.text(), releasesDir: dirname(candidateRoot), journeyStartedAt });
+        const served = modules.resolveServedRelease({ html: await document.text(), releasesDir: dirname(candidateRoot), journeyStartedAt });
         expect(served.buildId).toBe(metadata.buildId);
         receipt.servedRelease = served;
         const missingCookie = await phase('anonymous-creation', () => api.post(`${origin}/api/papercup-chat/conversations`, { data: {}, headers: { origin } }));
@@ -952,6 +984,8 @@ describe('public manual Portal fixture preparation', () => {
         receipt.stage = 'hosted-test-admission';
         const fixtureUser = publicManualPortalUser();
         receipt.fixtureOwner = { email: fixtureUser.email, attemptId: fixtureUser.attemptId };
+        assertPublicManualHostedRuntimeBudget([process.env.PAPERCUSP_TEST_HOSTED_RUNTIME_DEADLINE_EPOCH_MS,
+          process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS]);
         user = await phase('hosted-test-admission', () => kit.create({ ...fixtureUser, preassignedWorkspace: true }));
         expect(user.workspaceId).toBeTruthy();
         const cookie = user.cookie(origin);
@@ -985,16 +1019,21 @@ describe('public manual Portal fixture preparation', () => {
         receipt.stage = 'passed';
       } catch (error) { failure = error; }
       finally {
-        try { await phase('cleanup', () => cleanupHostedTestResources([
+        const resources = [
           { kind: 'hosted-operator-connector', cleanup: async () => { await connector?.close(); } },
           { kind: 'hosted-test-user', cleanup: async () => { await user?.cleanup('existing hosted release readiness cleanup'); } },
-          { kind: 'http-client', cleanup: () => api.dispose() },
-        ], failure, async (cleanup: unknown) => {
+          { kind: 'http-client', cleanup: async () => { await api?.dispose(); } },
+        ];
+        const writeEvidence = async (cleanup: unknown) => {
           receipt.cleanup = cleanup;
           const file = join(evidenceDir, 'case.json');
           writeFileSync(file, serializePortalEvidence(receipt, failure), { mode: 0o600 });
           console.log(`HOSTED_READINESS_RECEIPT ${file}`);
-        })); } finally {
+        };
+        try { await phase('cleanup', () => modules
+          ? modules.cleanupHostedTestResources(resources, failure, writeEvidence)
+          : finishManualFixture({ failure: failure === undefined ? undefined : { error: failure },
+            cleanup: resources.map(resource => ({ name: resource.kind, run: resource.cleanup })), writeEvidence })); } finally {
           if (originalIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
           else process.env.PAPERCUSP_INTEGRATION_ROOT = originalIntegrationRoot;
         }
@@ -1051,21 +1090,6 @@ describe('public manual Portal fixture preparation', () => {
         }
       }
     }, 30_000);
-  it.runIf(Boolean(process.env.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT))(
-    'imports the retained hosting policy before any TEST account creation', async () => {
-      const frozenRoot = realpathSync(process.env.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT!);
-      const evidenceDir = join(llmBatteryEvidenceRoot(), `public-manual-hosted-policy-import-${randomUUID()}`);
-      mkdirSync(evidenceDir, { recursive: true });
-      const file = join(evidenceDir, 'case.json');
-      const phase = publicManualHostedPhaseRecorder(value => {
-        writeFileSync(file, serializePortalEvidence({ ...value, accountCreations: 0, modelTurnRequests: 0 }), { mode: 0o600 });
-        console.log(`HOSTED_POLICY_IMPORT_PHASE ${JSON.stringify(value)} receipt=${file}`);
-      });
-      const loaded = await phase('connector-frozen-policy-import', () => import(/* @vite-ignore */ pathToFileURL(join(
-        frozenRoot, 'apps/operator/bin/hosted-handler.ts',
-      )).href));
-      expect(({ ...loaded.default, ...loaded }).readHostedWorkspaceHosting).toBeTypeOf('function');
-    }, 60_000);
   it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     'imports the retained Portal fixture modules without account or runtime admission', async () => {
       const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);

@@ -22,7 +22,9 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { escalateAlarm } from '../alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+export const DISK_SPACE_ALARM_CONDITION_KEY = 'alarm:disk-space';
 import { notifySyncInvalidate } from '../sync-sse';
 import { workspacesRoot } from '../workspace-registry';
 import { listDiskRootChildrenAsync, type DiskRootChildScan } from './disk';
@@ -367,7 +369,7 @@ export function formatDiskAlarmToast(breaches: DiskBreach[]): { level: string; m
 
 // ── Impure sampling + emit (injectable; never throws) ──────────────────────────
 
-export interface DiskAlarmDeps {
+export interface DiskAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'resolve'> {
   /** Bounded consumer attribution, sampled only when a filesystem breaches. */
   attributeUsage?: () => Promise<DiskRootChildScan>;
   /** Injectable for tests — defaults to a `statfs` probe of watchedPaths(). */
@@ -570,9 +572,12 @@ export async function runDiskSpaceAlarmOnce(
         body: request.body + attribution,
         cooldownMs: ESCALATE_COOLDOWN_MS,
         source: 'disk-space-alarm',
+        conditionKey: DISK_SPACE_ALARM_CONDITION_KEY,
       },
-      { notify: escalate, recentlyEscalated },
+      { notify: escalate, recentlyEscalated, broadcast: deps.broadcast },
     );
+  } else if (snapshots.length > 0) {
+    await resolveAlarm(DISK_SPACE_ALARM_CONDITION_KEY, 'disk-space-alarm', deps);
   }
   return { checked: snapshots.length, breaches, escalated };
 }

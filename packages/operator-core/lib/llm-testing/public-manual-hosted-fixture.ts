@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { withTimeout } from '../../../../libs/testing-shell/src/llm/runner';
 import {
   HostedProviderDelegationManager,
   PostgresHostedProviderDelegationStore,
@@ -11,11 +12,15 @@ import {
 export function publicManualHostedPhaseRecorder(persist: (phase: {
   stage: string; state: 'running' | 'complete' | 'failed'; startedAt: string; errorCode?: string;
 }) => void) {
-  return async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+  return async <T>(stage: string, operation: () => Promise<T>, readOnlyTimeoutMs?: number): Promise<T> => {
     const startedAt = new Date().toISOString();
     persist({ stage, state: 'running', startedAt });
     try {
-      const result = await operation();
+      // Only read-only work may race a timer. Admission and cleanup must settle
+      // so their resource owner cannot disappear behind a rejected promise.
+      const pending = operation();
+      const result = readOnlyTimeoutMs === undefined ? await pending
+        : await withTimeout(pending, readOnlyTimeoutMs, `hosted_fixture_phase:${stage}`);
       persist({ stage, state: 'complete', startedAt });
       return result;
     } catch (error) {
@@ -23,6 +28,18 @@ export function publicManualHostedPhaseRecorder(persist: (phase: {
       throw error;
     }
   };
+}
+
+/** Refuse fixture creation when its serving runtime cannot cover work AND cleanup. */
+export function assertPublicManualHostedRuntimeBudget(
+  deadlines: Array<string | undefined>, now = Date.now(), workMs = 90_000, cleanupMs = 20_000,
+) {
+  const values = deadlines.filter((value): value is string => value !== undefined);
+  if (!values.length || values.length !== deadlines.length || values.some(value => !/^\d+$/.test(value)
+    || !Number.isSafeInteger(Number(value)))) throw new Error('hosted_fixture_runtime_deadline_required');
+  const remainingMs = Math.min(...values.map(Number)) - now;
+  if (remainingMs < workMs + cleanupMs) throw new Error('hosted_fixture_runtime_budget_insufficient');
+  return { remainingMs, workMs, cleanupMs };
 }
 
 export interface PublicManualHostedFixtureBinding {

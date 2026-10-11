@@ -30,6 +30,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { observeFallback as recordBackfillFallback } from '../degradation/fallback-observations';
 // The engine (selection, batching, guarded writes, round-robin sweep) lives in
 // @papercusp/search per shared-vector-search-libraries-2026-09-29 D-004; this
 // module keeps papercusp's targets and hooks.
@@ -865,6 +866,8 @@ export type ProseBackfillProfile = Pick<EmbedderProfileSpec, 'profileId' | 'targ
  * text limit and the batch and row deadlines. One object, so a direct backfillTable
  * call and the sweep cannot drift apart.
  */
+const observeBackfillBatch: NonNullable<BackfillTableOptions['observeFallback']> = (decision) =>
+  recordBackfillFallback('backfill-batch', decision);
 const PROSE_ENGINE_OPTIONS = {
   batchSize: BATCH_SIZE,
   acceptsWidth: fitsProseColumns,
@@ -906,7 +909,9 @@ export function backfillTable(
   target: BackfillTarget,
   options: ProseBackfillTableOptions,
 ): Promise<BackfillStats> {
-  return backfillTableCore<ProseBackfillProfile>(sql, target, { ...PROSE_ENGINE_OPTIONS, ...options });
+  return backfillTableCore<ProseBackfillProfile>(sql, target, {
+    ...PROSE_ENGINE_OPTIONS, observeFallback: observeBackfillBatch, ...options,
+  });
 }
 
 /**
@@ -969,6 +974,7 @@ export function proseBackfillSweeperConfig(
 ): BackfillSweeperConfig<ProseBackfillProfile> {
   return {
     ...PROSE_ENGINE_OPTIONS,
+    observeFallback: observeBackfillBatch,
     getTargets: () => TARGETS,
     getSql: () => getOrgPg().sql,
     resolveEmbedder: () => resolveBackfillEmbedder(),

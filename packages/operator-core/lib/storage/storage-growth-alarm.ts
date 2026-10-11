@@ -43,7 +43,9 @@
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { escalateAlarm } from '../alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+export const STORAGE_GROWTH_ALARM_CONDITION_KEY = 'alarm:storage-growth';
 import { notifySyncInvalidate } from '../sync-sse';
 import { isPgCategory, STORAGE_CATEGORIES } from './categories';
 import {
@@ -87,7 +89,7 @@ export interface StorageBreach {
   trimmable: boolean;
 }
 
-export interface GrowthAlarmDeps {
+export interface GrowthAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'resolve'> {
   /** Injectable for tests — defaults to a sizes-only (cheap) usage scan. */
   computeUsage?: () => Promise<StorageUsageRow[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
@@ -617,8 +619,10 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
   const recentlyEscalated = deps.recentlyEscalated;
 
   let rows: StorageUsageRow[] = [];
+  let usageMeasured = false;
   try {
     rows = await computeUsage();
+    usageMeasured = true;
   } catch (err) {
     console.warn(`[storage-growth-alarm] usage scan skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`);
     rows = [];
@@ -639,9 +643,13 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
         ...formatGrowthEscalation(breaches),
         cooldownMs: STORAGE_GROWTH_ESCALATE_COOLDOWN_MS,
         source: 'storage-growth-alarm',
+        conditionKey: STORAGE_GROWTH_ALARM_CONDITION_KEY,
       },
-      { notify: escalate, recentlyEscalated },
+      { notify: escalate, recentlyEscalated, broadcast: deps.broadcast },
     );
+  } else if (usageMeasured && rows.some((row) => row.kind === 'pg') &&
+      rows.every((row) => row.kind !== 'pg' || (row.totalBytes !== null && Number.isFinite(row.totalBytes)))) {
+    await resolveAlarm(STORAGE_GROWTH_ALARM_CONDITION_KEY, 'storage-growth-alarm', deps);
   }
 
   // ── The undeclared sweep (the leg detectBreaches structurally cannot cover) ──

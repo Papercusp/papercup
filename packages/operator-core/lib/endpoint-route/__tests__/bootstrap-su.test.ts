@@ -309,10 +309,12 @@ vi.mock('../../agent-launch-core', async (importOriginal) => ({
   releaseAgentLaunchClaim: (...args: unknown[]) =>
     releaseAgentLaunchClaimMock(...(args as [any])),
 }));
-vi.mock('../../role-codex-home', () => ({
+vi.mock('../../role-codex-home', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../role-codex-home')>()),
   assertSuCodexHomeNotOwnedByLiveSession: (...args: unknown[]) =>
     assertSuCodexHomeNotOwnedByLiveSessionMock(...(args as Parameters<typeof assertSuCodexHomeNotOwnedByLiveSessionMock>)),
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
+  writeSuCodexHomeAsync: async (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
   rekeyCodexHome: (...args: unknown[]) => rekeyCodexHomeMock(...(args as [any, any])),
 }));
 vi.mock('../../interactive-claude-config', () => ({
@@ -392,6 +394,7 @@ vi.mock('../../agent-tools/plans/source', () => ({
 // DB-free + deterministic (the gateway-OFF + no-account branches return before them).
 type MockPoolAccount = {
   id: string;
+  credentialFailure?: { observedAt: number; ownerId: string };
   provider?: 'claude' | 'codex';
   rate?: {
     utilization?: number;
@@ -1568,15 +1571,14 @@ describe('bootstrap-su', () => {
     expect(json.codexHome).toMatch(/su-codex-homes\/session-42$/);
     expect(json.envelopeEnv.CODEX_HOME).toBe(json.codexHome);
     expect(json.promptFile).toMatch(/AGENTS\.md$/);
-    expect(assertSuCodexHomeNotOwnedByLiveSessionMock).toHaveBeenCalledWith(
-      42,
-      expect.stringMatching(/^su-/),
-      expect.any(Function),
-    );
+    // The async writer now owns the guard and receives the live-host probe.
+    // Its real guard behavior is verified in role-codex-home's own suite.
     // writeSuCodexHome gets the spec's prompt + url + the minted sid.
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         promptText: expect.stringContaining('⟦INSTRUCTION-PRECEDENCE⟧'),
+        sessionKey: 42,
+        isOwnerLive: expect.any(Function),
         mcpUrl: 'http://localhost:3070/api/mcp?superuser=1&workspace=default',
         sid: expect.stringMatching(/^su-/),
         model: 'gpt-5.6-terra:xhigh',
@@ -2092,6 +2094,16 @@ describe('bootstrap-su', () => {
 });
 
 describe('resolveAccountPin (psu-account-chooser P-002)', () => {
+  it('refuses a credential with a confirmed native auth failure for both pin and auto routing', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'bad', credentialFailure: { observedAt: 1, ownerId: 'su-failed' } }] });
+    const requested = await pin('bad');
+    expect(requested.error).toContain('confirmed provider authentication failure');
+    expect(requested.env).toEqual({});
+    const automatic = await pin('auto');
+    expect(automatic.error).toContain('no allowed claude account');
+  });
+
   beforeEach(() => {
     getFlagMock.mockResolvedValue(false);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] });
@@ -2461,7 +2473,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     getFlagMock.mockResolvedValue(true);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
     const response = await callPost({ agent: 'codex', harness_slug: 'papercup', account: 'codex-main' });
-    expect(response.status).toBe(200);
+    expect(response.status, await response.clone().text()).toBe(200);
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         codexGatewayAccountId: 'codex-main',

@@ -13,6 +13,34 @@ import { readWorkItemResume } from '../agent-tools/work_items/resume';
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));
 describe('native P012 current scoped brief integration', () => {
+  it('P018: carries recorded error references and real compiler hypotheses through canonical resume without asserting causation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-incident-brief-')); dirs.push(root);
+    writeFileSync(join(root, 'a-target.ts'), 'export function target() { return "source"; }\n');
+    writeFileSync(join(root, 'b-consumer.ts'), 'import { target } from "./a-target";\nexport function consumer() { return target(); }\n');
+    writeFileSync(join(root, 'reference.test.ts'), 'import { target } from "./a-target";\nexport const observed = target();\n');
+    const item = { id: 'WI-incident-fixture', harness: 'incident-fixture', state: 'open',
+      payload: { paths: ['a-target.ts', 'b-consumer.ts', 'reference.test.ts'] } };
+    const failure = { testRunId: 42, path: 'reference.test.ts', status: 'fail' as const,
+      commit: 'a'.repeat(40), logSha256: 'b'.repeat(64) };
+    const failures = vi.fn(async () => [failure]);
+    const source = async () => ({ taskBrief: await buildTaskBrief({ workspaceId: 'incident-workspace', workItem: item }, {
+      root: async () => root, effects: DEFAULT_PACKER_EFFECTS, pack: packerFacade, failures,
+      graph: (repo, name, filePath, paths, budgetMs) => firstPartyCallersOffthread({ root: repo, name, filePath,
+        paths, op: 'callers', limit: 8, vendorDir: LSP_VENDOR_DIR }, { budgetMs }),
+    }) });
+    const resumed = await readWorkItemResume(item, { checkpoint: async () => ({ checkpoint: null, updatedAtMs: null }),
+      freshness: async () => undefined, evidence: async () => [], taskBrief: source });
+    expect(resumed.taskBrief?.status, JSON.stringify(resumed.taskBrief)).toBe('current');
+    if (!resumed.taskBrief || resumed.taskBrief.status === 'omitted') throw new Error('Expected the current source brief, not an omitted inline response.');
+    expect(failures).toHaveBeenCalledWith({ workspaceId: 'incident-workspace', harness: 'incident-fixture', root,
+      paths: ['reference.test.ts'] });
+    expect(resumed.taskBrief.incident).toMatchObject({ status: 'measured', cause: 'unknown', runtimeExecution: 'unmeasured',
+      failures: [failure], workRecord: item.id, candidates: expect.arrayContaining([
+        { path: 'reference.test.ts', basis: 'failed-test', causation: 'unverified' },
+        { path: 'b-consumer.ts', basis: 'static-relationship', causation: 'unverified' },
+      ]) });
+    expect(item.state).toBe('open');
+  }, 60_000);
   it('packs only task files, reports the compiler consumer, and replaces stale excerpts on resume', async () => {
     expect(resolveRepomixBin(), 'the admitted safe packer must be provisioned').not.toBeNull();
     const root = mkdtempSync(join(tmpdir(), 'task-brief-int-')); dirs.push(root);

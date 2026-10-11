@@ -252,7 +252,7 @@ describe('resource governor enforcement lint', () => {
     expect(scanInventory([[nativePath, native.replace('71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10', 'other-graph')]])).toContain(`${nativePath}:resource-start-outside-admission`);
   });
 
-  it('bounds the Reports native verifier disposition to isolated synchronous helpers', () => {
+  it('bounds the Reports native verifier disposition to isolated awaited helpers', () => {
     const path = 'scripts/tauri-surface-verify-reports.mts';
     const source = readFileSync(ROOT + path, 'utf8');
     const finding = `${path}:resource-start-outside-admission`;
@@ -264,6 +264,18 @@ describe('resource governor enforcement lint', () => {
       source.replace('assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL', 'assert.ok(true'),
       source.replace('timeout: 60_000', 'timeout: undefined'),
       source.replace('timeout: 90_000', 'timeout: undefined'),
+      source.replace('timeout: 300_000', 'timeout: undefined'),
+      source.replace('maxBuffer: 4 * 1024 * 1024', 'maxBuffer: undefined'),
+      source.replace('const env = nativeChildEnvironment(profile);', 'const env = process.env;'),
+      source.replace('env.PAPERCUSP_VERIFY_TAURI_ISOLATED', 'env.UNVERIFIED_ISOLATION'),
+      source.replace('profile.tauriPID === Number(env.VERIFY_TAURI_PID)', 'true'),
+      source.replace('const testEnv = nativeTestDatabaseEnvironment(profile);', 'const testEnv = process.env;'),
+      source.replace('env: { ...testEnv,', 'env: { ...process.env,'),
+      source.replace('recordedDataDir === dataDir && port === address.port', 'true'),
+      source.replace("command[command.indexOf('-D') + 1] === dataDir", 'true'),
+      source.replace('env.PAPERCUSP_SKIP_PG_DISCOVERY', 'env.UNVERIFIED_PG_DISCOVERY'),
+      source.replace("execFile(process.execPath, ['--import', 'tsx'", "execFile('resident-worker', ['--import', 'tsx'"),
+      source.replace('if (!error) { resolve({ stdout, stderr }); return; }', 'resolve({ stdout, stderr }); return;'),
       source.replace('execFileSync(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN', 'spawn(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN'),
       source + "\nspawn('resident-worker', [], { detached: true });",
       source + "\nconst launch = spawn; launch('resident-worker', []);",

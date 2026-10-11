@@ -175,7 +175,7 @@ describe('listTasks pushes a label prefix into the query', () => {
 describe('listTasks taskId filter', () => {
   it('filters an exact identity batch before ordering and limiting', async () => {
     const { sql, text } = recordingSql();
-    sql.array = vi.fn(() => 'bound-task-array') as typeof sql.array;
+    sql.array = vi.fn(() => 'bound-task-array') as unknown as typeof sql.array;
     await listTasks({ workspaceId: 'ws-1', includeEnded: true, taskIds: ['older', 'recent'], limit: 2 }, sql);
     expect(sql.array).toHaveBeenCalledWith(['older', 'recent'], 25);
     expect(text()).toContain('task_id = ANY');

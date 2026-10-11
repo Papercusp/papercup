@@ -193,6 +193,7 @@ export default defineTool({
             evaluateNowUpdate(current, state, next, slug),
         );
 
+        if (result.kind === 'refused') return { slug, error: result.value.code, ...result.value };
         if (result.kind === 'busy') {
           return {
             ok: false as const,

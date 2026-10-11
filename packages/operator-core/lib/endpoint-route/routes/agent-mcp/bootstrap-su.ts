@@ -457,6 +457,7 @@ export async function resolveAccountPin(
       const pool = await loadAccountPool(workspaceId);
       const override = await getAccountOverride(workspaceId);
       const candidates = pool.accounts.filter((candidate) => {
+        if (candidate.credentialFailure) return false;
         if (accountProvider(candidate) !== expected) return false;
         if (override.excludeAccounts.includes(candidate.id)) return false;
         return !override.forcedAccounts.length || override.forcedAccounts.includes(candidate.id);
@@ -523,6 +524,7 @@ export async function resolveAccountPin(
     const pool = await loadAccountPool(workspaceId);
     const acct = (pool.accounts ?? []).find((a: { id: string }) => a.id === id);
     if (!acct) return fail(`'${id}' is not in the account pool (see accounts:list)`);
+    if (acct.credentialFailure) return fail(`'${id}' has a confirmed provider authentication failure; repair and re-register the account before pinning it`);
     const provider = accountProvider(acct as never);
     if (provider !== expected)
       return fail(`'${id}' is a ${provider} account, but ${agent} sessions require ${expected} accounts`);
@@ -639,7 +641,7 @@ export async function resolveAccountChoices(
     if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) return empty;
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
     const { accountsForProvider, accountFull, accountReadingStatus } = await import('../../../deployment/account-pool');
-    const accounts = accountsForProvider(await loadAccountPool(workspaceId), provider);
+    const accounts = accountsForProvider(await loadAccountPool(workspaceId), provider).filter((a) => !a.credentialFailure);
     const pool = accounts.map((a: { id: string }) => a.id);
     const now = Date.now();
     const accountStates = Object.fromEntries(accounts.flatMap((account) => {

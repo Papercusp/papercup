@@ -6,7 +6,7 @@ import type { HiveMemberRecord } from './hive-membership-store';
 import type { ResolvedHivePolicy } from './hive-policy-store';
 import type { PlanAdmissionGovernanceSnapshot } from './agent-tools/plans/plan-admission-governance-store';
 import type { PlanIndexRow } from './agent-tools/plans/source';
-import type { DaoRead, DaoWorkspaceView } from './dao-workspace-types';
+import type { DaoCapTable, DaoPerson, DaoRead, DaoWorkspaceView } from './dao-workspace-types';
 export type { DaoRead, DaoWorkspaceView } from './dao-workspace-types';
 
 export interface DaoWorkspaceDeps {
@@ -17,6 +17,8 @@ export interface DaoWorkspaceDeps {
   policy(workspaceId: string, slug: string): Promise<ResolvedHivePolicy | null>;
   governance(workspaceId: string, slug: string): Promise<PlanAdmissionGovernanceSnapshot>;
   plans(workspaceId: string, slug: string): Promise<PlanIndexRow[]>;
+  people?(workspaceId: string, slug: string): Promise<DaoPerson[]>;
+  capTable?(workspaceId: string, slug: string): Promise<DaoCapTable>;
 }
 
 const stores: DaoWorkspaceDeps = {
@@ -28,6 +30,15 @@ const stores: DaoWorkspaceDeps = {
   policy: async (workspace, slug) => (await import('./hive-policy-store')).getHivePolicy(workspace, slug),
   governance: async (workspaceId, potHomeSlug) => (await import('./agent-tools/plans/plan-admission-governance-store')).readPlanAdmissionGovernanceSnapshot({ workspaceId, potHomeSlug }),
   plans: async (workspaceId, harnessSlug) => (await import('./agent-tools/plans/source')).listPlanIndexRows({ workspaceId, harnessSlug, includeArchived: false, heavyFields: true }),
+  people: async (workspaceId, daoSlug) => {
+    const scope = await stores.policyScope(workspaceId, daoSlug);
+    const signed = await stores.policy(workspaceId, scope);
+    return (await import('./dao-hr/people')).readDaoPeople({ workspaceId, daoSlug, policy: signed?.policy ?? null });
+  },
+  capTable: async (workspaceId, daoSlug) => {
+    const signed = await stores.policy(workspaceId, await stores.policyScope(workspaceId, daoSlug));
+    return (await import('./dao-hr/cap-table')).readDaoCapTable({ workspaceId, daoSlug, policy: signed?.policy ?? null });
+  },
 };
 
 async function read<T>(operation: () => Promise<T>): Promise<DaoRead<T>> {
@@ -49,7 +60,7 @@ export async function buildDaoWorkspaceView(
   if (!binding) return { directoryId: directory.potId, localHomeSlug: null, status: 'not-joined' };
   const slug = binding.project.slug;
   const children = projects.filter(project => project.slug === slug || project.hive_slug === slug);
-  const [members, policy, governance, work] = await Promise.all([
+  const [members, policy, governance, work, people, capTable] = await Promise.all([
     read(async () => (await deps.members(workspaceId, slug)).map(member => ({ id: member.githubUserId, username: member.githubUsername, displayName: member.displayName, bindingStatus: member.bindingStatus, devices: member.deviceAttestations.length }))),
     read(async () => {
       const signed = await deps.policy(workspaceId, await deps.policyScope(workspaceId, slug));
@@ -63,6 +74,8 @@ export async function buildDaoWorkspaceView(
       slug: project.slug, title: project.slug === slug ? directory.title : project.slug,
       plans: (await deps.plans(workspaceId, project.slug)).map(plan => ({ slug: plan.planSlug, title: plan.title ?? plan.planSlug, status: plan.status ?? 'draft', owner: plan.owner ?? null, itemCount: plan.items.length })),
     })))),
+    deps.people ? read(() => deps.people!(workspaceId, slug)) : undefined,
+    deps.capTable ? read(() => deps.capTable!(workspaceId, slug)) : undefined,
   ]);
-  return { directoryId: directory.potId, localHomeSlug: slug, status: 'connected', members, policy, governance, projects: work };
+  return { directoryId: directory.potId, localHomeSlug: slug, status: 'connected', members, policy, governance, projects: work, ...(people ? { people } : {}), ...(capTable ? { capTable } : {}) };
 }

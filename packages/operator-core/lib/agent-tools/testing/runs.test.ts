@@ -657,6 +657,35 @@ describe('testing:runs payload-tier shape', () => {
     expect(executionDetails.passedCaseTitles).toHaveLength(2);
   });
 
+  it('publishes testLayer for judges and preserves it when execution details are bounded', () => {
+    expect(runsTool.agentRoles).toContain('judge');
+    const detailsShape = (runsTool.result as any).shape.runs.unwrap().element.shape.executionDetails.unwrap().shape;
+    expect(Object.keys(detailsShape)).toContain('testLayer');
+
+    const executionDetails = {
+      schemaVersion: 1,
+      root: '/tmp',
+      filePath: 'measured.test.ts',
+      runGroupId: 'measured',
+      workspaceId: null,
+      harnessSlug: null,
+      testNamePattern: null,
+      testLayer: 'integration',
+      passed: 7,
+      failed: 0,
+      skipped: 2,
+      collectionFailed: false,
+      passedCaseTitles: ['x'.repeat(2_048)],
+    };
+    const shaped = shapeTestingRuns({ runs: [{ id: 45, executionDetails }] }, 'trimmed') as {
+      runs: Array<{ executionDetails: Record<string, unknown>; executionDetailsBounded: { fieldsOmitted: string[] } }>;
+    };
+    expect(shaped.runs[0]?.executionDetails).toMatchObject({
+      testLayer: 'integration', passed: 7, failed: 0, skipped: 2,
+    });
+    expect(shaped.runs[0]?.executionDetailsBounded.fieldsOmitted).not.toContain('testLayer');
+  });
+
   // Plan mutation-probe-evidence-value-2026-10-11 R-1: the mutation descriptor is what
   // makes a probe row auditable, so a bounded row keeps it inline instead of listing it
   // in fieldsOmitted, and clips only the mutant diff body (flagged).

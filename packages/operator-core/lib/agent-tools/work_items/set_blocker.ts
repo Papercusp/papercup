@@ -490,7 +490,20 @@ export default defineTool({
           // the `blocks` edge the claim floors, plans:items blockedBy and the
           // dependency traversal read. Record that edge instead of an external row;
           // the lifecycle is left alone because the edge itself gates claiming.
-          const referents = pureWorkItemDependencyReferents(input.ref);
+          // Legacy owner asks can use their own item id as the ask identity.
+          // Preserve that existing condition on reassertion; it is not a
+          // dependency on the item itself. New bare refs still use the edge
+          // writer, and the structured-owner-ask checks below still apply.
+          const existingSelfOwnerAsk =
+            input.kind === 'human' &&
+            isStrictOwnerActionCapability(input.capability) &&
+            input.ref.toUpperCase() === input.id.toUpperCase() &&
+            activeExternalBlockers(workItem.payload).some((blocker) =>
+              blocker.kind === 'human' &&
+              blocker.ref === input.ref &&
+              blocker.capability === input.capability,
+            );
+          const referents = existingSelfOwnerAsk ? null : pureWorkItemDependencyReferents(input.ref);
           if (referents) {
             const linked = await linkWorkItemRefDependencies({
               dependentId: input.id,
@@ -520,7 +533,7 @@ export default defineTool({
           // WI-2141488: a bare work-item id MIXED with other conditions is still
           // inert as external text — refuse at the write; `clear` is deliberately
           // exempt so rows already carrying a bad ref stay clearable.
-          const workItemRef = workItemRefBlockerProblem({ itemId: input.id, ref: input.ref });
+          const workItemRef = existingSelfOwnerAsk ? null : workItemRefBlockerProblem({ itemId: input.id, ref: input.ref });
           if (workItemRef) {
             return {
               ok: false as const,

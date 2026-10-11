@@ -35,6 +35,7 @@ import {
   type ResolvedEmbedder,
 } from '@papercusp/memory';
 import { readCredentials } from '../credentials';
+import { observeFallback } from '../degradation/fallback-observations';
 import { loadVoicePrefs } from '../voice-prefs';
 import {
   buildDeferredSidecarAwareEmbedder,
@@ -430,6 +431,7 @@ registerMemoryBackend('hybrid-pg', () => {
 });
 
 configureMemory({
+  observeFallback,
   getAdminUrl: getHarnessAdminUrl,
   // The operator's memory tables live in the harness_shared schema
   // (migration 081); the embedded-pg database is `papercusp`.

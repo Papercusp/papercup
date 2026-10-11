@@ -418,7 +418,9 @@ export type WorkerTransportEvent =
   /** The worker died; calls in flight failed. It is restarted on the next call. */
   | { kind: 'worker-lost'; error: string; failures: number }
   /** The worker died too often; every later call goes through the fallback (or fails). */
-  | { kind: 'fallback'; reason: string; hasFallback: boolean };
+  | { kind: 'fallback'; reason: string; hasFallback: boolean }
+  /** One completed request attempt; fallback success does not mean the worker recovered. */
+  | { kind: 'decision'; path: 'worker' | 'fallback'; completed: boolean };
 
 export interface WorkerTransportOptions {
   /** Idle time a pooled socket is kept by the worker's agent. */
@@ -428,7 +430,7 @@ export interface WorkerTransportOptions {
    * times. Without one, those calls fail (the client records network-error).
    */
   readonly fallback?: FetchLike;
-  /** Told when the worker dies or the transport switches to the fallback. Never awaited. */
+  /** Worker lifecycle events and one path decision per request. Never awaited. */
   readonly onEvent?: (event: WorkerTransportEvent) => void;
 }
 
@@ -624,13 +626,21 @@ export function createWorkerTransport(options: WorkerTransportOptions): WorkerTr
 
   return {
     fetch: (url, init) => {
-      if (mode === 'worker') return fetchViaWorker(url, init);
-      if (mode === 'fallback' && options.fallback) {
-        return options.fallback(url, init).catch((err: unknown) => {
-          throw fallbackFailure(err);
-        });
-      }
-      return Promise.reject(new Error(mode === 'closed' ? 'worker transport closed' : 'worker transport unavailable'));
+      if (mode === 'closed') return Promise.reject(new Error('worker transport closed'));
+      // Capture the actual choice before an asynchronous worker loss changes mode.
+      const path = mode;
+      const attempt = path === 'worker' ? fetchViaWorker(url, init)
+        : options.fallback ? Promise.resolve().then(() => options.fallback!(url, init)).catch((err: unknown) => {
+            throw fallbackFailure(err);
+          })
+        : Promise.reject(new Error('worker transport unavailable'));
+      return attempt.then((response) => {
+        emit({ kind: 'decision', path, completed: true });
+        return response;
+      }, (error: unknown) => {
+        emit({ kind: 'decision', path, completed: false });
+        throw error;
+      });
     },
     mode: () => mode,
     async close() {

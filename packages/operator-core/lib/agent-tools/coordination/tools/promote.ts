@@ -567,6 +567,7 @@ async function backfillPromotedFromConsolidated(opts: {
   if (writeResult.kind === 'busy') {
     return fail('plan_locked', `plan ${slug} is locked by another writer — retry the backfill`);
   }
+  if (writeResult.kind === 'refused') return fail(writeResult.value.code, writeResult.value.message);
   if (!wrote) {
     return {
       content: [
@@ -1361,7 +1362,7 @@ export default defineTool({
       'plans:promote → write ## Promoted block + Now status + activate',
       planScope,
     );
-    await withPlanLock<null>(
+    const finalWrite = await withPlanLock<null>(
       ctx as never,
       {
         slug: args.slug,
@@ -1385,6 +1386,9 @@ export default defineTool({
         return { newBody: bumpUpdatedDate(newBody), value: null };
       },
     );
+
+    if (finalWrite.kind === 'busy') return fail('plan_locked', `plan ${args.slug} is locked by another writer`);
+    if (finalWrite.kind === 'refused') return fail(finalWrite.value.code, finalWrite.value.message);
 
     const spawnSummary = spawnedChildren.map((c) => ({
       child_slug: c.child_slug,

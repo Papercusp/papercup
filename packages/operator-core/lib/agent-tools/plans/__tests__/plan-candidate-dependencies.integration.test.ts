@@ -5,10 +5,11 @@
  * rewrites one item line, making it the regression shape for the central seam.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { parsePlan } from '@papercusp/plan-parser';
 import setItemBlockedByTool from '../set-item-blocked-by';
+import { withPlanLock } from '../with-plan-lock';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './_pg-tool-fixture';
 
 const HARNESS = `zzz-candidate-deps-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -97,6 +98,26 @@ afterAll(async () => {
 });
 
 describe('withPlanLock candidate dependency admission — structured writer', () => {
+  it.each([
+    ['invalid_plan_dependencies', (body: string) => body.replace('status: draft', 'status: ready').replace('first', 'first blocked-by: P-001')],
+    ['child_seed_template_reserved', (body: string) => body.replace('status: draft', 'status: draft\ntemplate: child-seed')],
+    ['conversation_audit_required', (body: string) => body.replace('status: draft', 'status: ready')],
+  ] as const)('returns a distinct refused result for %s without writing or running hooks', async (code, candidate) => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('draft'));
+    const before = await livePlan();
+    const afterWrite = vi.fn();
+    const result = await withPlanLock(
+      makeCtx(), { harnessSlug: HARNESS, workspaceId: wsId, slug: SLUG, intent: 'typed refusal regression', afterWrite },
+      async (body) => ({ newBody: candidate(body!), value: { created: true } }),
+    );
+    expect(result.kind).toBe('refused');
+    if (result.kind !== 'refused') throw new Error('Expected central domain refusal');
+    expect(result.value).toMatchObject({ ok: false, code });
+    expect(result.value).not.toHaveProperty('created');
+    expect(await livePlan()).toEqual(before);
+    expect(afterWrite).not.toHaveBeenCalled();
+  });
+
   it('allows a draft forward ref, writes it, and surfaces invalid-draft evidence on the tool value', async () => {
     await seedPlan(admin, wsId, HARNESS, SLUG, planBody('draft'));
 

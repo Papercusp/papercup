@@ -102,8 +102,9 @@ const M = vi.hoisted(() => {
     })),
     planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
     readPlanBySlug: vi.fn(async (slug: string): Promise<PlanRead> => planFixture(slug)),
-    ctxToPlanSourceOpts: vi.fn(async (ctx: { harnessSlug?: string }) => ({
+    ctxToPlanSourceOpts: vi.fn(async (ctx: { harnessSlug?: string; workspaceId?: string }) => ({
       harnessSlug: ctx.harnessSlug ?? 'papercup',
+      ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}),
     })),
     resolveCtxHarnessSlug: vi.fn(() => 'papercup'),
     resolveEffectiveHarnessSlug: vi.fn(() => 'papercup'),
@@ -133,6 +134,32 @@ const M = vi.hoisted(() => {
       ],
       findings: [],
       summary: 'code truth verified',
+    })),
+    getLatestActivationAudit: vi.fn(async (slug: string) => ({
+      planSlug: slug,
+      harnessSlug: 'papercup',
+      auditSeq: 8,
+      createdBy: 'su-activation-auditor',
+      createdAt: '2026-08-21T00:00:00.000Z',
+      auditKind: 'activation',
+      auditedSha: 'def456',
+      activation: {
+        sourceRanges: [],
+        mappings: [{
+          id: 'M-001',
+          sourceRefs: ['session_turn:codex:owner-session:17'],
+          requirement: 'Keep this plan item traceable to the owner request.',
+          planTargets: ['P-009'],
+          disposition: 'covered',
+        }],
+        repairedOmissions: [],
+        rejectedOrSuperseded: [],
+        unresolvedBlockers: [],
+      },
+      auditedPlanRevision: { id: 9, seq: 9, contentHash: 'plan-hash' },
+      items: [],
+      findings: [],
+      summary: 'owner request mapped to plan item',
     })),
     overlayIssueBlocksForPlan: vi.fn(async (_slug: string, items: unknown[]) => ({
       items,
@@ -184,6 +211,7 @@ vi.mock('../../rubrics', () => ({
 }));
 vi.mock('../../plan-audits', () => ({
   getLatestPlanAudit: M.getLatestPlanAudit,
+  getLatestActivationAudit: M.getLatestActivationAudit,
 }));
 vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: M.previewPlanStartConsult,
@@ -204,22 +232,24 @@ import { _refreshCacheLayerForTests } from '../../cache/instance';
 
 const CACHE_LAYER = 'papercusp-cache-layer';
 
-const ctx = (workspaceId: string, harnessSlug = 'papercup'): never =>
+const ctx = (workspaceId: string, harnessSlug = 'papercup', role?: string) =>
   ({
     workspaceId,
     harnessSlug,
+    ...(role ? { role } : {}),
     metadata: vi.fn(),
     log: vi.fn(),
     progress: vi.fn(),
-  }) as never;
+  });
 
 const run = async (
   args: Record<string, unknown>,
   workspaceId = 'ws-get',
   harnessSlug = 'papercup',
+  role?: string,
 ): Promise<{ results: Array<Record<string, unknown>> }> =>
   (
-    (await tool.handler(args as never, ctx(workspaceId, harnessSlug))) as {
+    (await tool.handler(args as never, ctx(workspaceId, harnessSlug, role) as never)) as {
       data: { results: Array<Record<string, unknown>> };
     }
   ).data;
@@ -527,6 +557,31 @@ describe('plans:get — cache wiring', () => {
     expect(M.getLatestPlanAudit).toHaveBeenCalledWith('alpha', {
       workspaceId: 'ws-get',
     });
+  });
+
+  it('surfaces exact activation-audit provenance only to judge callers', async () => {
+    const ordinary = await run({ slug: 'alpha' });
+    expect(ordinary.results[0]).not.toHaveProperty('latestActivationAudit');
+    expect(M.getLatestActivationAudit).not.toHaveBeenCalled();
+
+    const judged = await run({ slug: 'alpha' }, 'ws-get', 'papercup', 'judge');
+    expect(judged.results[0]).toMatchObject({
+      latestActivationAudit: {
+        planSlug: 'alpha',
+        auditSeq: 8,
+        auditKind: 'activation',
+        activation: {
+          mappings: [{
+            id: 'M-001',
+            sourceRefs: ['session_turn:codex:owner-session:17'],
+            requirement: 'Keep this plan item traceable to the owner request.',
+            planTargets: ['P-009'],
+            disposition: 'covered',
+          }],
+        },
+      },
+    });
+    expect(M.getLatestActivationAudit).toHaveBeenCalledWith('alpha', { workspaceId: 'ws-get' });
   });
 
   it('opts into a fresh activation consult preview without caching its time-varying result', async () => {

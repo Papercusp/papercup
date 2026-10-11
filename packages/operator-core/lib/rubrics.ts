@@ -3580,6 +3580,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   if (result.kind === 'busy') {
     throw new Error(`proposeRubric: plan '${input.rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
 
   // withPlanLock returns activation-gate refusals as typed domain values so plan
   // tools can render them without throwing. This library API cannot return a partial
@@ -5694,6 +5695,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   if (result.kind === 'busy') {
     throw new Error(`amendRubric: plan '${input.rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   if (!result.value) return null;
   return getRubric(input.rubricId);
 }
@@ -5789,6 +5791,7 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
   if (result.kind === 'busy') {
     throw new Error(`ratifyRubric: plan '${rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   return getRubric(rubricId);
 }
 
@@ -5827,7 +5830,7 @@ export async function retireAcceptanceRubricForPlan(
         return { newBody: bumpUpdatedDate(flipped), value: true };
       },
     );
-    if (result.kind === 'busy') return null;
+    if (result.kind !== 'applied') return null;
     return result.value ? rubric.rubricId : null;
   } catch {
     return null;
@@ -5895,6 +5898,7 @@ export async function retireRubric(rubricId: string, by?: string, reason?: strin
   if (result.kind === 'busy') {
     throw new Error(`retireRubric: plan '${rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   return getRubric(rubricId);
 }
 
@@ -5958,6 +5962,7 @@ export async function setRubricHistoryReset(rubricId: string, at: string, by?: s
   if (result.kind === 'busy') {
     throw new Error(`setRubricHistoryReset: plan '${rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   return getRubric(rubricId);
 }
 

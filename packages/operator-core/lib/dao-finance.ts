@@ -6,6 +6,7 @@ import { coerceHivePolicyInput } from './hive-policy-schema';
 import { equityArtifacts, inspectEquity, prepareEquityTransaction } from './equity/runtime';
 import type { EquityChainReader } from './equity/runtime';
 import type { EquityContractName } from './equity/compile';
+import { inspectEquityCapTable, type CapTableChainReader } from './equity/cap-table';
 import { readWalletBinding, requestWalletBindingChallenge, submitWalletBinding } from './cupboard/wallet-binding-io';
 import { commerceDashboardsDoor } from './cupboard/commerce-door-gate-io';
 
@@ -42,6 +43,20 @@ const production: DaoFinanceDeps = {
     return { chainId: binding.chainId, address, blockNumber: String(blockNumber), nativeBalanceWei: String(balance), signerAuthority: 'requires-treasury-signatures' };
   },
 };
+/** Reuse the owner-signed deployment and existing chain reader for a member profile. */
+export async function readDaoMemberEquity(policy: HivePolicy, holder: string): Promise<unknown> {
+  const valid = coerceHivePolicyInput(policy);
+  if (!valid.ok) throw new Error(valid.error);
+  if (!policy.finance?.equity) throw new Error('No owner-signed equity deployment is bound.');
+  return production.equity(policy.finance.equity, holder);
+}
+/** Whole-holder view over the same signed deployment, with event-key enumeration. */
+export async function readDaoEquityCapTable(policy: HivePolicy) {
+  const valid = coerceHivePolicyInput(policy);
+  if (!valid.ok) throw new Error(valid.error);
+  if (!policy.finance?.equity) throw new Error('No owner-signed equity deployment is bound.');
+  return inspectEquityCapTable(await publicClient() as unknown as CapTableChainReader, policy.finance.equity);
+}
 const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 async function measured(operation: () => Promise<unknown>) {
   try { return { status: 'ready', value: await operation() }; }

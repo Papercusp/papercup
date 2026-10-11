@@ -41,7 +41,9 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { collectChildOutput } from '../child-output.js';
-import { escalateAlarm } from '../alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+export const GUI_SURFACE_ALARM_CONDITION_KEY = 'alarm:gui-e2e-surface';
 
 const SUITE_SCRIPT = 'scripts/tauri-surface-verify-suite.sh';
 
@@ -119,19 +121,22 @@ export interface GuiE2eSurfaceScheduledRunIO {
   spawnFn: (command: string, args: readonly string[], options: Record<string, unknown>) => ChildProcess;
   readEnabled: () => Promise<boolean>;
   /** Injectable for tests; production defaults to the shared alarm-attention rail. */
-  escalate: (input: { title: string; body: string }) => Promise<boolean>;
+  escalate: (input: { title: string; body: string }, attention?: AlarmAttentionDeps) => Promise<boolean>;
+  resolve?: (attention?: AlarmAttentionDeps) => Promise<boolean>;
 }
 
-const defaultIO: GuiE2eSurfaceScheduledRunIO = {
+export const defaultIO: GuiE2eSurfaceScheduledRunIO = {
   spawnFn: (command, args, options) => spawn(command, args as string[], options),
   readEnabled: () => getFlag(FLAGS.GUI_E2E_SURFACE_SCHEDULED_RUN, 'system').catch(() => true),
-  escalate: (input) =>
+  escalate: (input, attention) =>
     escalateAlarm({
       title: input.title,
       body: input.body,
       cooldownMs: ESCALATION_COOLDOWN_MS,
       source: 'gui-e2e-surface-scheduled-run',
-    }),
+      conditionKey: GUI_SURFACE_ALARM_CONDITION_KEY,
+    }, attention),
+  resolve: (attention) => resolveAlarm(GUI_SURFACE_ALARM_CONDITION_KEY, 'gui-e2e-surface-scheduled-run', attention),
 };
 
 /**
@@ -218,6 +223,7 @@ export async function runGuiE2eSurfaceScheduledRun(
                 `the scheduled-tick log for the suite's own stdout tail.`;
           escalated = await io.escalate({ title, body });
         } else {
+          if (legs.length > 0 && failed.length === 0) await io.resolve?.();
           console.log(
             `[gui-e2e-surface-scheduled-run] ran in ${durationMs}ms, all ${legs.length} leg(s) passed`,
           );

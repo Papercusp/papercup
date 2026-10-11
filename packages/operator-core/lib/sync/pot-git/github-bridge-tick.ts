@@ -79,6 +79,13 @@ export const BRIDGE_CANONICAL_REF = 'refs/hive/staging';
 /** Where the canonical staging egresses to on the GitHub remote. */
 export const BRIDGE_REMOTE_STAGING_REF = 'refs/heads/staging';
 
+/** Checkpointed receipt reused by the post-integration egress pass. */
+export interface BridgeIngressSnapshot {
+  ingress: IngressResult;
+  admissions: Array<{ head: string; result: AdmissionResult }>;
+  lastAdmitted: string | null;
+}
+
 export interface BridgeTickInput {
   /** P517 single owning-hive publication authority (ingress remains readable by peers). */
   scope?: import('./signed-context').SignedProtocolScope;
@@ -105,6 +112,8 @@ export interface BridgeTickInput {
   githubCredentialHelper?: string | null;
   /** The last ADMITTED github-origin head (caller-persisted watermark). */
   lastAdmitted: string | null;
+  /** Reuse this fire's ingress/admission receipt without fetching or judging twice. */
+  ingressSnapshot?: BridgeIngressSnapshot;
   /** Previous bounded egress scan cursor from github_bridge metadata. */
   egressScanProgress?: unknown;
   /**
@@ -133,6 +142,7 @@ export interface BridgeTickInput {
 
 export interface BridgeTickOutcome {
   ran: boolean;
+  ingressSnapshot?: BridgeIngressSnapshot;
   /** Why the pass (or a leg) was skipped. */
   skipped?: 'no_github_remote' | 'not_bridge_writer';
   egressTarget: ForkPushTarget['target'] | 'skipped';
@@ -230,7 +240,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
 
   // 1. INGRESS — always from the UPSTREAM remote (the fork is a push target,
   //    never the read source: legacy humans/PR merges land upstream).
-  const ingress = await (input.deps?.ingress ?? ingressOriginBranches)({
+  const ingress = input.ingressSnapshot?.ingress ?? await (input.deps?.ingress ?? ingressOriginBranches)({
     repoPath,
     remoteUrl: input.githubRemote,
     historySourcePath: input.historySourcePath,
@@ -266,10 +276,9 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
     : null;
 
   // 2. ADMISSION — judge each moved head; advance the watermark only on admits.
-  const admissions: BridgeTickOutcome['admissions'] = [];
-  const admissionResults: Array<{ head: string; result: AdmissionResult }> = [];
-  let lastAdmitted = input.lastAdmitted;
-  for (const u of ingress.updated) {
+  const admissionResults = [...(input.ingressSnapshot?.admissions ?? [])];
+  let lastAdmitted = input.ingressSnapshot ? input.ingressSnapshot.lastAdmitted : input.lastAdmitted;
+  for (const u of input.ingressSnapshot ? [] : ingress.updated) {
     const result = await (input.deps?.admit ?? admitGithubOriginHead)({
       repoPath,
       lastAdmitted,
@@ -279,9 +288,11 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
       runGit,
     });
     admissionResults.push({ head: u.to, result });
-    admissions.push({ head: u.to, admit: result.admit, basis: result.basis });
     if (result.admit) lastAdmitted = u.to;
-    errors.push(...result.errors.map((e) => `admission ${u.to.slice(0, 12)}: ${e}`));
+  }
+  const admissions = admissionResults.map(({ head, result }) => ({ head, admit: result.admit, basis: result.basis }));
+  for (const { head, result } of admissionResults) {
+    errors.push(...result.errors.map((e) => `admission ${head.slice(0, 12)}: ${e}`));
   }
 
   // 3. EGRESS — canonical staging, FF-only + CAS, to the D-007b-resolved target.
@@ -361,6 +372,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
 
   return {
     ran: true,
+    ingressSnapshot: { ingress, admissions: admissionResults, lastAdmitted },
     egressTarget: target.target === 'none' ? 'skipped' : target.target,
     ingressed: {
       updated: ingress.updated.length,

@@ -1978,8 +1978,9 @@ export function formatProvenanceDrift(diff) {
       `TEST_FILE_PROVENANCE_HEAD_MOVED from=${diff.headMoved.from} to=${diff.headMoved.to}; ` +
         'the named test paths did not change, but their imported source/change radius was not measured. ' +
         'Result provenance is UNKNOWN. Inspect existing PC_EXECUTED_SOURCE_MAP_OUT evidence; if absent, ' +
-        'arm original-source capture BEFORE a new run. Do not repeat shallow runs solely waiting for settled HEAD ' +
-        'or attach the current HEAD retroactively. Captured evidence has its own measured scope and does not stamp a commit.',
+        'arm original-source capture before the next run by setting PC_EXECUTED_SOURCE_MAP_WORKSPACE=<workspace-name> and ' +
+        'PC_EXECUTED_SOURCE_MAP_OUT=<absolute-path> (OUT alone does not arm the reporter). Do not repeat shallow runs solely ' +
+        'waiting for settled HEAD or attach the current HEAD retroactively. Captured evidence has its own measured scope and does not stamp a commit.',
     );
   }
   return lines.join('\n');

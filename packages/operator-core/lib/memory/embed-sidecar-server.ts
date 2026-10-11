@@ -504,14 +504,15 @@ export type RerankerBuilders = {
 };
 
 const buildSidecarReranker = (model: string) => async (): Promise<RerankFn> => {
+  const { observeFallback } = await import('../degradation/fallback-observations');
   // Load eagerly so the builder's promise resolving MEANS the model is warm —
   // that is what makes the warm-state registry and /healthz honest.
-  await loadCrossEncoder({ model });
+  await loadCrossEncoder({ model, observeFallback });
   // scoreCrossEncoder THROWS on failure, deliberately: this server must report
   // a 500 (and flip the slot to 'failed') rather than quietly serve neutral
   // scores. The lib's fail-safe passthrough belongs on the CLIENT side, where
   // there is a retrieval order to degrade to.
-  return (query, texts) => scoreCrossEncoder(query, texts, { model });
+  return (query, texts) => scoreCrossEncoder(query, texts, { model, observeFallback });
 };
 
 const defaultRerankBuilders: RerankerBuilders = {

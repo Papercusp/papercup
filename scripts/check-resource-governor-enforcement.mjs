@@ -483,12 +483,27 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542; fourth under WI-6554700010008629): this is a disposable isolated Tauri Reports Library acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a concrete native PID and polling helper. Two of its four execFileSync sites invoke the native bridge and DOM poll helper with 60s/90s deadlines. The third is one awaited `npm run test:file -- <native e2e test files>` run inside the verifier source snapshot (cwd OPERATOR_SOURCE_ROOT), which verifyVerifierSourceSync first checks against the source receipt (EI-25545705752593070 replaced the earlier `lint:as-committed --ref=<receipt commit>` form, which needs Git inside the archive). Its test child is admitted upstream, because test:file enters scripts/test-files.mjs, which runs each file under runGovernedTestProcess. The fourth is one awaited `node --import tsx -e` child with a 60s timeout that publishes the native executable's kernel-measured runtime-vintage witness to the test-runs ledger database and exits; it starts no further process. Each child is awaited to exit before the next call. The script creates no detached worker or resident queue and exits after the bounded verification phase, so it adds no independently managed application capacity for Governor.admit to meter.",
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542; fourth under WI-6554700010008629; fifth under WI-6554700010008580): this is a disposable isolated Tauri Reports Library acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a concrete native PID and polling helper. Two of its four execFileSync sites invoke the native bridge and DOM poll helper with 60s/90s deadlines. The third is one awaited `npm run test:file -- <native e2e test files>` run inside the verifier source snapshot (cwd OPERATOR_SOURCE_ROOT), which verifyVerifierSourceSync first checks against the source receipt (EI-25545705752593070 replaced the earlier `lint:as-committed --ref=<receipt commit>` form, which needs Git inside the archive). Its test child is admitted upstream, because test:file enters scripts/test-files.mjs, which runs each file under runGovernedTestProcess. The fourth is one awaited `node --import tsx -e` child with a 60s timeout that publishes the native executable's kernel-measured runtime-vintage witness to the test-runs ledger database and exits; it starts no further process. The fifth is runNativeChild's single execFile of the Node executable and an explicit source-root script, awaited through its callback-backed Promise with a 300s deadline and 4MiB output bound. Its nativeChildEnvironment first verifies isolation, the owned rig PID and private workspace, then restores the native discovery directory. Each child is awaited to exit before the next call. The script creates no detached worker or resident queue and exits after the bounded verification phase, so it adds no independently managed application capacity for Governor.admit to meter.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return resourceStartCallCount(source) === 4 &&
+      return resourceStartCallCount(source) === 5 &&
         [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 4 &&
+        [...code.matchAll(/\bexecFile\s*\(/g)].length === 1 &&
+        // Fifth start: the awaited native child, with its owned profile restored.
+        source.includes("const env = nativeChildEnvironment(profile);") &&
+        source.includes("execFile(process.execPath, ['--import', 'tsx', join(sourceRoot, script), ...args], {") &&
+        source.includes("cwd: sourceRoot, env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024,") &&
+        source.includes("return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {") &&
+        source.includes("if (!error) { resolve({ stdout, stderr }); return; }") &&
+        source.includes("assert.equal(env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
+        source.includes("profile.tauriPID === Number(env.VERIFY_TAURI_PID)") &&
         source.includes("execFileSync('npm', ['run', 'test:file', '--', ...testFiles],") &&
+        source.includes("const testEnv = nativeTestDatabaseEnvironment(profile);") &&
+        source.includes("{ cwd: sourceRoot, stdio: 'inherit', env: { ...testEnv,") &&
+        source.includes("assert.equal(env.PAPERCUSP_SKIP_PG_DISCOVERY, '1'") &&
+        source.includes("PAPERCUSP_TEST_PG_ADMIN_URL: address.toString()") &&
+        source.includes("recordedDataDir === dataDir && port === address.port") &&
+        source.includes("command[command.indexOf('-D') + 1] === dataDir") &&
         // Fourth start (WI-6554700010008629): the bounded runtime-vintage witness child.
         source.includes("await import('./packages/operator-core/lib/runtime-vintage.ts');") &&
         source.includes("cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: { ...process.env,") &&

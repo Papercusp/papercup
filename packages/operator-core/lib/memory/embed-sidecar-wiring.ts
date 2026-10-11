@@ -36,6 +36,7 @@ import {
   type GemmaEmbedKind,
 } from '@papercusp/memory';
 import { buildSidecarFirstReranker, type RerankScoreFn } from '@papercusp/rerank';
+import { observeFallback } from '../degradation/fallback-observations';
 import {
   describeUnfitSidecar,
   embedSidecarEnabled,
@@ -332,6 +333,7 @@ export async function buildSidecarAwareReranker(
   // reporter, so it is the same latent red on a different sidecar capability —
   // fixed here at the same time rather than waiting for it to be filed too.
   return buildSidecarFirstReranker({
+    observeFallback,
     model,
     url,
     ensure: localSidecarEnsure(deps, url, EMBED_SIDECAR_CAP_RERANK),

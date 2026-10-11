@@ -44,7 +44,7 @@ import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { detectUnparsedItemLines } from './item-parse-feedback';
 import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
-import { analyzePlanDagParallelism } from './plan-dag-parallelism';
+import { analyzePlanDagParallelism, nativePlanGraphAdvice, type PlanCodeScope } from './plan-dag-parallelism';
 import type { DependencyPolicyFinding } from '../../scheduler/dependency-invariants';
 import {
   detectNowItemContradictions,
@@ -68,6 +68,13 @@ const argsSchema = z.object({
       'All-plans mode only: return the COMPLETE per-plan reports (every error AND warning message) instead of the bounded summary. The complete dump can exceed the agent result-size cap on a real workspace (hundreds of plans × hundreds of warnings → 170KB+), so it is OFF by default — prefer the summary, then lint a single `slug` for a plan’s full warning detail. Safe for HTTP/in-process callers that can handle the size.',
     ),
   harness: harnessArg,
+  codeScope: z.object({
+    symbol: z.string().trim().min(1).max(200),
+    file: z.string().trim().min(1).max(500),
+    paths: z.array(z.string().trim().min(1).max(500)).min(1).max(20).optional(),
+    taskPaths: z.array(z.object({ itemId: z.string().regex(/^P-\d{3,}$/),
+      paths: z.array(z.string().trim().min(1).max(500)).min(1).max(20) })).min(1).max(20),
+  }).optional().describe('Optional exact code/task scope for native graph ordering and overlap advice. Requires one slug. Reads current claims; never assigns work.'),
 });
 
 export interface LintFinding {
@@ -86,6 +93,7 @@ export interface PlanLintReport {
   exempt: boolean;
   errors: LintFinding[];
   warnings: LintFinding[];
+  codeAdvice?: ReturnType<typeof nativePlanGraphAdvice> | { status: 'unknown'; reason: string };
 }
 
 
@@ -119,6 +127,7 @@ async function countFeaturesFromPlan(planSlug: string): Promise<number> {
 export async function lintPlan(
   slug: string,
   opts: PlanSourceOpts = {},
+  codeScope?: PlanCodeScope,
 ): Promise<PlanLintReport | null> {
   const result = await readPlanBySlug(slug, opts);
   if (!result) return null;
@@ -136,6 +145,32 @@ export async function lintPlan(
       code: 'plan_item_index_divergence',
       message: `Stored item index differs from parsed plan body (${divergence}). Move misplaced item lines under ## Phase and rewrite the plan to refresh its index.`,
     });
+  }
+  if (codeScope) {
+    try {
+      const [{ loadHarnessRegistry }, { firstPartyCallersOffthread }, { LSP_VENDOR_DIR }, { getAllPlanItemCoverage }, locks] = await Promise.all([
+        import('../../harness-registry'), import('../../code-intelligence/first-party-callers-offthread'),
+        import('../../code-intelligence/lsp-adapter'), import('../../plan-item-coverage'),
+        import('../locks/su-lock-store'),
+      ]);
+      const harness = opts.harnessSlug;
+      const root = (await loadHarnessRegistry(activeWorkspaceId())).projects.find(project => project.slug === harness)?.path;
+      if (!root) report.codeAdvice = { status: 'unknown', reason: 'scoped harness repository unavailable' };
+      else {
+        const [answer, coverage, fileClaims] = await Promise.all([
+          firstPartyCallersOffthread({ root, vendorDir: LSP_VENDOR_DIR, name: codeScope.symbol, filePath: codeScope.file,
+            paths: codeScope.paths ?? ['.'], op: 'impact', direction: 'downstream', maxDepth: 3, limit: 50 }, { budgetMs: 6_000 }),
+          getAllPlanItemCoverage({ planItemRefs: codeScope.taskPaths.map(task => `${slug}#${task.itemId}`) }),
+          locks.readQueue(locks.getTxPool(), { coordinationDomain: null,
+            paths: [...new Set(codeScope.taskPaths.flatMap(task => task.paths))] }).then(result => ({ status: 'measured' as const,
+              held: result.active_locks.map(lock => ({ path: lock.path, owner: lock.owner, intent: lock.intent,
+                coordinationDomain: lock.coordination_domain })) }))
+            .catch(() => ({ status: 'unknown' as const, held: [] })),
+        ]);
+        report.codeAdvice = answer.error ? { status: 'unknown', reason: answer.error }
+          : nativePlanGraphAdvice(parsed.items, codeScope, answer.evidence, coverage, slug, fileClaims);
+      }
+    } catch { report.codeAdvice = { status: 'unknown', reason: 'native graph or live ownership read unavailable' }; }
   }
   return report;
 }
@@ -1022,11 +1057,13 @@ export default defineTool({
     const opts = await ctxToPlanSourceOpts(sctx);
 
     const slugs = mergeIds(args.slug, args.slugs);
+    if (args.codeScope && slugs.length !== 1) return { content: [{ type: 'text' as const,
+      text: JSON.stringify({ ok: false, error: 'code_scope_requires_exact_plan' }) }] };
     if (slugs.length > 0) {
       const env = await runBulk(
         slugs,
         async (slug) => {
-          const r = await lintPlan(slug, opts);
+          const r = await lintPlan(slug, opts, args.codeScope);
           if (!r) return { ok: false as const, slug, error: 'not_found' };
           return {
             ok: true as const,

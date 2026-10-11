@@ -15,6 +15,7 @@ import { seedPrivateCalendar, preflightPrivateCalendar } from './portal-calendar
 import { seedPrivateLearning, preflightPrivateLearning } from './portal-learning-fixture';
 import { seedPrivateWorkflows, preflightPrivateWorkflows } from './portal-workflows-fixture';
 import { seedPrivateStats, preflightPrivateStats } from './portal-stats-fixture';
+import { seedPrivateGit, preflightPrivateGit } from './portal-git-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
@@ -335,6 +336,9 @@ async function coordCanary(health: unknown) {
     const statsSeed = process.env.ROSTER_STATS_BROWSER_PROOF === '1'
       ? await seedPrivateStats(workspace, evidence, portalSourceRoot!) : undefined;
     if (statsSeed) await preflightPrivateStats(statsSeed, base, cookie(ownSession.token), cookie(foreignSession.token), evidence);
+    const gitSeed = process.env.ROSTER_GIT_BROWSER_PROOF === '1'
+      ? await seedPrivateGit(workspace, evidence, portalSourceRoot!) : undefined;
+    if (gitSeed) await preflightPrivateGit(gitSeed, base, cookie(ownSession.token), cookie(foreignSession.token), evidence);
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;
     if (process.env.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
@@ -424,6 +428,7 @@ async function coordCanary(health: unknown) {
       ...(learningSeed ? { learning: true, learningSeed } : {}),
       ...(workflowsSeed ? { workflows: true, workflowsSeed } : {}),
       ...(statsSeed ? { stats: true, statsSeed } : {}),
+      ...(gitSeed ? { git: true, gitSeed } : {}),
       ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
       ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
       ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),

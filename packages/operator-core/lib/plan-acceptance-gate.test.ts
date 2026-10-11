@@ -2344,7 +2344,7 @@ describe('all-blockers ship preflight (plan-verification-friction-reduction-2026
     expect(collected.blockers?.length).toBeGreaterThan(1);
   });
 
-  it('collect mode records an unvetted rubric beside an earlier blocker without reading the grading', async () => {
+  it('collect mode records an unvetted rubric and assessable grading beside an earlier blocker', async () => {
     mockFlag.mockImplementation(async (flag) =>
       flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE
       || flag === FLAGS.ACCEPTANCE_RUBRIC_VETTING_GATE
@@ -2360,9 +2360,23 @@ describe('all-blockers ship preflight (plan-verification-friction-reduction-2026
 
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { collectAllBlockers: true });
     expect(v).toMatchObject({ satisfied: false, code: 'spec_proof_stale' });
-    expect((v.blockers ?? []).map((b) => b.code)).toEqual(['spec_proof_stale', 'acceptance_rubric_unvetted']);
-    // Only the meta-rubric vetting read ran; the plan rubric's grading was never read.
-    expect(mockScorecards.mock.calls.every(([q]) => q?.rubricRef !== 'ar-some-plan')).toBe(true);
+    expect((v.blockers ?? []).map((b) => b.code)).toEqual(['spec_proof_stale', 'acceptance_rubric_unvetted', 'acceptance_ungraded']);
+    expect(mockScorecards.mock.calls.some(([q]) => q?.rubricRef === 'ar-some-plan')).toBe(true);
+  });
+
+  it('collects unmet grading bars and a missing author verdict beside earlier proof failure', async () => {
+    mockFlag.mockImplementation(async flag => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE);
+    mockSpecCoverage.mockResolvedValue(specStale());
+    const rubric = acceptanceRubric();
+    rubric.criteria = rubric.criteria.map(c => ({ ...c, role: 'outcome', mandatory: true, passRatings: ['healthy'] }));
+    mockRubric.mockResolvedValue(rubric);
+    mockScorecards.mockResolvedValue([scorecard({ createdAt: '2026-10-11T00:00:00Z', ratings: Object.fromEntries(rubric.criteria.map(c => [c.key, { rating: 'broken', evidence: 'measured failed outcome' }])) })]);
+    const first = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    const collected = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { collectAllBlockers: true });
+    expect(first.code).toBe('spec_proof_stale');
+    expect(collected.code).toBe(first.code);
+    expect(collected.blockers?.map(b => b.code)).toEqual(['spec_proof_stale', 'acceptance_bar_not_met', 'acceptance_not_recorded']);
+    expect(collected.blockers?.every(b => b.repairAction)).toBe(true);
   });
 
   it('collect mode records an unreadable rubric revision and skips the vetting evaluation', async () => {

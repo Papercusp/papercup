@@ -714,7 +714,7 @@ describe('AdvOverviewTab component', () => {
     render(<AdvOverviewTab />);
     for (const [label, target] of [['Plans', 'create'], ['Agents', 'work'], ['Activity', 'conversations'],
       ['Work items', 'work'], ['Deploy', 'git'], ['Health', 'health'], ['Learning', 'learning']]) {
-      fireEvent.click(screen.getByRole('button', { name: `Open ${label}`, exact: true }));
+      fireEvent.click(screen.getByRole('button', { name: `Open ${label}` }));
       expect(nuqsSetters.app).toHaveBeenLastCalledWith(target);
     }
     expect(nuqsSetters.tab).toBeUndefined();

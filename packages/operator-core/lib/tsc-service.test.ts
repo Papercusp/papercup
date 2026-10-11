@@ -330,7 +330,7 @@ describe('checkedSetFor', () => {
     dir = '';
   });
 
-  it('checks the named files, exported-type referencers and direct importers — nothing else', () => {
+  it('checks resolved importers, excluding bare type-name collisions', () => {
     dir = mkdtempSync(join(tmpdir(), 'tsc-service-scope-'));
     const write = (rel: string, body: string) => {
       mkdirSync(join(dir, rel, '..'), { recursive: true });
@@ -340,6 +340,7 @@ describe('checkedSetFor', () => {
     write('lib/uses-type.ts', "const s: Shape = { sides: 1 };\n");
     write('lib/sub/imports-rel.ts', "import { area } from '../shapes.js';\narea();\n");
     write('app/imports-alias.ts', "import { area } from '@/lib/shapes';\narea();\n");
+    write('tsconfig.json', JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@/*': ['./*'] } } }));
     write('lib/unrelated.ts', "import { other } from './other.js';\n");
     write('node_modules/pkg/index.d.ts', 'export type Shape = 1;\n');
     const abs = (rel: string) => join(dir, rel);
@@ -347,11 +348,10 @@ describe('checkedSetFor', () => {
       root: dir,
       named: ['lib/shapes.ts', 'lib/not-in-program.ts'],
       programFiles: ['lib/shapes.ts', 'lib/uses-type.ts', 'lib/sub/imports-rel.ts', 'app/imports-alias.ts', 'lib/unrelated.ts', 'node_modules/pkg/index.d.ts'].map(abs),
-      typeNames: new Set(['Shape']),
       readText: readTextOrNull,
     });
-    expect(scope.files.sort()).toEqual(['app/imports-alias.ts', 'lib/shapes.ts', 'lib/sub/imports-rel.ts', 'lib/uses-type.ts'].map(abs).sort());
-    expect(scope).toMatchObject({ named: 1, typeReferencing: 1, importers: 2, namedNotInProgram: ['lib/not-in-program.ts'] });
+    expect(scope.files.sort()).toEqual(['app/imports-alias.ts', 'lib/shapes.ts', 'lib/sub/imports-rel.ts'].map(abs).sort());
+    expect(scope).toMatchObject({ named: 1, typeReferencing: 0, importers: 2, namedNotInProgram: ['lib/not-in-program.ts'] });
   });
 
   it('treats an index file as importable by its directory', () => {
@@ -363,10 +363,35 @@ describe('checkedSetFor', () => {
       root: dir,
       named: ['lib/feature/index.ts'],
       programFiles: [join(dir, 'lib/feature/index.ts'), join(dir, 'lib/caller.ts')],
-      typeNames: new Set(),
       readText: readTextOrNull,
     });
     expect(scope.importers).toBe(1);
+  });
+
+  it('retains every caller through shared barrels and cycles while reading each module once', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-service-scope-'));
+    const abs = (name: string) => join(dir, name);
+    writeFileSync(abs('changed.ts'), 'export interface Shape { sides: number }\n');
+    writeFileSync(abs('barrel.ts'), "export type { Shape } from './changed.js';\nexport type { Other } from './cycle.js';\n");
+    writeFileSync(abs('cycle.ts'), "export type { Shape } from './barrel.js';\nexport interface Other { value: number }\n");
+    const callers = Array.from({ length: 40 }, (_, i) => `caller-${i}.ts`);
+    for (const caller of callers) {
+      writeFileSync(abs(caller), "import type { Shape } from './barrel.js';\nexport const shape: Shape = { sides: 4 };\n");
+    }
+    const reads = new Map<string, number>();
+    const scope = checkedSetFor({
+      root: dir,
+      named: ['changed.ts'],
+      programFiles: [...callers, 'changed.ts', 'cycle.ts'].map(abs),
+      readText: (file: string) => {
+        reads.set(file, (reads.get(file) ?? 0) + 1);
+        return readTextOrNull(file);
+      },
+    });
+    expect(scope.files.sort()).toEqual([...callers, 'changed.ts', 'cycle.ts'].map(abs).sort());
+    expect(scope.importers).toBe(callers.length + 1);
+    expect([...reads.keys()].sort()).toEqual([...callers, 'changed.ts', 'cycle.ts', 'barrel.ts'].map(abs).sort());
+    expect([...reads.values()].every((count) => count === 1)).toBe(true);
   });
 });
 

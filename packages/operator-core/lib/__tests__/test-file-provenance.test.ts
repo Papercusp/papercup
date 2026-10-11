@@ -276,7 +276,8 @@ describe('mid-run drift', () => {
     expect(marker).toContain('imported source/change radius was not measured');
     expect(marker).toContain('provenance is UNKNOWN');
     expect(marker).toContain('Inspect existing PC_EXECUTED_SOURCE_MAP_OUT evidence');
-    expect(marker).toContain('arm original-source capture BEFORE a new run');
+    expect(marker).toContain('arm original-source capture before the next run by setting PC_EXECUTED_SOURCE_MAP_WORKSPACE=<workspace-name>');
+    expect(marker).toContain('PC_EXECUTED_SOURCE_MAP_OUT=<absolute-path> (OUT alone does not arm the reporter)');
     expect(marker).toContain('does not stamp a commit');
     expect(marker).not.toContain('re-run at settled HEAD');
     expect(marker).not.toContain('still describes the files it measured');

@@ -41,7 +41,7 @@ import { markGrindingItems, readGrindingItems } from '../../verification-attempt
 import { readIterationMetrics } from '../../verification-attempts/plan-iteration-metrics';
 import type { PlanLifecycleReconciliation } from '@papercusp/plan-parser';
 import { getAcceptanceRubricForPlan } from '../../rubrics';
-import { getLatestPlanAudit } from '../../plan-audits';
+import { getLatestActivationAudit, getLatestPlanAudit } from '../../plan-audits';
 import { splitPlanSections } from './plan-sections';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -644,7 +644,7 @@ export default defineTool({
   // at 120s so both direct calls and tools:invoke get the same bounded window.
   timeoutSec: 120,
   description:
-    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+    "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. Judge callers also receive the exact latest activation-audit record and requirement mappings as `latestActivationAudit`. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
   guidance: {
     when: "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
     notWhen: "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
@@ -1562,6 +1562,20 @@ export default defineTool({
         ctxAny.metadata?.({ slug, searchedHarness: explicitCallerHarness, harnessMismatch: mismatch });
         result.harness = explicitCallerHarness;
         result.harnessMismatch = mismatch;
+      }
+    }
+    // EI-25658389474245350: an evidence-only judge needs the canonical activation
+    // audit sequence and source-turn mappings to verify citations. Keep this
+    // role-scoped read outside cachedRead: the ordinary plan cache is deliberately
+    // principal-independent, and must never share judge-only audit evidence.
+    if (ctxAny.role === 'judge' || ctxAny.principal?.slug === 'system:judge') {
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== true) continue;
+        const slug = typeof result.slug === 'string' ? result.slug : null;
+        if (!slug) continue;
+        result.latestActivationAudit = await getLatestActivationAudit(slug, {
+          ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+        });
       }
     }
     ctxAny.metadata?.({ plansGetRead: { unit: 'ms', timing: 'wall-time-per-stage-overlapping', reads: readTimings } });

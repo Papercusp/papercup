@@ -1385,6 +1385,77 @@ describe('work_items:set_blocker', () => {
     // is recorded as the canonical blocks edge — never as an external row.
     const edgeFor = (blocker: string) => ({ blocker, blocked: { kind: 'issue', ref: 'WI-1' } });
 
+    it('reasserts an existing self-id owner ask without turning it into a self-dependency', async () => {
+      const blocker = {
+        kind: 'human', capability: 'product-decision', ref: 'WI-1', status: 'active',
+        summary: 'Choose the prompt strategy.', nextVerb: 'Record the owner decision.',
+        defaultIfUnanswered: 'Keep this owner condition active.',
+        createdAt: '2026-10-01T00:00:00.000Z', createdBy: 'original-author',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      };
+      const item = { ...openItem, state: 'needs-human', payload: { externalBlockers: [blocker] } };
+      getWorkItem.mockResolvedValue(item);
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: { ...item.payload, ...patch } }));
+      const out = await one({
+        id: item.id, kind: 'human', capability: 'product-decision', ref: blocker.ref,
+        summary: blocker.summary, nextVerb: blocker.nextVerb,
+        recheckAt: '2026-10-12T00:00:00Z',
+      });
+
+      expect(out).toMatchObject({ ok: true, changed: true, autoCleared: false });
+      expect(out.activeBlockers).toEqual([expect.objectContaining({
+        kind: blocker.kind, capability: blocker.capability, ref: blocker.ref, status: 'active',
+        summary: blocker.summary, nextVerb: blocker.nextVerb,
+        defaultIfUnanswered: blocker.defaultIfUnanswered,
+        createdAt: blocker.createdAt, createdBy: blocker.createdBy,
+        recheckAt: '2026-10-12T00:00:00.000Z',
+      })]);
+      expect(Date.parse(out.activeBlockers[0].updatedAt)).toBeGreaterThan(Date.parse(blocker.updatedAt));
+      expect(linkWorkItemRefDependencies).not.toHaveBeenCalled();
+      expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+    });
+
+    it('still validates the concrete question on an existing self-id owner ask', async () => {
+      getWorkItem.mockResolvedValue({
+        ...openItem,
+        payload: { externalBlockers: [{
+          kind: 'human', capability: 'product-decision', ref: 'WI-1', status: 'active',
+          summary: 'Choose the prompt strategy.', nextVerb: 'Record the owner decision.',
+          createdAt: '2026-10-01T00:00:00.000Z', createdBy: 'original-author',
+          updatedAt: '2026-10-01T00:00:00.000Z',
+        }] },
+      });
+      const out = await one({ id: 'WI-1', kind: 'human', capability: 'product-decision', ref: 'WI-1' });
+
+      expect(out).toMatchObject({ ok: false });
+      expect(out.error).toContain('structured ask requires both');
+      expect(linkWorkItemRefDependencies).not.toHaveBeenCalled();
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    });
+
+    it('does not turn a new self-ref or an existing technical self-ref into an owner ask', async () => {
+      for (const payload of [{}, { externalBlockers: [{
+        kind: 'human', capability: 'live-dependency', ref: 'WI-1', status: 'active',
+        createdAt: '2026-10-01T00:00:00.000Z', createdBy: 'original-author',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+      }] }]) {
+        vi.clearAllMocks();
+        getWorkItem.mockResolvedValue({ ...openItem, payload });
+        linkWorkItemRefDependencies.mockResolvedValue({
+          ok: false, code: 'work_item_ref_dependency_refused', error: 'cannot depend on itself',
+        });
+        const out = await one({
+          id: 'WI-1', kind: 'human', capability: 'product-decision', ref: 'WI-1',
+          summary: 'Choose the prompt strategy.', nextVerb: 'Record the owner decision.',
+          defaultIfUnanswered: 'Keep this owner condition active.',
+        });
+
+        expect(out).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused' });
+        expect(linkWorkItemRefDependencies).toHaveBeenCalled();
+        expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      }
+    });
+
     it('records a bare work-item id as a blocks edge, writing no external row', async () => {
       getWorkItem.mockResolvedValue(openItem);
       linkWorkItemRefDependencies.mockResolvedValue({ ok: true, edges: [edgeFor('WI-40086')] });

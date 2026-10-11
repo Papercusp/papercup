@@ -27,6 +27,7 @@ import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { execPath } from 'node:process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { applyCodexGatewayRoute } from '../scripts/psu-launcher.mjs';
 import {
   findNativeTranscriptMarker,
   hostThroughPty,
@@ -1403,11 +1404,12 @@ it('quota wall during launch kickoff preserves the host and publishes recovery t
   expect(existsSync(sock)).toBe(false);
 }, 25000);
 
-it('eligible quota recovery recycles once under the same owner and settles the exact delivery id', async () => {
+it.each(['repaired', 'unavailable', 'wrong-route', 'auth'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
   const root = mkdtempSync(join(tmpdir(), 'psu-quota-recovery-'));
   const codexHome = join(root, 'codex');
   const transcript = join(codexHome, 'sessions', '2026', '09', '07', 'recovered.jsonl');
   mkdirSync(join(codexHome, 'sessions'), { recursive: true });
+  writeFileSync(join(codexHome, 'config.toml'), 'model_provider = "openai"\n');
   const ownerId = uniqueOwner('QUOTA-RECOVERY');
   const sock = socketPathFor(ownerId);
   const eventPath = eventLogPathForOwner(ownerId);
@@ -1417,6 +1419,8 @@ it('eligible quota recovery recycles once under the same owner and settles the e
   const childCode = [
     "const fs=require('node:fs'),path=require('node:path');",
     "const recycled=process.argv[1]==='RECYCLED';",
+    "if(recycled){const config=fs.readFileSync(path.join(process.env.CODEX_HOME,'config.toml'),'utf8');",
+    "process.stdout.write('RECYCLED-ROUTE:'+process.env.PAPERCUSP_ACCOUNT_ROUTING_MODE+':'+config.includes('model_provider = \"papercusp-codex-gateway\"')+'\\n');}",
     "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');let b='';",
     "process.stdout.write(recycled?'RECYCLED-READY\\n':'READY\\n');",
     "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);b+=d;if(!b.includes('\\r'))return;",
@@ -1428,6 +1432,7 @@ it('eligible quota recovery recycles once under the same owner and settles the e
   ].join('');
   let exitCode: number | null = null;
   let recycleMints = 0;
+  let routeRepairs = 0;
   const done = hostThroughPty({
     command: execPath,
     args: ['-e', childCode, 'ORIGINAL'],
@@ -1436,6 +1441,7 @@ it('eligible quota recovery recycles once under the same owner and settles the e
       PAPERCUSP_SID: ownerId,
       PAPERCUSP_AGENT: 'codex',
       PAPERCUSP_LAUNCHED_BY: 'su-integration-leader',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default',
       CODEX_HOME: codexHome,
       TEST_TRANSCRIPT: transcript,
       PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
@@ -1451,6 +1457,14 @@ it('eligible quota recovery recycles once under the same owner and settles the e
     io,
     bridgeTty: false,
     nativePersistenceTimeoutMs: 1_000,
+    ensureCodexHome: async (options?: { routeMode?: string }) => {
+      routeRepairs += 1;
+      expect(options).toEqual({ routeMode: 'auto' });
+      expect(recycleMints).toBe(0);
+      if (repair === 'unavailable') return null;
+      if (repair === 'repaired') applyCodexGatewayRoute(codexHome, { mode: 'auto', ownerId });
+      return { ok: true };
+    },
     mintRecycleArgs: (a: string[]) => {
       recycleMints += 1;
       return { args: a.slice(0, -1).concat('RECYCLED'), nativeId: null };
@@ -1474,7 +1488,7 @@ it('eligible quota recovery recycles once under the same owner and settles the e
       data: `${marker}\nresume exact delivery`,
       ownerId,
       deliveryId: operationId,
-      quotaRecovery: { operationId, ownerId, startedAtMs },
+      quotaRecovery: { operationId, ownerId, startedAtMs, cause: repair === 'auth' ? 'auth' : 'quota' },
     });
     expect(accepted).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
 
@@ -1484,9 +1498,22 @@ it('eligible quota recovery recycles once under the same owner and settles the e
       events = existsSync(eventPath)
         ? readFileSync(eventPath, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
         : [];
-      if (events.some((event) => event.kind === 'quota-recovery-ready')) break;
+      if (events.some((event) => event.kind === 'quota-recovery-ready' || event.kind === 'quota-recovery-dropped')) break;
       await sleep(25);
     }
+    expect(routeRepairs).toBe(repair === 'auth' ? 0 : 1);
+    if (repair === 'unavailable' || repair === 'wrong-route') {
+      expect(recycleMints).toBe(0);
+      expect(captured()).not.toContain('RECYCLED-READY');
+      expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.quotaBlocked).toBe(true);
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'quota-recovery-dropped', operationId,
+        reason: 'codex-auto-route-unavailable',
+      }));
+      expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+      return;
+    }
+    expect(captured()).toContain(repair === 'auth' ? 'RECYCLED-ROUTE:default:false' : 'RECYCLED-ROUTE:auto:true');
     expect(captured()).toContain('RECOVERED-TURN');
     const transcriptLines = readFileSync(transcript, 'utf8').split(/\r?\n/).filter(Boolean);
     const transcriptRows = transcriptLines.map((line) => JSON.parse(line));

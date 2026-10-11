@@ -7743,6 +7743,31 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
 });
 
 describe('codex auth-failure detector (parked-agent-census P-004)', () => {
+  it('detects confirmed Claude auth errors, while quoted prose and unknown transcripts cannot block', () => {
+    const copy = 'OAuth token revoked · Please run /login';
+    const native = { type: 'assistant', isApiErrorMessage: true, message: { model: '<synthetic>', content: [{ type: 'text', text: copy }] } };
+    const echo = { type: 'assistant', message: { content: [{ type: 'text', text: copy }] } };
+    expect(realHost.codexAuthFailureMatch(copy, 'claude').matched).toBe(true);
+    expect(realHost.codexAuthFailureMatch('Login expired · Please run /login', 'claude').matched).toBe(true);
+    expect(realHost.codexAuthFailureMatch(copy, 'codex').matched).toBe(false);
+    expect(realHost.claudeAuthTranscriptVerdict([native])).toBe('walled');
+    expect(realHost.claudeAuthTranscriptVerdict([native, echo])).toBe('echo');
+    let verdict = 'unknown';
+    const detector = realHost.makeAuthBlockDetector({ agent: 'claude', corroborate: () => verdict, deferUntilSubmit: true });
+    verdict = 'walled';
+    expect(detector.observe(copy)).toBeNull();
+    detector.observeInput('\r');
+    verdict = 'echo';
+    expect(detector.observe(copy)).toBeNull();
+    verdict = 'unknown';
+    expect(detector.observe(copy)).toBeNull();
+    verdict = 'walled';
+    expect(detector.observe(copy)).toBe('detected');
+    expect(detector.isBlocked()).toBe(true);
+    verdict = 'echo';
+    expect(detector.observe('new turn')).toBe('cleared');
+  });
+
   // Verbatim codex-cli 0.162.1 copy, wrapped and styled the way the TUI paints it.
   const REAL = 'Your access token could not be refreshed. Please log out and sign in again.';
 

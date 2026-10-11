@@ -582,6 +582,32 @@ describe('credential-SHAPE output redaction + owner-only spill (WI-10003538)', (
 });
 
 describe('background jobs', () => {
+  it('records observed spawn and pipe phases in the durable log without changing command output', async () => {
+    const job = startBackground({ command: 'printf phase-proof', cwd: STATE, stateDir: STATE }, 30_000);
+    await waitForStatus(job.id);
+    expect(job.status).toBe('completed');
+    expect(readJobOutput(job)).toBe('phase-proof');
+    const timing = job.phaseTiming!;
+    expect(timing.spawnReturnedAt).toBeGreaterThanOrEqual(timing.spawnRequestedAt);
+    expect(timing.clientSpawnedAt).not.toBeNull();
+    expect(timing.firstPipeByteAt).not.toBeNull();
+    expect(timing.firstPipeByteAt!).toBeGreaterThanOrEqual(timing.clientSpawnedAt!);
+    expect(job.endedAt!).toBeGreaterThanOrEqual(timing.firstPipeByteAt!);
+    const log = readFileSync(job.logPath, 'utf8');
+    expect(log).toContain(`spawn_requested_at=${timing.spawnRequestedAt}`);
+    expect(log).toContain(`ended_at=${job.endedAt}`);
+    expect(log).toContain('JOB END: status=completed');
+  });
+
+  it('leaves an unobserved first pipe byte null for a silent command', async () => {
+    const job = startBackground({ command: 'exit 0', cwd: STATE, stateDir: STATE }, 30_000);
+    await waitForStatus(job.id);
+    expect(job.status).toBe('completed');
+    expect(readJobOutput(job)).toBe('');
+    expect(job.phaseTiming!.firstPipeByteAt).toBeNull();
+    expect(readFileSync(job.logPath, 'utf8')).toContain('first_pipe_byte_at=null');
+  });
+
   it('executes the background payload in its requested cwd, not the operator home', async () => {
     const job = startBackground({ command: 'pwd', cwd: STATE, stateDir: STATE }, 10_000);
     await waitForStatus(job.id);
@@ -737,7 +763,10 @@ describe('background jobs', () => {
       expect(readJobOutput(job), `status=${job.status} exit=${job.exitCode}`).toContain(
         'payload-controls=absent/absent',
       );
-      expect(readFileSync(job.logPath, 'utf8')).toContain('payload-controls=absent/absent');
+      const spill = readFileSync(job.logPath, 'utf8');
+      const payload = 'payload-controls=absent/absent';
+      expect(spill).toContain(payload);
+      expect(spill.indexOf('JOB TIMING:')).toBeGreaterThanOrEqual(spill.indexOf(payload) + payload.length);
     } finally {
       begin.mockRestore();
       complete.mockRestore();

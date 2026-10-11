@@ -148,14 +148,16 @@ type ResolveWorkItemFamily = (id: string, harness: string) => Promise<'issue' | 
  * WI-4429: reject a fixed issue cohort that is already 0-admissible BEFORE the
  * spec is stored. Reuses explainIssueClaimFloors (the claim path's own SQL floor
  * fragments) and the same conservative ID extractor the issue fallback uses.
- * EI-25159722494650027: storing a fleet's scope is not acquiring a new claim.
- * A verified member's existing claim can keep the cohort alive, but only after
- * the shared evaluator checks every remaining floor in that member's context.
+ * EI-25159722494650027 / EI-25656077539051129: storing a fleet or self-targeted
+ * cup's scope is not acquiring a new claim. A verified target's existing claim
+ * can keep the cohort alive, but only after the shared evaluator checks every
+ * remaining floor in that holder's context.
  */
 export async function previewClaimSpecAdmission(args: {
   spec: ClaimSpec;
   harness?: string;
   assignee: string;
+  cupId?: string;
   fleet?: string;
   explain?: ExplainIssueFloors;
   resolveFamily?: ResolveWorkItemFamily;
@@ -244,13 +246,21 @@ export async function previewClaimSpecAdmission(args: {
   const alreadyHeldIds: string[] = [];
   let heldPreviewError: string | undefined;
   const heldRows = rows.filter((row) => row.refusedBy === 'already-taken' && row.heldBy);
-  if (args.fleet && heldRows.length > 0) {
+  const selfTarget = !args.fleet && args.cupId === args.assignee;
+  if ((args.fleet || selfTarget) && heldRows.length > 0) {
     try {
-      // Reuse the binding-control roster, NOT the delivery audience: muted/digest
-      // members still own fleet work. Never infer membership from the writer.
-      const resolveMembers = args.resolveFleetMembers ??
-        (await import('../coordination/audience-host')).listFleetControlMembers;
-      const members = new Set(await resolveMembers(args.fleet));
+      let members: Set<string>;
+      if (args.fleet) {
+        // Reuse the binding-control roster, NOT the delivery audience: muted/digest
+        // members still own fleet work. Never infer membership from the writer.
+        const resolveMembers = args.resolveFleetMembers ??
+          (await import('../coordination/audience-host')).listFleetControlMembers;
+        members = new Set(await resolveMembers(args.fleet));
+      } else {
+        // A single-cup write may scope the caller's already-held work, but only
+        // when the target and verified writer identities are the same.
+        members = new Set([args.assignee]);
+      }
       const byHolder = new Map<string, string[]>();
       for (const row of heldRows) {
         if (!members.has(row.heldBy!)) continue;
@@ -266,9 +276,13 @@ export async function previewClaimSpecAdmission(args: {
           assignee: holder,
           states: effectiveStates,
           scopeHeldBy: [holder],
-          claimantFleetSlug: args.fleet,
-          claimSpecReferencesFleet: claimSpecReferencesField(args.spec, 'fleet'),
-          claimSpecReferencesGoal: claimSpecReferencesField(args.spec, 'goal'),
+          ...(args.fleet
+            ? {
+                claimantFleetSlug: args.fleet,
+                claimSpecReferencesFleet: claimSpecReferencesField(args.spec, 'fleet'),
+                claimSpecReferencesGoal: claimSpecReferencesField(args.spec, 'goal'),
+              }
+            : {}),
         });
         for (const row of checked) {
           if (!ids.includes(row.id)) continue;
@@ -315,8 +329,15 @@ export async function previewClaimSpecAdmission(args: {
   }
   const warningParts: string[] = [];
   if (alreadyHeldIds.length > 0) {
+    const targetDescription = args.fleet
+      ? 'target fleet "' + args.fleet + '"'
+      : 'target cup "' + (args.cupId ?? args.assignee) + '"';
     warningParts.push(
-      `${alreadyHeldIds.length} cohort id(s) are already held by target fleet "${args.fleet}" and accepted for scope authoring only, not new acquisition: ${alreadyHeldIds.join(',')}`,
+      alreadyHeldIds.length +
+        ' cohort id(s) are already held by ' +
+        targetDescription +
+        ' and accepted for scope authoring only, not new acquisition: ' +
+        alreadyHeldIds.join(','),
     );
   }
   if (heldPreviewError) warningParts.push(heldPreviewError);
@@ -550,6 +571,7 @@ export default defineTool({
       spec: validated.spec,
       harness: resolvedHarness,
       assignee: ident.ownerId,
+      cupId: args.fleet ? undefined : targetBeeId,
       fleet: args.fleet?.trim(),
     });
     if (admission.errors.length > 0) {

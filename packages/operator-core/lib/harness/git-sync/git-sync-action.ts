@@ -90,6 +90,8 @@ import {
   BRIDGE_REMOTE_STAGING_REF,
   GITHUB_CREDENTIAL_HELPER_KEY,
   runGithubBridgeTick,
+  type BridgeIngressSnapshot,
+  type BridgeTickOutcome,
 } from '../../sync/pot-git/github-bridge-tick';
 import { resolveAnnouncementWatermark, runIntegratorTick } from '../../sync/pot-git/integrator-tick';
 import { githubOriginNamespaceKey } from '../../sync/pot-git/github-ingress';
@@ -4631,9 +4633,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // backlog must not hold the remote push behind its bounded bookkeeping pass.
     let bridgeFailed = false;
     let bridgeFailure: unknown;
+    let bridgeOutcome: BridgeTickOutcome | undefined;
     try {
       if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
-        await guardedPostLegs('git-sync:github-bridge', () =>
+        bridgeOutcome = await guardedPostLegs('git-sync:github-bridge', () =>
           runCheckpointedStep('git-sync:github-bridge', () =>
             runGithubBridgeLeg(slug, workspaceId, {
               signal: postLegsLiveness.signal,
@@ -4650,18 +4653,14 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       bridgeFailure = error;
     }
 
-    let settlementFailed = false;
-    let settlementFailure: unknown;
-    let settlementTimeout: GitSyncActionTimeoutError | undefined;
-    try {
-      settlementTimeout = await reconcileCommittedCompletions();
-    } catch (error) {
-      settlementFailed = true;
-      settlementFailure = error;
+    const settleCompletions = async (): Promise<void> => {
+      const timeout = await reconcileCommittedCompletions();
+      if (timeout) throw timeout;
+    };
+    if (bridgeFailed) {
+      // Retain settlement on an early bridge failure, with the original fault authoritative.
+      try { await settleCompletions(); } finally { throw bridgeFailure; }
     }
-    if (bridgeFailed) throw bridgeFailure;
-    if (settlementFailed) throw settlementFailure;
-    if (settlementTimeout) throw settlementTimeout;
 
     // p2p-git-live-activation P-205 (WI-3591, G-8): on ANY non-legacy hive, one
     // bootstrap-tick pass per git-sync tick, BEFORE ref-announce (P-202) — a
@@ -4771,6 +4770,25 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         runCheckpointedStep('git-sync:worktree-bridge', () => runWorktreeBridgeLeg(slug, workspaceId)),
       );
     }
+    // The integrator/worktree bridge may have advanced canonical since the early
+    // pass. Export that head in THIS fire, reusing its checkpointed admission
+    // receipt so no second fetch/judgment can erase an earlier ingress refusal.
+    // Both egress passes precede potentially slow completion bookkeeping.
+    if (bridgeOutcome?.ran && bridgeOutcome.ingressSnapshot) {
+      await guardedPostLegs('git-sync:github-bridge-post-integrator', () =>
+        runCheckpointedStep('git-sync:github-bridge-post-integrator', () =>
+          runGithubBridgeLeg(slug, workspaceId, {
+            ingressSnapshot: bridgeOutcome.ingressSnapshot,
+            signal: postLegsLiveness.signal,
+            onProgress: () => {
+              postLegsLiveness.touch();
+              enqueueActivityHeartbeat(postLegsLiveness, 'post-legs', outcome.status, 'git-sync:github-bridge-post-integrator');
+            },
+          }),
+        ),
+      );
+    }
+    await settleCompletions();
   } catch (error) {
     // EI-22154166487566939: mirror the local-sync phase's outer catch (~2756-2761) —
     // a guardedPostLegs timeout rejects with GitSyncActionTimeoutError naming the
@@ -5066,8 +5084,8 @@ export function githubBridgeErrorTransitionLine(
 export async function runGithubBridgeLeg(
   slug: string,
   workspaceId: string,
-  opts: { remote?: string; signal?: AbortSignal; onProgress?: () => void } = {},
-): Promise<void> {
+  opts: { remote?: string; signal?: AbortSignal; onProgress?: () => void; ingressSnapshot?: BridgeIngressSnapshot } = {},
+): Promise<BridgeTickOutcome | undefined> {
   const runGit: PotGitRunGit = (args, cwd, gitOptions) => {
     const reportProgress = (): void => {
       try {
@@ -5240,6 +5258,7 @@ export async function runGithubBridgeLeg(
       upstreamWrite,
       githubCredentialHelper,
       lastAdmitted,
+      ingressSnapshot: opts.ingressSnapshot,
       egressScanProgress: prevEgressScanProgress,
       // WI-10006624 / D-022: only the OWNING hive bridges GitHub — the same rule the
       // integrator leg applies (`not_hive_owner`). A non-owner member's egress is
@@ -5354,6 +5373,7 @@ export async function runGithubBridgeLeg(
         emitGitSyncEgressedEvent(outcome.egressHead, { scope: { installSlug: slug, workspaceId } });
       }
     }
+    return outcome.ran ? outcome : undefined;
   } catch (e) {
     console.warn(`[git-sync] ${slug}: github-bridge pass failed: ${e instanceof Error ? e.message : e}`);
   }

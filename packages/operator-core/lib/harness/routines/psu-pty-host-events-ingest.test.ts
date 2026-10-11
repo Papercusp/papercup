@@ -61,6 +61,33 @@ function row(kind: string, ts: string, extra: Record<string, unknown> = {}): str
 }
 
 describe('hostEventDigest', () => {
+  it('routes only confirmed named Claude auth faults, and retains failed reactions for retry', async () => {
+    const dir = await makeDir();
+    const ts = '2026-10-11T06:35:00.000Z';
+    const filename = join(dir, 'su-failed.events.jsonl');
+    await writeFile(filename, [
+      row('auth-block-detected', ts, { agent: 'claude', accountId: 'bad', confirmedProviderFailure: true }),
+      row('auth-block-detected', ts, { agent: 'claude', accountId: 'echo', confirmedProviderFailure: false }),
+      row('auth-block-detected', ts, { agent: 'codex', accountId: 'stale-memory', confirmedProviderFailure: true }),
+    ].join('\n'));
+    const onCredentialFailure = vi.fn(async (): Promise<void> => { throw new Error('health write unavailable'); });
+    const { sql } = makeFakeSql();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let failed;
+    try {
+      failed = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir, onCredentialFailure });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('health write unavailable'));
+    } finally { error.mockRestore(); }
+    expect(failed.ingestErrors).toBe(1);
+    expect(failed.rowsInserted).toBe(0);
+    expect(await readdir(dir)).toContain('su-failed.events.jsonl');
+    onCredentialFailure.mockResolvedValue(undefined);
+    const succeeded = await ingestPsuPtyHostEvents({ sql, workspaceId: 'ws', dir, onCredentialFailure });
+    expect(succeeded.rowsInserted).toBe(3);
+    expect(onCredentialFailure).toHaveBeenCalledTimes(2);
+    expect(onCredentialFailure).toHaveBeenLastCalledWith({ accountId: 'bad', ownerId: 'su-failed', observedAt: Date.parse(ts), workspaceId: 'ws' });
+  });
+
   it('is stable regardless of payload key insertion order', () => {
     const a = hostEventDigest('su-1', '2026-09-22T00:00:00.000Z', 'turn-delivered', {
       label: 'x',

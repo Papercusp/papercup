@@ -352,9 +352,11 @@ describe('worker transport failure handling', () => {
     const out = await pending;
     expect(out).toMatchObject({ kind: 'inconclusive', reason: 'network-error' });
     expect(performance.now() - t0).toBeLessThan(DEADLINE_MS);
-    expect(events).toEqual([expect.objectContaining({ kind: 'worker-lost', failures: 1 })]);
+    expect(events.filter((event) => event.kind !== 'decision')).toEqual([expect.objectContaining({ kind: 'worker-lost', failures: 1 })]);
+    expect(events.filter((event) => event.kind === 'decision')).toEqual([{ kind: 'decision', path: 'worker', completed: false }]);
     expect(transport.mode()).toBe('worker');
     expect(await client(toServer(transport.fetch, 0)).decide(request)).toMatchObject({ kind: 'answered' });
+    expect(events.at(-1)).toEqual({ kind: 'decision', path: 'worker', completed: true });
   });
 
   it(`switches to the fallback after ${WORKER_TRANSPORT_MAX_FAILURES} worker deaths, and says so`, async () => {

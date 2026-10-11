@@ -1184,7 +1184,8 @@ export interface ScorecardRow {
    * that stalled the 2026-07-14 GO call. WI-5397 widened the stamp to make that
    * staleness EXPLICIT (`staleHost`) instead of relying on the reader to notice a
    * hostStartedAt mismatch by hand — see generation-watermark.ts's RunningGeneration
-   * doc comment for the full shape rationale. Absent on pre-stamp scorecards.
+   * doc comment for the full shape rationale. `false` is a proven build match, `true`
+   * a proven mismatch, and `null` an unavailable comparison. Absent on pre-stamp scorecards.
    */
   gradedGeneration?: GradedGeneration;
   /**
@@ -1193,9 +1194,10 @@ export interface ScorecardRow {
    * `gradedGeneration` at all.
    *
    * ⚠ Do NOT substitute `gradedGeneration.staleHost` for this. That field is frozen at
-   * stamp time and says whether the scout was provably running the graded code THEN; it
-   * cannot say whether the generation has since ENDED. A row reading `staleHost: false`
-   * can still be `{ status: 'stale' }` here — which is precisely the 2026-07-17 failure
+   * stamp time and reports whether the scout was running the graded code THEN (`false`/
+   * `true`), or `null` if that comparison was unavailable; it cannot say whether the
+   * generation has since ENDED. A row reading `staleHost: false` can still be
+   * `{ status: 'stale' }` here — which is precisely the 2026-07-17 failure
    * (a 4.5h soak + 6/6 verdict voided by a restart 3 minutes after emit) that no reader
    * noticed because a plausible-looking `staleHost` was sitting right next to it.
    */
@@ -1844,14 +1846,15 @@ export function classifyGradingAuditCurrentness(
 
 /** The projected {@link parseGradedGeneration} shape — see RunningGeneration
  *  (generation-watermark.ts) for what each field means. `bootHeadSha`/`scoutCodeHash`/
- *  `staleHost` are optional: a pre-WI-5397 stamp (or a row this parser degrades) never
- *  carried them, so their ABSENCE means "not recorded", never "known false/null". */
+ *  `staleHost` are optional: a pre-WI-5397 stamp never carried them, so their ABSENCE
+ *  means "not recorded". A recorded `staleHost: null` means the comparison was attempted
+ *  but its inputs were unavailable. */
 export interface GradedGeneration {
   deployedSha: string | null;
   hostStartedAt: string | null;
   bootHeadSha?: string | null;
   scoutCodeHash?: string | null;
-  staleHost?: boolean;
+  staleHost?: boolean | null;
 }
 
 /** Result of the scorecards:retract write path. */
@@ -2858,7 +2861,7 @@ export function parseGradedGeneration(raw: unknown): GradedGeneration | null {
   const hostStartedAt = typeof o.hostStartedAt === 'string' && o.hostStartedAt ? o.hostStartedAt : null;
   const bootHeadSha = typeof o.bootHeadSha === 'string' && o.bootHeadSha ? o.bootHeadSha : null;
   const scoutCodeHash = typeof o.scoutCodeHash === 'string' && o.scoutCodeHash ? o.scoutCodeHash : null;
-  const staleHost = typeof o.staleHost === 'boolean' ? o.staleHost : undefined;
+  const staleHost = typeof o.staleHost === 'boolean' || o.staleHost === null ? o.staleHost : undefined;
   // An all-null/absent stamp carries no identity at all.
   if (deployedSha === null && hostStartedAt === null && bootHeadSha === null && scoutCodeHash === null) return null;
   return {

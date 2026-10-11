@@ -1,6 +1,69 @@
 {
   "workItems": ["WI-10007602", "EI-25533252356302006"],
   "scope": "Root recovery and tested producer guards; data-disk recovery remains open",
+  "boundedPublishedCensusReview": {
+    "workItem": "WI-10007997",
+    "kind": "manual review of retained allocated-block receipts",
+    "sourceArtifact": "docs/evidence/wi10007602-retention-interval-20261010.json",
+    "sourceArtifactSha256": "38a956eb97d70ad07f77c5c5dc6d107ec592d71ac197b09c14d1cff206516a0e",
+    "sourceField": "currentCandidateDemandAndAllocation.allocationReceipts",
+    "newHostMeasurement": false,
+    "producer": "Maintained dependency-generation publisher",
+    "retentionOwner": "Existing sessionDirGc dependency-generation-retention step",
+    "retentionSource": "packages/operator-core/lib/release/dependency-generation-retention.ts",
+    "stores": [
+      {
+        "root": "/mnt/data/papercusp-dependency-generations",
+        "device": 66304,
+        "capturedAt": "2026-10-11T03:03:36.384238+00:00",
+        "allocatedPublishedBytes": 72653312000,
+        "capturedGenerationCount": 10,
+        "generationPopulationRef": "currentCandidateDemandAndAllocation.allocationReceipts[0].population",
+        "populationStable": true,
+        "capturedPublishedPopulationComplete": true
+      },
+      {
+        "root": "/mnt/data/dependency-generations/papercusp",
+        "device": 66304,
+        "capturedAt": "2026-10-11T03:04:02.446005+00:00",
+        "allocatedPublishedBytes": 33380065280,
+        "capturedGenerationCount": 2,
+        "generationPopulationRef": "currentCandidateDemandAndAllocation.allocationReceipts[1].population",
+        "populationStable": true,
+        "capturedPublishedPopulationComplete": true
+      }
+    ],
+    "deviceInterpretation": "Both stores are on recorded device 66304. The retained root filesystem is device 66307. These store rows do not attribute root-filesystem usage. The /mnt/data and /tmp/pcv aliases share device 66304 and one reservation budget.",
+    "sharingInterpretation": "These are directory allocated-block observations. Hardlinks and reflinks can share physical blocks. Do not sum the stores as exclusive physical consumption, demand, or reclaim; no removal causality or growth rate follows from these snapshots.",
+    "coverage": {
+      "population": [
+        "published generation payloads at /mnt/data/papercusp-dependency-generations",
+        "published generation payloads at /mnt/data/dependency-generations/papercusp",
+        "mutable pending/inflight/control metadata at /mnt/data/papercusp-dependency-generations",
+        "mutable pending/inflight/control metadata at /mnt/data/dependency-generations/papercusp",
+        "root-filesystem producers outside these captured stores",
+        "data-filesystem producers outside these captured stores"
+      ],
+      "checked": [
+        "published generation payloads at /mnt/data/papercusp-dependency-generations",
+        "published generation payloads at /mnt/data/dependency-generations/papercusp"
+      ],
+      "notChecked": [
+        "mutable pending/inflight/control metadata at /mnt/data/papercusp-dependency-generations",
+        "mutable pending/inflight/control metadata at /mnt/data/dependency-generations/papercusp",
+        "root-filesystem producers outside these captured stores",
+        "data-filesystem producers outside these captured stores"
+      ],
+      "notApplicable": [],
+      "residue": ["WI-10007602"]
+    },
+    "preservation": "This review performed no deletion, restart, prune or allocation scan. Personal, VM, session, backup, source and evidence data are not classified as disposable. Native pin and generation-custody receipts remain in the source artifact.",
+    "limits": [
+      "Complete means only the exact captured published populations in the two retained receipts; it does not mean a host-wide census.",
+      "Excluded regions have no allocated-byte estimate here. Earlier partial scans remain lower-bound historical evidence; they were not replayed or upgraded to complete.",
+      "This record supports scoped attribution review, not full R1/R5 acceptance, current capacity or shipment."
+    ]
+  },
   "cleanup": {
     "actor": "papercup-docker-reclaim.service",
     "startedAt": "2026-10-09T23:09:12Z",

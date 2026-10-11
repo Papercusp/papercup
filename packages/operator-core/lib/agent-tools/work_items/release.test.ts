@@ -246,7 +246,11 @@ describe('work_items:release reason soft cap', () => {
     const b = await body({ id: 'WI-DEFER', reason: 'deferred until the supervised migration window' });
 
     expect(b.results[0].claimHoldNudge).toMatch(/release reason was recorded, but does not change selectability/);
-    expect(b.results[0].claimHoldNudge).toMatch(/work_items:release.*claimHold:true/);
+    expect(b.results[0].claimHoldNudge).toMatch(/work_items:release.*claimHold:true.*claimHoldRelease/);
+    expect(b.results[0].claimHoldNudge).toMatch(/original work_items:release call/);
+    expect(b.results[0].claimHoldNudge).toMatch(/re-read work_items:get before following up/);
+    expect(b.results[0].claimHoldNudge).toMatch(/not_holder result means another agent currently holds it/);
+    expect(b.results[0].claimHoldNudge).toMatch(/coordinate with them instead of forcing/);
     expect(holdM).not.toHaveBeenCalled();
   });
 

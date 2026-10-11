@@ -59,6 +59,7 @@ export interface PsuPtyHostEventsIngestOptions {
   /** Report what would happen without inserting or deleting anything. */
   dryRun?: boolean;
   now?: () => number;
+  onCredentialFailure?: (input: { accountId: string; ownerId: string; observedAt: number; workspaceId: string }) => Promise<void>;
 }
 
 export interface PsuPtyHostEventsIngestResult {
@@ -329,6 +330,16 @@ export async function ingestPsuPtyHostEvents(
         // Chunked so one enormous file cannot build a single oversized statement.
         for (let i = 0; i < rows.length; i += 500) {
           const chunk = rows.slice(i, i + 500);
+          // Reuse this durable ingestion lane rather than adding a watcher. Handle
+          // before INSERT/GC so an alert/pool failure retains the retryable source.
+          for (const row of chunk) {
+            if (row.kind !== 'auth-block-detected' || row.payload.agent !== 'claude' ||
+                row.payload.confirmedProviderFailure !== true || typeof row.payload.accountId !== 'string' ||
+                !row.payload.accountId) continue;
+            const handler = opts.onCredentialFailure ??
+              (await import('../../deployment/account-pool-store')).recordNativeCredentialFailure;
+            await handler({ accountId: row.payload.accountId, ownerId: row.owner_id, observedAt: Date.parse(row.ts), workspaceId: ws });
+          }
           // JSONB BINDING ON THIS CLIENT IS A FOOTGUN WITH TWO OPPOSITE WRONG ANSWERS, so it
           // is spelled out rather than left for the next reader to rediscover:
           //   - sql.json() THROWS on the getOrgPg client ("Buffer.byteLength received Object",

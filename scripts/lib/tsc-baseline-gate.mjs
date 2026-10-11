@@ -27,6 +27,7 @@ import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observat
 import { isRootWorkspace, rootWorkspacePatterns } from './submodule-installs.mjs';
 import {
   baselineWithinScope,
+  diagnosticFilesDependingOnChangedTypes,
   formatTscServiceBanner,
   serviceProjectFromTscCommand,
   tscServiceEligibility,
@@ -3497,27 +3498,18 @@ export async function runTscBaselineGate({
   // files are theirs, so never fall back to the git-status guess for the same run.
   const changedFiles = explicitFiles ?? (mineFlag ? gitChangedFiles(root) : null);
 
-  // EI-18756182128903253 / EI-21833727883305743 — cause-aware widening: when scoped (--mine or
-  // --files), also attribute a regression OUTSIDE the changed set when the file's source OR its
-  // compiler diagnostic references an exported type/interface one of the changed files also
-  // exports (the "I added a required field, an unchanged fixture broke" shape --mine was
-  // otherwise structurally blind to). Cheap: only reads the changed files plus files that already
-  // have a regression, never a tree-wide scan.
+  // Required-field regressions in unchanged consumers remain attributed, but a bare type name
+  // is not causality (EI-25720784739215773). Reuse the service's resolved dependency graph.
   const typeReferencedFiles = changedFiles
     ? (() => {
         const candidates = Object.keys(currentByFile).filter(
           (f) => f !== '(unattributed)' && !changedFiles.has(f),
         );
-        const typeNames = exportedTypeNames(root, changedFiles);
-        return new Set([
-          ...filesReferencingTypeNames(root, candidates, typeNames),
-          ...diagnosticFilesReferencingTypeNames(
-            tscOutput,
-            candidates,
-            typeNames,
-            diagnosticPathOptions,
-          ),
-        ]);
+        const dependent = diagnosticFilesDependingOnChangedTypes({
+          root, named: changedFiles, candidates, output: tscOutput,
+          configFile: serviceProjectFromTscCommand(tscCommand) ?? undefined,
+        });
+        return new Set([...dependent].map((file) => relative(root, file)));
       })()
     : null;
 

@@ -398,7 +398,7 @@ export async function synchronizeAcceptanceBarRevision(
   if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
   const subject = subjects[0]!;
   const { acceptanceBarBehaviorClass, acceptanceBarProjectedBehavior, parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
-  const { computeAcceptanceBarHash } = await import('./rubrics');
+  const { computeAcceptanceBarHash, inspectRubricRevisionSnapshot } = await import('./rubrics');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
   const requirements = parseRequirementBars(subject.content);
   if (!requirements.ok) {
@@ -494,6 +494,35 @@ export async function synchronizeAcceptanceBarRevision(
   const barKeyOf = (clause: ProjectedClause): string | null =>
     clause.source_bar_key ?? barKeyBySpecId.get(clause.spec_id) ?? generatedProjectionIdentity(clause.spec_id)?.barKey ?? null;
   const revisions = new Map<string, number>();
+  // Reuse the immutable snapshot envelope inside this transaction. Keeping an
+  // unchanged clause's old pin is safe only while that historical BAR resolves.
+  // Cache by revision so an amendment reads each old snapshot cohort once.
+  const pinnedSnapshots = new Map<number, Promise<unknown[]>>();
+  const historicalPinResolves = async (clause: ProjectedClause, next: SpecClauseWrite): Promise<boolean> => {
+    const revision = Number(clause.source_rubric_revision);
+    let pending = pinnedSnapshots.get(revision);
+    if (!pending) {
+      const marker = `"rubricRevision": ${revision},`;
+      pending = sql<Array<{ content_snapshot: string }>>`
+        SELECT content_snapshot FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+           AND plan_slug = ${args.rubricSlug}
+           AND position(${marker} in content_snapshot) > 0
+         ORDER BY seq DESC LIMIT 3`
+        .then((rows) => rows.length === 3 ? [] : rows.map((row) => inspectRubricRevisionSnapshot(row.content_snapshot))
+          .filter((snapshot) => snapshot.kind === 'enriched' && snapshot.rubricRevision === revision)
+          .map((snapshot) => snapshot.templateData));
+      pinnedSnapshots.set(revision, pending);
+    }
+    const snapshots = await pending;
+    if (snapshots.length !== 1) return false;
+    const historical = rubricTemplateDataAuthoringSchema.safeParse(snapshots[0]);
+    if (!historical.success || historical.data.kind !== 'acceptance'
+      || historical.data.barSetHash !== clause.source_bar_set_hash) return false;
+    const bars = historical.data.criteria.filter((bar) => bar.barKey === clause.source_bar_key);
+    return bars.length === 1 && bars[0]!.barHash === clause.source_bar_hash
+      && bars[0]!.evidencePlane === next.sourceBar?.evidencePlane;
+  };
   // The subject plan is the canonical discharge map. Diff every desired
   // (BAR, plan-item) edge, not merely whether a BAR has any clause: an existing
   // BAR may expand from one implementing item to several during an as-built
@@ -726,7 +755,10 @@ export async function synchronizeAcceptanceBarRevision(
     // for EVERY clause on EVERY amendment, which re-keyed their evidence bindings and
     // scorecards; measured on turn-start-memory-two-class, 4 of R-11's 7 revisions
     // changed only the set hash (D-003). Set-hash integrity stays on the plan + rubric.
-    if (isProvenanceOnlyReprojection(clause, next)) {
+    // Missing, malformed or ambiguous history must not strand the current
+    // clause on an unreadable pin. Re-project its unchanged promise onto the
+    // newly captured rubric instead; valid old history still avoids churn.
+    if (isProvenanceOnlyReprojection(clause, next) && await historicalPinResolves(clause, next)) {
       revisions.set(clause.spec_id, Number(clause.current_revision));
       continue;
     }

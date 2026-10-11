@@ -68,10 +68,12 @@ const START_GATES = vi.hoisted(() => ({
   prediction: vi.fn(),
   listCards: vi.fn(),
   afterQuality: vi.fn(),
+  barCritique: vi.fn(),
 }));
 const REVISION_MOCK = vi.hoisted(() => ({ failInTransaction: false }));
 // Keep the real clause/class readers and quality evaluator. Only the unrelated
 // scorecard ledger is supplied; the hook models a policy change after preflight.
+// P-007 critique enforcement is a separate start contract, so keep it out of this race fixture.
 vi.mock('../plan-spec-quality-gate', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../plan-spec-quality-gate')>();
   return {
@@ -81,6 +83,14 @@ vi.mock('../plan-spec-quality-gate', async (importOriginal) => {
       await START_GATES.afterQuality(result);
       return result;
     },
+  };
+});
+vi.mock('../plan-start-critique-gate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../plan-start-critique-gate')>();
+  return {
+    ...actual,
+    evaluatePlanStartBarCritique: (...args: Parameters<typeof actual.evaluatePlanStartBarCritique>) =>
+      START_GATES.barCritique(...args),
   };
 });
 vi.mock('../revisions', async (importOriginal) => {
@@ -303,6 +313,8 @@ beforeEach(async () => {
   START_GATES.listCards.mockResolvedValue([]);
   START_GATES.afterQuality.mockReset();
   START_GATES.afterQuality.mockResolvedValue(undefined);
+  START_GATES.barCritique.mockReset();
+  START_GATES.barCritique.mockResolvedValue(null);
   REVISION_MOCK.failInTransaction = false;
 });
 

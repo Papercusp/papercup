@@ -28,6 +28,8 @@ const getFleet = vi.hoisted(() => vi.fn());
 const listFleetControlMembers = vi.hoisted(() => vi.fn());
 const getWorkItem = vi.hoisted(() => vi.fn());
 const explainIssueClaimFloors = vi.hoisted(() => vi.fn());
+const getOrgPg = vi.hoisted(() => vi.fn());
+const fetchWakeability = vi.hoisted(() => vi.fn());
 
 // The helper is dynamically imported by the tool so its wake-plane dependency can
 // fail soft after the durable spec write. Keep this test focused on the target
@@ -40,6 +42,14 @@ vi.mock('../coordination/audience-host', () => ({
   hostAudienceResolvers: {
     listFleetMembers: (...args: unknown[]) => listFleetMembers(...args),
   },
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: (...args: unknown[]) => getOrgPg(...args),
+}));
+vi.mock('../coordination/presence-wakeability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/presence-wakeability')>()),
+  fetchWakeability: (...args: unknown[]) => fetchWakeability(...args),
 }));
 vi.mock('../../work-items', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../work-items')>()),
@@ -510,6 +520,76 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     });
   });
 
+  it('accepts the caller-held cohort for a self-targeted cup without making it claimable', async () => {
+    const selfHeld = { ...held, heldBy: 'su-self' };
+    const selfEligible = { ...eligible };
+    const explain = vi.fn(
+      async (_harness: string, _ids: readonly string[], opts?: { scopeHeldBy?: readonly string[] }) =>
+        opts?.scopeHeldBy?.includes('su-self') ? [selfEligible] : [selfHeld],
+    );
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      fleet: undefined,
+      cupId: 'su-self',
+      assignee: 'su-self',
+      explain,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [held.id],
+      alreadyHeldIds: [held.id],
+      floored: [],
+    });
+    expect(result.warning).toContain('target cup "su-self"');
+    expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
+      assignee: 'su-self',
+      states: ['open'],
+      scopeHeldBy: ['su-self'],
+    });
+  });
+
+  it('still refuses a self-held row when a later claim floor remains', async () => {
+    const selfHeld = { ...held, heldBy: 'su-self' };
+    const blocked = { ...eligible, admissible: false, refusedBy: 'claim-hold', detail: 'claim-hold' };
+    const explain = vi.fn(
+      async (_harness: string, _ids: readonly string[], opts?: { scopeHeldBy?: readonly string[] }) =>
+        opts?.scopeHeldBy?.includes('su-self') ? [blocked] : [selfHeld],
+    );
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      fleet: undefined,
+      cupId: 'su-self',
+      assignee: 'su-self',
+      explain,
+    });
+
+    expect(result.errors[0]).toContain('claim-hold');
+    expect(result.preview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [],
+      alreadyHeldIds: [],
+      floored: [blocked],
+    });
+  });
+
+  it('does not scope another cup holder’s work to the caller', async () => {
+    const explain = vi.fn(async () => [held]);
+    const result = await previewClaimSpecAdmission({
+      ...args,
+      fleet: undefined,
+      cupId: 'su-member',
+      assignee: 'su-leader',
+      explain,
+    });
+
+    expect(result.errors[0]).toContain('already-taken');
+    expect(result.preview.scopeAdmissibleIds).toEqual([]);
+    expect(result.preview.alreadyHeldIds).toEqual([]);
+    expect(explain).toHaveBeenCalledTimes(1);
+  });
+
   it('does not waive a foreign-held item or infer membership from the writer', async () => {
     const explain = vi.fn(async () => [held]);
     const result = await previewClaimSpecAdmission({
@@ -621,6 +701,40 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     });
     expect(listFleetControlMembers).toHaveBeenCalledWith('repair-fleet');
     expect(setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'fleet:repair-fleet' }));
+  });
+
+  it('threads a self cup target through admission for the caller-held cohort', async () => {
+    const selfHeld = { ...held, heldBy: 'su-leader' };
+    const selfEligible = { ...eligible };
+    const sql = vi.fn().mockResolvedValue([]);
+    getOrgPg.mockReturnValue({ sql });
+    fetchWakeability.mockResolvedValueOnce(new Map([['su-leader', { wakeable: true }]]));
+    getClaimSpecRecord.mockResolvedValueOnce(null);
+    getWorkItem.mockResolvedValueOnce({ family: 'issue' });
+    explainIssueClaimFloors.mockResolvedValueOnce([selfHeld]).mockResolvedValueOnce([selfEligible]);
+    setClaimSpec.mockClear();
+    setClaimSpec.mockResolvedValueOnce({ ok: true, revision: 2 });
+    listFleetMembers.mockResolvedValueOnce([]);
+    wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(0);
+
+    const result = await (setClaimSpecTool as any).handler(
+      { cupId: 'su-leader', harness: 'papercusp', spec: fixedSpec([held.id]) },
+      { isSuperuser: true, uiClientId: 'su-leader', workspaceId: 'ws-test' },
+    );
+
+    expect(result.data.ok).toBe(true);
+    expect(result.data.admissibilityPreview).toMatchObject({
+      admissibleIds: [],
+      scopeAdmissibleIds: [held.id],
+      alreadyHeldIds: [held.id],
+    });
+    expect(result.data.warning).toContain('target cup "su-leader"');
+    expect(explainIssueClaimFloors).toHaveBeenLastCalledWith('papercusp', [held.id], {
+      assignee: 'su-leader',
+      states: ['open'],
+      scopeHeldBy: ['su-leader'],
+    });
+    expect(setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'su-leader' }));
   });
 
   it('validates fleet existence before any held-cohort membership read or persistence', async () => {

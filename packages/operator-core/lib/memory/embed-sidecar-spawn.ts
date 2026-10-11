@@ -45,6 +45,7 @@ import {
   type SidecarFitness,
 } from '../process-supervision/sidecar-spawn-shared';
 import { isBenignHostError } from '../host-benign-errors';
+import { observeFallback } from '../degradation/fallback-observations';
 import {
   EMBED_SIDECAR_DEFAULT_PORT,
   EMBED_SIDECAR_LEGACY_CAPABILITIES,
@@ -435,6 +436,7 @@ export function describeUnfitSidecar(url: string, fitness: SidecarFitness): stri
 function scheduleRespawn(): void {
   if (deliberateStop) return;
   if (respawnTimer) return; // a respawn is already pending
+  observeFallback('embed-sidecar-respawn', { eligible: 1, applied: 0, reason: 'child-crashed' });
   const now = Date.now();
   respawnAttempts = pruneRespawnWindow(respawnAttempts, now, RESPAWN_WINDOW_MS);
   if (respawnBudgetExhausted(respawnAttempts, MAX_RESPAWN_ATTEMPTS)) {
@@ -613,6 +615,7 @@ export async function spawnEmbedSidecar(): Promise<void> {
             writeEmbedSidecarRecord({ pid: child.pid, port, uid: ownUid(), startedAt: Date.now() });
           }
           sidecarReady = true;
+          observeFallback('embed-sidecar-respawn', { eligible: 1, applied: 1, reason: 'ready-handshake' });
           clearTimeout(timeout);
           resolve();
 
@@ -762,7 +765,10 @@ export async function ensureEmbedSidecar(
     // a caller that arrives mid-startup waits for it the same way.
     if (idleExitPending || (fixed === null && spawnedPort === null)) await spawnEmbedSidecar();
     const own = childUrl() ?? (fixed !== null ? loopbackUrl(fixed) : null);
-    if (own) return own;
+    if (own) {
+      if (sidecarReady) observeFallback('embed-sidecar-respawn', { eligible: 1, applied: 1, reason: 'ready-child' });
+      return own;
+    }
   }
   if (fixed !== null) {
     const url = loopbackUrl(fixed);

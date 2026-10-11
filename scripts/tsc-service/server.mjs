@@ -15,7 +15,6 @@ import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { exportedTypeNames } from '../lib/tsc-baseline-gate.mjs';
 import {
   TSC_SERVICE_MAX_CHECKED_FILES,
   checkedSetFor,
@@ -136,7 +135,7 @@ async function serve({ request, arrivedAt }) {
     root: ROOT,
     named: request.files,
     programFiles: await program.getSourceFileNames(),
-    typeNames: exportedTypeNames(ROOT, request.files),
+    configFile: request.project,
     readText: cachedText,
   });
   if (scope.files.length > TSC_SERVICE_MAX_CHECKED_FILES) {

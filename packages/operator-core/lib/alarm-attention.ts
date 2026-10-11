@@ -8,6 +8,7 @@
  * the attention-notify delivery path, and fail-open observability semantics.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { SevereEventBroadcast, SevereEventResolution } from './severe-event-broadcast';
 
 export const DEFAULT_ALARM_ESCALATION_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
@@ -19,6 +20,8 @@ export interface AlarmAttentionRequest {
   cooldownMs: number;
   /** Used only to make non-fatal failures attributable in logs. */
   source: string;
+  /** Stable per-caller identity, independent of the repeat-notification cooldown. */
+  conditionKey: string;
 }
 
 export interface AlarmAttentionDeps {
@@ -26,6 +29,8 @@ export interface AlarmAttentionDeps {
   notify?: (input: { title: string; body: string }) => Promise<void>;
   /** Injectable for tests; production reads the durable notification rail. */
   recentlyEscalated?: () => Promise<boolean>;
+  broadcast?: (input: SevereEventBroadcast) => Promise<boolean>;
+  resolve?: (input: SevereEventResolution) => Promise<boolean>;
 }
 
 async function defaultRecentlyEscalated(title: string, cooldownMs: number): Promise<boolean> {
@@ -46,14 +51,27 @@ async function defaultRecentlyEscalated(title: string, cooldownMs: number): Prom
   }
 }
 
-async function defaultNotify(input: { title: string; body: string }): Promise<void> {
-  const { notifyAttention } = await import('./attention-notify');
-  await notifyAttention({
-    kind: 'intervention',
-    title: input.title,
-    body: input.body,
-    importance: 'urgent',
-  });
+async function defaultResolve(input: SevereEventResolution): Promise<boolean> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('./agent-tools/coordination/tools/conditions');
+  const open = computeConditionStates(await readConditionEnvelopes())
+    .some((condition) => condition.condition_key === input.conditionKey && condition.open);
+  if (!open) return false;
+  const { broadcastSevereEventResolved } = await import('./severe-event-broadcast');
+  return broadcastSevereEventResolved(input);
+}
+
+/** Resolve only after the caller successfully measured recovery; unreadable scans never clear. */
+export async function resolveAlarm(
+  conditionKey: string,
+  source: string,
+  deps: AlarmAttentionDeps = {},
+): Promise<boolean> {
+  try {
+    return await (deps.resolve ?? defaultResolve)({ conditionKey, summary: `${source} recovered` });
+  } catch (err) {
+    console.warn(`[${source}] condition resolution failed (non-fatal): ${String(err)}`);
+    return false;
+  }
 }
 
 /**
@@ -67,13 +85,36 @@ export async function escalateAlarm(
   request: AlarmAttentionRequest,
   deps: AlarmAttentionDeps = {},
 ): Promise<boolean> {
+  return defaultNotify(request, deps);
+}
+
+async function defaultNotify(request: AlarmAttentionRequest, deps: AlarmAttentionDeps): Promise<boolean> {
   const recentlyEscalated =
     deps.recentlyEscalated ?? (() => defaultRecentlyEscalated(request.title, request.cooldownMs));
-  const notify = deps.notify ?? defaultNotify;
+
+  // The owning work-item must remain visible even while owner notifications are cooling down.
+  // Failures in either delivery leg cannot suppress an attempt on the other leg.
+  if (request.conditionKey) {
+    try {
+      const event = { conditionKey: request.conditionKey, summary: request.title, body: request.body };
+      if (deps.broadcast) await deps.broadcast(event);
+      else {
+        const { broadcastSevereEvent } = await import('./severe-event-broadcast');
+        await broadcastSevereEvent(event);
+      }
+    } catch (err) {
+      console.warn(`[${request.source}] condition broadcast failed (non-fatal): ${String(err)}`);
+    }
+  }
 
   try {
     if (await recentlyEscalated()) return false;
-    await notify({ title: request.title, body: request.body });
+    if (deps.notify) await deps.notify({ title: request.title, body: request.body });
+    else {
+      const { notifyAttention } = await import('./attention-notify');
+      await notifyAttention({ kind: 'intervention', title: request.title, body: request.body,
+        importance: 'urgent', data: request.conditionKey ? { conditionKey: request.conditionKey } : undefined });
+    }
     return true;
   } catch (err) {
     console.warn(

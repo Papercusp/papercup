@@ -2212,28 +2212,31 @@ export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit,
      *  no screen history and cannot inherit the old child's wall. */
     reset(): void;
 };
-/** Match codex's auth-failure copy in a screen window. Non-codex agents never
- *  match: claude's and omp's auth flows are different products. */
+/** Match the backend's own auth-failure copy; retain the existing export for callers. */
 export function codexAuthFailureMatch(text: any, agent?: string): {
-    matched: boolean;
-    pattern: null;
-    excerpt: null;
-} | {
     matched: boolean;
     pattern: string;
     excerpt: string;
+} | {
+    matched: boolean;
+    pattern: null;
+    excerpt: null;
 };
+/** A quoted error is not a provider failure. Only a matching synthetic/API-error
+ * row in THIS session's native transcript corroborates a Claude auth wall. */
+export function claudeAuthTranscriptVerdict(rows: any): "unknown" | "walled" | "echo";
 /** P-004: auth-failure detector, the quota detector's twin. Feed it the same
  *  raw pty bytes. `isBlocked()` reports whether codex's auth-failure copy is in
  *  the recent screen. A resumed or forked child repaints its old transcript,
  *  including old errors, so with `deferUntilSubmit` the detector arms only at
  *  the first standalone submit keystroke. A recycle must call `reset()`: the
  *  fresh child has its own login state. Pure (no timers, no I/O). */
-export function makeAuthBlockDetector({ capBytes, agent, now, deferUntilSubmit, }?: {
+export function makeAuthBlockDetector({ capBytes, agent, now, deferUntilSubmit, corroborate, }?: {
     capBytes?: number | undefined;
     agent?: string | undefined;
     now?: (() => number) | undefined;
     deferUntilSubmit?: boolean | undefined;
+    corroborate?: (() => string) | null | undefined;
 }): {
     /** Returns 'detected' | 'cleared' on a level change, else null. */
     observe(chunk: any): "detected" | "cleared" | null;
@@ -4550,7 +4553,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {(args:string[], options:{systemPromptAddendum:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
  *   mint the argv that resumes a parked child (null = not resumable, never park)
- * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
+ * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
  * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
@@ -4611,7 +4614,9 @@ export function hostThroughPty(o: {
         args: string[];
         nativeId: string;
     } | null)) | undefined;
-    ensureCodexHome?: (() => Promise<any>) | undefined;
+    ensureCodexHome?: ((options?: {
+        routeMode?: "auto";
+    }) => Promise<any>) | undefined;
     refreshPersonaFile?: (() => Promise<any>) | undefined;
     onRespawn?: ((...args: any[]) => any) | undefined;
     resolveRespawnNativeId?: ((pid: number) => string | null) | null | undefined;

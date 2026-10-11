@@ -59,7 +59,7 @@ describe('bounded attached identity approval', () => {
     const events: SuSessionEventInput[] = [];
     const cards = new SuNativeCards('identity-fixture', `identity-${randomUUID()}`, event => events.push(event));
     const pending = cards.handleClaude(name as string, input as Record<string, unknown>, 'identity-turn', {
-      signal: new AbortController().signal, toolUseID: 'identity-call',
+      signal: new AbortController().signal, toolUseID: 'identity-call', requestId: 'identity-request',
     });
     try {
       const opened = events.find((event): event is OpenedCard => event.type === 'card' && event.phase === 'opened');
@@ -82,7 +82,7 @@ describe('bounded attached identity approval', () => {
     const events: SuSessionEventInput[] = [];
     const cards = new SuNativeCards('identity-fixture', `identity-${randomUUID()}`, event => events.push(event));
     const pending = cards.handleClaude(name as string, input as Record<string, unknown>, turnId as string, {
-      signal: new AbortController().signal, toolUseID: 'unrelated-call',
+      signal: new AbortController().signal, toolUseID: 'unrelated-call', requestId: 'unrelated-request',
     });
     try {
       const opened = events.find((event): event is OpenedCard => event.type === 'card' && event.phase === 'opened');
@@ -215,7 +215,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     try {
       if (server) await new Promise<void>((done, reject) => {
         server!.close(error => error ? reject(error) : done());
-        server!.closeAllConnections();
+        if ('closeAllConnections' in server! && typeof server!.closeAllConnections === 'function') server!.closeAllConnections();
       });
     } finally {
       try { await fixture?.dispose(); } finally {
@@ -357,7 +357,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         const event = next.value.event;
         observedEvents.push(event);
         if (event.type === 'card' && event.phase === 'opened') {
-          const call = observedEvents.findLast((entry): entry is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
+          const call = observedEvents.slice().reverse().find((entry): entry is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
             entry.type === 'tool' && entry.phase === 'started' && entry.turnId === event.turnId);
           assertIdentityApproval(event, call, command.turnId);
           const answered = await fetch(`${process.env.PAPERCUSP_OPERATOR_URL}/api/operator/conversations/${encodeURIComponent(chatId)}/card-response`, {

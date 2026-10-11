@@ -97,6 +97,11 @@ describe('normalizePlanStatus (P-006)', () => {
 });
 
 describe('set-plan-status expectedCurrent vocabulary', () => {
+  it('public chaining teaches the read-only all-blockers dryRun preflight', () => {
+    expect(setPlanStatusTool.guidance!.chaining).toContain('dryRun:true');
+    expect(setPlanStatusTool.guidance!.chaining).toContain('read-only all-blockers preflight');
+    expect(setPlanStatusTool.guidance!.chaining).toContain('no status write, forced-past stamp or grader recruitment');
+  });
   it('accepts the derived awaiting-acceptance lifecycle state as a guard', () => {
     const parsed = setPlanStatusTool.args.safeParse({
       harness: 'papercusp',

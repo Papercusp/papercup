@@ -739,11 +739,13 @@ describe('test-time evidence continuity', () => {
       root: scope.root, harnessSlug: scope.harnessSlug, workspaceId: scope.workspaceId,
       runGroupId: detached, rows, testNamePattern, commit: 'tested-sha', worktreeDirty: false,
       sql: async (strings, ...values) => {
-       expect(strings.join(' ')).toContain('execution_details');
-        const detailsParameter = values.at(-1);
+        expect(strings.join(' ')).toContain('execution_details, configuration_snapshot');
+        const configurationSnapshot = values.at(-1);
+        const detailsParameter = values.at(-2);
+        expect(configurationSnapshot).toBeNull();
         expect(detailsParameter).toBeTypeOf('object');
         executionDetails = detailsParameter;
-       return [{ id: 42 }];
+        return [{ id: 42 }];
       },
     });
     const { bundle } = await pendingRecovery(executionDetails);

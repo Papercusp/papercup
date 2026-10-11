@@ -28,6 +28,7 @@ import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import { filesDependingOnChangedModules, diagnosticFilesDependingOnChangedTypes, checkedSetFor } from '../../../scripts/lib/tsc-service.mjs';
 
 it('includes executable .mts scripts in the root scripts TypeScript project', () => {
   const configPath = fileURLToPath(new URL('../../../scripts/tsconfig.json', import.meta.url));
@@ -2254,6 +2255,63 @@ describe('exportedTypeNames + filesReferencingTypeNames (EI-18756182128903253)',
     dir = mkdtempSync(join(tmpdir(), 'lint-tsc-type-names-'));
     writeFileSync(join(dir, 'anything.ts'), 'export const x = 1;');
     expect(filesReferencingTypeNames(dir, ['anything.ts'], new Set())).toEqual(new Set());
+  });
+});
+
+describe('resolved module attribution (EI-25720784739215773)', () => {
+  let dir = '';
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  it('gates real imported, aliased, namespace and inferred fixture regressions through a cyclic barrel', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-module-provenance-'));
+    const sources = {
+      'shape.ts': 'export interface Verdict { ok: boolean; required: string }\nexport function take(v: Verdict) {}',
+      'barrel.ts': "export * from './shape.js'; export * from './cycle.js';",
+      'cycle.ts': "export * from './barrel.js';",
+      'direct.ts': "import type { Verdict } from './shape.js'; const v: Verdict = { ok: true };",
+      'alias.ts': "import type { Verdict as Result } from './barrel.js'; const v: Result = { ok: true };",
+      'namespace.ts': "import * as shapes from './barrel.js'; const v: shapes.Verdict = { ok: true };",
+      'inferred.ts': "import { take } from './barrel.js'; take({ ok: true });",
+      'receiver.ts': "import type { Verdict } from './barrel.js'; const v: Verdict = { ok: true, required: 'yes' }; v.removed;",
+      'comment.ts': '// Verdict Arm; import { Verdict } from "./shape.js";\nconst a: string = 1;',
+      'string.ts': 'const text = `Verdict; import { Verdict } from "./shape.js"`; const a: string = 1;',
+      'local.ts': 'interface Verdict { unrelated: string } const v: Verdict = {}; export {};',
+      'other.ts': 'export interface Verdict { unrelated: string }',
+      'other-fixture.ts': "import type { Verdict } from './other.js'; const v: Verdict = {};",
+      'function-decoy.ts': "import { take } from './barrel.js'; interface Verdict { unrelated: string } const v: Verdict = {}; const s: string = 1;",
+    };
+    for (const [file, body] of Object.entries(sources)) writeFileSync(join(dir, file), body);
+    const program = ts.createProgram(Object.keys(sources).map((file) => join(dir, file)), {
+      noEmit: true, noLib: true, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    });
+    const errors = ts.getPreEmitDiagnostics(program).filter((d) => d.file && d.category === ts.DiagnosticCategory.Error);
+    const counts: Record<string, number> = {};
+    for (const d of errors) { const file = d.file!.fileName.slice(dir.length + 1); counts[file] = (counts[file] ?? 0) + 1; }
+    const output = errors.map((d) => { const pos = d.file!.getLineAndCharacterOfPosition(d.start!);
+      return `${d.file!.fileName}(${pos.line + 1},${pos.character + 1}): error TS${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, '\n')}`;
+    }).join('\n');
+    const dependents = diagnosticFilesDependingOnChangedTypes({ root: dir, named: ['shape.ts'], candidates: Object.keys(counts), output });
+    const expected = ['direct.ts', 'alias.ts', 'namespace.ts', 'inferred.ts', 'receiver.ts'];
+    expect([...dependents].sort()).toEqual(expected.map((file) => join(dir, file)).sort());
+    const verdict = decidePerFile({ currentByFile: counts, baselineByFile: Object.fromEntries(Object.keys(counts).map((file) => [file, 0])),
+      brokenFiles: [], changedFiles: new Set(['shape.ts']), typeReferencedFiles: new Set([...dependents].map((file) => file.slice(dir.length + 1))) });
+    expect(verdict.verdict).toBe('fail-attributed');
+    expect(verdict.attributed!.map((r) => r.file).sort()).toEqual(expected.sort());
+    const scope = checkedSetFor({ root: dir, named: ['shape.ts'], programFiles: Object.keys(sources).map((f) => join(dir, f)),
+      readText: (file) => readFileSync(file, 'utf8') });
+    expect(scope.files.map((f) => f.slice(dir.length + 1)).sort()).toEqual(['shape.ts', 'barrel.ts', 'cycle.ts', 'function-decoy.ts', ...expected].sort());
+  });
+
+  it('resolves path aliases exactly instead of matching an unrelated module with the same suffix', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-module-alias-'));
+    mkdirSync(join(dir, 'other'), { recursive: true });
+    writeFileSync(join(dir, 'shape.ts'), 'export interface Verdict { ok: boolean }');
+    writeFileSync(join(dir, 'other/shape.ts'), 'export interface Verdict { unrelated: string }');
+    writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@changed': ['./shape.ts'], '@other': ['./other/shape.ts'] } } }));
+    writeFileSync(join(dir, 'real.ts'), "import type { Verdict as Result } from '@changed'; const v: Result = {};" );
+    writeFileSync(join(dir, 'decoy.ts'), "import type { Verdict } from '@other'; const v: Verdict = {};" );
+    expect(filesDependingOnChangedModules({ root: dir, named: ['shape.ts'], candidates: ['real.ts', 'decoy.ts'] }))
+      .toEqual(new Set([join(dir, 'real.ts')]));
   });
 });
 

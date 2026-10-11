@@ -29,6 +29,7 @@ import setStatusTool from '../set-status';
 import { getPlanItemStatuses } from '../../../plan-audits';
 import { getRubric, proposeRubric } from '../../../rubrics';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
+import { PLAN_ITEM_KIND, planItemRef } from '../../../issue-blocks-merge';
 import { runWithWorkspace } from '../../../workspace-als';
 import { setupPlanPgFixture, cleanupPlans, seedPlan, type PlanPgFixture } from './_pg-tool-fixture';
 
@@ -52,6 +53,7 @@ const SLUG = 'zzz-sps-term-plan-2026-06-16';
 const WS = DEFAULT_WORKSPACE_ID;
 const RUBRIC_ID = `zzz-sps-term-acceptance-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const PREVIOUS_RUBRIC_ID = 'zzz-sps-term-acceptance-2026-06-16';
+const COVERAGE_WORK_ITEM_ID = `WI-SPS-COVERAGE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 function planBody(status: 'draft' | 'ready' | 'superseded' | 'shipped'): string {
   return `---
@@ -116,6 +118,39 @@ async function seedStartedPlan(status: 'draft' | 'ready' | 'superseded' | 'shipp
   `;
 }
 
+async function cleanupCoverageWorkItem(): Promise<void> {
+  const srcRef = `${HARNESS}#${COVERAGE_WORK_ITEM_ID}`;
+  const dstRef = planItemRef(SLUG, 'P-001');
+  await admin`
+    DELETE FROM harness_shared.coord_links
+     WHERE workspace_id = ${WS} AND src_kind = 'feature' AND src_ref = ${srcRef}
+       AND rel = 'relates' AND dst_kind = ${PLAN_ITEM_KIND} AND dst_ref = ${dstRef}
+  `;
+  await admin`
+    DELETE FROM harness_shared.work_items
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${COVERAGE_WORK_ITEM_ID}
+  `;
+}
+
+async function seedCoverageWorkItem(): Promise<void> {
+  await admin`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, title, summary,
+       source_plan_slug, source_plan_item_ids, created_ts, updated_ts)
+    VALUES
+      (${WS}, ${HARNESS}, ${COVERAGE_WORK_ITEM_ID}, 'feature', 'open',
+       'Draft item-start gate coverage', 'Fixture coverage for P-001.',
+       ${SLUG}, ARRAY['P-001']::text[], 1, 1)
+  `;
+  await admin`
+    INSERT INTO harness_shared.coord_links
+      (workspace_id, src_kind, src_ref, rel, dst_kind, dst_ref)
+    VALUES
+      (${WS}, 'feature', ${`${HARNESS}#${COVERAGE_WORK_ITEM_ID}`}, 'relates',
+       ${PLAN_ITEM_KIND}, ${planItemRef(SLUG, 'P-001')})
+  `;
+}
+
 async function seedAcceptanceRubric(): Promise<void> {
   const rubric = await runWithWorkspace(WS, () => proposeRubric({
     rubricId: RUBRIC_ID,
@@ -161,12 +196,14 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
+  await cleanupCoverageWorkItem().catch(() => {});
   await cleanupAcceptanceRubric().catch(() => {});
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
   await fx?.dispose();
 });
 
 beforeEach(async () => {
+  await cleanupCoverageWorkItem().catch(() => {});
   await cleanupAcceptanceRubric().catch(() => {});
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
   mocks.evaluatePlanAcceptanceGate.mockReset();
@@ -196,6 +233,8 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
   });
 
   it('can supersede after a child reopens between the preflight gate and the locked parent write', async () => {
+    // Keep the draft lifecycle so marking P-001 done cannot drain the plan before
+    // the race; a real nonterminal coverage item makes the draft start eligible.
     await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
     const added = (await runWithWorkspace(WS, () => addItemTool.handler(
       {
@@ -208,6 +247,7 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
       makeCtx(),
     ))) as { data: { results: Array<{ ok: boolean; itemId?: string }> } };
     expect(added.data.results[0]).toMatchObject({ ok: true, itemId: 'P-001' });
+    await seedCoverageWorkItem();
     const closed = (await runWithWorkspace(WS, () => setStatusTool.handler(
       { harness: HARNESS, slug: SLUG, item: 'P-001', status: 'done' } as never,
       makeCtx(),
@@ -239,7 +279,7 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
         { harness: HARNESS, slug: SLUG, item: 'P-001', status: 'todo' } as never,
         makeCtx(),
       ))) as { data: { results: Array<{ ok: boolean }> } };
-      expect(childWrite.data.results[0]?.ok).toBe(true);
+      expect(childWrite.data.results[0]?.ok, JSON.stringify(childWrite.data.results[0])).toBe(true);
       expect(await runWithWorkspace(WS, () => getPlanItemStatuses(SLUG, { harnessSlug: HARNESS })))
         .toMatchObject([{ itemId: 'P-001', status: 'todo' }]);
     } finally {
@@ -264,8 +304,11 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
     // The invariant-violating state: frontmatter already superseded, but the
     // op-row is started (e.g. a raw .md edit set the status and bypassed the
     // verb's clear). Setting status→superseded is a NOOP (changed:false).
-    await seedStartedPlan('superseded');
+    await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
     await seedAcceptanceRubric();
+    // Establish the deliberately inconsistent terminal/started row last so no
+    // other setup operation can reconcile it before the no-op tool call.
+    await seedStartedPlan('superseded');
     expect(await opStatus()).toBe('started');
 
     const { data, isError } = await runSetPlanStatus('superseded');

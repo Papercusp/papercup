@@ -49,6 +49,7 @@ export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proo
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seams (tests)
  * @returns {Promise<{
  *   env: Record<string, string | undefined>,
+ *   args: string[],
  *   lines: string[],
  *   reused: number,
  *   recording: boolean,
@@ -79,6 +80,7 @@ export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env
     }> | undefined;
 }): Promise<{
     env: Record<string, string | undefined>;
+    args: string[];
     lines: string[];
     reused: number;
     recording: boolean;

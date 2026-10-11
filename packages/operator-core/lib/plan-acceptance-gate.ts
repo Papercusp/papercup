@@ -762,6 +762,10 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   };
   const collectedRefusal = (): PlanAcceptanceGateVerdictWithoutBuildProvenance =>
     withPreGradingBlockers(planSlug, preGradingRefusals, opts, subject);
+  const gradingRefusal = (verdict: PlanAcceptanceGateVerdictWithoutBuildProvenance) => {
+    refuse(verdict);
+    return collectedRefusal();
+  };
 
   // Exemptions: a rubric-template plan does not get an acceptance rubric of its own
   // (infinite regress), and a scheduled template INSTANCE is an auto-generated
@@ -1419,6 +1423,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   // rubric, no registered meta-rubric) — the ordering leg then has nothing to order
   // against and is correctly skipped rather than guessed at.
   let vettingAttestedAt: string | undefined;
+  let gradingInputsAvailable = true;
   // Exempt: a criteria:[] investigation rubric (D-009 — nothing to vet) and the
   // meta-rubric itself (kind:'standard' so it can never be a plan's acceptance rubric,
   // but the guard is cheap and the regress would be infinite).
@@ -1437,6 +1442,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     // mode the vetting evaluation is skipped (it needs the revision) and the barrier
     // below stops before grading.
     const revisionRead = metaRubric ? await readRubricPlanRevision(rubric.rubricId) : null;
+    if (revisionRead && !revisionRead.ok) gradingInputsAvailable = false;
     if (revisionRead && !revisionRead.ok && refuse({
       satisfied: false,
       code: 'acceptance_rubric_revision_unreadable',
@@ -1524,11 +1530,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     }
   }
 
-  // P-001 collect-mode barrier: every independent pre-grading check (contract, items,
-  // audit, citations, realization, spec coverage, verification, review, design, rubric
-  // existence + vetting) has now run. Grading is the LAST step of the flow and only
-  // meaningful once all of those pass, so collect mode returns the full set here.
-  if (preGradingRefusals.length > 0) return collectedRefusal();
+  // A known rubric permits independent grading checks even when earlier proof is
+  // blocked. Unknown revision inputs cannot support grading-currentness conclusions.
+  if (!gradingInputsAvailable) return collectedRefusal();
 
   // A qualifying grading: complete (every criterion rated), agent-emitted (synthesized
   // floors are excluded by listScorecards' default), against THIS rubric.
@@ -1583,7 +1587,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       workspaceId: rubric.workspaceId,
     });
   } catch (error) {
-    return {
+    return gradingRefusal({
       satisfied: false,
       code: 'acceptance_lineage_unreadable',
       rubricId: rubric.rubricId,
@@ -1592,7 +1596,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `acceptance rubric '${rubric.rubricId}' could not be read ` +
         `(${error instanceof Error ? error.message : String(error)}). The gate refuses rather than ` +
         'shrinking the exclusion set and admitting a related grader; repair/retry the lineage read.',
-    };
+    });
   }
   const principalImplementerIdentities = new Set(principalImplementers);
   const implementerIdentities = new Set<string>();
@@ -1659,7 +1663,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         !isPlanImplementerScorecard(s)),
   );
   if (complete.length === 0) {
-    return {
+    return gradingRefusal({
       satisfied: false,
       code: 'acceptance_ungraded',
       rubricId: rubric.rubricId,
@@ -1670,7 +1674,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005). ` +
         `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
         `declining on a constraint that does not exist (EI-20249725405239230).`,
-    };
+    });
   }
   // ── the authoritative grading among several (P-004) ──
   // Grading is a CASCADE of up to two graders since D-003 [owner], and D-002
@@ -1761,7 +1765,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     const staleGradingScorecardIds = [
       ...new Set([...(staleIndependent ? [staleIndependent.issueId] : []), ...cohortStaleIndependentIds]),
     ];
-    return {
+    return gradingRefusal({
       satisfied: false,
       code: 'self_graded_only',
       rubricId: rubric.rubricId,
@@ -1780,7 +1784,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           `different agent or the owner must file the grading scorecard. ` +
           `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
           `declining on a constraint that does not exist (EI-20249725405239230).`,
-    };
+    });
   }
 
   // requirements-with-teeth-bar-before-method-2026-09-04 P-013 (landed early to
@@ -1822,7 +1826,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           `'${criterionKey}' (bar '${barKey}', rating ${rating == null ? 'missing' : `'${rating}'`})`,
       )
       .join(', ');
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_bar_not_met',
       rubricId: rubric.rubricId,
@@ -1834,7 +1838,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `authoritative independent grading: ${detail}. Every mandatory outcome needs a current ` +
         `pass-equivalent rating; a disclosure criterion or the rubric author's acceptance verdict ` +
         `cannot substitute for the outcome.`,
-    };
+    })) return collectedRefusal();
   }
   // ── vetting PRECEDED grading (EI-21827040531672903) ──
   // The vetting block above established only that an attestation exists at the current
@@ -1851,7 +1855,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     !gradingPredatesOrderRule &&
     Date.parse(vettingAttestedAt) > Date.parse(independent.createdAt)
   ) {
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_rubric_vetted_after_grading',
       rubricId: rubric.rubricId,
@@ -1865,7 +1869,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `attestation is not in doubt; its ORDER is. Have a non-implementer re-grade against the now-vetted ` +
         `rubric: scorecards:emit { rubricRef:'${rubric.rubricId}', ratings:{ <every criterion key> } } with ` +
         `concrete evidence per rating, then record the implementer's acceptance verdict on that newer grading.`,
-    };
+    })) return collectedRefusal();
   }
 
   const explicitVerdicts = implementer ? complete.filter((s) => holdsAuthorAuthority(s) && s.acceptance) : [];
@@ -1877,7 +1881,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
     : false;
   const latestIndependentIsLegacy = Date.parse(independent.createdAt) < Date.parse(ACCEPTANCE_VERDICT_REQUIRED_AFTER);
   if (!verdictFollowsLatestIndependent && !latestIndependentIsLegacy) {
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_not_recorded',
       rubricId: rubric.rubricId,
@@ -1895,10 +1899,10 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `delivery plane you cannot reach (a deployed/live BAR behind a gate, or a deploy another agent owns): 'accept' ` +
         `would overclaim delivery and 'reject' would be false. It does not block this gate, and it does not waive the ` +
         `delivery-plane evidence, which keeps blocking on its own code.`,
-    };
+    })) return collectedRefusal();
   }
   if (verdictFollowsLatestIndependent && latestVerdict?.acceptance?.verdict === 'reject') {
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_rejected',
       rubricId: rubric.rubricId,
@@ -1910,7 +1914,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `plan '${planSlug}' cannot be marked shipped: implementer '${implementer}' recorded REJECT — ` +
         `${latestVerdict.acceptance.reasoning}. Address the grading, then record a newer acceptance verdict with ` +
         `scorecards:emit; the latest implementer verdict is authoritative.`,
-    };
+    })) return collectedRefusal();
   }
   // WI-10004135 — 'accept-pending-delivery' promises that the delivery-plane evidence
   // "keeps blocking on its own code". Inside the acceptance-BAR contract it does: the
@@ -1932,7 +1936,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         return rating == null || ratingVerdict(rating) !== 'pass';
       })
       .map((criterion) => criterion.key);
-    return {
+    if (refuse({
       satisfied: false,
       code: 'acceptance_pending_delivery',
       rubricId: rubric.rubricId,
@@ -1951,9 +1955,13 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `itself does. Bank the delivery evidence, then record a newer acceptance verdict with scorecards:emit ` +
         `{ rubricRef:'${rubric.rubricId}', acceptanceOf:'${independent.issueId}', acceptance:{ verdict:'accept', ` +
         `reasoning:'<the delivery evidence>' } } — or have the grading refreshed first if it rated that evidence unknown.`,
-    };
+    })) return collectedRefusal();
   }
-  if (deferredBarShipRefusal) return deferredBarShipRefusal;
+  if (deferredBarShipRefusal) {
+    if (!opts.collectAllBlockers) return deferredBarShipRefusal;
+    refuse(deferredBarShipRefusal);
+  }
+  if (preGradingRefusals.length > 0) return collectedRefusal();
 
   // EI-22181490624100467 — the ship is going to happen; record WHAT the graded
   // evidence's deployment position actually was, so the shipped artifact cannot

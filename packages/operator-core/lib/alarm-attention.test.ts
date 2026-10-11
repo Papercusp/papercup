@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { escalateAlarm } from './alarm-attention';
+import { escalateAlarm, resolveAlarm } from './alarm-attention';
+import { isActionableConditionKey } from './coord/actionable-conditions';
+vi.mock('./severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
 
 const request = {
   title: 'Test alarm',
   body: 'attention required',
   cooldownMs: 60_000,
   source: 'alarm-attention-test',
+  conditionKey: 'alarm:test',
 };
 
 describe('escalateAlarm', () => {
@@ -43,5 +46,33 @@ describe('escalateAlarm', () => {
     expect(result).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[alarm-attention-test] escalation failed'));
     warn.mockRestore();
+  });
+
+  it('opens the actionable condition on every measured breach despite the owner cooldown', async () => {
+    const broadcast = vi.fn(async () => true);
+    const notify = vi.fn(async () => {});
+    const conditionKey = 'alarm:replication-slot';
+    expect(isActionableConditionKey(conditionKey)).toBe(true);
+    expect(await escalateAlarm({ ...request, conditionKey }, {
+      broadcast, notify, recentlyEscalated: async () => true,
+    })).toBe(false);
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ conditionKey }));
+    expect(notify).not.toHaveBeenCalled();
+    const resolve = vi.fn(async () => true);
+    expect(await resolveAlarm(conditionKey, request.source, { resolve })).toBe(true);
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ conditionKey }));
+  });
+
+  it('keeps owner delivery and recovery best effort when condition delivery fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const notify = vi.fn(async () => {});
+    const fail = async () => { throw new Error('condition rail unavailable'); };
+    try {
+      expect(await escalateAlarm({ ...request, conditionKey: 'alarm:test' }, {
+        broadcast: fail, notify, recentlyEscalated: async () => false,
+      })).toBe(true);
+      expect(notify).toHaveBeenCalledOnce();
+      expect(await resolveAlarm('alarm:test', request.source, { resolve: fail })).toBe(false);
+    } finally { warn.mockRestore(); }
   });
 });

@@ -655,6 +655,16 @@ describe('parseGradedGeneration (EI-12147, widened WI-5397)', () => {
       hostStartedAt: null,
     });
   });
+  it('preserves staleHost null as an explicitly unknown comparison', () => {
+    expect(
+      parseGradedGeneration({
+        deployedSha: 'abc1234',
+        hostStartedAt: null,
+        bootHeadSha: null,
+        staleHost: null,
+      }),
+    ).toEqual({ deployedSha: 'abc1234', hostStartedAt: null, staleHost: null });
+  });
   it('an all-null/absent stamp carries no identity — null, so pre-stamp and unresolved rows read the same', () => {
     expect(parseGradedGeneration({ sha: null, hostStartedAt: null })).toBeNull();
     expect(parseGradedGeneration({})).toBeNull();

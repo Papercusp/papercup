@@ -64,7 +64,7 @@ import {
   writeReuseSkipList,
 } from "./test-pass-reuse.mjs";
 import { STANDALONE_PACKAGE_DIRS, expandWorkspaceDirs } from "./test-runner-classes.mjs";
-import { scriptRunsZeroFilesAsPass } from "./empty-suite-guard.mjs";
+import { emptySuiteGuardArgs, scriptSupportsPassReuse } from "./empty-suite-guard.mjs";
 import { pathToFileURL } from "node:url";
 
 /** The lane split of a workspace's unit suite. scripts/affected-tests.mjs imports this list. */
@@ -225,6 +225,7 @@ const token = (err) => String((err && err.message) || err).replace(/\s+/g, "_").
  * @param {Partial<typeof defaultDeps>} [o.deps] injection seams (tests)
  * @returns {Promise<{
  *   env: Record<string, string | undefined>,
+ *   args: string[],
  *   lines: string[],
  *   reused: number,
  *   recording: boolean,
@@ -282,7 +283,8 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
       resultFile = null;
     }
   }
-  const result = (reused) => ({ env: out, lines, reused, recording, finish: finishWith(resultFile) });
+  let args = [];
+  const result = (reused) => ({ env: out, args, lines, reused, recording, finish: finishWith(resultFile) });
   const record = async (decision) => {
     try { await d.recordReuse(label, decision); } catch { /* telemetry must not affect task execution */ }
   };
@@ -294,9 +296,8 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
 
   const pkg = resolveWorkspacePackage(root, workspace);
   if (!pkg) return off("workspace-unresolved");
-  // An all-reused task runs zero files; only a script that treats that as a pass may skip.
-  // The pure-lane runner does, without naming the flag (gate-test-reuse-yield P-006, D-005).
-  if (!scriptRunsZeroFilesAsPass(pkg.scripts[script] ?? "")) return off("script-cannot-run-zero-files");
+  // Direct Vitest commands receive a zero-file flag only with complete proof coverage below.
+  if (!scriptSupportsPassReuse(pkg.scripts[script] ?? "")) return off("script-cannot-run-zero-files");
   if (!testReuseEnabled(out)) return off("disabled-by-env");
   const head = (d.git(root, ["rev-parse", "HEAD"]) ?? "").trim();
   if (!head) return off("no-judged-sha");
@@ -381,6 +382,12 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
       });
       out[TEST_REUSE_SKIP_LIST_ENV] = list.path;
       reused = list.count;
+      args = emptySuiteGuardArgs({
+        scriptText: pkg.scripts[script] ?? "",
+        wsAbsDir: path.join(root, pkg.dirRel),
+        script,
+        reuseSkipped: skip.map((f) => f.slice(prefix.length)),
+      });
     } catch (err) {
       return off(`skip-list-unwritable(${token(err)})`);
     }

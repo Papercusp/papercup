@@ -17,6 +17,26 @@ export const TASK_BRIEF_MAX_CHARS = 3_000;
 const MAX_FILES = 12;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type Ref = { workItem?: ClaimTimeEnrichmentSubject | null; harness?: string | null; workspaceId?: string | null };
+export interface TaskFailureSignal {
+  testRunId: number;
+  path: string;
+  status: 'fail' | 'error';
+  commit: string | null;
+  logSha256: string | null;
+}
+export interface TaskIncidentBrief {
+  status: 'measured' | 'unknown';
+  cause: 'unknown';
+  failures: TaskFailureSignal[];
+  candidates: { path: string; basis: 'failed-test' | 'static-relationship'; causation: 'unverified' }[];
+  recentChanges: string[];
+  recentChangesStatus: 'measured' | 'unknown';
+  workRecord: string;
+  runtimeExecution: 'unmeasured';
+  recover: { tool: 'testing:runs'; args: { testRunIds: number[]; harness: string } }
+    | { tool: 'work_items:get'; args: { id: string; harness: string } };
+  limitations: string[];
+}
 export interface TaskBrief {
   status: 'current' | 'unknown';
   scope: { harness: string | null; paths: string[] };
@@ -28,6 +48,7 @@ export interface TaskBrief {
   files: { path: string; sha256: string; kind: 'implementation' | 'test' | 'doc' }[];
   excerpts: { path: string; text: string }[];
   graph: { status: 'measured' | 'unknown'; consumers: string[]; relationships: string[]; reason?: string };
+  incident?: TaskIncidentBrief;
   exclusions: string[];
   recover: { tool: 'code:pack'; args: { op: 'pack'; include: string[]; rootPath: string } }
     | { tool: 'work_items:get'; args: { id: string; harness?: string } };
@@ -38,6 +59,7 @@ export interface TaskBriefDeps {
   pack: typeof packerFacade;
   graph: (root: string, name: string, file: string, paths: string[], budgetMs: number) => Promise<CodeIntelAnswer>;
   decisions?: (ref: Ref) => Promise<ClaimTimePlanDecisionsBrief | null>;
+  failures?: (scope: { workspaceId: string; harness: string; root: string; paths: string[] }) => Promise<TaskFailureSignal[]>;
 }
 const defaults: TaskBriefDeps = {
   root: async (workspaceId, harness) =>
@@ -50,7 +72,27 @@ const defaults: TaskBriefDeps = {
   decisions: ref => getClaimTimePlanDecisions({ workItem: ref.workItem ? { payload: ref.workItem.payload } : undefined,
     planSlug: ref.workItem?.sourcePlanSlug, harness: ref.workItem?.harness ?? ref.harness,
     workspaceId: ref.workspaceId ?? activeWorkspaceId() }),
+  failures: async scope => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    // Latest normal run per selected file: a repaired test must not retain an old
+    // red, and deliberate mutation failures are not production incidents.
+    const rows = await sql<{ id: string; file_path: string; status: 'fail' | 'error'; commit_sha: string | null; output_tail: string | null }[]>`
+      SELECT id, file_path, status, commit_sha, output_tail FROM (
+        SELECT DISTINCT ON (file_path) id, file_path, status, commit_sha, output_tail, execution_details
+        FROM harness_shared.test_runs
+        WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harness}
+          AND source = 'local' AND file_path = ANY(${scope.paths}::text[])
+          AND execution_details->>'root' = ${scope.root}
+        ORDER BY file_path, id DESC
+      ) latest WHERE status IN ('fail', 'error')
+      ORDER BY id DESC LIMIT 3`;
+    return rows.map(row => ({ testRunId: Number(row.id), path: row.file_path, status: row.status,
+      commit: row.commit_sha, logSha256: row.output_tail ? hash(row.output_tail) : null }));
+  },
 };
+/** The same scoped ledger reader used by claim/resume, also exercised in isolated PG tests. */
+export const readTaskFailureSignals = defaults.failures!;
 const inside = (root: string, file: string) => {
   const rel = relative(root, file);
   return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
@@ -60,6 +102,33 @@ const safePath = (path: string) => Boolean(path.trim()) && path !== '.' && !isAb
   && !path.split('/').some(part => part === '..' || part === '.' || part.startsWith('.'));
 const kindOf = (path: string): TaskBrief['files'][number]['kind'] =>
   /\.(?:md|mdx)$/.test(path) ? 'doc' : /(?:^|\/)(?:tests?|__tests__)(?:\/|\.)|\.(?:test|spec)\./.test(path) ? 'test' : 'implementation';
+
+/** An observed failure and a static connection prioritize hypotheses, never prove a cause. */
+export function taskIncidentBrief(input: {
+  workItemId: string; harness: string; paths: string[]; failures: TaskFailureSignal[] | null;
+  consumers: string[]; recentChanges: string[];
+}): TaskIncidentBrief {
+  const selected = new Set(input.paths);
+  const failures = (input.failures ?? []).filter(row => selected.has(row.path) && safePath(row.path)
+    && Number.isSafeInteger(row.testRunId) && row.testRunId > 0 && ['fail', 'error'].includes(row.status)).slice(0, 3)
+    .map(row => ({ testRunId: row.testRunId, path: row.path, status: row.status, commit: row.commit, logSha256: row.logSha256 }));
+  const candidates: TaskIncidentBrief['candidates'] = failures.map(row => ({ path: row.path, basis: 'failed-test', causation: 'unverified' }));
+  if (failures.length) for (const consumer of input.consumers) {
+    const path = consumer.replace(/:\d+$/, '');
+    if (selected.has(path) && safePath(path) && !candidates.some(candidate => candidate.path === path)) {
+      candidates.push({ path, basis: 'static-relationship', causation: 'unverified' });
+    }
+  }
+  const recentChanges = input.recentChanges.filter(sha => /^[a-f0-9]{40,64}$/i.test(sha)).slice(0, 3);
+  return { status: input.failures === null ? 'unknown' : 'measured', cause: 'unknown', failures,
+    candidates: candidates.slice(0, 6), recentChanges, recentChangesStatus: recentChanges.length ? 'measured' : 'unknown',
+    workRecord: input.workItemId, runtimeExecution: 'unmeasured',
+    recover: failures.length
+      ? { tool: 'testing:runs', args: { testRunIds: failures.map(row => row.testRunId), harness: input.harness } }
+      : { tool: 'work_items:get', args: { id: input.workItemId, harness: input.harness } },
+    limitations: ['Selected task files and their latest normal test runs only; graph paths and recent edits are candidate causes.',
+      'Failure-log hashes identify recorded errors; no distinguishing causal test or runtime execution was measured.'] };
+}
 
 /** Fit optional evidence to its caller's budget without changing measured scope. */
 export function compactTaskBrief(input: TaskBrief, maxChars = TASK_BRIEF_MAX_CHARS): TaskBrief {
@@ -71,6 +140,9 @@ export function compactTaskBrief(input: TaskBrief, maxChars = TASK_BRIEF_MAX_CHA
   while (oversized() && brief.graph.consumers.length) brief.graph.consumers.pop();
   while (oversized() && brief.files.length > 1) brief.files.pop();
   while (oversized() && brief.decisions?.refs.length) brief.decisions.refs.pop();
+  while (oversized() && brief.incident?.recentChanges.length) brief.incident.recentChanges.pop();
+  while (oversized() && brief.incident && brief.incident.candidates.length > 1) brief.incident.candidates.pop();
+  if (oversized() && brief.incident) { delete brief.incident; brief.exclusions.push('Incident evidence omitted by the inline budget; use the test-run ledger.'); }
   return brief;
 }
 
@@ -93,7 +165,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
       bounded.files = []; bounded.excerpts = []; bounded.scope.paths = [];
       bounded.status = 'unknown'; bounded.sourceFingerprint = null; bounded.commit = null;
       bounded.graph = { status: 'unknown', consumers: [], relationships: [], reason: 'Task scope could not fit the inline budget.' };
-      delete bounded.repository; delete bounded.decisions;
+      delete bounded.repository; delete bounded.decisions; delete bounded.incident;
       bounded.exclusions = ['Task scope exceeded the inline brief budget; use the recovery reader.'];
       bounded.recover = { tool: 'work_items:get', args: { id: wi?.id ?? '', ...(harness ? { harness } : {}) } };
     }
@@ -172,6 +244,9 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     const compiler = implementation && name && compilerMs > 0
       ? deps.graph(root, name, implementation, brief.scope.paths, compilerMs).catch(() => null)
       : Promise.resolve(null);
+    const failures = deps.failures
+      ? deps.failures({ workspaceId, harness, root, paths: brief.scope.paths.filter(path => kindOf(path) === 'test') }).catch(() => null)
+      : null;
     const packed: PackerResult = await deps.pack('pack', {
       rootPath: root, include: brief.scope.paths, format: 'xml', compress: false,
     }, effects);
@@ -219,6 +294,24 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
       } else brief.graph.reason = 'No named function or class in the bounded implementation scope.';
     } else brief.graph.reason = 'No supported implementation in the stored task scope.';
     remaining();
+    if (failures) {
+      let incidentTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const signals = await Promise.race([failures, new Promise<null>(resolve => {
+          incidentTimer = setTimeout(() => resolve(null), Math.min(250, Math.max(0, deadline - Date.now() - 25)));
+        })]);
+        let recentChanges: string[] = [];
+        if (signals?.length && deadline - Date.now() > 100) {
+          recentChanges = await effects.exec('git', ['log', '-3', '--format=%H', '--', ...brief.files.map(file => file.path)],
+            { cwd: root, timeoutMs: Math.min(100, remaining()) }).then(result => result.stdout.trim().split(/\r?\n/)).catch(() => []);
+        }
+        brief.incident = taskIncidentBrief({ workItemId: wi.id, harness, paths: brief.files.map(file => file.path),
+          failures: signals, consumers: brief.graph.consumers, recentChanges });
+      } finally { clearTimeout(incidentTimer); }
+    }
+    remaining();
+    // Optional incident reads also belong to the capture window. Recheck AFTER
+    // they finish, so their latency cannot publish an already-edited source pin.
     const final = await Promise.all([...texts.keys()].map(async path => {
       if (!inside(root, await realpath(join(root, path)))) throw new Error('task source escaped during capture');
       return [path, hash(await readFile(join(root, path), 'utf8'))];
@@ -229,7 +322,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     brief.exclusions.push('Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution.');
     return finish();
   } catch (error) {
-    brief.files = []; brief.excerpts = []; brief.sourceFingerprint = null;
+    brief.files = []; brief.excerpts = []; brief.sourceFingerprint = null; delete brief.incident;
     brief.graph = { status: 'unknown', consumers: [], relationships: [], reason: 'No current compiler evidence.' };
     brief.exclusions.push(error instanceof Error ? error.message.slice(0, 220) : 'task brief unavailable');
     return finish();

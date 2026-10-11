@@ -261,12 +261,18 @@ function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder
  */
 export { embedderModeOf, embedderProfileIdOf } from '../../search/embedder-mode-registry';
 import { stampEmbedderMode } from '../../search/embedder-mode-registry';
+import { observeFallback as recordFallback } from '../../degradation/fallback-observations';
 
 export async function buildQueryEmbedderResolved(
   opts?: QueryEmbedderAcquireOpts,
+  deps: {
+    acquire?: () => ReturnType<typeof resolveEmbedderWith>;
+    observeFallback?: typeof recordFallback;
+  } = {},
 ): Promise<ResolvedQueryEmbedder | null> {
+  const { observeFallback = recordFallback } = deps;
   try {
-    const acquire = resolveEmbedderWith({
+    const acquire = deps.acquire ? deps.acquire() : resolveEmbedderWith({
       // P-015 harrier default flip: the QUERY side must keep ranking in the
       // gemma space where the vector(768) prose vectors live, not dims-guard
       // off — see proseSurfacePreference (memory/configure.ts).
@@ -292,10 +298,16 @@ export async function buildQueryEmbedderResolved(
       // process-memoized pipeline for a LATER query (same contract as the
       // orphaned acquisition on a withAcquireBudget timeout, below).
       acquire.catch(() => {});
+      observeFallback('query-embedder-acquisition', { eligible: 1, applied: 0, reason: 'cold-acquisition-skipped' });
       return null;
     }
     const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0);
-    if (resolved === null || resolved.mode === 'disabled') return null;
+    if (resolved === null) {
+      observeFallback('query-embedder-acquisition', { eligible: 1, applied: 0, reason: 'acquisition-budget-exhausted' });
+      return null;
+    }
+    // Disabled by preference is not an eligible primary path.
+    if (resolved.mode === 'disabled') return null;
     // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
     const cachedEmbed = cachedQueryEmbed(resolved.profile.profileId, resolved.dims, resolved.embed);
     const embed: Embedder = resolved.mode === 'openai'
@@ -311,8 +323,10 @@ export async function buildQueryEmbedderResolved(
     // P-017: stamp the space onto the instance every caller will actually hold,
     // so the floor policy can recognise it without any caller passing a mode.
     stampEmbedderMode(embed, resolved.mode, resolved.profile.profileId);
+    observeFallback('query-embedder-acquisition', { eligible: 1, applied: 1, reason: 'acquired' });
     return { mode: resolved.mode, dims: resolved.dims, profile: resolved.profile, embed };
   } catch (err) {
+    observeFallback('query-embedder-acquisition', { eligible: 1, applied: 0, reason: 'acquisition-failed' });
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
     // model fetch failed, …) degrades to BM25-only rather than throwing.
     //

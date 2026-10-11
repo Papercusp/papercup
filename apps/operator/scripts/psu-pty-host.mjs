@@ -6034,14 +6034,17 @@ const CODEX_AUTH_FAILURE_PATTERNS = [
   /your\s*access\s*token\s*could\s*not\s*be\s*refreshed/i,
   /please\s*log\s*out\s*and\s*sign\s*in\s*again/i,
 ];
+const CLAUDE_AUTH_FAILURE_PATTERNS = [
+  /OAuth\s*token\s*revoked\s*[·.]?\s*Please\s*run\s*\/login/i,
+  /Login\s*expired\s*[·.]?\s*Please\s*run\s*\/login/i,
+];
 
-/** Match codex's auth-failure copy in a screen window. Non-codex agents never
- *  match: claude's and omp's auth flows are different products. */
+/** Match the backend's own auth-failure copy; retain the existing export for callers. */
 export function codexAuthFailureMatch(text, agent = '') {
   const a = String(agent ?? '').trim().toLowerCase();
-  if (a !== 'codex') return { matched: false, pattern: null, excerpt: null };
+  const patterns = a === 'codex' ? CODEX_AUTH_FAILURE_PATTERNS : a === 'claude' ? CLAUDE_AUTH_FAILURE_PATTERNS : [];
   const visible = String(text ?? '');
-  for (const re of CODEX_AUTH_FAILURE_PATTERNS) {
+  for (const re of patterns) {
     const m = re.exec(visible);
     if (m) {
       const start = Math.max(0, m.index - 80);
@@ -6053,6 +6056,19 @@ export function codexAuthFailureMatch(text, agent = '') {
     }
   }
   return { matched: false, pattern: null, excerpt: null };
+}
+
+/** A quoted error is not a provider failure. Only a matching synthetic/API-error
+ * row in THIS session's native transcript corroborates a Claude auth wall. */
+export function claudeAuthTranscriptVerdict(rows) {
+  if (!Array.isArray(rows)) return 'unknown';
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (row?.type !== 'assistant' && row?.type !== 'user') continue;
+    if (!codexAuthFailureMatch(claudeTranscriptRowText(row), 'claude').matched) continue;
+    return claudeRowIsApiError(row) ? 'walled' : 'echo';
+  }
+  return 'unknown';
 }
 
 /** Bounded like the quota window, so new real output evicts the error and the
@@ -6070,6 +6086,7 @@ export function makeAuthBlockDetector({
   agent = '',
   now = Date.now,
   deferUntilSubmit = false,
+  corroborate = /** @type {null | (() => string)} */ (null),
 } = {}) {
   let buffer = '';
   let blocked = false;
@@ -6083,7 +6100,12 @@ export function makeAuthBlockDetector({
       if (awaitingSubmit) return null;
       buffer = `${buffer}${String(chunk ?? '')}`;
       if (buffer.length > capBytes) buffer = buffer.slice(-capBytes);
-      const hit = codexAuthFailureMatch(buffer, agent);
+      let hit = codexAuthFailureMatch(buffer, agent);
+      if (hit.matched && typeof corroborate === 'function') {
+        let verified = false;
+        try { verified = corroborate() === 'walled'; } catch { /* unavailable transcript is not a credential verdict */ }
+        if (!verified) hit = { matched: false, pattern: null, excerpt: null };
+      }
       if (hit.matched) lastMatch = hit;
       if (hit.matched === blocked) return null;
       blocked = hit.matched;
@@ -9570,7 +9592,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {(args:string[], options:{systemPromptAddendum:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
  *   mint the argv that resumes a parked child (null = not resumable, never park)
- * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
+ * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
  * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
@@ -10017,8 +10039,13 @@ export function hostThroughPty(o) {
   // a resumed transcript repaints its old errors before any new request.
   const authBlockDetector = makeAuthBlockDetector({
     agent: env.PAPERCUSP_AGENT,
-    deferUntilSubmit: env.PAPERCUSP_AGENT === 'codex' &&
-      args.some((arg) => arg === 'resume' || arg === 'fork'),
+    deferUntilSubmit: args.some((arg) => ['resume', 'fork', '--resume', '--fork-session'].includes(arg)),
+    corroborate: env.PAPERCUSP_AGENT === 'claude'
+      ? () => claudeAuthTranscriptVerdict(readIsolatedNativeTranscriptRows({
+          agent: 'claude', env, home: homedir(),
+          transcriptPath: newestNativeTranscriptPath('claude', env, homedir()),
+        }))
+      : null,
   });
   // The interactive Codex CLI remains under the owner's control. Classify its
   // transient capacity copy for the durable event stream without retrying or
@@ -14160,6 +14187,8 @@ export function hostThroughPty(o) {
           hit
             ? {
                 agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+                accountId: env.PAPERCUSP_ACCOUNT_ID || null,
+                confirmedProviderFailure: env.PAPERCUSP_AGENT === 'claude',
                 matchedPattern: hit.pattern,
                 matchedExcerpt: hit.excerpt,
               }
@@ -14707,6 +14736,31 @@ export function hostThroughPty(o) {
       // strictly better than a lost session — but it is RECORDED, never silent, so
       // a persistently-failing refresh is diagnosable instead of looking like the
       // bug this fixes.
+      // A quota recovery is admitted only for an operator-authorized auto
+      // route. The predecessor can still have loaded the default provider:
+      // repairing its file after startup does not change that live process.
+      // Restore and inspect the successor's route BEFORE stopping its writer.
+      if (quotaRecovery && quotaRecovery.cause !== 'auth' && env.PAPERCUSP_AGENT === 'codex') {
+        let autoRouteReady = false;
+        try {
+          const repaired = await ensureCodexHome({ routeMode: 'auto' });
+          const config = require('@iarna/toml').parse(readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8'));
+          const provider = config.model_providers?.['papercusp-codex-gateway'];
+          autoRouteReady = repaired?.ok === true && config.model_provider === 'papercusp-codex-gateway' &&
+            provider?.wire_api === 'responses' && provider.requires_openai_auth === false &&
+            provider.http_headers?.['x-papercusp-owner'] === ownerId &&
+            !provider.http_headers?.['x-papercusp-account'];
+        } catch {
+          // A failed repair leaves the current child alive and the wake retryable.
+        }
+        if (!autoRouteReady) {
+          recycling = false;
+          return settleQuotaRecovery(false, 'codex-auto-route-unavailable');
+        }
+        env.PAPERCUSP_ACCOUNT_ROUTING_MODE = 'auto';
+        env.PAPERCUSP_CODEX_GATEWAY = '1';
+        delete env.PAPERCUSP_ACCOUNT_ID;
+      }
       let personaFile = null;
       let personaRefreshReason = null;
       // Only claude has a `--system-prompt-file` to swap (codex carries its

@@ -79,6 +79,13 @@ describe('real git: the helper env stops `git status` from writing the index', (
 });
 
 describe('process roots apply the default at module top level', () => {
+  it('the green-checkpoint CLI applies the shared policy before starting its controller', () => {
+    const src = readFileSync(join(REPO_ROOT, 'apps/operator/lib/release/green-checkpoint.ts'), 'utf8');
+    const entry = src.slice(src.indexOf('if (require.main === module) {'));
+    expect(entry).toMatch(/^ {2}applyGitOptionalLocksDefault\(\);$/m);
+    expect(entry.indexOf('applyGitOptionalLocksDefault();')).toBeLessThan(entry.indexOf('releaseConfig('));
+  });
+
   it.each(['scripts/test-files.mjs', 'scripts/affected-tests.mjs'])('%s', (rel) => {
     const src = readFileSync(join(REPO_ROOT, rel), 'utf8');
     expect(src).toMatch(/^import \{ applyGitOptionalLocksDefault \} from ["']\.\/lib\/git-optional-locks\.mjs["'];$/m);

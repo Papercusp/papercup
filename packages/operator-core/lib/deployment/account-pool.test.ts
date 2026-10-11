@@ -14,6 +14,7 @@ import {
   bindAccount,
   unbindAccount,
   recordAccountPenalty,
+  recordAccountCredentialFailure,
   recordAccountReset,
   recordAccountWindow,
   recordProbeFailure,
@@ -112,6 +113,24 @@ function poolOf(...ids: string[]): AccountPool {
 }
 
 describe('registerAccount', () => {
+  it('blocks failed credentials across quota resets, sticky pins and permissive selectors until repair', () => {
+    let pool = registerAccount(emptyPool(), { id: 'bad', credentialRef: 'token:bad' }, T0);
+    pool = registerAccount(pool, { id: 'good', credentialRef: 'token:good' }, T0);
+    pool = recordAccountCredentialFailure(pool, 'bad', T0 + 1, 'su-failed');
+    const failed = getAccount(pool, 'bad')!;
+    expect(isAvailable(failed, T0 + 99 * MIN)).toBe(false);
+    expect(isSpawnEligible(failed, T0 + MIN)).toBe(false);
+    expect(selectAccountForSpawn(pool, T0 + MIN, { priorAccountId: 'bad', rng: () => 0 }).accountId).toBe('good');
+    expect(selectAccountByHeadroom(pool, T0 + MIN, { availableOnly: false })?.id).toBe('good');
+    expect(selectAccountByDrain(pool, T0 + MIN, { eligible: () => true })?.id).toBe('good');
+    expect(getAccount(recordAccountReset(pool, 'bad'), 'bad')?.credentialFailure).toEqual(failed.credentialFailure);
+    const repaired = registerAccount(pool, { id: 'bad', credentialRef: 'token:repaired' }, T0 + 2);
+    expect(isAvailable(getAccount(repaired, 'bad')!, T0 + MIN)).toBe(true);
+    expect(recordAccountCredentialFailure(repaired, 'bad', T0 + 1, 'su-stale')).toBe(repaired);
+    expect(recordAccountCredentialFailure(pool, 'bad', T0 + 1, 'su-replay')).toBe(pool);
+    expect(recordAccountCredentialFailure(pool, 'missing', T0 + 3, 'su-missing')).toBe(pool);
+  });
+
   it('appends a fresh account with empty bindings + zeroed rate state', () => {
     const p = registerAccount(emptyPool(), { id: 'acct-1', credentialRef: 'token:~/t', label: 'main' }, T0);
     const a = getAccount(p, 'acct-1')!;

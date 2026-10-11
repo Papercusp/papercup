@@ -26,7 +26,7 @@ import {
 } from './acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { specClauseContentHash, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
-import { computeAcceptanceBarHash, computeAcceptanceBarSetHash } from './rubrics';
+import { computeAcceptanceBarHash, computeAcceptanceBarSetHash, formatRubricRevisionSnapshot } from './rubrics';
 
 const RUBRIC = 'acceptance-subject-plan';
 const OLD_SET_HASH = 'a'.repeat(64);
@@ -141,7 +141,8 @@ function storedClause(barKey: string, planItemId: string, overrides: {
 }
 
 /** `rowsAfterCreate` models a create landing: the amendment re-reads the projection after it. */
-function sqlStub(rows: unknown[], rowsAfterCreate: unknown[] = rows, planContent = subjectPlan()) {
+function sqlStub(rows: unknown[], rowsAfterCreate: unknown[] = rows, planContent = subjectPlan(),
+  snapshots = [formatRubricRevisionSnapshot('', { ...template, barSetHash: OLD_SET_HASH }, null, 3)]) {
   let clauseReads = 0;
   return vi.fn(async (strings: TemplateStringsArray) => {
     const statement = strings.join(' ');
@@ -150,6 +151,9 @@ function sqlStub(rows: unknown[], rowsAfterCreate: unknown[] = rows, planContent
     if (statement.includes('FROM harness_shared.plan_spec_clauses c')) {
       clauseReads += 1;
       return clauseReads === 1 ? rows : rowsAfterCreate;
+    }
+    if (statement.includes('FROM harness_shared.plan_revisions')) {
+      return snapshots.map((content_snapshot) => ({ content_snapshot }));
     }
     return [];
   });
@@ -216,7 +220,9 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     // perform real projection work while retaining R-1's stronger obligation.
     const rows = [row, storedClause('R-2', 'P-002', { barHash: 'b'.repeat(64) })];
     const manualTemplate = { ...template, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
-    const revisions = await synchronizeAcceptanceBarRevision(sqlStub(rows) as never, {
+    const revisions = await synchronizeAcceptanceBarRevision(sqlStub(rows, rows, subjectPlan(), [
+      formatRubricRevisionSnapshot('', { ...manualTemplate, barSetHash: OLD_SET_HASH }, null, 3),
+    ]) as never, {
       workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
       templateData: manualTemplate, previousTemplateData: manualTemplate, actorId: 'amender',
     });
@@ -231,6 +237,27 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     expect(writtenSpecIds()).toEqual([]);
     expect(revisions.get('AUTO-BAR-R-1-P-001')).toBe(5);
     expect(revisions.get('AUTO-BAR-R-2-P-002')).toBe(5);
+  });
+
+  it.each([
+    ['missing', []],
+    ['markdown-only', ['# Prior rubric without a structured revision']],
+    ['ambiguous', Array(2).fill(formatRubricRevisionSnapshot('', { ...template, barSetHash: OLD_SET_HASH }, null, 3))],
+    ['mismatched BAR set', [formatRubricRevisionSnapshot('', template, null, 3)]],
+  ])('refreshes unchanged promises whose pinned history is %s', async (_kind, snapshots) => {
+    const rows = [storedClause('R-1', 'P-001'), storedClause('R-2', 'P-002')];
+    const revisions = await synchronizeAcceptanceBarRevision(sqlStub(rows, rows, subjectPlan(), snapshots as string[]) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: template, previousTemplateData: template, actorId: 'amender',
+    });
+    expect(writtenSpecIds()).toEqual(rows.map(row => row.spec_id));
+    for (const [write] of h.setSpecClause.mock.calls) {
+      const original = rows.find(row => row.spec_id === write.specId)!;
+      expect(write).toMatchObject({ behavior: original.behavior, falsifier: original.falsifier,
+        requiredTestLayers: original.required_test_layers, lifecycleStatus: original.lifecycle_status,
+        sourceBar: { rubricRevision: 4, barHash: original.source_bar_hash, barSetHash: template.barSetHash } });
+      expect(revisions.get(write.specId)).toBe(original.current_revision + 1);
+    }
   });
 
   it('re-projects ONLY the clause whose own bar changed and leaves its sibling untouched', async () => {

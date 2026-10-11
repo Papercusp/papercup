@@ -46,6 +46,7 @@ import { spawn } from 'node:child_process';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
 import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
 import type { BridgeTickInput, BridgeTickOutcome } from '../../sync/pot-git/github-bridge-tick';
+import * as checkpointedSteps from '../../dbos/checkpointed-step';
 import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
 import { GitSyncLeaseLostError } from './git-sync-lease-fence';
 import { TURN_HOLD_INTENT } from '../../personal-vault/git-sync-hold';
@@ -1369,6 +1370,51 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(patch.github_bridge?.egress_scan_progress).toEqual(nextCursor);
   });
 
+  it('egresses the post-integration head in the same fire before completion settlement', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const order: string[] = [];
+    const oldHead = 'a'.repeat(40);
+    const newHead = 'b'.repeat(40);
+    let canonical = oldHead;
+    const snapshot: NonNullable<BridgeTickOutcome['ingressSnapshot']> = {
+      ingress: { ok: true, namespaceKey: 'origin', updated: [], upToDate: ['main'], nonFF: [], absent: [], errors: [] },
+      admissions: [], lastAdmitted: null,
+    };
+    potGitMode = 'bridged';
+    registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup', github_remote: 'https://github.com/papercusp/papercusp.git' }];
+    bridgeTickOverride = async (input) => {
+      order.push(input.ingressSnapshot ? 'late-egress' : 'early-egress');
+      if (input.ingressSnapshot) expect(input.ingressSnapshot).toEqual(snapshot);
+      return {
+        ran: true, ingressSnapshot: snapshot, egressTarget: 'upstream',
+        ingressed: { updated: 0, upToDate: 1, nonFF: 0, absent: 0 },
+        admissions: [], lastAdmitted: null,
+        egress: { pushed: 1, upToDate: 0, rejectedNonFF: 0, blockedSecrets: 0 },
+        egressHead: canonical,
+        verdict: { action: 'clear', needsOwner: false, signals: [], detail: '' }, errors: [],
+      };
+    };
+    const originalStep = checkpointedSteps.runCheckpointedStep;
+    const step = vi.spyOn(checkpointedSteps, 'runCheckpointedStep').mockImplementation(async (name, fn) => {
+      const result = await originalStep(name, fn);
+      if (name === 'git-sync:integrator') {
+        canonical = newHead;
+        order.push('integrated');
+      }
+      return result;
+    });
+    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async () => {
+      order.push('settlement');
+      return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
+    });
+    runGitSyncMock.mockResolvedValueOnce(syncedOutcome);
+    try { await action(ctx); } finally { step.mockRestore(); warn.mockRestore(); }
+
+    expect(order).toEqual(['early-egress', 'integrated', 'late-egress', 'settlement']);
+    expect(emitGitSyncEgressedEventMock.mock.calls.map(([sha]) => sha)).toEqual([oldHead, newHead]);
+    expect(routinePatches().filter((p) => p.github_bridge).at(-1)?.github_bridge).toMatchObject({ egress_head: newHead });
+  });
+
   it('egresses origin/staging before a slow completion-settlement pass times out', async () => {
     const priorBudget = process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
     process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = '35';
@@ -1449,7 +1495,8 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
         expect.objectContaining({ scope: expect.any(Object) }),
       );
       const bridgeFetch = defaultRunGitCallHistory.find((call) =>
-        (call.args[0] as string[] | undefined)?.[0] === 'fetch',
+        (call.args[0] as string[] | undefined)?.includes(localProject.github_remote) &&
+        (call.args[2] as { onProgress?: unknown } | undefined)?.onProgress,
       );
       expect(bridgeFetch).toBeDefined();
       expect(bridgeFetch?.args[2]).toMatchObject({ signal: expect.anything(), onProgress: expect.any(Function) });
@@ -1503,7 +1550,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     );
   });
 
-  it('EI-24496143892913296: the first post-leg after settlement restamps the activity marker and drops the stale N/total', async () => {
+  it('EI-24496143892913296: final settlement drops the stale N/total when the fire completes', async () => {
     // Before the fix the marker stayed phase:'completion-settlement' (frozen 9/200, frozen
     // updated_at) for every leg that ran after settlement ended, so routines:list read a
     // healthy fire as "in flight, still recording progress" and then as stuck.
@@ -1528,9 +1575,8 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     expect(settlementAt).toBeGreaterThan(-1);
     const afterSettlement = patches[settlementAt + 1];
     expect(afterSettlement).toMatchObject({
-      active: true,
-      phase: 'post-legs',
-      leg: 'git-sync:bootstrap',
+      active: false,
+      phase: 'complete',
       outcome_status: 'synced',
     });
     expect(afterSettlement).not.toHaveProperty('settlement_progress');

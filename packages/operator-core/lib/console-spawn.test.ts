@@ -761,11 +761,13 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(result).toHaveProperty('error', expect.stringContaining('exit 1'));
   });
 
-  it('kickoff child exit: wakes a pending poll and retains the launcher refusal diagnostic', async () => {
+  it.each([
+    'tracked fork is unavailable for codex source; refusing untracked fork',
+    'psu: --account auto could not be honored: inference gateway off / no pool',
+  ])('kickoff child exit: retains the launcher refusal instead of a timeout: %s', async (refusal) => {
     const child = fakeChild(7798);
     spawnMock.mockImplementation(() => child);
     const logs = mkdtempSync(join(tmpdir(), 'kickoff-exit-log-'));
-    const refusal = 'tracked fork is unavailable for codex source; refusing untracked fork';
     try {
       const result = await spawnHeadless({
         envelope,

@@ -55,6 +55,7 @@ import {
   manuallyBoundAccount,
   normalizeAccount,
   recordAccountPenalty,
+  recordAccountCredentialFailure,
   selectAccountByHeadroom,
   selectAccountForSpawn,
   setSoftPin,
@@ -439,6 +440,35 @@ export async function updateAccountPool(
     // rows read as permanently paused otherwise).
     (current) => mutator({ accounts: (current?.accounts ?? []).map(normalizeAccount) }),
     ws,
+  );
+}
+
+/** The existing host-event ingester feeds confirmed native auth failures here.
+ * Alert before recording the marker: a failed alert remains retryable from the
+ * retained event file, while a completed marker makes replay a no-op. */
+export async function recordNativeCredentialFailure(
+  input: { accountId: string; ownerId: string; observedAt: number; workspaceId: string },
+  deps: {
+    loadPool?: typeof loadAccountPool;
+    updatePool?: typeof updateAccountPool;
+    alert?: (accountId: string, ownerId: string, workspaceId: string) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const pool = await (deps.loadPool ?? loadAccountPool)(input.workspaceId);
+  if (recordAccountCredentialFailure(pool, input.accountId, input.observedAt, input.ownerId) === pool) return;
+  const alert = deps.alert ?? (async (accountId, ownerId, workspaceId) => {
+    const { openEscalation } = await import('../agent-tools/coordination/escalations');
+    await openEscalation({ ownerId: 'system:psu-pty-host-events-ingest', ownerLabel: 'native credential health', source: 'static-client', workspaceId, userId: null }, {
+      severity: 'blocker',
+      summary: `Provider authentication failed for account '${accountId}' in ${ownerId}`,
+      body: 'The native Claude transcript confirmed a revoked/expired login. New pins and automatic spawn selection are blocked for this credential. Repair it and re-register the account to clear the failure; quota resets do not repair authentication.',
+      meta: { source: 'credential-health', deadAccountId: accountId, subjectSignature: `inference-gateway:credential-health:${accountId}` },
+    });
+  });
+  await alert(input.accountId, input.ownerId, input.workspaceId);
+  await (deps.updatePool ?? updateAccountPool)(
+    (current) => recordAccountCredentialFailure(current, input.accountId, input.observedAt, input.ownerId),
+    input.workspaceId,
   );
 }
 

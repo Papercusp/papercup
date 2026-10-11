@@ -2207,7 +2207,7 @@
           "POST"
         ]
       },
-      "description": "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the rubric's own declared window (default: its 48h-rolling `window`; or a sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Also returns resolvedWindow + runningGeneration (parity evidence; staleHost:true = scout loop not proven to run deployedSha's code). verdict='pass' only when every bar passes; 'incomplete' if evidence is missing; 'fail' on regression.",
+      "description": "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the rubric's own declared window (default: its 48h-rolling `window`; or a sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Also returns resolvedWindow + runningGeneration parity evidence: staleHost:false means the build match is proven, true means a mismatch is proven, and null means the comparison is unavailable. verdict='pass' only when every bar passes; 'incomplete' if evidence is missing; 'fail' on regression.",
       "capabilities": [
         "curation:read"
       ],
@@ -23152,7 +23152,7 @@
           "POST"
         ]
       },
-      "description": "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
+      "description": "Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too. Judge callers also receive the exact latest activation-audit record and requirement mappings as `latestActivationAudit`. An exact slug can auto-resolve its owning harness within the caller's workspace ONLY from an unscoped (operator/superuser) session; a session already scoped to a concrete harness stays scoped to it and reports which harness actually owns the slug on a miss. Pass a concrete `harness` (for example, 'papercusp') to disambiguate, constrain, or escape the ambient scope. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
       "capabilities": [
         "plans:read"
       ],
@@ -25331,7 +25331,7 @@
       "guidance": {
         "when": "Lifecycle changes. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), repair omissions, and record `plans:audit { phase:'activation' }`. Before shipped/`done`, author the acceptance rubric AFTER implementation from as-built outcomes, run `plans:audit { phase:'completion', items:[...] }`, then get a peer grade. Other moves: ready→draft or supersede.",
         "notWhen": "Not for P-NNN item status (use plans:set-status) or legacy plans without frontmatter (use plans:set-frontmatter). `learnings` applies only to superseded; shipped has code-truth and rubric gates.",
-        "chaining": "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: implementation → as-built acceptance rubric → `plans:audit { phase:'completion', items:[...] }` → peer grade → shipped/`done`. Re-audit after semantic edits, not cosmetic ones."
+        "chaining": "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: implementation → as-built acceptance rubric → `plans:audit { phase:'completion', items:[...] }` → peer grade → `status:'shipped', dryRun:true` for a read-only all-blockers preflight (no status write, forced-past stamp or grader recruitment) → repair → shipped/`done`. Re-audit after semantic edits, not cosmetic ones."
       }
     },
     {
@@ -35085,7 +35085,7 @@
           "POST"
         ]
       },
-      "description": "Fetch ordinary work-item reads by one id or many ids (WI-/F-/EI-…). For `resume:true`, exactly one item is required: pass `id` or a one-element `ids` array; multi-id resume batches are rejected. `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window (0–10); `threadLimit:0` explicitly suppresses thread work; `detail:true` (or `detail:'full'`) remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
+      "description": "Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Read `returns` for conditional warnings.",
       "capabilities": [
         "work_items:read"
       ],

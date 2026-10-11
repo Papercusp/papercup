@@ -7366,7 +7366,14 @@ export function codexGatewayConfigPatch(
     if (keepProviderTableWhenUnrouted) return stripCodexGatewayRoot(configText);
     return stripped ? `${stripped}\n` : "";
   }
-  return `${patch.root.join("\n")}${stripped ? `${stripped}\n\n` : ""}${patch.tables.join("\n")}`;
+  // An explicit prior provider (including openai) is still a root selector.
+  // Replace it when the selected route changes, rather than prepending a
+  // duplicate TOML key. Preserve model_provider inside profiles/tables.
+  const firstTable = stripped.search(/^\s*\[[^\n]+\]\s*(?:#.*)?$/m);
+  const root = firstTable === -1 ? stripped : stripped.slice(0, firstTable);
+  const tables = firstTable === -1 ? "" : stripped.slice(firstTable);
+  const routed = `${root.replace(/^\s*model_provider\s*=.*(?:\n|$)/gm, "")}${tables}`.trimEnd();
+  return `${patch.root.join("\n")}${routed ? `${routed}\n\n` : ""}${patch.tables.join("\n")}`;
 }
 
 /** The provider id a codex rollout is BOUND to (`session_meta.model_provider`
@@ -12577,7 +12584,7 @@ export function runWrapper(options) {
         // stays launcher-agnostic; without it the host never parks.
         mintParkResumeArgs: (a, o = {}) =>
           mintParkResumeArgs(a, { agent: o.agent ?? env.PAPERCUSP_AGENT, nativeId: o.nativeId ?? null }),
-        ensureCodexHome: () =>
+        ensureCodexHome: (options = {}) =>
           ensureCodexHomeViaOperator(
             ownerId,
             env.CODEX_HOME || null,
@@ -12593,8 +12600,8 @@ export function runWrapper(options) {
                 includeInherited: true,
                 notBeforeMs: modelObservationNotBeforeMs,
               }),
-              routeMode: env[ACCOUNT_ROUTING_MODE_ENV] || null,
-              accountId: env.PAPERCUSP_ACCOUNT_ID || null,
+              routeMode: options.routeMode ?? env[ACCOUNT_ROUTING_MODE_ENV] ?? null,
+              accountId: options.routeMode === 'auto' ? null : env.PAPERCUSP_ACCOUNT_ID || null,
               priority: env.PAPERCUSP_AGENT_ROLE || "su",
               headless: env.PAPERCUSP_PSU_HEADLESS === "1",
               env,
