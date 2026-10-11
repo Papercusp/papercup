@@ -1359,6 +1359,7 @@ export function buildCallToolParams(toolName, callArgs, { outputSchema, idempote
     Object.hasOwn(callArgs, 'projection'),
   );
   const objectRooted = outputSchema?.type === 'object' && !projected;
+  /** @type {{structured?: boolean, format?: string, idempotencyKey?: string, 'papercusp/servingGeneration'?: string}} */
   const meta = objectRooted ? { structured: true } : { format: 'json' };
   if (idempotencyKey) meta.idempotencyKey = idempotencyKey;
   if (typeof servingGeneration === 'string' && servingGeneration.trim()) {
@@ -1736,6 +1737,12 @@ export const PTOOL_SCORECARDS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
 
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
+  // EI-25679147891530264: graph:query permits a 60s compiler worker plus
+  // a bounded runtime-source join inside its declared 90s handler budget.
+  // Let the 95s MCP deadline return either an answer or the typed worker error;
+  // the ordinary 30s client cutoff hides both. timeoutForTool also unwraps
+  // tools:invoke, so deferred and direct graph queries share this contract.
+  ['graph:query', 100_000],
   ['documents:read', PTOOL_CONTENT_SUMMARY_TIMEOUT_MS],
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
@@ -3183,7 +3190,7 @@ export async function listToolsWithLocalRetry(
  * Accept either an operator base URL or an already-qualified `/api/mcp`
  * endpoint; explicit endpoint URLs must not receive a second MCP path.
  * @param {string} operatorUrl
- * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string, env?: EnvironmentMap}} [options]
+ * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string, nativeSessionOverride?: string|null, env?: EnvironmentMap}} [options]
  */
 export function buildMcpUrl(operatorUrl, {
   workspace,
@@ -3233,7 +3240,10 @@ export function isForeignNativeSessionRejection(result) {
     /\bmcp_auth_failed:\s*superuser_foreign_native_session\b/.test(errorDetail(result));
 }
 
-/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative. */
+/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative.
+ * @param {any} result
+ * @param {{client?: string, explicitNativeSession?: boolean, env?: EnvironmentMap}} [options]
+ */
 export function shouldRetryWithoutNativeSession(result, {
   client, explicitNativeSession = false, env = process.env,
 } = {}) {
@@ -3244,7 +3254,10 @@ export function shouldRetryWithoutNativeSession(result, {
     !explicitNativeSession;
 }
 
-/** Retry read-only catalog discovery when an inherited native-session claim is foreign. */
+/** Retry read-only catalog discovery when an inherited native-session claim is foreign.
+ * @param {any} initialClient
+ * @param {{discoverTools: (client: any) => Promise<{client: any, tools: any[]|null, error?: unknown}>, reconnectWithoutNativeSession?: () => Promise<any>, client?: string, explicitNativeSession?: boolean, env?: EnvironmentMap, closeClient?: (client: any) => Promise<void>}} options
+ */
 export async function listToolsWithNativeSessionFallback(
   initialClient,
   {
@@ -3254,7 +3267,7 @@ export async function listToolsWithNativeSessionFallback(
     explicitNativeSession = false,
     env = process.env,
     closeClient = closeClientQuietly,
-  } = {},
+  },
 ) {
   const first = await discoverTools(initialClient);
   if (

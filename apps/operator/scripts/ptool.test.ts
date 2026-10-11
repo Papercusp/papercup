@@ -91,8 +91,6 @@ import {
   timeoutForTool,
   toolNotOkReason,
   unwrapOutputEnvelope,
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore -- plain .mjs launcher script, no type declarations.
 } from './ptool.mjs';
 import {
   AGENT_LAUNCH_CLIENT_TIMEOUT_MS,
@@ -735,6 +733,18 @@ describe('ptool bearer-token resolution', () => {
 });
 
 describe('ptool call deadlines', () => {
+  it('waits for the declared graph compiler and runtime budget on direct and deferred calls', () => {
+    const args = { op: 'symbol', name: 'target', runtime: 'staging-operator' };
+    const direct = timeoutForTool('graph:query', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'graph:query', args });
+    // The handler owns 90s and MCP adds 5s. The CLI must observe its typed
+    // error as well as a successful answer, instead of cutting either off.
+    expect(direct).toBeGreaterThan(95_000);
+    expect(direct).toBeLessThanOrEqual(105_000);
+    expect(deferred).toBe(direct);
+    expect(timeoutForTool('ordinary:read')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('lets logs:read return its structured journal timeout on both call routes', () => {
     expect(timeoutForTool('logs:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {

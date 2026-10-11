@@ -100,27 +100,33 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
     path: string;
     sha: string;
 }[];
+/** Validate the explicit tested source population against its pinned commit.
+ * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean }} options
+ */
 export function validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs }: {
-    repo: any;
-    ref: any;
-    inputs?: never[] | undefined;
-    inputsFile: any;
-    tauriInputs?: boolean | undefined;
+    repo: string;
+    ref: string;
+    inputs?: string[];
+    inputsFile?: string;
+    tauriInputs?: boolean;
 }): Promise<{
     sha: string;
-    paths: any[];
+    paths: string[];
 }>;
+/** Prepare a source snapshot only after all declared inputs match their pin.
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean }} options
+ */
 export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, gitCheckout, tauriInputs }: {
-    repo: any;
-    ref: any;
-    dest: any;
-    inputs?: never[] | undefined;
-    inputsFile: any;
-    gitCheckout?: boolean | undefined;
-    tauriInputs?: boolean | undefined;
+    repo: string;
+    ref: string;
+    dest: string;
+    inputs?: string[];
+    inputsFile?: string;
+    gitCheckout?: boolean;
+    tauriInputs?: boolean;
 }): Promise<{
     testedInputs: {
-        path: any;
+        path: string;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
@@ -142,7 +148,7 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
     runtimeArtifacts?: boolean;
 }): Promise<{
     testedInputs: {
-        path: any;
+        path: string;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
@@ -164,7 +170,7 @@ export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnT
     runtimeArtifacts?: boolean;
 }): {
     testedInputs: {
-        path: any;
+        path: string;
         sha256: string;
     }[];
     files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];

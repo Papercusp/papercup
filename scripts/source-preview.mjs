@@ -482,6 +482,9 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'packages/operator-core/lib/gnome-terminal-policy.json',
 ]);
 
+/** Validate the explicit tested source population against its pinned commit.
+ * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean }} options
+ */
 export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFile, tauriInputs = false }) {
   if (inputsFile !== undefined) {
     const listed = JSON.parse(await fs.readFile(inputsFile, 'utf8'));
@@ -520,6 +523,9 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
   return { sha, paths };
 }
 
+/** Prepare a source snapshot only after all declared inputs match their pin.
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean }} options
+ */
 export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, tauriInputs = false }) {
   if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
   const { sha, paths } = await validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs });
@@ -1575,9 +1581,10 @@ async function main(argv) {
 }
 
 if (isCliEntry(import.meta.url)) {
-  main(process.argv.slice(2)).then((code) => process.exit(code), (err) => {
+  // Let pending stdout/stderr writes drain, including large piped receipts.
+  main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => {
     console.error(`ERROR: ${err.message}`);
-    process.exit(err instanceof PreviewError ? err.exitCode : 2);
+    process.exitCode = err instanceof PreviewError ? err.exitCode : 2;
   });
 }
 
