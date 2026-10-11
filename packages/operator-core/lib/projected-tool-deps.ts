@@ -258,6 +258,50 @@ interface AuthorityReadFailure {
   servingProcessId: string | null;
 }
 
+type KernelAuthorityTimingName = 'controlAnchorSql' | 'identityGrantEvaluation';
+interface KernelAuthorityTimingSample {
+  calls: number;
+  totalMs: number;
+}
+type KernelAuthorityTimingCollector = Record<KernelAuthorityTimingName, KernelAuthorityTimingSample>;
+
+function createKernelAuthorityTimingCollector(): KernelAuthorityTimingCollector {
+  return {
+    controlAnchorSql: { calls: 0, totalMs: 0 },
+    identityGrantEvaluation: { calls: 0, totalMs: 0 },
+  };
+}
+
+function recordKernelAuthorityTiming(
+  collector: KernelAuthorityTimingCollector | undefined,
+  name: KernelAuthorityTimingName,
+  startedAt: number,
+): void {
+  if (!collector) return;
+  const sample = collector[name];
+  sample.calls += 1;
+  sample.totalMs += Math.max(0, performance.now() - startedAt);
+}
+
+function attachKernelAuthorityTimings(
+  verdict: KernelEnforcementResult,
+  collector: KernelAuthorityTimingCollector,
+): KernelEnforcementResult {
+  const measured = Object.entries(collector).filter(([, sample]) => sample.calls > 0);
+  if (measured.length === 0) return verdict;
+  const timings = Object.fromEntries(measured.map(([name, sample]) => [name, {
+    calls: sample.calls,
+    totalMs: Math.round(sample.totalMs * 10) / 10,
+  }]));
+  return {
+    ...verdict,
+    serverAudit: {
+      ...verdict.serverAudit,
+      authorityTimings: { schemaVersion: 1, ...timings },
+    },
+  };
+}
+
 function authorityReadFailure(
   source: AuthorityUnavailableSource,
   error: unknown,
@@ -376,6 +420,7 @@ function resolveLaunchHeader(
 
 export async function readControlAnchorKernelState(
   request: KernelEnforcementRequest,
+  timingCollector?: KernelAuthorityTimingCollector,
 ): Promise<OperatorKernelState | null> {
   let ownerId: string;
   try {
@@ -486,6 +531,7 @@ export async function readControlAnchorKernelState(
        LIMIT 1
     `;
     stateRow = rows[0];
+    recordKernelAuthorityTiming(timingCollector, 'controlAnchorSql', anchorReadStartedAt);
   } catch (error) {
     // Unknown authority cannot authorize a new effect. In particular, neither
     // a missing migration nor a failed join is evidence of a legacy session.
@@ -782,15 +828,19 @@ async function healStaleArtifactFromLaunchRecord(heal: StaleArtifactHeal): Promi
 
 /** Live control-anchor resolver installed by the operator bootstrap. */
 export const controlAnchorKernelResolver: KernelEnforcementPort = async (request) => {
+  const timingCollector = createKernelAuthorityTimingCollector();
   const pending: { heal?: StaleArtifactHeal } = {};
-  const first = await resolveControlAnchorKernelOnce(request, (heal) => { pending.heal = heal; });
-  if (!pending.heal) return first;
+  const first = await resolveControlAnchorKernelOnce(
+    request, (heal) => { pending.heal = heal; }, timingCollector,
+  );
+  if (!pending.heal) return attachKernelAuthorityTimings(first, timingCollector);
   // Re-resolve from a fresh read only when the convergence actually wrote; the
   // second pass never heals again, so a session the launch record cannot vouch
   // for keeps its original denial.
-  return (await healStaleArtifactFromLaunchRecord(pending.heal))
-    ? resolveControlAnchorKernelOnce(request)
+  const final = (await healStaleArtifactFromLaunchRecord(pending.heal))
+    ? await resolveControlAnchorKernelOnce(request, undefined, timingCollector)
     : first;
+  return attachKernelAuthorityTimings(final, timingCollector);
 };
 
 function auditLaunchRowSelection(
@@ -832,11 +882,12 @@ function auditLaunchRowSelection(
 async function resolveControlAnchorKernelOnce(
   request: KernelEnforcementRequest,
   onStaleArtifact?: (heal: StaleArtifactHeal) => void,
+  timingCollector?: KernelAuthorityTimingCollector,
 ): Promise<KernelEnforcementResult> {
   let state: OperatorKernelState | null;
   const authorityReadStartedAt = performance.now();
   try {
-    state = await readControlAnchorKernelState(request);
+    state = await readControlAnchorKernelState(request, timingCollector);
   } catch (error) {
     // Client initialization itself can fail before the SELECT's try/catch.
     // Never let that escape into the generic optional-port fail-soft handler.
@@ -866,6 +917,7 @@ async function resolveControlAnchorKernelOnce(
         request, state, state.identityLaunchRecord, undefined, undefined,
         (stamp) => { ungoverned.stamp = stamp; },
       );
+      recordKernelAuthorityTiming(timingCollector, 'identityGrantEvaluation', identityReadStartedAt);
       if (grants) {
         if (onStaleArtifact && isStaleArtifactResolution(grants)) {
           const heal = staleArtifactHealFor(state);
