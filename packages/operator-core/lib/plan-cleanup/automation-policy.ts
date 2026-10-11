@@ -28,6 +28,9 @@ export function cleanupAutomationEligibility(
 ): { allowed: boolean; reason: string | null; risk: BulkAutomationRisk } {
   const risk = cleanupFindingRisk(finding.kind);
   if (finding.autoApplyBlockedBy === 'live-agents') return { allowed: false, reason: 'live-agents', risk };
+  if (finding.kind === 'enlist-plan' && finding.action?.ownerSelectionRequired) {
+    return { allowed: false, reason: 'owner-selection', risk };
+  }
   if (!policy?.riskLevels) {
     const eligibility = policy ? bulkAutomationEligibility(policy, confidence) : { allowed: true, reason: null };
     return {

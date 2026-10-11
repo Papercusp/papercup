@@ -97,6 +97,14 @@ describe('terminal-state pin', () => {
 });
 
 describe('enlist-plan', () => {
+  it('carries owner-only selection into an enlistment proposal without hiding it from review', () => {
+    const findings = ofKind(scan({ plans: [plan()], goalWorklist: {
+      goalId: 'picked-goal', refs: ['plan:h/picked'], version: 16, ownerSelectionRequired: true,
+    } }), 'enlist-plan');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].action).toMatchObject({ ownerSelectionRequired: true, planRef: 'plan:h/my-plan' });
+  });
+
   it('emits only the bounded highest-priority ready/active plans missing from the goal worklist', () => {
     const findings = scanForCleanupFindings({
       plans: [

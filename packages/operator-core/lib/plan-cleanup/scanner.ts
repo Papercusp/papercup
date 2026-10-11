@@ -125,6 +125,8 @@ export interface CleanupFinding {
     planRef: string;
     worklist: string[];
     expectedVersion: number;
+    /** Automatic risk grants cannot choose a plan for an owner-selected goal. */
+    ownerSelectionRequired?: boolean;
   };
 }
 
@@ -203,6 +205,7 @@ export interface CleanupScanInputs {
     goalId: string;
     refs: string[];
     version: number;
+    ownerSelectionRequired?: boolean;
   } | null;
 }
 
@@ -340,6 +343,7 @@ export function scanForCleanupFindings(
           planRef,
           worklist: goalWorklist.refs,
           expectedVersion: goalWorklist.version,
+          ...(goalWorklist.ownerSelectionRequired ? { ownerSelectionRequired: true } : {}),
         },
       };
       enlistRankByFindingId.set(finding.findingId, rank);

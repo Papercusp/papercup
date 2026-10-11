@@ -38,4 +38,18 @@ describe('cleanup risk autonomy', () => {
     const held = { ...finding('archive-candidate'), autoApplyBlockedBy: 'live-agents' as const };
     expect(cleanupAutomationEligibility(automatic, held)).toMatchObject({ allowed: false, reason: 'live-agents' });
   });
+
+  it('requires owner selection for an enlistment even under full risk autonomy', () => {
+    const enlist = { ...finding('enlist-plan', true), action: {
+      kind: 'enlist-plan' as const, goalId: 'picked-goal', planRef: 'plan:h/unpicked',
+      worklist: ['plan:h/picked'], expectedVersion: 16, ownerSelectionRequired: true,
+    } };
+    for (const policy of [automatic, null, { mode: 'safe-high', minConfidence: 'high' } as BulkAutomationPolicy]) {
+      expect(cleanupAutomationEligibility(policy, enlist))
+        .toMatchObject({ allowed: false, reason: 'owner-selection', risk: 'high' });
+    }
+    expect(cleanupAutomationEligibility(automatic, {
+      ...enlist, action: { ...enlist.action, ownerSelectionRequired: false },
+    }).allowed).toBe(true);
+  });
 });
