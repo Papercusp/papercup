@@ -39,6 +39,7 @@ import { formatIdleAge, type LastActiveSource, type PresenceTier1Joins } from '.
 import type { SessionState } from './presence-wakeability';
 import type { ContextPressureBucket } from './context-pressure';
 import type { SelfWakeSource } from './presence-selfwake';
+import type { PickupRecoverable } from '../../events/await/turn-proof';
 
 /**
  * The self-referential placeholder a presence declare writes when an agent is
@@ -111,6 +112,11 @@ export type RosterRow = UnifiedPresenceRecord &
       /** WI-4400: stale-ish takeover read — verify with coord:send wake:'required'
        * before assuming the owner is dead or alive. null = liveness unknown. */
       confirmLiveness: boolean | null;
+      /** P-011(a) / D-011: why a session whose psu host is alive still cannot take
+       * a turn (auth-blocked | quota-blocked | unbound-successor | pending-turn-stuck).
+       * Set only alongside sessionState 'suspect'; null = not wedged OR not checked,
+       * never "checked healthy". */
+      wedged: PickupRecoverable | null;
       /** EI-19407725333778711: an active engine loop will re-wake this owner.
        * null = the self-wake enrichment was not measured. */
       loopArmed: boolean | null;
@@ -273,6 +279,8 @@ export const PRESENCE_LIVENESS_FIELDS = [
   'sessionState',
   'wakeable',
   'confirmLiveness',
+  // P-011(a): derived every read from the host's current condition — liveness lane.
+  'wedged',
   'loopArmed',
   'selfWake',
   // EI-22805550006169069: the forward-looking half of the same liveness question
@@ -353,6 +361,7 @@ export const PRESENCE_FULL_ROW_FIELDS = [
   'sessionState',
   'wakeable',
   'confirmLiveness',
+  'wedged',
   'loopArmed',
   'selfWake',
   'dormantScheduled',
@@ -475,6 +484,8 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // transition. Readers must confirm a draining/suspect candidate by sending
     // coord:send { wake:'required' } and inspecting its wake result.
     confirmLiveness: (liveness.confirmLiveness as boolean | null | undefined) ?? null,
+    // P-011(a) / D-011: always present for a reader; null = not wedged OR not checked.
+    wedged: (liveness.wedged as PickupRecoverable | null | undefined) ?? null,
     // EI-19407725333778711: a missing enrichment is UNKNOWN, not evidence that
     // the owner has no self-wake source.
     loopArmed: (liveness.loopArmed as boolean | null | undefined) ?? null,

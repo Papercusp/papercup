@@ -41,7 +41,7 @@ import {
   overrideIntentStaleForSessionState,
   type WakeabilitySignals,
 } from './presence-wakeability';
-import { deriveVerdict } from './liveness-oracle';
+import { applyHostConditionLeg, deriveVerdict, type LivenessVerdict } from './liveness-oracle';
 // EI-22805550006169069: the SAME derivation the wake path uses to tell "dormant
 // between loop fires" from "dead" (`recipient_dormant_scheduled`). Imported, never
 // re-derived: re-implementing the rule here is how the two surfaces would drift
@@ -800,6 +800,13 @@ export async function assemblePresenceSnapshot(
     }
   });
   const findHostForVerdict = (ownerId: string) => liveHostsByOwner.get(ownerId) ?? null;
+  // P-011(a) / D-011: every verdict this surface derives, kept so the shared
+  // host-condition leg (applyHostConditionLeg) can judge it after the synchronous
+  // derivation below. EI-25695434826164414: without it coord:presence called
+  // deriveVerdict directly and never ran that leg, so a dead-auth live-host
+  // session read `parked` here while fleet:status read `suspect`.
+  const derivedVerdicts = new Map<string, LivenessVerdict>();
+  const derivedSubjects: { ownerId: string; agentRole?: string | null }[] = [];
   const withWakeability = (r: RosterRow): RosterRow => {
     const w = wakeability.get(r.ownerId);
     if (!w) return r;
@@ -827,6 +834,8 @@ export async function assemblePresenceSnapshot(
       selfWakeSignals.get(r.ownerId),
       recordedEndedOwners,
     );
+    if (!derivedVerdicts.has(r.ownerId)) derivedSubjects.push({ ownerId: r.ownerId, agentRole: r.agentRole });
+    derivedVerdicts.set(r.ownerId, v);
     return {
       ...r,
       wakeable: v.wakeable,
@@ -953,6 +962,37 @@ export async function assemblePresenceSnapshot(
       });
     }
   }
+
+  // P-011(a) / D-011: the host-condition leg, the SAME one resolveSessionStates
+  // runs. This surface derives with positive psu-host authority (a live host
+  // rescues a row to parked/recorded), so it must also ask whether that host can
+  // take a turn: a dead-auth / quota-walled / unbound / stuck-pending host makes
+  // the row `suspect` and names the condition in `wedged`. Hosts were already
+  // looked up above, so there is no fallback lookup; fail-soft like every join.
+  await timeAsync('enrichment', 'hostConditionLeg', async () => {
+    try {
+      await applyHostConditionLeg(derivedVerdicts, derivedSubjects, {
+        nowMs,
+        findHostFn: findHostForVerdict,
+        findHostAsyncFn: null,
+      });
+    } catch {
+      /* fail-soft: an unjudged row keeps its plain derivation */
+    }
+  });
+  const withHostCondition = (r: RosterRow): RosterRow => {
+    const v = derivedVerdicts.get(r.ownerId);
+    if (v?.wedged == null) return r;
+    return {
+      ...r,
+      sessionState: v.sessionState,
+      confirmLiveness: v.confirmLiveness,
+      wedged: v.wedged,
+      intentStale: overrideIntentStaleForSessionState(r.intentStale ?? null, v.sessionState),
+    };
+  };
+  activeEnriched = activeEnriched.map(withHostCondition);
+  staleEnriched = staleEnriched.map(withHostCondition);
 
   // The FULL enriched roster (fresh-heartbeat + stale), each carrying its derived
   // sessionState. What we RETURN is a filtered view of it:
