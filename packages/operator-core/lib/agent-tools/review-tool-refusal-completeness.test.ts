@@ -56,7 +56,9 @@ const CASES: Case[] = [
   },
   { tool: plansSetSpecs, request: { slug: 42 }, defects: ['slug', 'exactly one of `spec` or `items`'] },
   { tool: plansBindSpecEvidence, request: { slug: 42 }, defects: ['slug', 'exactly one of binding, items or retract'] },
-  { tool: plansAudit, request: { slug: 42, phase: 'activation' }, defects: ['slug', 'classRef'] },
+  // classRef may be omitted at activation since P-003 (it is derived), so the second defect
+  // is an invalid class rather than a missing one.
+  { tool: plansAudit, request: { slug: 42, phase: 'activation', classRef: 'not-a-class' }, defects: ['slug', 'classRef'] },
   {
     tool: plansEvaluateSpecTestAdequacy,
     request: { slug: 42, classRef: 'plan-class-feature-ship', specRevision: 3 },
