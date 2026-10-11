@@ -2,7 +2,7 @@
 import { parseCarryNote, shortCarryHash } from '../../carry-note';
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness, type WorkItemCheckpointWithMeta } from '../../work-item-checkpoint';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, listSpecEvidence } from '../plans/spec-evidence-store';
-import { getClaimTimeTaskBrief, type TaskBrief } from '../../code-intelligence/task-brief';
+import { compactTaskBrief, getClaimTimeTaskBrief, type TaskBrief } from '../../code-intelligence/task-brief';
 
 export const RESUME_PACKET_BUDGET = 5_000;
 const EVIDENCE_READ_LIMIT = 9;
@@ -88,7 +88,10 @@ export function buildWorkItemResume(input: {
     if (append(resume.walls.rows, wall)) resume.walls.omitted -= 1;
   }
   if (input.taskBrief) {
+    const withoutBrief = JSON.stringify(resume).length;
     resume.taskBrief = input.taskBrief;
+    const fieldOverhead = JSON.stringify({ ...resume, taskBrief: null }).length - withoutBrief - 4;
+    resume.taskBrief = compactTaskBrief(input.taskBrief, RESUME_PACKET_BUDGET - withoutBrief - fieldOverhead);
     if (JSON.stringify(resume).length > RESUME_PACKET_BUDGET) {
       resume.taskBrief = { status: 'omitted', recover: input.taskBrief.recover };
       if (JSON.stringify(resume).length > RESUME_PACKET_BUDGET) resume.taskBrief = undefined;

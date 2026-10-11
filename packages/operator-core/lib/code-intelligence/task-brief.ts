@@ -61,6 +61,19 @@ const safePath = (path: string) => Boolean(path.trim()) && path !== '.' && !isAb
 const kindOf = (path: string): TaskBrief['files'][number]['kind'] =>
   /\.(?:md|mdx)$/.test(path) ? 'doc' : /(?:^|\/)(?:tests?|__tests__)(?:\/|\.)|\.(?:test|spec)\./.test(path) ? 'test' : 'implementation';
 
+/** Fit optional evidence to its caller's budget without changing measured scope. */
+export function compactTaskBrief(input: TaskBrief, maxChars = TASK_BRIEF_MAX_CHARS): TaskBrief {
+  const brief = structuredClone(input);
+  const oversized = () => JSON.stringify(brief).length > maxChars;
+  if (oversized()) brief.exclusions.push('Additional inline evidence omitted; use the scoped recovery readers.');
+  while (oversized() && brief.excerpts.length) brief.excerpts.pop();
+  while (oversized() && brief.graph.relationships.length) brief.graph.relationships.pop();
+  while (oversized() && brief.graph.consumers.length) brief.graph.consumers.pop();
+  while (oversized() && brief.files.length > 1) brief.files.pop();
+  while (oversized() && brief.decisions?.refs.length) brief.decisions.refs.pop();
+  return brief;
+}
+
 /** Root authority is the workspace registry, never payload.rootPath or operator cwd. */
 export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): Promise<TaskBrief> {
   const wi = ref.workItem;
@@ -73,24 +86,18 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     recover: { tool: 'work_items:get', args: { id: wi?.id ?? '', ...(harness ? { harness } : {}) } },
   };
   const finish = () => {
-    // Omit whole records, preserving explicit omissions and recovery rather than clipping code.
-    if (JSON.stringify(brief).length > TASK_BRIEF_MAX_CHARS) brief.exclusions.push('Additional inline evidence omitted; use the scoped recovery readers.');
-    while (JSON.stringify(brief).length > TASK_BRIEF_MAX_CHARS && brief.excerpts.length) brief.excerpts.pop();
-    while (JSON.stringify(brief).length > TASK_BRIEF_MAX_CHARS && brief.graph.relationships.length) brief.graph.relationships.pop();
-    while (JSON.stringify(brief).length > TASK_BRIEF_MAX_CHARS && brief.graph.consumers.length) brief.graph.consumers.pop();
+    const bounded = compactTaskBrief(brief);
     // Long repository paths can consume the budget even without excerpts. Keep
     // the scoped pack reader and a measured card before omitting the whole brief.
-    while (JSON.stringify(brief).length > TASK_BRIEF_MAX_CHARS && brief.files.length > 1) brief.files.pop();
-    while (JSON.stringify(brief).length > TASK_BRIEF_MAX_CHARS && brief.decisions?.refs.length) brief.decisions.refs.pop();
-    if (JSON.stringify(brief).length > TASK_BRIEF_MAX_CHARS) {
-      brief.files = []; brief.excerpts = []; brief.scope.paths = [];
-      brief.status = 'unknown'; brief.sourceFingerprint = null; brief.commit = null;
-      brief.graph = { status: 'unknown', consumers: [], relationships: [], reason: 'Task scope could not fit the inline budget.' };
-      delete brief.repository; delete brief.decisions;
-      brief.exclusions = ['Task scope exceeded the inline brief budget; use the recovery reader.'];
-      brief.recover = { tool: 'work_items:get', args: { id: wi?.id ?? '', ...(harness ? { harness } : {}) } };
+    if (JSON.stringify(bounded).length > TASK_BRIEF_MAX_CHARS) {
+      bounded.files = []; bounded.excerpts = []; bounded.scope.paths = [];
+      bounded.status = 'unknown'; bounded.sourceFingerprint = null; bounded.commit = null;
+      bounded.graph = { status: 'unknown', consumers: [], relationships: [], reason: 'Task scope could not fit the inline budget.' };
+      delete bounded.repository; delete bounded.decisions;
+      bounded.exclusions = ['Task scope exceeded the inline brief budget; use the recovery reader.'];
+      bounded.recover = { tool: 'work_items:get', args: { id: wi?.id ?? '', ...(harness ? { harness } : {}) } };
     }
-    return brief;
+    return bounded;
   };
   if (!wi?.id || !harness || requested.length === 0) {
     brief.exclusions.push('No identified work item, registered harness, or stored payload.paths; no repository scope was inferred.');

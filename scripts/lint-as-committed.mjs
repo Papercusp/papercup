@@ -1383,7 +1383,7 @@ function main() {
       }
     }
   } finally {
-    if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h unless in use or retained by a dependent artifact)`);
+    if (args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h or earlier above ${MAX_IDLE_KEPT_TREES} idle kept trees; in-use trees and dependent artifacts are retained)`);
     else cleanupWorkRoot();
   }
 

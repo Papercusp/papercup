@@ -47,7 +47,10 @@ export function nativeCliResult(result: { status: number | null; stdout: string;
     throw new Error(`Native CLI returned an invalid response shape\n${evidence}`);
   }
   if (parsed.ok === false) throw new Error(`Native CLI tool refused\n${evidence}`);
-  return parsed.data ?? parsed;
+  // Only the legacy object wrapper is a transport envelope. Byte readers own
+  // their base64 `data` field, so preserve the complete page and its cursor.
+  return parsed.data !== null && typeof parsed.data === 'object' && !Array.isArray(parsed.data)
+    && Object.keys(parsed).every(key => key === 'ok' || key === 'data') ? parsed.data : parsed;
 }
 
 export function nativeCliCall(baseUrl: string, name: string, args: Record<string, unknown>) {

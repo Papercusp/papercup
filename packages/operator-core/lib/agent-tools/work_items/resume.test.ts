@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderCarryNote } from '../../carry-note';
 import { shapeWorkItemsGet } from './get-shape';
 import { buildWorkItemResume, readWorkItemResume, RESUME_PACKET_BUDGET } from './resume';
+import type { TaskBrief } from '../../code-intelligence/task-brief';
 
 const item = { id: 'WI-resume', harness: 'h1', assignee: 'su-current', state: 'open',
   payload: { plan_item: { plan_slug: 'resume-plan', item_id: 'P-001' } } };
@@ -72,6 +73,25 @@ describe('bounded work-item resume', () => {
     const packet = build({ checkpoint: { checkpoint: renderCarryNote({ next: instruction }), updatedAtMs: 1 } });
     expect(packet.nextAction).toMatchObject({ status: 'available', text: instruction.trim() });
     expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+  });
+
+  it('fits source evidence around a complete next action without losing attribution or mutating the claim brief', () => {
+    const instruction = 'Review each saved assertion carefully. '.repeat(65).trim();
+    const brief: TaskBrief = { status: 'current', scope: { harness: 'h1', paths: ['target.ts'] },
+      repository: { workspaceId: 'w1', rootPath: '/registered/repo' }, sourceFingerprint: 'measured-current-source',
+      commit: 'accepted', files: [{ path: 'target.ts', sha256: 'current-hash', kind: 'implementation' }],
+      excerpts: Array.from({ length: 5 }, () => ({ path: 'target.ts', text: 'literal source '.repeat(24) })),
+      graph: { status: 'measured', consumers: ['consumer.ts:2'], relationships: ['target → consumer'] },
+      exclusions: [], recover: { tool: 'code:pack', args: { op: 'pack', include: ['target.ts'], rootPath: '/registered/repo' } } };
+    const original = structuredClone(brief);
+    const packet = build({ checkpoint: { checkpoint: renderCarryNote({ next: instruction }), updatedAtMs: 1 }, taskBrief: brief });
+    expect(packet.nextAction.text).toBe(instruction);
+    expect(packet.taskBrief).toMatchObject({ status: 'current', repository: brief.repository,
+      scope: brief.scope, sourceFingerprint: brief.sourceFingerprint, files: brief.files, recover: brief.recover });
+    expect((packet.taskBrief as TaskBrief).excerpts.length).toBeLessThan(brief.excerpts.length);
+    expect((packet.taskBrief as TaskBrief).exclusions).toContain('Additional inline evidence omitted; use the scoped recovery readers.');
+    expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+    expect(brief).toEqual(original);
   });
 
   it('budgets whole proof and check rows while preserving outcome, currentness and omitted counts', () => {

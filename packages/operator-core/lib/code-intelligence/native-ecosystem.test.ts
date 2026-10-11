@@ -83,6 +83,14 @@ describe('native CLI fixture runtime and deadline guards', () => {
     }
     expect(nativeCliResult({ status: 0, stdout: '{"ok":true,"data":{"answer":1}}', stderr: '' })).toEqual({ answer: 1 });
   });
+  it('preserves tool-owned data and byte-page identity instead of unwrapping them', () => {
+    const page = { ok: true, data: Buffer.from('captured source').toString('base64'),
+      byte_offset: 0, byte_length: 15, eof: false,
+      next_cursor: { tool: 'capability:read', args: { file_path: '/tmp/captured', byte_offset: 15, byte_limit: 4096 } } };
+    expect(nativeCliResult({ status: 0, stdout: JSON.stringify(page), stderr: '' })).toEqual(page);
+    const tool = { ok: true, data: { answer: 1 }, sourceFingerprint: 'measured' };
+    expect(nativeCliResult({ status: 0, stdout: JSON.stringify(tool), stderr: '' })).toEqual(tool);
+  });
 });
 
 describe('native P011 required BAR add-only validated test selection', () => {
