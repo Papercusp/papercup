@@ -125,19 +125,45 @@ beforeAll(async () => {
       PRIMARY KEY (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision),
       FOREIGN KEY (workspace_id, harness_slug, work_item_id)
         REFERENCES harness_shared.work_items (workspace_id, harness_slug, feature_id) ON DELETE RESTRICT);
-    -- Stand-in for the live outbox capture (capture_work_items_outbox): a DELETE of a
-    -- local-origin row is federated; its echo-loop guard skips any other origin.
+    -- Stand-ins for the live federation triggers on work_items (D-010). A capture
+    -- stand-in that modelled only the DELETE half let 1443 pass here while, live, it
+    -- federated 283 deletes:
+    --  * stamp_local_federated_write (BEFORE UPDATE): a write that moves fed_ts/fed_hlc
+    --    is an apply/repair and is kept verbatim; a write it judges content-changing is
+    --    re-stamped origin='local'. Modelled at its worst case, EVERY clock-stationary
+    --    UPDATE re-stamps, which is what live xbench rows did to an origin-only mark.
+    --  * capture_work_items_outbox (AFTER UPDATE / DELETE): ships a local-origin row as
+    --    a put / del; its echo-loop guard skips any other origin.
     CREATE TABLE IF NOT EXISTS harness_shared.test_outbox (op text, harness_slug text, key text);
-    CREATE OR REPLACE FUNCTION harness_shared.test_capture_outbox() RETURNS trigger
+    CREATE OR REPLACE FUNCTION harness_shared.test_stamp_local_write() RETURNS trigger
       LANGUAGE plpgsql AS $fn$
       BEGIN
-        IF COALESCE(OLD.origin, 'local') <> 'local' THEN RETURN OLD; END IF;
-        INSERT INTO harness_shared.test_outbox VALUES (lower(TG_OP), OLD.harness_slug, OLD.feature_id);
-        RETURN OLD;
+        IF NEW.fed_ts IS DISTINCT FROM OLD.fed_ts OR NEW.fed_hlc IS DISTINCT FROM OLD.fed_hlc THEN
+          RETURN NEW;
+        END IF;
+        NEW.origin := 'local';
+        RETURN NEW;
+      END $fn$;
+    DROP TRIGGER IF EXISTS test_stamp_local_write_trg ON harness_shared.work_items;
+    CREATE TRIGGER test_stamp_local_write_trg BEFORE UPDATE ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.test_stamp_local_write();
+    CREATE OR REPLACE FUNCTION harness_shared.test_capture_outbox() RETURNS trigger
+      LANGUAGE plpgsql AS $fn$
+      DECLARE r record;
+      BEGIN
+        IF TG_OP = 'DELETE' THEN r := OLD; ELSE r := NEW; END IF;
+        IF COALESCE(r.origin, 'local') <> 'local' THEN RETURN NULL; END IF;
+        INSERT INTO harness_shared.test_outbox
+          VALUES (CASE TG_OP WHEN 'DELETE' THEN 'del' ELSE 'put' END, r.harness_slug, r.feature_id);
+        RETURN NULL;
       END $fn$;
     DROP TRIGGER IF EXISTS test_capture_outbox_del_trg ON harness_shared.work_items;
     CREATE TRIGGER test_capture_outbox_del_trg AFTER DELETE ON harness_shared.work_items
       FOR EACH ROW EXECUTE FUNCTION harness_shared.test_capture_outbox();
+    DROP TRIGGER IF EXISTS test_capture_outbox_upd_trg ON harness_shared.work_items;
+    CREATE TRIGGER test_capture_outbox_upd_trg AFTER UPDATE ON harness_shared.work_items
+      FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
+      EXECUTE FUNCTION harness_shared.test_capture_outbox();
     CREATE TABLE IF NOT EXISTS harness_shared.work_item_deps (
       id bigint PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',
       blocked_kind text NOT NULL, blocked_ref text NOT NULL,
@@ -380,16 +406,24 @@ describe('migration 1443: same-workspace work-item twins', () => {
     await applyMigration();
 
     // Without the origin mark, the retired papercup twin's delete would be captured —
-    // and live, canonical_harness_slug('papercup') ships it as a delete of the papercusp survivor.
-    expect(await db.sql`SELECT * FROM harness_shared.test_outbox`).toHaveLength(0);
-    const trg = await db.sql<Array<{ tgenabled: string }>>`
-      SELECT tgenabled FROM pg_trigger WHERE tgname = 'test_capture_outbox_del_trg'`;
-    expect(trg[0]!.tgenabled).toBe('O');
+    // and live, canonical_harness_slug('papercup') ships it as a delete of the papercusp
+    // survivor. A mark that leaves fed_ts alone is re-stamped 'local' by the stamp
+    // trigger, so the deleted rows would also ship a put (a stale source overwriting the
+    // survivor on peers) and a del (D-010). Only the survivor may federate.
+    const shipped = await db.sql<Array<{ op: string; harness_slug: string; key: string }>>`
+      SELECT op, harness_slug, key FROM harness_shared.test_outbox ORDER BY op, harness_slug, key`;
+    expect(shipped.filter((o) => o.op === 'del' || o.harness_slug !== 'papercusp')).toEqual([]);
+    const trg = await db.sql<Array<{ tgname: string; tgenabled: string }>>`
+      SELECT tgname, tgenabled FROM pg_trigger
+       WHERE tgname IN ('test_capture_outbox_del_trg', 'test_capture_outbox_upd_trg', 'test_stamp_local_write_trg')
+       ORDER BY tgname`;
+    expect(trg.map((t) => t.tgenabled)).toEqual(['O', 'O', 'O']);
     const survivor = await db.sql<Array<{ origin: string }>>`
       SELECT origin FROM harness_shared.work_items WHERE feature_id = 'WI-600'`;
     expect(survivor).toEqual([{ origin: 'local' }]);
     await db.sql`DELETE FROM harness_shared.work_items WHERE feature_id = 'WI-600'`;
-    expect(await db.sql`SELECT * FROM harness_shared.test_outbox`).toHaveLength(1);
+    expect(await db.sql`SELECT op, harness_slug, key FROM harness_shared.test_outbox WHERE op = 'del'`)
+      .toEqual([{ op: 'del', harness_slug: 'papercusp', key: 'WI-600' }]);
   });
 
   it('deletes the old-id row as a stale copy when a peer already federated the renamed row', async () => {
