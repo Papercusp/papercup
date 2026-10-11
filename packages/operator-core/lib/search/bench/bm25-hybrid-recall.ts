@@ -18,6 +18,10 @@
  */
 import { createHash } from 'node:crypto';
 
+// The same matcher the commit-time identity lints use, so what this scrubs at write time and
+// what git-sync's content lint refuses cannot drift (see prose-corpus.ts for the same pattern).
+import { redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
+
 export type Arm = 'legacy' | 'bm25';
 export const ARMS: readonly Arm[] = ['legacy', 'bm25'];
 
@@ -170,6 +174,28 @@ export function overallVerdict(sources: readonly SourceSummary[]): Verdict {
 export function sampleFingerprint(pairs: readonly Pick<PairResult, 'source' | 'targetId' | 'style' | 'query'>[]): string {
   const lines = pairs.map((p) => `${p.source}\t${p.targetId}\t${p.style}\t${p.query}`).sort();
   return createHash('sha256').update(lines.join('\n')).digest('hex');
+}
+
+/**
+ * The pairs as they may be written to a tracked evidence file. Probe queries are sampled from
+ * live rows, so one can carry this box's identity (a home path, the git name or email); the
+ * release-bundle identity audit then refuses the file and git-sync quarantines it (measured
+ * 2026-10-11: a session-turn query held a home path). Each query is passed through the shared
+ * redactor. `sampleFingerprint` is computed on the raw queries BEFORE this, so the recorded
+ * fingerprint still names the sample that ran; `redactedQueries` says how many were changed.
+ */
+export function redactPairsForArtifact<P extends { query: string }>(
+  pairs: readonly P[],
+  literals?: [string, string][],
+): { pairs: P[]; redactedQueries: number } {
+  let redactedQueries = 0;
+  const out = pairs.map((p) => {
+    const query = redactIdentityLeaks(p.query, literals);
+    if (query === p.query) return p;
+    redactedQueries += 1;
+    return { ...p, query };
+  });
+  return { pairs: out, redactedQueries };
 }
 
 /** Run order for pair `i`: alternate which arm goes first so warm caches favour neither. */

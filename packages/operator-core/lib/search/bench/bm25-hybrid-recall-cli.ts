@@ -37,6 +37,7 @@ import {
   armOrder,
   overallVerdict,
   rankOf,
+  redactPairsForArtifact,
   sampleFingerprint,
   summarizeSource,
   type Arm,
@@ -218,6 +219,8 @@ async function main(): Promise<number> {
   } catch {
     commit = null;
   }
+  // Queries are sampled from live rows; scrub box identity before writing a tracked file.
+  const written = redactPairsForArtifact(pairs);
   const artifact = {
     kind: 'bm25-hybrid-recall',
     plan: PLAN,
@@ -237,7 +240,8 @@ async function main(): Promise<number> {
     sameProcess: true,
     sources: summaries,
     verdict,
-    pairs,
+    redactedQueries: written.redactedQueries,
+    pairs: written.pairs,
   };
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, `${JSON.stringify(artifact, null, 2)}\n`);
