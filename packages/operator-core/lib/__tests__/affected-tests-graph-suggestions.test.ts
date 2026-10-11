@@ -40,6 +40,7 @@ import {
   unionSuperset,
   verifyEdge,
 } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
+import { produceSnapshotFromSource } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 /** Overridable so `scripts/mutation-probe.sh` can aim the selector-level cases at a COPY. */
@@ -223,6 +224,37 @@ describe('graph-dependency-suggestions — pure module', () => {
     expect(walk().rejected[0].reason).toBe('stale-importer');
   });
 
+  it.each(['@scope/coordination', 'coordination'])('refuses a %s package edge into another workspace with the same path tail', name => {
+    const source = `import { presence } from '${name}/presence';`;
+    const right = 'packages/coordination/src/presence/index.ts';
+    const wrong = 'packages/operator-core/lib/coordination/presence.ts';
+    const sources: Record<string, string> = {
+      [IMPORTER]: source,
+      'packages/coordination/package.json': JSON.stringify({ name }),
+      'packages/operator-core/package.json': '{"name":"@scope/operator-core"}',
+    };
+    const readSource = (p: string) => sources[p] ?? null;
+    const names = packageNameReader(readSource);
+    expect(sourceCorroborates(source, IMPORTER, right, names)).toBe(true);
+    expect(sourceCorroborates(source, IMPORTER, wrong, names)).toBe(false);
+    expect(sourceCorroborates(source, IMPORTER, wrong)).toBe(false);
+    const edge = { importer: IMPORTER, imported: wrong, importerSha256: sha256Hex(source) };
+    expect(verifyEdge(edge, { readSource })).toEqual({ ok: false, reason: 'uncorroborated' });
+    const built = buildSnapshot({ edges: [edge], index: INDEX, readSource, now: NOW });
+    expect(built.stats).toMatchObject({ kept: 0, skippedUncorroborated: 1 });
+    const walk = suggestFromSnapshot({ changed: [wrong], snapshot: snapshotOf([edge]), now: NOW, readSource });
+    expect(walk.suggestedFiles).toEqual([]);
+    expect(unionSuperset(['baseline'], walk.suggestedFiles).names).toEqual(['baseline']);
+  });
+
+  it('keeps explicit directory aliases separate from package manifest resolution', () => {
+    const names = packageNameReader(() => '{"name":"@scope/unrelated"}');
+    for (const specifier of ['@/coordination/presence', '~/coordination/presence']) {
+      expect(sourceCorroborates(`import x from '${specifier}';`, IMPORTER,
+        'packages/ui/coordination/presence/index.ts', names)).toBe(true);
+    }
+  });
+
   it('memoizes manifest reads during a snapshot build', () => {
     const sources: Record<string, string> = {
       'apps/a.ts': `import x from '@scope/api/client';`,
@@ -359,6 +391,23 @@ describe('affected-tests selector — graph suggestions are SUPERSET-ONLY', () =
     for (const n of base.names) expect(withGraph.names.has(n), `baseline workspace ${n} lost`).toBe(true);
     expect(withGraph.names.has(IMPORTER_WS)).toBe(true);
     expect(withGraph.line).toMatch(/status=applied accepted=1 rejected=0 added=.*@papercusp\/backup/);
+  });
+
+  it('first-party handover keeps the reference consumer and baseline; stale source cannot add it', () => {
+    const sources: Record<string, string> = { [IMPORTER]: IMPORTER_SRC, [IMPORTED]: 'export const fixture = 1;' };
+    const produced = produceSnapshotFromSource({ files: Object.keys(sources), readSource: p => sources[p] ?? null, headCommit: INDEX.lastCommit, now: Date.now() });
+    expect(produced.snapshot.index.backend).toBe('first-party-imports');
+    expect(produced.snapshot.edges).toEqual([goodEdge]);
+    const baseline = runSelector(IMPORTED, { PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS: '0' });
+    const handover = runSelector(IMPORTED, { PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: writeSnapshot('first-party.json', produced.snapshot) });
+    expect(handover.status).toBe(0);
+    expect(handover.names.has(IMPORTER_WS)).toBe(true);
+    for (const name of baseline.names) expect(handover.names.has(name), `baseline workspace ${name} lost`).toBe(true);
+    const stale = { ...produced.snapshot, edges: produced.snapshot.edges.map(edge => ({ ...edge, importerSha256: sha256Hex('different source') })) };
+    const rejected = runSelector(IMPORTED, { PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: writeSnapshot('first-party-stale.json', stale) });
+    expect(rejected.status).toBe(0);
+    expect(rejected.names).toEqual(baseline.names);
+    expect(rejected.line).toMatch(/accepted=0 rejected=1/);
   });
 
   const degraded: Array<[string, () => string | null, RegExp]> = [

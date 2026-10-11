@@ -36,7 +36,7 @@ import {
   workspacePackagesFrom,
   writeSnapshotAtomic,
 } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
-import { parseSnapshot, sourceCorroborates } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
+import { packageNameReader, parseSnapshot, sourceCorroborates } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
 import * as relatedTests from '../../../../scripts/lib/related-tests.mjs';
 import { matchTsconfigPath, tsconfigPathEntriesFor } from '../../../../scripts/lib/related-tests.mjs';
 
@@ -597,8 +597,9 @@ describe('first-party snapshot producer', () => {
 
     it('emits only edges the selector source corroboration re-derives (the snapshot keeps them)', () => {
       const { edges } = deriveFirstPartyEdges({ files, readSource, aliasesForImporter, workspacePackages });
-      const kept = edges.filter((e) => sourceCorroborates(readSource(e.importer)!, e.importer, e.imported));
-      // `@fx/core` -> lib/index.ts is a real edge the tail rule cannot verify; the rest survive
+      const names = packageNameReader(readSource);
+      const kept = edges.filter((e) => sourceCorroborates(readSource(e.importer)!, e.importer, e.imported, names));
+      // The package manifest verifies the subpath; root exports still require the producer's resolver.
       expect(kept.map((e) => `${e.importer} -> ${e.imported}`)).toEqual([
         'packages/core/lib/index.ts -> packages/core/lib/util.ts',
         'apps/web/page.ts -> packages/core/lib/util.ts',
