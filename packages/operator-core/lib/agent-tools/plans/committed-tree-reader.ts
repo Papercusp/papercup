@@ -341,6 +341,8 @@ function rememberDigest(blob: string, content: Buffer): { sha256: string; size: 
 export interface CommittedBlobLocation {
   /** Owning repository, root-relative (`.` for the root itself). */
   repo: string;
+  /** The commit pinned for the owning repository by the requested superproject commit. */
+  commitSha: string;
   /** The tree entry's object id (a blob id for a regular file). */
   object: string;
   mode: string;
@@ -384,7 +386,7 @@ export async function locateCommittedBlobs(
       located.set(
         path,
         entry
-          ? { repo, object: entry.object, mode: entry.mode, type: entry.type, isFile: entry.type === 'blob' && entry.mode !== '120000' }
+          ? { repo, commitSha: repoCommit, object: entry.object, mode: entry.mode, type: entry.type, isFile: entry.type === 'blob' && entry.mode !== '120000' }
           : null,
       );
     }
