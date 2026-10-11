@@ -5,7 +5,7 @@ import type { Sql } from 'postgres';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch } from '../hosted-browser-context';
 import { authorizeTutorialHelp, authorizeProductTutorialHelp, tutorialAssistanceRequestSchema, tutorialHelpRequestSchema, productTutorialHelpRequestSchema, type TutorialAssistanceRequest } from '../../onboarding/cloud-tutorial-help';
 import { authorizeTutorialVoice, tutorialVoiceRequestSchema, type TutorialVoiceRequest } from '../../onboarding/cloud-tutorial-help';
-import { readAccountTutorialProgress, readTutorialProgress } from '../../onboarding/cloud-tutorial-progress';
+import { readAccountTutorialProgress, readTutorialProgress, type AccountTutorialProgressRecord, type TutorialProgressRecord } from '../../onboarding/cloud-tutorial-progress';
 import { isHostedPrincipal } from '../../auth/hosted-principal';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, createHostedTutorialProgressRoutes } from './hosted-tutorial-progress-routes';
 export const HOSTED_BROWSER_TUTORIAL_HELP_PATH = '/hosted/browser/onboarding/tutorial-help' as const;
@@ -74,7 +74,7 @@ export function createHostedTutorialVoiceTokenRoute({ origin, controlPlaneWorksp
           userId: principal.userId, activeOrganizationId: principal.activeOrganizationId,
           sessionId: principal.sessionId, sessionVersion: principal.sessionVersion,
         } } : tenantContext(principal);
-        const record = await runTenant(context, tx => account
+        const record = await runTenant<AccountTutorialProgressRecord | TutorialProgressRecord | null>(context, tx => account
           ? readAccountTutorialProgress(tx, scope)
           : readTutorialProgress(tx, { ...scope, workspaceId: principal.selectedWorkspaceId! }, parsed.data.context.version === 2 ? 2 : 1, { requirePersisted: true }));
         let input: TutorialVoiceRequest;

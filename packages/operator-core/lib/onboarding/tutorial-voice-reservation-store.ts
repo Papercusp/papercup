@@ -3,6 +3,38 @@ import { withHostedServiceContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { TutorialVoiceAdmission } from '../endpoint-route/routes/hosted-tutorial-progress';
+import { HostedSessionStore } from '../auth/hosted-session';
+import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
+import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
+import type { HostedIdentityProvider } from '../auth/hosted/provider';
+
+/** Server composition supplies the provider, never an identity from a request.
+ * Keep local revocation locks until the surrounding reservation commits. This
+ * is one part of admission; tutorial, policy and provider limits still apply. */
+export async function validateTutorialVoiceIdentityForUpdate(sql: Sql, admission: TutorialVoiceAdmission,
+  provider: Pick<HostedIdentityProvider, 'providerId' | 'validateSession'>): Promise<boolean> {
+  const session = await new HostedSessionStore(sql).resolveForUpdate(admission.sessionId,
+    { expectedPermissionVersion: admission.sessionVersion });
+  if (!session || session.userId !== admission.userId || session.organizationId !== admission.organizationId
+    || session.upstreamProvider !== provider.providerId
+    || (admission.customerWorkspaceId !== null && session.workspaceId !== admission.customerWorkspaceId)) return false;
+  const upstream = await provider.validateSession({ externalSessionId: session.upstreamSessionId });
+  if (!upstream.ok || upstream.value.externalSessionId !== session.upstreamSessionId
+    || upstream.value.identity.emailVerified !== true || !upstream.value.identity.externalUserId
+    || !Number.isFinite(upstream.value.expiresAtMs) || upstream.value.expiresAtMs <= Date.now()) return false;
+  const linked = await new PostgresHostedIdentityDirectory(sql).resolveLinkedUserForUpdate({
+    providerId: provider.providerId, subject: upstream.value.identity.externalUserId });
+  if (linked?.userId !== admission.userId) return false;
+  const membership = new PostgresHostedMembershipAuthority(sql);
+  const active = await membership.resolveActiveForUpdate({ userId: admission.userId, organizationId: admission.organizationId });
+  if (!active || active.permissionVersion !== admission.sessionVersion) return false;
+  if (admission.customerWorkspaceId !== null && (!active.permissions.has('workspace:view')
+    || !await membership.workspaceBelongsToOrganizationForUpdate({ userId: admission.userId,
+      sessionId: admission.sessionId, sessionVersion: admission.sessionVersion, organizationId: admission.organizationId,
+      customerWorkspaceId: admission.customerWorkspaceId, controlPlaneWorkspaceId: admission.controlWorkspaceId }))) return false;
+  // Upstream verification can take time; expiry must still hold after all reads.
+  return session.expiresAt.getTime() > Date.now() && upstream.value.expiresAtMs > Date.now();
+}
 
 export interface TutorialVoiceQuotaAuthority {
   maximumSeconds: number;
