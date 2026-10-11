@@ -58,15 +58,21 @@ export async function seedFakeLlmPlanAcceptance(harnessSlug: string, planSlug: s
   await promisify(execFile)(process.execPath, [
     '--import', resolve(root, 'scripts/lib/committed-source-loader.mjs'),
     '--import', 'tsx', '--input-type=module', '-e',
-    `const { runAcceptanceBarMigrationInDatabase } = await import('./packages/operator-core/lib/acceptance-bar-migration.ts');
+    `console.error('plan-fixture stage=migration-import:start');
+     const { runAcceptanceBarMigrationInDatabase } = await import('./packages/operator-core/lib/acceptance-bar-migration.ts');
+     console.error('plan-fixture stage=migration-import:done gate-import:start');
      const { checkPlanStartable } = await import('./packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts');
+     console.error('plan-fixture stage=gate-import:done db-import:start');
      const { getOrgPg } = await import('@papercusp/db-org');
      const { sql } = getOrgPg();
      try {
        const harnessSlug = ${JSON.stringify(harnessSlug)};
        const planSlug = ${JSON.stringify(planSlug)};
+       console.error('plan-fixture stage=migration:start');
        const result = await runAcceptanceBarMigrationInDatabase({ workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, harnessSlug, planSlug, actorId: 'e2e-plan-fixture', dryRun: false });
+       console.error('plan-fixture stage=migration:done gate:start');
        const gate = await checkPlanStartable(planSlug, { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, harnessSlug }, null, 'start');
+       console.error('plan-fixture stage=gate:done');
        if (!gate.ok) throw new Error('Plan fixture launch precondition failed: ' + JSON.stringify({ result, gate }));
      } finally { await sql.end(); }`,
   ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 }).catch(error => { throw fixtureChildFailure(error); });
