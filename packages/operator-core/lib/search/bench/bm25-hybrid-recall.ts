@@ -99,10 +99,22 @@ export interface CallAttribution {
   /** D-030: run-queue wait of the bench process's main thread over the call. */
   clientRunqMs?: number;
   /**
-   * D-030: backends of this process that did not exist before the call: the pool opened a
-   * connection for it. Their schedstat counts from zero, so connection setup is in pgCpuMs.
+   * D-032: backends of this process in the after-call pid list but not the before-call one.
+   * Why a pid is missing from the before list is not known (run 12: such pids were long-lived,
+   * not born in the call), so none is counted from zero. Replaces D-031's `pgBackendsBorn`,
+   * which did count them from zero and is retracted.
    */
-  pgBackendsBorn?: number;
+  pgBackendsUnseen?: number;
+  /**
+   * D-032: of {@link pgBackendsUnseen}, the pids the wait sampler saw active during the call; each
+   * is baselined at that first sighting and its delta from there is in pgCpuMs and pgRunqMs.
+   */
+  pgBackendsLateBaselined?: number;
+  /**
+   * D-032: per-pid deltas dropped because their CPU exceeded the schedstat window's wall time,
+   * which one backend cannot do. Non-zero means a pid's baseline was not its state at window start.
+   */
+  pgPidsImplausible?: number;
 }
 
 /** One pg_stat_activity row of an active bench backend, sampled during a timed call (D-030). */
@@ -191,22 +203,33 @@ export function parseSchedstat(text: string | null | undefined): Schedstat | nul
  * Summed schedstat deltas, in ms, over the pids present in BOTH snapshots: a backend that appeared
  * or exited mid-call is left out rather than counted from zero (a recycled pid would otherwise add
  * another process's whole lifetime).
+ *
+ * D-032: when `maxCpuMs` is given (the wall time between the two snapshots, plus slack), a pid
+ * whose CPU delta exceeds it is dropped and counted in `implausible`: one single-threaded backend
+ * cannot run longer than the window, so such a delta means the baseline was not taken at the
+ * window's start.
  */
 export function schedstatDeltaMs(
   before: ReadonlyMap<number, Schedstat>,
   after: ReadonlyMap<number, Schedstat>,
-): { cpuMs: number; runqMs: number; pids: number } {
+  maxCpuMs?: number,
+): { cpuMs: number; runqMs: number; pids: number; implausible: number } {
   let cpuNs = 0;
   let runqNs = 0;
   let pids = 0;
+  let implausible = 0;
   for (const [pid, b] of before) {
     const a = after.get(pid);
     if (!a || a.cpuNs < b.cpuNs || a.runqNs < b.runqNs) continue;
+    if (maxCpuMs !== undefined && (a.cpuNs - b.cpuNs) / 1e6 > maxCpuMs) {
+      implausible += 1;
+      continue;
+    }
     cpuNs += a.cpuNs - b.cpuNs;
     runqNs += a.runqNs - b.runqNs;
     pids += 1;
   }
-  return { cpuMs: round1(cpuNs / 1e6), runqMs: round1(runqNs / 1e6), pids };
+  return { cpuMs: round1(cpuNs / 1e6), runqMs: round1(runqNs / 1e6), pids, implausible };
 }
 
 /**

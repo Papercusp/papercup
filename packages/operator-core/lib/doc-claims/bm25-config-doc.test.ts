@@ -162,6 +162,20 @@ describe('pg_textsearch (BM25) configuration page', () => {
     expect(section('Compaction is manual, and maintenance owns it')).toContain('`kept:exact-list`');
   });
 
+  it('names the merge method the code actually uses (D-032: interleave, not RRF)', () => {
+    const exact = section('Exact-list corpora (D-016)');
+    const start = RANK.indexOf('export function mergeExactAndBm25');
+    expect(start, 'mergeExactAndBm25 not found in rank.ts').toBeGreaterThanOrEqual(0);
+    const end = RANK.indexOf('\n}\n', start);
+    expect(end, 'mergeExactAndBm25 body end not found').toBeGreaterThan(start);
+    const body = RANK.slice(start, end);
+    // Derived from the function body, so switching the merge back to RRF (or to anything
+    // else) fails here until the page says so.
+    const usesRrf = body.includes('rrfCombine(');
+    expect(exact.includes('by reciprocal-rank fusion over row identity')).toBe(usesRrf);
+    expect(exact.includes('by interleaving over row identity')).toBe(!usesRrf);
+  });
+
   it('pins the CONCURRENTLY lock_timeout and the advisory lock name to the maintenance module', () => {
     const trap = section('Compaction is manual, and maintenance owns it');
     expect(trap).toContain(`\`lock_timeout\` of \`${CONCURRENT_DDL_LOCK_TIMEOUT}\``);
