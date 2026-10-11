@@ -784,6 +784,50 @@ describe('the P-043 reconciliation gate on DAO transfers', () => {
     );
   }
 
+  it.each([
+    ['unauthorized', 401],
+    ['invalid-config', 503],
+    ['batch_not_final', 409],
+    ['reconciliation_failed', 409],
+    ['safe_deployment_unrecorded', 409],
+    ['routing_refused', 409],
+  ] as const)('preserves %s before checking a closed transfer gate', async (error, status) => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const { api, db, raw, env } = harness({}, adapter);
+    const batchId = await settleToFinal(api, db, env);
+    if (error !== 'safe_deployment_unrecorded') await recordDeployment(api, env);
+    raw.prepare('UPDATE treasury_transfer_gate SET open = 0, reasons_json = ?').run('["seeded break"]');
+    if (error === 'unauthorized') auth.resolveGithubBearer.mockResolvedValue(null);
+    if (error === 'invalid-config') env.TREASURY_SAFE_THRESHOLD = '0';
+    if (error === 'batch_not_final') raw.prepare('UPDATE settlement_batches SET state = ? WHERE batch_id = ?').run('claimed', batchId);
+    if (error === 'reconciliation_failed') {
+      const row = raw.prepare('SELECT allocations_micros FROM settlement_batches WHERE batch_id = ?').get(batchId) as { allocations_micros: string };
+      const allocations = JSON.parse(row.allocations_micros) as Record<string, string>;
+      allocations.dao = String(BigInt(allocations.dao!) - 1n);
+      allocations.host = String(BigInt(allocations.host!) + 1n);
+      raw.prepare('UPDATE settlement_batches SET allocations_micros = ? WHERE batch_id = ?').run(JSON.stringify(allocations), batchId);
+    }
+    if (error === 'routing_refused') env.TREASURY_SETTLEMENT_MAX_MICROS = '1';
+    const response = await route(api, env, batchId);
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ error });
+    expect(submitTransfer).not.toHaveBeenCalled();
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM treasury_transfers').get()).toMatchObject({ n: 0 });
+  });
+
+  it.each(['disputed', 'refunded'])('omits a formerly FINAL %s batch from independent reconciliation inputs', async (state) => {
+    const { adapter, submitTransfer } = fakeTreasuryAdapter();
+    const { api, db, raw, env } = harness({}, adapter);
+    const batchId = await settleToFinal(api, db, env);
+    const before = await readReconciliationInputs(db, Date.now());
+    expect(before.finalSettlementBatches.map((batch) => batch.batchId)).toEqual([batchId]);
+    raw.prepare('UPDATE settlement_batches SET state = ? WHERE batch_id = ?').run(state, batchId);
+    const after = await readReconciliationInputs(db, Date.now());
+    expect(after.finalSettlementBatches).toEqual([]);
+    expect(raw.prepare('SELECT state FROM settlement_batches WHERE batch_id = ?').get(batchId)).toMatchObject({ state });
+    expect(submitTransfer).not.toHaveBeenCalled();
+  });
+
   it('pauses DAO transfers for every gate state except a fresh, open, treasury-reconciled one', async () => {
     const { adapter, submitTransfer } = fakeTreasuryAdapter();
     const { api, db, raw, env } = harness({ RECONCILIATION_GATE_SECRET: SECRET }, adapter);

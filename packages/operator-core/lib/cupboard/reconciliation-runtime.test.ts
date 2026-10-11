@@ -6,7 +6,7 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import type { JournalEntry } from './money-journal';
+import { validateJournalEntry, type JournalEntry } from './money-journal';
 import type { StripeBalanceTransaction, StripeBalanceTransactionLister } from './money-journal-producers';
 import { memoryReconciliationStore, type BreakFiler, type GatePublisher } from './reconciliation';
 import {
@@ -246,14 +246,18 @@ describe('runReconciliationPass', () => {
     const TX_C = `0x${'c'.repeat(64)}`;
     // A 20.00 claim, final in October, whose batch allocated 2.00 to the DAO.
     const claim = { batchId: 'batch-1', chainId: 84532, claimTransactionHash: TX_C, claimMicros: 2_000 * 10_000, daoMicros: 200 * 10_000, finalizedAtMs: NOW - 3_600_000 };
-    const pass = (j: ReturnType<typeof journal>, verifier: () => Promise<boolean> = async () => true) =>
+    const pass = (
+      j: ReturnType<typeof journal>,
+      verifier: () => Promise<boolean> = async () => true,
+      claims: ReconciliationInputs['finalSettlementBatches'] = [claim],
+    ) =>
       runReconciliationPass(
         { mode: 'provisional', workspaces: [WS] },
         {
           config: config(),
           resolveSecret: async () => SECRET,
           stripeLister: lister([charge, credits, payout]),
-          cupboardInputs: async () => inputs({ finalSettlementBatches: [claim] }),
+          cupboardInputs: async () => inputs({ finalSettlementBatches: claims }),
           chainVerifier: verifier,
           store: memoryReconciliationStore(),
           filer: recordingFiler().filer,
@@ -287,6 +291,56 @@ describe('runReconciliationPass', () => {
       expect(daoDetail(ws).detail).toBe(
         'journal dao-payable 700c; accrued 1200c (off-chain journal 1000c + final settlements 200c) - transferred on chain 500c = 700c',
       );
+    });
+
+    it('rounds each FINAL batch before summing DAO accrual and excludes finality at the period end', async () => {
+      // Two 0.6-cent allocations round to two cents, whereas rounding their
+      // combined 1.2 cents would understate the DAO liability by one cent.
+      const claims = [
+        { ...claim, batchId: 'round-1', claimTransactionHash: `0x${'1'.repeat(64)}`, claimMicros: 60_000, daoMicros: 6_000 },
+        { ...claim, batchId: 'round-2', claimTransactionHash: `0x${'2'.repeat(64)}`, claimMicros: 60_000, daoMicros: 6_000 },
+        // Accrual is cumulative: a prior-month FINAL batch still contributes.
+        { ...claim, batchId: 'prior-month', claimTransactionHash: `0x${'3'.repeat(64)}`, claimMicros: 60_000, daoMicros: 6_000, finalizedAtMs: Date.UTC(2026, 8, 30) },
+        { ...claim, batchId: 'at-end', claimTransactionHash: `0x${'4'.repeat(64)}`, finalizedAtMs: NOW },
+      ];
+      const j = journal();
+      const ws = (await pass(j, async () => true, claims)).workspaces[0]!;
+      expect(ws.settlementClaimImport).toMatchObject({ posted: 4, refused: [] });
+      expect(daoDetail(ws)).toMatchObject({ status: 'ok' });
+      expect(daoDetail(ws).detail).toContain('final settlements 3c');
+      for (const c of claims.slice(0, 3)) {
+        expect(j.entries.get(`chain-tx:84532:${c.claimTransactionHash}`)!.lines)
+          .toContainEqual({ account: 'dao-payable', side: 'credit', cents: 1 });
+      }
+    });
+
+    it('keeps a previously FINAL claim journaled and breaks DAO accrual until an explicit reversing entry', async () => {
+      const j = journal();
+      expect(daoDetail((await pass(j)).workspaces[0]!).status).toBe('ok');
+      const original = j.entries.get(`chain-tx:84532:${TX_C}`)!;
+      // The Worker omits a batch once it becomes disputed/refunded. That does
+      // not erase its immutable import or silently forgive the liability.
+      for (let run = 0; run < 2; run += 1) {
+        const ws = (await pass(j, async () => true, [])).workspaces[0]!;
+        expect(ws.settlementClaimImport).toMatchObject({ scanned: 0, posted: 0 });
+        expect(j.entries.get(original.entryId)).toEqual(original);
+        expect(daoDetail(ws)).toMatchObject({ status: 'broken' });
+        expect(ws.run!.gate.open).toBe(false);
+      }
+      const reversal = validateJournalEntry({
+        ...original,
+        entryId: 'claim-refund-reversal',
+        movement: 'refund',
+        externalRef: { kind: 'chain-tx', chainId: 84532, txHash: `0x${'d'.repeat(64)}` },
+        occurredAtMs: NOW - 1_000,
+        memo: 'explicit reversal of refunded FINAL claim',
+        lines: original.lines.map((line) => ({ ...line, side: line.side === 'credit' ? 'debit' : 'credit' })),
+      });
+      expect(reversal.ok).toBe(true);
+      if (!reversal.ok) throw new Error(reversal.detail);
+      await j.post()(reversal.entry);
+      expect(daoDetail((await pass(j, async () => true, [])).workspaces[0]!).status).toBe('ok');
+      expect(j.entries.get(original.entryId)).toEqual(original);
     });
 
     it('a journal entry for the claim that mis-splits the DAO share breaks the invariant', async () => {
