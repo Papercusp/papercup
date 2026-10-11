@@ -11,6 +11,7 @@ import {
   overallVerdict,
   pairedCounts,
   rankOf,
+  redactPairsForArtifact,
   sampleFingerprint,
   summarizeArm,
   summarizeSource,
@@ -127,6 +128,25 @@ describe('helpers', () => {
     const a = sample(4, 2, 2);
     expect(sampleFingerprint(a)).toBe(sampleFingerprint([...a].reverse()));
     expect(sampleFingerprint(a)).not.toBe(sampleFingerprint([...a.slice(1), { ...a[0]!, query: 'other' }]));
+  });
+
+  it('redactPairsForArtifact scrubs box identity from sampled queries before they are written', () => {
+    // Built at runtime: tracked source may not spell a home path or a real identity literal.
+    const home = ['', 'home', 'qzsynthuser', 'repo', 'notes.md'].join('/');
+    const literals: [string, string][] = [['gitEmail', 'qz.synth@example.invalid']];
+    const pairs = [
+      { source: 'session_turn', targetId: 'A', query: `diagnostic extraction ${home} papercusp` },
+      { source: 'work_item', targetId: 'B', query: 'mail qz.synth@example.invalid about the gate' },
+      { source: 'work_item', targetId: 'C', query: 'plain known-item fragment' },
+    ];
+    const { pairs: written, redactedQueries } = redactPairsForArtifact(pairs, literals);
+    expect(redactedQueries).toBe(2);
+    expect(written[0]!.query).not.toContain('qzsynthuser');
+    expect(written[0]!.query).toContain('diagnostic extraction');
+    expect(written[1]!.query).not.toContain('qz.synth@example.invalid');
+    expect(written[2]).toBe(pairs[2]);
+    // The fingerprint is taken on the raw sample, so redaction must not touch the input.
+    expect(pairs[0]!.query).toContain('qzsynthuser');
   });
 
   it('armOrder alternates which arm runs first', () => {
