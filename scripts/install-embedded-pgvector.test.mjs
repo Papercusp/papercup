@@ -7,10 +7,12 @@ import { join } from 'node:path';
 import {
   EMBEDDED_EXTENSIONS,
   embeddedPgMajor,
+  embeddedPgPackageDirs,
   hostPgTextsearchCandidates,
   hostPgvectorCandidates,
   hostServerMinor,
   installEmbeddedExtensions,
+  missingWarning,
   runtimeDirs,
 } from './install-embedded-pgvector.mjs';
 
@@ -286,6 +288,85 @@ test('npm reify staging directories (.linux-x64-XXXX) are never provisioned', ()
   const report = installEmbeddedExtensions({ root, platform: 'linux', env: { ...fakeHostPgvector(), ...fakeHostPgTextsearch() }, log: quiet });
   assert.deepEqual([...new Set(report.trees.map((row) => row.tree))], ['linux-x64']);
   assert.ok(!existsSync(join(staging, 'native', 'lib', 'postgresql', 'pg_textsearch.so')));
+});
+
+// The D-014 layout, measured 2026-10-11: apps/slack-asana-bug-drill pins embedded-postgres
+// 18.3 exactly, so 18.3 stays hoisted and embedded-postgres-server (^18.4) gets its own
+// copy nested under its workspace. Every embedded-postgres-server boot loads the nested one.
+function fakeNestedCheckout() {
+  const { root, nativeDir: hoistedNative } = fakeCheckout({ version: '18.3.0-beta.17' });
+  const nestedRel = 'libs/papercusp/packages/embedded-postgres-server/node_modules/@embedded-postgres';
+  const nestedPkg = join(root, nestedRel, 'linux-x64');
+  mkdirSync(join(nestedPkg, 'native'), { recursive: true });
+  writeFileSync(join(nestedPkg, 'package.json'), JSON.stringify({ name: '@embedded-postgres/linux-x64', version: '18.4.0-beta.17' }));
+  writeFileSync(
+    join(root, 'package-lock.json'),
+    JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'root' },
+        'node_modules/@embedded-postgres/linux-x64': { version: '18.3.0-beta.17', optional: true },
+        'node_modules/@embedded-postgres/darwin-arm64': { version: '18.4.0-beta.17', optional: true },
+        [`${nestedRel}/linux-x64`]: { version: '18.4.0-beta.17', optional: true },
+        // Recorded in the lock but not on disk (an optional package for another platform).
+        'node_modules/embedded-postgres/node_modules/@embedded-postgres/windows-x64': { version: '18.3.0-beta.17', optional: true },
+        // Not an @embedded-postgres placement at all.
+        'node_modules/embedded-postgres': { version: '18.3.0-beta.17' },
+        'node_modules/@embedded-postgres-like/linux-x64': { version: '1.0.0' },
+      },
+    }),
+  );
+  return { root, hoistedNative, nestedNative: join(nestedPkg, 'native'), nestedRel };
+}
+
+test('embeddedPgPackageDirs reads every @embedded-postgres placement from the lock, hoisted always included', () => {
+  const { root, nestedRel } = fakeNestedCheckout();
+  assert.deepEqual(embeddedPgPackageDirs(root), [
+    nestedRel,
+    'node_modules/@embedded-postgres',
+    'node_modules/embedded-postgres/node_modules/@embedded-postgres',
+  ]);
+  const noLock = mkdtempSync(join(tmpdir(), 'emb-pgv-nolock-'));
+  assert.deepEqual(embeddedPgPackageDirs(noLock), ['node_modules/@embedded-postgres']);
+});
+
+test('a tree npm nested under a workspace is provisioned too, each against its own server minor', () => {
+  const { root, hoistedNative, nestedNative, nestedRel } = fakeNestedCheckout();
+  const report = installEmbeddedExtensions({
+    root,
+    platform: 'linux',
+    env: { ...fakeHostPgvector(), ...fakeHostPgTextsearch({ builtFor: '18.4' }) },
+    log: quiet,
+  });
+  const byWhere = Object.fromEntries(report.trees.map((row) => [`${row.location} ${row.extension}`, row.status]));
+  assert.deepEqual(byWhere, {
+    [`${nestedRel}/linux-x64 pgvector`]: 'installed',
+    [`${nestedRel}/linux-x64 pg_textsearch`]: 'installed',
+    'node_modules/@embedded-postgres/linux-x64 pgvector': 'installed',
+    // The 18.4 build would stop an 18.3 postmaster from starting.
+    'node_modules/@embedded-postgres/linux-x64 pg_textsearch': 'incompatible',
+  });
+  assert.ok(existsSync(join(nestedNative, 'lib', 'postgresql', 'pg_textsearch.so')));
+  assert.ok(existsSync(join(nestedNative, 'lib', 'postgresql', 'vector.so')));
+  assert.ok(!existsSync(join(hoistedNative, 'lib', 'postgresql', 'pg_textsearch.so')));
+  // The refusal names the tree it is about, so two linux-x64 trees are distinguishable.
+  assert.equal(report.missingSource.length, 1);
+  assert.equal(report.missingSource[0].location, 'node_modules/@embedded-postgres/linux-x64');
+});
+
+test('a refused build is not reported as missing from the host', () => {
+  const { root } = fakeNestedCheckout();
+  const report = installEmbeddedExtensions({
+    root,
+    platform: 'linux',
+    env: fakeHostPgTextsearch({ builtFor: '18.4' }),
+    log: quiet,
+    extensions: PG_TEXTSEARCH,
+  });
+  const text = missingWarning(report.missingSource[0]);
+  assert.doesNotMatch(text, /not found on this machine/);
+  assert.match(text, /node_modules\/@embedded-postgres\/linux-x64 boots without pg_textsearch/);
+  assert.match(text, /Bump embedded-postgres to >= 18\.4/);
 });
 
 test('no embedded-postgres install means nothing to do', () => {
