@@ -41,6 +41,8 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as targetedTaskReuse from "../../../../scripts/lib/targeted-task-reuse.mjs";
 import {
   checkNpmScript,
   buildTerminalFailureCheckpointResult,
@@ -500,6 +502,32 @@ const cfg: ReleaseConfig = releaseConfig({
   // about it. Setting it also makes the build assertions below prove the build honours
   // cfg.spaBuildWorkspace instead of a hardcoded name, which is the stronger property.
   spaBuildWorkspace: "@example/fixture-spa",
+});
+
+describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocation", () => {
+  it("forwards guarded empty-run arguments from reuse to the actual workspace invocation", async () => {
+    const tree = fileURLToPath(new URL("../../../../", import.meta.url));
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: tree, encoding: "utf8" });
+    expect(head.status).toBe(0);
+    const sha = head.stdout.trim();
+    const finish = vi.fn(() => []);
+    const arm = vi.spyOn(targetedTaskReuse, "armTargetedTaskReuse").mockResolvedValue({
+      env: { GREEN_CHECKPOINT: "1", PC_TEST_REUSE_SKIP_LIST: "/fixture/verified-passes.json" },
+      args: ["--passWithNoTests"], lines: [], reused: 2, recording: true, finish,
+    });
+    const { exec, calls } = makeExec([{ code: 0 }]);
+    const deps = realCheckpointDeps({ ...cfg, checkpointRoot: tree }, exec);
+    deps.setupTree = async () => {};
+    try {
+      const result = await deps.runGateAtRef!(sha, ["@papercusp/operator-vite :: test"]);
+      expect(result.pass).toBe(true);
+      expect(arm).toHaveBeenCalledWith(expect.objectContaining({ expectedSha: sha, script: "test" }));
+      const call = calls.find(c => c.args.includes("test"));
+      expect(call?.args.slice(-2)).toEqual(["--", "--passWithNoTests"]);
+      expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBe("/fixture/verified-passes.json");
+      expect(finish).toHaveBeenCalledOnce();
+    } finally { arm.mockRestore(); }
+  });
 });
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");
 
