@@ -2,6 +2,21 @@
 import assert from 'node:assert/strict';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 
+/** Automatic read retries are repeated receipts, not additional UI controls. */
+export function verifyPrivateInsightsDenialCoverage(denials: readonly {
+  control: string; status: number; body: string;
+}[]) {
+  const controls = ['cold-overview', 'token-refresh', 'warm-overview'];
+  for (const denial of denials) {
+    assert.ok(controls.includes(denial.control), 'denial must identify its intended UI control');
+    assert.equal(denial.status, 403);
+    assert.equal(JSON.parse(denial.body).error?.code, 'host_not_allowed');
+  }
+  for (const control of controls) assert.ok(denials.some(denial => denial.control === control),
+    `missing actual Host denial for ${control}`);
+  return { hostDenials: denials.length, denialControls: controls };
+}
+
 /** Both maintained Codex routes identify the same seeded native transcript. */
 export function verifyPrivateHistoryStreams(
   streams: readonly { url: string; status: number }[],
