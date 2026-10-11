@@ -218,6 +218,10 @@ describe('P-005 measureStaleAcceptance', () => {
       staleAcceptanceSurfaced: 1,
       staleAcceptanceNeverSurfaced: 1,
       staleAcceptanceUndispositioned: 2,
+      // D-019 denominator: every non-archived, non-rubric plan in scope, ANY status —
+      // including the `ready` one — so an empty or misfiltered scope reads 0 here, and
+      // the health cell can report the stale metrics as unmeasured instead of a clean 0.
+      acceptancePlansConsidered: 6,
       thresholds: { surfaceAfterDays: 14, graceDays: 3, neverSurfacedAfterDays: 17 },
     });
   });
@@ -227,5 +231,7 @@ describe('P-005 measureStaleAcceptance', () => {
     expect(m.staleAcceptanceSurfaced).toBe(0);
     expect(m.staleAcceptanceNeverSurfaced).toBe(0);
     expect(m.staleAcceptanceUndispositioned).toBe(0);
+    // An empty scope must be distinguishable from a clean one (D-019).
+    expect(m.acceptancePlansConsidered).toBe(0);
   });
 });
