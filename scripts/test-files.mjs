@@ -15,6 +15,7 @@
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
+import { readVerifierSourceReceiptSync } from '@papercusp/verification-harness/verifier-source';
 import { spawn, spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1776,6 +1777,20 @@ function gitLineDeltas(absolutePaths, root, repositories = new Map()) {
  */
 export function snapshotProvenance(absolutePaths, root = REPO_ROOT) {
   const unique = [...new Set(absolutePaths)];
+  if (existsSync(resolve(root, '.verifier-source.json'))) {
+    let receipt;
+    let provenanceError;
+    try { receipt = readVerifierSourceReceiptSync(root); }
+    catch (error) { provenanceError = String(error); }
+    return { head: receipt?.sourceCommit ?? null, startedAt: new Date().toISOString(),
+      ...(provenanceError ? { provenanceError } : {}),
+      entries: unique.map(absolute => {
+        const path = relative(root, absolute);
+        const recorded = receipt?.files.some(file => file.path === path);
+        return { absolute, path, state: recorded ? 'clean' : PROVENANCE_UNKNOWN,
+          fingerprint: fileFingerprint(absolute), added: recorded ? 0 : null, deleted: recorded ? 0 : null };
+      }) };
+  }
   const repositories = new Map();
   const states = gitPathStates(unique, root, repositories);
   const deltas = gitLineDeltas(unique, root, repositories);
