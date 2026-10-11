@@ -10,6 +10,11 @@ export const FLAGS = {
   // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the shared
   // tools/UI kill-switch, not a hidden rollout of otherwise finished work.
   REPORTS_LIBRARY: "papercusp-reports-library",
+  // bm25-lexical-search-evoke-adoption-2026-10-10 P-005/P-009 (D-003 §4-5): lexical
+  // search ranks with pg_textsearch BM25 wherever the corpus's BM25 index exists.
+  // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the cutover
+  // kill-switch that restores the legacy ts_rank_cd ordering on every call site.
+  BM25_LEXICAL_RANKING: "papercusp-bm25-lexical-ranking",
   // SNAPSHOTS retired (retire-snapshots-instance-spec-2026-06-09): the harness-
   // snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible
   // clone is now the lightweight InstanceSpec (capture/boot/vary, ungated). The
@@ -1131,6 +1136,15 @@ export const FLAGS = {
   // exactly as before this plan (no quarantine, no escalation) — the instant off-switch on
   // this shared commit path if the guard ever mis-quarantines a real, safe deletion.
   GIT_SYNC_DELETION_GUARD: "papercusp-git-sync-deletion-guard",
+  // git-sync-turn-scoped-commit-hold-2026-10-11 P-004: the runtime KILL-SWITCH for the
+  // turn-scoped commit hold — git-sync leaves out every path a live session natively edited
+  // during its CURRENT turn (edit_attribution_ledger newer than its last
+  // session_turn_journal turn end), so a multi-file change commits together after the turn
+  // ends instead of being swept half-done mid-turn. Bounded: a hold lifts at turn end,
+  // session end, or 60 min after the edit (D-001). ON by default (finished, a safety
+  // feature on the shared commit path). When OFF, the census has no turn-holds leg and
+  // git-sync sweeps exactly as before this plan.
+  GIT_SYNC_TURN_HOLD: "papercusp-git-sync-turn-hold",
   // github-bridge-hive-egress-2026-07-02 P-008: the hive P2P git <-> GitHub bridge —
   // on a BRIDGED hive's git-sync tick, ingress origin branches into the synthetic
   // github-origin namespace (admission-gated) + egress canonical refs FF-only to the

@@ -114,11 +114,16 @@ function withScratchWorkspaceMutex<T>(
   run: () => Promise<T>,
   onWaiting?: (info: { owner: string; elapsedMs: number }) => void,
   onAcquired?: (info: { waitedMs: number }) => void,
+  requestTraceId?: string,
 ): Promise<T> {
   const mutexName = scratchWorkspaceMutexName(workspaceId);
   const previous = scratchMutexState.get(mutexName) ?? Promise.resolve();
   const requests = scratchMutexWaiters.get(mutexName) ?? [];
-  const request = { operation, startedAt: Date.now() };
+  const request = {
+    operation,
+    startedAt: Date.now(),
+    ...(requestTraceId ? { requestTraceId: requestTraceId.slice(0, 120) } : {}),
+  };
   requests.push(request);
   const queuedLocally = requests[0] !== request;
   scratchMutexWaiters.set(mutexName, requests);
@@ -137,6 +142,7 @@ function withScratchWorkspaceMutex<T>(
           owner: JSON.stringify({
             layer: 'process-local',
             operation: holder.operation,
+            requestTraceId: holder.requestTraceId,
             pid: process.pid,
             startedAt: new Date(holder.startedAt).toISOString(),
           }),
@@ -1533,6 +1539,7 @@ export interface ScratchWriteMutexWaitOwner {
   layer: 'process-local' | 'filesystem' | 'unknown';
   operation?: string;
   subsystem?: string;
+  requestTraceId?: string;
   pid?: number;
   host?: string;
   startedAt?: string;
@@ -1551,6 +1558,9 @@ function scratchWriteMutexWaitOwner(owner: string): ScratchWriteMutexWaitOwner {
       layer,
       ...(typeof operation === 'string' ? { operation: operation.slice(0, 100) } : {}),
       ...(typeof subsystem === 'string' ? { subsystem: subsystem.slice(0, 100) } : {}),
+      ...(typeof parsed.requestTraceId === 'string'
+        ? { requestTraceId: parsed.requestTraceId.slice(0, 120) }
+        : {}),
       ...(Number.isSafeInteger(parsed.pid) ? { pid: parsed.pid as number } : {}),
       ...(typeof parsed.host === 'string' ? { host: parsed.host.slice(0, 120) } : {}),
       ...(typeof parsed.startedAt === 'string' ? { startedAt: parsed.startedAt.slice(0, 40) } : {}),
@@ -1564,6 +1574,7 @@ const SCRATCH_WRITE_PROGRESS_AFTER_MS = 5_000;
 
 export async function writeWithScratchQuota(
   opts: { workspaceId: string; filePath: string; bytes: number;
+    requestTraceId?: string;
     onTiming?: (timings: ScratchWriteTimings) => void },
   write: () => Promise<void>,
 ): Promise<void> {
@@ -1778,7 +1789,7 @@ export async function writeWithScratchQuota(
     }, onMutexWaiting, ({ waitedMs }) => {
       if (refreshWaitOwner) timings.refreshWaitMs += waitedMs;
       else timings.quotaWaitMs += waitedMs;
-    });
+    }, opts.requestTraceId);
   } finally {
     entry.writes.delete(token);
     if (pending.reserved) entry.writeGeneration += 1;

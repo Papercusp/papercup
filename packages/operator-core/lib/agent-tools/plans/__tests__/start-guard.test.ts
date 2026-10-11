@@ -9,7 +9,8 @@
  * PG/lock side-effects so the branch is exercised without a database or a
  * real plan row.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { configurePlanAdmissionPolicySource } from '../plan-admission-gate';
 import {
   projectAcceptanceBarContractSnapshot,
   readAcceptanceBarContractSnapshot,
@@ -163,6 +164,11 @@ vi.mock('../plan-spec-quality-gate', () => ({
   evaluatePlanSpecQualityGate: vi.fn(async () => H.state.specQuality),
 }));
 
+const barCritiqueMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<unknown> => null));
+vi.mock('../plan-start-critique-gate', () => ({
+  evaluatePlanStartBarCritique: (...args: unknown[]) => barCritiqueMock(...args),
+}));
+
 // Auto-approve runs inside withPlanLock after a successful start — stub it to
 // a no-op so the proceed-case test doesn't need the real lock side-database.
 vi.mock('../with-plan-lock', async (orig) => {
@@ -274,6 +280,20 @@ beforeEach(() => {
   promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false, ...NO_EDGES });
   planLockMocks.withPlanLock.mockReset();
   planLockMocks.withPlanLock.mockResolvedValue({ kind: 'noop', value: false });
+  // mockReset drains any unconsumed mockResolvedValueOnce, so a test that refuses
+  // before the bar-critique gate cannot leak its verdict into the next test.
+  barCritiqueMock.mockReset();
+  barCritiqueMock.mockResolvedValue(null);
+  // plans:start runs checkPlanStartable -> checkPlanAdmission, whose DEFAULT policy
+  // source resolves the pot via potHomeSlugForHarness — a real-PG read this suite has
+  // no database for (the rail census refused it, red-pinning every test here). Install
+  // the gate's own host seam: a null policy is the gate's documented "no admission
+  // policy" answer, so the door admits and the suite exercises plans:start itself.
+  configurePlanAdmissionPolicySource(async () => null);
+});
+
+afterEach(() => {
+  configurePlanAdmissionPolicySource(null);
 });
 
 /**
@@ -650,6 +670,80 @@ describe('plans:start terminal guard', () => {
       code: 'spec_quality_scorecard_missing',
     });
     expect(() => planRowRead()).toThrow();
+  });
+
+  it('SPEC-P-007 R-7: refuses a contracted plan with a stale bar critique before approval and promotion', async () => {
+    H.state.specQuality = {
+      satisfied: true,
+      applicable: true,
+      mode: 'enforced',
+      planSlug: 'live-plan-2026-06-02',
+      specSetHash: 'hash-one',
+      wouldBlock: [],
+    };
+    barCritiqueMock.mockResolvedValueOnce({
+      mode: 'enforced',
+      authorIds: ['su-author'],
+      mandatoryOutcomeBarCount: 1,
+      nonDroppedItemCount: 1,
+      verdict: {
+        satisfied: false,
+        planSlug: 'live-plan-2026-06-02',
+        code: 'critique_stale',
+        message: 'stale',
+        threshold: 1,
+        barSetHash: null,
+        consultIds: ['c-1'],
+        critics: ['L:critic'],
+        authorLineageConsultIds: [],
+        clauseShortfalls: [{ specId: 'S-1', revision: 2, coveredBy: 0, reason: 'stale' }],
+        barSetShortfall: null,
+      },
+    });
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(barCritiqueMock).toHaveBeenCalledWith(
+      expect.objectContaining({ planSlug: 'live-plan-2026-06-02', contractEnforced: true }),
+    );
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'critique_stale', message: 'stale' });
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expect(() => planRowRead()).toThrow();
+  });
+
+  it('SPEC-P-007 cohort: a report-only bar-critique verdict is surfaced but never refuses', async () => {
+    H.state.specQuality = {
+      satisfied: true,
+      applicable: true,
+      mode: 'enforced',
+      planSlug: 'live-plan-2026-06-02',
+      specSetHash: 'hash-one',
+      wouldBlock: [],
+    };
+    barCritiqueMock.mockResolvedValueOnce({
+      mode: 'report-only',
+      reportOnlyReason: 'pre-cohort',
+      authorIds: [],
+      mandatoryOutcomeBarCount: 0,
+      nonDroppedItemCount: 1,
+      verdict: {
+        satisfied: false,
+        planSlug: 'live-plan-2026-06-02',
+        code: 'critique_missing',
+        message: 'missing',
+        threshold: 1,
+        barSetHash: null,
+        consultIds: [],
+        critics: [],
+        authorLineageConsultIds: [],
+        clauseShortfalls: [{ specId: 'S-1', revision: 1, coveredBy: 0, reason: 'missing' }],
+        barSetShortfall: null,
+      },
+    });
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.data.results[0]).toMatchObject({ ok: true, barCritique: { mode: 'report-only', reportOnlyReason: 'pre-cohort' } });
   });
 
   it('surfaces no-clause rollout as report-only while allowing the start path', async () => {

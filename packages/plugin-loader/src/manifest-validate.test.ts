@@ -296,7 +296,7 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     contractVersion: 1,
     displayName: 'Example',
     datatypes: ['ticket'],
-    capabilities: ['ticket.read', 'push.subscribe', 'push.unsubscribe'],
+    capabilities: ['ticket.read', 'push.subscribe', 'push.unsubscribe', 'ingress.normalize'],
     oauth,
     egressHosts: ['api.example.com', 'example.com', 'pubsub.example.com'],
     configSchema: { type: 'object' },
@@ -306,6 +306,26 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     push: {
       handshake: { header: 'x-hook-secret' },
       signature: { header: 'x-hook-signature', algorithm: 'hmac-sha256', encoding: 'hex' },
+    },
+    setup: {
+      credentials: [
+        { key: 'app_token', label: 'App token', pattern: 'xapp-[A-Za-z0-9-]+', help: 'Basic Information', helpUrl: 'https://example.com/help', placeholder: 'xapp-…' },
+        { key: 'bot_token', label: 'Bot token', hosts: ['api.example.com'] },
+      ],
+      appRegistration: {
+        createUrl: 'https://example.com/apps?manifest_json={definition}',
+        definition: { settings: { socket_mode_enabled: true } },
+        docsUrl: 'https://example.com/docs',
+        copyHint: 'From a manifest',
+      },
+    },
+    ingress: {
+      socket: {
+        credential: 'app_token',
+        open: { url: 'https://api.example.com/apps.connections.open', method: 'POST', urlField: 'url' },
+        ackField: 'envelope_id',
+        reconnect: { field: 'type', values: ['disconnect'] },
+      },
     },
   };
   const manifest = (p: unknown) => ({ name: 'example-provider', version: '0.1.0', papercusp: '^0.1.0', provider: p });
@@ -351,6 +371,18 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     expect(validateManifest(manifest({ ...provider, push: { signature: { ...signature, header: 'X-Hook-Signature' } } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, push: { handshake: { header: 'x-hook-secret' } } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, push: { signature } })).issues).toEqual([]);
+  });
+
+  it('refuses a socket ingress with an unknown kind or key, a carried token, a non-https open URL or an empty reconnect list (P-003)', () => {
+    // Schema shape only; credential-key, egress and capability rules are semantic
+    // (validateProviderDescriptor, plugin-sdk/src/provider.test.ts).
+    const socket = provider.ingress.socket;
+    expect(validateManifest(manifest({ ...provider, ingress: { socket, webhook: {} } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, ingress: { socket: { ...socket, token: 'xapp-1' } } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, ingress: { socket: { ...socket, open: { ...socket.open, url: 'http://api.example.com/x' } } } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, ingress: { socket: { ...socket, reconnect: { field: 'type', values: [] } } } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, ingress: {} })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, ingress: { socket: { credential: 'app_token', open: { url: 'https://api.example.com/open', urlField: 'url' } } } })).issues).toEqual([]);
   });
 });
 

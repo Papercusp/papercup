@@ -3269,18 +3269,19 @@ describe('makeQuotaBlockDetector (WI-1386682 (1)/(2) — quota-wall ring-buffer 
   it('publishes the current quota episode and clears it on recovery or recycle', () => {
     let now = 1000;
     const d = makeQuotaBlockDetector({ agent: 'codex', capBytes: 128, now: () => now });
-    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null });
+    // WI-6554700010008412: quotaResetAtMs is null when the wall states no reset.
+    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null, quotaResetAtMs: null });
     d.observe("You've hit your usage limit.");
-    expect(d.snapshot()).toEqual({ quotaBlocked: true, quotaBlockedSinceMs: 1000 });
+    expect(d.snapshot()).toEqual({ quotaBlocked: true, quotaBlockedSinceMs: 1000, quotaResetAtMs: null });
     now = 2000;
     d.observe(' still waiting');
     expect(d.snapshot().quotaBlockedSinceMs).toBe(1000);
     d.observe('healthy output '.repeat(20));
-    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null });
+    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null, quotaResetAtMs: null });
     d.observe('Usage limit reached');
-    expect(d.snapshot()).toEqual({ quotaBlocked: true, quotaBlockedSinceMs: 2000 });
+    expect(d.snapshot()).toEqual({ quotaBlocked: true, quotaBlockedSinceMs: 2000, quotaResetAtMs: null });
     d.reset();
-    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null });
+    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null, quotaResetAtMs: null });
   });
   it('starts unblocked and stays unblocked on ordinary output', () => {
     const d = makeQuotaBlockDetector();

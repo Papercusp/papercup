@@ -59,6 +59,7 @@ import {
   validatePlanCandidateDependencies,
 } from './plan-candidate-dependencies';
 import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './plan-spec-quality-gate';
+import { evaluatePlanStartBarCritique, type PlanStartBarCritiqueOutcome } from './plan-start-critique-gate';
 import { specQualityPlanItemIds } from './spec-quality';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -81,6 +82,13 @@ const stringTolerantBool = z.preprocess((v) => (v === 'true' ? true : v === 'fal
 // flat MCP deadline so a legitimate long saga returns its structured outcome
 // instead of an ambiguous timeout (EI-22583060887975914).
 export const PLANS_START_TIMEOUT_SEC = 120;
+
+/**
+ * Requirement-contract refusals plans:start returns itself (the gates it calls
+ * carry their own unions). Registered in doc-claims/verification-system-map.ts,
+ * whose test demands a map entry and a triggering test for every member.
+ */
+export type PlanStartDoorRefusalCode = 'spec_quality_not_current' | 'claim_spec_binding_failed';
 
 const argsSchema = z
   .object({
@@ -295,9 +303,46 @@ export default defineTool({
               ok: false as const,
               slug,
               harnessSlug,
-              error: 'spec_quality_not_current' as const,
+              error: 'spec_quality_not_current' as const satisfies PlanStartDoorRefusalCode,
               ...specQuality,
             };
+          }
+        }
+
+        // P-007 (verification-system-improvements-2026-10-10, D-003/D-004/D-014/D-015): a
+        // contracted plan starts only once outside-lineage bar critiques cover its current
+        // contract. Plans created before the cohort boundary, or whose contract the
+        // spec-quality gate does not enforce, record the verdict here and never refuse.
+        let barCritique: PlanStartBarCritiqueOutcome | null = null;
+        if (read && specQuality?.applicable) {
+          const planItems = read.row.items.length ? read.row.items : read.parsed.items;
+          barCritique = await evaluatePlanStartBarCritique({
+            workspaceId: startWorkspaceId,
+            harnessSlug,
+            planSlug: slug,
+            nonDroppedItemCount: specQualityPlanItemIds(planItems).length,
+            contractEnforced: specQuality.mode === 'enforced',
+          });
+          if (barCritique) {
+            ctxAny.metadata?.({
+              slug,
+              harnessSlug,
+              barCritiqueMode: barCritique.mode,
+              barCritiqueSatisfied: barCritique.verdict.satisfied,
+              barCritiqueThreshold: barCritique.verdict.threshold,
+              barCritiqueConsultIds: barCritique.verdict.consultIds,
+              ...(barCritique.verdict.code ? { barCritiqueCode: barCritique.verdict.code } : {}),
+            });
+            if (barCritique.mode === 'enforced' && !barCritique.verdict.satisfied) {
+              return {
+                ok: false as const,
+                slug,
+                harnessSlug,
+                error: barCritique.verdict.code ?? ('critique_missing' as const),
+                message: barCritique.verdict.message,
+                barCritique,
+              };
+            }
           }
         }
 
@@ -916,7 +961,7 @@ export default defineTool({
             ...(promotedBlockError ? { promotedBlockError } : {}),
             admission,
             ...(admissionError ? { admissionError } : {}),
-            ...(specQuality ? { specQuality } : {}),
+            ...(specQuality ? { specQuality } : {}), ...(barCritique ? { barCritique } : {}),
             ...(checkpointConsult ? { checkpointConsult } : {}),
             message: `${promotionMessage}${promotedBlockMessage} ${admission ? admission.message : `Exact-plan admission could not be measured: ${admissionError ?? 'unknown error'}`}`,
             ...(axisLive ? {} : { opStatusRetired: true as const }),
@@ -932,7 +977,7 @@ export default defineTool({
           });
           return {
             ok: false as const,
-            error: 'claim_spec_binding_failed' as const,
+            error: 'claim_spec_binding_failed' as const satisfies PlanStartDoorRefusalCode,
             slug,
             harnessSlug,
             status: axisLive ? 'started' : null,
@@ -948,7 +993,7 @@ export default defineTool({
             admission,
             claimSpecBinding,
             claimSpecBindingError,
-            ...(specQuality ? { specQuality } : {}),
+            ...(specQuality ? { specQuality } : {}), ...(barCritique ? { barCritique } : {}),
             ...(checkpointConsult ? { checkpointConsult } : {}),
             message: `${promotionMessage}${promotedBlockMessage} Exact-plan claim-spec binding failed: ${claimSpecBindingError}`,
             ...(axisLive ? {} : { opStatusRetired: true as const }),
@@ -974,7 +1019,7 @@ export default defineTool({
           ...(promotionError ? { promotionError } : {}),
           ...(promotedBlock ? { promotedBlock } : {}),
           ...(promotedBlockError ? { promotedBlockError } : {}),
-          ...(specQuality ? { specQuality } : {}),
+          ...(specQuality ? { specQuality } : {}), ...(barCritique ? { barCritique } : {}),
           ...(checkpointConsult ? { checkpointConsult } : {}),
           message:
             promotionMessage +

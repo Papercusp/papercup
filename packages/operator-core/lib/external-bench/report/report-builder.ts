@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { summarizeAssignedOutcomes } from '@papercusp/bench-metrics';
+import { armContamination } from '../contamination';
 import {
   BENCH_REPORT_SCHEMA_VERSION,
   type BenchReportArmSummary,
@@ -109,6 +110,10 @@ export function bundleFromRollouts(input: {
   callLog?: BenchReportCall[];
   concurrencyTimeline?: Record<string, Array<{ tMs: number; live: number }>>;
   suiteData?: Record<string, unknown>;
+  /** taskId → task creation date (ISO). A task absent here is undated, so its arm cannot be labelled clean. */
+  taskCreatedAt?: Readonly<Record<string, string | null | undefined>>;
+  /** modelId → pinned training-data cutoff (`null` = explicitly unknown). Absent ids use MODEL_TRAINING_CUTOFFS. */
+  trainingCutoffs?: Readonly<Record<string, string | null>>;
 }): BenchReportBundle {
   if (input.runResults.some(row => !input.arms.includes(row.arm))) {
     throw new Error('benchmark report: result outside frozen arm assignment');
@@ -174,6 +179,14 @@ export function bundleFromRollouts(input: {
       ...recordedCosts(rows),
       tokensTotal: rows.reduce((s, r) => s + (r.tokensTotal || 0), 0),
       concurrency: summarizeConcurrency(input.concurrencyTimeline?.[arm]),
+      contamination: armContamination({
+        modelId: input.models[arm] ?? 'unknown',
+        assignedTaskIds,
+        assignedSeeds: input.assignedSeeds,
+        rows,
+        taskCreatedAt: input.taskCreatedAt,
+        trainingCutoffOverride: pinnedCutoff(input.trainingCutoffs, input.models[arm]),
+      }),
     };
   });
 
@@ -209,6 +222,15 @@ export function bundleFromRollouts(input: {
     suite: input.suite,
     suiteData: input.suiteData,
   };
+}
+
+/** A caller-pinned cutoff for `modelId`: `undefined` when none was pinned (use the curated table). */
+function pinnedCutoff(
+  pins: Readonly<Record<string, string | null>> | undefined,
+  modelId: string | undefined,
+): string | null | undefined {
+  if (!pins || !modelId || !Object.prototype.hasOwnProperty.call(pins, modelId)) return undefined;
+  return pins[modelId];
 }
 
 function summarizeConcurrency(

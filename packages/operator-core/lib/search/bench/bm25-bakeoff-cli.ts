@@ -225,14 +225,14 @@ async function main(): Promise<number> {
   try {
     await c.waitReady();
     const databases = bakeoffDatabases(engines);
-    for (const [i, { database, setupFile }] of databases.entries()) {
+    for (const [i, { database, setupFiles }] of databases.entries()) {
       log(`setting up ${database}`);
       c.psql('postgres', { sql: createDatabaseSql(database) });
       const inherited = c.psql(database, { sql: INHERITED_EXTENSIONS_SQL }).trim();
       if (inherited) throw new Error(`${database} was created holding extensions [${inherited}]; engine isolation is broken`);
       c.psql(database, { file: 'common.sql' });
       c.psql(database, { file: i === 0 ? 'queries.sql' : 'load-queries.sql' });
-      c.psql(database, { file: setupFile });
+      for (const file of setupFiles) c.psql(database, { file });
     }
     // Evoke's preload worker publishes resident images for auto_preload indexes at
     // startup; restart so every index starts from its production (preloaded) state.

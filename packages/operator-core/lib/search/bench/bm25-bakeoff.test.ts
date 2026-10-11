@@ -299,6 +299,15 @@ describe('roster', () => {
     expect(dbs.map(d => d.database).sort()).toEqual(['bake_evoke', 'bake_pgsearch', 'bake_pgts', 'bake_sql']);
   });
 
+  it('runs the pure-SQL BM25 postings setup only when a sqlbm25 arm is selected (EI-25652941379953131)', () => {
+    const pick = (...methods: string[]) => BM25_BAKEOFF_ENGINES.filter(e => methods.includes(e.method));
+    const sqlFiles = (methods: string[]) => bakeoffDatabases(pick(...methods)).find(d => d.database === 'bake_sql')?.setupFiles;
+    expect(sqlFiles(['tsv_and', 'pgts'])).toEqual(['engine-sql.sql']);
+    expect(sqlFiles(['tsv_and', 'sqlbm25_post'])).toEqual(['engine-sql.sql', 'engine-sqlbm25.sql']);
+    expect(sqlFiles(['sqlbm25_tsv', 'sqlbm25_post'])).toEqual(['engine-sql.sql', 'engine-sqlbm25.sql']);
+    expect(bakeoffDatabases(pick('pgts'))).toEqual([{ database: 'bake_pgts', setupFiles: ['engine-pgts.sql'] }]);
+  });
+
   it('marks only the AGPL engine as not shippable', () => {
     expect(BM25_BAKEOFF_ENGINES.filter(e => !e.shippable).map(e => e.method)).toEqual(['pgsearch']);
   });

@@ -2627,6 +2627,15 @@ export const DEPENDENCY_SNAPSHOT_REFRESH_AGE_MS = 20 * 60 * 60_000;
 /** The direct-mode producer took ~2 min for 59,067 edge rows (2026-10-06); bounded well inside the routine budget. */
 export const DEPENDENCY_SNAPSHOT_PRODUCER_TIMEOUT_MS = 10 * 60_000;
 
+export type DependencySnapshotBackend = 'first-party-imports' | 'gitnexus';
+
+/** Reuse the routine's trigger config for a reversible producer choice (native P-009). */
+export function dependencySnapshotBackend(value: unknown): DependencySnapshotBackend {
+  if (value == null || value === 'first-party-imports') return 'first-party-imports';
+  if (value === 'gitnexus') return 'gitnexus';
+  throw new Error(`Unsupported snapshot_backend: ${String(value)}`);
+}
+
 /**
  * `fresh` and `behind-index` are both READ by the selector (every edge is re-corroborated
  * against the importer's current source, so an older index still yields valid suggestions);
@@ -2663,7 +2672,7 @@ export function dependencySnapshotPath(repoName: string, home: string = os.homed
 export function judgeDependencySnapshot(
   text: string | null,
   nowMs: number,
-  opts: { maxAgeMs?: number; currentIndexCommit?: string | null } = {},
+  opts: { maxAgeMs?: number; currentIndexCommit?: string | null; expectedBackend?: DependencySnapshotBackend } = {},
 ): DependencySnapshotJudgement {
   const unknown = { generatedAt: null, ageMs: null, indexCommit: null, edges: null };
   if (text == null) return { status: 'absent', reason: 'no snapshot file', ...unknown };
@@ -2675,7 +2684,7 @@ export function judgeDependencySnapshot(
   }
   const o = (raw && typeof raw === 'object' ? raw : {}) as {
     schema?: unknown;
-    index?: { lastCommit?: unknown } | null;
+    index?: { lastCommit?: unknown; backend?: unknown } | null;
     generatedAt?: unknown;
     edges?: unknown;
   };
@@ -2696,8 +2705,12 @@ export function judgeDependencySnapshot(
   if (known.ageMs > maxAgeMs) {
     return { status: 'stale', reason: `older than the ${Math.round(maxAgeMs / 3_600_000)}h selector ceiling`, ...known };
   }
+  if (opts.expectedBackend && o.index?.backend !== opts.expectedBackend) {
+    return { status: 'behind-index', reason: `producer handover to ${opts.expectedBackend} pending`, ...known };
+  }
   const current = opts.currentIndexCommit ?? null;
-  if (current && current !== lastCommit) {
+  // A first-party snapshot pins the source checkout, not the retired graph's index.
+  if (o.index?.backend !== 'first-party-imports' && current && current !== lastCommit) {
     return { status: 'behind-index', reason: `bound to ${lastCommit.slice(0, 10)}, index is at ${current.slice(0, 10)}`, ...known };
   }
   return { status: 'fresh', reason: null, ...known };
@@ -2726,11 +2739,10 @@ export function parseProducerLine(stderr: string): { status: string; line: strin
 }
 
 /** `--out` is always explicit, so the writer and the routine's own reader cannot disagree on HOME. */
-export function dependencySnapshotProducerArgv(root: string, repoName: string, bin: string, out: string): string[] {
+export function dependencySnapshotProducerArgv(root: string, repoName: string, bin: string, out: string, backend: DependencySnapshotBackend = 'first-party-imports'): string[] {
   return [
     path.join(root, 'scripts', 'gen-graph-dependency-snapshot.mjs'),
-    '--gitnexus-bin',
-    bin,
+    ...(backend === 'first-party-imports' ? ['--first-party'] : ['--gitnexus-bin', bin]),
     '--repo',
     repoName,
     '--source-root',
@@ -2747,6 +2759,7 @@ export interface DependencySnapshotProducerRun {
 }
 
 export interface DependencySnapshotProducerDeps {
+  backend?: DependencySnapshotBackend;
   exec?: typeof execFileViaSidecar;
   bin?: string;
   nodeBin?: string;
@@ -2762,13 +2775,14 @@ export async function runDependencySnapshotProducer(
   deps: DependencySnapshotProducerDeps = {},
 ): Promise<DependencySnapshotProducerRun> {
   const at = (deps.now ?? Date.now)();
+  const backend = deps.backend ?? 'first-party-imports';
   const bin = deps.bin ?? canaryBin();
-  if (!(deps.exists ?? existsSync)(bin)) {
+  if (backend === 'gitnexus' && !(deps.exists ?? existsSync)(bin)) {
     return { exit: null, line: `GRAPH_SNAPSHOT status=not-attempted reason=no gitnexus binary at ${bin}`, at };
   }
   const nodeBin = deps.nodeBin ?? process.env.GITNEXUS_NODE_BIN ?? process.execPath;
   try {
-    const { stderr } = await (deps.exec ?? execFileViaSidecar)(nodeBin, dependencySnapshotProducerArgv(root, repoName, bin, out), {
+    const { stderr } = await (deps.exec ?? execFileViaSidecar)(nodeBin, dependencySnapshotProducerArgv(root, repoName, bin, out, backend), {
       cwd: root,
       timeoutMs: DEPENDENCY_SNAPSHOT_PRODUCER_TIMEOUT_MS,
       maxBuffer: 4 * 1024 * 1024,
@@ -2821,7 +2835,7 @@ export function decideDependencySnapshotHealth(
 
 export interface RefreshDependencySnapshotDeps {
   readText?: (p: string) => string | null;
-  produce?: (root: string, repoName: string, out: string) => Promise<DependencySnapshotProducerRun>;
+  produce?: (root: string, repoName: string, out: string, deps?: DependencySnapshotProducerDeps) => Promise<DependencySnapshotProducerRun>;
   now?: () => number;
   out?: string;
 }
@@ -2836,17 +2850,18 @@ function readTextOrNull(p: string): string | null {
 
 /** Judge the snapshot, run the producer when it needs a refresh, re-judge, fold into health. */
 export async function refreshDependencySnapshot(
-  i: { root: string; repoName: string; currentIndexCommit: string | null; prev: Partial<DependencySnapshotHealth> | null },
+  i: { root: string; repoName: string; currentIndexCommit: string | null; prev: Partial<DependencySnapshotHealth> | null; backend?: DependencySnapshotBackend },
   deps: RefreshDependencySnapshotDeps = {},
 ): Promise<DependencySnapshotHealthUpdate & { ran: boolean }> {
   const now = deps.now ?? Date.now;
   const out = deps.out ?? dependencySnapshotPath(i.repoName);
   const read = deps.readText ?? readTextOrNull;
-  const judge = () => judgeDependencySnapshot(read(out), now(), { currentIndexCommit: i.currentIndexCommit });
+  const backend = i.backend ?? 'first-party-imports';
+  const judge = () => judgeDependencySnapshot(read(out), now(), { currentIndexCommit: i.currentIndexCommit, expectedBackend: backend });
   let judged = judge();
   let run: DependencySnapshotProducerRun | null = null;
   if (dependencySnapshotNeedsRefresh(judged)) {
-    run = await (deps.produce ?? runDependencySnapshotProducer)(i.root, i.repoName, out);
+    run = await (deps.produce ?? runDependencySnapshotProducer)(i.root, i.repoName, out, { backend });
     judged = judge();
   }
   return { ...decideDependencySnapshotHealth(i.prev, judged, run, now(), out), ran: run != null };
@@ -2868,7 +2883,8 @@ async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoN
       [ctx.installSlug],
     )) as Array<{ ds: Partial<DependencySnapshotHealth> | null }>;
     const currentIndexCommit = pickIndexFreshness(readRegistryEntry(registryPath(), repoName), readIndexMetaFreshness(root)).lastCommit ?? null;
-    const update = await refreshDependencySnapshot({ root, repoName, currentIndexCommit, prev: rows[0]?.ds ?? null });
+    const backend = dependencySnapshotBackend(ctx.triggerConfig?.snapshot_backend);
+    const update = await refreshDependencySnapshot({ root, repoName, currentIndexCommit, prev: rows[0]?.ds ?? null, backend });
     const s = update.next;
     if (update.ran || !dependencySnapshotUsable(s.status)) {
       const age = s.ageMs == null ? 'n/a' : `${(s.ageMs / 3_600_000).toFixed(1)}h`;
@@ -2936,6 +2952,10 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   const root = integrationRoot();
   const repoName = typeof cfg.repo_name === 'string' ? cfg.repo_name : GITNEXUS_REPO_NAME;
   const dbAlertRatio = num(cfg, 'db_alert_ratio', GITNEXUS_LBUG_DB_ALERT_RATIO);
+
+  // Source-only refresh must also run while the optional graph analyzer is busy or skipped.
+  const snapshotBackend = dependencySnapshotBackend(cfg.snapshot_backend);
+  if (snapshotBackend === 'first-party-imports') await trackDependencySnapshot(ctx, root, repoName);
 
   // Capacity telemetry is cheap and independent of whether this tick elects to run
   // the expensive analyzer, so record it before the cadence gates (including skips).
@@ -3123,7 +3143,7 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     console.log(`[gitnexus-reindex] skip: ${decision.reason}`);
     // P-001: the index did not move, but the snapshot ages on its own clock and may be absent.
     // A no-op unless it needs a refresh (absent/invalid/behind the index/nearing the ceiling).
-    await trackDependencySnapshot(ctx, root, repoName);
+    if (snapshotBackend === 'gitnexus') await trackDependencySnapshot(ctx, root, repoName);
     return;
   }
 

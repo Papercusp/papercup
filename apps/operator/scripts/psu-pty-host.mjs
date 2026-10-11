@@ -5591,6 +5591,77 @@ export function quotaLimitBannerVisible(text, agent = '') {
 /** WI-10003875: how often a LATCHED quota block re-consults its corroborator. */
 export const QUOTA_CORROBORATE_TTL_MS = 15_000;
 
+/** WI-6554700010008412: how long past the provider's stated reset a latch is
+ *  held before it expires, so a reset rendered to the minute is not probed
+ *  seconds early. */
+export const QUOTA_RESET_GRACE_MS = 60_000;
+
+const QUOTA_RESET_MONTHS = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11,
+};
+
+/** WI-6554700010008412: the reset instant a quota wall states on screen, or
+ *  null. Codex copy only ("... or try again at Oct 14th, 2026 8:24 PM." /
+ *  "try again in 2 days 3 hours 5 minutes."). Codex renders the absolute form
+ *  in the machine's local time, which this host shares with its child. The
+ *  LAST statement in `text` wins (the newest wall). A reset that is not in the
+ *  future at `nowMs` is ignored, so a mis-parse or a replayed old wall can
+ *  never open the gate early; null keeps the old fail-closed level. Pure;
+ *  exported for tests. */
+export function parseQuotaResetAtMs(text, agent = '', nowMs = Date.now()) {
+  if (String(agent ?? '').trim().toLowerCase() !== 'codex') return null;
+  const flat = stripAnsi(String(text ?? '')).replace(/\s+/g, ' ');
+  const starts = [...flat.matchAll(/try again (at|in) /gi)];
+  if (starts.length === 0) return null;
+  const last = starts[starts.length - 1];
+  const tail = flat.slice((last.index ?? 0) + last[0].length, (last.index ?? 0) + last[0].length + 80);
+  const now = Number(nowMs);
+  if (!Number.isFinite(now)) return null;
+  let at = null;
+  if (last[1].toLowerCase() === 'at') {
+    const m = tail.match(
+      /^(?:([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? (?:(\d{4}),? )?)?(\d{1,2}):(\d{2}) ?([AaPp])\.?[Mm]\b/,
+    );
+    if (!m) return null;
+    const base = new Date(now);
+    let month = base.getMonth();
+    let day = base.getDate();
+    let year = base.getFullYear();
+    if (m[1]) {
+      const mo = QUOTA_RESET_MONTHS[/** @type {keyof typeof QUOTA_RESET_MONTHS} */ (m[1].slice(0, m[1].toLowerCase().startsWith('sept') ? 4 : 3).toLowerCase())];
+      if (mo === undefined) return null;
+      month = mo;
+      day = Number(m[2]);
+      if (m[3]) year = Number(m[3]);
+    }
+    let hour = Number(m[4]) % 12;
+    if (m[6].toLowerCase() === 'p') hour += 12;
+    const minute = Number(m[5]);
+    if (minute > 59 || Number(m[4]) > 12 || Number(m[4]) < 1) return null;
+    at = new Date(year, month, day, hour, minute, 0, 0).getTime();
+    // A bare time already past means tomorrow; a dated reset without a year
+    // already past means next year. An explicit year is taken as stated.
+    if (!m[1] && at <= now) at += 24 * 60 * 60 * 1000;
+    else if (m[1] && !m[3] && at <= now) at = new Date(year + 1, month, day, hour, minute, 0, 0).getTime();
+  } else {
+    const unitMs = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 };
+    let total = 0;
+    let rest = tail;
+    for (;;) {
+      const m = rest.match(/^,? ?(?:and )?(\d+) ?(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/i);
+      if (!m) break;
+      const u = m[2].toLowerCase();
+      const key = u.startsWith('d') ? 'd' : u.startsWith('h') ? 'h' : u.startsWith('m') ? 'm' : 's';
+      total += Number(m[1]) * unitMs[key];
+      rest = rest.slice(m[0].length);
+    }
+    if (total <= 0) return null;
+    at = now + total;
+  }
+  return Number.isFinite(at) && at > now ? at : null;
+}
+
 /** The rendered text of one Claude Code transcript row: assistant/user text
  *  blocks, tool_use inputs and tool_result bodies — everything the TUI can
  *  echo onto the screen. Pure; exported for tests. */
@@ -5706,12 +5777,21 @@ export function makeQuotaBlockDetector({
   corroborate = /** @type {null | ((match: { matched: boolean, pattern: string | null, excerpt: string | null }) => string)} */ (null),
   corroborateTtlMs = QUOTA_CORROBORATE_TTL_MS,
   onDismiss = /** @type {null | ((dismissed: { matched: boolean, pattern: string | null, excerpt: string | null, blockedSinceMs: number | null }) => unknown)} */ (null),
+  resetGraceMs = QUOTA_RESET_GRACE_MS,
+  onExpire = /** @type {null | ((expired: { matched: boolean, pattern: string | null, excerpt: string | null, blockedSinceMs: number | null, resetAtMs: number }) => unknown)} */ (null),
 } = {}) {
   let buffer = '';
   let blocked = false;
   let awaitingSubmit = deferUntilSubmit;
   /** @type {number | null} */
   let blockedSinceMs = null;
+  /** WI-6554700010008412: the provider's own stated reset ("try again at
+   *  Oct 14th, 2026 8:24 PM"), parsed once from the screen while latched.
+   *  A walled idle TUI writes too little to evict the banner and every wake
+   *  is deferred while blocked, so without this the latch outlived the wall
+   *  forever. null = no reset stated/parsed: the old fail-closed level. */
+  /** @type {number | null} */
+  let resetAtMs = null;
   let lastMatch = { matched: false, pattern: null, excerpt: null };
   /** @type {{ atMs: number, value: string } | null} */
   let verdict = null;
@@ -5723,6 +5803,26 @@ export function makeQuotaBlockDetector({
    *  Anything else ('walled', 'unknown', a throw) keeps today's fail-closed
    *  level. Without a corroborator this is exactly the old `() => blocked`. */
   const isBlockedNow = () => {
+    // Expire at the provider's stated reset. Drop the stale window too, so the
+    // same static bytes cannot re-latch it; a wall that is still up repaints a
+    // fresh banner on the next turn and latches again with its new reset.
+    if (blocked && resetAtMs != null && now() >= resetAtMs + resetGraceMs) {
+      const expired = { ...lastMatch, blockedSinceMs, resetAtMs };
+      buffer = '';
+      blocked = false;
+      blockedSinceMs = null;
+      resetAtMs = null;
+      verdict = null;
+      lastMatch = { matched: false, pattern: null, excerpt: null };
+      if (typeof onExpire === 'function') {
+        try {
+          onExpire(expired);
+        } catch {
+          /* a failed trace must not re-latch or break the gate */
+        }
+      }
+      return false;
+    }
     if (!blocked || typeof corroborate !== 'function') return blocked;
     const t = now();
     if (!verdict || t - verdict.atMs >= corroborateTtlMs) {
@@ -5762,9 +5862,14 @@ export function makeQuotaBlockDetector({
       if (buffer.length > capBytes) buffer = buffer.slice(-capBytes);
       const hit = quotaLimitBannerMatch(buffer, agent);
       if (hit.matched) lastMatch = hit;
+      // The reset clause can arrive in a later chunk than the matched words,
+      // so keep trying until one parses. Parsed once: the text is static, and
+      // a relative "in 2 hours" re-read later would drift.
+      if (hit.matched && resetAtMs == null) resetAtMs = parseQuotaResetAtMs(buffer, agent, now());
       if (hit.matched === blocked) return null;
       blocked = hit.matched;
       blockedSinceMs = blocked ? now() : null;
+      if (!blocked) resetAtMs = null;
       verdict = null;
       return blocked ? 'detected' : 'cleared';
     },
@@ -5779,8 +5884,10 @@ export function makeQuotaBlockDetector({
      *  is pending, instead of advertising quotaBlocked to the operator. */
     snapshot: () => {
       const quotaBlocked = isBlockedNow();
-      return { quotaBlocked, quotaBlockedSinceMs: blockedSinceMs };
+      return { quotaBlocked, quotaBlockedSinceMs: blockedSinceMs, quotaResetAtMs: resetAtMs };
     },
+    /** The parsed provider reset for the current latch, or null. */
+    resetAtMs: () => resetAtMs,
     /** WI-2140984: WHICH pattern last matched, and the text around it — so a
      *  `quota-block-detected` row says what was actually on screen and a false
      *  positive is diagnosable from the event log alone. */
@@ -5792,6 +5899,7 @@ export function makeQuotaBlockDetector({
       blocked = false;
       awaitingSubmit = deferUntilSubmit;
       blockedSinceMs = null;
+      resetAtMs = null;
       verdict = null;
       lastMatch = { matched: false, pattern: null, excerpt: null };
     },
@@ -9783,6 +9891,15 @@ export function hostThroughPty(o) {
         matchedPattern: dismissed.pattern,
         matchedExcerpt: dismissed.excerpt,
         blockedSinceMs: dismissed.blockedSinceMs,
+      }),
+    // WI-6554700010008412: the provider's stated reset passed; the next
+    // deferred wake is let through and re-latches if the wall is still up.
+    onExpire: (expired) =>
+      appendHostEvent(ownerId, 'quota-block-expired-at-reset', {
+        agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+        matchedPattern: expired.pattern,
+        blockedSinceMs: expired.blockedSinceMs,
+        resetAtMs: expired.resetAtMs,
       }),
   });
   // P-004: codex auth-failure twin. Same resume/fork replay deferral as quota:
@@ -13915,6 +14032,7 @@ export function hostThroughPty(o) {
                 agent: String(env.PAPERCUSP_AGENT ?? '') || null,
                 matchedPattern: hit.pattern,
                 matchedExcerpt: hit.excerpt,
+                resetAtMs: quotaBlockDetector.resetAtMs(),
               }
             : {},
         );

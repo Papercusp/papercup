@@ -1584,6 +1584,48 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
   });
 
+  it('reports the request trace ID of the process-local scratch mutex holder', async () => {
+    const holderTraceId = '21f43fb8-4354-4f61-8ba7-ec03098d0e22';
+    let releaseHolder!: () => void;
+    let startedHolder!: () => void;
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const holderStarted = new Promise<void>((resolve) => { startedHolder = resolve; });
+    const holder = writeWithScratchQuota({
+      workspaceId: 'ws-Q',
+      filePath: join(makeRunDir('ws-Q', 'mutex', UUID(40), 16), 'holder.bin'),
+      bytes: 1,
+      requestTraceId: holderTraceId,
+    }, async () => {
+      startedHolder();
+      await holderGate;
+    });
+    const timings: ScratchWriteTimings[] = [];
+    let waiter: Promise<void> | undefined;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      await holderStarted;
+      waiter = writeWithScratchQuota({
+        workspaceId: 'ws-Q',
+        filePath: join(makeRunDir('ws-Q', 'mutex', UUID(41), 16), 'waiter.bin'),
+        bytes: 1,
+        onTiming: (row) => timings.push(row),
+      }, async () => {});
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(timings.find((row) => row.progress)?.progress?.mutexWaitOwner).toMatchObject({
+        layer: 'process-local',
+        operation: 'write',
+        requestTraceId: holderTraceId,
+      });
+      releaseHolder();
+      await holder;
+      await waiter;
+    } finally {
+      releaseHolder();
+      vi.useRealTimers();
+      await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
+    }
+  });
+
   it('protects an in-flight writer even when its run is the oldest FIFO candidate', async () => {
     const active = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
     const other = makeSparseRun('ws-Q', UUID(2), 1024 ** 3, 10_000);

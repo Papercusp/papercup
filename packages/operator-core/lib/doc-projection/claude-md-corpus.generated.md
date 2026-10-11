@@ -511,7 +511,7 @@ Two mechanisms make this cheap in practice:
 
 1. **Finish or intentionally drop every item** — `todo`/`blocked`/`needs-human` refuse shipping; a deliberate departure is `plans:set-status { status:'dropped', note }`.
 2. **Audit the actual code, per item** — `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations verify; paths must resolve and their blob SHAs are stored. Never treat a work-item, doc, or memory of writing code as code truth.
-3. **Author the rubric AFTER implementation** — `rubrics:propose { rubricRef, kind:'acceptance', subjectPlan, classRef, characteristic, title, criteria }`, 3–7 OUTCOME criteria tracing to the goal + Decisions (a pure investigation may use `criteria:[]`). Deliberately authored against as-built reality — never at plan creation.
+3. **Acceptance bars are seeded at plan activation** from the plan's `requirement` blocks (`plans:audit { phase:'activation' }`), OUTCOME criteria tracing to the goal + Decisions. At completion, amend them to as-built reality with `rubrics:amend`. No seed? Author one with `rubrics:propose { kind:'acceptance', subjectPlan, … }` (an investigation may use `criteria:[]`).
 4. **Vet its current revision** — `consult:get_feedback { policy:'rubric-vetting' }` (that key, NO responder count), improve, then attest with `scorecards:emit` against `meta-acceptance-rubric`. Any later rubric edit invalidates BOTH the attestation AND any independent grading, so batch every revision BEFORE requesting independent grading.
 5. **A NON-implementer grades it** — `scorecards:emit { rubricRef, ratings }` with concrete evidence per criterion; the grader must be outside the rubric author's spawn/rebind lineage and spot-checks the audit citations.
 6. **The implementer records the acceptance call** — re-emit the complete ratings with `acceptance:{ verdict, reasoning }`. The implementer owns the passing bar; a latest `reject` blocks ship until superseded.
@@ -545,32 +545,26 @@ Passing the policy key and NO count keeps the responder bound inside `selection-
 
 ## Verify mixed-family work-item citations against the base table
 
-When checking whether a work-item citation is real, do not treat a zero-row
-lookup in `harness_shared.engineer_issues` as proof that the citation is
-fabricated. `engineer_issues` is an issue-family view (bug/change/task) with
-harness scope; it does not cover feature-family `WI-`/`F-` rows. Those rows live
-in the canonical `harness_shared.work_items` table under `feature_id`, so a
-mixed `EI-`/`WI-`/`F-` citation set must be checked there (or with
-`work_items:get`) before an absence claim is made. Preserve the applicable
-`workspace_id` and `harness_slug` predicates when using the base-table query:
+A zero-row lookup in `harness_shared.engineer_issues` does not prove a citation
+fabricated: that view is issue-family only and omits feature-family `WI-`/`F-`
+rows. Check a mixed `EI-`/`WI-`/`F-` set in the base table
+`harness_shared.work_items` (`feature_id`), or with `work_items:get { id }`.
+A work-item id names one row per WORKSPACE: scope by `workspace_id` only, since
+a guessed `harness_slug` turns a real citation into a false zero.
 
 ```sql
--- sql-snippet-justified: the RELATION CHOICE is the lesson here — engineer_issues is an
--- issue-family view that omits feature-family WI-/F- rows, so only the canonical work_items
--- base table can answer a mixed citation set. work_items:get is already named as the tool
--- alternative in the prose above; this block exists to show the base relation and the tenant
--- predicates it requires, which a tool call cannot demonstrate.
-SELECT feature_id, item_kind, status, workspace_id, harness_slug
+-- sql-snippet-justified: the RELATION CHOICE is the lesson — only the base
+-- table answers a mixed citation set; work_items:get is named above.
+SELECT feature_id, item_kind, status, harness_slug
   FROM harness_shared.work_items
  WHERE workspace_id = '<workspace-id>'
-   AND harness_slug = '<harness-slug>'
    AND feature_id IN ('<EI-or-WI-or-F-id>', ...);
 ```
 
-The view's `issue_id` and the base table's `feature_id` are relation-specific;
-neither relation uses a generic `id` column for this check. Only call a
-citation fabricated after the family-correct lookup and a nearby-id sanity
-check both support genuine absence.
+Call a citation fabricated only after this lookup and a nearby-id sanity check
+both support absence. Every id you cite must be globally unique or carry its
+scope: write `<slug>#P-NNN` / `<slug>#D-NNN`, never bare
+([identifier-scope invariant](/internal/docs/agent-insights/identifier-scope-invariant)).
 
 
 When citing a repo-relative file path in a work-item comment or checkpoint that

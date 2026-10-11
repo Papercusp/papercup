@@ -28,8 +28,12 @@ export interface BakeoffEngine {
   method: string;
   /** Database inside the container; one per engine family (two extensions both define a `bm25` access method). */
   database: string;
-  /** Setup file under `bm25-bakeoff/`, run once per database after `common.sql`. */
-  setupFile: string;
+  /**
+   * Setup files under `bm25-bakeoff/`, in order. Each runs once per database, after
+   * `common.sql`, and only when a selected arm lists it (so `tsv_and` alone does not
+   * pay for the pure-SQL BM25 postings build, EI-25652941379953131).
+   */
+  setupFiles: readonly string[];
   label: string;
   licence: string;
   /** False when the licence rules the engine out of the desktop distribution. */
@@ -39,37 +43,37 @@ export interface BakeoffEngine {
 
 export const BM25_BAKEOFF_ENGINES: readonly BakeoffEngine[] = [
   {
-    method: 'tsv_and', database: 'bake_sql', setupFile: 'engine-sql.sql',
+    method: 'tsv_and', database: 'bake_sql', setupFiles: ['engine-sql.sql'],
     label: "today's lexical leg: tsvector + plainto_tsquery (AND) + ts_rank_cd",
     licence: 'PostgreSQL (core)', shippable: true, analyzer: "Postgres 'english' (stem + stopwords)",
   },
   {
-    method: 'sqlbm25_tsv', database: 'bake_sql', setupFile: 'engine-sql.sql',
+    method: 'sqlbm25_tsv', database: 'bake_sql', setupFiles: ['engine-sql.sql', 'engine-sqlbm25.sql'],
     label: 'pure-SQL BM25 scored off the tsvector (OR candidates via GIN)',
     licence: 'PostgreSQL (core)', shippable: true, analyzer: "Postgres 'english' (stem + stopwords)",
   },
   {
-    method: 'sqlbm25_post', database: 'bake_sql', setupFile: 'engine-sql.sql',
+    method: 'sqlbm25_post', database: 'bake_sql', setupFiles: ['engine-sql.sql', 'engine-sqlbm25.sql'],
     label: 'pure-SQL BM25 over a postings side-table (btree, covering)',
     licence: 'PostgreSQL (core)', shippable: true, analyzer: "Postgres 'english' (stem + stopwords)",
   },
   {
-    method: 'evoke', database: 'bake_evoke', setupFile: 'engine-evoke.sql',
+    method: 'evoke', database: 'bake_evoke', setupFiles: ['engine-evoke.sql'],
     label: 'Evoke 0.2.5, defaults, preloaded',
     licence: 'Apache-2.0', shippable: true, analyzer: 'Evoke default: lowercase, no stemming, no stopwords',
   },
   {
-    method: 'evoke_stem', database: 'bake_evoke', setupFile: 'engine-evoke.sql',
+    method: 'evoke_stem', database: 'bake_evoke', setupFiles: ['engine-evoke.sql'],
     label: 'Evoke 0.2.5, text_stem_english, preloaded',
     licence: 'Apache-2.0', shippable: true, analyzer: 'Evoke: lowercase + English Porter stemming, no stopwords',
   },
   {
-    method: 'pgts', database: 'bake_pgts', setupFile: 'engine-pgts.sql',
+    method: 'pgts', database: 'bake_pgts', setupFiles: ['engine-pgts.sql'],
     label: 'pg_textsearch 1.5.1',
     licence: 'PostgreSQL', shippable: true, analyzer: "Postgres 'english' (stem + stopwords)",
   },
   {
-    method: 'pgsearch', database: 'bake_pgsearch', setupFile: 'engine-pgsearch.sql',
+    method: 'pgsearch', database: 'bake_pgsearch', setupFiles: ['engine-pgsearch.sql'],
     label: 'ParadeDB pg_search 0.26.1 (reference only)',
     licence: 'AGPL-3.0', shippable: false, analyzer: 'pdb.simple + English stemmer (Tantivy)',
   },
@@ -139,10 +143,15 @@ export function resolveBakeoffCorpus(key: string | undefined): BakeoffCorpus {
 }
 
 /** Databases in setup order: bake_sql first, because it freezes the query set the others load. */
-export function bakeoffDatabases(engines: readonly BakeoffEngine[] = BM25_BAKEOFF_ENGINES): { database: string; setupFile: string }[] {
-  const seen = new Map<string, string>();
-  for (const e of engines) if (!seen.has(e.database)) seen.set(e.database, e.setupFile);
-  const out = [...seen].map(([database, setupFile]) => ({ database, setupFile }));
+export function bakeoffDatabases(engines: readonly BakeoffEngine[] = BM25_BAKEOFF_ENGINES): { database: string; setupFiles: string[] }[] {
+  // Union of the selected arms' setup files per database, in first-listed order.
+  const seen = new Map<string, string[]>();
+  for (const e of engines) {
+    const files = seen.get(e.database) ?? [];
+    for (const f of e.setupFiles) if (!files.includes(f)) files.push(f);
+    seen.set(e.database, files);
+  }
+  const out = [...seen].map(([database, setupFiles]) => ({ database, setupFiles }));
   out.sort((a, b) => Number(b.database === 'bake_sql') - Number(a.database === 'bake_sql'));
   return out;
 }

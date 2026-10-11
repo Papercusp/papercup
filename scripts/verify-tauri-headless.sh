@@ -1018,12 +1018,16 @@ fi
 shared_schema_readiness_preflight() {
   [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ] || return 0
   local status=0 shared_database_url
+  local schema_source_args=()
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
+    schema_source_args+=(--source-ref "$VERIFY_TAURI_SOURCE_REF")
+  fi
   shared_database_url="$(
     cd "$REPO_DIR/apps/operator" || exit 74
     set -a
     if [ -f .env.local ]; then . ./.env.local || exit 74; fi
     set +a
-    timeout --kill-after=1s 8s node "$DESKTOP_DIR/bin/dev-operator-pg-probe.mjs" --repo-root "$REPO_DIR" --require-applied-schema >&2 || exit $?
+    timeout --kill-after=1s 8s node "$DESKTOP_DIR/bin/dev-operator-pg-probe.mjs" --repo-root "$REPO_DIR" --require-applied-schema "${schema_source_args[@]}" >&2 || exit $?
     # Assertions need the same resolved connection as this successful probe.
     # Capture credentials only in this shell; WORK is allocated after preflight.
     # Probe diagnostics go to stderr so they cannot enter the connection value.

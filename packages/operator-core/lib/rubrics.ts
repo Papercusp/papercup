@@ -982,9 +982,48 @@ async function queryRubricPlansPage(
   }
 }
 
+/**
+ * A rubric ref names ONE rubric row per workspace (scope-unique-identifiers-2026-07-26,
+ * WI-6554700010008395). `harness_plans` is keyed (workspace_id, harness_slug, plan_slug),
+ * so nothing in the schema stops two harnesses from holding the same rubric slug, and a
+ * slug-only `LIMIT 1` would then grade against whichever row Postgres returned first.
+ * Every slug-only rubric read refuses that case with this error, naming the candidates.
+ */
+export class RubricRefAmbiguousError extends Error {
+  readonly code = 'rubric_ref_ambiguous';
+  constructor(
+    readonly rubricId: string,
+    readonly harnesses: readonly string[],
+  ) {
+    super(
+      `rubric_ref_ambiguous: rubric '${rubricId}' exists in ${harnesses.length} harnesses of ` +
+        `this workspace (${harnesses.join(', ')}); a rubric ref must name exactly one row. ` +
+        'Retire or rename the duplicate.',
+    );
+    this.name = 'RubricRefAmbiguousError';
+  }
+}
+
+/**
+ * The one row a slug-only rubric read resolves to. Keeps only rows whose slug matches
+ * (mocked-sql fixtures may return a wider set than the predicates describe) and throws
+ * {@link RubricRefAmbiguousError} when more than one harness holds the slug. Callers
+ * query with `ORDER BY harness_slug LIMIT 2` so a duplicate is always observable.
+ */
+export function uniqueRubricRow<T extends { plan_slug: string; harness_slug?: string | null }>(
+  rows: readonly T[],
+  rubricId: string,
+): T | undefined {
+  const matches = rows.filter((candidate) => candidate.plan_slug === rubricId);
+  const harnesses = [...new Set(matches.map((candidate) => candidate.harness_slug ?? ''))].sort();
+  if (harnesses.length > 1) throw new RubricRefAmbiguousError(rubricId, harnesses);
+  return matches[0];
+}
+
 type RubricPlanRowRead =
   | { kind: 'found'; row: RubricPlanRow }
   | { kind: 'missing' }
+  | { kind: 'ambiguous'; error: RubricRefAmbiguousError }
   | { kind: 'error' };
 
 /**
@@ -1006,13 +1045,13 @@ async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRea
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND plan_slug = ${rubricId}
-       LIMIT 1`,
+       ORDER BY harness_slug
+       LIMIT 2`,
     );
-    // Client-side slug guard: mocked-sql fixtures may return a wider row set than
-    // the predicates describe, so the explicit id remains authoritative here.
-    const row = rows.find((candidate) => candidate.plan_slug === rubricId);
+    const row = uniqueRubricRow(rows, rubricId);
     return row ? { kind: 'found', row } : { kind: 'missing' };
-  } catch {
+  } catch (error) {
+    if (error instanceof RubricRefAmbiguousError) return { kind: 'ambiguous', error };
     return { kind: 'error' };
   }
 }
@@ -1362,17 +1401,18 @@ export type RubricPlanRevisionRead = { ok: true; revision: number | null } | { o
 export async function readRubricPlanRevision(rubricId: string): Promise<RubricPlanRevisionRead> {
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ plan_slug: string; version: string | number | null }[]>`
-      SELECT plan_slug, version
+    const rows = await sql<{ plan_slug: string; harness_slug: string; version: string | number | null }[]>`
+      SELECT plan_slug, harness_slug, version
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND plan_slug = ${rubricId}
-       LIMIT 1`;
-    // Client-side slug guard, mirroring getRubric: identical behavior under
-    // mocked-sql fixtures that return the full row set for any query.
-    const row = rows.find((r) => r.plan_slug === rubricId);
+       ORDER BY harness_slug
+       LIMIT 2`;
+    // A slug held by two harnesses throws into the catch below and reads as ok:false:
+    // fail-closed for the strict callers this read exists for.
+    const row = uniqueRubricRow(rows, rubricId);
     if (!row || row.version == null) return { ok: true, revision: null };
     const version = Number(row.version); // bigint arrives as a string
     return { ok: true, revision: Number.isFinite(version) ? version : null };
@@ -1408,8 +1448,9 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND plan_slug = ${rubricId}
-       LIMIT 1`;
-    const row = rows.find((candidate) => candidate.plan_slug === rubricId);
+       ORDER BY harness_slug
+       LIMIT 2`;
+    const row = uniqueRubricRow(rows, rubricId);
     if (!row) return null;
 
     // A plan version is NOT an audit seq: writes can predate tracking or lose a
@@ -1473,7 +1514,8 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
     return typeof parsedSnapshot?.criteriaHash === 'string' && parsedSnapshot.criteriaHash.length > 0
       ? { ...historical, criteriaHash: parsedSnapshot.criteriaHash }
       : historical;
-  } catch {
+  } catch (error) {
+    if (error instanceof RubricRefAmbiguousError) throw error;
     return null;
   }
 }
@@ -1490,6 +1532,7 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
  */
 export async function getRubricWithoutSeeding(rubricId: string): Promise<Rubric | null> {
   const direct = await readRubricPlanRowById(rubricId);
+  if (direct.kind === 'ambiguous') throw direct.error;
   if (direct.kind !== 'found') return null;
   return (await mapRubricPlanRows([direct.row]))[0] ?? null;
 }
@@ -1500,6 +1543,7 @@ export async function getRubric(rubricId: string, revision?: number): Promise<Ru
   // Resolve the target directly before touching the capped shared library scan;
   // acceptance rubrics are hidden from that scan, but never from this lookup.
   const direct = await readRubricPlanRowById(rubricId);
+  if (direct.kind === 'ambiguous') throw direct.error;
   if (direct.kind === 'error') return null;
   if (direct.kind === 'found') {
     const rubric = (await mapRubricPlanRows([direct.row]))[0] ?? null;
@@ -2733,7 +2777,17 @@ async function resolveRubricWriteScope(rubricId: string): Promise<{ workspaceId:
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId}
          AND plan_slug = ${rubricId}
-       LIMIT 1`;
+       ORDER BY harness_slug
+       LIMIT 2`;
+    const holders = [...new Set(rows.map((row) => row.harness_slug))].sort();
+    if (holders.length > 1) {
+      // A write must target one PK row; picking either holder would silently fork the
+      // rubric (WI-6554700010008395). Same fail-closed prefix as the collision below.
+      throw new Error(
+        `invalid_args: proposeRubric: rubricId '${rubricId}' is held by ${holders.length} harnesses ` +
+          `of this workspace (${holders.join(', ')}); retire or rename the duplicate before writing`,
+      );
+    }
     const existing = rows[0];
     if (existing && existing.template !== RUBRIC_TEMPLATE_NAME) {
       throw new Error(
@@ -5626,15 +5680,16 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
  *  ratifyRubric's provenance patch. Reads by the same predicates as queryRubricPlans. */
 async function readRawRubricTemplateData(rubricId: string): Promise<Record<string, unknown> | null> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ template_data: unknown }[]>`
-    SELECT template_data
+  const rows = await sql<{ plan_slug: string; harness_slug: string; template_data: unknown }[]>`
+    SELECT plan_slug, harness_slug, template_data
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${rubricsScopeWorkspace()}
        AND template = ${RUBRIC_TEMPLATE_NAME}
        AND template_slug IS NULL
        AND plan_slug = ${rubricId}
-     LIMIT 1`;
-  const d = rows[0]?.template_data;
+     ORDER BY harness_slug
+     LIMIT 2`;
+  const d = uniqueRubricRow(rows, rubricId)?.template_data;
   return d && typeof d === 'object' ? (d as Record<string, unknown>) : null;
 }
 

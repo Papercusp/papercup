@@ -6,6 +6,7 @@ import {
   PROVIDER_APP_DEFINITION_MAX_LENGTH,
   PROVIDER_APP_DEFINITION_PLACEHOLDER,
   PROVIDER_CREDENTIAL_MAX_LENGTH,
+  PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
   providerAppDefinitionText,
   providerAppRegistrationUrl,
   providerCredentialForHost,
@@ -315,6 +316,80 @@ describe('setup.appRegistration', () => {
     expect(withRegistration({ ...slackLike, definition: huge })).toContain(
       `provider.setup.appRegistration.definition is longer than ${PROVIDER_APP_DEFINITION_MAX_LENGTH} characters as JSON`,
     );
+  });
+});
+
+describe('validateProviderDescriptor: ingress.socket (P-003, D-009)', () => {
+  const socket = {
+    credential: 'app_token',
+    open: { url: 'https://api.example.com/apps.connections.open', urlField: 'url' },
+    ackField: 'envelope_id',
+    reconnect: { field: 'type', values: ['disconnect'] },
+  };
+  const base: ProviderDescriptor = {
+    id: 'example-chat',
+    contractVersion: 1,
+    datatypes: ['chat-message'],
+    capabilities: ['chat.send', 'ingress.normalize'],
+    egressHosts: ['api.example.com'],
+    setup: {
+      credentials: [
+        { key: 'bot_token', label: 'Bot token', hosts: ['api.example.com'] },
+        { key: 'app_token', label: 'App token', pattern: 'xapp-[A-Za-z0-9-]+' },
+      ],
+    },
+    ingress: { socket },
+  };
+  const withSocket = (patch: Record<string, unknown>) =>
+    validateProviderDescriptor({ ...base, ingress: { socket: { ...socket, ...patch } } } as unknown as ProviderDescriptor);
+
+  it('accepts a socket opened with a host-only setup credential, with or without ack and reconnect rules', () => {
+    expect(validateProviderDescriptor(base)).toEqual([]);
+    expect(validateProviderDescriptor({ ...base, ingress: { socket: { credential: 'app_token', open: { url: socket.open.url, method: 'GET', urlField: 'data.socket.url' } } } })).toEqual([]);
+    expect(PROVIDER_INGRESS_NORMALIZE_CAPABILITY).toBe('ingress.normalize');
+  });
+
+  it('refuses a credential that is not a declared setup field, including when the provider declares no setup', () => {
+    expect(withSocket({ credential: 'signing_secret' })).toContain(
+      "provider.ingress.socket.credential 'signing_secret' is not a provider.setup.credentials key",
+    );
+    expect(withSocket({ credential: '' })).toContain('provider.ingress.socket.credential must name a provider.setup.credentials key');
+    expect(validateProviderDescriptor({ ...base, setup: undefined })).toContain(
+      "provider.ingress.socket.credential 'app_token' is not a provider.setup.credentials key",
+    );
+  });
+
+  it('refuses an open URL that is not https or whose host is outside egressHosts', () => {
+    expect(withSocket({ open: { ...socket.open, url: 'http://api.example.com/open' } })).toContain('provider.ingress.socket.open.url must be an https URL');
+    expect(withSocket({ open: { ...socket.open, url: 'https://evil.example.net/open' } })).toContain(
+      "provider.ingress.socket.open.url host 'evil.example.net' is not in provider.egressHosts",
+    );
+    expect(withSocket({ open: { ...socket.open, method: 'PUT' } })).toContain('provider.ingress.socket.open.method must be GET or POST');
+    expect(withSocket({ open: { url: socket.open.url } })).toContain('provider.ingress.socket.open.urlField must be a dot path to the socket URL in the response');
+    expect(withSocket({ open: undefined })).toContain('provider.ingress.socket.open must be an object');
+  });
+
+  it('refuses a socket ingress whose provider does not declare ingress.normalize', () => {
+    expect(validateProviderDescriptor({ ...base, capabilities: ['chat.send'] })).toEqual([
+      'provider.ingress.socket needs capability ingress.normalize',
+    ]);
+  });
+
+  it('refuses malformed ack and reconnect fields, a carried token and an unknown ingress kind', () => {
+    expect(withSocket({ ackField: 'envelope.id' })).toContain('provider.ingress.socket.ackField must be a top-level envelope field name');
+    expect(withSocket({ reconnect: { field: 'type', values: [] } })).toContain('provider.ingress.socket.reconnect.values must list at least one value');
+    expect(withSocket({ reconnect: { field: 'type', values: ['disconnect', 'disconnect'] } })).toContain(
+      'provider.ingress.socket.reconnect.values repeats "disconnect"',
+    );
+    expect(withSocket({ reconnect: { values: ['disconnect'] } })).toContain('provider.ingress.socket.reconnect.field must be a top-level envelope field name');
+    expect(withSocket({ token: 'xapp-1-abc' })).toContain(
+      'provider.ingress.socket.token is not allowed: a descriptor never carries a credential value',
+    );
+    expect(validateProviderDescriptor({ ...base, ingress: { socket, webhook: {} } } as unknown as ProviderDescriptor)).toContain(
+      'provider.ingress.webhook is not a known ingress kind (known: socket)',
+    );
+    expect(validateProviderDescriptor({ ...base, ingress: 'socket' } as unknown as ProviderDescriptor)).toEqual(['provider.ingress must be an object']);
+    expect(validateProviderDescriptor({ ...base, ingress: {} } as unknown as ProviderDescriptor)).toEqual(['provider.ingress.socket must be an object']);
   });
 });
 

@@ -122,7 +122,68 @@ export interface ProviderDescriptor {
    * checks each value, stores it, and never hands it back.
    */
   setup?: ProviderSetupDescriptor;
+  /**
+   * Inbound delivery the HOST holds open for each connected source (cupboard-distributable-
+   * integrations P-003, D-009), e.g. a Slack Socket Mode connection. Pure data: the host opens the
+   * connection with a credential the owner stored, acknowledges each envelope, and hands it to the
+   * provider's {@link PROVIDER_INGRESS_NORMALIZE_CAPABILITY} capability, which turns it into records.
+   * Provider code never sees the credential or the socket.
+   */
+  ingress?: ProviderIngressDescriptor;
 }
+
+/** Inbound channels a provider declares (P-003). */
+export interface ProviderIngressDescriptor {
+  socket: ProviderSocketIngressDescriptor;
+}
+
+/**
+ * A socket the host opens per connected source. Socket URLs are usually single-use, so the host
+ * calls `open` before every connect and reconnect.
+ */
+export interface ProviderSocketIngressDescriptor {
+  /**
+   * `setup.credentials` key whose stored value authenticates `open`, sent as
+   * `Authorization: Bearer <value>`. Typically a credential with no `hosts`, used only here.
+   */
+  credential: string;
+  /** The request that returns a fresh socket URL. */
+  open: {
+    /** https endpoint; its host must be allowed by `egressHosts`. */
+    url: string;
+    /** Default `POST`. */
+    method?: 'GET' | 'POST';
+    /** Dot path of the `wss://` URL in the JSON response, e.g. `url`. */
+    urlField: string;
+  };
+  /**
+   * Top-level envelope field whose value the host sends back as `{ [ackField]: value }` as soon as
+   * an envelope arrives, before normalizing it (Slack: `envelope_id`). Omit when the protocol has no acks.
+   */
+  ackField?: string;
+  /**
+   * Top-level envelope `field` whose value in `values` means the server is about to drop the
+   * socket (Slack: `type` = `disconnect`); the host opens a fresh one instead of waiting for the close.
+   */
+  reconnect?: { field: string; values: string[] };
+}
+
+/**
+ * Capability a socket-ingress provider must declare: `invoke({ capability: 'ingress.normalize',
+ * args: { envelope } })` returns {@link ProviderIngressNormalizeResult}. An envelope that carries no
+ * data (a hello, a ping, an event the provider ignores) returns `records: []`.
+ */
+export const PROVIDER_INGRESS_NORMALIZE_CAPABILITY = 'ingress.normalize';
+
+/** Result of the {@link PROVIDER_INGRESS_NORMALIZE_CAPABILITY} capability: records shaped like a sync page's. */
+export interface ProviderIngressNormalizeResult {
+  records: ProviderRecord[];
+}
+
+/** Envelope field names `ackField` and `reconnect.field` may use. */
+export const PROVIDER_INGRESS_FIELD_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+/** Dot path `open.urlField` may use. */
+export const PROVIDER_INGRESS_PATH_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}(?:\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,7}$/;
 
 /** Owner-performed setup a provider declares (cupboard-distributable-integrations P-001, P-002). */
 export interface ProviderSetupDescriptor {
@@ -665,6 +726,12 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     );
     issues.push(...setupDescriptorIssues(d.setup, egress.filter(isNonEmptyString), serviceHosts));
   }
+  if (d.ingress !== undefined) {
+    const credentialKeys = (Array.isArray(d.setup?.credentials) ? d.setup.credentials : [])
+      .map((field) => (field && typeof field === 'object' ? (field as { key?: unknown }).key : undefined))
+      .filter(isNonEmptyString);
+    issues.push(...ingressDescriptorIssues(d.ingress, capabilities.filter(isNonEmptyString), egress.filter(isNonEmptyString), credentialKeys));
+  }
   if (d.membership !== undefined) {
     const membership = d.membership as unknown;
     const identityProvider = membership && typeof membership === 'object' && !Array.isArray(membership)
@@ -696,6 +763,71 @@ function pushDescriptorIssues(push: unknown, capabilities: string[]): string[] {
     for (const required of [PROVIDER_PUSH_SUBSCRIBE_CAPABILITY, PROVIDER_PUSH_UNSUBSCRIBE_CAPABILITY]) {
       if (!capabilities.includes(required)) issues.push(`provider.push.handshake needs capability ${required}`);
     }
+  }
+  return issues;
+}
+
+function ingressDescriptorIssues(ingress: unknown, capabilities: string[], egress: string[], credentialKeys: string[]): string[] {
+  if (!ingress || typeof ingress !== 'object' || Array.isArray(ingress)) return ['provider.ingress must be an object'];
+  const issues: string[] = [];
+  for (const key of Object.keys(ingress)) {
+    if (key !== 'socket') issues.push(`provider.ingress.${key} is not a known ingress kind (known: socket)`);
+  }
+  const socket = (ingress as { socket?: unknown }).socket;
+  const at = 'provider.ingress.socket';
+  if (!socket || typeof socket !== 'object' || Array.isArray(socket)) {
+    issues.push(`${at} must be an object`);
+    return issues;
+  }
+  const s = socket as Partial<ProviderSocketIngressDescriptor> & Record<string, unknown>;
+  // Published to the Cupboard: names the credential, never carries it.
+  for (const forbidden of ['token', 'secret', 'value', 'appToken']) {
+    if (forbidden in s) issues.push(`${at}.${forbidden} is not allowed: a descriptor never carries a credential value`);
+  }
+  if (!isNonEmptyString(s.credential)) {
+    issues.push(`${at}.credential must name a provider.setup.credentials key`);
+  } else if (!credentialKeys.includes(s.credential)) {
+    issues.push(`${at}.credential '${s.credential}' is not a provider.setup.credentials key`);
+  }
+  const open = s.open as Partial<ProviderSocketIngressDescriptor['open']> | undefined;
+  if (!open || typeof open !== 'object' || Array.isArray(open)) {
+    issues.push(`${at}.open must be an object`);
+  } else {
+    if (!isHttpsUrl(open.url)) {
+      issues.push(`${at}.open.url must be an https URL`);
+    } else {
+      const host = new URL(open.url as string).hostname;
+      if (host !== '127.0.0.1' && host !== 'localhost' && !providerEgressAllows(egress, host)) {
+        issues.push(`${at}.open.url host '${host}' is not in provider.egressHosts`);
+      }
+    }
+    if (open.method !== undefined && open.method !== 'GET' && open.method !== 'POST') {
+      issues.push(`${at}.open.method must be GET or POST`);
+    }
+    if (!isNonEmptyString(open.urlField) || !PROVIDER_INGRESS_PATH_PATTERN.test(open.urlField)) {
+      issues.push(`${at}.open.urlField must be a dot path to the socket URL in the response`);
+    }
+  }
+  if (s.ackField !== undefined && (!isNonEmptyString(s.ackField) || !PROVIDER_INGRESS_FIELD_PATTERN.test(s.ackField))) {
+    issues.push(`${at}.ackField must be a top-level envelope field name`);
+  }
+  if (s.reconnect !== undefined) {
+    const reconnect = s.reconnect as Partial<NonNullable<ProviderSocketIngressDescriptor['reconnect']>> | null;
+    if (!reconnect || typeof reconnect !== 'object' || Array.isArray(reconnect)) {
+      issues.push(`${at}.reconnect must be an object`);
+    } else {
+      if (!isNonEmptyString(reconnect.field) || !PROVIDER_INGRESS_FIELD_PATTERN.test(reconnect.field)) {
+        issues.push(`${at}.reconnect.field must be a top-level envelope field name`);
+      }
+      const values = Array.isArray(reconnect.values) ? reconnect.values : [];
+      if (values.length === 0 || !values.every(isNonEmptyString)) {
+        issues.push(`${at}.reconnect.values must list at least one value`);
+      }
+      for (const dup of duplicates(values.filter(isNonEmptyString))) issues.push(`${at}.reconnect.values repeats "${dup}"`);
+    }
+  }
+  if (!capabilities.includes(PROVIDER_INGRESS_NORMALIZE_CAPABILITY)) {
+    issues.push(`${at} needs capability ${PROVIDER_INGRESS_NORMALIZE_CAPABILITY}`);
   }
   return issues;
 }

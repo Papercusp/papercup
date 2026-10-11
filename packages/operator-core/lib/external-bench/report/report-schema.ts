@@ -25,6 +25,8 @@
  * not invent. Optional fields degrade gracefully in the viewer (a missing section just hides).
  */
 
+import type { ArmContamination } from '../contamination';
+
 /** A monotonic schema version so an old viewer can refuse / a new viewer can branch. */
 export const BENCH_REPORT_SCHEMA_VERSION = 1;
 
@@ -153,6 +155,12 @@ export interface BenchReportArmSummary {
   costBasis?: string;
   tokensTotal: number;
   concurrency?: { avg: number; peak: number };
+  /**
+   * Freshness / contamination verdict for this arm's headline (P-009): its model's training-data cutoff vs
+   * each assigned task's creation date, the label, and the post-cutoff / exposed / unknown subsets with
+   * their own primary outcome. A headline claim should prefer `contamination.postCutoff`.
+   */
+  contamination?: ArmContamination;
   /** Suite-specific headline (e.g. METR: { horizon50Min, horizon50Ci }). */
   extra?: Record<string, unknown>;
 }

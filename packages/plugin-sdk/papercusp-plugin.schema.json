@@ -197,6 +197,42 @@
             }
           }
         },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["socket"],
+          "description": "Inbound delivery the host holds open per connected source (cupboard-distributable-integrations P-003, D-009). The host opens the socket with the stored setup credential named by `credential`, acks each envelope by echoing `ackField`, reconnects on a `reconnect` value, and hands each envelope to the provider's ingress.normalize capability. Never carries a credential.",
+          "properties": {
+            "socket": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["credential", "open"],
+              "properties": {
+                "credential": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$" },
+                "open": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["url", "urlField"],
+                  "properties": {
+                    "url": { "type": "string", "pattern": "^https://" },
+                    "method": { "type": "string", "enum": ["GET", "POST"] },
+                    "urlField": { "type": "string", "minLength": 1 }
+                  }
+                },
+                "ackField": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$" },
+                "reconnect": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["field", "values"],
+                  "properties": {
+                    "field": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$" },
+                    "values": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+                  }
+                }
+              }
+            }
+          }
+        },
         "membership": {
           "type": "object",
           "additionalProperties": false,

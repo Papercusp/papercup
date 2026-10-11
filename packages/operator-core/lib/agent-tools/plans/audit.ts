@@ -84,11 +84,7 @@ import { stagingFirstActivationProblems } from './staging-first-activation-guard
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { previewPlanStartConsult } from './get-activation-readiness';
 import { previewProductShaping } from './product-shaping';
-import {
-  recoverHarnessFromSlugs,
-  requireUnambiguousSlugScope,
-  slugScopeErrorResult,
-} from './slug-scope';
+import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
 
 const citationPathSchema = z.string().min(1).describe(
   'Repo-relative path. No leading `/` or `~`, no `..` segments — a citation that needs one is not evidence.',
@@ -391,16 +387,12 @@ export default defineTool({
     // EI-22078133656298536: an audit already names an exact plan slug, so a
     // workspace-scoped operator call can recover its owning harness from the
     // canonical plan index instead of failing with an undiscoverable
-    // `harness_required`. This is a write, so an ambiguous slug remains
-    // fail-loud rather than choosing the most-recently-updated copy.
+    // `harness_required`. A slug present in >1 harness refuses (P-006: the
+    // decider itself refuses ambiguity, for reads and writes alike).
     const scope = resolveHarnessScope(args.harness, ctx);
     let sctx: typeof ctx & { harnessSlug: string };
     if (scope.kind === 'none') {
-      const recovered = await recoverHarnessFromSlugs(ctx, [args.slug]);
-      const decision = requireUnambiguousSlugScope(
-        recovered,
-        ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
-      );
+      const decision = await recoverHarnessFromSlugs(ctx, [args.slug]);
       if (decision.status !== 'resolved') return slugScopeErrorResult('plans:audit', decision);
       sctx = { ...ctx, harnessSlug: decision.harnessSlug };
       (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({

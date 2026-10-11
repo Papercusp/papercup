@@ -2078,6 +2078,15 @@ export function quotaLimitBannerMatch(text: any, agent?: string): {
     excerpt: null;
 };
 export function quotaLimitBannerVisible(text: any, agent?: string): boolean;
+/** WI-6554700010008412: the reset instant a quota wall states on screen, or
+ *  null. Codex copy only ("... or try again at Oct 14th, 2026 8:24 PM." /
+ *  "try again in 2 days 3 hours 5 minutes."). Codex renders the absolute form
+ *  in the machine's local time, which this host shares with its child. The
+ *  LAST statement in `text` wins (the newest wall). A reset that is not in the
+ *  future at `nowMs` is ignored, so a mis-parse or a replayed old wall can
+ *  never open the gate early; null keeps the old fail-closed level. Pure;
+ *  exported for tests. */
+export function parseQuotaResetAtMs(text: any, agent?: string, nowMs?: number): number | null;
 /** The rendered text of one Claude Code transcript row: assistant/user text
  *  blocks, tool_use inputs and tool_result bodies — everything the TUI can
  *  echo onto the screen. Pure; exported for tests. */
@@ -2119,7 +2128,7 @@ export function claudeQuotaTranscriptVerdict(rows: any): "unknown" | "walled" | 
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit, corroborate, corroborateTtlMs, onDismiss, }?: {
+export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit, corroborate, corroborateTtlMs, onDismiss, resetGraceMs, onExpire, }?: {
     capBytes?: number | undefined;
     agent?: string | undefined;
     now?: (() => number) | undefined;
@@ -2136,6 +2145,14 @@ export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit,
         excerpt: string | null;
         blockedSinceMs: number | null;
     }) => unknown) | null | undefined;
+    resetGraceMs?: number | undefined;
+    onExpire?: ((expired: {
+        matched: boolean;
+        pattern: string | null;
+        excerpt: string | null;
+        blockedSinceMs: number | null;
+        resetAtMs: number;
+    }) => unknown) | null | undefined;
 }): {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
      *  or null when the level didn't change, so a caller can log transitions
@@ -2151,7 +2168,10 @@ export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit,
     snapshot: () => {
         quotaBlocked: boolean;
         quotaBlockedSinceMs: number | null;
+        quotaResetAtMs: number | null;
     };
+    /** The parsed provider reset for the current latch, or null. */
+    resetAtMs: () => number | null;
     /** WI-2140984: WHICH pattern last matched, and the text around it — so a
      *  `quota-block-detected` row says what was actually on screen and a false
      *  positive is diagnosable from the event log alone. */
@@ -4752,6 +4772,10 @@ export const STARTUP_TURN_DROP_REASON_TEXT: Readonly<{
 export const QUOTA_BLOCK_STARVATION_THRESHOLD_MS: number;
 /** WI-10003875: how often a LATCHED quota block re-consults its corroborator. */
 export const QUOTA_CORROBORATE_TTL_MS: 15000;
+/** WI-6554700010008412: how long past the provider's stated reset a latch is
+ *  held before it expires, so a reset rendered to the minute is not probed
+ *  seconds early. */
+export const QUOTA_RESET_GRACE_MS: 60000;
 /** How often the discovery file's activity fields are refreshed. Coarse on
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */

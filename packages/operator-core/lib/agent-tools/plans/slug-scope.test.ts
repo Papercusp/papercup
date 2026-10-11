@@ -5,6 +5,8 @@
  * harness RESOLVED (or an error naming what was searched and found) instead
  * of a bare `harness_required` demanding an undiscoverable input.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ planHarnessesForSlugs: vi.fn() }));
@@ -64,8 +66,17 @@ describe('decideSlugScope', () => {
     expect(d).toEqual({ status: 'split', mapping: { a: 'hive-1', b: 'hive-2' }, workspaceId: 'ws-x' });
   });
 
-  it('exports no wrapper that callers must remember: the decider is the only gate', () => {
-    expect(Object.keys(slugScope)).not.toContain('requireUnambiguousSlugScope');
+  it('no production caller wraps the decider: the decider is the only gate', () => {
+    // slug-scope.ts re-exports requireUnambiguousSlugScope as a TEMPORARY identity shim
+    // (WI-6554700010008411) only because git-sync committed this file ahead of audit.ts.
+    // The invariant that matters is that no caller depends on a wrapper.
+    const root = path.resolve(__dirname, '..');
+    const callers = (fs.readdirSync(root, { recursive: true }) as string[])
+      .filter((rel) => rel.endsWith('.ts') && !rel.endsWith('.test.ts'))
+      .filter((rel) => !rel.endsWith(path.join('plans', 'slug-scope.ts')))
+      .filter((rel) => fs.readFileSync(path.join(root, rel), 'utf8').includes('requireUnambiguousSlugScope'));
+    expect(callers).toEqual([]);
+    expect(slugScope.requireUnambiguousSlugScope({ status: 'resolved' }, 'ws')).toEqual({ status: 'resolved' });
   });
 });
 

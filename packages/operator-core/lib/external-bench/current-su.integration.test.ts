@@ -14,7 +14,7 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchWorkloadTransitionReader, currentBenchWorkloadArtifactReader, currentBenchWorkloadContextReader,
   currentBenchWorkloadCheckpointReader, currentBenchWorkloadHandoffReader, currentBenchWorkloadProviderInputReader,
-  currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
+  currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader, currentBenchWorkloadGradeReader,
   currentBenchProviderAuthenticator, currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
@@ -33,6 +33,11 @@ import { startGatewayService } from '../inference-gateway/launch';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import { shortCarryHash, computeWorkItemSubjectFingerprint } from '../carry-note';
 import { canonicalJson } from './reproducibility/canonical-json';
+import { emitRollout, rolloutIdFor } from './reproducibility/emit';
+import { computePreregHash } from './reproducibility/prereg';
+
+vi.mock('../sync-sse', async importOriginal => ({ ...await importOriginal<typeof import('../sync-sse')>(),
+  notifySyncInvalidate: vi.fn().mockResolvedValue(undefined) }));
 
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 // Goal admission is an independent boundary. Its production service binding
@@ -151,6 +156,12 @@ beforeAll(async () => {
       identity_specification_revision text, identity_state_revision text);
     CREATE VIEW harness_shared.agent_usage_samples_identity_attribution AS SELECT * FROM harness_shared.agent_usage_samples;`);
   await sql.unsafe('ALTER TABLE harness_shared.agent_usage_samples ADD COLUMN harness_slug text, ADD COLUMN run_id text, ADD COLUMN input_tokens bigint, ADD COLUMN output_tokens bigint');
+  // Use the maintained benchmark persistence schema and real emission entry
+  // point for grade-reader tests, rather than a hand-shaped grade receipt.
+  await sql.unsafe('DROP TABLE harness_shared.benchmark_run_result');
+  await sql.unsafe(readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/291-benchmark-reproducibility.sql', import.meta.url), 'utf8')
+    .split('\n').filter(line => !/^GRANT /.test(line)).join('\n'));
+  await sql.unsafe('ALTER TABLE harness_shared.benchmark_run_result ADD COLUMN score double precision, ADD COLUMN fleet_run_id text');
   for (const name of ['244-learning-governor.sql', '1116-learning-spend-reservations.sql', '1224-learning-reservation-resources.sql']) {
     const body = readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url), 'utf8')
       .split('\n').filter(line => !/\bGRANT\b|^\s*\\/.test(line)).join('\n');
@@ -168,7 +179,7 @@ beforeEach(async () => {
   operationAttestation.mockReset().mockResolvedValue(undefined);
   vi.clearAllMocks();
   hostHome.byId.clear();
-  await sql`TRUNCATE harness_shared.coord_event_log, harness_shared.carry_notes, harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.work_items,
+  await sql`TRUNCATE harness_shared.coord_event_log, harness_shared.carry_notes, harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.benchmark_rollout, harness_shared.work_items,
     harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage,
     harness_shared.interactive_usage_files, harness_shared.agent_usage_samples,
     harness_shared.learning_governor_loops, harness_shared.learning_spend_events, harness_shared.learning_spend_reservations`;
@@ -338,6 +349,109 @@ describe('private workload status authority', () => {
   it('refuses production allocation and ambiguous receipt mappings before reading', () => {
     expect(() => currentBenchWorkloadTransitionReader({ ...options(), workspaceId: 'papercusp-workspace' })).toThrow(/PRODUCTION/);
     expect(() => currentBenchWorkloadTransitionReader({ ...options(), receipts: [...options().receipts, ...options().receipts] })).toThrow(/unique exact receipts/);
+  });
+});
+
+describe('private workload stored grade authority', () => {
+  const binding = { runId: 'private-grade-run', trialBindingHash: 'a'.repeat(64) };
+  const harnessSlug = 'private-grade-harness', subjectId = 'private-grade-subject';
+  const sha = (value: string) => createHash('sha256').update(value).digest('hex');
+  async function fixture(resolved = true) {
+    const protocol = currentProtocolFixture(binding.runId), preregHash = computePreregHash(protocol);
+    await sql`INSERT INTO harness_shared.work_items VALUES (${workspaceId}, ${harnessSlug}, ${subjectId}, 'done')`;
+    await sql`INSERT INTO harness_shared.benchmark_prereg
+      (prereg_hash, run_id, workspace_id, config, suites, file_path, git_committed, git_commit_sha, created_at)
+      VALUES (${preregHash}, ${binding.runId}, ${workspaceId}, ${JSON.stringify(protocol)}::jsonb,
+        '["swe-bench-pro"]'::jsonb, 'fixture-prereg.json', true, ${'1'.repeat(40)}, '2026-10-10T23:00:00Z')`;
+    const submission = 'private graded submission π\n', rawOutput = canonicalJson({ resolved });
+    const input = { ...binding, preregHash, suite: 'swe-bench-pro' as const, modality: 'diff' as const,
+      taskId: 't1', arm: 'papercusp' as const, seed: 1,
+      generation: { status: 'completed' as const, tokensIn: 1, tokensOut: 1, tokensTotal: 2,
+        wallClockMs: 1, modelId: protocol.arms[0].model, harnessVersion: 'private-harness', submission },
+      grading: { resolved, status: resolved ? 'passed' as const : 'failed' as const,
+        family: protocol.grader.family, version: protocol.grader.version, rawOutput },
+      provenance: { configSnapshot: { ...protocol } } };
+    await emitRollout(input, { sql, workspaceId });
+    const rolloutId = rolloutIdFor(binding.runId, input.suite, input.taskId, input.arm, input.seed);
+    const receipt = { receiptRef: 'grade:private', subjectId, rolloutId, taskId: input.taskId, arm: input.arm, seed: 1,
+      index: 8, outcomeId: 'answer-correctness', graderRef: 'benchmark-grader:official@pinned',
+      resultSha256: '', rolloutSha256: '', submissionSha256: sha(submission), rawGraderOutputSha256: sha(rawOutput) };
+    const options = { sql, workspaceId, harnessSlug, ...binding, notBefore: '2026-10-11T00:00:00Z',
+      preregHash, protocol, receipts: [receipt] };
+    const pin = async () => {
+      const [r] = await sql`SELECT to_jsonb(result) AS result, to_jsonb(rollout) AS rollout
+        FROM harness_shared.benchmark_run_result result JOIN harness_shared.benchmark_rollout rollout USING (rollout_id)`;
+      receipt.resultSha256 = sha(canonicalJson(r.result)); receipt.rolloutSha256 = sha(canonicalJson(r.rollout));
+    };
+    await pin();
+    return { input, options, receipt, pin };
+  }
+  it.each([true, false])('resolves actual emitted grade bytes, including resolved=%s', async resolved => {
+    const f = await fixture(resolved);
+    const rows = await currentBenchWorkloadGradeReader(f.options)(f.receipt.receiptRef, binding);
+    expect(rows?.[0]).toMatchObject({ index: 8, kind: 'tool-result', name: 'benchmark:grade',
+      metadata: { ...binding, workloadOutcome: { id: 'answer-correctness', value: resolved,
+        graderRef: f.receipt.graderRef }, gradeSource: { basis: 'stored-benchmark-grade', rolloutId: f.receipt.rolloutId } } });
+    expect(rows?.[0].metadata).not.toHaveProperty('durableTransition');
+  });
+  it.each(['workspace', 'harness', 'subject', 'missing-subject', 'duplicate-subject', 'missing-rollout',
+    'missing-result', 'missing-prereg', 'prereg-config', 'uncommitted', 'commit', 'late-prereg',
+    'old-result', 'old-rollout', 'arm', 'seed', 'task', 'model', 'grader', 'rollout-id', 'snapshot',
+    'generation', 'generation-error', 'ungraded', 'status', 'harness-version', 'submission-ref',
+    'grader-ref', 'submission', 'raw-output'] as const)('refuses %s even after grade-row pins are refreshed', async fault => {
+    const f = await fixture();
+    if (fault === 'workspace') f.options.workspaceId = 'foreign-bench-workspace';
+    if (fault === 'harness') f.options.harnessSlug = 'foreign-harness';
+    if (fault === 'subject') f.receipt.subjectId = 'foreign-subject';
+    if (fault === 'missing-subject') await sql`DELETE FROM harness_shared.work_items`;
+    if (fault === 'duplicate-subject') await sql`INSERT INTO harness_shared.work_items SELECT * FROM harness_shared.work_items`;
+    if (fault === 'missing-rollout') await sql`DELETE FROM harness_shared.benchmark_rollout`;
+    if (fault === 'missing-result') await sql`DELETE FROM harness_shared.benchmark_run_result`;
+    if (fault === 'missing-prereg') await sql`DELETE FROM harness_shared.benchmark_prereg`;
+    if (fault === 'prereg-config') await sql`UPDATE harness_shared.benchmark_prereg SET config = '{}'::jsonb`;
+    if (fault === 'uncommitted') await sql`UPDATE harness_shared.benchmark_prereg SET git_committed = false`;
+    if (fault === 'commit') await sql`UPDATE harness_shared.benchmark_prereg SET git_commit_sha = 'not-a-commit'`;
+    if (fault === 'late-prereg') await sql`UPDATE harness_shared.benchmark_prereg SET created_at = now()`;
+    if (fault === 'old-result') await sql`UPDATE harness_shared.benchmark_run_result SET created_at = '2026-10-10T00:00:00Z'`;
+    if (fault === 'old-rollout') await sql`UPDATE harness_shared.benchmark_rollout SET created_at = '2026-10-10T00:00:00Z'`;
+    if (fault === 'arm') await sql`UPDATE harness_shared.benchmark_rollout SET arm = 'baseline'`;
+    if (fault === 'seed') await sql`UPDATE harness_shared.benchmark_rollout SET seed = 2`;
+    if (fault === 'task') await sql`UPDATE harness_shared.benchmark_rollout SET task_id = 'foreign-task'`;
+    if (fault === 'model') await sql`UPDATE harness_shared.benchmark_rollout SET model_id = 'foreign-model'`;
+    if (fault === 'grader') await sql`UPDATE harness_shared.benchmark_rollout SET grader_version = 'foreign-grader'`;
+    if (fault === 'rollout-id') f.receipt.rolloutId = 'b'.repeat(64);
+    if (fault === 'snapshot') await sql`UPDATE harness_shared.benchmark_rollout SET config_snapshot = '{}'::jsonb`;
+    if (fault === 'generation') await sql`UPDATE harness_shared.benchmark_run_result SET generation_status = 'error'`;
+    if (fault === 'generation-error') await sql`UPDATE harness_shared.benchmark_run_result SET generation_error = 'failed'`;
+    if (fault === 'ungraded') await sql`UPDATE harness_shared.benchmark_run_result SET resolved = null`;
+    if (fault === 'status') await sql`UPDATE harness_shared.benchmark_run_result SET grader_status = 'failed'`;
+    if (fault === 'harness-version') await sql`UPDATE harness_shared.benchmark_rollout SET harness_version = 'foreign'`;
+    if (fault === 'submission-ref') await sql`UPDATE harness_shared.benchmark_run_result SET submission_ref = 'foreign'`;
+    if (fault === 'grader-ref') await sql`UPDATE harness_shared.benchmark_run_result SET raw_grader_output_ref = 'foreign'`;
+    if (fault === 'submission') await sql`UPDATE harness_shared.benchmark_rollout SET submission = 'changed'`;
+    if (fault === 'raw-output') await sql`UPDATE harness_shared.benchmark_rollout SET raw_grader_output = 'changed'`;
+    if (!['missing-rollout', 'missing-result'].includes(fault)) await f.pin();
+    expect(await currentBenchWorkloadGradeReader(f.options)(f.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('refuses an overwritten deterministic rollout rather than borrowing its new verdict', async () => {
+    const f = await fixture(), reader = currentBenchWorkloadGradeReader(f.options);
+    await emitRollout({ ...f.input, grading: { ...f.input.grading, resolved: false, status: 'failed', rawOutput: 'new grade' } }, { sql, workspaceId });
+    expect(await reader(f.receipt.receiptRef, binding)).toBeNull();
+  });
+  it('freezes the allocation and rejects foreign bindings and candidate refs', async () => {
+    const f = await fixture(), reader = currentBenchWorkloadGradeReader(f.options);
+    f.options.protocol.grader.version = 'changed'; f.receipt.outcomeId = 'candidate-outcome';
+    expect((await reader('grade:private', binding))?.[0].metadata?.workloadOutcome).toMatchObject({ id: 'answer-correctness' });
+    expect(await reader('grade:private', { ...binding, runId: 'foreign-run' })).toBeNull();
+    expect(await reader('grade:private', { ...binding, trialBindingHash: 'b'.repeat(64) })).toBeNull();
+    expect(await reader('candidate-ref', binding)).toBeNull();
+  });
+  it('refuses production, ambiguous records and protocols outside the frozen assignment', async () => {
+    const f = await fixture();
+    expect(() => currentBenchWorkloadGradeReader({ ...f.options, workspaceId: 'papercusp-workspace' })).toThrow(/PRODUCTION/);
+    expect(() => currentBenchWorkloadGradeReader({ ...f.options, receipts: [f.receipt, f.receipt] })).toThrow(/unique pinned/);
+    expect(() => currentBenchWorkloadGradeReader({ ...f.options, preregHash: 'b'.repeat(64) })).toThrow(/frozen private protocol/);
+    expect(() => currentBenchWorkloadGradeReader({ ...f.options, receipts: [{ ...f.receipt, graderRef: 'candidate-grader' }] })).toThrow(/frozen private protocol/);
   });
 });
 

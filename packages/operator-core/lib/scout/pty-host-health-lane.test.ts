@@ -13,6 +13,15 @@ const row = (kind: string, count: number, latestId = '42'): PtyHostEventAggregat
   lastAt: '2026-09-25 14:00:00+00',
 });
 
+/** Every host function whose call site names an event kind. The two drill helpers
+ * write host events through appendHostEvent's `kind` pass-through. */
+const HOST_EVENT_PRODUCERS = new Set([
+  'appendHostEvent',
+  'emitEvent',
+  'recordAdoptedCarryDrillEvent',
+  'recordAdoptedCarryDrillTerminal',
+]);
+
 /** Walk the host's emitter expressions instead of counting only literal calls.
  * A new computed form must be resolved here before its class can silently pass. */
 function emittedHostKinds(hostSource: string): string[] {
@@ -20,7 +29,7 @@ function emittedHostKinds(hostSource: string): string[] {
   const calls: ts.CallExpression[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
-        (node.expression.text === 'appendHostEvent' || node.expression.text === 'emitEvent')) calls.push(node);
+        HOST_EVENT_PRODUCERS.has(node.expression.text)) calls.push(node);
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -59,14 +68,21 @@ function emittedHostKinds(hostSource: string): string[] {
     throw new Error(`unresolved PTY event kind: ${expression.getText(source)}`);
   };
 
-  const hostCalls = calls.filter((call) => (call.expression as ts.Identifier).text === 'appendHostEvent');
+  const callee = (call: ts.CallExpression) => (call.expression as ts.Identifier).text;
+  const hostCalls = calls.filter((call) => callee(call) === 'appendHostEvent');
   const delegated = hostCalls.filter((call) => call.arguments[1]?.getText(source) === 'kind');
-  expect(delegated).toHaveLength(1); // makeCarryRearm's pass-through into appendHostEvent.
+  // makeCarryRearm's emitEvent and recordAdoptedCarryDrillEvent pass `kind` through;
+  // their callers are the producers counted below.
+  expect(delegated).toHaveLength(2);
   const direct = hostCalls.filter((call) => !delegated.includes(call));
-  const emitted = calls.filter((call) => (call.expression as ts.Identifier).text === 'emitEvent');
+  const emitted = calls.filter((call) => callee(call) === 'emitEvent');
   expect(emitted).toHaveLength(7); // every pass-through producer is included in this census.
-  return [...new Set([...direct, ...emitted].flatMap((call) => {
-    const kind = call.arguments[call.expression.getText(source) === 'emitEvent' ? 0 : 1];
+  // recordAdoptedCarryDrillTerminal delegates into recordAdoptedCarryDrillEvent with `kind`.
+  const drill = calls.filter((call) =>
+    callee(call).startsWith('recordAdoptedCarryDrill') && call.arguments[0]?.getText(source) !== 'kind');
+  expect(drill.length).toBeGreaterThan(0);
+  return [...new Set([...direct, ...emitted, ...drill].flatMap((call) => {
+    const kind = call.arguments[callee(call) === 'appendHostEvent' ? 1 : 0];
     if (!kind || !ts.isExpression(kind)) throw new Error('PTY event kind argument missing');
     return resolve(kind);
   }))].sort();
@@ -79,12 +95,14 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('submit-verify-exhausted')).toBe('failure');
     expect(classifyPtyHostEvent('turn-delivered')).toBe('routine');
     expect(classifyPtyHostEvent('duplicate-delivery-id')).toBe('routine');
+    // WI-6554700010008412: a quota latch released at the provider's stated reset.
+    expect(classifyPtyHostEvent('quota-block-expired-at-reset')).toBe('recovered');
   });
 
   it('covers the existing and newly logged host failure classes', () => {
     for (const kind of [
       'busy-gate-expired', 'respawn-carry-dropped', 'host-code-stale',
-      'quota-block-detected', 'control-payload-unaddressed',
+      'quota-block-detected', 'auth-block-detected', 'control-payload-unaddressed',
       'pty-load-failed', 'pty-spawn-failed', 'resume-finalization-report-failed',
       'resume-finalization-callback-failed', 'startup-turn-dropped',
       'kickoff-refusal-unreported-terminating',

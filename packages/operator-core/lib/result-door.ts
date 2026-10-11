@@ -138,6 +138,8 @@ export interface ResultDoorOpts {
   onLateScratchWriteSettled?: (settlement: ResultDoorLateScratchWriteSettlement) => void | Promise<void>;
   /** Phase attribution for awaited spill writes, including failed writes. */
   onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
+  /** MCP request ID attached to process-local scratch mutex holder diagnostics. */
+  requestTraceId?: string;
   /** Internal replay of a deferred failure: cap honestly without retrying filesystem I/O. */
   scratchWriteFailure?: { error: unknown };
 }
@@ -1603,6 +1605,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       content: contentMetadata(input.result.content),
       evidence,
       deferredWrites: input.opts.deferredScratchWrites,
+      requestTraceId: input.opts.requestTraceId,
       onScratchWriteTiming: input.opts.onScratchWriteTiming,
       // This spill path stores the JSON MCP content envelope directly as the
       // scratch payload. Declare byte zero as its machine-readable body so the
@@ -2810,6 +2813,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           content: contentMetadata(items),
           evidence: spillEvidence,
           deferredWrites: opts.deferredScratchWrites,
+          requestTraceId: opts.requestTraceId,
           onScratchWriteTiming: opts.onScratchWriteTiming,
           // EI-21949915395361184: put the boundary IN THE FILE, not only in the cursor
           // this call returns. Ten reports across five months all describe the same

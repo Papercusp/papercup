@@ -266,3 +266,18 @@ export function slugScopeErrorResult(
     content: [{ type: 'text', text: JSON.stringify({ tool: toolName, ...body }) }],
   };
 }
+
+/**
+ * TEMPORARY MITIGATION, not an API. git-sync committed this file's removal of the old
+ * ambiguity wrapper while holding back plans/audit.ts (its importer) behind an excluded
+ * transitive import. That left committed HEAD importing a name that no longer existed,
+ * which broke the host bundle (WI-6554700010008411). `decideSlugScope` now refuses
+ * ambiguity itself, so this is an exact identity pass-through. Durable fix: the git-sync
+ * guard change tracked in WI-6554700010008411. Delete this export once
+ * `git show HEAD:packages/operator-core/lib/agent-tools/plans/audit.ts` no longer names it.
+ * slug-scope.test.ts fails if any production caller imports it.
+ * @deprecated
+ */
+export function requireUnambiguousSlugScope<T>(decision: T, _workspaceId?: string): T {
+  return decision;
+}

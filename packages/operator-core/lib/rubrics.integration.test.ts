@@ -234,7 +234,9 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
       expect(rubric?.rubricId).toBe('direct-id-fast-path');
       expect(statements).toHaveLength(1);
       expect(statements[0]).toContain('plan_slug =');
-      expect(statements[0]).toContain('LIMIT 1');
+      // Still a point read, not the library scan. LIMIT 2 (not 1) so a slug held by two
+      // harnesses is observable and refused (WI-6554700010008395).
+      expect(statements[0]).toContain('LIMIT 2');
       expect(statements[0]).not.toContain('LIMIT 500');
     } finally {
       h.sql = originalSql;
@@ -362,6 +364,44 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     await insertRubricPlan('broken-r', { data: { characteristic: 'x', criteria: [], ratingScale: [] } });
     expect(await rubrics.getRubric('broken-r')).toBeNull();
     expect(await rubrics.listRubrics({})).toEqual([]);
+  });
+});
+
+describe('rubric refs are workspace-unique — a slug held by two harnesses refuses (WI-6554700010008395)', () => {
+  /** The PK is (workspace_id, harness_slug, plan_slug), so the schema admits this twin. */
+  async function insertTwinInSecondHarness(slug: string) {
+    await insertRubricPlan(slug);
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      VALUES (${activeWorkspaceId()}, 'zz-second-hive', ${slug}, '', md5(${slug}), 1, ${slug},
+              'active', '2026-06-20', '2026-06-20', 'queen-1', false,
+              'rubric', ${JSON.stringify(rubricData)}::text::jsonb, null, 'local')`;
+  }
+
+  it('getRubric and getRubricWithoutSeeding throw RubricRefAmbiguousError naming both harnesses', async () => {
+    await insertTwinInSecondHarness('twin-rubric');
+    for (const read of [rubrics.getRubric, rubrics.getRubricWithoutSeeding]) {
+      const error = await read('twin-rubric').then(() => null, (e: unknown) => e);
+      expect(error).toBeInstanceOf(rubrics.RubricRefAmbiguousError);
+      expect((error as InstanceType<typeof rubrics.RubricRefAmbiguousError>).harnesses).toEqual([
+        'papercusp',
+        'zz-second-hive',
+      ]);
+    }
+  });
+
+  it('the revision read fails closed (ok:false), and a pinned-revision read throws', async () => {
+    await insertTwinInSecondHarness('twin-rubric-rev');
+    await expect(rubrics.readRubricPlanRevision('twin-rubric-rev')).resolves.toEqual({ ok: false, revision: null });
+    await expect(rubrics.getRubric('twin-rubric-rev', 1)).rejects.toBeInstanceOf(rubrics.RubricRefAmbiguousError);
+  });
+
+  it('CONTROL: the same slug in ONE harness still resolves, so the refusal is about the twin', async () => {
+    await insertRubricPlan('single-rubric');
+    await expect(rubrics.getRubric('single-rubric')).resolves.toMatchObject({ rubricId: 'single-rubric' });
+    await expect(rubrics.readRubricPlanRevision('single-rubric')).resolves.toEqual({ ok: true, revision: 1 });
   });
 });
 

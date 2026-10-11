@@ -123,6 +123,8 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'turn-verifier-unsupported' ||
     kind === 'wake-rearm-unsupported' ||
     kind === 'quota-block-detected' ||
+    // P-004: the codex login is dead; the child cannot take a turn until recovery.
+    kind === 'auth-block-detected' ||
     kind === 'model-capacity-detected' ||
     kind === 'turn-deferred-quota-blocked' ||
     kind === 'launch-kickoff-model-turn-absent' ||

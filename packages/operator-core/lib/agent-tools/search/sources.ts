@@ -27,6 +27,9 @@ import '../../search/configure-search-defaults';
 import { createReportSearchSource } from './report-source';
 import { createDocSearchSource, createPlanSearchSource } from './knowledge-sources';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
+import type { Sql } from 'postgres';
+import { bm25LegIfAvailable, lexicalLeg, type LexicalLeg } from '../../search/lexical/rank';
+import type { Bm25CorpusTable } from '../../search/lexical/corpora';
 // WI-37603: every `embedding` leg below runs through this. Without it an HNSW
 // scan stops at `hnsw.ef_search` (40) and silently returns fewer rows than the
 // engine's `candidateLimit = limit * 3` asked for — measured 40 rows for a
@@ -79,6 +82,22 @@ export const HEADLINE_OPTS =
   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
 
 const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' : '');
+
+/**
+ * The lexical leg for a source whose legacy ranking is plain
+ * `ts_rank_cd(<tsv>, plainto_tsquery('english', q))` behind `<tsv> @@ …`: BM25 when
+ * its index is live (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005),
+ * else exactly that ranking.
+ */
+function plainLexicalLeg(sql: SearchSourceParams['sql'], table: Bm25CorpusTable, query: string, tsvColumn: string) {
+  const tq = sql`plainto_tsquery('english', ${query})`;
+  const tsv = sql(tsvColumn);
+  return lexicalLeg(sql as unknown as Sql, {
+    table,
+    query,
+    legacy: { score: sql`ts_rank_cd(${tsv}, ${tq})`, match: sql`${tsv} @@ ${tq}` },
+  });
+}
 
 /**
  * How many rows a per-lexeme document-frequency probe will count before it
@@ -244,12 +263,37 @@ function lexicalSql(
   table: ReturnType<SearchSourceParams['sql']>,
   /** Optional exact-token vector used only for fallback-only transcript rows. */
   simpleTsv?: ReturnType<SearchSourceParams['sql']>,
+  /**
+   * The BM25 (pg_textsearch) leg from `bm25LegIfAvailable`, when BM25 ranks this
+   * source's corpus (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005).
+   * BM25 sums per-term IDF-weighted scores, so a document matching more of the
+   * query's terms already outranks one matching fewer: the coverage-graded mode,
+   * the rarest-lexeme anchor and the AND filter all exist to approximate that with
+   * `ts_rank_cd`, and none of them applies here. The match is disjunctive and the
+   * ORDER BY is the bare BM25 distance so the index drives the top-k scan.
+   */
+  bm25?: LexicalLeg | null,
 ) {
   const sql = p.sql;
   // `?? ` and not `||`: a caller passing 0 is asking for the argmin-only
   // control arm, not for the default.
   const anchorDfBudget = p.lexicalAnchorDfBudget ?? ANCHOR_DF_BUDGET;
   const orText = sql`replace(plainto_tsquery('english', ${p.query})::text, ' & ', ' | ')`;
+  const legacyOrder = sql`coverage DESC, rank DESC`;
+
+  if (bm25) {
+    return {
+      with: sql`WITH q AS (SELECT ${orText}::tsquery AS orq)`,
+      join: sql`, q`,
+      coverage: sql`1`,
+      fallbackOnly: sql`FALSE`,
+      rank: bm25.score,
+      match: bm25.match,
+      order: bm25.order,
+      headlineQuery: sql`q.orq`,
+      headlineConfig: sql`'english'::regconfig`,
+    };
+  }
 
   // EI-24045346484356708: there is deliberately NO literal-substring arm in
   // `match` here any more. It used to be `(tsv @@ q.andq OR position(...) > 0)`,
@@ -269,6 +313,7 @@ function lexicalSql(
       )`,
       join: sql`, q`,
       coverage: sql`1`,
+      order: legacyOrder,
       fallbackOnly: simpleTsv
         ? sql`NOT (${tsv} @@ q.andq) AND NOT (${simpleTsv} @@ q.simpleq)`
         : sql`FALSE`,
@@ -325,6 +370,7 @@ function lexicalSql(
             OR (n < ${DF_PROBE_CAP} AND prior + n <= ${anchorDfBudget})
       )`,
     join: sql`, q, anchor`,
+    order: legacyOrder,
     fallbackOnly: simpleTsv
       ? sql`NOT (${tsv} @@ anchor.a) AND NOT (${simpleTsv} @@ q.simpleq)`
       : sql`FALSE`,
@@ -370,9 +416,10 @@ function lexicalSql(
 const escalations: SearchSource = {
   name: 'escalations',
   async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+    const leg = await plainLexicalLeg(sql, 'harness_escalations', query, 'body_tsv');
     const rows = (await sql`
       SELECT harness_slug, phase, escalation, supervisor_notes,
-             ts_rank_cd(body_tsv, plainto_tsquery('english', ${query})) AS rank,
+             ${leg.score} AS rank,
              ts_headline('english',
                COALESCE(escalation, '') || E'\n' || COALESCE(supervisor_notes, ''),
                plainto_tsquery('english', ${query}),
@@ -381,8 +428,8 @@ const escalations: SearchSource = {
         FROM harness_shared.harness_escalations
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
-         AND body_tsv @@ plainto_tsquery('english', ${query})
-    ORDER BY rank DESC LIMIT ${limit}
+         AND ${leg.match}
+    ORDER BY ${leg.order} LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; phase: string; escalation: string | null; supervisor_notes: string | null; rank: number; highlight: string }>;
     return rows.map((r) => {
       const body = `${r.escalation ?? ''}\n${r.supervisor_notes ?? ''}`.trim();
@@ -440,17 +487,18 @@ const escalations: SearchSource = {
 const brainstorm: SearchSource = {
   name: 'brainstorm',
   async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+    const leg = await plainLexicalLeg(sql, 'harness_brainstorm', query, 'content_tsv');
     const rows = (await sql`
       SELECT harness_slug, phase, content,
-             ts_rank_cd(content_tsv, plainto_tsquery('english', ${query})) AS rank,
+             ${leg.score} AS rank,
              ts_headline('english', content,
                plainto_tsquery('english', ${query}),
                ${HEADLINE_OPTS}) AS highlight
         FROM harness_shared.harness_brainstorm
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
-         AND content_tsv @@ plainto_tsquery('english', ${query})
-    ORDER BY rank DESC LIMIT ${limit}
+         AND ${leg.match}
+    ORDER BY ${leg.order} LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; phase: string; content: string; rank: number; highlight: string }>;
     return rows.map((r) => ({
       key: `brainstorm:${r.harness_slug}:${r.phase}`,
@@ -578,9 +626,10 @@ const turns: SearchSource = {
 const decisions: SearchSource = {
   name: 'decisions',
   async lexical({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+    const leg = await plainLexicalLeg(sql, 'harness_decisions', query, 'body_tsv');
     const rows = (await sql`
       SELECT harness_slug, line_hash, verb, args, iso,
-             ts_rank_cd(body_tsv, plainto_tsquery('english', ${query})) AS rank,
+             ${leg.score} AS rank,
              ts_headline('english',
                coalesce(verb, '') || ' ' || coalesce(args, ''),
                plainto_tsquery('english', ${query}),
@@ -588,8 +637,8 @@ const decisions: SearchSource = {
         FROM harness_shared.harness_decisions
        WHERE workspace_id = ${workspaceId}
          AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
-         AND body_tsv @@ plainto_tsquery('english', ${query})
-    ORDER BY rank DESC LIMIT ${limit}
+         AND ${leg.match}
+    ORDER BY ${leg.order} LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; rank: number; highlight: string }>;
     return rows.map((r) => {
       const body = `${r.verb} ${r.args}`.trim();
@@ -731,7 +780,15 @@ const workItem: SearchSource = {
   async lexical(p: SearchSourceParams): Promise<Listing> {
     const { sql, workspaceId, scopeFilter, limit } = p;
     // P-017 / D-062 — see lexicalSql. Byte-identical without `lexicalMode`.
-    const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`);
+    // P-005: BM25 indexes the BASE table's title+summary+notes and the view exposes
+    // no notes, so the BM25 leg joins each view row to its base row by primary key.
+    const bm25 = await bm25LegIfAvailable(sql as unknown as Sql, 'work_items', p.query, 'w');
+    const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`, undefined, bm25);
+    const from = bm25
+      ? sql`harness_shared.engineer_issues ei
+            JOIN harness_shared.work_items w
+              ON w.harness_slug = ei.base_harness_slug AND w.feature_id = ei.issue_id`
+      : sql`harness_shared.engineer_issues ei`;
     // EI-21924046411702156: see LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS. This tool
     // runs `ctx.tx` = a bare `getOrgPg()` handle with no ambient bound, so the
     // bound must be installed HERE, per the readiness-reconcile.ts pattern
@@ -742,20 +799,20 @@ const workItem: SearchSource = {
       await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
       return tx`
       ${lex.with}
-      SELECT issue_id, scope, title, body, kind, state, severity, lane,
-             coalesce(updated_at, created_at) AS updated_at,
+      SELECT ei.issue_id, ei.scope, ei.title, ei.body, ei.kind, ei.state, ei.severity, ei.lane,
+             coalesce(ei.updated_at, ei.created_at) AS updated_at,
              ${lex.coverage} AS coverage,
              ${lex.rank} AS rank,
-             ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
+             ts_headline('english', coalesce(ei.title, '') || E'\n' || coalesce(ei.body, ''),
                ${lex.headlineQuery},
                ${HEADLINE_OPTS}) AS highlight
-        FROM harness_shared.engineer_issues ${lex.join}
-       WHERE workspace_id = ${workspaceId}
+        FROM ${from} ${lex.join}
+       WHERE ei.workspace_id = ${workspaceId}
          -- the scope column stores 'operator' | 'harness:<slug>' — a bare harness_slug
          -- filter (as the other sources take it) maps to the 'harness:<slug>' form.
-         AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
+         AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)
          AND ${lex.match}
-    ORDER BY coverage DESC, rank DESC LIMIT ${limit}
+    ORDER BY ${lex.order} LIMIT ${limit}
     `;
     })) as unknown as Array<{
       issue_id: string;
@@ -997,6 +1054,7 @@ const sessionTurn: SearchSource = {
       p.sql`text_tsv`,
       p.sql`harness_shared.session_turns`,
       undefined,
+      await bm25LegIfAvailable(p.sql as unknown as Sql, 'session_turns', p.query),
     );
     // The caller's scope + filter bag as ONE predicate, shared by the primary
     // query and the literal fill so the two can never disagree about scope —
@@ -1053,7 +1111,7 @@ const sessionTurn: SearchSource = {
         FROM harness_shared.session_turns ${lex.join}
        WHERE ${scoped()}
          AND ${lex.match}
-    ORDER BY coverage DESC, rank DESC LIMIT ${p.limit}
+    ORDER BY ${lex.order} LIMIT ${p.limit}
     `) as unknown as SessionTurnLexicalRow[];
 
       // FILL — EI-24045346484356708. A literal-only row scores ts_rank_cd = 0,

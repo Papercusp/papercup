@@ -18,6 +18,7 @@ import {
   DEPENDENCY_SNAPSHOT_REFRESH_AGE_MS,
   DEPENDENCY_SNAPSHOT_SCHEMA,
   decideDependencySnapshotHealth,
+  dependencySnapshotBackend,
   dependencySnapshotNeedsRefresh,
   dependencySnapshotPath,
   dependencySnapshotProducerArgv,
@@ -111,7 +112,7 @@ describe('the producer invocation', () => {
   });
 
   it('argv runs the indexed tree\'s own script in DIRECT mode with the repo, source root and an explicit --out', () => {
-    expect(dependencySnapshotProducerArgv('/repo', 'papercusp', '/bin/gitnexus', '/out.json')).toEqual([
+    expect(dependencySnapshotProducerArgv('/repo', 'papercusp', '/bin/gitnexus', '/out.json', 'gitnexus')).toEqual([
       join('/repo', 'scripts', 'gen-graph-dependency-snapshot.mjs'),
       '--gitnexus-bin',
       '/bin/gitnexus',
@@ -127,6 +128,7 @@ describe('the producer invocation', () => {
   it('no gitnexus binary: not attempted, nothing spawned', async () => {
     let spawned = false;
     const r = await runDependencySnapshotProducer('/repo', 'papercusp', '/out.json', {
+      backend: 'gitnexus',
       bin: '/missing/gitnexus',
       exists: () => false,
       exec: async () => {
@@ -159,6 +161,19 @@ describe('the producer invocation', () => {
         opts: { cwd: '/repo', timeoutMs: DEPENDENCY_SNAPSHOT_PRODUCER_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, subsystem: 'gitnexus-dependency-snapshot' },
       },
     ]);
+  });
+
+  it('uses the first-party producer without an installed graph binary, with explicit shared output', async () => {
+    const seen: unknown[] = [];
+    const r = await runDependencySnapshotProducer('/repo', 'papercusp', '/shared/snapshot.json', {
+      bin: '/missing/gitnexus', exists: () => false, now: () => NOW,
+      exec: async (_cmd, args) => { seen.push(args); return { stdout: '', stderr: 'GRAPH_SNAPSHOT status=written edges=1' }; },
+    });
+    expect(r.exit).toBe(0);
+    expect(seen).toEqual([[join('/repo', 'scripts', 'gen-graph-dependency-snapshot.mjs'), '--first-party', '--repo', 'papercusp', '--source-root', '/repo', '--out', '/shared/snapshot.json']]);
+    expect(dependencySnapshotBackend(undefined)).toBe('first-party-imports');
+    expect(dependencySnapshotBackend('gitnexus')).toBe('gitnexus');
+    expect(() => dependencySnapshotBackend('typo')).toThrow('Unsupported snapshot_backend');
   });
 
   it('a refusing producer resolves with its exit code and its own status line — never throws into the tick', async () => {
@@ -206,10 +221,25 @@ describe('decideDependencySnapshotHealth — alert once per unusable streak', ()
 });
 
 describe('refreshDependencySnapshot', () => {
+  it('replaces a fresh legacy snapshot, then leaves first-party source identity independent of the graph index', async () => {
+    let text = snapshotText();
+    let produced = 0;
+    const options = { out: '/out.json', now: () => NOW, readText: () => text,
+      produce: async (_root: string, _repo: string, _out: string, deps?: { backend?: string }) => {
+        expect(deps?.backend).toBe('first-party-imports'); produced++;
+        const next = JSON.parse(snapshotText()); next.index.backend = 'first-party-imports'; next.index.lastCommit = NEWER;
+        text = JSON.stringify(next); return { exit: 0, line: 'GRAPH_SNAPSHOT status=written', at: NOW };
+      } };
+    const input = { root: '/repo', repoName: 'papercusp', currentIndexCommit: COMMIT, prev: null };
+    expect((await refreshDependencySnapshot(input, options)).next.status).toBe('fresh');
+    expect((await refreshDependencySnapshot(input, options)).ran).toBe(false);
+    expect(produced).toBe(1);
+    expect(judgeDependencySnapshot(text, NOW, { expectedBackend: 'gitnexus' }).status).toBe('behind-index');
+  });
   it('a fresh snapshot is left alone — no producer run', async () => {
     let produced = 0;
     const r = await refreshDependencySnapshot(
-      { root: '/repo', repoName: 'papercusp', currentIndexCommit: COMMIT, prev: null },
+      { root: '/repo', repoName: 'papercusp', currentIndexCommit: COMMIT, prev: null, backend: 'gitnexus' },
       { out: '/out.json', now: () => NOW, readText: () => snapshotText(), produce: async () => ((produced += 1), { exit: 0, line: null, at: NOW }) },
     );
     expect(produced).toBe(0);
@@ -219,7 +249,7 @@ describe('refreshDependencySnapshot', () => {
   it('an absent snapshot is produced and RE-JUDGED from what the producer actually wrote', async () => {
     let onDisk: string | null = null;
     const r = await refreshDependencySnapshot(
-      { root: '/repo', repoName: 'papercusp', currentIndexCommit: COMMIT, prev: null },
+      { root: '/repo', repoName: 'papercusp', currentIndexCommit: COMMIT, prev: null, backend: 'gitnexus' },
       {
         out: '/out.json',
         now: () => NOW,
@@ -236,7 +266,7 @@ describe('refreshDependencySnapshot', () => {
 
   it('a producer that writes nothing leaves the status unusable and alerts', async () => {
     const r = await refreshDependencySnapshot(
-      { root: '/repo', repoName: 'papercusp', currentIndexCommit: COMMIT, prev: null },
+      { root: '/repo', repoName: 'papercusp', currentIndexCommit: COMMIT, prev: null, backend: 'gitnexus' },
       { out: '/out.json', now: () => NOW, readText: () => null, produce: async () => ({ exit: 3, line: 'GRAPH_SNAPSHOT status=not-written reason=empty', at: NOW }) },
     );
     expect(r).toMatchObject({ ran: true, shouldAlert: true, next: { status: 'absent', lastProducerLine: 'GRAPH_SNAPSHOT status=not-written reason=empty' } });
@@ -244,7 +274,7 @@ describe('refreshDependencySnapshot', () => {
 
   it('a refresh that fails keeps a still-usable older snapshot usable (no alert), and records the failure', async () => {
     const r = await refreshDependencySnapshot(
-      { root: '/repo', repoName: 'papercusp', currentIndexCommit: NEWER, prev: null },
+      { root: '/repo', repoName: 'papercusp', currentIndexCommit: NEWER, prev: null, backend: 'gitnexus' },
       { out: '/out.json', now: () => NOW, readText: () => snapshotText(), produce: async () => ({ exit: 3, line: 'GRAPH_SNAPSHOT status=not-written reason=index-moved', at: NOW }) },
     );
     expect(r).toMatchObject({ ran: true, shouldAlert: false, next: { status: 'behind-index', lastProducerExit: 3 } });
@@ -255,8 +285,14 @@ describe('wiring — the routine refreshes on BOTH the analyze path and the idle
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
   const CALL = 'await trackDependencySnapshot(ctx, root, repoName);';
 
-  it('exactly two call sites', () => {
-    expect(src.split(CALL).length - 1).toBe(2);
+  it('refreshes source-only snapshots before optional graph writer admission, while retaining legacy skip and finish paths', () => {
+    expect(src.split(CALL).length - 1).toBe(3);
+    const handler = src.indexOf("registerSystemAction('gitnexus-reindex'");
+    const call = src.indexOf(CALL, handler);
+    const writer = src.indexOf('detectLiveAnalyzeWriter(root)', handler);
+    expect(call).toBeGreaterThan(handler);
+    expect(call).toBeLessThan(writer);
+    expect(src.slice(handler, call)).toContain("snapshotBackend === 'first-party-imports'");
   });
 
   it('one closes finishAnalyzeTick (the one finish path for same-host AND adopted runs), after the health write', () => {

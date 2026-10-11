@@ -16,7 +16,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { GitRunner } from './evidence-measurement-pin';
+import { defaultGitRunner, type GitRunner } from './evidence-measurement-pin';
 import {
   INSTRUMENT_EVIDENCE_KINDS,
   INSTRUMENT_REFUSAL_CODES,
@@ -292,6 +292,39 @@ describe('instrument provenance — as-committed /tmp run (SPEC-P-010-AS-COMMITT
     const d = deps({});
     expect(await refusalCode({ evidenceKind: 'test', details: asCommittedDetails }, d, { commitSha: runCommit, repoPrefix: null })).toBeNull();
     expect(d.cwds).toEqual([]);
+  });
+});
+
+describe('instrument provenance — real git, no fake (AUTO-BAR-R-10-P-010)', () => {
+  // The cases above use an in-memory git fake. These pin the same committed / not-committed /
+  // not-importing verdicts with the PRODUCTION git runner against THIS repository at HEAD: no fake
+  // git and no fixture tree — the cited instrument and tests are real committed files of this
+  // checkout, so the fake cannot drift from real `git cat-file` / `git show` behaviour unnoticed.
+  const PLANS = 'packages/operator-core/lib/agent-tools/plans';
+  const realDeps = async (): Promise<InstrumentProvenanceDeps> => {
+    const root = (await defaultGitRunner(__dirname, ['rev-parse', '--show-toplevel'])).trim();
+    return { git: defaultGitRunner, primaryRoot: async () => root, checkoutRoot: async () => null };
+  };
+
+  it('accepts a real committed instrument whose real committed test imports it', async () => {
+    const d = await realDeps();
+    const binding = operational({ path: `${PLANS}/evidence-measurement-pin.ts`, testPath: `${PLANS}/evidence-measurement-pin.test.ts` });
+    expect(await refusalCode(binding, d)).toBeNull();
+  });
+
+  it('refuses an instrument path with no blob at HEAD as not committed', async () => {
+    const d = await realDeps();
+    const binding = operational({ path: `${PLANS}/never-committed-instrument.ts`, testPath: `${PLANS}/evidence-measurement-pin.test.ts` });
+    await expectRefused('instrument_not_committed', binding, d);
+  });
+
+  it('refuses a real committed test that does not import the instrument', async () => {
+    const d = await realDeps();
+    const binding = operational({
+      path: `${PLANS}/evidence-measurement-pin.ts`,
+      testPath: 'packages/operator-core/lib/search/bench/aggregate-correctness.test.ts',
+    });
+    await expectRefused('instrument_test_not_importing', binding, d);
   });
 });
 

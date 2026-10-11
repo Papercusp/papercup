@@ -662,6 +662,18 @@ if [ "$IN_TREE" -eq 0 ] && [ "$RELOCATION" != "overlay" ]; then
   esac
 fi
 
+# EI-25654051948437355: a Playwright CLI --reporter REPLACES every reporter in the
+# project's playwright.config, including the harness_shared.test_runs ledger
+# reporter. The probe still prints a verdict, but `mutant_ledger=none` and no row
+# exists to bind as spec evidence, so the whole (often ~10 min) probe has to be
+# re-run. Refuse before any snapshot or mutation. The exit-code verdict does not
+# need the ledger, so a caller who only wants the verdict can opt out.
+if [ "${MUTATION_PROBE_ALLOW_REPORTER_OVERRIDE:-}" != "1" ]; then
+  if [[ "$TEST_CMD" == *playwright* ]] && [[ "$TEST_CMD" =~ (^|[[:space:]])--reporter([=[:space:]]|$) ]]; then
+    die "--test passes a Playwright --reporter, which REPLACES the configured reporters including the test_runs ledger reporter: the probe would report mutant_ledger=none and leave no row to bind. Drop --reporter (the configured reporters already print progress), or set MUTATION_PROBE_ALLOW_REPORTER_OVERRIDE=1 if you only need the exit-code verdict."
+  fi
+fi
+
 # capability:bash foreground calls terminate the WHOLE child process tree when
 # their short wall-clock deadline expires. That kill can arrive after this
 # script has applied the mutant but before Bash gets to run finish(), so the

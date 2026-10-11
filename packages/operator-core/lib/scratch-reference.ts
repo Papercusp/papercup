@@ -242,6 +242,8 @@ export function writeScratchReference(input: {
   payload: Buffer | string;
   workspaceId: string;
   ownerId?: string | null;
+  /** MCP request correlation used to identify this writer in mutex wait diagnostics. */
+  requestTraceId?: string;
   audience?: OutputAudience;
   mediaType: string;
   content?: readonly ScratchReferenceContentMetadata[];
@@ -269,6 +271,7 @@ export function writeScratchReference(input: {
   if (input.deferredWrites) {
     const filePath = input.filePath;
     const write = writeWithScratchQuota({ workspaceId: input.workspaceId, filePath, bytes: bytes.length,
+      requestTraceId: input.requestTraceId,
       onTiming: input.onScratchWriteTiming }, async () => {
       // WI-10006512: a root this mkdir creates is marked as a workspace scratch root, so the
       // scratch GC can later prove it is ours before deleting it.

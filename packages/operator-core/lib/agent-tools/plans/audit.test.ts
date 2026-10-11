@@ -184,7 +184,6 @@ describe('plans:audit exact-slug scope recovery', () => {
       status: 'resolved',
       harnessSlug: 'papercusp',
       bySlug: { 'plan-a': 'papercusp' },
-      ambiguous: {},
     });
 
     const result = await tool.handler({

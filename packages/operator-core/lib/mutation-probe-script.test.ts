@@ -676,6 +676,31 @@ exec "$PROBE_TEST_REAL_GIT" "$@"
   });
 
   /**
+   * EI-25654051948437355 — a Playwright CLI --reporter replaces the configured
+   * reporters, including the test_runs ledger reporter, so the probe printed a
+   * verdict but `mutant_ledger=none` and left no row to bind. Refuse up front.
+   */
+  it.each([
+    ['equals form', 'npx playwright test --reporter=list {}'],
+    ['space form', 'npx playwright test {} --reporter list'],
+  ])('refuses a Playwright --test that overrides reporters (%s) before any guard runs', (_label, cmd) => {
+    const { code, out } = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', cmd]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('test_runs ledger reporter');
+    expect(out).not.toContain('running baseline guard');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('lets an explicit MUTATION_PROBE_ALLOW_REPORTER_OVERRIDE=1 through to a genuine verdict (calibration)', () => {
+    const { code, out } = runProbeIO(
+      ['--file', subject, '--mutate', 's/beta/BETA/', '--test', 'true playwright --reporter=list; grep -q "^beta$" {}'],
+      { ...process.env, MUTATION_PROBE_ALLOW_REPORTER_OVERRIDE: '1' },
+    );
+    expect(code, out).toBe(0);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  /**
    * EI-21882388979504012 — a test runner that cannot COLLECT its subject exits
    * nonzero for MISUSE (vitest's "No test files found, exiting with code 1" is
    * the reproduced case: copy-out mode moves the mutant under a scratch dir a

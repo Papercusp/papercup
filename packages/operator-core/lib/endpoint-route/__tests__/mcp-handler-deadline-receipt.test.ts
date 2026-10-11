@@ -73,6 +73,7 @@ const h = vi.hoisted(() => {
     invocations: [] as unknown[],
     resultDoorDelayMs: 0,
     resultDoorCalls: 0,
+    resultDoorRequestTraceIds: [] as Array<string | null>,
     scratchWriteTimings: [] as ScratchWriteTimings[],
     realScratchWriteTimings: [] as ScratchWriteTimings[],
     captureScratchWriteTimings: false,
@@ -180,7 +181,11 @@ vi.mock('../../result-door', async (importOriginal) => {
       if (h.resultDoorDelayMs > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, h.resultDoorDelayMs));
       }
-      const opts = args[1] as { onScratchWriteTiming?: (timings: typeof h.scratchWriteTimings[number]) => void };
+      const opts = args[1] as {
+        onScratchWriteTiming?: (timings: typeof h.scratchWriteTimings[number]) => void;
+        requestTraceId?: string;
+      };
+      h.resultDoorRequestTraceIds.push(opts.requestTraceId ?? null);
       for (const timing of h.scratchWriteTimings) opts.onScratchWriteTiming?.(timing);
       if (h.captureScratchWriteTimings) {
         return applyResultDoorAsync(args[0], {
@@ -374,6 +379,7 @@ beforeEach(() => {
   h.spillWriteEntered = null;
   h.spillPaths = [];
   h.resultDoorCalls = 0;
+  h.resultDoorRequestTraceIds.length = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns();
 });
@@ -498,6 +504,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         }),
       );
       expect(h.resultDoorCalls).toBeGreaterThan(0);
+      expect(h.resultDoorRequestTraceIds).toContain(traceId);
       expect((settled?.phaseTimingsMs as { resultDoor?: number } | undefined)?.resultDoor)
         .toBeGreaterThanOrEqual(resultDoorDelayMs);
       expect(Number(settled?.elapsedMs)).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
@@ -672,7 +679,10 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(h.scratchWriteTimings).toEqual([]); // no synthetic phase injection
       expect(h.realScratchWriteTimings).toHaveLength(1);
       const timing = h.realScratchWriteTimings[0];
-      expect(timing).toMatchObject({ quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0 });
+      // An already-running shared usage refresh may add a short, legitimate wait.
+      expect(timing).toMatchObject({ quotaWaitMs: 0, quotaRecoveryMs: 0 });
+      expect(Number.isFinite(timing.refreshWaitMs)).toBe(true);
+      expect(timing.refreshWaitMs).toBeGreaterThanOrEqual(0);
       expect(timing.writeMs).toBeGreaterThan(0);
       expect(timing.totalMs).toBeGreaterThanOrEqual(timing.writeMs);
       const settled = traceEvents(info.mock.calls).find((event) =>

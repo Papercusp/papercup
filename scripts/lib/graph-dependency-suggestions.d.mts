@@ -51,8 +51,9 @@ export function baseCandidates(base: string): Set<string>;
 export function packageNameReader(readSource: (rel: string) => string | null): (dir: string) => string | null;
 /**
  * Does `source` (the importer's current text) actually import `imported`? Relative specifiers
- * by resolution; non-relative ones by path tail, or — when `packageNameAt` is supplied — by
- * re-resolving a workspace-package specifier against the enclosing package's manifest.
+ * by resolution; explicit @/ and ~/ directory aliases by path tail; package specifiers
+ * only by re-resolving against the enclosing package's manifest. A package's path tail
+ * cannot identify its owning workspace (WI-6554700010008389).
  * @param {string} source
  * @param {string} importer
  * @param {string} imported
