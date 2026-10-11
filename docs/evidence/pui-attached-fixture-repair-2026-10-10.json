@@ -198,12 +198,38 @@
       "deadline": "2026-10-11T18:14:10.304Z",
       "state": "failed before either cold control executed; authoritative JOB END adopted",
       "testRunId": 21099325,
+      "logSha256": "18fe36c485975dc159d2fa05f044c4ea0308fbfcad2fb8e710426409e11ecaac",
       "exitCode": 1,
       "terminalAt": "2026-10-11T18:03:11.352Z",
       "frameworkResult": "1 failed file / 94 skipped tests; beforeAll fixture build failed; no cold timing or native evidence",
       "buildFailure": "The maintained bundle restricted-hold gate correctly refused a live org-admin database read inherited from the integration process. The fixture builder had not supplied the existing VITEST-only census fixture.",
       "recurrenceRepair": "Reuse PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE exactly as bundle-host-fallback.test.ts does: an explicit private fixture census, scoped only to the builder subprocess. Production fail-closed census and strict cold timing controls stay unchanged. Source edit and fresh verification are pending.",
       "fixtureWorkItem": "EI-25707128043245334",
+      "passingRun": {
+        "taskId": "0mv45c7vc1knm5lf1io",
+        "testRunId": 21100487,
+        "logPath": ".papercusp/scratch/bash-c3bbf6a4-433.log",
+        "logSha256": "d1f89340a3427c5f0cf95fc8d3964e229f56e3832cc59cb79cdaa1d308a532d7",
+        "terminalAt": "2026-10-11T18:23:39.832Z",
+        "exitCode": 0,
+        "result": "2 passed / 92 skipped; both literal cold startup controls; native launches zero",
+        "bundleSha256": "5ea423f6a5c6ab933e9de02ec7cc14416503add0fb27d43665822f3ac2613533",
+        "bundleBuildMs": 76307,
+        "runtime": "plain-node",
+        "tsxLoader": false,
+        "censusSource": "private-test-fixture",
+        "testFileSha256": "7014d2a3705635aa59b0edf44d87b7d8c0bf46d87747db03a686421e9df8face",
+        "fixtureEntrySha256": "38acf689906080be578645e7061083c0b3255f9445a3c63d5e219b4a9d782451",
+        "controls": [
+          { "observerViewStateRead": false, "identityStatus": 200, "identityMs": 41, "accountStatus": 200, "accountStatusMs": 130, "eventLoopDelayMaxMsSinceReadyAtAccountResponse": 221.904895, "nativeLaunches": 0 },
+          { "observerViewStateRead": true, "identityStatus": 200, "identityMs": 43, "accountStatus": 200, "accountStatusMs": 85, "eventLoopDelayMaxMsSinceReadyAtAccountResponse": 152.305663, "nativeLaunches": 0 }
+        ],
+        "provenance": "Current-build fixture only; TEST_FILE_RESULT reports unknown commit provenance after shared HEAD movement, ledger source is dirty. No clean as-committed BAR or immutable full-candidate claim.",
+        "cpuProfiles": [
+          { "path": "/tmp/pui-acceptance-7534f/cold-identity-census-20261011-1819/timing/operator-157142-8a757a8c-933c-4ef1-b386-436caaba61a8.json", "sha256": "273896485263385fa248bfe077e8aa12d262db9d90a2f022012140352463dd88" },
+          { "path": "/tmp/pui-acceptance-7534f/cold-identity-census-20261011-1819/timing/operator-170164-5e36bd82-d0f8-45e2-958f-078337f20052.json", "sha256": "a5351bd7aa43b995e47bc85bc5affebdfb97c32fdbd4ece92a3d751f77a8fea3" }
+        ]
+      },
       "limitations": "Both cold controls only; no native launch, approval, restart or immutable full-candidate verdict."
     },
     "repairSourceSha256": {
@@ -214,7 +240,7 @@
     },
     "limitations": [
       "The profile ties this cold startup stall to synchronous module loading; it does not establish the earlier Connection: Unavailable cause or the observer's causal role.",
-      "The changed invocation path passes 10 route tests; chat context/catalog checks add 7 passes with unknown commit provenance. Cold controls reach healthy identity and complete accounts:status, but both fail the new global loop-delay guard. The startup class is not resolved; no native approval/restart or immutable full-candidate acceptance is established.",
+      "The changed invocation path passes 10 route tests; chat context/catalog checks add 7 passes with unknown commit provenance. Both cold controls now pass the unchanged three-second request/loop guard on the production bundle loader. This proves the corrected private fixture; no native approval/restart or immutable full-candidate acceptance is established.",
       "The original full47a6 verdict remains refused. BAR adequacy, independent grading and final Avi candidate approval remain required."
     ]
   }
