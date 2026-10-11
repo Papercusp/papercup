@@ -66,6 +66,14 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     });
   });
 
+  it('does not grant hosted service direct access to global operator policy', async () => {
+    await db.adminSql`INSERT INTO harness_shared.operator_flag_overrides (workspace_id, payload)
+      VALUES ('@global', '{"fixture-policy":true}'::jsonb)
+      ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload`;
+    await expect(run(tx => readGlobalFlagOverridesForUpdate(tx)))
+      .rejects.toMatchObject({ code: '42501' });
+  });
+
   it('holds workspace tenant ownership against deletion and reassignment until commit', async () => {
     const control = randomUUID(); const workspace = randomUUID(); const host = randomUUID(); const connection = randomUUID();
     const input = { userId: randomUUID(), sessionId: `hs_${'A'.repeat(43)}`, sessionVersion: 1,
