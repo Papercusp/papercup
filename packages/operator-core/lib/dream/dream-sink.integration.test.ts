@@ -13,6 +13,7 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import { rm } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import {
   beginDreamRun,
@@ -45,6 +46,50 @@ const HARNESS = 'papercusp';
 describe('accepted dream sink (real PG — P-004)', () => {
   let db: OrgTestDb;
   let workspaceBefore: string | undefined;
+
+  // Keep the original strict oracle. If it fails, retain the reached phase and
+  // complete snapshots in stdout before the ledger bounds its error tail.
+  async function assertReplayPayload(
+    phase: 'post-close-before-replay' | 'post-replay',
+    before: unknown,
+    after: unknown,
+    assertion: () => void,
+  ): Promise<void> {
+    try {
+      assertion();
+    } catch (error) {
+      let database: unknown;
+      let testSha256: string | undefined;
+      let sourceCaptureError: string | undefined;
+      try {
+        testSha256 = createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex');
+      } catch (captureError) {
+        sourceCaptureError = String(captureError);
+      }
+      try {
+        const [identity] = await db.adminSql`SELECT current_database() AS database,
+          current_user AS role, current_setting('server_version') AS server_version`;
+        database = identity;
+      } catch (captureError) {
+        database = { captureError: String(captureError) };
+      }
+      console.error('DREAM_REPLAY_FAILURE', JSON.stringify({
+        phase,
+        testFile: fileURLToPath(import.meta.url),
+        testSha256,
+        sourceCaptureError,
+        nodeVersion: process.version,
+        nodeExecutable: process.execPath,
+        workspace: process.env.PAPERCUSP_WORKSPACE_ID,
+        database,
+        before,
+        after,
+        assertionMessage: error instanceof Error ? error.message : String(error),
+        assertionStack: error instanceof Error ? error.stack : undefined,
+      }));
+      throw error;
+    }
+  }
 
   beforeAll(async () => {
     db = await createOrgTestDb();
@@ -233,9 +278,11 @@ describe('accepted dream sink (real PG — P-004)', () => {
       // replay. Preserve that terminal payload exactly, including its token.
       const [terminal] = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
         WHERE issue_id = ${original!.issue_id}`;
-      expect(terminal!.payload).toEqual({
-        ...original!.payload,
-        _completionEventIntentId: expect.stringMatching(/\S/),
+      await assertReplayPayload('post-close-before-replay', original!.payload, terminal!.payload, () => {
+        expect(terminal!.payload).toEqual({
+          ...original!.payload,
+          _completionEventIntentId: expect.stringMatching(/\S/),
+        });
       });
       const replay = await Promise.all([sinkDreamInsight(input, deps), sinkDreamInsight(input, deps)]);
       for (const value of replay)
@@ -255,7 +302,9 @@ describe('accepted dream sink (real PG — P-004)', () => {
       const artifacts = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
         WHERE workspace_id = ${WS} AND payload->>'watchdogKey' = 'dream:DR-CAPABILITY-PG'`;
       expect(artifacts).toHaveLength(1);
-      expect(artifacts[0]!.payload).toEqual(terminal!.payload);
+      await assertReplayPayload('post-replay', terminal!.payload, artifacts[0]!.payload, () => {
+        expect(artifacts[0]!.payload).toEqual(terminal!.payload);
+      });
       const rows = await readRoutedIdeas({ workspaceId: WS, harnessSlug: HARNESS, origin: 'dream' });
       const routed = rows.filter((r) => r.ideaId === 'dream:DR-CAPABILITY-PG');
       expect(routed).toHaveLength(1);
