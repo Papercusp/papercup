@@ -7,11 +7,12 @@
  * AppArmor userns grant for bwrap; they are skipped (not passed) where the namespace
  * cannot be built, and the skip reason says so.
  */
-import { mkdtempSync, rmSync, symlinkSync, existsSync, readlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, existsSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
@@ -97,6 +98,56 @@ describe('run-in-isolated-netns.sh — modes and fallback', () => {
 });
 
 describe.skipIf(!ISOLATION_AVAILABLE)(`run-in-isolated-netns.sh — isolation ${isolationSkipReason}`, () => {
+  it('captures live native executable custody outside the user namespace and refuses an exited process', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'netns-native-witness-'));
+    dirs.push(dir);
+    const receipt = join(dir, 'receipt.json');
+    const commit = 'a'.repeat(40);
+    writeFileSync(receipt, JSON.stringify({ schemaVersion: 'verifier-source-v1', sourceCommit: commit }));
+    const native = spawn(process.execPath, ['-e', 'console.log("READY"); setInterval(() => {}, 1000)']);
+    await new Promise<void>((done, reject) => {
+      native.stdout.once('data', () => done());
+      native.once('error', reject);
+    });
+    const module = pathToFileURL(join(REPO_ROOT, 'packages/operator-core/lib/testing-native-runtime.ts')).href;
+    try {
+      const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
+        const child = spawn(WRAPPER, ['--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', `
+          import assert from 'node:assert/strict';
+          import { statSync } from 'node:fs';
+          import { prepareNativeRuntimeReader } from ${JSON.stringify(module)};
+          assert.throws(() => statSync('/proc/' + process.env.VERIFY_TAURI_PID + '/exe'), { code: 'EACCES' });
+          const read = prepareNativeRuntimeReader(${JSON.stringify(REPO_ROOT)}, ${JSON.stringify(commit)});
+          const before = read();
+          assert.match(before.fingerprint, /^[a-f0-9]{64}$/);
+          assert.deepEqual(before.units, ['verify-tauri-headless:' + process.env.VERIFY_TAURI_PID]);
+          assert.equal(read().fingerprint, before.fingerprint);
+          assert.throws(() => prepareNativeRuntimeReader(${JSON.stringify(REPO_ROOT)}, 'b'.repeat(40)), /source receipt mismatch/);
+          console.log('WITNESS_READY');
+          const deadline = Date.now() + 10000;
+          const poll = setInterval(() => {
+            if (read() === null) { clearInterval(poll); console.log('EXIT_REFUSED'); }
+            else if (Date.now() > deadline) { clearInterval(poll); process.exitCode = 9; }
+          }, 100);
+        `], { cwd: REPO_ROOT, env: { ...process.env,
+          PAPERCUSP_E2E_NETNS: 'required', VERIFY_TAURI_PID: String(native.pid),
+          PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', OPERATOR_SOURCE_ROOT: REPO_ROOT,
+          VERIFY_TAURI_SOURCE_REF: commit, VERIFY_TAURI_SOURCE_RECEIPT: receipt } });
+        let stdout = '';
+        let stderr = '';
+        const timeout = setTimeout(() => { child.kill('SIGTERM'); reject(new Error('native witness guard timed out')); }, 45_000);
+        child.stdout.on('data', chunk => { stdout += chunk; if (stdout.includes('WITNESS_READY')) native.kill('SIGTERM'); });
+        child.stderr.on('data', chunk => { stderr += chunk; });
+        child.once('error', error => { clearTimeout(timeout); reject(error); });
+        child.once('close', code => { clearTimeout(timeout); done({ code, stdout, stderr }); });
+      });
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).toContain('RUN_IN_ISOLATED_NETNS isolated=1');
+      expect(result.stdout).toContain('WITNESS_READY');
+      expect(result.stdout).toContain('EXIT_REFUSED');
+    } finally { native.kill('SIGTERM'); }
+  }, 60_000);
+
   it('runs the command in a different network namespace holding only loopback and one tap interface', () => {
     const host = spawnSync('ip', ['-o', 'link', 'show'], { encoding: 'utf8' }).stdout.trim().split('\n');
     // Calibration: the comparison means something only if the host has more than that.
