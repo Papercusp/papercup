@@ -522,6 +522,9 @@ describe('goals.* resolvers against real SQL', () => {
             selection: { ok: boolean; selected?: string[] }; rows: Array<{ id: string; label: string }> }> };
         };
         expect(detail.goalModeState).toMatchObject({ status: 'degraded', portfolio: null });
+        expect(warn).toHaveBeenCalledWith(
+          `[bounded-timeout] agent-obligations:goal-portfolio exceeded ${AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS}ms — degrading to fallback`,
+        );
         expect(spy).toHaveBeenCalledTimes(1);
         expect(spy).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WS, goalId: GOAL,
           collectionProperty: 'worklist', sql, claimability: 'skip', rubricStewardship: 'skip' }));
@@ -848,6 +851,7 @@ describe('goals.* resolvers against real SQL', () => {
         goalModeState: {
           schemaVersion: string;
           status: string;
+          degradedReasons: string[];
           ownerId: string | null;
           portfolio: { goal: { id: string } } | null;
           obligations: {
@@ -870,6 +874,11 @@ describe('goals.* resolvers against real SQL', () => {
       });
       expect(['known', 'degraded']).toContain(out.goalModeState.status);
       expect(out.goalModeState.obligations?.sourceGeneration).toMatch(/^[0-9a-f]{20}$/);
+      for (const [message] of warn.mock.calls) {
+        expect(message).toMatch(/^\[bounded-timeout\] agent-obligations:[\w:-]+ (?:exceeded \d+ms|failed: .+) — degrading to fallback$/);
+        expect(out.goalModeState.status).toBe('degraded');
+        expect(out.goalModeState.degradedReasons.length).toBeGreaterThan(0);
+      }
     } finally {
       warn.mockRestore();
     }
@@ -1153,18 +1162,38 @@ describe('goals.* resolvers against real SQL', () => {
     expect(out.agents[0]?.setBy).toBe('operator-ui');
   });
 
-  it('surfaces BOTH stamps when two agents claim one goal rather than collapsing to one', async () => {
+  it.each(['known', 'degraded', 'unknown'] as const)(
+    'surfaces BOTH stamps when two agents claim one goal with %s optional agenda state', async (status) => {
     // D-006 makes one the normal case; two is a coordination fault, and a
     // resolver that returned a scalar would hide it.
     const { resolveGoalDetail } = await import('./goals');
     await goal();
     await agentOnGoal('su-one');
     await agentOnGoal('su-two');
-
-    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
-      agents: Array<{ ownerId: string }>;
+    // This case measures the real agent_modes SQL predicate. Optional agenda
+    // providers have their own reader suite and explicit timeout cases above;
+    // their cold imports/reads must not decide whether two SQL stamps survive.
+    const reader = await import('../agent-obligation-reader');
+    const state: Awaited<ReturnType<typeof reader.readAgentGoalModeState>> = {
+      schemaVersion: 'agent-goal-mode-state-v1', status, ownerId: 'su-two',
+      observedAt: new Date().toISOString(), portfolio: null, obligations: null,
+      degradedReasons: status === 'degraded' ? ['fixture optional source unavailable'] : [],
+      ...(status === 'unknown' ? { unknown: { code: 'goal-mode-state-read-failed',
+        detail: 'fixture optional source unavailable', retry: 'refresh goals.detail' } } : {}),
     };
-    expect(out.agents.map((a) => a.ownerId).sort()).toEqual(['su-one', 'su-two']);
+    const optional = vi.spyOn(reader, 'readAgentGoalModeState').mockResolvedValue(state);
+    try {
+      const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+        agents: Array<{ ownerId: string }>; goalModeState: typeof state;
+      };
+      expect(out.agents.map((a) => a.ownerId).sort()).toEqual(['su-one', 'su-two']);
+      expect(optional).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        workspaceId: WS, goalId: GOAL, ownerId: out.agents[0]?.ownerId,
+      }));
+      expect(out.goalModeState).toEqual(state);
+    } finally {
+      optional.mockRestore();
+    }
   });
 
   it('the LIST carries the same agents as the detail, so the HUD Goals tab can filter by agent id', async () => {
