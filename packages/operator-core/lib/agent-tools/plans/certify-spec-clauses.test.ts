@@ -133,6 +133,7 @@ const MEASUREMENT = {
   testPaths: ['test/reconnect.test.ts'],
 };
 const FIXTURE_MEASUREMENT = { ...MEASUREMENT, fixturePaths: ['test/reconnect.fixture.json'] };
+const CASE_TITLE = 'acknowledged events are not replayed';
 
 function bindingRow(
   over: {
@@ -150,6 +151,18 @@ function bindingRow(
   },
   fingerprints: { sourceFingerprint: string; testFingerprint: string | null },
 ): Record<string, unknown> {
+  // A counterexample only demonstrates red capability as a measured mutant failure
+  // (spec-test-adequacy measuredExecutionVerdict): a mutation-probe run in the mutant phase
+  // that failed the declared case. A passing counterexample run rates execution `unknown`.
+  const mutant = over.evidenceKind === 'counterexample';
+  const execution = {
+    schemaVersion: 1, root: h.measurementRoot, filePath: 'test/reconnect.test.ts', runGroupId: null,
+    workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null,
+    passed: mutant ? 0 : 1, failed: mutant ? 1 : 0, skipped: 0, collectionFailed: false,
+    mutationPhase: mutant ? 'mutant' : null,
+    commitSha: 'fixture-clean-commit', worktreeDirty: false, testLayer: 'integration',
+    ...(mutant ? { failedCaseTitles: [CASE_TITLE] } : { passedCaseTitles: [CASE_TITLE] }),
+  };
   return {
     id: over.id,
     work_item_id: 'WI-101',
@@ -173,19 +186,15 @@ function bindingRow(
     test_run_file_path: 'test/reconnect.test.ts',
     test_run_commit_sha: 'fixture-clean-commit',
     test_run_worktree_dirty: false,
-    test_run_status: 'pass',
-    test_run_execution_details: {
-      schemaVersion: 1, root: h.measurementRoot, filePath: 'test/reconnect.test.ts', runGroupId: null,
-      workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null,
-      passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
-      commitSha: 'fixture-clean-commit', worktreeDirty: false, testLayer: 'integration',
-      passedCaseTitles: ['acknowledged events are not replayed'],
-    },
+    test_run_status: mutant ? 'fail' : 'pass',
+    test_run_execution_details: execution,
+    ...(mutant ? { test_run_source: 'mutation-probe', mutation_failure_tail: null, mutation_execution_details: execution } : {}),
     details: {
       adequacy: {
         fixtureFree: over.evidenceKind !== 'fixture',
-        testCases: ['acknowledged events are not replayed'],
-        scenarioIds: over.evidenceKind === 'counterexample' ? ['acknowledged-event-negative-control'] : [],
+        testCases: [CASE_TITLE],
+        // An empty scenarioIds list is malformed contract metadata (scenarioIds:invalid).
+        ...(mutant ? { scenarioIds: ['acknowledged-event-negative-control'] } : {}),
         ...(over.evidenceKind === 'fixture' ? { fixtureCalibrated: true } : {}),
         falsifiable: true,
         testLayer: 'integration',
@@ -194,7 +203,9 @@ function bindingRow(
         collected: true,
         skipped: false,
         executed: true,
-        targeted: over.targeted ?? true,
+        // Correct-layer and the L3 risk floor count a binding only when its target names this
+        // exact clause (spec-test-adequacy bindingTargetsClause): the lowercase specId.
+        targeted: over.targeted ?? over.specId.toLowerCase(),
         coverageRungs: { l3: true, l4: false },
         outcome: over.outcome,
       },
@@ -584,7 +595,8 @@ describe('plans:certify-spec-clauses', () => {
         subject: { kind: 'plan', ref: subjectRef },
         gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-10-11T12:36:00.000Z', ...gradingAudit },
         supersededBy: null,
-        rerunRecipe: { evaluatorBuild },
+        // A real filed card's recipe carries its args; emit fingerprints them when superseding.
+        rerunRecipe: { ...(observation as { rerunRecipe?: Record<string, unknown> }).rerunRecipe, evaluatorBuild },
         missingKeys: [],
         extraKeys: [],
       };
