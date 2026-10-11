@@ -26,16 +26,21 @@ export async function seedPrivateStats(workspace: string, evidence: string, read
 
 export async function preflightPrivateStats(seed: PrivateStatsSeed, base: string, ownCookie: string,
   foreignCookie: string, evidence: string) {
-  const reads: Array<{ slug: string; foreignCookie: boolean; status: number; body: any }> = [];
-  for (const [slug, cookie] of [[seed.selected, ownCookie], [seed.neighbor, ownCookie],
-    [seed.foreign, ownCookie], [seed.foreign, foreignCookie]]) {
+  const reads: Array<{ slug: string; foreignCookie: boolean; workspaceHeader: string | null; status: number; body: any }> = [];
+  // Native loopback Git reads select their workspace through the window
+  // header, not through a cookie. Keep the cookie-only foreign denial as a
+  // separate control so a process-global fallback cannot look like selection.
+  for (const [slug, cookie, workspaceHeader] of [[seed.selected, ownCookie, null], [seed.neighbor, ownCookie, null],
+    [seed.foreign, ownCookie, null], [seed.foreign, foreignCookie, seed.workspace + '-foreign'],
+    [seed.foreign, foreignCookie, null]] as const) {
     const response = await fetch(new URL(`/api/harness/${slug}/git/stats`, base), {
-      headers: { cookie }, signal: AbortSignal.timeout(90_000),
+      headers: { cookie, ...(workspaceHeader ? { 'x-papercusp-workspace': workspaceHeader } : {}) },
+      signal: AbortSignal.timeout(90_000),
     });
     const body = await response.json();
-    reads.push({ slug, foreignCookie: cookie === foreignCookie, status: response.status, body });
+    reads.push({ slug, foreignCookie: cookie === foreignCookie, workspaceHeader, status: response.status, body });
     writeFileSync(join(evidence, 'portal-stats-preflight.json'), JSON.stringify(reads, null, 2));
-    if (slug === seed.foreign && cookie === ownCookie) { assert.equal(response.status, 404); continue; }
+    if (slug === seed.foreign && !workspaceHeader) { assert.equal(response.status, 404); continue; }
     assert.equal(response.status, 200);
     if (slug === seed.neighbor) { assert.equal(body.notAGitRepo, true); continue; }
     assert.match(body.stats.repository.head, /^[a-f0-9]{40}$/);
