@@ -19,7 +19,7 @@ export default defineConfig({
         test: {
           name: 'unit',
           exclude: [...participation.exclude, '**/treasury.test.ts', '**/transparency-routes.test.ts',
-            '**/funded-turn-host.integration.test.ts'],
+            '**/funded-turn-host.integration.test.ts', '**/identity-metered-usage.test.ts'],
           provide: { papercuspTestLayer: 'unit' },
         },
       },
@@ -35,7 +35,9 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'funded-turn-host-integration',
-          include: ['src/__tests__/funded-turn-host.integration.test.ts'],
+          // Both suites exercise the hosted handler against migrated D1.
+          include: ['src/__tests__/funded-turn-host.integration.test.ts',
+            'src/__tests__/identity-metered-usage.test.ts'],
           provide: { papercuspTestLayer: 'integration' },
         },
       },

@@ -1,5 +1,5 @@
 import { paymentTestKey, signPaymentTestBytes, signPaymentTestVoucher } from '@papercusp/operator-core/lib/p2p/_payment-voucher-fixture';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, inject, it, vi } from 'vitest';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { identityPerUseOfferTerms } from '@papercusp/operator-core/lib/cupboard/identity-per-use-offer';
 import { paymentVoucherDigest, paymentVoucherSigningBytes, unsignedVoucher, type CumulativePaymentVoucher } from '@papercusp/operator-core/lib/p2p/microcharge';
@@ -72,6 +72,10 @@ function closure(body: Record<string, unknown> = {}) {
 
 describe('exact identity settlement through the hosted production handler and real migrated D1', () => {
   beforeEach(() => { auth.resolveGithubBearer.mockReset(); auth.resolveGithubBearer.mockResolvedValue({ id: 9 }); });
+
+  it('records migrated D1 statement verification in the integration lane', () => {
+    expect(inject('papercuspTestLayer')).toBe('integration');
+  });
 
   it('pages the authenticated buyer or seller across channels without exposing another party', async () => {
     const h = harness();
