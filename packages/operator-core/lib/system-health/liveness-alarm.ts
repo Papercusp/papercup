@@ -546,6 +546,7 @@ export const EVALUATED_LIVENESS_SIGNATURES: ReadonlySet<string> = new Set([
   'rubric-emission-dark',
   'accounts-starved',
   'pg-restarted',
+  'dns-resolution-failing',
   'agents-wedged',
   'agents-stranded',
 ]);
@@ -846,6 +847,24 @@ export function evaluateLivenessAlarm(
     });
   }
 
+  // DNS resolution failing box-wide (WI-6554700010008585). On 2026-10-11 systemd-resolved rejected
+  // every lookup for ~46 minutes (stale DNSSEC root trust anchor, "missing-key") and nothing paged.
+  // Fires only when EVERY canary failed — one upstream domain going dark is not a resolver outage.
+  // An absent/null probe is unobserved (see unobservableLivenessSignatures), never a recovery.
+  const dnsProbe = health.panels.infra?.data?.dns ?? null;
+  if (dnsProbe?.allFailed) {
+    const detail = dnsProbe.names.map((n) => `${n.name}: ${n.error ?? 'failed'}`).join(', ');
+    signals.push({
+      key: 'dns-resolution-failing',
+      severity: 'blocker',
+      summary:
+        `DNS resolution FAILING box-wide — all ${dnsProbe.names.length} canary names failed through the system ` +
+        `resolver (${detail}). Every outbound call (LLM providers, GitHub, container registries) fails while this ` +
+        `holds. Diagnose with \`resolvectl query <name>\` and \`journalctl -u systemd-resolved\`; a DNSSEC ` +
+        `"missing-key" error means the root trust anchor is stale (WI-6554700010008585).`,
+    });
+  }
+
   // 5c. EI-9794: autoloop FIRE-RECENCY staleness — independent of `last_status` /
   //     `consecutive_errors` (frozen the instant a loop stops firing) and of the
   //     `armed` wake-routine bit (a self-deactivating one-shot's normal resting
@@ -1044,6 +1063,14 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
     out.add('accounts-starved');
   } else if (accountPoolProjectionStale(health)) {
     out.add('accounts-starved');
+  }
+
+  // WI-6554700010008585 — DNS is observed only when this tick's infra panel ran the probe. An errored
+  // panel, or a null/absent `dns` (probe could not run, or a snapshot from a build without the probe),
+  // has NOT observed resolution recovering, so an open dns-resolution-failing row must stay open.
+  const infraPanel = health.panels.infra;
+  if (!infraPanel || infraPanel.status === 'unknown' || infraPanel.error != null || infraPanel.data?.dns == null) {
+    out.add('dns-resolution-failing');
   }
 
   // P-009 (ex-P-010): collectDeploy's git-sync read is fail-soft, so a failed read leaves
@@ -1450,6 +1477,7 @@ export function deriveSignatureFromSummary(summary: string): string | null {
     return 'overwatch-dark';
   if (/LLM pool account\(s\) (?:paused|unavailable by a fresh capacity projection)/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
+  if (s.startsWith('DNS resolution FAILING')) return 'dns-resolution-failing';
   if (/^\d+ agent session\(s\) cannot take a turn/.test(s)) return 'agents-wedged';
   if (/^\d+ autonomous agent\(s\) hold work with their loop off/.test(s)) return 'agents-stranded';
   const gitSyncMissedMatch = /^git-sync\b(?: on (\S+))?.* has missed \d+ consecutive scheduler intervals/.exec(s);

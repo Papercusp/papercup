@@ -51,7 +51,12 @@ function mkHealth(over: {
   panels?: Partial<Record<PanelKey, Partial<HealthPanel<unknown>>>>;
 } = {}): SystemHealth {
   const panels = {} as Record<string, HealthPanel<unknown>>;
-  for (const k of PANEL_KEYS) panels[k] = panel(k, over.panels?.[k] ?? {});
+  // WI-6554700010008585: a default fixture is a current-build tick that OBSERVED healthy DNS. Without a
+  // dns reading the infra panel has not observed resolution, so dns-resolution-failing is unobservable.
+  const defaults: Partial<Record<PanelKey, Partial<HealthPanel<unknown>>>> = {
+    infra: { data: { dns: { ok: true, allFailed: false, probeMs: 5, names: [{ name: 'api.github.com', ok: true, ms: 5 }] } } },
+  };
+  for (const k of PANEL_KEYS) panels[k] = panel(k, over.panels?.[k] ?? defaults[k] ?? {});
   return {
     workspaceId: 'ws',
     evaluatedAt: over.evaluatedAt ?? 1_000_000,

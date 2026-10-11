@@ -2262,6 +2262,14 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       // elevated ≥1.5s, critical ≥4s (a healthy pgHealth returns in tens of ms).
       pool = { probeMs, band: classifyPoolPressure(probeMs, 1500, 4000) };
     } catch { /* PG unreadable — collector still returns (gateway leg) */ }
+    // Host DNS canary (WI-6554700010008585): a 46-minute box-wide resolver outage fired no alarm
+    // because nothing observed DNS. probeDnsResolution never throws and is bounded by its own
+    // per-query timeout; a failure to even run it leaves `dns` null (= unobserved, not healthy).
+    let dns: InfraHealth['dns'] = null;
+    try {
+      const { probeDnsResolution } = await import('./dns-probe');
+      dns = await probeDnsResolution();
+    } catch { /* probe could not run — leave null */ }
     // Fresh host-pressure evidence from the resource-governor monitor. The reader
     // validates the atomic snapshot and rejects missing, malformed, future, or
     // stale files; the pure detector then preserves unknown signal states rather
@@ -2421,6 +2429,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       performanceHistory,
       mcpProxy,
       pool,
+      dns,
       disk,
       backup,
       migrationDrift,
@@ -2445,6 +2454,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       metrics: [
         m('pg conns', pg ? `${pg.active}/${pg.total}` : '?', pg === null ? 'unknown' : undefined),
         m('pg pool', pool ? (pool.band === 'ok' ? `${pool.probeMs}ms` : `${pool.band} (${pool.probeMs}ms)`) : 'n/a', pool?.band === 'critical' ? 'warn' : undefined),
+        m('dns', dns ? (dns.ok ? `${dns.probeMs}ms` : `${dns.names.filter((n) => !n.ok).length}/${dns.names.length} canaries failing`) : 'n/a', dns && !dns.ok ? 'warn' : undefined),
         m('gateway', ctx.gatewayEnabled ? (ctx.gatewayReachable ? 'up' : 'down') : 'direct', ctx.gatewayEnabled && ctx.gatewayReachable === false ? 'crit' : undefined),
         m('mcp-proxy', mcpProxy ? (mcpQueueCrit ? `${mcpQueueStalls} critical continuation wait(s) ≥${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m observed in the last hour (max ${Math.round(mcpProxy.criticalContinuationQueueMaxWaitMs / 1000)}s)` : mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit || mcpQueueCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),

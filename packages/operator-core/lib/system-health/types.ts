@@ -15,6 +15,7 @@
  */
 
 import type { PerfVerdict } from './perf-budgets';
+import type { DnsProbeResult } from './dns-probe';
 import type { PerfRegressionProducerHealth } from './perf-regression-rig';
 import type { GitSyncFailingLeg } from '../harness/git-sync/git-sync-escalation';
 import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
@@ -797,6 +798,11 @@ export interface InfraHealth {
    * NOT read the bg-host tick's in-process shed counter). OPTIONAL (deploy-skew-safe):
    * absent on an older projection ⇒ treated as no signal. null when PG is unreadable. */
   pool?: { probeMs: number; band: 'ok' | 'elevated' | 'critical' } | null;
+  /** Host DNS-resolution canary (WI-6554700010008585): canary names resolved through the system
+   *  resolver stub. `allFailed` drives the `dns-resolution-failing` liveness signal. OPTIONAL
+   *  (deploy-skew-safe); null/absent = the probe did not run this tick, which the alarm treats as
+   *  UNOBSERVED, never as recovered. */
+  dns?: DnsProbeResult | null;
   /** Disk pressure (health-tab-v2 P-011, mirrors the fedplane script's 90% warn):
    *  used% per watched mount (~/.papercusp + the repo volume, deduped by device).
    *  OPTIONAL + null when statfs is unavailable — never fabricated. */
