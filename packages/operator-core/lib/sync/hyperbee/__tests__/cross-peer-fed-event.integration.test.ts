@@ -36,6 +36,7 @@ import {
   pollUntil,
   federateTwoPeerPresence,
 } from './_cross-peer-rig';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
 import { type CoordMessageRow } from '../projections/coord-message';
 import { createFreshPgDb } from '../../../../test/_pg-helpers';
 
@@ -62,6 +63,9 @@ vi.mock('@papercusp/flags/server', async () => {
   };
 });
 
+// Registered BEFORE the file's own hooks so the stub outlives substrate teardown,
+// which can still run a merge pass (WI-6554700010008561 / WI-10007530).
+stubHivePolicyReadsForSuite();
 afterEach(rigAfterEach);
 
 // FAITHFUL to migrations 163 + 175 (once/min_sleep_sec/urgency/coalesced_count) +

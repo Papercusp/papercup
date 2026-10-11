@@ -12,6 +12,7 @@ import { createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivate
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 import { seedPrivateProjectHistory, preflightPrivateProjectHistory } from './portal-project-history-fixture';
 import { seedPrivateCalendar, preflightPrivateCalendar } from './portal-calendar-fixture';
+import { seedPrivateLearning, preflightPrivateLearning } from './portal-learning-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
@@ -323,6 +324,9 @@ async function coordCanary(health: unknown) {
     const calendarSeed = process.env.ROSTER_CALENDAR_BROWSER_PROOF === '1'
       ? await seedPrivateCalendar(workspace, evidence) : undefined;
     if (calendarSeed) await preflightPrivateCalendar(calendarSeed, base, cookie(ownSession.token), evidence);
+    const learningSeed = process.env.ROSTER_LEARNING_BROWSER_PROOF === '1'
+      ? await seedPrivateLearning(workspace, evidence) : undefined;
+    if (learningSeed) await preflightPrivateLearning(learningSeed, base, cookie(ownSession.token), evidence);
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;
     if (process.env.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
@@ -409,6 +413,7 @@ async function coordCanary(health: unknown) {
       ...(overviewPlans ? { overview: true, overviewPlans } : {}),
       ...(projectHistorySeed ? { projectHistory: true, projectHistorySeed } : {}),
       ...(calendarSeed ? { calendar: true, calendarSeed } : {}),
+      ...(learningSeed ? { learning: true, learningSeed } : {}),
       ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
       ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
       ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),

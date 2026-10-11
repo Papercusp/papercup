@@ -18,6 +18,7 @@ import type { PrViewerDetails } from '../lib/pr-host/pr-viewer';
 import type { InsightsTabProps, TokensDashboardSnapshot } from '../lib/harness-insights/card-types';
 import { runPrivateProjectHistoryPage, type PrivateProjectHistorySeed } from './portal-project-history-fixture';
 import { runPrivateCalendarPage, type PrivateCalendarSeed } from './portal-calendar-fixture';
+import { runPrivateLearningPage, type PrivateLearningSeed } from './portal-learning-fixture';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -126,6 +127,7 @@ type PortalRosterBrowserInput = {
   projectHistorySeed?: PrivateProjectHistorySeed;
   calendar?: boolean;
   learning?: boolean;
+  learningSeed?: PrivateLearningSeed;
   calendarSeed?: PrivateCalendarSeed;
   overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
   hud?: boolean;
@@ -675,12 +677,14 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
     const url = new URL(`http://127.0.0.1:${address.port}/${input.harnesses
       ? '?scope=all&app=work&q=preflight-search&ws=preflight-workspace' : ''}`);
     if (options.brainstormHydration || options.prsRead || options.insightsRead) url.searchParams.set('slug', input.selected);
+    if (input.learning) { url.searchParams.set('lview', 'learnings'); url.searchParams.set('scope', 'all'); }
     if (options.prsRead || options.insightsRead) {
       url.searchParams.set('app', options.insightsRead ? 'insights' : 'prs'); url.searchParams.set('q', 'preflight-search');
       url.searchParams.set('ws', 'preflight-workspace');
     }
     await page.goto(url.href);
-    try { await (input.calendar ? page.locator('.pc-sched-cal .fc') : input.projectHistory ? page.locator('.pc-project-history')
+    try { await (input.learning ? page.getByRole('region', { name: 'Retained ledger', exact: true })
+      : input.calendar ? page.locator('.pc-sched-cal .fc') : input.projectHistory ? page.locator('.pc-project-history')
       : input.harnesses ? page.getByTestId('pot-workspace-cards')
       : page.getByRole('region', { name: input.insights ? 'ADV Insights workspace' : input.prs ? 'ADV PRs workspace' : input.brainstorm ? 'ADV Brainstorm workspace' : 'ADV Docs workspace' })).waitFor({ timeout: 15_000 }); }
     catch (error) { throw new Error([...errors, ...failedRequests, String(error)].join('\n')); }
@@ -853,7 +857,9 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       assert.equal(params.get('ws'), 'preflight-workspace');
     }
     assert.deepEqual(errors, [], 'actual workspace module initialization must be browser-safe');
-    if (input.calendar) {
+    if (input.learning) {
+      assert.equal(await page.getByRole('textbox', { name: 'Filter retained items' }).count(), 1);
+    } else if (input.calendar) {
       assert.equal(await page.getByRole('heading', { name: 'Calendar', exact: true }).count(), 1);
       assert.equal(await page.locator('.pc-sched-cal .fc').count(), 1);
       assert.equal(await page.locator('.pc-routines').count(), 1);
@@ -1171,7 +1177,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.calendar ? '/?app=calendar&q=retained-shell-search' : input.projectHistory ? '/?app=history&q=retained-shell-search'
+    const url = new URL(input.learning ? '/?app=learning&q=retained-shell-search'
+      : input.calendar ? '/?app=calendar&q=retained-shell-search' : input.projectHistory ? '/?app=history&q=retained-shell-search'
       : input.overview ? '/?app=overview&q=retained-shell-search'
       : input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
       : input.testing ? '/?app=testing&q=retained-shell-search'
@@ -1197,6 +1204,13 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     if (input.calendarSeed) {
       const receipt = await runPrivateCalendarPage(page, context, input.calendarSeed, url, evidence);
       assert.deepEqual(pageErrors, [], 'actual Calendar controls must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
+    }
+    if (input.learningSeed) {
+      const receipt = await runPrivateLearningPage(page, context, input.learningSeed, url, evidence);
+      assert.deepEqual(pageErrors, [], 'actual Learning controls must stay browser-safe');
       const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
       writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
       return retained;

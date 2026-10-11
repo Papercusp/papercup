@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 964,
+  "count": 961,
   "tools": [
     {
       "name": "ablation:report",
@@ -31447,105 +31447,6 @@
       }
     },
     {
-      "name": "slack:file-asana-bug",
-      "http": {
-        "path": "/api/agent-tools/slack/file-asana-bug",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "File the durable bug verdict from a Slack classifier run in its configured Asana destination. Accepts only planRunId; pins source and correlation before HTTP. Replays recover an existing task and never repeat an uncertain create.",
-      "capabilities": [
-        "operator:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "mug",
-        "documenter",
-        "curator",
-        "papercup",
-        "papercup-deep"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "After slack:record-classification returned a bug verdict, with the same planRunId.",
-        "notWhen": "Arbitrary task creation, non-bugs or choosing a destination from message text.",
-        "chaining": "Retain externalRef as proof; pendingReconciliation is incomplete and requires recovery with the same run."
-      }
-    },
-    {
-      "name": "slack:record-classification",
-      "http": {
-        "path": "/api/agent-tools/slack/record-classification",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Persist one bug, non-bug or needs-information verdict for the originating ordinary Slack message. First recorded verdict wins on retries. This records report classification, not reproduction or authority to fix.",
-      "capabilities": [
-        "operator:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "mug",
-        "documenter",
-        "curator",
-        "papercup",
-        "papercup-deep"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "The Slack classifier template has read its event via triggers:read-payload. Pass that same planRunId.",
-        "notWhen": "Arbitrary Slack messages, changing a recorded verdict, or recording reproduction evidence.",
-        "chaining": "Record verdict; only a bug verdict may proceed to configured source-bound Asana filing."
-      }
-    },
-    {
-      "name": "slack:respond-in-thread",
-      "http": {
-        "path": "/api/agent-tools/slack/respond-in-thread",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Reply to the Slack thread that originated one completed external-trigger plan run. The server resolves source/channel/thread/credential from planRunId; callers cannot redirect the post or read the token.",
-      "capabilities": [
-        "operator:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "mug",
-        "documenter",
-        "curator",
-        "papercup",
-        "papercup-deep"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "A Slack-triggered plan item asks you to respond to the originating mention. Read payload.plan_run.runId from the claimed work item and pass it with the final response text.",
-        "notWhen": "General Slack posting or a run that did not originate from an ext:slack event. This tool refuses arbitrary channel/thread coordinates.",
-        "chaining": "After posted:true or alreadyPosted:true, complete the plan-run work item with the returned messageTs as evidence."
-      }
-    },
-    {
       "name": "slash:dispatch",
       "http": {
         "path": "/api/agent-tools/slash/dispatch",
@@ -33800,7 +33701,7 @@
       "guidance": {
         "when": "An external-trigger plan item or trigger-fired operation tells you to read the triggering message. Pass payload.plan_run.runId as planRunId, or your operation work item id as workItemId.",
         "notWhen": "A run that did not originate from an external trigger, or to browse other runs — this returns only the event for the run you name, inside your own workspace.",
-        "chaining": "triggers:read-payload → compose the response → mail:reply / slack:respond-in-thread with the SAME planRunId."
+        "chaining": "triggers:read-payload → compose the response → mail:reply / chat:reply with the SAME planRunId."
       }
     },
     {

@@ -26,6 +26,7 @@ import {
   claimVia,
   type PeerNode,
 } from './_cross-peer-rig';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
 import { lockAuthorityForHive, queryPresenceRowsForHive } from '../../../authority/lock-authority';
 import { setPeerRpcTransport, __resetPeerRpcTransportForTests } from '../../../authority/peer-rpc-transport';
 import { HttpPeerRpcTransport } from '../../../authority/http-peer-rpc-transport';
@@ -56,6 +57,9 @@ vi.mock('@papercusp/flags/server', async () => {
   };
 });
 
+// Registered BEFORE the file's own hooks so the stub outlives substrate teardown,
+// which can still run a merge pass (WI-6554700010008561 / WI-10007530).
+stubHivePolicyReadsForSuite();
 beforeEach(() => {
   rekeyFixture.enabled = false;
   orgSqlHolder.sql = undefined as unknown as typeof orgSqlHolder.sql;
@@ -71,7 +75,9 @@ describe('cross-peer scale boot fixture boundary', () => {
   it('still fails closed when rekey is enabled without its SQL dependency', async () => {
     rekeyFixture.enabled = true;
     await expect(buildHiveRekeyBootDeps({ workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG })).rejects.toThrow(
-      /failed closed \(compose confirmed Hive dependencies\): sql is not a function/,
+      // The registry read (Hive-scope lookup) is the first SQL use, so it fails there — before
+      // any Hive is confirmed (WI-6554700010008455 split this out of the compose phase).
+      /failed closed \(resolve Hive scope\): sql is not a function/,
     );
   });
 });

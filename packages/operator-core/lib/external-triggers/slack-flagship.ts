@@ -1,12 +1,13 @@
-/** Flagship Slack mention → plan run → thread response binding (P-008). */
+/**
+ * Flagship Slack mention → plan run → thread response binding (P-008). The reply
+ * itself is the provider-neutral `chat:reply { planRunId }` (capability-verbs/chat.ts),
+ * posted through the source's installed chat package
+ * (cupboard-distributable-integrations-2026-10-10 D-019).
+ */
 import type postgres from 'postgres';
-import type { TokenStorage } from '../oauth/token';
 import { ensureFlagshipPlan, type FlagshipPlanEnsureResult } from './flagship-plan';
 import { ensureExternalTriggerBinding, type CreatedExternalTriggerBinding } from './admin';
-import { postSlackThreadMessage, resolveSlackSocketCredentials } from './slack';
 import type { ExternalTriggerSourceRow } from './source-store';
-
-type Db = postgres.Sql | postgres.TransactionSql;
 
 export const SLACK_RESPOND_IN_THREAD_HARNESS = 'papercusp';
 export const SLACK_RESPOND_IN_THREAD_PLAN = 'slack-respond-in-thread-2026-08-22';
@@ -40,7 +41,7 @@ elsewhere.
 
 **R-1 — Reply in the originating thread.**
 \`\`\`requirement
-{"intent":{"request":"Each Slack mention yields one reply posted to the thread it was made in.","constraints":["Resolve channel, thread and bot credential server-side from the trigger plan run.","Never post to a caller-supplied channel."],"sourceRefs":["P-001","D-001","D-002"]},"acceptance":{"condition":"A run of this template posts exactly one reply to the originating Slack thread through slack:respond-in-thread with the run's planRunId.","falsifier":"A run completes with no reply, posts a second reply for the same run, or posts outside the originating thread.","requiredScope":["tree"],"evidencePlane":"tree"},"verification":{"method":"Fire a slack mention event through the binding engine, then read the run and the reply tool's recorded result.","check":{"kind":"instrument","instrumentKey":"none"},"replication":"Run packages/operator-core/lib/external-triggers/slack-flagship.integration.test.ts."}}
+{"intent":{"request":"Each Slack mention yields one reply posted to the thread it was made in.","constraints":["Resolve channel, thread and bot credential server-side from the trigger plan run.","Never post to a caller-supplied channel."],"sourceRefs":["P-001","D-001","D-002"]},"acceptance":{"condition":"A run of this template posts exactly one reply to the originating Slack thread through chat:reply with the run's planRunId.","falsifier":"A run completes with no reply, posts a second reply for the same run, or posts outside the originating thread.","requiredScope":["tree"],"evidencePlane":"tree"},"verification":{"method":"Fire a slack mention event through the binding engine, then read the run and the reply tool's recorded result.","check":{"kind":"instrument","instrumentKey":"none"},"replication":"Run packages/operator-core/lib/capability-verbs/chat.test.ts (chat:reply { planRunId } exactly-once)."}}
 \`\`\`
 
 ## Design
@@ -53,7 +54,7 @@ elsewhere.
 
 ## Phase 1 — Respond
 
-- **P-001** \`todo\` Call \`triggers:read-payload\` with \`planRunId=payload.plan_run.runId\` to read the triggering mention, draft a concise response, then call \`slack:respond-in-thread\` with that same \`planRunId\` and the response text. Complete only after the tool reports \`posted:true\` or \`alreadyPosted:true\`.
+- **P-001** \`todo\` Call \`triggers:read-payload\` with \`planRunId=payload.plan_run.runId\` to read the triggering mention, draft a concise response, then call \`chat:reply\` with that same \`planRunId\` and the response text (it posts through the source's installed chat package, cupboard-distributable-integrations-2026-10-10#D-019). Complete only after the tool reports \`posted:true\` or \`alreadyPosted:true\`.
 
 ## Decisions
 
@@ -136,136 +137,4 @@ export async function ensureSlackRespondInThreadBinding(
     createdBy,
   });
   return { plan, binding };
-}
-
-interface SlackReplyTriggerRow {
-  id: string;
-  args: Record<string, unknown>;
-  outcome: Record<string, unknown> | null;
-  sourceId: string;
-  ownerUserId: string | null;
-  credentialRef: string | null;
-  providerAccountId: string | null;
-  sourceStatus: string;
-  sourceConfig: Record<string, unknown>;
-  sourceCursor: Record<string, unknown>;
-}
-
-export interface SlackPlanThreadResponseResult {
-  posted: boolean;
-  alreadyPosted: boolean;
-  channelId: string;
-  threadId: string;
-  messageTs: string;
-}
-
-function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function string(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-/**
- * Resolve the originating Slack coordinates from a durable plan run and post
- * exactly once per recorded success. The row lock collapses concurrent retries.
- */
-export async function respondToSlackTriggerPlanRun(
-  sql: Db,
-  workspaceId: string,
-  planRunId: number,
-  responseText: string,
-  deps: {
-    storage?: TokenStorage;
-    fetch?: typeof fetch;
-    apiOrigin?: string;
-    now?: () => Date;
-  } = {},
-): Promise<SlackPlanThreadResponseResult> {
-  if (!Number.isSafeInteger(planRunId) || planRunId <= 0) throw new Error('slack_reply_plan_run_id_invalid');
-  const text = responseText.trim();
-  if (!text || text.length > 4_000) throw new Error('slack_reply_text_invalid');
-  const respondInTransaction = async (tx: Db): Promise<SlackPlanThreadResponseResult> => {
-    const rows = await tx<SlackReplyTriggerRow[]>`
-      SELECT tr.id::text,
-             tr.args,
-             tr.outcome,
-             s.id::text AS "sourceId",
-             s.owner_user_id::text AS "ownerUserId",
-             s.credential_ref AS "credentialRef",
-             s.provider_account_id::text AS "providerAccountId",
-             s.status AS "sourceStatus",
-             s.config AS "sourceConfig",
-             s.cursor AS "sourceCursor"
-        FROM harness_shared.trigger_runs tr
-        JOIN harness_shared.trigger_bindings b
-          ON b.workspace_id = tr.workspace_id AND b.id = tr.binding_id
-        JOIN harness_shared.data_sources s
-          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
-       WHERE tr.workspace_id = ${workspaceId}
-         AND tr.plan_run_ref = ${String(planRunId)}
-         AND tr.status = 'succeeded'
-         AND s.kind = 'slack'
-       ORDER BY tr.completed_at DESC NULLS LAST, tr.id
-       LIMIT 1
-       FOR UPDATE OF tr`;
-    const row = rows[0];
-    if (!row) throw new Error(`slack_reply_trigger_run_not_found:${planRunId}`);
-    const prior = object(row.outcome).slackThreadReply;
-    const priorReply = object(prior);
-    const priorMessageTs = string(priorReply.messageTs);
-    if (priorMessageTs) {
-      return {
-        posted: false,
-        alreadyPosted: true,
-        channelId: string(priorReply.channelId),
-        threadId: string(priorReply.threadId),
-        messageTs: priorMessageTs,
-      };
-    }
-    const trigger = object(row.args.trigger);
-    const payload = object(trigger.payload);
-    const channelId = string(payload.channelId);
-    const threadId = string(payload.threadId);
-    if (!channelId || !threadId) throw new Error('slack_reply_trigger_coordinates_missing');
-    const source: ExternalTriggerSourceRow = {
-      id: row.sourceId,
-      workspaceId,
-      kind: 'slack',
-      ownerUserId: row.ownerUserId,
-      credentialRef: row.credentialRef,
-      providerAccountId: row.providerAccountId,
-      status: row.sourceStatus,
-      config: row.sourceConfig,
-      cursor: row.sourceCursor,
-    };
-    const installSlug = string(source.config.installSlug) || SLACK_RESPOND_IN_THREAD_HARNESS;
-    const credentials = await resolveSlackSocketCredentials(source, installSlug, deps.storage);
-    const posted = await postSlackThreadMessage(
-      credentials.botToken,
-      {
-        channelId,
-        threadId,
-        text,
-      },
-      { fetch: deps.fetch, apiOrigin: deps.apiOrigin },
-    );
-    const outcome = {
-      ...object(row.outcome),
-      slackThreadReply: {
-        ...posted,
-        postedAt: (deps.now ?? (() => new Date()))().toISOString(),
-      },
-    };
-    await tx`
-      UPDATE harness_shared.trigger_runs
-         SET outcome = ${JSON.stringify(outcome)}::text::jsonb, updated_at = now()
-       WHERE workspace_id = ${workspaceId} AND id = ${row.id}::uuid`;
-    return { posted: true, alreadyPosted: false, ...posted };
-  };
-  // Direct callers get an atomic row-lock/post/outcome transaction. Agent-tool
-  // dispatch already supplies a TransactionSql (which deliberately has no
-  // nested `.begin()`), so reuse that outer transaction instead.
-  return 'begin' in sql ? sql.begin(respondInTransaction) : respondInTransaction(sql);
 }

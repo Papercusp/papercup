@@ -11,7 +11,20 @@ describe('held-out subject measurement integrity', () => {
     results[1].scores = [0.8, 0.1];
     const { summary } = evaluateSubjectCases(results, 0.5);
     expect(summary).toEqual({ population: 5, positiveCases: 3, noExpertCases: 2,
-      topChoicePrecision: 2 / 3, recallAt1: 2 / 3, falseExpertCases: 1, unavailable: 0 });
+      topChoicePrecision: 2 / 3, recallAt1: 2 / 3, selectionPrecision: 3 / 5,
+      falseExpertSelections: 2, falseExpertCases: 1, unavailable: 0 });
+  });
+
+  it('detects irrelevant retained alternatives even when the top choice and recall are perfect', () => {
+    const results = perfect();
+    results[3].scores = [0.9, 0.6];
+    const { summary, cases } = evaluateSubjectCases(results, 0.5);
+    expect(cases[3].selected).toEqual(['schema-author', 'model-worker']);
+    expect(summary.topChoicePrecision).toBe(1);
+    expect(summary.recallAt1).toBe(1);
+    expect(summary.selectionPrecision).toBe(3 / 4);
+    expect(summary.falseExpertSelections).toBe(1);
+    expect(summary.falseExpertCases).toBe(0);
   });
 
   it('refuses omitted, duplicate and undeclared cases instead of shrinking the population', () => {
@@ -31,6 +44,7 @@ describe('held-out subject measurement integrity', () => {
     expect(summary.unavailable).toBe(2);
     expect(summary.topChoicePrecision).toBeNull();
     expect(summary.recallAt1).toBeNull();
+    expect(summary.selectionPrecision).toBeNull();
     results[0].scores = [2, -0.1];
     expect(evaluateSubjectCases(results, 0.5).summary.unavailable).toBe(2);
     results[0].scores = [];
