@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
+import { observeAdmission, type AdmissionHealthObserver } from './sidecar-admission-wedge';
 
 import { isReadOnlyGitBatchExec } from '../git-batch';
 import { gitSubcommandOf, qualifiesForLazyReceipt as qualifiesForLazyGitExec } from './sidecar-read-only-git';
@@ -111,6 +112,11 @@ export interface ExecProcessDeps {
    * not qualify are always admitted eagerly, whatever this says.
    */
   lazyReceiptMs?: number;
+  /**
+   * Observes every admission outcome (WI-6554700010008488). The spawner
+   * sidecar server passes its wedge breaker here; omitted elsewhere.
+   */
+  admissionHealth?: AdmissionHealthObserver;
 }
 
 /**
@@ -271,7 +277,9 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
     return { code: -1, stdout: '', stderr: `spawner sidecar could not open a handoff file: ${String(e)}` };
   }
 
-  const begin = deps.beginExecution ?? beginSidecarProcessExecution;
+  // WI-6554700010008488: every admission outcome (eager AND lazy) feeds the
+  // owner's wedge breaker, so a pool that can no longer begin is detected.
+  const begin = observeAdmission(deps.beginExecution ?? beginSidecarProcessExecution, deps.admissionHealth);
   const lazyDelayMs = qualifiesForLazyReceiptProcess(params) ? (deps.lazyReceiptMs ?? SIDECAR_LAZY_RECEIPT_DELAY_MS) : 0;
   let execution: ReceiptHandle;
   try {
@@ -280,7 +288,10 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   } catch (e) {
     await stdinHandle?.close().catch(() => {});
     await stdoutHandle?.close().catch(() => {});
-    return { code: -1, stdout: '', stderr: `spawner sidecar admission failed: ${String(e)}` };
+    // Name WHICH process failed: a wedged pool is per-process, and without the
+    // pid the error cannot say which sidecar to inspect (WI-6554700010008488).
+    // The prefix is matched (isSidecarInfrastructureFault, log greps): keep it first.
+    return { code: -1, stdout: '', stderr: `spawner sidecar admission failed (sidecar pid ${process.pid}): ${String(e)}` };
   }
 
   // Admission may have waited while the caller cancelled. Do not create a

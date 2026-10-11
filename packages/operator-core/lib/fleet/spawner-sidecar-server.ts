@@ -69,6 +69,7 @@ import {
 import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { captureSidecarContainment, SPAWNER_SCOPE_ENV } from './sidecar-exec-lifetime';
 import { armSpawnerSidecarOrphanWatchdog } from './spawner-sidecar-orphan-watchdog';
+import { createAdmissionWedgeBreaker, createAdmissionWedgeExitHandler } from './sidecar-admission-wedge';
 import { getBuildInfo } from '../build-info';
 
 const SAFE_PROCESS_EXEC_CALLER_LABELS = new Set<ProcessExecCallerLabel>(
@@ -176,13 +177,29 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
   let shuttingDown = false;
   let socketsClosed = false;
   let exitRequested = false;
+  let drainExitCode = 0;
   const exitWhenDrained = (): void => {
     if (!shuttingDown || !socketsClosed || controllers.size > 0 || exitRequested) return;
     exitRequested = true;
     process.off('SIGTERM', onTerm);
     process.off('SIGINT', onInterrupt);
-    process.exit(0);
+    process.exit(drainExitCode);
   };
+  // WI-6554700010008488: a pool that can no longer begin a transaction makes
+  // every admission fail until this process is replaced. Measured 2026-10-11, a
+  // graceful SIGTERM could not finish because settlement needed that same pool,
+  // so the drain is capped and the exit code names the cause.
+  // The trip only fires from a request handler, after `shutdown` below exists.
+  const admissionWedge = createAdmissionWedgeBreaker({
+    onTrip: createAdmissionWedgeExitHandler({
+      pid: process.pid,
+      requestShutdown: (reason) => shutdown(reason),
+      setDrainExitCode: (code) => {
+        drainExitCode = code;
+      },
+      exit: (code) => process.exit(code),
+    }),
+  });
   // Keep the client sockets so shutdown can destroy a persistent IPC connection
   // before `server.close()`. Without this, net.Server waits forever for the
   // parent-side client to close and the sidecar/socket survive the host exit.
@@ -329,6 +346,7 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
             signal: controller.signal,
             onPid: (pid) => write(rpcNotification('spawn:pid', { requestId: id, pid })),
             onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
+            admissionHealth: admissionWedge,
           });
           executions.set(id, execution);
           const result = await execution;
