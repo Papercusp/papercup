@@ -15,6 +15,7 @@ import type { CaptureImprovementInput, CaptureImprovementResult } from '../harne
 import { quoteEndUserTitle } from '../harness/improvements/untrusted-evidence';
 import { registerAdmissionSource, unregisterAdmissionSourceForTest } from './admission-sources';
 import { admissionBugCapture, admitWorkItem, bugIntakeTarget, FOLDED_FIELD_AUTHORITY, type AdmitDeps } from './admit';
+import { claimIssue } from '../issues-engineer';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -204,8 +205,28 @@ describe('two reports of the same failure through the real intake (R-4)', () => 
     expect(first).toMatchObject({ ok: true, reason: 'admitted' });
     const bugId = (first as { workItemId: string }).workItemId;
 
+    // The real admission/capture composition must persist verification enrollment;
+    // passing through a function named "intake" alone must not make a report ready.
+    const [candidate] = await sql<{ admission: string; payload: Record<string, unknown> }[]>`
+      SELECT admission, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${bugId}`;
+    expect(candidate).toMatchObject({ admission: 'pending', payload: {
+      reporter: { kind: 'end-user' },
+      implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' },
+      agentReview: { status: 'pending', round: 1 },
+    } });
+    expect(candidate!.payload).not.toHaveProperty('intakeReproduction');
+    expect(await claimIssue(bugId, 'su-intake-test-fixer', { workspaceId: WS })).toBeNull();
+
     const second = await admit('thread-2');
     expect(second).toMatchObject({ ok: true, reason: 'folded', workItemId: bugId });
+
+    const [replayed] = await sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${bugId}`;
+    expect(replayed!.payload).toMatchObject({
+      implementationReadiness: { status: 'unknown' }, agentReview: { status: 'pending', round: 1 },
+    });
 
     // A rule admission is a person's report from outside, so the intake stores its title
     // quoted (D-047); look the bug up by the stored form.
