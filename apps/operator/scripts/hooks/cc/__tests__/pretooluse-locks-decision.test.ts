@@ -25,7 +25,9 @@ import { createServer, type Server } from "node:http";
 const HOOK =
   process.env.PAPERCUSP_TEST_LOCKS_ACQUIRE_HOOK ??
   join(__dirname, "..", "pretooluse-locks-acquire.sh");
-const POST_HOOK = join(__dirname, "..", "posttooluse-locks-release.sh");
+const POST_HOOK =
+  process.env.PAPERCUSP_TEST_LOCKS_RELEASE_HOOK ??
+  join(__dirname, "..", "posttooluse-locks-release.sh");
 
 let home: string, cache: string, ws: string, repo: string;
 let server: Server;
@@ -804,16 +806,22 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     }
   }, 20_000);
 
-  it.each(["exec", "functions.exec"])(
-    "failed nested apply_patch is recovered when its %s parent completes",
-    async (parentToolName) => {
+  it.each([
+    ["exec", "relative"],
+    ["functions.exec", "relative"],
+    ["exec", "absolute"],
+    ["functions.exec", "absolute"],
+    ["functions.exec", "foreign"],
+  ])(
+    "nested apply_patch recovery checks its %s parent's %s paths",
+    async (parentToolName, pathStyle) => {
       const identity = {
         PAPERCUSP_LOCK_SID: "test-parent-owner",
         PAPERCUSP_SID: "test-parent-owner",
       };
       const patch = [
         "*** Begin Patch",
-        "*** Update File: sub/failed-nested.ts",
+        `*** Update File: ${pathStyle === "absolute" ? join(fs.realpathSync(repo), "sub/failed-nested.ts") : "sub/failed-nested.ts"}`,
         "@@",
         "-before",
         "+after",
@@ -848,11 +856,18 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
         released: ["sub/failed-nested.ts"],
         held_before: 1,
       };
+      const parentPatch =
+        pathStyle === "foreign"
+          ? patch.replace(
+              "sub/failed-nested.ts",
+              join(dirname(repo), "foreign-repo", "sub/failed-nested.ts"),
+            )
+          : patch;
       const parent = await runPost(
         {
           tool_name: parentToolName,
           tool_input: {
-            source: `const result = await tools.apply_patch(${JSON.stringify(patch)}); text(result);`,
+            source: `const result = await tools.apply_patch(${JSON.stringify(parentPatch)}); text(result);`,
           },
           tool_use_id: `tu-parent-${parentToolName.replace(/\W/g, "-")}`,
           session_id: "s",
@@ -862,6 +877,15 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       );
 
       expect(parent.status).toBe(0);
+      if (pathStyle === "foreign") {
+        expect(requests.map((request) => request.body.params.name)).toEqual([
+          "locks:acquire",
+        ]);
+        for (const suffix of ["lock", "paths", "domain"]) {
+          expect(fs.existsSync(join(cache, `tu-failed-nested.${suffix}`))).toBe(true);
+        }
+        return;
+      }
       expect(requests.map((request) => request.body.params.name)).toEqual([
         "locks:acquire",
         "locks:queue",

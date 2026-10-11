@@ -403,9 +403,13 @@ def recover_failed_code_mode_edit(current_cache_path):
     if 'apply_patch' not in source or '*** Begin Patch' not in source:
         return
 
-    def path_named_in_patch(path):
+    def path_named_in_patch(path, domain):
+        # The acquire hook caches repository-relative paths; Codex native
+        # patches may name that same file by its absolute checkout path.
+        candidates = (path, os.path.join(domain, path))
         return any(
-            marker + path in source
+            marker + candidate in source
+            for candidate in candidates
             for marker in (
                 '*** Add File: ',
                 '*** Update File: ',
@@ -426,7 +430,7 @@ def recover_failed_code_mode_edit(current_cache_path):
             continue
         if not lock_id or not domain or not isinstance(paths, list) or not paths:
             continue
-        if not all(isinstance(path, str) and path_named_in_patch(path) for path in paths):
+        if not all(isinstance(path, str) and path_named_in_patch(path, domain) for path in paths):
             continue
 
         queued, queue_error = call_tool('locks:queue', {
