@@ -5699,7 +5699,22 @@ async function startOperatorProcess(port = 0) {
     // The IPC announcement proves listen() completed; exercise the exact
     // bounded identity route the client needs before spending a PTY deadline.
     await verifyOperatorProcessIdentity(ready!.port);
-  } catch (error) { await stop().catch(() => {}); throw error; }
+  } catch (error) {
+    // Vitest does not consistently render expect's custom message, so a late
+    // or blocked fixture boot otherwise loses the only child-side evidence.
+    console.info('PUI_OPERATOR_PROCESS_START_FAILURE', JSON.stringify({
+      pid: child.pid ?? null,
+      exitCode: child.exitCode,
+      signalCode: child.signalCode,
+      ready: Boolean(ready),
+      startupError: startupError ? redactSensitiveText(startupError.message) : null,
+      diagnosticLevels: diagnostics.slice(-10).map(({ level }) => level),
+      output: inertOutput().slice(-8_000),
+      error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+    }));
+    await stop().catch(() => {});
+    throw error;
+  }
   return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
 }
 
