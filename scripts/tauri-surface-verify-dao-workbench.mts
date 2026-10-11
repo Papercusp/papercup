@@ -50,7 +50,7 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
     };
     const capture = (name: string) => {
       writeFileSync(join(ctx.evidenceDir, name + '.json'), ev('JSON.stringify({url:location.href,text:document.body.innerText})'));
-      native('screenshot', '--output', join(ctx.evidenceDir, name + '.png'));
+      native('screenshot', '--selector', 'html', '--output', join(ctx.evidenceDir, name + '.png'));
     };
     const workControlLayout = () => {
       const controls = JSON.parse(ev(`JSON.stringify([...document.querySelectorAll('.dao-execution label')].map(label=>{
