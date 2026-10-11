@@ -336,7 +336,7 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    "COLD loop carry-note. Read {read:true, ownerId?, harness?}; write {did,left,insight,next}, {note}, or {checkpoint}. Oversized fields clip on write; repairs list them. carry mode belongs to loop:arm; loop:checkpoint does not accept a `carry` argument. Default rowsMode:'merge' preserves; rowsMode:'replace' retires (empty list with replace clears).",
+    "COLD carry-note. Read {read:true,ownerId?,harness?}; write {did,left,insight,next}, {note} or {checkpoint}. Clips are reported. carry mode belongs to loop:arm; loop:checkpoint does not accept a `carry` argument. rowsMode:'merge' preserves; rowsMode:'replace' retires; empty list with replace clears. `confirmShrink` is accepted by `work_items:checkpoint` only.",
   guidance: {
     when:
       "COLD: pair facts with work_items:checkpoint. Same-line [turn:<session>@<iso-ts>] refs; never invent a ref; label [self-imposed]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance an immediately runnable action or do a bounded progress read; writing this checkpoint alone is not post-note progress. cold-successor-no-progress may refuse; scheduled fire/compaction is a narrow boundary exception. carry mode belongs to loop:arm, not loop:checkpoint; do not retry a rejected `carry` argument here. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. " + EXECUTABLE_PROBE_SHAPE,
