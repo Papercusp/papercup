@@ -96,6 +96,46 @@
     "result": "The reviewed full-product implementation extends the identified existing product/control surfaces. R11@2 reuse assessment passes.",
     "parentShipment": "Owner directive1534 and the full plan remain open. Original hosted failures, protected voice/human/native acceptance, novice review, required affected suite and final release obligations stay in their own acceptance records. This review changes no BAR, spec or shipment requirement."
   },
+  "r11CurrentDeltaReview": {
+    "schemaVersion": 1,
+    "specId": "AUTO-BAR-R-11-P-016",
+    "specRevision": 2,
+    "specFingerprint": "a26bd754ff3206bcd5dff3fed1aafa6d0735f741badd8fcbd7c896c3ccdeb102",
+    "observedAt": "2026-10-11T17:57:00Z",
+    "commits": {
+      "papercusp": "af73da044b9c67adc47a9a5044968b6139578a8a",
+      "portal": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7"
+    },
+    "priorBindings": [34588, 34590],
+    "comparisonBaselines": {
+      "papercusp": "fc723ef3f924af543510f19ea6aef5daa59628fa",
+      "portal": "cc880c5d44f91e93325cb865956d4bfc3eff2c00"
+    },
+    "oracle": "The unchanged R11@2 falsifier rejects a forked product/control plane or a new durable surface without a specific reuse assessment. This source review establishes reuse only.",
+    "procedure": "Read complete diffs for all nine core measurement paths and three Portal measurement paths from their original binding pins. Read the exact existing SettingsSlots, workspace-location, account-progress and Help seams. Compare each changed behavior to its maintained owner; byte-check all eleven implementation files against committed blobs. Preserve the earlier full-product findings and all wider acceptance requirements.",
+    "findings": [
+      "Hosted Settings adds profile and saved-prompts cases to the existing OperatorSettingsSlot union. Personalization keeps its existing SavedPromptsSection fallback; PortalSettingsAdditions selects hosted disclosure through the existing workspace-location provider. SettingsLayout uses that same location to avoid a desktop-only startup reader. These changes extend one maintained composition seam rather than adding a Settings store or API.",
+      "PortalEntry wraps the account guide in the existing OperatorWorkspaceLocationProvider because the guide mounts above its destination. AccountProductTutorial passes that location into the existing captureBrowserTelemetry writer. The account/session/workspace scope and original destination remain owned by PortalEntry.",
+      "The optional Portal microphone launcher now dynamically imports the existing voice-elevenlabs module after the explicit start gesture and preserves the caller's abort signal. Added query-owner entries extend the existing SURFACE_PARAM_OWNERS map; they introduce no parallel router.",
+      "authorizeTutorialVoice extends the existing strict lesson request schemas and compares the verified principal against persisted account/workspace progress. Optional row locking and persisted-enrollment checks extend readTutorialProgress/readAccountTutorialProgress within the existing tenant transaction and hosted_user_preferences record. No new progress table, service, provider or configuration surface is introduced by these changes.",
+      "The versioned catalogue, theme writer, authenticated Portal host API and web-runtime files are byte-identical to their previous measurement pins. Their original reuse findings remain applicable. The changed mounted guide, Help, progress and Settings paths are explicitly assessed above rather than treated as unchanged."
+    ],
+    "sourceFiles": [
+      { "root": "papercusp", "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts", "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4" },
+      { "root": "papercusp", "path": "packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts", "sha256": "b74c6d8dc6fd64ffb0799802bef871bbdadf85d9abc86cceb2a9d8eaf45ae2fe" },
+      { "root": "papercusp", "path": "packages/operator-core/lib/onboarding/cloud-tutorial-help.ts", "sha256": "64d1a204e7323bdd9866aba203388e72a0cb08062ba5ccb7d088881500517687" },
+      { "root": "papercusp", "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "cd741196a73abd62f1b5f57108524b7fea0455045657891ceeb035a4a97bf512" },
+      { "root": "papercusp", "path": "packages/operator-ui/src/settings-slots.tsx", "sha256": "0f895053db818541640d7a336623a42fce8c4db1be04f69c94e53810aa9a7cbf" },
+      { "root": "papercusp", "path": "apps/operator/app/settings/personalization/page.tsx", "sha256": "8b1fa89493e70ec394929f95302ef9c9d9ce6fcac2f118ef9babf91f964ad78a" },
+      { "root": "papercusp", "path": "apps/operator/app/settings/layout.tsx", "sha256": "19767c7f32aa3323fcf81e569e4174c882c860814aa50f249c8431f84e4600b3" },
+      { "root": "papercusp", "path": "apps/operator/lib/theme.ts", "sha256": "70a631c641a05aca5470a799da2325b57c2e7a84758dd1b509551cbb1f701776" },
+      { "root": "portal", "path": "packages/ui/src/shell.tsx", "sha256": "0477784fbbae1dc88523f309b926104d752d9ff3f462ac6c799bbe99a370e470" },
+      { "root": "portal", "path": "apps/host/src/api.ts", "sha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701" },
+      { "root": "portal", "path": "apps/host/src/web-runtime.ts", "sha256": "ad036f0d349bb7e172e552a1937e9ae2daf1bb6234242732ea3c5c8d244dcf85" }
+    ],
+    "result": "The reviewed current full-product source extends the identified existing product/control surfaces. R11@2 reuse assessment passes for these measured files.",
+    "parentShipment": "Directive1534 remains open. This source review does not establish security correctness, current affected-suite PASS, protected native microphone use, human-heard audio, novice review, pilot baseline or exact production shipment. Older source reviews, browser runs and failures retain their original scope and lineage."
+  },
   "reviews": [
     {
       "specId": "AUTO-BAR-R-11-P-016",
