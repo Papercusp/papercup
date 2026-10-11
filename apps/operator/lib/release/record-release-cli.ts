@@ -28,6 +28,7 @@
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -513,6 +514,54 @@ interface AndroidReleaseProvenance {
   };
 }
 
+type MobileScanOptions = {
+  skipAndroid?: boolean;
+  productName?: string;
+  iosCiState?: string;
+};
+
+interface IosCiArtifact {
+  path: string;
+  size: number;
+  sha256: string;
+}
+
+interface IosCiPhase {
+  name: string;
+  exitCode: number | null;
+  log: string;
+  sha256: string;
+}
+
+interface IosCiResult {
+  schemaVersion: 1;
+  executor: string;
+  attempt: string;
+  status: string;
+  mode: string;
+  distributionMethod: string;
+  buildNumber: string | number;
+  finishedAt: string;
+  source: { commit: string; dirty: boolean };
+  installation?: { distributionMethod: string; installationRoute: string; registeredDeviceCount?: number };
+  phases: IosCiPhase[];
+  artifacts: IosCiArtifact[];
+}
+
+interface IosReleaseProvenance {
+  schemaVersion: 1;
+  sourceSha: string;
+  version: string;
+  build: string | number;
+  signed: boolean;
+  releaseVersion: string;
+  sourceCommit: string;
+  sourceDirty: boolean;
+  builtAt: string;
+  installation: { distributionMethod: string; installationRoute: string; registeredDeviceCount?: number };
+  artifacts: Array<IosCiArtifact & { kind: string }>;
+}
+
 /**
  * Is this file too small to plausibly BE the installer/app its name claims?
  * Exported so the floor is unit-testable on its own, and so callers other than
@@ -729,7 +778,7 @@ export function scanMobileArtifacts(
   mobileRoot: string | null,
   version: string,
   tag: string,
-  options: { skipAndroid?: boolean; productName?: string } = {},
+  options: MobileScanOptions = {},
 ): ReleaseArtifact[] {
   const found: ReleaseArtifact[] = [];
   for (const { src, outName } of scanMobileArtifactSources(mobileRoot, version, options)) {
@@ -758,7 +807,7 @@ export function scanMobileArtifacts(
   return found.sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
 }
 
-function mobileGitState(mobileRoot: string): { commit: string; dirty: boolean } {
+function mobileGitState(mobileRoot: string, platform: 'Android' | 'iOS'): { commit: string; dirty: boolean } {
   try {
     const commit = execFileSync('git', ['-C', mobileRoot, 'rev-parse', 'HEAD'], {
       encoding: 'utf8',
@@ -772,7 +821,7 @@ function mobileGitState(mobileRoot: string): { commit: string; dirty: boolean } 
     return { commit, dirty: status.length > 0 };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Cannot resolve Android source identity in ${mobileRoot}: ${detail}`);
+    throw new Error(`Cannot resolve ${platform} source identity in ${mobileRoot}: ${detail}`);
   }
 }
 
@@ -788,6 +837,271 @@ function parseAndroidReleaseProvenance(file: string): AndroidReleaseProvenance {
     throw new Error(`Invalid Android release provenance ${file}: expected an object`);
   }
   return value as AndroidReleaseProvenance;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseIosJsonObject(file: string, label: string): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid iOS ${label} ${file}: ${detail}`);
+  }
+  if (!isJsonObject(value)) {
+    throw new Error(`Invalid iOS ${label} ${file}: expected an object`);
+  }
+  return value;
+}
+
+function isWithinDirectory(directory: string, candidate: string): boolean {
+  const relative = path.relative(directory, candidate);
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function resolveIosAttemptFile(attempt: string, relativePath: string, label: string): string {
+  const segments = relativePath.split('/');
+  if (
+    !relativePath ||
+    path.isAbsolute(relativePath) ||
+    relativePath.includes('\\') ||
+    segments.some((segment) => segment === '' || segment === '.' || segment === '..')
+  ) {
+    throw new Error(`iOS ${label} path must be a safe attempt-relative path: ${JSON.stringify(relativePath)}`);
+  }
+  const file = path.resolve(attempt, relativePath);
+  if (!isWithinDirectory(attempt, file)) {
+    throw new Error(`iOS ${label} path escapes its attempt: ${relativePath}`);
+  }
+  return file;
+}
+
+function resolveIosAttemptDirectory(
+  stateRoot: string,
+  mobileRoot: string,
+  rawAttempt: string,
+): string {
+  const stateRootReal = fs.realpathSync(stateRoot);
+  const attemptsPath = path.join(stateRootReal, 'attempts');
+  const attemptsStats = fs.lstatSync(attemptsPath);
+  if (!attemptsStats.isDirectory() || attemptsStats.isSymbolicLink()) {
+    throw new Error(`iOS CI attempts root must be a regular directory: ${attemptsPath}`);
+  }
+  const attemptsRoot = fs.realpathSync(attemptsPath);
+  const candidate = path.isAbsolute(rawAttempt) ? path.resolve(rawAttempt) : path.resolve(mobileRoot, rawAttempt);
+  if (!isWithinDirectory(attemptsRoot, candidate)) {
+    throw new Error(`iOS CI attempt is outside its state attempts directory: ${rawAttempt}`);
+  }
+  const candidateStats = fs.lstatSync(candidate);
+  if (!candidateStats.isDirectory() || candidateStats.isSymbolicLink()) {
+    throw new Error(`iOS CI attempt must be a regular directory: ${candidate}`);
+  }
+  const attempt = fs.realpathSync(candidate);
+  if (
+    path.dirname(attempt) !== attemptsRoot ||
+    !/^\d{8}T\d{6}Z-[0-9a-f]{8}$/.test(path.basename(attempt))
+  ) {
+    throw new Error(`iOS CI attempt has an invalid state-owned path: ${rawAttempt}`);
+  }
+  return attempt;
+}
+
+function requireIosRegularFile(file: string, label: string): fs.Stats {
+  let stats: fs.Stats;
+  try {
+    stats = fs.lstatSync(file);
+  } catch {
+    throw new Error(`iOS ${label} is missing: ${file}`);
+  }
+  if (!stats.isFile() || stats.isSymbolicLink() || fs.realpathSync(file) !== file) {
+    throw new Error(`iOS ${label} must be a regular, non-symlink file: ${file}`);
+  }
+  return stats;
+}
+
+function verifyIosArtifactReceipt(
+  attempt: string,
+  receipts: IosCiArtifact[],
+  relativePath: string,
+  label: string,
+): IosCiArtifact {
+  const matches = receipts.filter((receipt) => receipt?.path === relativePath);
+  if (matches.length !== 1) {
+    throw new Error(`iOS runner must retain exactly one ${label} artifact receipt for ${relativePath}`);
+  }
+  const receipt = matches[0];
+  if (
+    !Number.isSafeInteger(receipt.size) ||
+    receipt.size < 0 ||
+    !/^[0-9a-f]{64}$/.test(receipt.sha256 ?? '')
+  ) {
+    throw new Error(`iOS runner ${label} receipt has an invalid size or sha256`);
+  }
+  const file = resolveIosAttemptFile(attempt, relativePath, label);
+  const stats = requireIosRegularFile(file, label);
+  if (stats.size !== receipt.size) {
+    throw new Error(`iOS runner ${label} receipt size ${receipt.size} does not match ${relativePath} (${stats.size} bytes)`);
+  }
+  const sha256 = sha256File(file);
+  if (sha256 !== receipt.sha256) {
+    throw new Error(`iOS runner ${label} receipt sha256 does not match ${relativePath}`);
+  }
+  return { path: relativePath, size: stats.size, sha256 };
+}
+
+/**
+ * Admit only the native runner's current signed App Store Connect IPA. A check
+ * run is useful CI evidence but is not a release candidate; a signed candidate
+ * must match its attempt-local manifest, retained runner receipts, requested
+ * version, and the current clean mobile source tree.
+ */
+function scanProvenancedIosArtifactSources(
+  mobileRoot: string,
+  version: string,
+  productName: string,
+  configuredState?: string,
+): Array<{ src: string; outName: string }> {
+  const artifactStem = assertPapercuspMobileProductName(productName);
+  const stateRoot = path.resolve(
+    configuredState ??
+      process.env.PAPERCUP_IOS_CI_STATE ??
+      path.join(os.homedir(), '.local/state/papercusp/ios-ci'),
+  );
+  const latestFile = path.join(stateRoot, 'latest.json');
+  if (!fs.existsSync(latestFile)) return [];
+  requireIosRegularFile(latestFile, 'CI latest result');
+  const latestValue = parseIosJsonObject(latestFile, 'CI latest result');
+  const result = latestValue as unknown as IosCiResult;
+  if (
+    result.schemaVersion !== 1 ||
+    typeof result.attempt !== 'string' ||
+    typeof result.status !== 'string' ||
+    typeof result.mode !== 'string'
+  ) {
+    throw new Error(`Invalid iOS CI latest result ${latestFile}: unsupported or incomplete result`);
+  }
+  // The native runner updates latest.json for scheduled check runs too. They do
+  // not make an iOS release candidate and must not block an Android-only scan.
+  if (result.mode === 'check' || result.status !== 'passed') return [];
+  if (result.mode !== 'signed') {
+    throw new Error(`iOS CI latest result mode ${String(result.mode)} is not signed release evidence`);
+  }
+  if (result.executor !== 'native-mac') {
+    throw new Error(`iOS CI executor must be native-mac, got ${String(result.executor)}`);
+  }
+  if (!Array.isArray(result.artifacts) || !Array.isArray(result.phases)) {
+    throw new Error('iOS CI signed result is missing phases or artifact receipts');
+  }
+  if (!isJsonObject(result.source) || typeof result.source.commit !== 'string' || result.source.dirty !== false) {
+    throw new Error('iOS CI signed result must identify clean committed source');
+  }
+  if (
+    !/^[0-9a-f]{40,64}$/.test(result.source.commit) ||
+    !(typeof result.buildNumber === 'string' && /^[1-9]\d*$/.test(result.buildNumber)) ||
+    typeof result.finishedAt !== 'string' ||
+    Number.isNaN(Date.parse(result.finishedAt))
+  ) {
+    throw new Error('iOS CI signed result has a malformed source, build number, or finishedAt');
+  }
+  if (result.distributionMethod !== 'app-store-connect') {
+    throw new Error(`iOS distribution ${String(result.distributionMethod)} is not public-release eligible`);
+  }
+
+  const attempt = resolveIosAttemptDirectory(stateRoot, mobileRoot, result.attempt);
+  const resultFile = path.join(attempt, 'result.json');
+  requireIosRegularFile(resultFile, 'attempt result');
+  const attemptValue = parseIosJsonObject(resultFile, 'attempt result');
+  if (!isDeepStrictEqual(latestValue, attemptValue)) {
+    throw new Error('iOS latest.json does not match its attempt-local result.json');
+  }
+
+  const installation = result.installation;
+  if (
+    !isJsonObject(installation) ||
+    installation.distributionMethod !== 'app-store-connect' ||
+    installation.installationRoute !== 'app-store-connect'
+  ) {
+    throw new Error('iOS signed result installation must use the App Store Connect route');
+  }
+  for (const phaseName of ['signed-export', 'archive-guard']) {
+    const phases = result.phases.filter((phase) => phase?.name === phaseName);
+    if (phases.length !== 1 || phases[0].exitCode !== 0) {
+      throw new Error(`iOS signed result must contain one successful ${phaseName} phase`);
+    }
+    const logReceipt = verifyIosArtifactReceipt(attempt, result.artifacts, `${phaseName}.log`, `${phaseName} log`);
+    if (phases[0].log !== path.join(attempt, `${phaseName}.log`) || phases[0].sha256 !== logReceipt.sha256) {
+      throw new Error(`iOS ${phaseName} phase does not match its retained log receipt`);
+    }
+  }
+
+  const manifestFile = path.join(attempt, 'candidate-manifest.json');
+  requireIosRegularFile(manifestFile, 'candidate manifest');
+  const manifestValue = parseIosJsonObject(manifestFile, 'candidate manifest');
+  const manifest = manifestValue as unknown as IosReleaseProvenance;
+  verifyIosArtifactReceipt(attempt, result.artifacts, 'candidate-manifest.json', 'candidate manifest');
+  if (
+    manifest.schemaVersion !== 1 ||
+    manifest.signed !== true ||
+    manifest.version !== version ||
+    manifest.releaseVersion !== version ||
+    manifest.build !== result.buildNumber ||
+    manifest.sourceSha !== result.source.commit ||
+    manifest.sourceCommit !== result.source.commit ||
+    manifest.sourceDirty !== false ||
+    manifest.builtAt !== result.finishedAt ||
+    !isDeepStrictEqual(manifest.installation, installation)
+  ) {
+    throw new Error('iOS candidate manifest does not match the requested version and signed runner result');
+  }
+  const currentSource = mobileGitState(mobileRoot, 'iOS');
+  if (currentSource.dirty) {
+    throw new Error(`iOS source tree ${mobileRoot} is dirty; provenance is no longer publishable`);
+  }
+  if (currentSource.commit !== manifest.sourceCommit) {
+    throw new Error(
+      `iOS provenance sourceCommit ${manifest.sourceCommit} does not match current HEAD ${currentSource.commit}`,
+    );
+  }
+  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== 1) {
+    throw new Error('iOS candidate manifest must name exactly one signed IPA');
+  }
+  const ipa = manifest.artifacts[0];
+  if (ipa.kind !== 'ipa' || typeof ipa.path !== 'string' || !/^export\/[^/]+\.ipa$/i.test(ipa.path)) {
+    throw new Error('iOS candidate manifest IPA must name one canonical export/*.ipa path');
+  }
+  const exportDir = path.join(attempt, 'export');
+  const exportStats = fs.lstatSync(exportDir);
+  if (!exportStats.isDirectory() || exportStats.isSymbolicLink()) {
+    throw new Error(`iOS signed export must be a regular directory: ${exportDir}`);
+  }
+  const exportedIpas = fs.readdirSync(exportDir, { withFileTypes: true }).filter((entry) => /\.ipa$/i.test(entry.name));
+  if (exportedIpas.length !== 1) {
+    throw new Error(`iOS signed release requires exactly one export/*.ipa; found ${exportedIpas.length}`);
+  }
+  const exportedIpa = exportedIpas[0];
+  if (!exportedIpa || exportedIpa.isSymbolicLink() || !exportedIpa.isFile()) {
+    throw new Error('iOS signed release export must be one regular, non-symlink IPA');
+  }
+  const exportedRelativePath = `export/${exportedIpa.name}`;
+  if (ipa.path !== exportedRelativePath) {
+    throw new Error(
+      `iOS candidate manifest IPA path ${JSON.stringify(ipa.path)} does not match exported ${exportedRelativePath}`,
+    );
+  }
+  if (!Number.isSafeInteger(ipa.size) || ipa.size < MIN_PLAUSIBLE_ARTIFACT_BYTES) {
+    throw new Error(`iOS candidate manifest IPA has implausible size ${String(ipa.size)}`);
+  }
+  if (!/^[0-9a-f]{64}$/.test(ipa.sha256 ?? '')) {
+    throw new Error('iOS candidate manifest IPA sha256 is missing or malformed');
+  }
+  const ipaReceipt = verifyIosArtifactReceipt(attempt, result.artifacts, ipa.path, 'signed IPA');
+  if (ipaReceipt.size !== ipa.size || ipaReceipt.sha256 !== ipa.sha256) {
+    throw new Error('iOS signed IPA does not match the candidate manifest size and sha256');
+  }
+  return [{ src: resolveIosAttemptFile(attempt, ipa.path, 'signed IPA'), outName: `${artifactStem}_${version}_ios.ipa` }];
 }
 
 /**
@@ -836,7 +1150,7 @@ export function scanProvenancedAndroidArtifactSources(
     throw new Error('Android provenance builtAt is missing or malformed');
   }
 
-  const source = mobileGitState(mobileRoot);
+  const source = mobileGitState(mobileRoot, 'Android');
   if (source.dirty) {
     throw new Error(`Android source tree ${mobileRoot} is dirty; provenance is no longer publishable`);
   }
@@ -898,12 +1212,15 @@ export function scanProvenancedAndroidArtifactSources(
 export function scanMobileArtifactSources(
   mobileRoot: string | null,
   version: string,
-  options: { skipAndroid?: boolean; productName?: string } = {},
+  options: MobileScanOptions = {},
 ): Array<{ src: string; outName: string }> {
   if (!mobileRoot || !fs.existsSync(mobileRoot)) return [];
-  return options.skipAndroid
+  const productName = options.productName ?? 'Papercusp';
+  const sources = options.skipAndroid
     ? []
-    : scanProvenancedAndroidArtifactSources(mobileRoot, version, options.productName);
+    : scanProvenancedAndroidArtifactSources(mobileRoot, version, productName);
+  sources.push(...scanProvenancedIosArtifactSources(mobileRoot, version, productName, options.iosCiState));
+  return sources;
 }
 
 /**
