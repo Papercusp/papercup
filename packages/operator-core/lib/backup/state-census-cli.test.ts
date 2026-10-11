@@ -28,6 +28,7 @@ describe('unit census executable exit contract', () => {
       // A catalog with 20,001 unrelated columns must never enter the result.
       const catalog = [...matching, ...Array.from({ length: 20001 }, () => ({ table_schema: 'unrelated', table_name: 'records', column_name: 'id', data_type: 'text' }))];
       expect(strings.join('?')).toContain("(table_schema || '.' || table_name) = ANY(?)");
+      expect(strings.join('?')).toContain('data_type, udt_schema, udt_name');
       return catalog.filter(row => tables.includes(`${row.table_schema}.${row.table_name}`));
     });
     expect(await readMigrationCensusColumns(query as never, sources)).toEqual(matching);

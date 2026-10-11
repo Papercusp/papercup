@@ -11,7 +11,7 @@ vi.mock('../identity/keychain', () => ({ identityDir: () => '/fixture/sensitive/
 vi.mock('../cupboard/ledger-anchor-eas', () => ({ anchorKeyFilePath: () => '/fixture/sensitive/anchor-key' }));
 vi.mock('../papercusp-root', () => ({ papercuspRoot: () => '/relocated/workspaces/registered-project/.papercusp' }));
 import { databaseCensusEntries, physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, secretCensusProducers, unitCensusEntries, unitCensusDeclarations, verifyHostStateCensus, workspaceRegistryCensusProducer, scratchCensusProducer, installedRootCensusProducers, mergeNestedCensusRoots, postgresStorageDeclaration, gitStorageDeclaration } from './state-census-producers';
-import { mkdtemp, writeFile, rm, symlink, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, symlink, readFile, mkdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CensusDeclaration } from '@papercusp/backup';
@@ -352,6 +352,32 @@ describe('secret census producer adapters', () => {
     expect(sqlMigrationCensusSource('CREATE TABLE x.first (id text); CREATE TABLE x.second (id text', 'fixture')).toBeNull();
     expect(sqlMigrationCensusSource("CREATE TABLE x.first (id text DEFAULT 'a,b)'); CREATE TABLE x.second (id bigint, CHECK (id > 0));", 'fixture')?.tables).toEqual(['x.first', 'x.second']);
   });
+  it('matches declared enum identities and rejects missing, wrong-case or wrong-schema metadata', () => {
+    const source = sqlMigrationCensusSource('CREATE TYPE public."Role" AS ENUM(\'BUYER\'); CREATE TABLE first (role public."Role"); CREATE TABLE second (role public."Role" NOT NULL);', 'enum');
+    expect(source?.columns).toHaveLength(2);
+    expect(source?.columns?.[0]).toMatchObject({ type: 'USER-DEFINED', udtSchema: 'public', udtName: 'Role' });
+    const entry = { kind: 'database' as const, root: 'postgres-cluster:123', name: 'app' };
+    expect(migrationDatabaseCensusDeclarations(entry, source!.tables, [source!], source!.columns)).toHaveLength(1);
+    for (const patch of [{ udtName: 'role' }, { udtSchema: 'other' }, { udtName: undefined }, { type: 'text' }]) {
+      expect(migrationDatabaseCensusDeclarations(entry, source!.tables, [source!], source!.columns!.map(column => ({ ...column, ...patch })))).toEqual([]);
+    }
+    expect(sqlMigrationCensusSource('CREATE TABLE first (id text); CREATE TABLE second (role "Role");', 'missing')).toBeNull();
+    expect(sqlMigrationCensusSource('CREATE TABLE first (id text[]); CREATE TABLE second (id text);', 'array')).toBeNull();
+    expect(sqlMigrationCensusSource('CREATE TABLE first (id timestamp nonsense); CREATE TABLE second (id text);', 'unsupported')).toBeNull();
+  });
+  it('distinguishes timestamp zones and matches double precision metadata', () => {
+    const source = sqlMigrationCensusSource('CREATE TABLE "Records" ("Created" timestamp without time zone, score double precision); CREATE TABLE receipts (created timestamp, received timestamptz, updated timestamp with time zone);', 'drizzle');
+    expect(source?.columns?.map(column => column.type)).toEqual([
+      'timestamp without time zone', 'double precision', 'timestamp without time zone',
+      'timestamp with time zone', 'timestamp with time zone',
+    ]);
+    const entry = { kind: 'database' as const, root: 'postgres-cluster:123', name: 'app' };
+    expect(migrationDatabaseCensusDeclarations(entry, source!.tables, [source!], source!.columns)).toHaveLength(1);
+    expect(migrationDatabaseCensusDeclarations(entry, source!.tables, [source!], source!.columns!.map(column =>
+      column.name === 'Created' ? { ...column, type: 'timestamp with time zone' } : column))).toEqual([]);
+    expect(migrationDatabaseCensusDeclarations(entry, source!.tables, [source!], source!.columns!.map(column =>
+      column.name === 'score' ? { ...column, type: 'real' } : column))).toEqual([]);
+  });
   it('preserves quoted identifier case while rejecting SQL-looking identifier prose', () => {
     const source = sqlMigrationCensusSource('CREATE TABLE "Records" ("Id" text); CREATE TABLE public."Receipts" (id bigint);', 'quoted');
     expect(source?.tables).toEqual(['public.Records', 'public.Receipts']);
@@ -361,6 +387,21 @@ describe('secret census producer adapters', () => {
     expect(migrationDatabaseCensusDeclarations(entry, source!.tables.map(name => name.toLowerCase()), [source!], source!.columns)).toEqual([]);
     expect(sqlMigrationCensusSource('SELECT "CREATE TABLE x.first (id text); CREATE TABLE x.second (id text)";', 'spoof')).toBeNull();
     expect(sqlMigrationCensusSource('/* outer /* CREATE TABLE x.first (id text) */ CREATE TABLE x.second (id text) */', 'spoof')).toBeNull();
+  });
+  it.skipIf(process.getuid?.() === 0)('does not classify unreadable installed source roots or abort readable source discovery', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'unreadable-migration-census-'));
+    const privateRoot = join(directory, 'private');
+    const app = join(directory, 'app');
+    try {
+      await mkdir(privateRoot);
+      await mkdir(join(app, 'drizzle'), { recursive: true });
+      await writeFile(join(app, 'drizzle.config.ts'), "export default defineConfig({ out: './drizzle' });");
+      await writeFile(join(app, 'drizzle/0000.sql'), 'CREATE TABLE public.first (id text); CREATE TABLE public.second (id text);');
+      await chmod(privateRoot, 0);
+      const sources = await registeredProjectMigrationSources([{ slug: 'private', path: privateRoot }, { slug: 'app', path: app }]);
+      expect(sources).toHaveLength(1);
+      expect(sources[0].producer).toContain('registry:app:');
+    } finally { await chmod(privateRoot, 0o700); await rm(directory, { recursive: true, force: true }); }
   });
   it('discovers registered sibling migrations while excluding linked and missing sources', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'registered-migration-census-'));

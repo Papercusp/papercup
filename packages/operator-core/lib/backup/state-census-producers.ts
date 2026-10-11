@@ -655,7 +655,7 @@ export async function registeredProjectMigrationSources(projects: readonly { slu
         if (source) sources.push(source);
       }
     } catch (error) {
-      if (!['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      if (!['ENOENT', 'ENOTDIR', 'ELOOP', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     }
   }
   return sources;
@@ -670,7 +670,9 @@ async function boundedSource(path: string, bound = 1_048_576): Promise<string | 
     if (!metadata.isFile() || metadata.size > bound) return null;
     return await handle.readFile('utf8');
   } catch (error) {
-    if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) return null;
+    // An installed unit may belong to another user. No readable source means
+    // no provenance declaration; the database remains census residue.
+    if (['ENOENT', 'ENOTDIR', 'ELOOP', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) return null;
     throw error;
   } finally { await handle?.close(); }
 }
@@ -697,10 +699,17 @@ function literalDrizzleOutput(source: string): string | null {
  * Older schemas stay exportable without claiming the latest migrations applied.
  * This identifies schema provenance, not live application identity or contents.
  */
+export interface MigrationCensusColumn {
+  table: string;
+  name: string;
+  type: string;
+  udtSchema?: string;
+  udtName?: string;
+}
 export interface MigrationCensusSource {
   producer: string;
   tables: readonly string[];
-  columns?: readonly { table: string; name: string; type: string }[];
+  columns?: readonly MigrationCensusColumn[];
 }
 
 /** SQL literals/comments cannot introduce schema evidence. Unsupported column
@@ -712,7 +721,13 @@ export function sqlMigrationCensusSource(source: string, producer: string): Migr
   const identifier = '(?:[a-z_][a-z0-9_]*|"[a-z_][a-z0-9_]*")';
   const normalize = (name: string) => name.startsWith('"') ? name.slice(1, -1) : name.toLowerCase();
   const tables: string[] = [];
-  const columns: { table: string; name: string; type: string }[] = [];
+  const columns: MigrationCensusColumn[] = [];
+  const enumTypes = new Set<string>();
+  const enums = new RegExp(`\\bCREATE\\s+TYPE\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?\\s+AS\\s+ENUM\\s*\\([^)]*\\)\\s*;`, 'gi');
+  for (const match of code.matchAll(enums)) {
+    if (!/^CREATE\s+TYPE\b/i.test(keywords.slice(match.index))) continue;
+    enumTypes.add(match[2] ? `${normalize(match[1])}.${normalize(match[2])}` : `public.${normalize(match[1])}`);
+  }
   const creates = new RegExp(`\\bCREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${identifier})(?:\\s*\\.\\s*(${identifier}))?\\s*\\(`, 'gi');
   for (const match of code.matchAll(creates)) {
     // Preserved identifiers may themselves contain SQL-looking text. Only live
@@ -735,9 +750,22 @@ export function sqlMigrationCensusSource(source: string, producer: string): Migr
     const tableColumns: typeof columns = [];
     for (const part of parts) {
       if (/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(part)) continue;
-      const column = part.match(new RegExp(`^(${identifier})\\s+(text|integer|bigint|jsonb|boolean|timestamptz|timestamp\\s+with\\s+time\\s+zone)\\b`, 'i'));
-      if (!column) return null;
-      tableColumns.push({ table, name: normalize(column[1]), type: /^(timestamptz|timestamp)/i.test(column[2]) ? 'timestamp with time zone' : column[2].toLowerCase() });
+      const column = part.match(new RegExp(`^(${identifier})\\s+(text|integer|bigint|jsonb|boolean|timestamptz|timestamp(?:\\s+(?:with|without)\\s+time\\s+zone)?|double\\s+precision)\\b`, 'i'));
+      if (!column) {
+        const custom = part.match(new RegExp(`^(${identifier})\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?(?=\\s|$)`, 'i'));
+        if (!custom) return null;
+        const udtSchema = custom[3] ? normalize(custom[2]) : 'public';
+        const udtName = normalize(custom[3] ?? custom[2]);
+        if (!enumTypes.has(`${udtSchema}.${udtName}`) ||
+          !/^(?:$|NOT\b|NULL\b|PRIMARY\b|DEFAULT\b|REFERENCES\b|UNIQUE\b|CHECK\b)/i.test(part.slice(custom[0].length).trim())) return null;
+        tableColumns.push({ table, name: normalize(custom[1]), type: 'USER-DEFINED', udtSchema, udtName });
+        continue;
+      }
+      if (!/^(?:$|NOT\b|NULL\b|PRIMARY\b|DEFAULT\b|REFERENCES\b|UNIQUE\b|CHECK\b)/i.test(part.slice(column[0].length).trim())) return null;
+      const sqlType = column[2].toLowerCase().replace(/\s+/g, ' ');
+      const type = sqlType === 'timestamptz' ? 'timestamp with time zone'
+        : sqlType === 'timestamp' ? 'timestamp without time zone' : sqlType;
+      tableColumns.push({ table, name: normalize(column[1]), type });
     }
     if (!tableColumns.length) return null;
     tables.push(table);
@@ -757,13 +785,14 @@ export async function canonicalSqlMigrationCensusSources(): Promise<MigrationCen
   return sources;
 }
 
-export function migrationDatabaseCensusDeclarations(entry: CensusEntry, observedTables: readonly string[], sources: readonly MigrationCensusSource[], observedColumns: readonly { table: string; name: string; type: string }[] = []): CensusDeclaration[] {
+export function migrationDatabaseCensusDeclarations(entry: CensusEntry, observedTables: readonly string[], sources: readonly MigrationCensusSource[], observedColumns: readonly MigrationCensusColumn[] = []): CensusDeclaration[] {
   if (entry.kind !== 'database' || !/^postgres-cluster:\d+$/.test(entry.root)) throw new Error('Missing physical migration database identity');
   return sources.flatMap(source => {
     let prefix = 0;
     while (prefix < source.tables.length && observedTables.includes(source.tables[prefix]) &&
       (!source.columns || source.columns.filter(column => column.table === source.tables[prefix]).every(column =>
-        observedColumns.some(observed => observed.table === column.table && observed.name === column.name && observed.type === column.type)))) prefix++;
+        observedColumns.some(observed => observed.table === column.table && observed.name === column.name && observed.type === column.type &&
+          (!column.udtName || (observed.udtSchema === column.udtSchema && observed.udtName === column.udtName)))))) prefix++;
     return prefix < 2 ? [] : [{ ...entry, classification: 'state' as const,
       producer: prefix === source.tables.length ? source.producer : `${source.producer}:migration-prefix:${prefix}/${source.tables.length}` }];
   });

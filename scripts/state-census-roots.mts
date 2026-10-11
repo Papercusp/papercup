@@ -26,8 +26,8 @@ import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 export async function readMigrationCensusColumns(sql: ReturnType<typeof postgres>, sources: readonly MigrationCensusSource[]) {
   const tables = [...new Set(sources.flatMap(source => [...source.tables]))];
   if (!tables.length) return [];
-  const rows = await sql<{ table_schema: string; table_name: string; column_name: string; data_type: string }[]>`
-    SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns
+  const rows = await sql<{ table_schema: string; table_name: string; column_name: string; data_type: string; udt_schema: string; udt_name: string }[]>`
+    SELECT table_schema, table_name, column_name, data_type, udt_schema, udt_name FROM information_schema.columns
     WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
       AND (table_schema || '.' || table_name) = ANY(${tables})
     ORDER BY table_schema, table_name, ordinal_position LIMIT 20001`;
@@ -275,7 +275,7 @@ if (hostCatalogs && migrationSources.length) {
       const rows = await readMigrationCensusColumns(sql, migrationSources);
       declarations.push(...migrationDatabaseCensusDeclarations(database,
         [...new Set(rows.map(row => `${row.table_schema}.${row.table_name}`))], migrationSources,
-        rows.map(row => ({ table: `${row.table_schema}.${row.table_name}`, name: row.column_name, type: row.data_type }))));
+        rows.map(row => ({ table: `${row.table_schema}.${row.table_name}`, name: row.column_name, type: row.data_type, udtSchema: row.udt_schema, udtName: row.udt_name }))));
     } finally { await sql.end(); }
   }
 }
