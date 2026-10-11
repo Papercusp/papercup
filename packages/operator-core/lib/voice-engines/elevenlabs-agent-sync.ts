@@ -281,6 +281,32 @@ export interface ElevenLabsCredentialReceipt {
   serviceAccountUserId: string;
 }
 
+/** Capture only from the authenticated service-account create-key response.
+ * This is validation, NOT authentication: the provisioning host supplies the
+ * trusted response and stores the returned secret and receipt atomically in
+ * its external encrypted store. Never expose this helper as a browser route,
+ * pass a list-key response, or synthesize a receipt for an existing secret.
+ * The receipt contains no raw secret; the secret goes only to the store.
+ */
+export function captureElevenLabsCredentialReceipt(options: {
+  secretRef: string;
+  serviceAccountUserId: string;
+  createResponse: unknown;
+}): { apiKey: string; receipt: ElevenLabsCredentialReceipt } | null {
+  const { secretRef, serviceAccountUserId, createResponse } = options;
+  const identifier = (value: unknown): value is string => typeof value === 'string'
+    && value.length > 0 && value.length <= 1_024 && value.trim() === value
+    && !/[\s\x00-\x1f\x7f]/.test(value);
+  if (!identifier(secretRef) || !identifier(serviceAccountUserId)
+    || !createResponse || typeof createResponse !== 'object' || Array.isArray(createResponse)) return null;
+  const response = createResponse as Record<string, unknown>;
+  const apiKey = response['xi-api-key'];
+  const keyId = response.key_id;
+  if (!identifier(apiKey) || !identifier(keyId)) return null;
+  return { apiKey, receipt: { secretRef, serviceAccountUserId, keyId,
+    secretSha256: createHash('sha256').update(apiKey).digest('hex') } };
+}
+
 /** Fresh restricted-key metadata, bound to the resolved issuance secret by its
  * trusted creation receipt. Metadata credentials are separate from issuance.
  * Credit limits are billing-period limits, NOT seconds or daily quota authority.

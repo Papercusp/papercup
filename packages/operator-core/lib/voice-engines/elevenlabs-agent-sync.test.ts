@@ -15,10 +15,34 @@ import {
   readElevenLabsAgentDuration,
   readElevenLabsImmutableProfile,
   readElevenLabsRestrictedCredential,
+  captureElevenLabsCredentialReceipt,
   type ElevenLabsAgentSyncDeps,
 } from './elevenlabs-agent-sync';
 
 const KEY = 'sk_test_secret_key_value_1234';
+
+describe('server provisioning receipt capture', () => {
+  const capture = (createResponse: unknown, secretRef = 'integration:TUTORIAL_KEY') =>
+    captureElevenLabsCredentialReceipt({ secretRef, serviceAccountUserId: 'service-account', createResponse });
+  it('binds the same create response key and id without putting the secret in the receipt', () => {
+    const response = { 'xi-api-key': KEY, key_id: 'created-key' };
+    const result = capture(response)!;
+    expect(result.apiKey).toBe(KEY);
+    expect(result.receipt).toEqual({ secretRef: 'integration:TUTORIAL_KEY', keyId: 'created-key',
+      serviceAccountUserId: 'service-account', secretSha256: createHash('sha256').update(KEY).digest('hex') });
+    expect(JSON.stringify(result.receipt)).not.toContain(KEY);
+    response.key_id = 'mutated';
+    expect(result.receipt.keyId).toBe('created-key');
+  });
+  it('refuses list metadata and malformed creation responses instead of inferring a secret', () => {
+    for (const response of [null, [], {}, { key_id: 'created-key', hashed_xi_api_key: KEY },
+      { 'xi-api-key': KEY }, { 'xi-api-key': '', key_id: 'created-key' },
+      { 'xi-api-key': KEY, key_id: ' padded ' }, { 'xi-api-key': KEY + '\n', key_id: 'created-key' }]) {
+      expect(capture(response)).toBeNull();
+    }
+    expect(capture({ 'xi-api-key': KEY, key_id: 'created-key' }, '')).toBeNull();
+  });
+});
 
 describe('restricted credential creation-receipt binding', () => {
   const receipt = () => ({ secretRef: 'integration:TUTORIAL_KEY', keyId: 'created-key',
