@@ -1259,20 +1259,23 @@ function mutationProvenanceDescription(row: SpecEvidenceForAdequacy): string[] {
   if (row.evidenceKind !== 'mutation' && !isCanonicalMutantCounterexample(row)) return [];
   const provenance = row.testRunProvenance;
   const mutation = provenance?.mutation;
-  if (!mutation) return ['mutationLinkage=unverified-legacy'];
   const reaim = row.details.reaim;
+  const measuredFields = [
+    `mutationLeg=${JSON.stringify(mutation?.leg ?? provenance?.mutationPhase ?? null)}`,
+    `mutationFailedCaseTitles=${JSON.stringify(provenance?.mutationFailedCaseTitles ?? [])}`,
+    `mutationReaim=${JSON.stringify(reaim ?? null)}`,
+    'mutationReaimCoverage=ledgered-mutant-leg-rows-only',
+  ];
+  if (!mutation) return ['mutationLinkage=unverified-legacy', ...measuredFields];
   return [
     `mutationLinkage=${hasLinkedMutationBaseline(row) ? 'verified' : 'unverified'}`,
-    `mutationLeg=${JSON.stringify(mutation.leg)}`,
+    ...measuredFields,
     `probeInvocationId=${JSON.stringify(mutation.probeInvocationId)}`,
     `mutationSubjectPath=${JSON.stringify(mutation.subjectPath)}`,
     `mutationExpression=${JSON.stringify(mutation.mutateExpression)}`,
     `mutationAgainstCommit=${JSON.stringify(mutation.againstCommit)}`,
     `mutationSubjectBeforeSha256=${mutation.subjectBeforeSha256}`,
-    `mutationFailedCaseTitles=${JSON.stringify(provenance?.mutationFailedCaseTitles ?? [])}`,
     `mutationBaselineTestRunId=${provenance?.mutationBaseline?.testRunId ?? 'unavailable'}`,
-    `mutationReaim=${JSON.stringify(reaim ?? null)}`,
-    'mutationReaimCoverage=ledgered-mutant-leg-rows-only',
   ];
 }
 
@@ -1308,7 +1311,7 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
     const outcome = detailsOf(row).outcome?.toLowerCase();
     if (!hasLinkedMutationBaseline(row) ||
         !row.testRunProvenance.mutationFailedCaseTitles?.length ||
-        (outcome !== undefined && !SUCCESS_OUTCOMES.has(outcome)) || status !== 'fail') return 'unknown';
+        (outcome !== undefined && outcome !== 'caught' && outcome !== 'killed') || status !== 'fail') return 'unknown';
   }
 
   if (row.evidenceKind === 'mutation') {
