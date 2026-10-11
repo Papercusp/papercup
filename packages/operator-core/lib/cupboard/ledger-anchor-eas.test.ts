@@ -91,6 +91,28 @@ describe('ledger anchor EAS backend against a chain', () => {
     await expect(easAnchorReader(cfg).read(ref)).resolves.toBeNull();
   });
 
+  it('attests each completed quiet hour once even when the root and tree size are unchanged', async () => {
+    const cfg = { chain: baseSepolia, transport: http(url), pollingIntervalMs: 10 };
+    const backend = easAnchorBackend({ ...cfg, privateKey: generatePrivateKey() });
+    const store = memoryLedgerAnchorStore();
+    const links = appendLinks('money-journal', null, [entryDigest({ cents: 100 })]);
+    const feed = { links: async () => links };
+    const t0 = 1_790_000_000 - (1_790_000_000 % HOUR_SECONDS);
+    const tick = (nowSeconds: number) => runAnchorTick({ workspaceId: 'ws-quiet', logId: 'self:ws-quiet', nowSeconds, store, feed, backend });
+    const first = await tick(t0 + 60);
+    const quiet = await tick(t0 + HOUR_SECONDS + 60);
+    expect(quiet).toMatchObject({ status: 'anchored', newLeaves: 0 });
+    if (first.status !== 'anchored' || quiet.status !== 'anchored') throw new Error('expected both completed hours to be anchored');
+    expect(quiet.anchor).toMatchObject({ logRoot: first.anchor.logRoot, treeSize: first.anchor.treeSize, windowStart: t0, windowEnd: t0 + HOUR_SECONDS });
+    expect(quiet.anchor.ref).not.toBe(first.anchor.ref);
+    expect((await tick(t0 + HOUR_SECONDS + 900)).status).toBe('already-anchored');
+    expect(chain.calls.filter(c => c.fn === 'attest')).toHaveLength(2);
+    expect(chain.calls.filter(c => c.fn === 'register')).toHaveLength(1);
+    await expect(easAnchorReader(cfg).read(quiet.anchor.ref)).resolves.toMatchObject({
+      logRoot: first.anchor.logRoot, treeSize: 1, windowEnd: t0 + HOUR_SECONDS, revoked: false, attester: backend.attester.toLowerCase(),
+    });
+  });
+
   it('self-hosted: a configured RPC and key are the only endpoint and identity used, end to end', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'anchor-key-'));
     try {

@@ -15,8 +15,13 @@ import {
   parseReconciliationInputs,
   signReconciliationRequest,
 } from '@papercusp/operator-core/lib/cupboard/reconciliation-hmac.ts';
-import { unionAnchorLinkFeed } from '@papercusp/operator-core/lib/cupboard/ledger-anchor.ts';
+import {
+  HOUR_SECONDS, buildInclusionBundle, memoryLedgerAnchorStore, runAnchorTick, unionAnchorLinkFeed, verifyInclusionBundle,
+  type AnchoredRoot, type AnchorInclusionBundle,
+} from '@papercusp/operator-core/lib/cupboard/ledger-anchor.ts';
 import { cupboardAnchorLinkFeed } from '@papercusp/operator-core/lib/cupboard/ledger-anchor-cupboard-feed.ts';
+import { exportLedgerStream, witnessLedgerStream } from '../ledger-chain-store.ts';
+import { parseChainExport } from '@papercusp/hash-chain';
 import { buildApi } from '../routes/index.ts';
 import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
@@ -375,5 +380,39 @@ describe('GET /commerce/ledger-chain/links', () => {
     const pg = { links: async () => [{ streamId: 'commerce.ledger', seq: 0, entryHash: hex(7) }] };
     const union = unionAnchorLinkFeed(pg, [{ name: 'cupboard', feed: operatorFeed(h, WS) }], () => {});
     await expect(union.links(WS)).rejects.toThrow(/claimed by both primary and cupboard/);
+  });
+
+  it('verifies an entry-free real D1 bundle through public root data and rejects tampered link and root identities', async () => {
+    const h = harness();
+    h.raw.prepare(`INSERT INTO commerce_ledger_events
+      (ledger_event_id, kind, occurred_at_ms, provider, provider_event_id, payload_json)
+      VALUES ('le-entry-free', 'order.paid', 1000, 'stripe', 'evt-entry-free', '{"amountMinor":1000,"currency":"USD"}')`).run();
+    const witnessed = await witnessLedgerStream(h.env.DB, 'commerce.ledger', 2000);
+    expect(witnessed.appended).toBe(1);
+    const link = parseChainExport(await exportLedgerStream(h.env.DB, 'commerce.ledger')).records[0]!.link;
+    const store = memoryLedgerAnchorStore();
+    const attester = '0x00000000000000000000000000000000000a11ce';
+    let publicRoot: AnchoredRoot | null = null;
+    const t0 = 1_790_000_000 - (1_790_000_000 % HOUR_SECONDS);
+    await runAnchorTick({
+      workspaceId: WS, logId: `papercusp:${WS}`, nowSeconds: t0 + 60, store, feed: operatorFeed(h, WS),
+      backend: { kind: 'public-test-chain', publish: async publication => {
+        publicRoot = { ...publication, attester, revoked: false };
+        return { backend: 'public-test-chain', chainId: 84532, ref: '0x-public-root', txHash: null, attester };
+      } },
+    });
+    const built = await buildInclusionBundle({ workspaceId: WS, link, store });
+    expect(built).not.toHaveProperty('entry');
+    if ('error' in built) throw new Error(built.error);
+    const portable = JSON.parse(JSON.stringify(built)) as AnchorInclusionBundle;
+    expect(portable.link.streamId).toBe('commerce.ledger');
+    // No credential, Worker route or ledger reader is supplied to this verifier.
+    const reader = { read: async (ref: string) => ref === portable.anchor.ref ? publicRoot : null };
+    const verify = (bundle: AnchorInclusionBundle) => verifyInclusionBundle(bundle, reader, { expectedAttester: attester, expectedLogId: `papercusp:${WS}` });
+    await expect(verify(portable)).resolves.toEqual({ ok: true, anchoredWindowEnd: t0, attester });
+    await expect(verify({ ...portable, link: { ...portable.link, entryDigest: 'f'.repeat(64) } })).resolves.toMatchObject({ ok: false, reason: 'link-mismatch' });
+    await expect(verify({ ...portable, anchor: { ...portable.anchor, ref: '0x-absent' } })).resolves.toMatchObject({ ok: false, reason: 'anchor-not-found' });
+    publicRoot = { ...publicRoot!, treeSize: portable.treeSize + 1 };
+    await expect(verify(portable)).resolves.toMatchObject({ ok: false, reason: 'anchor-mismatch' });
   });
 });
