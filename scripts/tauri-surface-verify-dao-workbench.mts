@@ -16,6 +16,7 @@ import { DEFAULT_PLAN_ADMISSION_POLICY } from '../packages/operator-core/lib/age
 import { readPlanAdmissionGovernanceSnapshot } from '../packages/operator-core/lib/agent-tools/plans/plan-admission-governance-store.ts';
 import { getPlanRow } from '../packages/operator-core/lib/agent-tools/plans/source.ts';
 import { readNativeHostHealth } from './fixtures/dao-workbench-identity.mjs';
+import { WORKBENCH_FIELD_SELECTOR, workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from './lib/dao-workbench-controls.ts';
 
 if (process.argv.includes('--check-imports')) {
   assert.equal(typeof authorHivePolicy, 'function'); assert.equal(typeof getPlanRow, 'function');
@@ -40,14 +41,20 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
     const ev = (code: string) => native('eval', code);
     const wait = (code: string) => native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
     const click = (text: string, scope = 'document') => ev(`(()=>{const b=[...${scope}.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify(text)});if(!b)throw Error('Missing button '+${JSON.stringify(text)});b.click();return true})()`);
-    const field = (label: string, value: string) => ev(`(()=>{const l=[...document.querySelectorAll('.dao-governance label')].find(e=>e.firstChild.textContent.trim()===${JSON.stringify(label)});const e=l?.querySelector('input,textarea,select');if(!e)throw Error('Missing field');const p=e instanceof HTMLSelectElement?HTMLSelectElement.prototype:e instanceof HTMLInputElement?HTMLInputElement.prototype:HTMLTextAreaElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event(e instanceof HTMLSelectElement?'change':'input',{bubbles:true}));return true})()`);
+    const field = (label: string, value: string) => ev(workbenchTextField(label, value));
+    const selectProposal = (title: string) => {
+      ev(openWorkbenchSelect('Review proposal'));
+      wait(`!![...document.querySelectorAll('[role="option"]')].find(e=>e.textContent.trim()===${JSON.stringify(title)})`);
+      ev(chooseWorkbenchOption(title));
+    };
     const capture = (name: string) => {
       writeFileSync(join(ctx.evidenceDir, name + '.json'), ev('JSON.stringify({url:location.href,text:document.body.innerText})'));
       native('screenshot', '--output', join(ctx.evidenceDir, name + '.png'));
     };
     const workControlLayout = () => {
       const controls = JSON.parse(ev(`JSON.stringify([...document.querySelectorAll('.dao-execution label')].map(label=>{
-        const field=label.querySelector('input,select,textarea');
+        const field=label.querySelector(${JSON.stringify(WORKBENCH_FIELD_SELECTOR)});
+        if(!field)throw Error('Missing layout control '+label.textContent.trim());
         const range=document.createRange();range.selectNodeContents(label.firstChild);
         const title=range.getBoundingClientRect(),box=field.getBoundingClientRect(),container=label.getBoundingClientRect();
         return {name:label.firstChild.textContent.trim(),titleBottom:title.bottom,fieldTop:box.top,
@@ -120,9 +127,10 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       const row = await getPlanRow(proposalSlug, { workspaceId: ws, harnessSlug: slug });
       assert.ok(row, 'Native draft did not persist');
       assert.equal(row.title, 'Native proposal');
-      field('Review proposal', slug + '/' + proposalSlug); wait("document.querySelector('.dao-governance')?.innerText.includes('Deciding as native-workbench-member')");
+      selectProposal('Native proposal · ' + slug); wait("document.querySelector('.dao-governance')?.innerText.includes('Deciding as native-workbench-member')");
       assert.equal(ev("String([...document.querySelectorAll('.dao-governance button')].find(e=>e.textContent==='Open voting round').disabled)").trim().replace(/^"|"$/g, ''), 'true');
-      ev("document.querySelector('.dao-governance input[type=checkbox]').click()");
+      ev(reviewWorkbenchProposal());
+      wait("document.querySelector('.dao-governance [role=checkbox]')?.getAttribute('aria-checked')==='true'");
       ctx.markStep('real-device-signatures-and-policy-verification');
       click('Open voting round'); wait("document.querySelector('.dao-governance')?.innerText.includes('Voting round opened.')");
       click('Approve'); wait("document.querySelector('.dao-governance')?.innerText.includes('Your approve vote was recorded.')");
@@ -136,7 +144,7 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
       capture('signed-decision');
       ctx.markStep('reload-and-independent-product-selections');
       ev('location.reload()'); wait("!!document.querySelector('.dao-governance')");
-      field('Review proposal', slug + '/' + proposalSlug); wait("document.querySelector('.dao-governance')?.innerText.includes('Plan admission approved')");
+      selectProposal('Native proposal · ' + slug); wait("document.querySelector('.dao-governance')?.innerText.includes('Plan admission approved')");
       ev("document.querySelector('a[aria-label=Ops]').click()"); wait("!location.pathname.startsWith('/daos')");
       ev("document.querySelector('a[aria-label=\"DAO Management\"]').click()");
       wait("location.pathname==='/daos' && new URLSearchParams(location.search).get('dao')==='workbench-native' && !!document.querySelector('.dao-governance')");
