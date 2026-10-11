@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
-import { assertTutorialVoiceEnvironment, parseEnvFile, resolveIntegrationReferences, siblingAppEnv } from "../systemd/portal-hosted-launcher";
+import { assertTutorialVoiceEnvironment, hostedServiceProcessIds, parseEnvFile, resolveIntegrationReferences, siblingAppEnv } from "../systemd/portal-hosted-launcher";
 
 const ROOT = resolve(__dirname, "../../../..");
 const SCRIPT = join(ROOT, "apps/operator/scripts/systemd/deploy-cloud-portal.sh");
@@ -11,6 +11,39 @@ const TEMPLATE = join(ROOT, "apps/operator/scripts/systemd/papercusp-cloud-porta
 const PROXY_SCRIPT = join(ROOT, "apps/operator/scripts/systemd/papercusp-cloud-portal-proxy.mjs");
 const LAUNCHER_SCRIPT = join(ROOT, "apps/operator/scripts/systemd/portal-hosted-launcher.ts");
 const README = join(ROOT, "apps/operator/scripts/systemd/README.md");
+
+describe("hosted service evidence process inventory", () => {
+  const dirs: Record<string, string[]> = {
+    "/proc/10/task": ["10", "11"],
+    "/proc/20/task": ["20"],
+    "/proc/30/task": ["30"],
+  };
+  const children: Record<string, string> = {
+    "/proc/10/task/10/children": "",
+    "/proc/10/task/11/children": "20 20",
+    "/proc/20/task/20/children": "30",
+    "/proc/30/task/30/children": "10",
+  };
+  it("reaches the secret-holding grandchild through worker threads and deduplicates cycles", () => {
+    const pids = hostedServiceProcessIds(10, { readDir: path => dirs[path], readFile: path => children[path] });
+    const secretHoldingPid = 30;
+    expect(pids).toEqual([10, 20, secretHoldingPid]);
+    expect(pids.slice(0, 2)).not.toContain(secretHoldingPid); // previous one-level inventory misses it
+  });
+  it("refuses a bounded partial inventory rather than claiming secret coverage", () => {
+    expect(() => hostedServiceProcessIds(10, {
+      readDir: path => dirs[path], readFile: path => children[path], maxProcesses: 2,
+    })).toThrow("hosted_process_tree_incomplete");
+  });
+  it("refuses an unreadable root but tolerates a child exiting during traversal", () => {
+    const missing = Object.assign(new Error("gone"), { code: "ENOENT" });
+    expect(() => hostedServiceProcessIds(10, { readDir: () => { throw missing; } })).toThrow("gone");
+    expect(hostedServiceProcessIds(10, {
+      readDir: path => { if (path === "/proc/20/task") throw missing; return dirs[path]; },
+      readFile: path => children[path],
+    })).toEqual([10, 20]);
+  });
+});
 
 interface Fixture {
   dir: string;

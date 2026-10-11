@@ -5,12 +5,52 @@
  * then exposed to the standalone child through an ephemeral env slot using the
  * generic `env:NAME` resolver already bundled by the Portal.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export type HostedSecretRefResolver = (reference: string) => Promise<string>;
+
+/** PID-anchored traversal for hosted evidence collectors. Secrets are resolved
+ * in descendants of the systemd launcher, including children forked by worker
+ * threads; the service MainPID environment alone is not its effective config. */
+export function hostedServiceProcessIds(rootPid: number, {
+  readFile = (path: string) => readFileSync(path, "utf8"),
+  readDir = (path: string) => readdirSync(path),
+  maxProcesses = 1024,
+} = {}): number[] {
+  if (!Number.isSafeInteger(rootPid) || rootPid < 1) throw new Error("hosted_process_root_invalid");
+  const pending = [rootPid];
+  const visited = new Set<number>();
+  for (let index = 0; index < pending.length; index++) {
+    const pid = pending[index];
+    if (visited.has(pid)) continue;
+    if (visited.size >= maxProcesses) throw new Error("hosted_process_tree_incomplete");
+    visited.add(pid);
+    let threads: string[];
+    try { threads = readDir(`/proc/${pid}/task`); }
+    catch (error) {
+      // A child can exit while the snapshot is read; a missing service root
+      // cannot establish an evidence inventory.
+      if (pid === rootPid) throw error;
+      continue;
+    }
+    for (const tid of threads.filter((value) => /^\d+$/.test(value))) {
+      let children: string;
+      try { children = readFile(`/proc/${pid}/task/${tid}/children`); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      for (const value of children.trim().split(/\s+/)) {
+        const child = Number(value);
+        if (Number.isSafeInteger(child) && child > 0 && !visited.has(child)) pending.push(child);
+      }
+    }
+  }
+  return [...visited];
+}
 
 function positiveSetting(name: string, fallback: number): number {
   const value = process.env[name]?.trim();
