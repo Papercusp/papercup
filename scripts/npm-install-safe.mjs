@@ -59,12 +59,14 @@ import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
   readFileSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,6 +95,7 @@ import {
   formatUnsatisfiedDeclaredDepRanges,
   resolveWorkspaceDirs,
 } from "./check-declared-deps-extracted.mjs";
+import { findBrokenBinLinks } from "./check-partial-install.mjs";
 
 const DEFAULT_REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -583,6 +586,7 @@ export async function verifyDepsExtracted({
     deps,
   });
   const inspect = async () => {
+    const brokenBinLinks = findBrokenBinLinks(repoRoot, { workspaceDirs });
     const declared = await findUnextractedDepsWithRetry({
       repoRoot,
       workspaceDirs,
@@ -615,6 +619,7 @@ export async function verifyDepsExtracted({
         invalidVersions: packageVersions.invalid,
         unsatisfiedRanges: unsatisfiedRanges.invalid,
         runtimeFailures: [],
+        brokenBinLinks,
       };
     const runtime = await findUnusableRuntimeDepsWithRetry({
       repoRoot,
@@ -627,6 +632,7 @@ export async function verifyDepsExtracted({
       invalidVersions: [],
       unsatisfiedRanges: [],
       runtimeFailures: runtime.failures,
+      brokenBinLinks,
     };
   };
 
@@ -636,6 +642,7 @@ export async function verifyDepsExtracted({
     invalidVersions,
     unsatisfiedRanges,
     runtimeFailures,
+    brokenBinLinks,
   }) => {
     if (missing.length > 0) console.error(formatMissing(missing));
     if (incomplete.length > 0)
@@ -646,6 +653,8 @@ export async function verifyDepsExtracted({
       console.error(formatUnsatisfiedDeclaredDepRanges(unsatisfiedRanges));
     if (runtimeFailures.length > 0)
       console.error(formatRuntimeFailures(runtimeFailures));
+    for (const finding of brokenBinLinks)
+      console.error(`NPM_INSTALL_SAFE dangling executable link: ${finding.workspace}/node_modules/${finding.pkg}`);
   };
 
   const healthy = ({
@@ -654,20 +663,38 @@ export async function verifyDepsExtracted({
     invalidVersions,
     unsatisfiedRanges,
     runtimeFailures,
+    brokenBinLinks,
   }) =>
     missing.length === 0 &&
     incomplete.length === 0 &&
     invalidVersions.length === 0 &&
     unsatisfiedRanges.length === 0 &&
-    runtimeFailures.length === 0;
+    runtimeFailures.length === 0 &&
+    brokenBinLinks.length === 0;
 
   const first = await inspect();
   if (healthy(first)) return 0;
 
   report(first);
+  // Validate every parent before modifying any detected link or its local owner.
+  // unlink removes only the link; it cannot recursively delete its target.
+  const binTargets = first.brokenBinLinks.map((finding) => {
+    const [target] = packageLocalRepairTargets({
+      repoRoot,
+      findings: [{ workspace: finding.workspace === '<root>' ? '.' : finding.workspace, package: finding.pkg }],
+    });
+    if (!isStrictlyWithin(realpathSync(repoRoot), realpathSync(dirname(target))))
+      throw new Error(`refusing executable-link repair outside repo root: ${target}`);
+    return target;
+  });
+  for (const target of binTargets) {
+    if (lstatSync(target).isSymbolicLink() && !existsSync(target)) unlinkSync(target);
+  }
   const removedTargets = removePackageLocalRepairTargets({
     repoRoot,
-    findings: [...first.incomplete, ...first.invalidVersions],
+    findings: [...first.incomplete, ...first.invalidVersions, ...first.brokenBinLinks
+      .filter((finding) => finding.package)
+      .map((finding) => ({ workspace: finding.workspace === '<root>' ? '.' : finding.workspace, package: finding.package }))],
     deps,
   });
   const removedLockEntries = removePackageLocalRepairLockEntries({
@@ -711,7 +738,7 @@ export async function verifyDepsExtracted({
   const second = await inspect();
   if (healthy(second)) {
     console.log(
-      "NPM_INSTALL_SAFE repaired: dependency directories, package-local manifests and versions, and critical runtime imports are healthy",
+      "NPM_INSTALL_SAFE repaired: dependency directories, package-local manifests and versions, executable links, and critical runtime imports are healthy",
     );
     return 0;
   }

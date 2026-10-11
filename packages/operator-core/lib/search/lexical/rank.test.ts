@@ -4,7 +4,45 @@
  */
 import { describe, expect, it } from 'vitest';
 import { RRF_K_DEFAULT } from '@papercusp/rrf';
-import { fuseByPosition, usesWebsearchOperators } from './rank';
+import { EXACT_LIST_MAX_AND_ROWS, fuseByPosition, mergeExactAndBm25, usesWebsearchOperators } from './rank';
+
+describe('mergeExactAndBm25 (R-13, D-016)', () => {
+  type R = { id: string; rank: number };
+  const id = (r: R) => r.id;
+
+  it('counts a row both lists found ONCE, with both contributions, ahead of single-list rows', () => {
+    const exact: R[] = [{ id: 'target', rank: 0.9 }, { id: 'e2', rank: 0.5 }];
+    const bm25: R[] = [{ id: 'b1', rank: 30 }, { id: 'target', rank: 20 }, { id: 'b3', rank: 10 }];
+    const merged = mergeExactAndBm25(exact, bm25, id, 10);
+    expect(merged.map(r => r.id)).toEqual(['target', 'b1', 'e2', 'b3']);
+    expect(merged.filter(r => r.id === 'target')).toHaveLength(1);
+    expect(merged[0].rank).toBeCloseTo(1 / (RRF_K_DEFAULT + 1) + 1 / (RRF_K_DEFAULT + 2), 12);
+  });
+
+  it('keeps a fragment target the exact list ranks first inside the top results even when BM25 never found it', () => {
+    // The R-13 failure shape: BM25 ranks the target past its whole list, the exact list ranks it 1.
+    const bm25: R[] = Array.from({ length: 30 }, (_, i) => ({ id: `b${i}`, rank: 100 - i }));
+    const exact: R[] = [{ id: 'target', rank: 0.4 }];
+    const merged = mergeExactAndBm25(exact, bm25, id, 10);
+    expect(merged.map(r => r.id).indexOf('target')).toBe(0);
+  });
+
+  it('breaks a tie in favour of the exact list and scores rows by fused rank, not by either scale', () => {
+    const merged = mergeExactAndBm25([{ id: 'e', rank: 0.001 }], [{ id: 'b', rank: 999 }], id, 10);
+    expect(merged.map(r => r.id)).toEqual(['e', 'b']);
+    expect(merged[0].rank).toBe(merged[1].rank);
+  });
+
+  it('returns the BM25 list unchanged in order when the exact list is empty, and honours limit', () => {
+    const bm25: R[] = [{ id: 'a', rank: 3 }, { id: 'b', rank: 2 }, { id: 'c', rank: 1 }];
+    expect(mergeExactAndBm25([], bm25, id, 2).map(r => r.id)).toEqual(['a', 'b']);
+    expect(mergeExactAndBm25([], bm25, id, 0)).toEqual([]);
+  });
+
+  it('caps the exact list at a population that admits every measured R-13 loss (largest AND set 1,656)', () => {
+    expect(EXACT_LIST_MAX_AND_ROWS).toBeGreaterThanOrEqual(1656);
+  });
+});
 
 describe('usesWebsearchOperators (plan D-007)', () => {
   it.each(['"exact phrase"', 'report -draft', '-draft report', 'gate or deploy', 'gate OR deploy', 'a "b c" d'])(

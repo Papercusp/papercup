@@ -47,25 +47,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true,
-        "oracle.preAt": "2026-10-11T12:06:58.067Z",
-        "oracle.postAt": "2026-10-11T12:07:04.029Z",
-        "oracle.queueNonTerminal": 3037,
-        "oracle.churnIds": 0,
-        "oracle.missingFromQueue": 0,
-        "oracle.extraInQueue": 0,
-        "oracle.queueTerminal": 53177,
-        "oracle.termOk": true,
-        "counts": {
-          "total": 56214,
-          "terminal": 53177,
-          "inFlight": 265,
-          "parked": 1893,
-          "unclaimed": 879
-        }
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"oracle.preAt\":\"2026-10-11T12:06:58.067Z\",\"oracle.postAt\":\"2026-10-11T12:07:04.029Z\",\"oracle.queueNonTerminal\":3037,\"oracle.churnIds\":0,\"oracle.missingFromQueue\":0,\"oracle.extraInQueue\":0,\"oracle.queueTerminal\":53177,\"oracle.termOk\":true,\"counts\":{\"total\":56214,\"terminal\":53177,\"inFlight\":265,\"parked\":1893,\"unclaimed\":879}}"
     },
     {
       "id": "queue-population-partition-with-children",
@@ -74,25 +56,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true,
-        "oracle.preAt": "2026-10-11T12:07:04.352Z",
-        "oracle.postAt": "2026-10-11T12:07:09.389Z",
-        "oracle.queueNonTerminal": 3079,
-        "oracle.churnIds": 0,
-        "oracle.missingFromQueue": 0,
-        "oracle.extraInQueue": 0,
-        "oracle.queueTerminal": 53795,
-        "oracle.termOk": true,
-        "counts": {
-          "total": 56874,
-          "terminal": 53795,
-          "inFlight": 282,
-          "parked": 1905,
-          "unclaimed": 892
-        }
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"oracle.preAt\":\"2026-10-11T12:07:04.352Z\",\"oracle.postAt\":\"2026-10-11T12:07:09.389Z\",\"oracle.queueNonTerminal\":3079,\"oracle.churnIds\":0,\"oracle.missingFromQueue\":0,\"oracle.extraInQueue\":0,\"oracle.queueTerminal\":53795,\"oracle.termOk\":true,\"counts\":{\"total\":56874,\"terminal\":53795,\"inFlight\":282,\"parked\":1905,\"unclaimed\":892}}"
     },
     {
       "id": "claimable-breakdown",
@@ -101,7 +65,7 @@
       "operatorVerdict": true,
       "oracleKind": null,
       "oracleAgrees": null,
-      "evidence": {}
+      "evidence": "{}"
     },
     {
       "id": "reproduction-route-claim-spec",
@@ -110,7 +74,7 @@
       "operatorVerdict": true,
       "oracleKind": null,
       "oracleAgrees": null,
-      "evidence": {}
+      "evidence": "{}"
     },
     {
       "id": "authority-unknown-adoption-refused",
@@ -119,10 +83,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true}"
     },
     {
       "id": "dependency-blocked-excluded-from-self-select",
@@ -131,10 +92,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true}"
     },
     {
       "id": "dependency-blocked-by-id-names-blockers",
@@ -143,10 +101,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true}"
     },
     {
       "id": "plan-lane-blocked-unavailable",
@@ -155,11 +110,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true,
-        "oracle.scope": "claim and terminal state only; the plan-item blocked status is read from the plan store by the operator and is not SQL-checked here"
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"oracle.scope\":\"claim and terminal state only; the plan-item blocked status is read from the plan store by the operator and is not SQL-checked here\"}"
     },
     {
       "id": "park-liveness-projected",
@@ -168,9 +119,7 @@
       "operatorVerdict": true,
       "oracleKind": null,
       "oracleAgrees": null,
-      "evidence": {
-        "parks": 476
-      }
+      "evidence": "{\"parks\":476}"
     },
     {
       "id": "park-reconcile-dryrun:unverified/blocked",
@@ -179,12 +128,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true,
-        "outcome": "cleared",
-        "disclosure": "D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition"
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"outcome\":\"cleared\",\"disclosure\":\"D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition\"}"
     },
     {
       "id": "park-reconcile-dryrun:tracked/reachable",
@@ -193,12 +137,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true,
-        "outcome": "cleared",
-        "disclosure": "D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition"
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"outcome\":\"cleared\",\"disclosure\":\"D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition\"}"
     },
     {
       "id": "park-reconcile-dryrun:unverified/none",
@@ -207,12 +146,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true,
-        "outcome": "cleared",
-        "disclosure": "D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition"
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"outcome\":\"cleared\",\"disclosure\":\"D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition\"}"
     },
     {
       "id": "park-reconcile-dryrun:unreachable/unreachable",
@@ -221,12 +155,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true,
-        "outcome": "cleared",
-        "disclosure": "D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition"
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"outcome\":\"cleared\",\"disclosure\":\"D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition\"}"
     },
     {
       "id": "park-certification-postdates-park",
@@ -235,18 +164,7 @@
       "operatorVerdict": true,
       "oracleKind": "sql",
       "oracleAgrees": true,
-      "evidence": {
-        "oracle.kind": "sql",
-        "oracle.agree": true,
-        "oracle.violations": 0,
-        "oracle.controlCaught": 9,
-        "parks": 476,
-        "liveSatisfied": 0,
-        "storedSatisfied": 66,
-        "storedPrePark": 66,
-        "ownStatusTriggers": 63,
-        "violations": 0
-      }
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"oracle.violations\":0,\"oracle.controlCaught\":9,\"parks\":476,\"liveSatisfied\":0,\"storedSatisfied\":66,\"storedPrePark\":66,\"ownStatusTriggers\":63,\"violations\":0}"
     },
     {
       "id": "reservation-facts-distinct",
@@ -255,7 +173,7 @@
       "operatorVerdict": true,
       "oracleKind": null,
       "oracleAgrees": null,
-      "evidence": {}
+      "evidence": "{}"
     }
   ],
   "calibration": {

@@ -32,6 +32,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
@@ -578,6 +579,79 @@ describe('runtime-content probes catch partial packages that directory checks ca
 });
 
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
+  it('repairs an orphan workspace bin that a real offline hoisted npm install leaves untouched', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
+    const vendor = join(root, 'vendor/tool');
+    mkdirSync(vendor, { recursive: true });
+    writeFileSync(join(vendor, 'package.json'), JSON.stringify({ name: 'fixture-tool', version: '1.0.0', bin: { 'fixture-tool': 'cli.js' } }));
+    writeFileSync(join(vendor, 'cli.js'), '#!/usr/bin/env node\nprocess.exit(0)\n');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fixture-root', private: true, workspaces: ['libs/tooling'], dependencies: { 'fixture-tool': 'file:vendor/tool' } }));
+    writeFileSync(join(root, 'libs/tooling/package.json'), JSON.stringify({ name: 'tooling', version: '1.0.0', devDependencies: { 'fixture-tool': 'file:../../vendor/tool' } }));
+    const install = () => execFileSync('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: root, stdio: 'pipe', timeout: 30_000 });
+    install();
+    const bin = join(root, 'libs/tooling/node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    const orphan = join(bin, 'fixture-tool');
+    symlinkSync('../fixture-tool/cli.js', orphan);
+    install();
+    expect(readFileSync(join(root, 'node_modules/fixture-tool/cli.js'), 'utf8')).toContain('process.exit(0)');
+    expect(() => readFileSync(orphan)).toThrow();
+    // A plain reify left the orphan behind; the wrapper's post-install check
+    // must detect it, perform one repair and retain the usable hoisted binary.
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: () => { repairs++; install(); return 0; }, deps: { sleep: async () => {} } });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(() => symlinkSync('../fixture-tool/cli.js', orphan)).not.toThrow();
+    expect(existsSync(join(root, 'node_modules/.bin/fixture-tool'))).toBe(true);
+  }, 45_000);
+
+  it('removes the damaged local package before repairing its missing executable content', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: { 'libs/tooling': ['tool'] } });
+    const nm = join(root, 'libs/tooling/node_modules');
+    writeFileSync(join(nm, 'tool/package.json'), JSON.stringify({ name: 'tool', version: '1.0.0', bin: { tool: 'cli.js' } }));
+    mkdirSync(join(nm, '.bin'));
+    symlinkSync('../tool/cli.js', join(nm, '.bin/tool'));
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: () => {
+      repairs++;
+      expect(existsSync(join(nm, 'tool'))).toBe(false);
+      mkdirSync(join(nm, 'tool'));
+      writeFileSync(join(nm, 'tool/package.json'), JSON.stringify({ name: 'tool', version: '1.0.0' }));
+      writeFileSync(join(nm, 'tool/cli.js'), 'ok');
+      symlinkSync('../tool/cli.js', join(nm, '.bin/tool'));
+      return 0;
+    }, deps: { sleep: async () => {} } });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(existsSync(join(nm, '.bin/tool'))).toBe(true);
+  });
+
+  it('refuses success when a repair recreates the dangling link', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
+    const bin = join(root, 'libs/tooling/node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    symlinkSync('../tool/cli.js', join(bin, 'tool'));
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: () => { repairs++; symlinkSync('../tool/cli.js', join(bin, 'tool')); return 0; }, deps: { sleep: async () => {} } });
+    expect(status).toBe(1);
+    expect(repairs).toBe(1);
+  });
+
+  it('keeps broken bins in unselected workspaces out of a workspace-scoped repair', async () => {
+    const root = fixture({ packages: { 'libs/tooling': {}, 'libs/other': {} }, extracted: {} });
+    const bin = join(root, 'libs/other/node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    symlinkSync('../tool/cli.js', join(bin, 'tool'));
+    const calls: string[][] = [];
+    const status = await verifyDepsExtracted({ repoRoot: root, npmArgs: ['install', '--workspace=libs/tooling'], probeSpecifiers: [], runNpm: (args: string[]) => { calls.push(args); return 0; }, deps: { sleep: async () => {} } });
+    expect(status).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
   it('refuses every pre-repair target outside the repo or workspace node_modules boundary', () => {
     expect(
       packageLocalRepairTargets({

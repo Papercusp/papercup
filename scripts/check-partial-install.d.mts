@@ -10,17 +10,36 @@
  */
 export function expandWorkspaceDirs(patterns: any, root: any): any[];
 /**
+ * Present .bin links are install outputs too. A hoisted package can resolve while
+ * an orphaned workspace shim still points at its removed local copy. npm's normal
+ * hoisted reify does not inventory orphan shims, so an up-to-date install can leave
+ * them untouched. Share this detector with install:safe's verified repair boundary.
+ *
+ * @param {string} root
+ * @param {{ workspaceDirs?: string[] }} [options]
+ * @returns {Array<{workspace: string, pkg: string, kind: 'dangling-bin-symlink', package?: string}>}
+ */
+export function findBrokenBinLinks(root: string, { workspaceDirs }?: {
+    workspaceDirs?: string[];
+}): Array<{
+    workspace: string;
+    pkg: string;
+    kind: "dangling-bin-symlink";
+    package?: string;
+}>;
+/**
  * THE DETECTOR. Walks the root node_modules and every workspace's package-local
  * node_modules, and returns each present-but-unusable package entry.
  *
- * @returns {{ findings: Array<{workspace: string, pkg: string, kind: 'hollow'|'dangling-symlink'}>,
+ * @returns {{ findings: Array<{workspace: string, pkg: string, kind: 'hollow'|'dangling-symlink'|'dangling-bin-symlink', package?: string}>,
  *             workspacesScanned: number, nodeModulesScanned: number, packagesScanned: number }}
  */
 export function findHollowPackages(root: any): {
     findings: Array<{
         workspace: string;
         pkg: string;
-        kind: "hollow" | "dangling-symlink";
+        kind: "hollow" | "dangling-symlink" | "dangling-bin-symlink";
+        package?: string;
     }>;
     workspacesScanned: number;
     nodeModulesScanned: number;
