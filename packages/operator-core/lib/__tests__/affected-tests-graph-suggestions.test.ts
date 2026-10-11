@@ -134,7 +134,7 @@ describe('graph-dependency-suggestions — pure module', () => {
     const positive = suggestFromSnapshot(input);
     expect(positive.dependencyPaths?.find(path => path.consumer === 'middle.test.ts')).toEqual({
       changed: 'target.ts', consumer: 'middle.test.ts', files: ['target.ts', 'middle.ts', 'middle.test.ts'],
-      hops: snapshot.edges,
+      hops: ['middle.ts', 'middle.test.ts'].map(importer => snapshot.edges.find(edge => edge.importer === importer)),
     });
     sources['middle.ts'] = 'export const middle = 1;';
     const stale = suggestFromSnapshot(input);

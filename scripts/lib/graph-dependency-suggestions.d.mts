@@ -97,6 +97,8 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
     rejected: never[];
     reason?: undefined;
     index?: undefined;
+    dependencyPaths?: undefined;
+    pathsTruncated?: undefined;
     truncated?: undefined;
 } | {
     status: string;
@@ -105,10 +107,19 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
     accepted: never[];
     rejected: never[];
     index: any;
+    dependencyPaths?: undefined;
+    pathsTruncated?: undefined;
     truncated?: undefined;
 } | {
     status: string;
     suggestedFiles: any[];
+    dependencyPaths: {
+        changed: any;
+        consumer: any;
+        files: any[];
+        hops: any[];
+    }[];
+    pathsTruncated: boolean;
     accepted: {
         importer: any;
         imported: any;
@@ -203,6 +214,8 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
     ageMs: null;
     rejectedReasons?: undefined;
     truncated?: undefined;
+    dependencyPaths?: undefined;
+    pathsTruncated?: undefined;
 } | {
     status: string;
     reason: string | null;
@@ -211,6 +224,13 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
     rejected: number;
     rejectedReasons: (string | undefined)[];
     truncated: boolean;
+    dependencyPaths: {
+        changed: any;
+        consumer: any;
+        files: any[];
+        hops: any[];
+    }[];
+    pathsTruncated: boolean;
     index: any;
     ageMs: number | null;
 };
@@ -269,5 +289,8 @@ export const GRAPH_SNAPSHOT_SCHEMA: "graph-dependency-snapshot-v1";
 export const DEFAULT_MAX_AGE_MS: number;
 /** Hard cap on files visited by one suggestion walk — a bound, never a verdict. */
 export const MAX_VISITED_FILES: 20000;
+/** Evidence stays bounded independently of the add-only selection walk. */
+export const MAX_DEPENDENCY_PATH_DEPTH: 64;
+export const MAX_DEPENDENCY_PATHS: 100;
 /** The gitnexus repo name this tree is indexed under (the reindex routine's `--name`). */
 export const GRAPH_SNAPSHOT_REPO: "papercusp";
