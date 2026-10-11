@@ -54,6 +54,12 @@ export interface LexicalLeg {
    * for `bm25TopK`, which evaluates it once per row; `score`/`match` re-evaluate it each.
    */
   distance?: SqlFragment;
+  /**
+   * BM25 only, and only when the server has `bm25_get_current_score()` (BM25_SCAN_SCORE_NOTE):
+   * the distance of the row the BM25 index scan just returned, read from the scan instead of
+   * re-scoring the document. Set by `bm25LegIfAvailable`; consumed by `runBm25TopK`.
+   */
+  scanScore?: SqlFragment;
 }
 
 /** The caller's existing ts_rank ranking, used verbatim when BM25 is unavailable. */
@@ -92,11 +98,16 @@ const AVAILABILITY_TTL_MS = 60_000;
 
 interface AvailabilityEntry {
   indexes: ReadonlySet<string>;
+  /** `bm25_get_current_score()` exists on this server (BM25_SCAN_SCORE_NOTE). */
+  scanScore: boolean;
   checkedAt: number;
 }
 
 const state = pinModuleState('@papercusp/operator-core.lexical-bm25-availability', () => ({
   bySql: new WeakMap<object, AvailabilityEntry>(),
+  /** `runBm25TopK` lists that failed the scan-score check and were re-run standalone. */
+  scanScoreFallbacks: 0,
+  scanScoreFallbackWarnedAt: 0,
 }));
 
 /**
@@ -122,14 +133,39 @@ export async function readBm25Indexes(sql: Sql): Promise<ReadonlySet<string>> {
   }
 }
 
-/** `readBm25Indexes`, remembered per connection pool for a minute. */
-export async function bm25IndexesFor(sql: Sql): Promise<ReadonlySet<string>> {
+/**
+ * Whether this server has pg_textsearch's `bm25_get_current_score()` (present in 1.5.1, not
+ * in the README's documented surface). Resolved through the search_path, like `to_bm25query`.
+ */
+export async function readBm25ScanScore(sql: Sql): Promise<boolean> {
+  try {
+    const [row] = await sql<{ ok: boolean }[]>`
+      SELECT to_regprocedure('bm25_get_current_score()') IS NOT NULL AS ok`;
+    return row?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+async function availabilityFor(sql: Sql): Promise<AvailabilityEntry> {
   const now = Date.now();
   const hit = state.bySql.get(sql);
-  if (hit && now - hit.checkedAt < AVAILABILITY_TTL_MS) return hit.indexes;
+  if (hit && now - hit.checkedAt < AVAILABILITY_TTL_MS) return hit;
   const indexes = await readBm25Indexes(sql);
-  state.bySql.set(sql, { indexes, checkedAt: now });
-  return indexes;
+  const scanScore = indexes.size > 0 && (await readBm25ScanScore(sql));
+  const entry = { indexes, scanScore, checkedAt: now };
+  state.bySql.set(sql, entry);
+  return entry;
+}
+
+/** `readBm25Indexes`, remembered per connection pool for a minute. */
+export async function bm25IndexesFor(sql: Sql): Promise<ReadonlySet<string>> {
+  return (await availabilityFor(sql)).indexes;
+}
+
+/** `readBm25ScanScore`, remembered with the index availability. */
+export async function bm25ScanScoreFor(sql: Sql): Promise<boolean> {
+  return (await availabilityFor(sql)).scanScore;
 }
 
 /** Forget remembered availability (after creating or dropping an index, and in tests). */
@@ -172,6 +208,12 @@ export interface Bm25TopKRequest {
   /** Non-BM25 filters (scope, workspace). Do NOT pass the leg's `match`. */
   where: SqlFragment;
   limit: number;
+  /**
+   * The leg's `scanScore`. When set, `bm25_d` is read from the index scan instead of being
+   * computed by the select list (BM25_SCAN_SCORE_NOTE). Only `runBm25TopK` may pass it: the
+   * value is wrong unless the BM25 index scan drives the rows, and that function checks.
+   */
+  scanScore?: SqlFragment | null;
 }
 
 /**
@@ -190,8 +232,21 @@ export interface Bm25TopKRequest {
  * equals filter-then-limit. Measured on the R-18 tail query (work_items, plan
  * bm25-lexical-search-evoke-adoption-2026-10-10 D-019): 234/282 ms vs 142/149 ms.
  * Pinned by bm25-top-k.integration.test.ts.
+ *
+ * With `req.scanScore` the select list does not score at all: see BM25_SCAN_SCORE_NOTE.
  */
 export function bm25TopK(sql: Sql, req: Bm25TopKRequest): SqlFragment {
+  if (req.scanScore) {
+    return sql`
+    SELECT * FROM (
+      SELECT ${req.columns}, ${req.scanScore} AS bm25_d
+        FROM ${req.from}
+       WHERE ${req.where}
+    ORDER BY ${req.distance}
+       LIMIT ${req.limit}
+    ) bm25_top
+    WHERE bm25_top.bm25_d < 0`;
+  }
   return sql`
     SELECT * FROM (
       SELECT ${req.columns}, ${req.distance} AS bm25_d
@@ -201,6 +256,90 @@ export function bm25TopK(sql: Sql, req: Bm25TopKRequest): SqlFragment {
        LIMIT ${req.limit}
     ) bm25_top
     WHERE bm25_top.bm25_d < 0`;
+}
+
+/**
+ * ─── BM25_SCAN_SCORE_NOTE (R-18, D-023) ──────────────────────────────────────
+ * `<@>` in a select list is pg_textsearch's STANDALONE scoring: it re-tokenizes the whole
+ * document for every output row, even though the BM25 index scan ordering those rows has
+ * already scored them. Measured on the R-18 work_item tail query #35 (30 rows, documents up
+ * to 59k chars): 78-96 ms with the select-list distance, 12-18 ms without it.
+ *
+ * pg_textsearch 1.5.1 also ships `bm25_get_current_score()`: the score of the row its index
+ * scan returned last, as a distance (negative, same sign as `<@>`). Projected on the scan it
+ * equals the standalone distance to float4 precision (measured max |diff| 1.4e-5). It is
+ * not in the README, and it is NOT tied to the current row: with no BM25 index scan driving
+ * the rows (a seq scan + sort plan, which the planner may choose for a small table or a
+ * selective filter) it returns whatever the backend's last BM25 scan left behind (measured:
+ * every row got the previous query's last score; a fresh backend returns 0). A stale 0 would
+ * empty the list through `bm25_d < 0`; a stale negative would keep non-matches.
+ *
+ * So `runBm25TopK` reads the scan score and checks it. A stale value is the same constant on
+ * every row, so a list of two or more rows with differing scores came from a live scan; a
+ * list of zero or one rows, or with one score repeated, is checked against the standalone
+ * distance of the best row (one `LIMIT 1` query that scores one document). On disagreement
+ * the list is re-run with the select-list distance, counted (`bm25ScanScoreFallbacks`) and
+ * logged. Pinned by bm25-top-k.integration.test.ts (fast path equals standalone under a
+ * forced index scan; a forced seq scan is caught and re-run).
+ */
+
+/** Relative tolerance between the scan score (float4) and the standalone distance (float8). */
+const SCAN_SCORE_TOLERANCE = 1e-4;
+const SCAN_SCORE_WARN_INTERVAL_MS = 60_000;
+
+/** How many `runBm25TopK` lists failed the scan-score check since boot (or the last reset). */
+export function bm25ScanScoreFallbacks(): number {
+  return state.scanScoreFallbacks;
+}
+
+/** Test seam: zero the fallback counter. */
+export function resetBm25ScanScoreFallbacks(): void {
+  state.scanScoreFallbacks = 0;
+  state.scanScoreFallbackWarnedAt = 0;
+}
+
+/**
+ * Run a call site's statement around `bm25TopK`, reading the score from the BM25 index scan
+ * when `req.scanScore` is set and falling back to the select-list distance when the scan
+ * score cannot be trusted (BM25_SCAN_SCORE_NOTE).
+ *
+ * `sql` builds the fragments; `exec` runs the one check query and must be the handle `run`
+ * executes on (the caller's transaction, so its SET LOCALs apply). `run` executes the call
+ * site's statement with the given top-k subquery body; `distanceOf` reads a returned row's
+ * `bm25_d` (a caller that exposes `rank = -bm25_d` passes `(r) => -r.rank`).
+ */
+export async function runBm25TopK<R>(
+  sql: Sql,
+  exec: Sql,
+  req: Bm25TopKRequest,
+  run: (topK: SqlFragment) => Promise<R[]>,
+  distanceOf: (row: R) => number,
+): Promise<R[]> {
+  const rows = await run(bm25TopK(sql, req));
+  if (!req.scanScore) return rows;
+  const distances = rows.map(distanceOf);
+  if (distances.length >= 2 && distances.some((d) => d !== distances[0])) return rows;
+  const [best] = (await exec`${bm25TopK(sql, { ...req, scanScore: null, columns: sql`1 AS one`, limit: 1 })}`) as unknown as Array<{
+    bm25_d: number;
+  }>;
+  const want = best ? Number(best.bm25_d) : null;
+  const got = distances.length ? Math.min(...distances) : null;
+  const agree =
+    want === null
+      ? got === null
+      : got !== null && Math.abs(got - want) <= SCAN_SCORE_TOLERANCE * Math.max(1, Math.abs(want));
+  if (agree) return rows;
+  state.scanScoreFallbacks += 1;
+  const now = Date.now();
+  if (now - state.scanScoreFallbackWarnedAt >= SCAN_SCORE_WARN_INTERVAL_MS) {
+    state.scanScoreFallbackWarnedAt = now;
+    console.warn(
+      `[lexical/rank] bm25_get_current_score() disagreed with the standalone distance ` +
+        `(scan ${got}, standalone ${want}, ${rows.length} rows): no BM25 index scan drove the list; ` +
+        `re-ran with the select-list distance (${state.scanScoreFallbacks} since boot). BM25_SCAN_SCORE_NOTE.`,
+    );
+  }
+  return run(bm25TopK(sql, { ...req, scanScore: null }));
 }
 
 /**
@@ -214,7 +353,9 @@ export async function bm25LegIfAvailable(
   query: string,
   alias?: string,
 ): Promise<LexicalLeg | null> {
-  return (await lexicalEngine(sql, table)) === 'bm25' ? bm25Leg(sql, bm25Corpus(table), query, alias) : null;
+  if ((await lexicalEngine(sql, table)) !== 'bm25') return null;
+  const leg = bm25Leg(sql, bm25Corpus(table), query, alias);
+  return (await bm25ScanScoreFor(sql)) ? { ...leg, scanScore: sql`bm25_get_current_score()` } : leg;
 }
 
 /**
