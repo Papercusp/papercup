@@ -485,6 +485,19 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
     expect(refs).not.toContain(CANDIDATE);
   });
 
+  it("routes a target without platform selective tooling to its configured full suite", async () => {
+    const queue = queueWith([entry({ kind: "test-file", id: "tests/host-smoke.test.ts" })]);
+    let selectiveCalls = 0;
+    const verdict = await verifyRepairHead({
+      selectiveRepairSupported: false,
+      runTestsAtRef: async () => { selectiveCalls++; throw new Error("foreign target has no platform runner"); },
+    }, queue);
+    expect(verdict.kind).toBe("full-run-required");
+    expect(verdict.summary).toContain(queue.repairHead.slice(0, 8));
+    expect(selectiveCalls).toBe(0);
+    expect((await verifyRepairHead({}, queue)).kind).toBe("unavailable");
+  });
+
   it("a post-suite-leg entry is full-run-required — named in the summary, with no runner spent", async () => {
     const queue = queueWith([
       entry({ kind: "test-file", id: "lib/a.test.ts", workspace: CORE }),

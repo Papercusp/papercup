@@ -11364,7 +11364,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/scratch-gc.ts": {
-      "bytes": 66813,
+      "bytes": 69886,
       "imports": [
         {
           "path": "node:fs",
@@ -28986,7 +28986,7 @@
       "format": "esm"
     },
     "packages/backup/src/types.ts": {
-      "bytes": 6921,
+      "bytes": 6962,
       "imports": [],
       "format": "esm"
     },
@@ -29120,7 +29120,7 @@
       "format": "esm"
     },
     "packages/backup/src/workspace-backup.ts": {
-      "bytes": 74330,
+      "bytes": 74625,
       "imports": [
         {
           "path": "node:child_process",
@@ -40735,6 +40735,32 @@
       ],
       "format": "esm"
     },
+    "packages/operator-core/lib/agent-tools/plans/packaged-artifact-evidence.ts": {
+      "bytes": 4159,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node_modules/zod/index.js",
+          "kind": "import-statement",
+          "original": "zod"
+        }
+      ],
+      "format": "esm"
+    },
     "node_modules/balanced-match/dist/esm/index.js": {
       "bytes": 1608,
       "imports": [],
@@ -40942,7 +40968,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts": {
-      "bytes": 168401,
+      "bytes": 170408,
       "imports": [
         {
           "path": "node:crypto",
@@ -41033,6 +41059,11 @@
           "path": "packages/operator-core/lib/agent-tools/plans/source.ts",
           "kind": "import-statement",
           "original": "./source"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/packaged-artifact-evidence.ts",
+          "kind": "import-statement",
+          "original": "./packaged-artifact-evidence"
         },
         {
           "path": "packages/operator-core/lib/agent-tools/locks/su-lock-store.ts",
@@ -49988,7 +50019,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/events/await/turn-proof.ts": {
-      "bytes": 9073,
+      "bytes": 15422,
       "imports": [
         {
           "path": "packages/operator-core/lib/events/await/types.ts",
@@ -59466,7 +59497,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/release/checkpoint-qualification-transaction.ts": {
-      "bytes": 101567,
+      "bytes": 102525,
       "imports": [
         {
           "path": "node:child_process",
@@ -59891,7 +59922,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/cupboard/shadow-metering.ts": {
-      "bytes": 17099,
+      "bytes": 17802,
       "imports": [],
       "format": "esm"
     },
@@ -60104,7 +60135,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/cupboard/shadow-metering-reader.ts": {
-      "bytes": 24497,
+      "bytes": 23859,
       "imports": [
         {
           "path": "packages/operator-core/lib/work-item-completion-authority.ts",
@@ -60120,6 +60151,11 @@
           "path": "libs/generic/model-pricing/src/index.ts",
           "kind": "import-statement",
           "original": "@papercusp/model-pricing"
+        },
+        {
+          "path": "packages/operator-core/lib/cupboard/shadow-metering.ts",
+          "kind": "import-statement",
+          "original": "./shadow-metering"
         },
         {
           "path": "packages/operator-core/lib/cupboard/shadow-metering.ts",
@@ -60465,7 +60501,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/cell-registrations.ts": {
-      "bytes": 184229,
+      "bytes": 184334,
       "imports": [
         {
           "path": "packages/operator-core/lib/cell-registry.ts",
@@ -61651,7 +61687,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/code-intelligence/lsp-adapter.ts": {
-      "bytes": 134323,
+      "bytes": 139074,
       "imports": [
         {
           "path": "node:crypto",
@@ -67328,7 +67364,7 @@
       "format": "esm"
     },
     "apps/operator/scripts/psu-launcher.mjs": {
-      "bytes": 815168,
+      "bytes": 816143,
       "imports": [
         {
           "path": "node:child_process",
@@ -70093,7 +70129,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/capability-envelope/identity-grants-port.ts": {
-      "bytes": 46967,
+      "bytes": 47923,
       "imports": [
         {
           "path": "node:crypto",
@@ -90166,7 +90202,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/plans/evaluate-spec-test-adequacy.ts": {
-      "bytes": 39788,
+      "bytes": 40012,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -96194,7 +96230,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-triggers/slack.ts": {
-      "bytes": 25368,
+      "bytes": 25658,
       "imports": [
         {
           "path": "packages/operator-core/lib/oauth/storage-fs.ts",
@@ -109133,7 +109169,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/events/await/host-recovery-eligibility.ts": {
-      "bytes": 10575,
+      "bytes": 11083,
       "imports": [
         {
           "path": "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
@@ -109263,7 +109299,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts": {
-      "bytes": 37385,
+      "bytes": 43403,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
@@ -109296,6 +109332,11 @@
           "original": "../../fleet-park-resume-path"
         },
         {
+          "path": "packages/operator-core/lib/agent-tools/coordination/inbox-wake.ts",
+          "kind": "dynamic-import",
+          "original": "../../agent-tools/coordination/inbox-wake"
+        },
+        {
           "path": "libs/flags/src/server.ts",
           "kind": "dynamic-import",
           "original": "@papercusp/flags/server"
@@ -109316,6 +109357,16 @@
           "original": "../../agent-fleets-store"
         },
         {
+          "path": "packages/operator-core/lib/harness/routines/stalled-loops-guard.ts",
+          "kind": "dynamic-import",
+          "original": "./stalled-loops-guard"
+        },
+        {
+          "path": "packages/operator-core/lib/events/await/host-recovery-eligibility.ts",
+          "kind": "dynamic-import",
+          "original": "../../events/await/host-recovery-eligibility"
+        },
+        {
           "path": "packages/operator-core/lib/agent-tools/coordination/messages.ts",
           "kind": "dynamic-import",
           "original": "../../agent-tools/coordination/messages"
@@ -109329,6 +109380,26 @@
           "path": "packages/operator-core/lib/attention-notify.ts",
           "kind": "dynamic-import",
           "original": "../../attention-notify"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/audience.ts",
+          "kind": "dynamic-import",
+          "original": "../../agent-tools/coordination/audience"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/audience-host.ts",
+          "kind": "dynamic-import",
+          "original": "../../agent-tools/coordination/audience-host"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/messages.ts",
+          "kind": "dynamic-import",
+          "original": "../../agent-tools/coordination/messages"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/inbox-wake.ts",
+          "kind": "dynamic-import",
+          "original": "../../agent-tools/coordination/inbox-wake"
         }
       ],
       "format": "esm"
@@ -133482,7 +133553,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/task-sets.ts": {
-      "bytes": 43569,
+      "bytes": 44953,
       "imports": [
         {
           "path": "node:fs",
@@ -133517,13 +133588,473 @@
       ],
       "format": "esm"
     },
+    "packages/operator-core/lib/external-bench/reproducibility/prereg.ts": {
+      "bytes": 10656,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/docs/_repo-paths.ts",
+          "kind": "import-statement",
+          "original": "../../agent-tools/docs/_repo-paths"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/canonical-json.ts",
+          "kind": "import-statement",
+          "original": "./canonical-json"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
+          "kind": "import-statement",
+          "original": "./db"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/external-bench/gate.ts": {
+      "bytes": 1535,
+      "imports": [
+        {
+          "path": "libs/flags/src/index.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/flags"
+        },
+        {
+          "path": "libs/flags/src/server.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/flags/server"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/external-bench/run-loop.ts": {
+      "bytes": 7254,
+      "imports": [],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/external-bench/bench-harness-live.ts": {
+      "bytes": 44638,
+      "imports": [
+        {
+          "path": "packages/operator-core/lib/external-bench/types.ts",
+          "kind": "import-statement",
+          "original": "./types"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/run-loop.ts",
+          "kind": "import-statement",
+          "original": "./run-loop"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/index.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/db-org"
+        },
+        {
+          "path": "packages/operator-core/lib/harness-registry.ts",
+          "kind": "dynamic-import",
+          "original": "../harness-registry"
+        },
+        {
+          "path": "packages/operator-core/lib/scaffold-harness-schema.ts",
+          "kind": "dynamic-import",
+          "original": "../scaffold-harness-schema"
+        },
+        {
+          "path": "node:fs",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "node_modules/yaml/dist/index.js",
+          "kind": "dynamic-import",
+          "original": "yaml"
+        },
+        {
+          "path": "packages/operator-core/lib/dbos/orchestrator-runner.ts",
+          "kind": "dynamic-import",
+          "original": "../dbos/orchestrator-runner"
+        },
+        {
+          "path": "packages/operator-core/lib/dbos/orchestrator-spawn-env.ts",
+          "kind": "dynamic-import",
+          "original": "../dbos/orchestrator-spawn-env"
+        },
+        {
+          "path": "libs/papercusp/packages/orchestrator/src/blueprint/index.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/orchestrator/blueprint"
+        },
+        {
+          "path": "libs/papercusp/packages/orchestrator/src/index.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/orchestrator"
+        },
+        {
+          "path": "libs/papercusp/packages/orchestrator/src/blueprint/index.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/orchestrator/blueprint"
+        },
+        {
+          "path": "node:path",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/pot/provision-learning-loop.ts",
+          "kind": "dynamic-import",
+          "original": "../pot/provision-learning-loop"
+        },
+        {
+          "path": "packages/operator-core/lib/harness-membership.ts",
+          "kind": "dynamic-import",
+          "original": "../harness-membership"
+        },
+        {
+          "path": "packages/operator-core/lib/scaffold-harness-schema.ts",
+          "kind": "dynamic-import",
+          "original": "../scaffold-harness-schema"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/external-bench/reproducibility/context.ts": {
+      "bytes": 7309,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node_modules/zod/index.js",
+          "kind": "import-statement",
+          "original": "zod"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/canonical-json.ts",
+          "kind": "import-statement",
+          "original": "./canonical-json"
+        }
+      ],
+      "format": "esm"
+    },
+    "packages/operator-core/lib/external-bench/current-su.ts": {
+      "bytes": 99929,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "libs/papercusp/packages/orchestrator/src/codex-gateway-config.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/orchestrator/codex-gateway-config"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/bench-workspace.ts",
+          "kind": "import-statement",
+          "original": "./bench-workspace"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/bench-harness-live.ts",
+          "kind": "import-statement",
+          "original": "./bench-harness-live"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/run-loop.ts",
+          "kind": "import-statement",
+          "original": "./run-loop"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/schema.ts",
+          "kind": "import-statement",
+          "original": "./reproducibility/schema"
+        },
+        {
+          "path": "packages/operator-core/lib/work-item-dispatch-states.ts",
+          "kind": "import-statement",
+          "original": "../work-item-dispatch-states"
+        },
+        {
+          "path": "packages/operator-core/lib/runtime-vintage.ts",
+          "kind": "import-statement",
+          "original": "../runtime-vintage"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/schema.ts",
+          "kind": "import-statement",
+          "original": "./reproducibility/schema"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/canonical-json.ts",
+          "kind": "import-statement",
+          "original": "./reproducibility/canonical-json"
+        },
+        {
+          "path": "packages/operator-core/lib/gym/proposer.ts",
+          "kind": "import-statement",
+          "original": "../gym/proposer"
+        },
+        {
+          "path": "packages/operator-core/lib/process-monotonic-clock.ts",
+          "kind": "import-statement",
+          "original": "../process-monotonic-clock"
+        },
+        {
+          "path": "libs/generic/bench-metrics/src/index.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/bench-metrics"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/schema.ts",
+          "kind": "import-statement",
+          "original": "./reproducibility/schema"
+        },
+        {
+          "path": "packages/operator-core/lib/inference-gateway/request-stage-telemetry.ts",
+          "kind": "import-statement",
+          "original": "../inference-gateway/request-stage-telemetry"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/hive-backlog-utilities.ts",
+          "kind": "import-statement",
+          "original": "./hive-backlog-utilities"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/context.ts",
+          "kind": "import-statement",
+          "original": "./reproducibility/context"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/docs/_repo-paths.ts",
+          "kind": "import-statement",
+          "original": "../agent-tools/docs/_repo-paths"
+        },
+        {
+          "path": "packages/operator-core/lib/inference-gateway/cache-policy.ts",
+          "kind": "import-statement",
+          "original": "../inference-gateway/cache-policy"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/db"
+        },
+        {
+          "path": "libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/orchestrator/session-launch-dirs"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/db"
+        },
+        {
+          "path": "packages/operator-core/lib/session-transcript-resolvers.ts",
+          "kind": "dynamic-import",
+          "original": "../session-transcript-resolvers"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/db"
+        },
+        {
+          "path": "packages/operator-core/lib/cupboard/shadow-metering-reader.ts",
+          "kind": "dynamic-import",
+          "original": "../cupboard/shadow-metering-reader"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/db"
+        },
+        {
+          "path": "packages/operator-core/lib/learning-governor/store.ts",
+          "kind": "dynamic-import",
+          "original": "../learning-governor/store"
+        },
+        {
+          "path": "packages/operator-core/lib/deployment/account-pool-store.ts",
+          "kind": "dynamic-import",
+          "original": "../deployment/account-pool-store"
+        },
+        {
+          "path": "packages/operator-core/lib/deployment/account-pool.ts",
+          "kind": "dynamic-import",
+          "original": "../deployment/account-pool"
+        },
+        {
+          "path": "packages/operator-core/lib/inference-gateway/credential-store.ts",
+          "kind": "dynamic-import",
+          "original": "../inference-gateway/credential-store"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/db"
+        },
+        {
+          "path": "libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts",
+          "kind": "dynamic-import",
+          "original": "@papercusp/orchestrator/session-launch-dirs"
+        },
+        {
+          "path": "packages/operator-core/lib/runtime-vintage.ts",
+          "kind": "dynamic-import",
+          "original": "../runtime-vintage"
+        },
+        {
+          "path": "node:fs",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "packages/operator-core/lib/session-transcript-resolvers.ts",
+          "kind": "dynamic-import",
+          "original": "../session-transcript-resolvers"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/db"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/prereg.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/prereg"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/capability/launch-agent.ts",
+          "kind": "dynamic-import",
+          "original": "../agent-tools/capability/launch-agent"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/store.ts",
+          "kind": "dynamic-import",
+          "original": "../task-manager/store"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/store.ts",
+          "kind": "dynamic-import",
+          "original": "../task-manager/store"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/control.ts",
+          "kind": "dynamic-import",
+          "original": "../task-manager/control"
+        }
+      ],
+      "format": "esm"
+    },
     "packages/operator-core/lib/external-bench/estimate.ts": {
-      "bytes": 1368,
+      "bytes": 6469,
       "imports": [
         {
           "path": "packages/operator-core/lib/external-bench/task-sets.ts",
           "kind": "import-statement",
           "original": "./task-sets"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/schema.ts",
+          "kind": "import-statement",
+          "original": "./reproducibility/schema"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/bench-workspace.ts",
+          "kind": "dynamic-import",
+          "original": "./bench-workspace"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/store.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/store"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/reproducibility/prereg.ts",
+          "kind": "dynamic-import",
+          "original": "./reproducibility/prereg"
+        },
+        {
+          "path": "packages/operator-core/lib/deployment/account-pool-store.ts",
+          "kind": "dynamic-import",
+          "original": "../deployment/account-pool-store"
+        },
+        {
+          "path": "packages/operator-core/lib/inference-gateway/credential-store.ts",
+          "kind": "dynamic-import",
+          "original": "../inference-gateway/credential-store"
+        },
+        {
+          "path": "packages/operator-core/lib/runtime-vintage.ts",
+          "kind": "dynamic-import",
+          "original": "../runtime-vintage"
+        },
+        {
+          "path": "packages/operator-core/lib/runtime-vintage.ts",
+          "kind": "dynamic-import",
+          "original": "../runtime-vintage"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/gate.ts",
+          "kind": "dynamic-import",
+          "original": "./gate"
+        },
+        {
+          "path": "packages/operator-core/lib/workspace-registry.ts",
+          "kind": "dynamic-import",
+          "original": "../workspace-registry"
+        },
+        {
+          "path": "packages/operator-core/lib/external-bench/current-su.ts",
+          "kind": "dynamic-import",
+          "original": "./current-su"
         }
       ],
       "format": "esm"
@@ -133550,7 +134081,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/sync-resolver/index.ts": {
-      "bytes": 443480,
+      "bytes": 444000,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -174189,7 +174720,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/hive-backlog-live.ts": {
-      "bytes": 48804,
+      "bytes": 49109,
       "imports": [
         {
           "path": "packages/operator-core/lib/external-bench/hive-backlog.ts",
@@ -174306,7 +174837,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts": {
-      "bytes": 57096,
+      "bytes": 57297,
       "imports": [
         {
           "path": "packages/operator-core/lib/external-bench/hive-backlog.ts",
@@ -174438,7 +174969,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/external-bench/su-independent-backlog.ts": {
-      "bytes": 43941,
+      "bytes": 44300,
       "imports": [
         {
           "path": "packages/operator-core/lib/external-bench/hive-backlog.ts",
@@ -174528,73 +175059,6 @@
       ],
       "format": "esm"
     },
-    "packages/operator-core/lib/external-bench/gate.ts": {
-      "bytes": 1535,
-      "imports": [
-        {
-          "path": "libs/flags/src/index.ts",
-          "kind": "import-statement",
-          "original": "@papercusp/flags"
-        },
-        {
-          "path": "libs/flags/src/server.ts",
-          "kind": "import-statement",
-          "original": "@papercusp/flags/server"
-        }
-      ],
-      "format": "esm"
-    },
-    "packages/operator-core/lib/external-bench/reproducibility/prereg.ts": {
-      "bytes": 10656,
-      "imports": [
-        {
-          "path": "node:crypto",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:child_process",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:util",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "packages/operator-core/lib/agent-tools/docs/_repo-paths.ts",
-          "kind": "import-statement",
-          "original": "../../agent-tools/docs/_repo-paths"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/canonical-json.ts",
-          "kind": "import-statement",
-          "original": "./canonical-json"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
-          "kind": "import-statement",
-          "original": "./db"
-        }
-      ],
-      "format": "esm"
-    },
-    "packages/operator-core/lib/external-bench/run-loop.ts": {
-      "bytes": 7254,
-      "imports": [],
-      "format": "esm"
-    },
     "packages/operator-core/lib/external-bench/arm-generation.ts": {
       "bytes": 4207,
       "imports": [
@@ -174602,344 +175066,6 @@
           "path": "packages/operator-core/lib/external-bench/run-loop.ts",
           "kind": "import-statement",
           "original": "./run-loop"
-        }
-      ],
-      "format": "esm"
-    },
-    "packages/operator-core/lib/external-bench/bench-harness-live.ts": {
-      "bytes": 44638,
-      "imports": [
-        {
-          "path": "packages/operator-core/lib/external-bench/types.ts",
-          "kind": "import-statement",
-          "original": "./types"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/run-loop.ts",
-          "kind": "import-statement",
-          "original": "./run-loop"
-        },
-        {
-          "path": "libs/papercusp/libs/db/src/index.ts",
-          "kind": "dynamic-import",
-          "original": "@papercusp/db-org"
-        },
-        {
-          "path": "packages/operator-core/lib/harness-registry.ts",
-          "kind": "dynamic-import",
-          "original": "../harness-registry"
-        },
-        {
-          "path": "packages/operator-core/lib/scaffold-harness-schema.ts",
-          "kind": "dynamic-import",
-          "original": "../scaffold-harness-schema"
-        },
-        {
-          "path": "node:fs",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "node_modules/yaml/dist/index.js",
-          "kind": "dynamic-import",
-          "original": "yaml"
-        },
-        {
-          "path": "packages/operator-core/lib/dbos/orchestrator-runner.ts",
-          "kind": "dynamic-import",
-          "original": "../dbos/orchestrator-runner"
-        },
-        {
-          "path": "packages/operator-core/lib/dbos/orchestrator-spawn-env.ts",
-          "kind": "dynamic-import",
-          "original": "../dbos/orchestrator-spawn-env"
-        },
-        {
-          "path": "libs/papercusp/packages/orchestrator/src/blueprint/index.ts",
-          "kind": "dynamic-import",
-          "original": "@papercusp/orchestrator/blueprint"
-        },
-        {
-          "path": "libs/papercusp/packages/orchestrator/src/index.ts",
-          "kind": "dynamic-import",
-          "original": "@papercusp/orchestrator"
-        },
-        {
-          "path": "libs/papercusp/packages/orchestrator/src/blueprint/index.ts",
-          "kind": "dynamic-import",
-          "original": "@papercusp/orchestrator/blueprint"
-        },
-        {
-          "path": "node:path",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "packages/operator-core/lib/pot/provision-learning-loop.ts",
-          "kind": "dynamic-import",
-          "original": "../pot/provision-learning-loop"
-        },
-        {
-          "path": "packages/operator-core/lib/harness-membership.ts",
-          "kind": "dynamic-import",
-          "original": "../harness-membership"
-        },
-        {
-          "path": "packages/operator-core/lib/scaffold-harness-schema.ts",
-          "kind": "dynamic-import",
-          "original": "../scaffold-harness-schema"
-        }
-      ],
-      "format": "esm"
-    },
-    "packages/operator-core/lib/external-bench/reproducibility/context.ts": {
-      "bytes": 7309,
-      "imports": [
-        {
-          "path": "node:crypto",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node_modules/zod/index.js",
-          "kind": "import-statement",
-          "original": "zod"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/canonical-json.ts",
-          "kind": "import-statement",
-          "original": "./canonical-json"
-        }
-      ],
-      "format": "esm"
-    },
-    "packages/operator-core/lib/external-bench/current-su.ts": {
-      "bytes": 99929,
-      "imports": [
-        {
-          "path": "node:crypto",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "libs/papercusp/packages/orchestrator/src/codex-gateway-config.ts",
-          "kind": "import-statement",
-          "original": "@papercusp/orchestrator/codex-gateway-config"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/bench-workspace.ts",
-          "kind": "import-statement",
-          "original": "./bench-workspace"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/bench-harness-live.ts",
-          "kind": "import-statement",
-          "original": "./bench-harness-live"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/run-loop.ts",
-          "kind": "import-statement",
-          "original": "./run-loop"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/schema.ts",
-          "kind": "import-statement",
-          "original": "./reproducibility/schema"
-        },
-        {
-          "path": "packages/operator-core/lib/work-item-dispatch-states.ts",
-          "kind": "import-statement",
-          "original": "../work-item-dispatch-states"
-        },
-        {
-          "path": "packages/operator-core/lib/runtime-vintage.ts",
-          "kind": "import-statement",
-          "original": "../runtime-vintage"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/schema.ts",
-          "kind": "import-statement",
-          "original": "./reproducibility/schema"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/canonical-json.ts",
-          "kind": "import-statement",
-          "original": "./reproducibility/canonical-json"
-        },
-        {
-          "path": "packages/operator-core/lib/gym/proposer.ts",
-          "kind": "import-statement",
-          "original": "../gym/proposer"
-        },
-        {
-          "path": "packages/operator-core/lib/process-monotonic-clock.ts",
-          "kind": "import-statement",
-          "original": "../process-monotonic-clock"
-        },
-        {
-          "path": "libs/generic/bench-metrics/src/index.ts",
-          "kind": "import-statement",
-          "original": "@papercusp/bench-metrics"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/schema.ts",
-          "kind": "import-statement",
-          "original": "./reproducibility/schema"
-        },
-        {
-          "path": "packages/operator-core/lib/inference-gateway/request-stage-telemetry.ts",
-          "kind": "import-statement",
-          "original": "../inference-gateway/request-stage-telemetry"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/hive-backlog-utilities.ts",
-          "kind": "import-statement",
-          "original": "./hive-backlog-utilities"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/context.ts",
-          "kind": "import-statement",
-          "original": "./reproducibility/context"
-        },
-        {
-          "path": "packages/operator-core/lib/agent-tools/docs/_repo-paths.ts",
-          "kind": "import-statement",
-          "original": "../agent-tools/docs/_repo-paths"
-        },
-        {
-          "path": "packages/operator-core/lib/inference-gateway/cache-policy.ts",
-          "kind": "import-statement",
-          "original": "../inference-gateway/cache-policy"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
-          "kind": "dynamic-import",
-          "original": "./reproducibility/db"
-        },
-        {
-          "path": "libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts",
-          "kind": "dynamic-import",
-          "original": "@papercusp/orchestrator/session-launch-dirs"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
-          "kind": "dynamic-import",
-          "original": "./reproducibility/db"
-        },
-        {
-          "path": "packages/operator-core/lib/session-transcript-resolvers.ts",
-          "kind": "dynamic-import",
-          "original": "../session-transcript-resolvers"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
-          "kind": "dynamic-import",
-          "original": "./reproducibility/db"
-        },
-        {
-          "path": "packages/operator-core/lib/cupboard/shadow-metering-reader.ts",
-          "kind": "dynamic-import",
-          "original": "../cupboard/shadow-metering-reader"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
-          "kind": "dynamic-import",
-          "original": "./reproducibility/db"
-        },
-        {
-          "path": "packages/operator-core/lib/learning-governor/store.ts",
-          "kind": "dynamic-import",
-          "original": "../learning-governor/store"
-        },
-        {
-          "path": "packages/operator-core/lib/deployment/account-pool-store.ts",
-          "kind": "dynamic-import",
-          "original": "../deployment/account-pool-store"
-        },
-        {
-          "path": "packages/operator-core/lib/deployment/account-pool.ts",
-          "kind": "dynamic-import",
-          "original": "../deployment/account-pool"
-        },
-        {
-          "path": "packages/operator-core/lib/inference-gateway/credential-store.ts",
-          "kind": "dynamic-import",
-          "original": "../inference-gateway/credential-store"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
-          "kind": "dynamic-import",
-          "original": "./reproducibility/db"
-        },
-        {
-          "path": "libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts",
-          "kind": "dynamic-import",
-          "original": "@papercusp/orchestrator/session-launch-dirs"
-        },
-        {
-          "path": "packages/operator-core/lib/runtime-vintage.ts",
-          "kind": "dynamic-import",
-          "original": "../runtime-vintage"
-        },
-        {
-          "path": "node:fs",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "packages/operator-core/lib/session-transcript-resolvers.ts",
-          "kind": "dynamic-import",
-          "original": "../session-transcript-resolvers"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/db.ts",
-          "kind": "dynamic-import",
-          "original": "./reproducibility/db"
-        },
-        {
-          "path": "packages/operator-core/lib/external-bench/reproducibility/prereg.ts",
-          "kind": "dynamic-import",
-          "original": "./reproducibility/prereg"
-        },
-        {
-          "path": "packages/operator-core/lib/agent-tools/capability/launch-agent.ts",
-          "kind": "dynamic-import",
-          "original": "../agent-tools/capability/launch-agent"
-        },
-        {
-          "path": "packages/operator-core/lib/task-manager/store.ts",
-          "kind": "dynamic-import",
-          "original": "../task-manager/store"
-        },
-        {
-          "path": "packages/operator-core/lib/task-manager/store.ts",
-          "kind": "dynamic-import",
-          "original": "../task-manager/store"
-        },
-        {
-          "path": "packages/operator-core/lib/task-manager/control.ts",
-          "kind": "dynamic-import",
-          "original": "../task-manager/control"
         }
       ],
       "format": "esm"
@@ -175270,7 +175396,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/endpoint-route/routes/external-bench/launch.ts": {
-      "bytes": 6032,
+      "bytes": 6358,
       "imports": [
         {
           "path": "packages/agent-mcp/src/index.ts",
@@ -194201,7 +194327,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/backup/snapshot_list.ts": {
-      "bytes": 1709,
+      "bytes": 1773,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -213290,7 +213416,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/agent-tools/work_items/get-shape.ts": {
-      "bytes": 70175,
+      "bytes": 71110,
       "imports": [
         {
           "path": "packages/operator-core/lib/context-doors.ts",
@@ -237750,7 +237876,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts": {
-      "bytes": 107322,
+      "bytes": 107332,
       "imports": [
         {
           "path": "node:crypto",
@@ -239876,7 +240002,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/release/dependency-generation-retention.ts": {
-      "bytes": 3252,
+      "bytes": 6078,
       "imports": [
         {
           "path": "node:child_process",
@@ -240115,7 +240241,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/dbos/periodic-workflows.ts": {
-      "bytes": 121976,
+      "bytes": 121983,
       "imports": [
         {
           "path": "@dbos-inc/dbos-sdk",
@@ -242011,7 +242137,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts": {
-      "bytes": 40374,
+      "bytes": 42903,
       "imports": [
         {
           "path": "libs/generic/scheduled-registry/src/index.ts",
@@ -251406,7 +251532,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/sync/hyperbee/projections/engineer-issues.ts": {
-      "bytes": 63313,
+      "bytes": 67229,
       "imports": [
         {
           "path": "libs/papercusp/libs/db/src/index.ts",
@@ -255214,7 +255340,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/goal-launch-settings.ts": {
-      "bytes": 219003,
+      "bytes": 219832,
       "imports": [
         {
           "path": "node_modules/zod/index.js",
@@ -257445,7 +257571,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/events/await/pickup-sweep.ts": {
-      "bytes": 6882,
+      "bytes": 6507,
       "imports": [
         {
           "path": "packages/operator-core/lib/events/await/catalog.ts",
@@ -262539,7 +262665,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/code-intelligence/lsp-daemon-protocol.ts": {
-      "bytes": 3458,
+      "bytes": 3720,
       "imports": [
         {
           "path": "packages/operator-core/lib/code-intelligence/lsp-adapter.ts",
@@ -262607,7 +262733,7 @@
       "format": "esm"
     },
     "packages/operator-core/lib/code-intelligence/lsp-daemon-cost-key.ts": {
-      "bytes": 5870,
+      "bytes": 6772,
       "imports": [
         {
           "path": "node:crypto",
@@ -262627,8 +262753,29 @@
       ],
       "format": "esm"
     },
+    "packages/operator-core/lib/code-intelligence/lsp-daemon-cache.ts": {
+      "bytes": 6008,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "libs/generic/cache/src/index.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/cache"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/lsp-daemon-cost-key.ts",
+          "kind": "import-statement",
+          "original": "./lsp-daemon-cost-key"
+        }
+      ],
+      "format": "esm"
+    },
     "packages/operator-core/lib/code-intelligence/lsp-daemon-server.ts": {
-      "bytes": 10761,
+      "bytes": 11523,
       "imports": [
         {
           "path": "node:net",
@@ -262649,6 +262796,16 @@
           "path": "node:crypto",
           "kind": "import-statement",
           "external": true
+        },
+        {
+          "path": "libs/flags/src/server.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/flags/server"
+        },
+        {
+          "path": "libs/flags/src/index.ts",
+          "kind": "import-statement",
+          "original": "@papercusp/flags"
         },
         {
           "path": "packages/operator-core/lib/sidecar-socket/pid-keyed-socket.ts",
@@ -262679,6 +262836,11 @@
           "path": "packages/operator-core/lib/code-intelligence/lsp-adapter.ts",
           "kind": "import-statement",
           "original": "./lsp-adapter.ts"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/lsp-daemon-cache.ts",
+          "kind": "import-statement",
+          "original": "./lsp-daemon-cache"
         },
         {
           "path": "packages/operator-core/lib/code-intelligence/contracts.ts",
@@ -263026,7 +263188,7 @@
     }
   },
   "outputs": {
-    "apps/operator/dist-host-customer-terminal/hono-host.mjs.tmp.387354": {
+    "apps/operator/dist-host-customer-terminal/hono-host.mjs.tmp.3401471": {
       "imports": [
         {
           "path": "node:module",
@@ -267060,6 +267222,21 @@
         },
         {
           "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs/promises",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
           "kind": "import-statement",
           "external": true
         },
@@ -276119,6 +276296,76 @@
           "external": true
         },
         {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:child_process",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:fs",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
+          "path": "node:path",
+          "kind": "dynamic-import",
+          "external": true
+        },
+        {
           "path": "node:fs",
           "kind": "dynamic-import",
           "external": true
@@ -279110,76 +279357,6 @@
         },
         {
           "path": "node:fs/promises",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "node:crypto",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:child_process",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:util",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "dynamic-import",
-          "external": true
-        },
-        {
-          "path": "node:crypto",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:path",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:crypto",
-          "kind": "import-statement",
-          "external": true
-        },
-        {
-          "path": "node:fs",
           "kind": "dynamic-import",
           "external": true
         },
@@ -282764,6 +282941,11 @@
           "external": true
         },
         {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
           "path": "node:net",
           "kind": "import-statement",
           "external": true
@@ -284177,7 +284359,7 @@
           "bytesInOutput": 991
         },
         "packages/operator-core/lib/agent-tools/coordination/audience.ts": {
-          "bytesInOutput": 6120
+          "bytesInOutput": 6365
         },
         "libs/generic/linkable-edges/src/types.ts": {
           "bytesInOutput": 199
@@ -284990,7 +285172,7 @@
           "bytesInOutput": 14321
         },
         "packages/operator-core/lib/scratch-gc.ts": {
-          "bytesInOutput": 41099
+          "bytesInOutput": 43626
         },
         "packages/operator-core/lib/scratch-reference.ts": {
           "bytesInOutput": 10671
@@ -287462,7 +287644,7 @@
           "bytesInOutput": 3689
         },
         "packages/backup/src/workspace-backup.ts": {
-          "bytesInOutput": 54937
+          "bytesInOutput": 55236
         },
         "packages/backup/src/snapshot-admission.ts": {
           "bytesInOutput": 3180
@@ -289240,6 +289422,9 @@
         "packages/operator-core/lib/agent-tools/plans/adhoc-spec-scope.ts": {
           "bytesInOutput": 3420
         },
+        "packages/operator-core/lib/agent-tools/plans/packaged-artifact-evidence.ts": {
+          "bytesInOutput": 4258
+        },
         "node_modules/balanced-match/dist/esm/index.js": {
           "bytesInOutput": 1722
         },
@@ -289274,7 +289459,7 @@
           "bytesInOutput": 15331
         },
         "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts": {
-          "bytesInOutput": 122628
+          "bytesInOutput": 124730
         },
         "packages/operator-core/lib/design-compare/acceptance.ts": {
           "bytesInOutput": 10574
@@ -290390,7 +290575,7 @@
           "bytesInOutput": 1537
         },
         "packages/operator-core/lib/events/await/turn-proof.ts": {
-          "bytesInOutput": 3701
+          "bytesInOutput": 6177
         },
         "packages/operator-core/lib/events/await/effective-deadline.ts": {
           "bytesInOutput": 2073
@@ -291542,7 +291727,7 @@
           "bytesInOutput": 5836
         },
         "packages/operator-core/lib/harness/git-sync/run-git-sync.ts": {
-          "bytesInOutput": 195598
+          "bytesInOutput": 195600
         },
         "packages/operator-core/lib/agent-tools/coordination/presence-payload.ts": {
           "bytesInOutput": 8922
@@ -291836,7 +292021,7 @@
           "bytesInOutput": 3829
         },
         "packages/operator-core/lib/plan-audits.ts": {
-          "bytesInOutput": 68507
+          "bytesInOutput": 68511
         },
         "packages/operator-core/lib/plan-requirement-realization.ts": {
           "bytesInOutput": 7473
@@ -291980,7 +292165,7 @@
           "bytesInOutput": 5037
         },
         "packages/operator-core/lib/release/checkpoint-qualification-transaction.ts": {
-          "bytesInOutput": 60212
+          "bytesInOutput": 61043
         },
         "packages/operator-core/lib/judging-sha-source.ts": {
           "bytesInOutput": 389
@@ -292040,7 +292225,7 @@
           "bytesInOutput": 10320
         },
         "packages/operator-core/lib/cupboard/shadow-metering.ts": {
-          "bytesInOutput": 7835
+          "bytesInOutput": 8360
         },
         "packages/operator-core/lib/p2p/microcharge.ts": {
           "bytesInOutput": 4772
@@ -292073,7 +292258,7 @@
           "bytesInOutput": 24020
         },
         "packages/operator-core/lib/cupboard/shadow-metering-reader.ts": {
-          "bytesInOutput": 17612
+          "bytesInOutput": 17076
         },
         "packages/operator-core/lib/session-transcript-resolvers.ts": {
           "bytesInOutput": 20065
@@ -292106,7 +292291,7 @@
           "bytesInOutput": 313
         },
         "packages/operator-core/lib/cell-registrations.ts": {
-          "bytesInOutput": 154685
+          "bytesInOutput": 154794
         },
         "packages/operator-core/lib/agent-tools/cell-registrations-wiring.ts": {
           "bytesInOutput": 206
@@ -292253,7 +292438,7 @@
           "bytesInOutput": 4333
         },
         "packages/operator-core/lib/code-intelligence/lsp-adapter.ts": {
-          "bytesInOutput": 65911
+          "bytesInOutput": 69674
         },
         "packages/operator-core/lib/agent-tools/gitnexus/query.ts": {
           "bytesInOutput": 6000
@@ -292874,7 +293059,7 @@
           "bytesInOutput": 7551
         },
         "apps/operator/scripts/psu-launcher.mjs": {
-          "bytesInOutput": 126985
+          "bytesInOutput": 127658
         },
         "node_modules/@iarna/toml/lib/parser.js": {
           "bytesInOutput": 3552
@@ -293234,7 +293419,7 @@
           "bytesInOutput": 6521
         },
         "packages/operator-core/lib/capability-envelope/identity-grants-port.ts": {
-          "bytesInOutput": 24314
+          "bytesInOutput": 24591
         },
         "packages/operator-core/lib/agent-identities/class-provider.ts": {
           "bytesInOutput": 2894
@@ -293606,7 +293791,7 @@
           "bytesInOutput": 1522
         },
         "libs/generic/search-core/src/retrieval-bench.ts": {
-          "bytesInOutput": 10715
+          "bytesInOutput": 10742
         },
         "libs/generic/search-core/src/width-sweep.ts": {
           "bytesInOutput": 2598
@@ -294128,7 +294313,7 @@
           "bytesInOutput": 5806
         },
         "packages/operator-core/lib/release-checkpoint-launch.ts": {
-          "bytesInOutput": 63119
+          "bytesInOutput": 63122
         },
         "packages/operator-core/lib/pg-listen-hub.ts": {
           "bytesInOutput": 1468
@@ -295322,7 +295507,7 @@
           "bytesInOutput": 738
         },
         "packages/operator-core/lib/agent-tools/plans/evaluate-spec-test-adequacy.ts": {
-          "bytesInOutput": 35709
+          "bytesInOutput": 35896
         },
         "packages/operator-core/lib/scorecard-emitted-events.ts": {
           "bytesInOutput": 2425
@@ -295904,7 +296089,7 @@
           "bytesInOutput": 12377
         },
         "packages/operator-core/lib/external-triggers/slack.ts": {
-          "bytesInOutput": 19941
+          "bytesInOutput": 20193
         },
         "packages/operator-core/lib/personal-vault/authorization.ts": {
           "bytesInOutput": 2888
@@ -297350,10 +297535,10 @@
           "bytesInOutput": 7166
         },
         "packages/operator-core/lib/events/await/host-recovery-eligibility.ts": {
-          "bytesInOutput": 5177
+          "bytesInOutput": 5927
         },
         "packages/operator-core/lib/harness/routines/stalled-loops-guard.ts": {
-          "bytesInOutput": 44191
+          "bytesInOutput": 45048
         },
         "packages/operator-core/lib/harness/routines/stalled-loops-action.ts": {
           "bytesInOutput": 3786
@@ -297365,7 +297550,7 @@
           "bytesInOutput": 487
         },
         "packages/operator-core/lib/harness/routines/silent-halt-reconcile.ts": {
-          "bytesInOutput": 18174
+          "bytesInOutput": 21748
         },
         "packages/operator-core/lib/harness/routines/silent-halt-action.ts": {
           "bytesInOutput": 1891
@@ -297890,7 +298075,7 @@
           "bytesInOutput": 3707
         },
         "packages/operator-core/lib/agent-tools/work_items/_create-core.ts": {
-          "bytesInOutput": 36707
+          "bytesInOutput": 36710
         },
         "packages/operator-core/lib/harness/routines/operator-e2e-red-filer.ts": {
           "bytesInOutput": 19079
@@ -299816,7 +300001,7 @@
           "bytesInOutput": 268
         },
         "packages/operator-core/lib/external-bench/bench-workspace.ts": {
-          "bytesInOutput": 961
+          "bytesInOutput": 1234
         },
         "packages/operator-core/lib/external-bench/swarmbench-backlog.ts": {
           "bytesInOutput": 1764
@@ -299824,8 +300009,26 @@
         "packages/operator-core/lib/external-bench/task-sets.ts": {
           "bytesInOutput": 23620
         },
+        "packages/operator-core/lib/external-bench/reproducibility/prereg.ts": {
+          "bytesInOutput": 7503
+        },
+        "packages/operator-core/lib/external-bench/gate.ts": {
+          "bytesInOutput": 866
+        },
+        "packages/operator-core/lib/external-bench/run-loop.ts": {
+          "bytesInOutput": 267
+        },
+        "packages/operator-core/lib/external-bench/bench-harness-live.ts": {
+          "bytesInOutput": 18621
+        },
+        "packages/operator-core/lib/external-bench/reproducibility/context.ts": {
+          "bytesInOutput": 6766
+        },
+        "packages/operator-core/lib/external-bench/current-su.ts": {
+          "bytesInOutput": 82095
+        },
         "packages/operator-core/lib/external-bench/estimate.ts": {
-          "bytesInOutput": 1025
+          "bytesInOutput": 5869
         },
         "packages/operator-core/lib/attention/operator-report-source.ts": {
           "bytesInOutput": 1753
@@ -299834,7 +300037,7 @@
           "bytesInOutput": 1300
         },
         "packages/operator-core/lib/sync-resolver/index.ts": {
-          "bytesInOutput": 439081
+          "bytesInOutput": 439709
         },
         "packages/operator-core/lib/sync-resolver/resolve-observability.ts": {
           "bytesInOutput": 1993
@@ -303416,7 +303619,7 @@
           "bytesInOutput": 8307
         },
         "packages/operator-core/lib/cupboard/funded-tool-turn-store.ts": {
-          "bytesInOutput": 19856
+          "bytesInOutput": 19864
         },
         "packages/operator-core/lib/authority/http-peer-rpc-transport.ts": {
           "bytesInOutput": 3306
@@ -303425,7 +303628,7 @@
           "bytesInOutput": 2173
         },
         "packages/operator-core/lib/cupboard/seller-receipt-rpc.ts": {
-          "bytesInOutput": 18794
+          "bytesInOutput": 18798
         },
         "packages/operator-core/lib/cupboard/installed-tool-funding.ts": {
           "bytesInOutput": 11622
@@ -303524,7 +303727,7 @@
           "bytesInOutput": 33674
         },
         "packages/operator-core/lib/admin-test-suites.ts": {
-          "bytesInOutput": 76972
+          "bytesInOutput": 76984
         },
         "packages/operator-core/lib/system-health/desktop-perf-runs.ts": {
           "bytesInOutput": 4257
@@ -304385,7 +304588,7 @@
           "bytesInOutput": 2846
         },
         "packages/operator-core/lib/external-bench/hive-backlog.ts": {
-          "bytesInOutput": 1429
+          "bytesInOutput": 1433
         },
         "packages/operator-core/lib/pot-eval/outcome-metrics.ts": {
           "bytesInOutput": 2898
@@ -304430,13 +304633,13 @@
           "bytesInOutput": 23833
         },
         "packages/operator-core/lib/external-bench/hive-backlog-live.ts": {
-          "bytesInOutput": 20355
+          "bytesInOutput": 20381
         },
         "packages/operator-core/lib/external-bench/gaia-backlog-support.ts": {
           "bytesInOutput": 4797
         },
         "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts": {
-          "bytesInOutput": 27663
+          "bytesInOutput": 27686
         },
         "node_modules/nanoid/url-alphabet/index.js": {
           "bytesInOutput": 193
@@ -304445,28 +304648,10 @@
           "bytesInOutput": 2228
         },
         "packages/operator-core/lib/external-bench/su-independent-backlog.ts": {
-          "bytesInOutput": 20483
-        },
-        "packages/operator-core/lib/external-bench/gate.ts": {
-          "bytesInOutput": 695
-        },
-        "packages/operator-core/lib/external-bench/reproducibility/prereg.ts": {
-          "bytesInOutput": 7503
-        },
-        "packages/operator-core/lib/external-bench/run-loop.ts": {
-          "bytesInOutput": 175
+          "bytesInOutput": 20490
         },
         "packages/operator-core/lib/external-bench/arm-generation.ts": {
           "bytesInOutput": 1947
-        },
-        "packages/operator-core/lib/external-bench/bench-harness-live.ts": {
-          "bytesInOutput": 18625
-        },
-        "packages/operator-core/lib/external-bench/reproducibility/context.ts": {
-          "bytesInOutput": 6769
-        },
-        "packages/operator-core/lib/external-bench/current-su.ts": {
-          "bytesInOutput": 80314
         },
         "packages/operator-core/lib/external-bench/native-harness-config.ts": {
           "bytesInOutput": 873
@@ -304487,7 +304672,7 @@
           "bytesInOutput": 4507
         },
         "packages/operator-core/lib/endpoint-route/routes/external-bench/launch.ts": {
-          "bytesInOutput": 5058
+          "bytesInOutput": 5391
         },
         "packages/operator-core/lib/endpoint-route/routes/index.ts": {
           "bytesInOutput": 35090
@@ -305474,7 +305659,7 @@
           "bytesInOutput": 17503
         },
         "packages/operator-core/lib/pot/session-audit.ts": {
-          "bytesInOutput": 10147
+          "bytesInOutput": 10149
         },
         "packages/operator-core/lib/agent-tools/loop/session_audit.ts": {
           "bytesInOutput": 2463
@@ -305885,7 +306070,7 @@
           "bytesInOutput": 5737
         },
         "packages/operator-core/lib/release-trace.ts": {
-          "bytesInOutput": 36647
+          "bytesInOutput": 36650
         },
         "packages/operator-core/lib/agent-tools/release/trace.ts": {
           "bytesInOutput": 18728
@@ -306026,7 +306211,7 @@
           "bytesInOutput": 4768
         },
         "packages/operator-core/lib/agent-tools/backup/snapshot_list.ts": {
-          "bytesInOutput": 1922
+          "bytesInOutput": 1986
         },
         "packages/operator-core/lib/agent-tools/backup/restore.ts": {
           "bytesInOutput": 2597
@@ -306269,7 +306454,7 @@
           "bytesInOutput": 3981
         },
         "packages/operator-core/lib/agent-tools/capability/list.ts": {
-          "bytesInOutput": 5634
+          "bytesInOutput": 5636
         },
         "packages/operator-core/lib/agent-tools/capability/replace-file.ts": {
           "bytesInOutput": 1224
@@ -306563,7 +306748,7 @@
           "bytesInOutput": 2471
         },
         "packages/operator-core/lib/agent-tools/fleet_registry/respawn-member.ts": {
-          "bytesInOutput": 55554
+          "bytesInOutput": 55576
         },
         "packages/operator-core/lib/agent-tools/coordination/tools/whoami.ts": {
           "bytesInOutput": 2786
@@ -307523,7 +307708,7 @@
           "bytesInOutput": 5667
         },
         "packages/operator-core/lib/agent-tools/work_items/get-shape.ts": {
-          "bytesInOutput": 49829
+          "bytesInOutput": 50285
         },
         "packages/operator-core/lib/agent-tools/work_items/resume.ts": {
           "bytesInOutput": 5156
@@ -309032,7 +309217,7 @@
           "bytesInOutput": 3491
         },
         "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts": {
-          "bytesInOutput": 66491
+          "bytesInOutput": 66502
         },
         "packages/operator-core/lib/acceptance-bar-lifecycle-evaluator.ts": {
           "bytesInOutput": 16174
@@ -309158,7 +309343,7 @@
           "bytesInOutput": 9750
         },
         "packages/operator-core/lib/release/dependency-generation-retention.ts": {
-          "bytesInOutput": 3181
+          "bytesInOutput": 5280
         },
         "packages/operator-core/lib/external-triggers/delivery-retention.ts": {
           "bytesInOutput": 2183
@@ -309194,7 +309379,7 @@
           "bytesInOutput": 11086
         },
         "packages/operator-core/lib/dbos/periodic-workflows.ts": {
-          "bytesInOutput": 68505
+          "bytesInOutput": 68512
         },
         "packages/operator-core/lib/dbos/coord-spawn-runner.ts": {
           "bytesInOutput": 2406
@@ -309308,7 +309493,7 @@
           "bytesInOutput": 12158
         },
         "packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts": {
-          "bytesInOutput": 20965
+          "bytesInOutput": 21756
         },
         "packages/operator-core/lib/system-health/embed-latency-watchdog.ts": {
           "bytesInOutput": 7529
@@ -310040,7 +310225,7 @@
           "bytesInOutput": 1602
         },
         "packages/operator-core/lib/sync/hyperbee/projections/engineer-issues.ts": {
-          "bytesInOutput": 37324
+          "bytesInOutput": 39471
         },
         "packages/operator-core/lib/sync/hyperbee/projections/harness-plan-parts.ts": {
           "bytesInOutput": 10050
@@ -310274,7 +310459,7 @@
           "bytesInOutput": 9786
         },
         "packages/operator-core/lib/goal-launch-settings.ts": {
-          "bytesInOutput": 140235
+          "bytesInOutput": 141064
         },
         "packages/agent-mcp/src/tools/goals/list.ts": {
           "bytesInOutput": 6913
@@ -310409,7 +310594,7 @@
           "bytesInOutput": 7244
         },
         "packages/operator-core/lib/events/await/pickup-sweep.ts": {
-          "bytesInOutput": 4079
+          "bytesInOutput": 3688
         },
         "packages/operator-core/lib/events/await/engine.ts": {
           "bytesInOutput": 50628
@@ -310721,10 +310906,13 @@
           "bytesInOutput": 7070
         },
         "packages/operator-core/lib/code-intelligence/lsp-daemon-cost-key.ts": {
-          "bytesInOutput": 4747
+          "bytesInOutput": 5369
+        },
+        "packages/operator-core/lib/code-intelligence/lsp-daemon-cache.ts": {
+          "bytesInOutput": 5538
         },
         "packages/operator-core/lib/code-intelligence/lsp-daemon-server.ts": {
-          "bytesInOutput": 9456
+          "bytesInOutput": 10067
         },
         "apps/operator/bin/boot-malloc-arena.ts": {
           "bytesInOutput": 1391
@@ -310919,7 +311107,7 @@
           "bytesInOutput": 1163
         }
       },
-      "bytes": 75844912
+      "bytes": 75889280
     }
   }
 }

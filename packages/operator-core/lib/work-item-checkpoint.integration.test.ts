@@ -525,6 +525,43 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     expect(await getWorkItemCheckpoint({ harness: '*', workItemId: 'EI-3' })).toBe('written under null');
   });
 
+  it('EI-8805 / scope-unique-identifiers R-7: a feature id held by two harnesses of one workspace keeps each checkpoint on the row it was written to', async () => {
+    // Legacy F-FIX ids were numbered per harness, so one workspace holds the same
+    // feature id under two harnesses (measured: F-FIX-001 in hiveloop-hive and
+    // papercusp). A checkpoint written for one row must read back from THAT row —
+    // never be lost, never surface on the sibling, never bump the sibling's progress.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, status, item_kind, taken_by, taken_at, last_progress_at)
+      VALUES
+        ('default', ${HARNESS}, 'F-FIX-TWIN', 'open', 'feature', 'su-a',
+         now() - interval '40 minutes', now() - interval '30 minutes'),
+        ('default', 'h2', 'F-FIX-TWIN', 'open', 'feature', 'su-b',
+         now() - interval '40 minutes', now() - interval '30 minutes')`;
+    const progress = async () =>
+      Object.fromEntries(
+        (
+          await db.sql<{ harness_slug: string; last_progress_at: Date }[]>`
+            SELECT harness_slug, last_progress_at FROM harness_shared.work_items
+             WHERE workspace_id = 'default' AND feature_id = 'F-FIX-TWIN'`
+        ).map((r) => [r.harness_slug, r.last_progress_at.getTime()]),
+      );
+    const before = await progress();
+
+    expect(await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'F-FIX-TWIN' }, 'state of the h1 row')).toBe(
+      'state of the h1 row',
+    );
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'F-FIX-TWIN' })).toBe('state of the h1 row');
+    expect(await getWorkItemCheckpoint({ harness: 'h2', workItemId: 'F-FIX-TWIN' })).toBeNull();
+    const afterFirst = await progress();
+    expect(afterFirst[HARNESS]).toBeGreaterThan(before[HARNESS]);
+    expect(afterFirst.h2).toBe(before.h2);
+
+    await setWorkItemCheckpoint({ harness: 'h2', workItemId: 'F-FIX-TWIN' }, 'state of the h2 row');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'F-FIX-TWIN' })).toBe('state of the h1 row');
+    expect(await getWorkItemCheckpoint({ harness: 'h2', workItemId: 'F-FIX-TWIN' })).toBe('state of the h2 row');
+  });
+
   it("EI-9013: the unscoped-session literal '*' workspace canonicalizes to the concrete workspace on BOTH write and read", async () => {
     // The EI-9013/EI-8824 class: an unscoped su session's ctx.workspaceId is the
     // literal '*'. A write keyed under '*' is invisible to every concrete-workspace

@@ -2267,6 +2267,26 @@ export function isUnbindableChild({
   return nowMs - childStartedAtMs >= windowMs && !probedNativeId;
 }
 
+/** P-005(c) / D-007 (d): how the host answers a delivery id it has already
+ *  accepted. A `pending` turn/reset retry to a child that is NOW unbindable is
+ *  refused as `deferred-successor-unbindable`, exactly like a first delivery: the
+ *  accepted copy can sit on the busy gate or the carry re-arm long after the child
+ *  crossed its window, and answering `pending-delivery-id` let the sender re-poll
+ *  it forever (measured 2026-10-10: zero refusals on 33 wedged hosts, all of them
+ *  re-polling pending). Completed and cancelled retries keep their idempotent
+ *  answer, and the refusal does not cancel the accepted copy: if the child binds
+ *  later and it writes, the dedup turns the sender's next retry into a duplicate.
+ *  `unbindable` is called only when it can change the answer (it probes). Pure.
+ * @param {{duplicateState?: string | null, mode?: string, unbindable: () => boolean}} input
+ * @returns {'not-duplicate' | 'refuse-unbindable' | 'short-circuit'} */
+export function duplicateDeliveryVerdict({ duplicateState, mode, unbindable }) {
+  if (!duplicateState) return 'not-duplicate';
+  if (duplicateState === 'pending' && (mode === 'turn' || mode === 'reset') && unbindable()) {
+    return 'refuse-unbindable';
+  }
+  return 'short-circuit';
+}
+
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
  *  as a SEPARATE keystroke this long later. A single `text + CR` burst is
  *  swallowed by the Claude Code TUI's paste detector — the CR lands as a literal
@@ -11158,6 +11178,30 @@ export function hostThroughPty(o) {
       probedNativeId,
     });
   };
+  // P-005(c) / D-003: the one refusal for a turn/reset to an unbindable child,
+  // shared by a first delivery and a pending duplicate (D-007 (d)). The event is
+  // written once per child so the operator's host-tail judge sees it.
+  const refuseUnbindableDelivery = (mode, phase) => {
+    if (unbindableRefusalChild !== child) {
+      unbindableRefusalChild = child;
+      appendHostEvent(ownerId, 'successor-unbindable-refused', {
+        mode,
+        phase,
+        childAgeMs: Date.now() - childStartedAtMs,
+        windowMs: unboundWindowMs,
+      });
+      try {
+        writeHostDiagnostic(
+          `psu-pty-host: ${ownerId} child pid ${child.pid} has no native id after ` +
+            `${Math.round((Date.now() - childStartedAtMs) / 1000)}s; refusing ${mode} deliveries ` +
+            'as deferred-successor-unbindable until it binds\n',
+        );
+      } catch {
+        /* diagnostic only */
+      }
+    }
+    return { ok: false, reason: 'deferred-successor-unbindable' };
+  };
   if (launchKickoff) {
     const requireRoleMcp = headlessRoleKickoffRequiresMcp({
       agent: env.PAPERCUSP_AGENT,
@@ -12542,6 +12586,14 @@ export function hostThroughPty(o) {
           appendHostEvent(ownerId, 'duplicate-cancelled-delivery-id', { deliveryId: msg.deliveryId });
           return { ok: true, reason: 'cancelled-before-write' };
         }
+        // D-007 (d): a pending retry to a now-unbindable child is refused, not
+        // re-ACKed as pending-delivery-id (which the sender re-polls forever).
+        if (
+          duplicateDeliveryVerdict({ duplicateState, mode: msg.mode, unbindable: currentChildUnbindable }) ===
+          'refuse-unbindable'
+        ) {
+          return refuseUnbindableDelivery(msg.mode, 'duplicate-pending');
+        }
         // EI-21428742689578243: `accepted` means the FIRST copy can wait behind
         // the host's busy/composer gates for minutes. During that wait the durable
         // pump retries the SAME delivery id, and executeWake rehydrates its text
@@ -12588,24 +12640,7 @@ export function hostThroughPty(o) {
       // parks only `deferred-*` refusals; any other ok:false falls through to
       // resume-headless, a second process on this live session.
       if ((msg.mode === 'turn' || msg.mode === 'reset') && currentChildUnbindable()) {
-        if (unbindableRefusalChild !== child) {
-          unbindableRefusalChild = child;
-          appendHostEvent(ownerId, 'successor-unbindable-refused', {
-            mode: msg.mode,
-            childAgeMs: Date.now() - childStartedAtMs,
-            windowMs: unboundWindowMs,
-          });
-          try {
-            writeHostDiagnostic(
-              `psu-pty-host: ${ownerId} child pid ${child.pid} has no native id after ` +
-                `${Math.round((Date.now() - childStartedAtMs) / 1000)}s; refusing ${msg.mode} deliveries ` +
-                'as deferred-successor-unbindable until it binds\n',
-            );
-          } catch {
-            /* diagnostic only */
-          }
-        }
-        return { ok: false, reason: 'deferred-successor-unbindable' };
+        return refuseUnbindableDelivery(msg.mode, 'admission');
       }
       // SHUTDOWN (WI-6638) — wind this session down and EXIT, closing its tab.
       //

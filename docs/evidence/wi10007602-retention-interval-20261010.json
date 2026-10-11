@@ -2,41 +2,9 @@
   "schemaVersion": 1,
   "workItem": "WI-10007602",
   "plan": "durable-disk-and-checkpoint-recovery-2026-10-09",
-  "edition": "2026-10-10T23:29Z",
+  "edition": "2026-10-11T00:10:51.546391+00:00",
   "verdict": "OPEN",
   "scope": "Observed capacity, reservation, recorder, SQLite and retention receipts; no full-interval or shipment claim.",
-  "r2": {
-    "specId": "AUTO-BAR-R-2-P-002",
-    "revision": 3,
-    "observedAt": "2026-10-10T23:02:04Z",
-    "verdict": "pass",
-    "bindingIds": [
-      35259,
-      35260,
-      35294,
-      35295
-    ],
-    "generationRun": {
-      "taskId": "0mv2zmorxwgjc3d13pt",
-      "testRunId": 21009245,
-      "commit": "bba734d034b34b8bb333973bb1a5772a5dd6bf37",
-      "passed": 12,
-      "skipped": 0,
-      "dirty": false
-    },
-    "reclaimRun": {
-      "taskId": "0mv2zx4f415xsyd31wz",
-      "testRunId": 21009301,
-      "commit": "9d2d9c91304f4f1c7239743528e80d66a22bcb71",
-      "passed": 51,
-      "skipped": 0,
-      "dirty": false
-    },
-    "limits": [
-      "Prior eight-file capture has28 late-original gaps and2 opaque child-input closures.",
-      "New D010 reservation guard still needs committed-source proof; no local-dirty source-ready claim."
-    ]
-  },
   "reservationRepair": {
     "workItem": "EI-25635536055511804",
     "decision": "D-010",
@@ -46,14 +14,6 @@
       "failed": 1,
       "expected": 95,
       "actual": 0
-    },
-    "verification": {
-      "testRunId": 21009855,
-      "passed": 15,
-      "skipped": 0,
-      "dirty": true,
-      "shellSelftest": "PASS",
-      "taskId": "0mv30ijyj9yf5yl1iem"
     },
     "live": {
       "at": "2026-10-10T23:16:07.518Z",
@@ -84,7 +44,37 @@
     },
     "completionKey": "work-item:done:EI-25635536055511804",
     "contract": "Committed shell helper and matching root desktop gitlink plus immutable15-case source proof.",
-    "syncAwaitId": 266037
+    "syncAwaitId": 266037,
+    "priorLocalVerification": {
+      "testRunId": 21009855,
+      "passed": 15,
+      "skipped": 0,
+      "dirty": true,
+      "shellSelftest": "PASS",
+      "taskId": "0mv30ijyj9yf5yl1iem"
+    },
+    "verification": {
+      "testRunId": 21015961,
+      "passed": 15,
+      "skipped": 0,
+      "dirty": false,
+      "taskId": "0mv31txqb1c39igoo2o",
+      "commit": "c3451c17b13a8051923fba85e288e02326cc5eb7",
+      "desktopGitlink": "f7eb5332213688bc5943268260485befd4dca107",
+      "helperBlob": "54b633b30f65684fa4754a37789df824093ce22b",
+      "bindingId": 35602,
+      "shellSelftest": "Earlier PASS task0mv30ijyj9yf5yl1iem preserved"
+    },
+    "completionReceipt": {
+      "appliedState": "done",
+      "completionAuthority": "committed",
+      "terminalEvent": "work-item:done:EI-25635536055511804"
+    },
+    "directNotifications": [
+      "coord-send-e5079bac440f2f492c75e103ad45c172967953b55f7ee3d6cc6feeda72c0c00b",
+      "coord-send-d78430287be2093b055a6a0d4a5b642e83ea572db87d2e15974589f42db51185",
+      "coord-send-d29f775f03e228ef05018ba0127c3c4e956b1815b1cc03fbf4f15e3caafed50c"
+    ]
   },
   "recorder": {
     "at": "2026-10-10T23:04:30.007Z",
@@ -150,5 +140,309 @@
   "preservation": [
     "Legacy trash, Git admin and archival evidence retained.",
     "No manual commit/push, desktop restart, release force or LIVE_GATE_OPS."
+  ],
+  "historicalR2": {
+    "specId": "AUTO-BAR-R-2-P-002",
+    "revision": 3,
+    "observedAt": "2026-10-10T23:02:04Z",
+    "verdict": "pass",
+    "bindingIds": [
+      35259,
+      35260,
+      35294,
+      35295
+    ],
+    "generationRun": {
+      "taskId": "0mv2zmorxwgjc3d13pt",
+      "testRunId": 21009245,
+      "commit": "bba734d034b34b8bb333973bb1a5772a5dd6bf37",
+      "passed": 12,
+      "skipped": 0,
+      "dirty": false
+    },
+    "reclaimRun": {
+      "taskId": "0mv2zx4f415xsyd31wz",
+      "testRunId": 21009301,
+      "commit": "9d2d9c91304f4f1c7239743528e80d66a22bcb71",
+      "passed": 51,
+      "skipped": 0,
+      "dirty": false
+    },
+    "limits": [
+      "Prior eight-file capture has28 late-original gaps and2 opaque child-input closures.",
+      "New D010 reservation guard still needs committed-source proof; no local-dirty source-ready claim."
+    ]
+  },
+  "r2": {
+    "specId": "AUTO-BAR-R-2-P-002",
+    "revision": 3,
+    "specFingerprint": "67f33f83a13478955ec53d539c3da3ed1eb307d070e757ac73f704ae7d8b5c92",
+    "assessmentRecordedAt": "2026-10-11T00:10:51.546391+00:00",
+    "evaluatorOrigin": "http://127.0.0.1:3170",
+    "verdict": "pass",
+    "wouldBlock": [],
+    "currentRefreshBindings": [
+      35602,
+      35603,
+      35636
+    ],
+    "cohortNote": "Only measured stale gen/prune proofs refreshed; unaffected prior bindings and clean counterexample remain canonical.",
+    "limits": [
+      "Tree/source adequacy only; does not discharge R5 or main promotion.",
+      "Named source/test/fixture paths are measured; complete imported/descendant-input closure is not claimed."
+    ]
+  },
+  "retentionRepair": {
+    "workItem": "EI-25637075692558914",
+    "decision": "D-011",
+    "sourceProof": {
+      "taskId": "0mv31txqb1c39igoo2o",
+      "testRunId": 21015962,
+      "commit": "c3451c17b13a8051923fba85e288e02326cc5eb7",
+      "passed": 15,
+      "skipped": 0,
+      "dirty": false,
+      "bindingId": 35603
+    },
+    "nativeActivation": "UNVERIFIED",
+    "limits": [
+      "Fix skips absent integration roots, deduplicates physical stores with current-mode precedence, and preserves bounded per-store stdout/stderr/errors in the DBOS report.",
+      "Loaded actor and actual native per-store execution/removal receipts remain pending; work-item stays open."
+    ]
+  },
+  "pruneRefresh": {
+    "taskId": "0mv320p6mrd3tz0c6j7",
+    "testRunId": 21016087,
+    "commit": "c3451c17b13a8051923fba85e288e02326cc5eb7",
+    "passed": 22,
+    "skipped": 0,
+    "dirty": false,
+    "bindingId": 35636,
+    "reason": "Binding35242 measured source drift in scratch-gc.ts; targeted immutable refresh rather than broad repeat matrix."
+  },
+  "intervalBaseline": {
+    "taskId": "0mv31rn851qcrv0a1xp",
+    "logPath": ".papercusp/scratch/bash-fddcc556-12d.log",
+    "receipt": {
+      "schemaVersion": 1,
+      "kind": "r5-interval-baseline",
+      "at": "2026-10-10T23:51:29.511Z",
+      "sourceSha": "c3451c17b13a8051923fba85e288e02326cc5eb7",
+      "bgPid": 1543918,
+      "bgStart": "46350906",
+      "bgEnv": {
+        "PAPERCUSP_DISK_ALARM_FREE_GB": "100"
+      },
+      "runtimeError": null,
+      "reservationLedger": "/tmp/papercusp-disk-reservations",
+      "policy": {
+        "freePctMin": 0.1,
+        "freeBytesMin": 107374182400,
+        "freeInodesPctMin": 0.05,
+        "criticalFreePctMin": 0.02,
+        "criticalFreeBytesMin": 2147483648,
+        "criticalFreeBytesCap": 68719476736
+      },
+      "snapshots": [
+        {
+          "at": "2026-10-10T23:50:41.549Z",
+          "path": "/",
+          "dev": 66307,
+          "key": "dev-66307",
+          "totalBytes": 2013991550976,
+          "availableBytes": 115566542848,
+          "reservedBytes": 10737418240,
+          "usableAfterReservationsBytes": 104829124608,
+          "criticalFloorBytes": 40279831019.520004,
+          "invalidOriginalCriticalFloorBytes": 2147483648
+        },
+        {
+          "at": "2026-10-10T23:50:41.573Z",
+          "path": "/mnt/data",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 271246966784,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 258362064896,
+          "criticalFloorBytes": 68719476736,
+          "invalidOriginalCriticalFloorBytes": 2147483648
+        },
+        {
+          "at": "2026-10-10T23:50:41.595Z",
+          "path": "/tmp/pcv",
+          "dev": 66304,
+          "key": "dev-66304",
+          "totalBytes": 7999426224128,
+          "availableBytes": 271246790656,
+          "reservedBytes": 12884901888,
+          "usableAfterReservationsBytes": 258361888768,
+          "criticalFloorBytes": 68719476736,
+          "invalidOriginalCriticalFloorBytes": 2147483648
+        }
+      ],
+      "stores": [
+        {
+          "path": "/mnt/data/papercusp-dependency-generations",
+          "physical": "/mnt/data/papercusp-dependency-generations",
+          "dev": 66304,
+          "at": "2026-10-10T23:50:41.595Z",
+          "completedAt": "2026-10-10T23:51:06.633Z",
+          "allocatedBytes": null,
+          "allocationError": "spawnSync du ETIMEDOUT",
+          "generations": [
+            "v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1",
+            "v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c",
+            "v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249",
+            "v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0",
+            "v1-b235e06323a71b9ee81a41bc3f1cdb3d50995f113ab1fc5f3e67c4172b954f8f",
+            "v1-be30308f67158093653001fc9417c4f27d78a603043623540eaf4090d467c08f",
+            "v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41",
+            "v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673",
+            "v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+          ],
+          "controls": {
+            ".pins": [
+              {
+                "name": "checkout-37a7b9e3778689655a9cab242a4d29eef9b8ea4bb42f7aae2f5f6a8f0001ab6b",
+                "sha256": "3064b8a499b374d8f37c2fabbaa5b7c0ee6632220f7e624cc8802de37259fa44",
+                "identity": "identity=v1-e649ef8a70b17fa02e4c3887a62a1545c8ed469cbc4bbaec0c42bbd869758673"
+              },
+              {
+                "name": "checkout-3e3f043d8f7a63193b528b315202e06132da5c91cf4cc615f721039c52e1a1d4",
+                "sha256": "a99c114055f4e5d5a81e65a8cddc3ae76ae8a2821e22831bbf004079a7bdbd09",
+                "identity": "identity=v1-4d658479badc73c49aa1ceb970d7d4df55339eb3ac4ad75114151e6b8002a249"
+              },
+              {
+                "name": "checkout-53ddc01e5218db398064fb991e2147532d422087456bcb0314242253a24903f0",
+                "sha256": "5e2272d5b89163e49d7a2af652a138cad8e69c16589a0766475b95c468a264ef",
+                "identity": "identity=v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1"
+              },
+              {
+                "name": "checkout-6cbe9d031b725091cfad82a628df70e0e7d0547e5e92290c532a97a4058a5b6b",
+                "sha256": "997a8620e53d061f4f2643fe9c08d49701f0f9371511f4bcd4d312819be5f7de",
+                "identity": "identity=v1-f52fff0aa40572927df330a5140c8eca5efe38823fee1643fa09f5f8d43173c0"
+              },
+              {
+                "name": "checkout-7f0358da6db3ffa18900666fd47e82435e8b25bbd9232d742ef4298f4c627641",
+                "sha256": "cfb61591b940f02f706a2ff4630a6889d780d872ab34ed67368d3cfed8daa507",
+                "identity": "identity=v1-29d2ac83fcfbcad99f74ccf937640ec14ab22818686e653d9448dcd2ecafd3c1"
+              },
+              {
+                "name": "checkout-8141b4633bbf7c430c7181b1a1184c206301123fb4d48f9d2379c73cf1aede9d",
+                "sha256": "b82980019268c5bdaac27cc97f6e303ba677046c4cbf314f75424db8728c8ed2",
+                "identity": "identity=v1-420da6f6a1568dba81b7b2e2ba9965c62a7dccf136ef8daeab2eb43ad1c7877c"
+              },
+              {
+                "name": "checkout-9e1223d9f74a8b8ff2b8dcaebc532f74e69004a4d753591553730db8aa5c17fc",
+                "sha256": "eb29025cffe22510ac189c17ae019d21ac97fd7fe68404a2f1f74cb6bbb75c20",
+                "identity": "identity=v1-9eca93012db016969d9159866a579989b6ddf79b1123a594311a0101ef7228d0"
+              },
+              {
+                "name": "checkout-c88b0c59829dace377bc2d3a1dd370394430b9d2258679ec4559650cb28f593d",
+                "sha256": "6ef64b607bcd5fefe34cfb4901bfd71ae675f799db956f03c9c57eaa4b675ba3",
+                "identity": "identity=v1-d72af5e8e19f3ecf1c52fd39cdfd8c3b6fd4b75893c3820fddf25db336a9ad41"
+              }
+            ],
+            ".leases": []
+          }
+        },
+        {
+          "path": "/mnt/data/dependency-generations/papercusp",
+          "physical": "/mnt/data/dependency-generations/papercusp",
+          "dev": 66304,
+          "at": "2026-10-10T23:51:06.633Z",
+          "completedAt": "2026-10-10T23:51:29.485Z",
+          "allocatedBytes": 33380229120,
+          "allocationError": null,
+          "generations": [
+            "v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95",
+            "v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb"
+          ],
+          "controls": {
+            ".pins": [
+              {
+                "name": "checkout-2807f21ae14cfcc122ae4101e544784c544dd221f80fe7447be27669d16d61c0",
+                "sha256": "d72e1359a6378d927bfcb1278fa8735cf8bc68deedfd843982f0f0a1114c0090",
+                "identity": "identity=v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb"
+              },
+              {
+                "name": "checkout-709e38c8022dfe5aa5162235fa897b2b72265355958192bff28477b0c70ce32d",
+                "sha256": "4045862f52d830480a027452d04f29c5c3380b6896b1e5bda03aec3786f3786b",
+                "identity": "identity=v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95"
+              },
+              {
+                "name": "checkout-877c2268628ba98915c113d4d357ef4cb9d9a913273c608f7b7bd2c50c7c479c",
+                "sha256": "4bd018f0e0eb331d5136758d15a913a622a5cbc08e38e447361dcaa9f6525c65",
+                "identity": "identity=v1-9f13b93ebc0329f18d9cfa19d198b52e0ddacca6594b262378f5a464a98d0ddb"
+              },
+              {
+                "name": "checkout-f6ead3f886faa15a4a5578e3e2af90bbccabb3553214eabc72773ea2c0af1259",
+                "sha256": "f8aa0a3d50ba02b02b4f4c4de5104ef7b8fcc338fbb4aff7cc6534444c808ca5",
+                "identity": "identity=v1-89f1224716757f1dde3bd1b8b0d470ffb1c4795515aaf12cf0d5f411d2204b95"
+              }
+            ],
+            ".leases": []
+          }
+        }
+      ],
+      "verdict": "OPEN",
+      "limits": [
+        "Read-only baseline; no native prune or runtime replacement performed.",
+        "Per-store du values may share hardlinks and are not exclusive reclaim amounts.",
+        "Policy and reservations use the whitelist read from the identified bg-host process; source helper is current working tree."
+      ]
+    },
+    "floorCorrectionTaskId": "0mv31uzzkyw6ews1pwz",
+    "floorCorrectionLogPath": ".papercusp/scratch/bash-5c014d61-db3.log",
+    "floorCorrection": {
+      "schemaVersion": 1,
+      "kind": "r5-policy-floor-correction",
+      "at": "2026-10-10T23:53:16.171Z",
+      "sourceTask": "0mv31rn851qcrv0a1xp",
+      "sourceLog": ".papercusp/scratch/bash-fddcc556-12d.log",
+      "reason": "Diagnostic passed an object to a number-taking helper. Previous criticalFloorBytes fields are invalid; raw statfs/reservation/policy rows remain usable.",
+      "rows": [
+        {
+          "path": "/",
+          "dev": 66307,
+          "totalBytes": 2013991550976,
+          "invalidPriorFloorBytes": 2147483648,
+          "criticalFloorBytes": 40279831019.520004,
+          "usableAfterReservationsBytes": 104829124608
+        },
+        {
+          "path": "/mnt/data",
+          "dev": 66304,
+          "totalBytes": 7999426224128,
+          "invalidPriorFloorBytes": 2147483648,
+          "criticalFloorBytes": 68719476736,
+          "usableAfterReservationsBytes": 258362064896
+        },
+        {
+          "path": "/tmp/pcv",
+          "dev": 66304,
+          "totalBytes": 7999426224128,
+          "invalidPriorFloorBytes": 2147483648,
+          "criticalFloorBytes": 68719476736,
+          "usableAfterReservationsBytes": 258361888768
+        }
+      ]
+    },
+    "earliestOneHourEndpoint": "2026-10-11T00:50:41.549Z",
+    "verdict": "OPEN",
+    "limits": [
+      "Current-store allocated-byte scan was unmeasured at its explicit25-second bound.",
+      "Former-store allocated bytes are nonexclusive due to possible shared hardlinks.",
+      "Raw criticalFloorBytes2GiB fields in the original baseline log are invalid and superseded by the maintained-helper correction.",
+      "Complete registered retention interval, loaded recurrence actor, actual removals and protected-data custody remain required.",
+      "Alarm warning10percent/100GiB thresholds remain distinct from hard writer floors; no all-warning-clear claim."
+    ]
+  },
+  "remaining": [
+    "Observe complete registered retention interval with same-device before/after receipts and current-store allocated-byte coverage.",
+    "Verify D011 is loaded by the native actor and consume actual per-store removal/preservation/error receipts.",
+    "Verify active recorder and native SQLite journal recovery evidence at acceptance time.",
+    "Consume independent candidate-bound final promotion/shipment receipt from existing LIVE_GATE_OPS owner; do not control or monitor that lane."
   ]
 }

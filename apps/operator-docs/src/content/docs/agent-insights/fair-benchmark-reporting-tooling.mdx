@@ -14,11 +14,14 @@ documents:
   - "libs/generic/bench-metrics/src/fairness-audit.ts"
   - "libs/generic/bench-metrics/src/aggregate.ts"
   - "libs/generic/bench-metrics/src/intervals.ts"
+  - "libs/generic/bench-metrics/src/schema.ts"
   - "packages/operator-core/lib/external-bench/report/capability-attribution-report.ts"
   - "packages/operator-core/lib/external-bench/run-topology.ts"
   - "packages/operator-core/lib/external-bench/current-su.ts"
   - "packages/operator-core/lib/external-bench/reproducibility/prereg.ts"
   - "packages/operator-core/lib/external-bench/reproducibility/context.ts"
+  - "packages/operator-core/lib/external-bench/reproducibility/schema.ts"
+  - "packages/operator-core/lib/external-bench/reproducibility/store.ts"
   - "benchmarks/README.md"
 plans:
   - "benchmark-capability-injection-redesign-2026-06-17"
@@ -94,7 +97,7 @@ For regression reproduction, call `testing:run` with exact repository-relative f
 
 Inspect assertion bodies: identity tests join provider/native/runtime evidence and reject configured or incomplete measurements; context tests compare both arms' restored bytes, mutate one arm's memory, and re-read the other receipt unchanged; preregistration tests reject mutable/retargeted registrations and verify introducing git blobs before outcomes. A title census alone does not establish absence or completeness.
 
-Paired comparisons must collapse repeated seeds within each assigned task and resample aligned task outcomes under the preregistered repository-clustering policy. The existing `pairedBootstrapCI` is a paired-item primitive; its current unextended form does not prove repository clustering. Keep R-7 unresolved until the repository-aware implementation, report binding and falsifying tests exist. Independent-arm CI overlap is a negative control, never the study significance test. A small pilot validates measurement and cannot establish superiority; preserve the withheld, power-planned confirmation design.
+Current reports collapse repeated assigned seeds within each task and resample aligned task outcomes in whole repository blocks. Freeze `sampling.unit: "repository"`, `sampling.taskRepositories` (exactly the pilot and withheld task rosters), `ci`, `bootstrapSeed` and `bootstrapIterations` before launch. The existing `pairedBootstrapCI` accepts index-aligned `clusterIds`, preserves task weighting for unequal repository sizes and refuses fewer than two independent clusters. `buildRunReports` binds this policy from the immutable protocol, retaining absent task pairs. Read `sampling` and `deltas[].uncertainty` for task/seed populations, independent repositories, observed/absent attempts and missing measurements; read `deltas[].accuracyDeltaCi` for the paired difference. Missing grades, insufficient repositories or an older unregistered current policy withhold primary intervals. Older protocols remain readable but new current launches require the policy. Missing usage or wholly absent arms retain accuracy differences without measured cost efficiency. Conventional intervals/aggregate/report/reproducibility tests falsify task-as-repository sampling, seed-as-task precision and drifted roster policies. Independent review must evaluate the actual assertions and source/spec/test fingerprints; this source implementation is not live study or shipped-artifact proof. Independent-arm CI overlap is a negative control, never the study significance test. A small pilot validates measurement and cannot establish superiority; preserve the withheld, power-planned confirmation design.
 
 R-8 requires the actual live pilot record and confirmation-design artifact; green fixture tests cannot satisfy it. R-18 requires a lineage-independent current-build implementation grade bound to exact source/spec/test revisions. R-9 alone requires the accepted artifact observed on the deployed green release and the successful shipped-transition receipt. These are separate evidence records. Tests, typechecks, a dirty source edit, a deployment request or an archive import alone cannot satisfy them.
 

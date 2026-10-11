@@ -10,7 +10,7 @@ import { withHostedServiceContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { HostedEntitlementSet } from '../../hosted-entitlement-schema';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
-import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering';
 import { addMicrosDecimals, splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { readMoneyJournalEntries } from '../../../cupboard/money-journal-store';
 import { pgPaymentReceiptStore, type StoredPaymentReceipt } from '../../../cupboard/payment-receipt-store';

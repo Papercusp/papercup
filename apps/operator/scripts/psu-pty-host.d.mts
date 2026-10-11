@@ -882,6 +882,23 @@ export function isUnbindableChild({ bindingOwed, childStartedAtMs, nowMs, window
     windowMs?: number;
     probedNativeId?: string | null;
 }): boolean;
+/** P-005(c) / D-007 (d): how the host answers a delivery id it has already
+ *  accepted. A `pending` turn/reset retry to a child that is NOW unbindable is
+ *  refused as `deferred-successor-unbindable`, exactly like a first delivery: the
+ *  accepted copy can sit on the busy gate or the carry re-arm long after the child
+ *  crossed its window, and answering `pending-delivery-id` let the sender re-poll
+ *  it forever (measured 2026-10-10: zero refusals on 33 wedged hosts, all of them
+ *  re-polling pending). Completed and cancelled retries keep their idempotent
+ *  answer, and the refusal does not cancel the accepted copy: if the child binds
+ *  later and it writes, the dedup turns the sender's next retry into a duplicate.
+ *  `unbindable` is called only when it can change the answer (it probes). Pure.
+ * @param {{duplicateState?: string | null, mode?: string, unbindable: () => boolean}} input
+ * @returns {'not-duplicate' | 'refuse-unbindable' | 'short-circuit'} */
+export function duplicateDeliveryVerdict({ duplicateState, mode, unbindable }: {
+    duplicateState?: string | null;
+    mode?: string;
+    unbindable: () => boolean;
+}): "not-duplicate" | "refuse-unbindable" | "short-circuit";
 /** WI-10004943: the per-host retry budget for a launch kickoff's fresh-child
  *  replacement. A missing, empty, or malformed value keeps the default; an explicit
  *  integer >= 0 wins, so `0` is the kill switch. Pure; exported for tests.

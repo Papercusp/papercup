@@ -6,7 +6,7 @@
  * The caller must derive the scope and completeness receipt on the server.
  */
 import { MICROS_PER_CENT, addMicrosDecimals, parseMicrosDecimal, splitMicrosDecimal, formatMicrosDecimal } from '../../../cupboard/money-journal';
-import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { shadowMonthBounds } from '../../../cupboard/shadow-metering';
 import { PILOT_COST_CATEGORIES, type CostPayer, type PilotCostCategory } from './unit-economics';
 
 export type HostedCostSource = 'unpriced' | 'estimate' | 'provider-reported' | 'provider-billed';
