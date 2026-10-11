@@ -1,21 +1,8 @@
 /** R8/P013: actual unpublished-turn lookup and observation writer against private migrated PG. */
 import { createHash, randomUUID } from 'node:crypto';
-import type postgres from 'postgres';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
-
-// Route both the detector's lookup and capture's real stores to the disposable
-// database. Keep the Reports flag, classification and observation writer real.
-const fixture = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async (original) => ({
-  ...await original<typeof import('@papercusp/db-org')>(),
-  getOrgPg: () => ({ sql: fixture.sql }),
-  withWorkspace: async <T>(workspaceId: string, callback: (sql: postgres.Sql) => Promise<T>): Promise<T> =>
-    fixture.sql.begin(async (transaction) => {
-      await transaction`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
-      return callback(transaction as unknown as postgres.Sql);
-    }) as Promise<T>,
-}));
+import { disposeBaselineCoordFixture, setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { activeWorkspaceId } = await import('./workspace-registry');
@@ -28,9 +15,12 @@ const body = '# Architecture audit\n\n## Findings\n' + 'Measured architecture ev
 
 describe('Reports turn detector against migrated private PostgreSQL', () => {
   let db: OrgTestDb;
+  let routing: BaselineCoordFixture | undefined;
   beforeAll(async () => {
     db = await createOrgTestDb();
-    fixture.sql = db.adminSql;
+    // Reuse the maintained fixture's URL/pool resets so nested capture stores
+    // use this same private database. No detector or capture module is mocked.
+    routing = await setupBaselineCoordFixture({ dsn: db.adminDsn });
   }, 180_000);
   afterEach(async () => {
     await drainDetached();
@@ -38,6 +28,7 @@ describe('Reports turn detector against migrated private PostgreSQL', () => {
   });
   afterAll(async () => {
     await drainDetached();
+    await disposeBaselineCoordFixture(routing);
     await db?.cleanup();
   });
 
@@ -51,7 +42,7 @@ describe('Reports turn detector against migrated private PostgreSQL', () => {
 
   async function observations(input: ReturnType<typeof turn>) {
     const key = `unpublished-report:${createHash('sha256').update(input.turnRef).digest('hex')}`;
-    return db.adminSql`SELECT id, state, created_by, body, payload FROM harness_shared.engineer_issues
+    return db.adminSql`SELECT issue_id, state, created_by, body, payload FROM harness_shared.engineer_issues
       WHERE payload->>'watchdogKey' = ${key}`;
   }
 
