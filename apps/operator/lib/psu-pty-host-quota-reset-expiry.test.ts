@@ -13,6 +13,8 @@ import { describe, it, expect } from 'vitest';
 import {
   makeQuotaBlockDetector,
   parseQuotaResetAtMs,
+  QUOTA_PROBE_BASE_MS,
+  QUOTA_PROBE_MAX_MS,
   QUOTA_RESET_GRACE_MS,
 } from '../scripts/psu-pty-host.mjs';
 
@@ -72,11 +74,12 @@ describe('parseQuotaResetAtMs (WI-6554700010008412)', () => {
 describe('makeQuotaBlockDetector reset expiry (WI-6554700010008412)', () => {
   it('holds the incident latch until the stated reset, then expires it once', () => {
     let now = BEFORE_RESET;
-    const expired: Array<{ resetAtMs: number; blockedSinceMs: number | null }> = [];
+    const expired: Array<{ resetAtMs: number | null; blockedSinceMs: number | null }> = [];
     const d = makeQuotaBlockDetector({
       agent: 'codex',
       now: () => now,
-      onExpire: (e: { resetAtMs: number; blockedSinceMs: number | null }) => expired.push(e),
+      probeBaseMs: Number.POSITIVE_INFINITY, // isolate the stated-reset path
+      onExpire: (e) => expired.push(e),
     });
     expect(d.observe(INCIDENT_WALL)).toBe('detected');
     expect(d.resetAtMs()).toBe(INCIDENT_RESET);
@@ -103,7 +106,7 @@ describe('makeQuotaBlockDetector reset expiry (WI-6554700010008412)', () => {
 
   it('re-latches with the new reset when the wall is still up on the next turn', () => {
     let now = BEFORE_RESET;
-    const d = makeQuotaBlockDetector({ agent: 'codex', now: () => now });
+    const d = makeQuotaBlockDetector({ agent: 'codex', now: () => now, probeBaseMs: Number.POSITIVE_INFINITY });
     d.observe(INCIDENT_WALL);
     now = INCIDENT_RESET + QUOTA_RESET_GRACE_MS;
     expect(d.isBlocked()).toBe(false);
@@ -122,13 +125,66 @@ describe('makeQuotaBlockDetector reset expiry (WI-6554700010008412)', () => {
     expect(d.resetAtMs()).toBe(INCIDENT_RESET);
   });
 
-  it('keeps the fail-closed level when no reset is stated (control)', () => {
+  it('keeps the fail-closed level when no reset is stated and probing is off (control)', () => {
     let now = BEFORE_RESET;
-    const d = makeQuotaBlockDetector({ agent: 'codex', now: () => now });
+    const d = makeQuotaBlockDetector({ agent: 'codex', now: () => now, probeBaseMs: Number.POSITIVE_INFINITY });
     d.observe('You’ve hit your usage limit.');
     now = INCIDENT_RESET + 30 * 86_400_000;
     expect(d.isBlocked()).toBe(true);
     expect(d.snapshot()).toMatchObject({ quotaBlocked: true, quotaResetAtMs: null });
+  });
+
+  // D-014: on 2026-10-11 the stated reset was Oct 14 but credits were back by
+  // 04:25Z Oct 11. Only a probe can see that.
+  it('probes a latched codex wall before its stated reset, backing off while it stays walled', () => {
+    let now = BEFORE_RESET;
+    const released: Array<{ reason: string; probe: number | null }> = [];
+    const d = makeQuotaBlockDetector({
+      agent: 'codex',
+      now: () => now,
+      onExpire: (e: { reason: string; probe: number | null }) => released.push(e),
+    });
+    d.observe(INCIDENT_WALL);
+    now += QUOTA_PROBE_BASE_MS - 1;
+    expect(d.isBlocked()).toBe(true);
+    now += 1;
+    expect(d.isBlocked()).toBe(false); // first probe: one deferred wake goes through
+    expect(released).toEqual([expect.objectContaining({ reason: 'probe', probe: 1 })]);
+
+    // The probe turn hits the wall again: re-latch, next probe waits twice as long.
+    expect(d.observe(INCIDENT_WALL)).toBe('detected');
+    now += QUOTA_PROBE_BASE_MS;
+    expect(d.isBlocked()).toBe(true);
+    now += QUOTA_PROBE_BASE_MS;
+    expect(d.isBlocked()).toBe(false);
+    expect(released.at(-1)).toMatchObject({ reason: 'probe', probe: 2 });
+
+    // The backoff is capped.
+    for (let i = 0; i < 6; i++) {
+      d.observe(INCIDENT_WALL);
+      now += QUOTA_PROBE_MAX_MS;
+      expect(d.isBlocked()).toBe(false);
+    }
+  });
+
+  it('starts a new episode at the base interval once a wall returns long after the last probe', () => {
+    let now = BEFORE_RESET;
+    const d = makeQuotaBlockDetector({ agent: 'codex', now: () => now });
+    d.observe(INCIDENT_WALL);
+    now += QUOTA_PROBE_BASE_MS;
+    expect(d.isBlocked()).toBe(false);
+    now += QUOTA_PROBE_MAX_MS + 1; // the account worked for hours
+    d.observe(INCIDENT_WALL);
+    now += QUOTA_PROBE_BASE_MS;
+    expect(d.isBlocked()).toBe(false);
+  });
+
+  it('never probes a claude wall (its TUI auto-continues at the reset)', () => {
+    let now = BEFORE_RESET;
+    const d = makeQuotaBlockDetector({ agent: 'claude', now: () => now });
+    d.observe("You've hit your weekly limit.");
+    now += 30 * 86_400_000;
+    expect(d.isBlocked()).toBe(true);
   });
 
   it('clears the parsed reset on recycle', () => {
