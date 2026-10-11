@@ -136,6 +136,8 @@ export interface ResultDoorOpts {
   /** A spill that outlives the bounded request wait may finish after the response.
    *  The transport uses this callback to backfill its invocation row on late settlement. */
   onLateScratchWriteSettled?: (settlement: ResultDoorLateScratchWriteSettlement) => void | Promise<void>;
+  /** Persist the bounded-wait timeout before registering the late-settlement backfill. */
+  onScratchWritePending?: (timeout: ResultDoorScratchWriteTimeout) => void | Promise<void>;
   /** Phase attribution for awaited spill writes, including failed writes. */
   onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
   /** MCP request ID attached to process-local scratch mutex holder diagnostics. */
@@ -153,6 +155,17 @@ export interface ResultDoorLateScratchWriteSettlement {
   reason: string;
   aggregateOutputEscape: boolean;
   errorCode?: string;
+}
+
+export interface ResultDoorScratchWriteTimeout {
+  timeoutMs: number;
+  timedOutAt: string;
+  spillPath: string;
+  spillUri: string;
+  originalBytes: number;
+  returnedContextBytes: number;
+  reason: string;
+  aggregateOutputEscape: boolean;
 }
 
 export interface ResultDoorAggregateScope {
@@ -2146,6 +2159,7 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
     if (boundedWrites.reason === 'timeout') {
       const pendingResult = markPendingScratchWrite(doored, error, opts);
       if (pendingResult) {
+        await recordPendingScratchWriteTimeout(pendingResult, opts);
         observeLateScratchWrite(writeSettlements, pendingResult, opts);
         const volatileFallback = applyResultDoor(result, {
           ...opts,
@@ -2335,6 +2349,36 @@ function observeLateScratchWrite<T extends DoorableResult>(
       );
     }
   });
+}
+
+async function recordPendingScratchWriteTimeout<T extends DoorableResult>(
+  pendingResult: T,
+  opts: ResultDoorOpts,
+): Promise<void> {
+  const callback = opts.onScratchWritePending;
+  const meta = recordAt(pendingResult._meta?.resultDoor);
+  const spillPath = typeof meta?.spillPath === 'string' ? meta.spillPath : null;
+  const spillUri = typeof meta?.spillUri === 'string' ? meta.spillUri : null;
+  if (!callback || !meta || !spillPath || !spillUri) return;
+
+  const aggregate = recordAt(meta.aggregate);
+  try {
+    await callback({
+      timeoutMs: RESULT_DOOR_SCRATCH_WRITE_WAIT_MS,
+      timedOutAt: new Date().toISOString(),
+      spillPath,
+      spillUri,
+      originalBytes: typeof meta.originalBytes === 'number' ? meta.originalBytes : 0,
+      returnedContextBytes: measureResultContextBytes(pendingResult),
+      reason: typeof meta.reason === 'string' ? meta.reason : 'per-result-budget-exceeded',
+      aggregateOutputEscape:
+        meta.reason === 'aggregate-output-budget-exceeded' || aggregate?.exceeded === true,
+    });
+  } catch (callbackError) {
+    console.warn(
+      `[result-door] pending scratch-write timeout callback failed: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
+    );
+  }
 }
 
 function isScorecardsGetResult(opts: ResultDoorOpts): boolean {
