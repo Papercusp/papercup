@@ -116,7 +116,14 @@ describe('native operational execution witnesses', () => {
     f.deps.readRuntime.mockImplementation(async () => { order.push('runtime'); return f.fingerprint; });
     f.definition.run.mockImplementation(async () => {
       order.push('execute');
-      return { exitCode: 0, summary: 'Actual check passed.', assertions: [{ id: 'actual-result', passed: true, evidence: 'Observed' }] };
+      return {
+        exitCode: 0,
+        summary: 'Actual check passed.',
+        assertions: [{ id: 'actual-result', passed: true, evidence: 'Observed' }],
+        runtimeEnvironmentBefore: { fingerprint: 'forged' },
+        testLayer: 'e2e',
+        startedAt: '2000-01-01T00:00:00Z',
+      };
     });
     const pending = executeOperationalRun(f.definition, f.ctx, { ...f.deps, snapshot });
     await vi.waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));

@@ -173,6 +173,21 @@ describe('listTasks pushes a label prefix into the query', () => {
 });
 
 describe('listTasks taskId filter', () => {
+  it('filters an exact identity batch before ordering and limiting', async () => {
+    const { sql, text } = recordingSql();
+    sql.array = vi.fn(() => 'bound-task-array') as typeof sql.array;
+    await listTasks({ workspaceId: 'ws-1', includeEnded: true, taskIds: ['older', 'recent'], limit: 2 }, sql);
+    expect(sql.array).toHaveBeenCalledWith(['older', 'recent'], 25);
+    expect(text()).toContain('task_id = ANY');
+    expect(text().indexOf('task_id = ANY')).toBeLessThan(text().indexOf('LIMIT'));
+  });
+
+  it('does not turn an empty identity batch into an unfiltered ledger read', async () => {
+    const { sql, calls } = recordingSql();
+    expect(await listTasks({ workspaceId: 'ws-1', taskIds: [] }, sql)).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
   it('emits an exact task_id predicate carrying the durable id as a bound parameter', async () => {
     const { sql, calls, text } = recordingSql();
     const taskId = 'task-to-kill';

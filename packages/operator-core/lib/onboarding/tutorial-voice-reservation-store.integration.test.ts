@@ -5,7 +5,7 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { TutorialVoiceAdmission } from '../endpoint-route/routes/hosted-tutorial-progress';
-import { PostgresTutorialVoiceReservationStore, validateTutorialVoiceIdentityForUpdate, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
+import { PostgresTutorialVoiceReservationStore, validateTutorialVoiceIdentityForUpdate, withTutorialVoiceTenantContext, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
@@ -90,19 +90,31 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
       const [before] = await tx`SELECT current_user AS role,
         current_setting('app.workspace_id', true) AS workspace`;
       expect(before.role).toBe('hosted_service');
-      await tx`SELECT set_config('app.organization_id', ${organizationId}, true),
-        set_config('app.user_id', ${userId}, true)`;
-      await tx.unsafe('SET LOCAL ROLE hosted_app');
-      const rows = await tx`SELECT user_id FROM papercusp_auth.hosted_user_preferences
-        WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid FOR UPDATE`;
+      const context = { principal: { kind: 'user' as const, profile: 'hosted' as const,
+        authMethod: 'cookie-session' as const, trust: 'verified' as const, slug: userId,
+        workspaceId: randomUUID(), userId, activeOrganizationId: organizationId,
+        sessionId: 'verified-session', sessionVersion: 1 } };
+      const rows = await withTutorialVoiceTenantContext(tx, context, scoped => scoped`
+        SELECT user_id FROM papercusp_auth.hosted_user_preferences
+        WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid FOR UPDATE`);
       expect(rows).toHaveLength(1);
-      await tx.unsafe('SET LOCAL ROLE hosted_service');
-      await tx`SELECT set_config('app.organization_id', '', true), set_config('app.user_id', '', true)`;
       const [after] = await tx`SELECT current_user AS role,
         current_setting('app.workspace_id', true) AS workspace,
         current_setting('app.organization_id', true) AS organization,
         current_setting('app.user_id', true) AS "user"`;
       expect(after).toEqual({ ...before, organization: '', user: '' });
+      await expect(withTutorialVoiceTenantContext(tx, context, async scoped => {
+        await scoped`SELECT 1 / 0`;
+      })).rejects.toMatchObject({ code: '22012' });
+      const [restored] = await tx`SELECT current_user AS role,
+        current_setting('app.workspace_id', true) AS workspace,
+        current_setting('app.organization_id', true) AS organization,
+        current_setting('app.user_id', true) AS "user"`;
+      expect(restored).toEqual(after);
+      expect(await withTutorialVoiceTenantContext(tx, { principal: { ...context.principal,
+        activeOrganizationId: randomUUID() } }, scoped => scoped`
+          SELECT user_id FROM papercusp_auth.hosted_user_preferences
+          WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid`)).toHaveLength(0);
       await expect(db.adminSql.begin(async writer => {
         await writer.unsafe("SET LOCAL lock_timeout = '100ms'");
         await writer`UPDATE papercusp_auth.hosted_user_preferences SET profile = '{}'::jsonb
