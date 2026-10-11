@@ -676,6 +676,24 @@ export interface PlaywrightStateWriterEvidence extends HostedProfileWriterEviden
 
 export interface IndexedCensusWriterEvidence extends HostedProfileWriterEvidence { sessionId: string }
 
+/** Native exec can print a completed shell envelope instead of its stdout.
+ * Only unwrap the documented successful terminal envelope; a yielded handle,
+ * failed command, or arbitrary nested object is not a writer receipt.
+ */
+function historicalCensusReceipt(text: string): string | null {
+  let value;
+  try { value = JSON.parse(text); } catch { return null; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if ('exit_code' in value || 'session_id' in value) {
+    if (value.exit_code !== 0 || 'session_id' in value || typeof value.output !== 'string') return null;
+    try { value = JSON.parse(value.output); } catch { return null; }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  }
+  return value.storageState !== undefined ||
+    (value.ok === true && typeof value.statePath === 'string' && typeof value.sessionHash === 'string')
+    ? JSON.stringify(value) : null;
+}
+
 /** The search index locates a session/time; it is not the complete source.
  * Reuse the session-port reader's manifest, bounded decompression and SHA checks.
  * Pair calls by call_id, never by adjacent lines/parts (outputs can interleave).
@@ -728,7 +746,10 @@ export async function recoverHistoricalCensusWriterEvidence(candidates: readonly
       if (!output || duplicate.has(callId)) continue;
       const texts = typeof output.output === 'string' ? [output.output] : Array.isArray(output.output)
         ? output.output.flatMap(block => typeof block?.text === 'string' ? [block.text] : []) : [];
-      const receipts = texts.filter(text => { try { return JSON.parse(text)?.storageState !== undefined; } catch { return false; } });
+      const receipts = texts.flatMap(text => {
+        const receipt = historicalCensusReceipt(text);
+        return receipt === null ? [] : [receipt];
+      });
       if (result.length >= 100) throw new Error('Historical census recovered call bound exceeded');
       result.push({ ref: `archive:codex:${sessionId}:sha256:${source.sha256}:line:${call.line}:call:${callId}`,
         indexedRef: selected.find(candidate => Date.parse(candidate.startedAt) === Date.parse(call.timestamp))?.ref,
