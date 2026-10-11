@@ -15,8 +15,8 @@
  *    digest, so two pins on one task mean the arms (or trials) were not graded by the same verifier.
  * Every count it reports (tasks, per-bucket tasks, the small-N caveat) is derived from the rows, never restated.
  */
-import type { ArmTaskTrials, FrontierArmSummary, TaskRunResult } from '@papercusp/bench-metrics';
-import { frontierRankReport } from '@papercusp/bench-metrics';
+import type { ArmTaskTrials, FrontierArmSummary, Interval, PairedComparison, TaskRunResult } from '@papercusp/bench-metrics';
+import { bootstrapMeanCI, frontierRankReport, pairedBootstrapCI } from '@papercusp/bench-metrics';
 import { frontierSweGraderCorpusVersion } from '../grader/frontier-swe';
 
 /** Coarse buckets in their reporting order; any other bucket a corpus carries sorts after these. */
@@ -24,7 +24,7 @@ const BUCKET_ORDER = ['implementation', 'performance', 'research'] as const;
 
 export type FrontierSweCorpusVersion = 'v1' | 'v2';
 
-export type FrontierSweReportRefusalCode = 'mixed-corpus-versions' | 'scorer-mismatch';
+export type FrontierSweReportRefusalCode = 'mixed-corpus-versions' | 'scorer-mismatch' | 'duplicate-trial';
 
 /** Why a FrontierSWE report cannot be built from these rows. The rows are not comparable; nothing was folded. */
 export class FrontierSweReportRefusal extends Error {
@@ -78,10 +78,24 @@ export interface FrontierSweSuiteData {
   excludedCount: number;
   /** Scored tasks per bucket, derived from the rows + `taskBucket` (tasks with no bucket are not counted). */
   bucketTaskCounts: Record<string, number>;
-  /** Per-arm rollup over all tasks, sorted by AVG RANK ascending. */
+  /** Per-arm rollup: v2 sorts by mean@k descending; v1 keeps historical AVG RANK. */
   arms: FrontierArmSummary[];
   /** Per-bucket per-arm rollups, one per bucket in `bucketTaskCounts`. */
   perBucket: Record<string, FrontierArmSummary[]>;
+  /** Explicit primary/secondary labels, so historical rank cannot become a v2 headline. */
+  headlineMetric: string;
+  secondaryMetrics: string[];
+  /** An incomplete arm has no headline value; its conditional rollup remains in `arms`. */
+  headline: Record<string, { value: number | null; interval: Interval | null; taskIds: string[] }>;
+  incompleteTasks: Record<string, string[]>;
+  /** Pairwise differences resample complete TASK means, never individual seed rows. */
+  pairedComparisons: Array<{
+    armA: string; armB: string; taskIds: string[]; excludedTaskIds: string[]; comparison: PairedComparison | null;
+  }>;
+  /** Upstream suite categories may overlap; overall task weighting remains unchanged. */
+  perCategory: Record<string, FrontierArmSummary[]>;
+  categoryTaskCounts: Record<string, number>;
+  uncategorizedTaskIds: string[];
   caveats: readonly string[];
 }
 
@@ -89,8 +103,7 @@ export interface FrontierSweSuiteData {
 function isScoredFrontierRow(r: TaskRunResult): boolean {
   return (
     r.generationStatus === 'completed' &&
-    r.graderStatus !== 'error' &&
-    r.graderStatus !== 'timeout' &&
+    (r.graderStatus === 'passed' || r.graderStatus === 'failed') &&
     typeof r.score === 'number' &&
     Number.isFinite(r.score)
   );
@@ -166,11 +179,30 @@ function assertOneScorerPerTask(scored: readonly TaskRunResult[]): void {
  */
 export function buildFrontierSweSuiteData(
   rows: readonly TaskRunResult[],
-  opts: { k?: number; taskBucket?: Record<string, string> } = {},
+  opts: {
+    k?: number;
+    taskBucket?: Record<string, string>;
+    taskCategories?: Record<string, readonly string[]>;
+    /** Frozen assignment scope, when available, exposes entirely absent tasks/arms too. */
+    assignedTaskIds?: readonly string[];
+    assignedArms?: readonly string[];
+  } = {},
 ): FrontierSweSuiteData {
   const k = opts.k ?? 5;
   const fsRows = rows.filter((r) => r.suite === 'frontier-swe');
   const corpusVersion = assertOneCorpusVersion(fsRows);
+  if (corpusVersion === 'v2') {
+    const seen = new Set<string>();
+    for (const row of fsRows) {
+      const key = JSON.stringify([row.taskId, row.arm, row.seed]);
+      if (seen.has(key)) {
+        throw new FrontierSweReportRefusal('duplicate-trial',
+          `FrontierSWE v2 report refused: duplicate trial ${row.arm}/${row.taskId}#${row.seed}; select one settled attempt per seed.`,
+          { taskId: row.taskId, arm: row.arm, seed: row.seed });
+      }
+      seen.add(key);
+    }
+  }
   const scored = fsRows.filter(isScoredFrontierRow);
   assertOneScorerPerTask(scored);
   const excludedCount = fsRows.length - scored.length;
@@ -198,9 +230,51 @@ export function buildFrontierSweSuiteData(
   );
   for (const b of buckets) bucketTaskCounts[b] = tasks.filter((t) => t.tier === b).length;
 
-  const report = frontierRankReport(tasks, k);
+  const ranking = corpusVersion === 'v2' ? 'mean' as const : 'avg-rank' as const;
+  const report = frontierRankReport(tasks, k, { ranking });
   const perBucket: Record<string, FrontierArmSummary[]> = {};
-  for (const b of buckets) perBucket[b] = frontierRankReport(tasks, k, { tierFilter: b }).arms;
+  for (const b of buckets) perBucket[b] = frontierRankReport(tasks, k, { tierFilter: b, ranking }).arms;
+
+  const taskIds = [...new Set([...(opts.assignedTaskIds ?? []), ...fsRows.map(r => r.taskId)])].sort();
+  const armIds = [...new Set([...(opts.assignedArms ?? []), ...fsRows.map(r => r.arm)])].sort();
+  const means = new Map(report.perTaskMeanAtK.map(t => [t.taskId, t.scores]));
+  const incompleteTasks: Record<string, string[]> = {};
+  const headline: FrontierSweSuiteData['headline'] = {};
+  for (const arm of armIds) {
+    const completeIds = taskIds.filter(id => means.get(id)?.[arm] !== undefined);
+    incompleteTasks[arm] = taskIds.filter(id => means.get(id)?.[arm] === undefined);
+    const values = completeIds.map(id => means.get(id)![arm]);
+    const complete = incompleteTasks[arm].length === 0 && values.length > 0;
+    headline[arm] = {
+      value: complete
+        ? corpusVersion === 'v2' ? values.reduce((a, b) => a + b, 0) / values.length : report.arms.find(a => a.arm === arm)?.avgRank ?? null
+        : null,
+      interval: corpusVersion === 'v2' && complete && values.length >= 2 ? bootstrapMeanCI(values) : null,
+      taskIds: completeIds,
+    };
+  }
+  const pairedComparisons: FrontierSweSuiteData['pairedComparisons'] = [];
+  for (let i = 0; i < armIds.length; i++) {
+    for (let j = i + 1; j < armIds.length; j++) {
+      const armA = armIds[i];
+      const armB = armIds[j];
+      const pairedIds = taskIds.filter(id => means.get(id)?.[armA] !== undefined && means.get(id)?.[armB] !== undefined);
+      pairedComparisons.push({
+        armA, armB, taskIds: pairedIds, excludedTaskIds: taskIds.filter(id => !pairedIds.includes(id)),
+        comparison: pairedIds.length >= 2
+          ? pairedBootstrapCI(pairedIds.map(id => means.get(id)![armA]), pairedIds.map(id => means.get(id)![armB]))
+          : null,
+      });
+    }
+  }
+  const categories = [...new Set(tasks.flatMap(t => opts.taskCategories?.[t.taskId] ?? []))].sort();
+  const perCategory: FrontierSweSuiteData['perCategory'] = {};
+  const categoryTaskCounts: Record<string, number> = {};
+  for (const category of categories) {
+    const members = tasks.filter(t => opts.taskCategories?.[t.taskId]?.includes(category));
+    categoryTaskCounts[category] = members.length;
+    perCategory[category] = frontierRankReport(members, k, { ranking }).arms;
+  }
 
   return {
     k,
@@ -212,6 +286,14 @@ export function buildFrontierSweSuiteData(
     bucketTaskCounts,
     arms: report.arms,
     perBucket,
+    headlineMetric: corpusVersion === 'v2' ? `mean@${k}` : 'avg-rank',
+    secondaryMetrics: corpusVersion === 'v2' ? [`best@${k}`, 'avg-rank', 'dominance'] : [`mean@${k}`, `best@${k}`, 'dominance'],
+    headline,
+    incompleteTasks,
+    pairedComparisons,
+    perCategory,
+    categoryTaskCounts,
+    uncategorizedTaskIds: taskIds.filter(id => !opts.taskCategories?.[id]?.length),
     caveats: frontierSweCaveats({ corpusVersion, taskCount: byTask.size }),
   };
 }

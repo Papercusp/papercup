@@ -100,6 +100,103 @@ const V2_PIN_REPUSHED = 'frontier-swe@v2+da83f84f8fbc verifier=ghcr.io/x/astrono
 const V1_PIN = 'frontier-swe@v1 0123456789abcdef0123456789abcdef01234567';
 
 describe('buildFrontierSweSuiteData — v2 comparability (plan benchmark-coverage-frontierswe-v2-2026-10-10 P-003)', () => {
+  it('leads with mean@5 rather than best-score rank and labels the secondary metrics', () => {
+    const rows = ['t1', 't2'].flatMap(task => [
+      ...trials(task, 'steady', 0.6, { graderVersion: V2_PIN }),
+      ...[1, 0, 0, 0, 0].map((score, seed) => row(task, 'spike', seed, score, { graderVersion: V2_PIN })),
+    ]);
+    const sd = buildFrontierSweSuiteData(rows, {
+      taskBucket: { t1: 'implementation', t2: 'implementation' },
+      taskCategories: { t1: ['Implementation', 'Visual Reasoning'], t2: ['Implementation'] },
+    });
+    expect(sd.headlineMetric).toBe('mean@5');
+    expect(sd.secondaryMetrics).toEqual(['best@5', 'avg-rank', 'dominance']);
+    expect(sd.arms.map(a => a.arm)).toEqual(['steady', 'spike']);
+    expect(sd.arms[0].avgRank).toBe(2);
+    expect(sd.headline.steady.value).toBeCloseTo(0.6);
+    expect(sd.headline.spike.value).toBeCloseTo(0.2);
+    expect(sd.headline.steady.interval?.point).toBeCloseTo(0.6);
+    expect(sd.categoryTaskCounts).toEqual({ Implementation: 2, 'Visual Reasoning': 1 });
+    expect(sd.perCategory.Implementation[0].arm).toBe('steady');
+    expect(sd.perBucket.implementation[0].arm).toBe('steady');
+    expect(sd.taskCount).toBe(2); // overlapping categories do not double-weight t1
+    expect(sd.uncategorizedTaskIds).toEqual([]);
+    expect(sd.pairedComparisons[0].comparison).toMatchObject({ n: 2, resamplingUnit: 'pair', independentUnits: 2 });
+    expect(sd.pairedComparisons[0].comparison?.delta.point).toBeCloseTo(0.4); // steady - spike
+  });
+
+  it('discloses incomplete tasks and pairs only complete task means, with no fabricated headline', () => {
+    const rows = ['t1', 't2', 'short'].flatMap(task => [
+      ...trials(task, 'A', 0.2, { graderVersion: V2_PIN }),
+      ...trials(task, 'B', 0.6, { graderVersion: V2_PIN }).filter(r => task !== 'short' || r.seed < 4),
+    ]);
+    rows.push(row('short', 'B', 4, null, { graderVersion: V2_PIN, graderStatus: 'error' }));
+    const sd = buildFrontierSweSuiteData(rows);
+    expect(sd.incompleteTasks).toEqual({ A: [], B: ['short'] });
+    expect(sd.headline.B.value).toBeNull();
+    expect(sd.headline.B.interval).toBeNull();
+    expect(sd.arms.find(a => a.arm === 'B')?.tasksUsed).toBe(2);
+    expect(sd.pairedComparisons[0].taskIds).toEqual(['t1', 't2']);
+    expect(sd.pairedComparisons[0].excludedTaskIds).toEqual(['short']);
+    expect(sd.pairedComparisons[0].comparison?.n).toBe(2);
+    expect(sd.pairedComparisons[0].comparison?.delta.point).toBeCloseTo(0.4);
+    expect(sd.excludedCount).toBe(1);
+    expect(sd.uncategorizedTaskIds).toEqual(['short', 't1', 't2']);
+  });
+
+  it('matches the hand-computed three-task mean@5 and gives each task equal weight', () => {
+    const rows = [
+      ...[0, 0, 0, 0, 1].map((score, seed) => row('t1', 'A', seed, score, { graderVersion: V2_PIN })),
+      ...trials('t2', 'A', 0.5, { graderVersion: V2_PIN }),
+      ...trials('t3', 'A', 0.8, { graderVersion: V2_PIN }),
+    ];
+    expect(buildFrontierSweSuiteData(rows).headline.A.value).toBeCloseTo((0.2 + 0.5 + 0.8) / 3);
+    // An additional complete seed must not give t3 more weight than the other tasks.
+    rows.push(row('t3', 'A', 5, 0.8, { graderVersion: V2_PIN }));
+    const score = buildFrontierSweSuiteData(rows).headline.A.value;
+    expect(score).toBeCloseTo(0.5);
+    expect(score).not.toBeCloseTo((1 + 2.5 + 4.8) / 16);
+  });
+
+  it('never invents an interval from one paired task or counts invalid grader results', () => {
+    const rows = [...trials('t', 'A', 0, { graderVersion: V2_PIN }), ...trials('t', 'B', 1, { graderVersion: V2_PIN })];
+    rows.push(row('invalid', 'A', 0, 1, { graderVersion: V2_PIN, graderStatus: 'invalid' }));
+    const sd = buildFrontierSweSuiteData(rows);
+    expect(sd.pairedComparisons[0].comparison).toBeNull();
+    expect(sd.pairedComparisons[0].taskIds).toEqual(['t']);
+    expect(sd.excludedCount).toBe(1);
+    expect(sd.incompleteTasks.A).toEqual(['invalid']);
+    expect(sd.arms.find(a => a.arm === 'A')?.meanAtK).toBe(0);
+  });
+
+  it('refuses duplicate seeds instead of presenting four distinct trials as mean@5', () => {
+    const rows = trials('t', 'A', 0.5, { graderVersion: V2_PIN }).filter(r => r.seed < 4);
+    rows.push(rows[0]);
+    expect(() => buildFrontierSweSuiteData(rows)).toThrow(/duplicate trial/);
+  });
+
+  it('uses frozen assignment scope to disclose completely absent tasks and arms', () => {
+    const sd = buildFrontierSweSuiteData(trials('present', 'A', 0.5, { graderVersion: V2_PIN }), {
+      assignedTaskIds: ['present', 'absent'], assignedArms: ['A', 'B'],
+    });
+    expect(sd.incompleteTasks).toEqual({ A: ['absent'], B: ['absent', 'present'] });
+    expect(sd.headline.A.value).toBeNull();
+    expect(sd.headline.B).toEqual({ value: null, interval: null, taskIds: [] });
+    expect(sd.pairedComparisons[0]).toMatchObject({ taskIds: [], excludedTaskIds: ['absent', 'present'], comparison: null });
+  });
+
+  it('retains historical rank ordering for v1', () => {
+    const rows = [
+      ...trials('t', 'steady', 0.6, { graderVersion: V1_PIN }),
+      ...[1, 0, 0, 0, 0].map((score, seed) => row('t', 'spike', seed, score, { graderVersion: V1_PIN })),
+    ];
+    const sd = buildFrontierSweSuiteData(rows);
+    expect(sd.headlineMetric).toBe('avg-rank');
+    expect(sd.arms[0].arm).toBe('spike');
+    expect(sd.headline.spike.value).toBe(1);
+    expect(sd.headline.spike.interval).toBeNull();
+  });
+
   it('names the corpus version and the scorer pins of the rows it folded', () => {
     const sd = buildFrontierSweSuiteData(
       [...trials('impl1', 'hive', 0.6, { graderVersion: V2_PIN }), ...trials('impl1', 'opus', 0.3, { graderVersion: V2_PIN })],
