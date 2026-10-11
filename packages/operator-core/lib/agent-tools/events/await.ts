@@ -566,9 +566,11 @@ export default defineTool({
 
     // ── Monotonic exact-key LATCHES. The fire ledger is normally diagnostic: a
     // recurring key having fired before does not satisfy a wait for its NEXT edge.
-    // One concrete SHA's proven egress and one durable task's first terminal
-    // transition cannot become untrue or recur, so a late exact-key registrant must
-    // consume the latch. Patterns and bare streams remain ordinary edge waits.
+    // One concrete SHA's proven egress, one durable task's first terminal
+    // transition, and one message's receipt cannot become untrue, so a late
+    // exact-key registrant must consume the latch. A receipt fire does not prove
+    // any payload filter (e.g. read:true versus delivery only); filtered receipt
+    // waits, patterns and bare streams remain ordinary edge waits.
     // EI-24719187042784648: git-sync emits only full-sha suffixed keys, so a short sha or a
     // non-sha suffix (`git-sync:committed:papercusp`) names a key that can never fire. Refuse
     // before any latch probe or registration rather than parking the caller until timeout.
@@ -576,7 +578,10 @@ export default defineTool({
     if (gitSyncShaProblem) return gitSyncShaSuffixRefusal(eventKey, gitSyncShaProblem, 'events:await');
     const gitSyncEgressTarget = !patternAwait ? /^git-sync:egressed:([^:]+)$/.exec(eventKey) : null;
     const taskTerminalTarget = !patternAwait ? /^task:terminal:([^:]+)$/.exec(eventKey) : null;
-    const monotonicLatchTarget = gitSyncEgressTarget ?? taskTerminalTarget;
+    const coordReceiptTarget = !patternAwait && args.payload_filter == null
+      ? /^coord:receipt:(.+)$/.exec(eventKey)
+      : null;
+    const monotonicLatchTarget = gitSyncEgressTarget ?? taskTerminalTarget ?? coordReceiptTarget;
     if (monotonicLatchTarget) {
       const probe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
         fallback: null,
@@ -595,6 +600,8 @@ export default defineTool({
                 fired_at: probe.value.lastFiredAt,
                 advice: taskTerminalTarget
                   ? `The managed-task terminal key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
+                  : coordReceiptTarget
+                    ? `The coordination receipt key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — inspect the receipt payload and continue now. A receipt does not prove the requested action was completed.`
                   : `The git-sync egress key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — origin/staging has already contained this commit. Do not wait; proceed with the work this egress unblocks now.`,
               }),
             },
@@ -1426,6 +1433,8 @@ export default defineTool({
                   fired_at: postRegisterProbe.value.lastFiredAt,
                   advice: taskTerminalTarget
                     ? `The managed-task terminal key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired because this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
+                    : coordReceiptTarget
+                      ? `The coordination receipt key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired. Inspect the receipt payload; a receipt does not prove the requested action was completed.`
                     : `The git-sync egress key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired and the commit is already on origin/staging. Proceed with the work this egress unblocks now.`,
                 }),
               },

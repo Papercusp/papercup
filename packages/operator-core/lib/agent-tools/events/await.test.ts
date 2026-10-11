@@ -2127,6 +2127,86 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
   });
 });
 
+describe('EI-25418020058852136 — coordination receipt exact-key latch', () => {
+  const receiptKey = 'coord:receipt:coord-send-read-once';
+  const firedAt = '2026-10-08T13:13:40.328Z';
+  const noFire = {
+    prefix: 'coord:receipt', exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null,
+  };
+  const exactFire = {
+    prefix: 'coord:receipt', exact: true, distinctKeys: 1, fires: 1, lastFiredAt: firedAt,
+  };
+
+  beforeEach(() => {
+    vi.mocked(probeKeyFireEvidence).mockReset().mockResolvedValue(noFire);
+    vi.mocked(cancelAwait).mockReset().mockResolvedValue(false);
+  });
+
+  it('returns the prior receipt instead of waiting for a second receipt edge', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValue(exactFire);
+
+    const out = await call({ event: receiptKey });
+
+    expect(out).toMatchObject({ ok: true, already_fired: true, event: receiptKey, fired_at: firedAt });
+    expect(out.advice).toMatch(/receipt/i);
+    expect(out.advice).toMatch(/does not prove.*action/i);
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a receipt for a different message', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValue({ ...exactFire, exact: false });
+
+    const out = await call({ event: receiptKey });
+
+    expect(out.already_fired).toBeUndefined();
+    expect(out.await_id).toBe(99);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires the pending wait when the receipt fires during registration', async () => {
+    vi.mocked(probeKeyFireEvidence)
+      .mockResolvedValueOnce(noFire)
+      .mockResolvedValueOnce(exactFire);
+    vi.mocked(cancelAwait).mockResolvedValueOnce(true);
+
+    const out = await call({ event: receiptKey });
+
+    expect(out).toMatchObject({ ok: true, already_fired: true, event: receiptKey, fired_at: firedAt });
+    expect(out.advice).toMatch(/receipt.*during registration/i);
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the delivery when the emitter already claimed the registered wait', async () => {
+    vi.mocked(probeKeyFireEvidence)
+      .mockResolvedValueOnce(noFire)
+      .mockResolvedValueOnce(exactFire);
+
+    const out = await call({ event: receiptKey });
+
+    expect(out).toMatchObject({ ok: true, await_id: 99, event: receiptKey });
+    expect(out.already_fired).toBeUndefined();
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+  });
+
+  it('keeps bare and pattern receipt streams edge-triggered', async () => {
+    await call({ event: 'coord:receipt' });
+    await call({ event: 'coord:receipt:*' });
+
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+  });
+
+  it('does not use an unqualified fire to satisfy a payload-filtered receipt wait', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValue(exactFire);
+
+    const out = await call({ event: receiptKey, payload_filter: { read: true } });
+
+    expect(out.already_fired).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('EI-23156083757639548 — task terminal exact-key latch', () => {
   const terminalKey = 'task:terminal:0mtzw7ug42uhzvubiux';
 
