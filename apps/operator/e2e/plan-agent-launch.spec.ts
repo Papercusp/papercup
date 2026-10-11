@@ -27,7 +27,7 @@
  *   8. /admin/plans page renders without 500 (smoke).
  */
 import { test, expect, type APIRequestContext } from './_egress';
-import { seedFakeLlmHarness } from './_fake-llm-fixture';
+import { seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
 let harnessSlug = 'main';
 
 const baseURL =
@@ -163,6 +163,25 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       '',
       'First edit landed.',
       '',
+      '## Requirements',
+      '',
+      '**R-1 — Durable launch rows.**',
+      '```requirement',
+      JSON.stringify({
+        intent: { request: 'Verify plan launch and resume persist their revision and turn rows.', sourceRefs: ['test:plan-agent-launch'] },
+        acceptance: { condition: 'Launch and resume retain the expected plan run and transcript rows.', falsifier: 'A launched run or seeded user turn is absent.', evidencePlane: 'tree', requiredScope: ['launch', 'resume'], requiredTestLayers: ['e2e'] },
+        verification: { method: 'Run this scripted fake-LLM journey and inspect runs and run-transcript through the admin API.', check: { kind: 'tests', files: ['apps/operator/e2e/plan-agent-launch.spec.ts'] } },
+      }),
+      '```',
+      '',
+      '## Design',
+      '',
+      '### Bar-to-work map for this plan',
+      '',
+      '| bar | implementing plan items | evidence plane |',
+      '|---|---|---|',
+      '| R-1 | P-001 | tree |',
+      '',
       '## Phase 1',
       '',
       '- **P-001** `todo` Author the e2e fixture.',
@@ -213,6 +232,7 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
 
     // ── 5. plans:launch — admin path always sends await:false; we
     //      verify the row exists immediately.
+    await seedFakeLlmPlanAcceptance(harnessSlug, slug);
     const launched = await adminPost(request, 'launch', {
       slug,
       note: 'P-028: focus on P-001.',
@@ -225,7 +245,7 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       mode?: string;
       status?: string;
     };
-    expect(launchJson.ok).toBe(true);
+    expect(launchJson.ok, JSON.stringify(launched.json)).toBe(true);
     expect(launchJson.mode).toBe('background');
     expect(launchJson.status).toBe('running');
     expect(launchJson.runId).toBeGreaterThan(0);

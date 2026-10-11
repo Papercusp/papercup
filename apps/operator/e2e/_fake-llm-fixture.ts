@@ -35,3 +35,31 @@ export async function seedFakeLlmHarness(options: { hive?: boolean } = {}): Prom
   ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 });
   return slug;
 }
+
+// Use the maintained transactional BAR writer, then the actual launch gate.
+// This fixture is deliberately confined to the disposable database; it never
+// changes admission policy or fabricates a successful gate verdict.
+export async function seedFakeLlmPlanAcceptance(harnessSlug: string, planSlug: string): Promise<void> {
+  if (process.env.VERIFY_TAURI_ISOLATED_DB !== '1') return;
+  const root = process.env.OPERATOR_SOURCE_ROOT;
+  const workspace = process.env.PAPERCUSP_WORKSPACE_ID;
+  const admin = process.env.HARNESS_ADMIN_DATABASE_URL;
+  if (!root || !workspace?.startsWith('verify-tauri-isolated-') || !admin) throw new Error('Missing isolated plan fixture context');
+  const database = new URL(admin);
+  if (!['127.0.0.1', 'localhost'].includes(database.hostname) || !database.port || database.port === '5432') throw new Error('Refusing shared plan fixture database');
+  await promisify(execFile)(process.execPath, [
+    '--import', resolve(root, 'scripts/lib/committed-source-loader.mjs'),
+    '--import', 'tsx', '--input-type=module', '-e',
+    `const { runAcceptanceBarMigrationInDatabase } = await import('./packages/operator-core/lib/acceptance-bar-migration.ts');
+     const { checkPlanStartable } = await import('./packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts');
+     const { getOrgPg } = await import('@papercusp/db-org');
+     const { sql } = getOrgPg();
+     try {
+       const harnessSlug = ${JSON.stringify(harnessSlug)};
+       const planSlug = ${JSON.stringify(planSlug)};
+       const result = await runAcceptanceBarMigrationInDatabase({ workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, harnessSlug, planSlug, actorId: 'e2e-plan-fixture', dryRun: false });
+       const gate = await checkPlanStartable(planSlug, { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, harnessSlug }, null, 'start');
+       if (!gate.ok) throw new Error('Plan fixture launch precondition failed: ' + JSON.stringify({ result, gate }));
+     } finally { await sql.end(); }`,
+  ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 });
+}
