@@ -80,6 +80,17 @@ vi.mock('../../activation-item-provenance', async (orig) => ({
   dbRefOriginLookup: () => async (refs: readonly string[]) =>
     new Map(refs.map((ref) => [ref, 'owner-typed' as const])),
 }));
+// plan-verification-friction-reduction-2026-10-11 P-003: the activation classRef resolver
+// reads the plan's acceptance rubric (its persisted class) and its latest spec-quality
+// scorecard. beforeEach defaults both to empty, so a supplied classRef passes unchanged.
+vi.mock('../../rubrics', async (orig) => ({
+  ...(await orig<typeof import('../../rubrics')>()),
+  getAcceptanceRubricsForPlan: vi.fn(),
+}));
+vi.mock('../../scorecards', async (orig) => ({
+  ...(await orig<typeof import('../../scorecards')>()),
+  listScorecards: vi.fn(),
+}));
 
 import {
   getEffectiveItemAudits,
@@ -100,6 +111,10 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { recoverHarnessFromSlugs } from './slug-scope';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 import { productShapingScaffold } from './product-shaping';
+import { getAcceptanceRubricsForPlan } from '../../rubrics';
+import { listScorecards } from '../../scorecards';
+import { SPEC_QUALITY_RUBRIC_REF, specQualitySubjectRef } from './spec-quality';
+import type { PlanClassRubricRef } from './spec-test-adequacy';
 import tool from './audit';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
@@ -117,6 +132,8 @@ const mockSetSpecClause = vi.mocked(setSpecClause);
 const mockRecoverHarness = vi.mocked(recoverHarnessFromSlugs);
 const mockPreviewPlanStartConsult = vi.mocked(previewPlanStartConsult);
 const mockEmitPlanEvent = vi.mocked(emitPlanEventForCaller);
+const mockAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
+const mockListScorecards = vi.mocked(listScorecards);
 
 const ctx = {
   log: vi.fn(),
@@ -132,6 +149,8 @@ const body = async (items: Array<Record<string, unknown>>, over: Record<string, 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockAcceptanceRubrics.mockResolvedValue([]);
+  mockListScorecards.mockResolvedValue([]);
   mockItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' }]);
   mockResolveHome.mockResolvedValue(null);
   mockSetSpecClause.mockResolvedValue({
@@ -399,14 +418,15 @@ describe('plans:audit D-008 writer contract', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('limits classRef to activation audits at the live input schema', () => {
+  it('admits classRef at both phases of the live input schema (completion ignores it, P-003)', () => {
     const completion = {
       slug: 'plan-a',
       items: [{ itemId: 'P-001', verdict: 'not-code', citations: [], note: 'No code deliverable.' }],
     };
 
     expect(tool.args.safeParse(completion).success).toBe(true);
-    expect(tool.args.safeParse({ ...completion, classRef: 'plan-class-bugfix' }).success).toBe(false);
+    expect(tool.args.safeParse({ ...completion, classRef: 'plan-class-bugfix' }).success).toBe(true);
+    expect(tool.args.safeParse({ ...completion, classRef: 'not-a-class' }).success).toBe(false);
     expect(tool.args.safeParse({
       slug: 'plan-a',
       phase: 'activation',
@@ -809,8 +829,9 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation).toHaveBeenCalled();
   });
 
-  it('requires the evaluated class and admits omitted or empty coverage arrays for carry-forward re-audits', () => {
-    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(false);
+  it('admits an omitted classRef and omitted or empty coverage arrays for carry-forward re-audits', () => {
+    // P-003: an omitted classRef is derived in the handler, so the schema no longer refuses it.
+    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(true);
     expect(tool.args.safeParse({
       slug: 'plan-a',
       harness: 'papercusp',
@@ -1718,5 +1739,115 @@ describe('plans:audit phase:activation', () => {
     }));
 
     expect(missingConversationObligations(mappings)).toEqual(['M-011']);
+  });
+});
+
+// plan-verification-friction-reduction-2026-10-11 P-003 (rubric R-3): an activation audit
+// derives an omitted classRef from the plan's latest spec-quality evaluation, a completion
+// audit ignores a stray classRef, and either way the class must match the plan's persisted
+// acceptance class.
+describe('plans:audit activation classRef derivation (P-003)', () => {
+  type AcceptanceRubricRows = Awaited<ReturnType<typeof getAcceptanceRubricsForPlan>>;
+  type ScorecardRows = Awaited<ReturnType<typeof listScorecards>>;
+  // One cast seam per fixture shape: the resolver reads only rubricId/classRef from a rubric
+  // and issueId/subject.ref from a scorecard, so the wide row types are filled partially here.
+  const acceptanceRubric = (classRef: PlanClassRubricRef): AcceptanceRubricRows =>
+    [{ rubricId: 'acceptance-plan-a', classRef }] as unknown as AcceptanceRubricRows;
+  /** Spec-quality cards for plan-a, NEWEST FIRST (the order listScorecards returns). */
+  const specQualityCards = (...classRefs: PlanClassRubricRef[]): ScorecardRows =>
+    classRefs.map((classRef, index) => ({
+      issueId: `EI-SPEC-QUALITY-${index}`,
+      createdAt: `2026-10-11T0${9 - index}:00:00.000Z`,
+      createdBy: 'su-author',
+      subject: { ref: specQualitySubjectRef('plan-a', classRef, `${index}`.repeat(64)), kind: 'spec-set' },
+    })) as unknown as ScorecardRows;
+  const activationWithoutClassRef = () => {
+    const { classRef: _omitted, ...args } = activationArgs();
+    return args;
+  };
+  const run = async (args: Record<string, unknown>) =>
+    ((await tool.handler(args as never, ctx)) as { data: any }).data;
+
+  it('derives classRef from the latest spec-quality evaluation when an activation call omits it', async () => {
+    mockListScorecards.mockResolvedValue(specQualityCards('plan-class-feature-ship', 'plan-class-bugfix'));
+
+    const result = await run(activationWithoutClassRef());
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'activation',
+      classRefResolution: { classRef: 'plan-class-feature-ship', source: 'derived', evaluationScorecardId: 'EI-SPEC-QUALITY-0' },
+    });
+    expect(mockListScorecards).toHaveBeenCalledWith(expect.objectContaining({
+      rubricRef: SPEC_QUALITY_RUBRIC_REF,
+      subjectRefLike: expect.stringMatching(/^spec-set:%:[0-9a-f]{16}$/),
+    }));
+    // The newest card's class seeds the BARs; the older bugfix evaluation is not used.
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({ classRef: 'plan-class-feature-ship' }));
+
+    // A plan with no evaluation record still refuses, naming the tool that creates one.
+    mockListScorecards.mockResolvedValue([]);
+    mockRecordActivation.mockClear();
+    const refused = await run(activationWithoutClassRef());
+    expect(refused).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'activation_audit_invalid',
+      problems: [expect.objectContaining({
+        code: 'class_ref_required',
+        detail: expect.stringContaining('plans:evaluate-spec-quality'),
+      })],
+    });
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('accepts a completion-phase audit carrying classRef and notes that it was ignored', async () => {
+    const items = [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }];
+    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', items, classRef: 'plan-class-bugfix' }).success)
+      .toBe(true);
+
+    const result = await body(items, { classRef: 'plan-class-bugfix' });
+
+    expect(result).toMatchObject({ ok: true, slug: 'plan-a', coverage: { auditedItems: 1, verifiedItems: 1 } });
+    expect(result.note).toContain("classRef 'plan-class-bugfix' was ignored");
+    expect(mockRecord).toHaveBeenCalled();
+    // Completion never consults the class sources.
+    expect(mockListScorecards).not.toHaveBeenCalled();
+    expect(mockAcceptanceRubrics).not.toHaveBeenCalled();
+  });
+
+  it("refuses an activation whose classRef differs from the plan's persisted acceptance class", async () => {
+    mockAcceptanceRubrics.mockResolvedValue(acceptanceRubric('plan-class-feature-ship'));
+
+    // A supplied classRef that disagrees with the persisted class.
+    const supplied = await run(activationArgs({ classRef: 'plan-class-bugfix' }));
+    expect(supplied).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'activation_audit_invalid',
+      problems: [expect.objectContaining({
+        code: 'class_ref_mismatch',
+        detail: expect.stringContaining("supplied classRef 'plan-class-bugfix' differs from plan 'plan-a's persisted acceptance class 'plan-class-feature-ship'"),
+      })],
+    });
+    expect(mockAcceptanceRubrics).toHaveBeenCalledWith('plan-a', expect.objectContaining({ harnessSlug: 'papercusp', strict: true }));
+
+    // A derived classRef whose evaluation ran under a different class.
+    mockListScorecards.mockResolvedValue(specQualityCards('plan-class-bugfix'));
+    const derived = await run(activationWithoutClassRef());
+    expect(derived).toMatchObject({
+      ok: false,
+      problems: [expect.objectContaining({
+        code: 'class_ref_mismatch',
+        detail: expect.stringContaining("derived classRef 'plan-class-bugfix'"),
+      })],
+    });
+    expect(mockPreviewActivation).not.toHaveBeenCalled();
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+
+    // Control: the matching class proceeds, so the refusals above are about the mismatch alone.
+    const matching = await run(activationArgs({ classRef: 'plan-class-feature-ship' }));
+    expect(matching).toMatchObject({ ok: true, phase: 'activation' });
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({ classRef: 'plan-class-feature-ship' }));
   });
 });

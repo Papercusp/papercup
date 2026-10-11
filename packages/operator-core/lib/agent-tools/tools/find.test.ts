@@ -601,7 +601,8 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const { schemaByTool } = buildCorpus();
     const compact = compactSchemaForResult(schemaByTool.get('plans:audit')) ?? '';
 
-    expect(compact).toContain('phase=activation => classRef required');
+    // P-003 (plan-verification-friction-reduction-2026-10-11): classRef is derived when omitted.
+    expect(compact).toContain('phase=activation => classRef derived if omitted');
     expect(compact).toContain('phase=completion (including omitted phase) => items required');
     expect(compact).toContain('classRef');
   });

@@ -60,7 +60,9 @@ describe('product shaping authoring and audit consumer paths', () => {
   it('rejects write payloads on shaping without loosening the old audit phases', () => {
     expect(audit.args.safeParse({ slug: 'p', phase: 'shaping', items: [] }).success).toBe(false);
     expect(audit.args.safeParse({ slug: 'p', phase: 'completion' }).success).toBe(false);
-    expect(audit.args.safeParse({ slug: 'p', phase: 'activation' }).success).toBe(false);
+    // A bare activation is valid since P-003 (plan-verification-friction-reduction-2026-10-11)
+    // derives classRef; a completion-only payload on activation is still refused.
+    expect(audit.args.safeParse({ slug: 'p', phase: 'activation', items: [] }).success).toBe(false);
   });
 
   describe('content writes surface missing shaping without refusing (R-9)', () => {

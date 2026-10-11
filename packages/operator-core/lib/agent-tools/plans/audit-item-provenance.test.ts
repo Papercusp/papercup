@@ -65,6 +65,16 @@ vi.mock('./spec-clauses-store', async (importOriginal) => ({
 vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: vi.fn(),
 }));
+// plan-verification-friction-reduction-2026-10-11 P-003: the activation classRef resolver
+// reads the acceptance rubric and spec-quality cards; with neither, a supplied classRef passes.
+vi.mock('../../rubrics', async (orig) => ({
+  ...(await orig<typeof import('../../rubrics')>()),
+  getAcceptanceRubricsForPlan: vi.fn(async () => []),
+}));
+vi.mock('../../scorecards', async (orig) => ({
+  ...(await orig<typeof import('../../scorecards')>()),
+  listScorecards: vi.fn(async () => []),
+}));
 
 import { getLatestActivationAudit, recordCurrentActivationAudit, type ActivationAuditPayload, type PlanAudit } from '../../plan-audits';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
