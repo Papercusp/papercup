@@ -20,7 +20,12 @@ import { BM25_CORPORA } from '../search/lexical/corpora';
 const REPO = new URL('../../../../', import.meta.url);
 const read = (rel: string): string => readFileSync(new URL(rel, REPO), 'utf8');
 
-const DOC = read('apps/operator-docs/src/content/docs/agent-insights/pg-textsearch-bm25-configuration.mdx');
+// Overridable so scripts/mutation-probe.sh can point the test at a mutated COPY of the page
+// (copy-out mode) instead of mutating the shared tree. An absolute path resolves as-is.
+const DOC = read(
+  process.env.BM25_CONFIG_DOC_PATH ??
+    'apps/operator-docs/src/content/docs/agent-insights/pg-textsearch-bm25-configuration.mdx',
+);
 const MIGRATION_1447 = read('libs/papercusp/libs/db/sql/1447-bm25-pg-textsearch-indexes.sql');
 const EMBEDDED_PG_PATH = 'libs/papercusp/packages/embedded-postgres-server/src/index.js';
 const EMBEDDED_PG = read(EMBEDDED_PG_PATH);
