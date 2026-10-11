@@ -214,7 +214,7 @@ describe('automatic stale-held checkpoint preservation (EI-25379632433059487)', 
     const initial = withCarryNoteWalls(withCarryNoteChecks('## Did\nAuthored progress.', [
       { id: 'check-a', claim: 'Spill evidence.', sinceMs: 1, verified: 'Saved fixture.' },
       { id: 'check-b', claim: 'Quota evidence.', sinceMs: 2, falsifier: 'Repeated scan.' },
-      { id: 'check-c', claim: 'Diagnostic evidence.', sinceMs: 3, sampleAdequate: true },
+      { id: 'check-c', claim: 'Diagnostic evidence.', sinceMs: 3, observed: 'Original diagnostic retained.' },
     ]), [{ id: 'custody', claim: 'Keep source custody.', sinceMs: 4 }]);
     const state = lockedStore(initial);
     readHeldWorkItems.mockImplementation(async () => [{ ...ref, checkpoint: state.note }]);

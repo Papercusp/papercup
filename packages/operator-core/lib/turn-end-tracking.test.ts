@@ -158,7 +158,7 @@ describe('composeMechanicalCheckpoint / mergeMechanicalCheckpoint', () => {
     const prior = withCarryNoteWalls(withCarryNoteChecks('## Did\nAuthored progress.\n\n## Next action\nVerify the source.', [
       { id: 'real-mcp-spill-attribution', claim: 'The spill remains readable.', sinceMs: 1, verified: 'Passing fixture.', recheck: 'Run the spill fixture.' },
       { id: 'quota-scan-reuse', claim: 'Quota waiters share one scan.', sinceMs: 2, verified: 'One scan observed.', falsifier: 'More than one scan.' },
-      { id: 'scratch-phase-attribution', claim: 'The diagnostic retains the original error.', sinceMs: 3, observed: 'Original error retained.', sampleAdequate: true },
+      { id: 'scratch-phase-attribution', claim: 'The diagnostic retains the original error.', sinceMs: 3, observed: 'Original error retained.' },
     ]), [{ id: 'source-custody', claim: 'Preserve the source lane.', sinceMs: 4, recheck: 'Read the governing decision.' }]);
     const originalChecks = splitCarryNoteChecks(prior).checks;
     const originalWalls = splitCarryNoteWalls(prior).walls;
