@@ -6850,6 +6850,113 @@
     "status": "source-condition-identified-feasibility-not-final",
     "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
     "acceptanceWaived": false
+   },
+   "voiceP001EvidenceQualification": {
+    "status": "current-clause-stale-partial-bindings-and-retained-release-bars",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004757",
+    "auditProofs": [
+     "WI-10005820#comment:1174312",
+     "WI-10005820#comment:1174322"
+    ],
+    "sourceAuthority": {
+     "plan": "voice-final-public-release-2026-10-01",
+     "version": 38,
+     "contentHash": "ce2eea820d85e77d5d53e6581daffb2d7eab2d314bdb58dea6c03ce3a9745496",
+     "planState": "ready",
+     "item": "P-001",
+     "workItemState": "blocked",
+     "assignee": "su-d7c6542c-582d-44dc-a02b-6cca3ebc2352",
+     "checkpointContentHash": "7607bf6053b7",
+     "checkpointLimit": "The stored checkpoint contains unverified-owner-attribution and later-activity warnings. Finite history and current resume were read; its prose is not independent acceptance evidence.",
+     "ownerProvenance": [
+      {
+       "decision": "D-005",
+       "ref": "session_turn:claude:2f6cdc57-6f37-492e-93e8-452e98e80261:4",
+       "verifiedMeaning": "The owner dialog chooses a guided real-microphone session and dropping unkeyed engines. Physical-microphone acceptance is retained."
+      },
+      {
+       "decision": "D-006",
+       "ref": "session_turn:claude:70a32e52-d10e-419f-8fda-3254be7c44dd:6",
+       "verifiedMeaning": "The owner dialog adds synthetic testing, keeps the real-microphone check and routes the synthetic work to su-d7c6542c. Credential values are excluded from this artifact."
+      },
+      {
+       "decision": "D-008",
+       "ref": "owner-directive:1479",
+       "verifiedMeaning": "The owner-typed directive corroborates the ElevenLabs cloud direction. The precise fast-front dialog was not independently recovered in this finite audit."
+      },
+      {
+       "decision": "D-010",
+       "refs": [
+        "owner-directive:1489",
+        "session_turn:claude:132e32d0-80b4-403b-983b-13ca112c9885:12"
+       ],
+       "verifiedMeaning": "The typed turn and directive match approval of the two-tier plan, self execution in AUTO, a release hold, spoken tutorial questions, shared tutorial ElevenLabs access and cloud support of other backends. D-010 maps final shipment to the two-tier plan P-009."
+      }
+     ],
+     "agentRulings": "D-007 local-versus-hosted ElevenLabs scope and D-009 test-tenant workspace-refusal coverage are agent-authored rulings. Their dated observations do not create owner waivers or current hosted acceptance."
+    },
+    "specs": {
+     "specId": "AUTO-BAR-R-1-P-001",
+     "revision": 3,
+     "lifecycleStatus": "accepted",
+     "contentHash": "6a2edc5300326dc5723174dec9ae6f18a86cda5474cae5aa16125acf7a4d8c2a",
+     "rubric": "acceptance-voice-final-public-release-2026-10-01",
+     "rubricRevision": 2,
+     "barHash": "68e02e18dfa02fff7a9dfa5e178951f9c530cfc06c1837946f1a74748aca3339",
+     "barSetHash": "f9142b477e9898d2d79f853a09b19f69f99063c202174da349cc31e2ef7f021f",
+     "criteriaHash": "55f16cabe304b655d018b0d40e39b4dc2c159dfa759400744144e0be83f62af7",
+     "vetting": "Current rubric reader reports vetted/current revision2 attestation EI-25261530158703845. Construction vetting is separate from outcome acceptance.",
+     "requiredProof": "A source-backed client/engine/platform/mode matrix with credentials, acceptance evidence and unresolved bars; an independent reviewer compares it to the actual public UI and desktop/TUI source. Omissions, unsupported labels and uncited resolved or shipped claims falsify R-1."
+    },
+    "bindingQualification": {
+     "scope": "Exact AUTO-BAR-R-1-P-001 evidence query, limit100, seven rows and truncatedByLimit:false; saved full response and fresh summary agree.",
+     "bindingIds": [19932, 19017, 19014, 18964, 18811, 18795, 18636],
+     "specRevision": 3,
+     "evidenceKind": "manual",
+     "outcome": "partial",
+     "currentness": "All seven bindings are source-stale;19932 is also test-stale. The spec remains current. None establishes current complete R-1 acceptance.",
+     "latestBinding": {
+      "id": 19932,
+      "evidenceRef": "plan-section:voice-final-public-release-2026-10-01@23#Current-release-matrix",
+      "testRunId": null,
+      "historicalTestProof": "The recorded31 voice-mode and9 lesson tests passed with no skips at e50d7a6df2. They were not rerun or promoted to current source acceptance.",
+      "pinComparison": "Independent file SHA256 comparison reproduces ten changed files among thirteen pins. Only apps/tui/src/voice_convai.rs, packages/operator-core/lib/voice-node/operator-voice-session.ts and packages/operator-core/lib/voice-prefs.ts remain byte-equal."
+     },
+     "readerQualification": "get-spec-evidence.ts computes count from the returned evidence array, detects truncation with limit+1 lookahead and rolls up each binding's overall currentness; the seven-row claim is restricted to this exact clause."
+    },
+    "sourceInspection": {
+     "path": "packages/operator-core/lib/voice-release-availability.ts",
+     "sha256": "e80c61908096a85c57b53a39b67d33f06f8f5a11c38a79ea91794f5c7f7b6e75",
+     "scope": "Complete shared availability source and finite current matrix excerpts; no complete current client-source census or independent public-UI comparison.",
+     "observedSets": {
+      "unavailableLocalTts": ["openai", "cartesia"],
+      "unavailableHostedTts": ["openai", "cartesia", "elevenlabs"],
+      "unavailableFullAgent": ["gemini-live", "openai-realtime", "elevenlabs-conv", "elevenlabs-conversational"],
+      "unavailableWake": ["porcupine"]
+     },
+     "matrixReconciliation": "The current matrix's D-005 table still drops D3/L3 using the dated401; D-007 returns local ElevenLabs TTS after the later key probe. Reconcile that table with current source before claiming R-1 acceptance.",
+     "portalSourceBoundary": "The older portal/ path is absent from this canonical checkout. No alternate worktree or forbidden scope was used. Current hosted source/runtime/artifact identity and authenticated journey were not measured here.",
+     "datedProviderLimit": "D-006's new-key200/TTS report and D-009's hosted test-tenant chat-workspace refusal are dated agent observations, not independently replayed provider or hosted spoken-journey proof."
+    },
+    "acceptanceQualification": {
+     "realMicrophone": "D-005 and the verified D-006 dialog retain actual microphone and audible-reply proof. Synthetic audio supplements that bar.",
+     "syntheticMilestone": "The latest subject resume reports R-4 rig7, ledger21045358 passed11/11 and binding36648. This audit did not independently rerun that rig and it does not satisfy R-1, D-005 or final shipment.",
+     "finalReleaseHold": "D-010's verified owner directive holds final release for voice-two-tier-elevenlabs-agent-2026-10-06 P-009; its fulfillment was not established here.",
+     "unestablished": [
+      "Current source-backed matrix reconciliation and independent public-UI/desktop/TUI comparison",
+      "Current authenticated hosted voice/provider acceptance",
+      "Retained real acoustic, owner and platform acceptance",
+      "Independent outcome grading and exact final public artifact/package acceptance"
+     ]
+    },
+    "auditBoundary": {
+     "historicalFields": "All172 prior rows, original version23 source fields, prior qualifications, population and exclusions are preserved.",
+     "disposition": "Retain requires-further-qualification; no duplicate, obsolete, superseded, accepted or shipped disposition.",
+     "queueReconciliation": "Whole PERSONAL audit and200-versus172 reconciliation remain OPEN. Separate Phone9/R68 and repair WI-10005218 remain unresolved.",
+     "ownerWalls": "Existing residue-authority and private-preview questions were already asked; their last saved answers remain open/null and were not re-read for this addition.",
+     "actions": "Only this additive row42 qualification; no child claim/state/hold changes, native/provider/Actions execution, LIVE_GATE_OPS, killed-goal revival or release shipment."
+    }
    }
   },
   {
