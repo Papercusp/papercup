@@ -21,6 +21,7 @@ import {
   INSTRUMENT_EVIDENCE_KINDS,
   INSTRUMENT_REFUSAL_CODES,
   instrumentProvenanceRefusal,
+  isScriptPathToken,
   testReferencesInstrument,
   type InstrumentProvenanceDeps,
   type InstrumentRefusalCode,
@@ -153,6 +154,110 @@ describe('instrument provenance — declaration (SPEC-P-010-INSTRUMENT-DECLARED)
     await expectRefused('instrument_undeclared', operational({ none: true }), d);
     await expectRefused('instrument_undeclared', operational({ none: true, reason: '   ' }), d);
     await expectRefused('instrument_undeclared', operational({ none: true, reason: 'x', path: INSTRUMENT }), d);
+  });
+
+  // R-10 drift marker (4): a no-instrument declaration whose evidence record names a script path,
+  // a run id or captured output is refused — the record says a program measured it.
+  const NONE = { none: true, reason: 'observed it by hand; no program measured it' };
+  const noneBinding = (extra: { evidenceRef?: string; testRunId?: number | null; details?: Record<string, unknown> }) => ({
+    evidenceKind: 'manual',
+    ...extra,
+    details: { instrument: NONE, ...(extra.details ?? {}) },
+  });
+
+  it('refuses a no-instrument declaration whose evidence record names a script path (R-10 marker 4)', async () => {
+    const d = deps(committedTree());
+    for (const evidenceRef of [
+      'scripts/measure-recall.sh',
+      '.papercusp/scratch/verif/probe.mts',
+      '/tmp/census.py',
+      'ran ~/bin/count.sh by hand',
+      'docs/evidence/census.sql',
+      'packages/bench/lib/recall.test.ts',
+      'tools/measure/report.js',
+    ]) {
+      const refusal = await expectRefused('instrument_undeclared', noneBinding({ evidenceRef }), d);
+      expect(refusal.reason).toContain('script path');
+    }
+    for (const details of [
+      { note: 'numbers from scripts/recall.ts' },
+      { probe: { command: 'bash .papercusp/scratch/census.sh' } },
+      { steps: ['opened the dashboard', 'ran /tmp/x.mjs'] },
+    ]) {
+      const refusal = await expectRefused('instrument_undeclared', noneBinding({ evidenceRef: 'docs/evidence/live.json', details }), d);
+      expect(refusal.reason).toContain('script path');
+    }
+  });
+
+  it('refuses a no-instrument declaration whose evidence record names a run id (R-10 marker 4)', async () => {
+    const d = deps(committedTree());
+    const run = await expectRefused('instrument_undeclared', noneBinding({ evidenceRef: 'docs/evidence/live.json', testRunId: 21057568 }), d);
+    expect(run.reason).toContain('testRunId 21057568');
+    for (const evidenceRef of ['test-run 21057568', 'testRunId=21057568', 'run id 9001', 'run #12', 'testing:run 21057568']) {
+      const refusal = await expectRefused('instrument_undeclared', noneBinding({ evidenceRef }), d);
+      expect(refusal.reason).toContain('run id');
+    }
+    for (const details of [
+      { runId: 'rg-2026-10-11' },
+      { testRun: { id: 21057568, status: 'pass' } },
+      { test_run_id: 21057568 },
+      { probe: { runGroupId: 'g-1' } },
+      { note: 'bound from test-run 21057568' },
+    ]) {
+      const refusal = await expectRefused('instrument_undeclared', noneBinding({ evidenceRef: 'docs/evidence/live.json', details }), d);
+      expect(refusal.reason).toContain('run id');
+    }
+  });
+
+  it('refuses a no-instrument declaration whose evidence record carries captured output (R-10 marker 4)', async () => {
+    const d = deps(committedTree());
+    for (const details of [
+      { capturedOutput: 'recall@1 = 0.91' },
+      { stdout: 'PASS 12/12' },
+      { stderr: ['warn: 3 rows dropped'] },
+      { outputTail: 'ok' },
+      { observation: { log: 'line 1\nline 2' } },
+    ]) {
+      const refusal = await expectRefused('instrument_undeclared', noneBinding({ evidenceRef: 'docs/evidence/live.json', details }), d);
+      expect(refusal.reason).toContain('captured output');
+    }
+  });
+
+  it('keeps accepting an honest no-instrument observation: the shapes live bindings use (calibration)', async () => {
+    const d = deps(committedTree());
+    // Each evidenceRef/details shape below is copied from a live none:true binding (2026-10-11).
+    for (const binding of [
+      noneBinding({ evidenceRef: 'docs/evidence/scope-unique-identifiers-2026-07-26-live.json', details: { note: 'census of 4 tables', observedVia: 'dev:pg_query' } }),
+      noneBinding({ evidenceRef: 'live:hono-host:3170 plans:verification-health @a5827f2d5b 2026-10-11T10:02:23.428Z health.valBlockPlans=0' }),
+      noneBinding({ evidenceRef: 'work_items:get:WI-6554700010008355/comment:WI-6554700010008355' }),
+      noneBinding({ evidenceRef: 'scorecard:EI-25451551833415468; thread-post:1166188; thread-post:1166250' }),
+      noneBinding({
+        evidenceRef: 'work-item:WI-10007399; report:rpt_7a95e432-7f4c-4a35-982c-fe4e1ef7e2e1; lifecycle-observation:2026-10-11T04:27Z',
+        details: { previousObservationBindingId: 36313, observationRuntime: { build: 'a5827f2d5b' } },
+      }),
+      noneBinding({ evidenceRef: 'read packages/operator-core/lib/verification-health.ts by hand; Node.js runtime, run 2 of 3' }),
+      noneBinding({ testRunId: null, evidenceRef: 'observed the UI by hand' }),
+      // Server-stamped measurement keys and adequacy metadata are not part of the observation.
+      noneBinding({
+        evidenceRef: 'docs/evidence/live.json',
+        details: {
+          measurementPin: { files: ['scripts/x.sh'] },
+          currentMeasurement: { sourcePaths: ['scripts/x.sh'] },
+          declaredConfiguration: { testRunId: 1 },
+        },
+      }),
+    ]) {
+      expect(await refusalCode(binding, d), JSON.stringify(binding)).toBeNull();
+    }
+  });
+
+  it('classifies script-path tokens at their documented boundary', () => {
+    for (const script of ['scripts/a.ts', 'x/scripts/b', '/tmp/a', '~/a', '.papercusp/scratch/p.ts', 'a.sh', 'a.py', 'a.mjs', 'q.sql', 'a.test.ts', 'b.spec.tsx', 'lib/a.js', 'scripts/a.sh:12', 'a.sh.']) {
+      expect(isScriptPathToken(script), script).toBe(true);
+    }
+    for (const notScript of ['Node.js', 'docs/evidence/x.json', 'lib/foo.ts', 'plans:verification-health', '@a5827f2d5b', 'thread-post:1166188', 'scriptsfoo/a.ts', '']) {
+      expect(isScriptPathToken(notScript), notScript).toBe(false);
+    }
   });
 
   it('refuses a citation missing either the instrument path or its test', async () => {
