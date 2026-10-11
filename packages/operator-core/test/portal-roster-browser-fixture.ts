@@ -354,8 +354,10 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     }));
   `;
   const originals = new Map<string, { sha256: string; bytes: number }>();
-  const boundary = input.inbox || input.plans || input.docs || input.brainstorm || input.prs || input.insights || input.overview || input.hud || input.health || input.harnesses
-    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter: Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.overview || input.hud || input.health || input.harnesses) }) : undefined;
+  const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing
+    || input.overview || input.hud || input.health || input.harnesses);
+  const boundary = input.inbox || input.plans || standaloneRouter
+    ? await portalBrowserSurfaceBuild(portal, { standaloneRouter }) : undefined;
   if (boundary) {
     const contents = readFileSync(boundary.source);
     originals.set(boundary.source, { sha256: digest(contents), bytes: contents.length });
@@ -1621,7 +1623,49 @@ async function runPrivateHealthPage(page: Page, context: BrowserContext, input: 
     scope: 'Actual HealthTab, private shared snapshot/history reads, native Host denial, Origin-denied acknowledgement and successful ack/unack through the maintained Work-items collector. Initial snapshot/history population and destination geometry are supplied; other collector accuracy, hosted tenant authorization and full Portal acceptance remain unmeasured' };
 }
 
-/** Preserve the complete grouped-nav identity when filenames repeat. */
+/** Named slug lookup may cross workspaces; domain/file reads must stay on the
+ * exact requested pot. Check the actual receipts, including foreign-domain
+ * misses, instead of treating a deliberate registry fallback as a denial. */
+export function verifyPrivateTestingReadScopes(
+  reads: readonly { url: string; status: number; body: string }[],
+  pots: { selected: string; neighbor: string; foreign: string },
+) {
+  const matching = (slug: string, endpoint: string, domainId?: string) => reads.filter(read => {
+    const url = new URL(read.url);
+    return url.pathname === `/api/harness/${slug}/testing/${endpoint}`
+      && (domainId === undefined || url.searchParams.get('domainId') === domainId);
+  });
+  for (const role of ['selected', 'neighbor'] as const) {
+    const id = `private-${role}-tests`;
+    const registries = matching(pots[role], 'domains').filter(read => read.status === 200);
+    assert.ok(registries.length, 'each pot requires its actual successful registry response');
+    for (const read of registries) assert.deepEqual(JSON.parse(read.body).domains.map((domain: { id: string }) => domain.id),
+      [id], 'registry must expose only the requested pot domain');
+    const details = matching(pots[role], 'domain-detail', id).filter(read => read.status === 200);
+    assert.ok(details.length, 'each pot requires an actual successful scoped domain-detail response');
+    for (const read of details) {
+      const detail = JSON.parse(read.body);
+      assert.equal(detail.id, id, 'domain detail must identify the requested pot domain');
+      assert.equal(detail.totalFiles, 1);
+      assert.deepEqual(detail.sections.flatMap((section: { files: Array<{ path: string }> }) => section.files.map(value => value.path)),
+        [`${role}/${role}.test.ts`], 'domain detail must exclude neighbor and foreign files');
+    }
+    const misses = matching(pots[role], 'domain-detail', 'private-foreign-tests');
+    assert.ok(misses.length, 'each pot requires an actual foreign-domain rejection');
+    for (const read of misses) {
+      assert.equal(read.status, 404, 'foreign domain must not resolve in the requested pot');
+      assert.equal(JSON.parse(read.body).error, 'unknown_domain', 'foreign-domain rejection must have the intended cause');
+    }
+  }
+  const foreign = matching(pots.foreign, 'domains');
+  assert.ok(foreign.length, 'named foreign slug lookup must be observed separately');
+  for (const read of foreign) {
+    assert.equal(read.status, 200, 'named slug resolution intentionally crosses workspace registries');
+    assert.deepEqual(JSON.parse(read.body).domains.map((domain: { id: string }) => domain.id), ['private-foreign-tests']);
+  }
+}
+
+/** Actual Testing controls plus exact private registry and file receipts. */
 async function runPrivateTestingPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput, url: URL) {
   const pots = input.testingHarnesses;
   assert.ok(pots, 'Testing journey requires exact private harness identities');
@@ -1635,7 +1679,11 @@ async function runPrivateTestingPage(page: Page, context: BrowserContext, input:
   });
   page.on('response', response => {
     if (!response.url().includes('/testing/')) return;
-    const capture = response.text().then(body => { reads.push({ url: response.url(), status: response.status(), body }); });
+    const capture = response.text().then(body => {
+      reads.push({ url: response.url(), status: response.status(), body });
+      // Keep the observed HTTP evidence even when the next UI assertion fails.
+      writeFileSync(join(input.evidence, 'portal-testing-reads.json'), JSON.stringify(reads, null, 2));
+    });
     captures.add(capture); void capture.catch(() => {});
     void capture.then(() => captures.delete(capture), () => captures.delete(capture));
   });
@@ -1684,23 +1732,23 @@ async function runPrivateTestingPage(page: Page, context: BrowserContext, input:
   assert.equal(after.searchParams.get('testsTab'), neighborId);
   assert.equal(after.searchParams.get('q'), 'retained-shell-search');
   assert.equal(after.searchParams.get('ws'), input.workspace);
-  const foreign = await context.request.get(new URL(`/api/harness/${encodeURIComponent(pots.foreign)}/testing/domains?phase=staging`, input.base).href);
-  assert.equal(foreign.status(), 404, 'foreign-workspace-only harness must not resolve in the private workspace');
-  await Promise.all([...captures]);
-  for (const [slug, id, file] of [[pots.selected, selectedId, 'selected/selected.test.ts'], [pots.neighbor, neighborId, 'neighbor/neighbor.test.ts']]) {
-    const read = reads.find(row => row.status === 200 && new URL(row.url).pathname === `/api/harness/${slug}/testing/domain-detail`
-      && new URL(row.url).searchParams.get('domainId') === id);
-    assert.ok(read, 'each pot requires an actual successful scoped domain-detail response');
-    const detail = JSON.parse(read.body);
-    assert.equal(detail.totalFiles, 1);
-    assert.deepEqual(detail.sections.flatMap((section: { files: Array<{ path: string }> }) => section.files.map(value => value.path)), [file]);
+  const probePaths = [`/api/harness/${encodeURIComponent(pots.foreign)}/testing/domains?phase=staging`,
+    ...[pots.selected, pots.neighbor].map(slug =>
+      `/api/harness/${encodeURIComponent(slug)}/testing/domain-detail?phase=staging&domainId=private-foreign-tests`)];
+  for (const path of probePaths) {
+    const response = await context.request.get(new URL(path, input.base).href);
+    reads.push({ url: response.url(), status: response.status(), body: await response.text() });
+    writeFileSync(join(input.evidence, 'portal-testing-reads.json'), JSON.stringify(reads, null, 2));
   }
+  await Promise.all([...captures]);
+  verifyPrivateTestingReadScopes(reads, pots);
   assert.ok(denials.length > 0, 'changed-pot denial must come from the actual host');
   assert.deepEqual(writes, [], 'registry/file acceptance must execute no test runners or mutations');
   const receipt = { workspace: input.workspace, pots, authMethod: 'private-loopback-testing-with-cookie',
     scopedFiles: true, keyboardNavigation: true, deepLinkReload: true, oldRegistryDiscarded: true,
     deniedRegistryRecovery: true, foreignExcluded: true, shellQueryPreserved: true, writes, denials, reads,
-    scope: 'Actual ADV Testing wrapper and shared TestingShell with private registry/worktree reads; outer pot-switch control is fixture geometry, no runner execution, hosted authorization, provider or shipment acceptance' };
+    namedSlugResolution: 'cross-workspace',
+    scope: 'Actual ADV Testing wrapper and shared TestingShell with pot-specific registry/worktree reads and foreign-domain rejection. Named slug resolution deliberately crosses workspace registries. Outer pot-switch control is fixture geometry; no runner execution, hosted tenant authorization, provider or shipment acceptance' };
   writeFileSync(join(input.evidence, 'portal-testing-read-receipt.json'), JSON.stringify(receipt, null, 2));
   return receipt;
 }
