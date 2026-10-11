@@ -27,7 +27,7 @@ function CollectionRow({ row, index, count, disabled, selectable, move, select }
       ariaLabel={`Include ${row.label}`} onChange={(checked) => select(row.id, checked)} /> : null}
     <span style={{ flex: '1 1 160px', minWidth: 0, overflowWrap: 'anywhere' }}>
       {row.label}{!row.selected ? ' · Excluded' : ''}
-      {row.reason ? <small style={{ display: 'block', color: 'var(--text-muted)' }}>{row.reason}</small> : null}
+      {row.reason ? <small style={{ display: 'block', color: 'var(--fg-mute)' }}>{row.reason}</small> : null}
     </span>
     <button type="button" style={buttonStyle} aria-label={`Move ${row.label} up`}
       disabled={disabled || index === 0} onClick={() => move(index, index - 1)}>↑</button>

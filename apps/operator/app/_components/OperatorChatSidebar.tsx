@@ -4,6 +4,8 @@
 import { Tooltip } from '@/app/harness/Tooltip';
 import { Popover } from '@/app/harness/Popover';
 import { Button } from '@/app/harness/Button';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 import { toast } from 'sonner';
 /**
  * OperatorChatSidebar — fixed left, full-height, and collapsible.
@@ -210,10 +212,10 @@ function ReadingControls() {
     <Popover open={open} onOpenChange={setControlsOpen} ariaLabel="Original reading controls" trigger={<Button variant="ghost" onMouseDown={event => event.preventDefault()} aria-label="Read selected text aloud">{active ? 'Reading' : 'Read aloud'}</Button>}>
       <div role="group" aria-label="Original reading controls">
         <label>Text to read or summarize<textarea aria-label="Text to read or summarize" value={sourceText} onChange={event => { setSourceText(event.target.value); setSummaryText(''); setSummaryWarnings([]); }} disabled={summarizing} /></label>
-        <label><input type="checkbox" checked={allowCloud} onChange={event => setAllowCloud(event.target.checked)} /> Allow selected text to use cloud speech</label>
+        <label><Checkbox ariaLabel="Allow selected text to use cloud speech" checked={allowCloud} onChange={setAllowCloud} /> Allow selected text to use cloud speech</label>
         <Button variant="neutral" onMouseDown={event => event.preventDefault()} onClick={readSelection} disabled={active || summarizing}>Read selection</Button>
-        <label><input type="checkbox" checked={allowSummaryCloud} onChange={event => setAllowSummaryCloud(event.target.checked)} /> Allow this text to use a cloud summary model</label>
-        <label>Summary length<select aria-label="Summary length" value={length} onChange={event => setLength(event.target.value)}><option value="short">Short</option><option value="standard">Standard</option><option value="detailed">Detailed</option></select></label>
+        <label><Checkbox ariaLabel="Allow this text to use a cloud summary model" checked={allowSummaryCloud} onChange={setAllowSummaryCloud} /> Allow this text to use a cloud summary model</label>
+        <label>Summary length<Select ariaLabel="Summary length" value={length} onChange={setLength} options={[{ value: 'short', label: 'Short' }, { value: 'standard', label: 'Standard' }, { value: 'detailed', label: 'Detailed' }]} /></label>
         <label>Summary focus<input aria-label="Summary focus" value={focus} onChange={event => setFocus(event.target.value)} placeholder="Optional" /></label>
         <label>Summary language<input aria-label="Summary language" value={language} onChange={event => setLanguage(event.target.value)} placeholder="Original language" /></label>
         <details><summary>Model and account</summary>

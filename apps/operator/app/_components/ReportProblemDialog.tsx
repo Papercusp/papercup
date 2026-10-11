@@ -247,11 +247,13 @@ export default function ReportProblemDialog() {
           ) : (
             <div>
               <label style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '0 0 8px' }}>
-                <input
-                  type="checkbox"
-                  data-testid="report-problem-attach-log"
+                <Checkbox
+                  id="report-problem-attach-log"
+                  dataTestId="report-problem-attach-log"
+                  ariaLabel="Attach recent log lines"
                   checked={attachLog}
-                  onChange={(e) => setAttachLog(e.target.checked)}
+                  onChange={setAttachLog}
+                  disabled={sending}
                 />
                 Attach recent log lines ({captured.logLines.length})
               </label>
@@ -261,7 +263,7 @@ export default function ReportProblemDialog() {
               {screenshot && <div data-testid="report-problem-screenshot-preview">
                 <img src={screenshot} alt="Screenshot preview" style={{ width: '100%', maxHeight: 240, objectFit: 'contain' }} />
                 <label htmlFor="report-problem-attach-screenshot" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <Checkbox id="report-problem-attach-screenshot" dataTestId="report-problem-attach-screenshot" checked={attachScreenshot} onChange={setAttachScreenshot} disabled={sending} />
+                  <Checkbox id="report-problem-attach-screenshot" dataTestId="report-problem-attach-screenshot" ariaLabel="Attach this screenshot" checked={attachScreenshot} onChange={setAttachScreenshot} disabled={sending} />
                   Attach this screenshot
                 </label>
                 <p style={{ fontSize: 11 }}>Images are not redacted. Check the preview before attaching it.</p>
@@ -275,7 +277,7 @@ export default function ReportProblemDialog() {
                   return key === 'content' && this?.kind === 'screenshot' ? '[Screenshot shown above]' : value;
                 }, 2) : ''}
               </pre>
-              {error ? <p role="alert" style={{ color: 'var(--pc-danger, #f87171)' }}>{error}</p> : null}
+              {error ? <p role="alert" style={{ color: 'var(--bad)' }}>{error}</p> : null}
               <div style={{ marginTop: 10, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button type="button" onClick={() => setCaptured(null)}>Back</button>
                 <button type="button" data-testid="report-problem-send" disabled={!payload || sending || capturingScreenshot} onClick={() => void send()}>

@@ -37,6 +37,14 @@ async function preview() {
 }
 
 describe('screenshot consent in the report preview', () => {
+  it('uses the registered checkbox for optional recent-log attachment', async () => {
+    await preview();
+    const checkbox = screen.getByRole('checkbox', { name: 'Attach recent log lines' });
+    expect(checkbox.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(checkbox);
+    expect(checkbox.getAttribute('aria-checked')).toBe('true');
+  });
+
   it('shows the locally captured image before consent and sends no unchecked image', async () => {
     await preview();
     expect(h.requests).toHaveLength(0);

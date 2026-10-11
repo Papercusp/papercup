@@ -507,7 +507,8 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     vi.stubGlobal('fetch', send);
     render(<OperatorChatSidebar />);
     fireEvent.click(screen.getByRole('button', { name: 'Read selected text aloud' }));
-    fireEvent.change(await screen.findByRole('combobox', { name: 'Summary length' }), { target: { value: 'short' } });
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Summary length' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Short' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Summary focus' }), { target: { value: 'numbers' } });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Allow this text to use a cloud summary model' }));
     fireEvent.click(screen.getByRole('button', { name: /^Summarize$/ }));

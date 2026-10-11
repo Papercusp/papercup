@@ -68,8 +68,8 @@ export default function PlanAuditPane() {
   }, [id]);
   const run = loadedRun?.id === id ? loadedRun : null;
   if (!id) return null;
-  return <section data-testid="plan-audit-pane" aria-label="Plan audit workspace" style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', background: 'var(--background, #f5f7f8)', color: 'var(--foreground, #182c38)' }}>
-    <header style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, padding: 16, borderBottom: '1px solid #d7e0e4' }}>
+  return <section data-testid="plan-audit-pane" aria-label="Plan audit workspace" style={{ position: 'absolute', inset: 0, zIndex: 40, display: 'flex', flexDirection: 'column', background: 'var(--bg)', color: 'var(--fg)' }}>
+    <header style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, padding: 16, borderBottom: '1px solid var(--border)' }}>
       <button type="button" onClick={() => void setId(null)}>← Back to plans</button><strong>{id === 'history' ? 'Audit history' : 'Plan audit'}</strong>
       <button type="button" onClick={() => void setId('history')}>Saved audits</button>
       {run?.status === 'complete' ? <a href={API + '?runId=' + encodeURIComponent(id) + '&format=json'} download="plan-audit.json">Download full JSON</a> : null}

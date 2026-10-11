@@ -183,9 +183,13 @@ function pack(overrides: { installationId?: string; pluginName?: string; unmet?:
     inputsSchema: {
       type: 'object',
       required: ['project'],
-      properties: { project: { type: 'string', title: 'Project' }, notify: { type: 'boolean', title: 'Notify' } },
+      properties: {
+        project: { type: 'string', title: 'Project' },
+        notify: { type: 'boolean', title: 'Notify' },
+        priority: { type: 'string', title: 'Priority', enum: ['normal', 'urgent'] },
+      },
     },
-    inputs: { project: 'P1' },
+    inputs: { project: 'P1', priority: 'normal' },
     state: {
       installationId,
       fingerprint: `fp-${installationId}`,
@@ -301,12 +305,13 @@ describe('Settings → Integrations', () => {
 
     fireEvent.click((await row('src-1')).getByRole('button', { name: 'What syncs' }));
     fireEvent.click(await screen.findByRole('checkbox', { name: /Engineering/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Design/ }));
     fireEvent.change(screen.getByLabelText('Harness to store tickets in'), { target: { value: 'website' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(call('PATCH', `${API}/sources/src-1/config`)).toBeTruthy());
     expect(call('POST', `${API}/sources/src-1/containers`)?.body).toEqual({ args: {} });
-    expect(call('PATCH', `${API}/sources/src-1/config`)?.body).toEqual({ patch: { harnessSlug: 'website', teamIds: ['team-a'] } });
+    expect(call('PATCH', `${API}/sources/src-1/config`)?.body).toEqual({ patch: { harnessSlug: 'website', teamIds: ['team-a', 'team-b'] } });
     await waitFor(() => expect(H.toast.success).toHaveBeenCalledWith('Saved. Linear syncs this account shortly.'));
   });
 
@@ -357,7 +362,7 @@ describe('Settings → Integrations', () => {
     render(<Page />);
 
     fireEvent.click((await row('src-2')).getByRole('button', { name: 'What syncs' }));
-    expect(((await screen.findByRole('checkbox', { name: /Website/ })) as HTMLInputElement).checked).toBe(true);
+    expect((await screen.findByRole('checkbox', { name: /Website/ })).getAttribute('aria-checked')).toBe('true');
     expect(screen.queryByRole('checkbox', { name: /Mobile/ })).toBeNull();
 
     fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'ws-2' } });
@@ -560,11 +565,12 @@ describe('every installed integration and workflow (P-005)', () => {
 
     fireEvent.change(section.getByLabelText('Project (required)'), { target: { value: 'P2' } });
     fireEvent.click(section.getByLabelText('Notify'));
+    fireEvent.change(section.getByLabelText('Priority'), { target: { value: 'urgent' } });
     expect(arm.disabled).toBe(true);
     fireEvent.click(section.getByRole('button', { name: 'Save settings' }));
 
     await waitFor(() =>
-      expect(call('PUT', '/api/user/integrations/trigger-packs/pack-1/inputs')?.body).toEqual({ inputs: { project: 'P2', notify: true } }),
+      expect(call('PUT', '/api/user/integrations/trigger-packs/pack-1/inputs')?.body).toEqual({ inputs: { project: 'P2', notify: true, priority: 'urgent' } }),
     );
     expect(H.toast.success).toHaveBeenCalledWith(expect.stringContaining('intake-pack settings saved'));
   });

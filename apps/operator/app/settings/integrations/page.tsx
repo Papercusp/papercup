@@ -39,6 +39,7 @@ import type { SetAdmissionRuleResult, TicketRulePreset } from '@papercusp/operat
 import type { AdmittedKind } from '@papercusp/operator-core/lib/work-admission/admit';
 import type { TicketStatusCategory } from '@papercusp/operator-core/lib/data-sources/ticket-vocabulary';
 import { Button } from '../../harness/Button';
+import { Checkbox } from '../../harness/Checkbox';
 import { Select, type SelectOption } from '../../harness/Select';
 import { isExternalWebUrl, openExternalWebUrl } from '../../_components/ExternalLinkProvider';
 import { isDesktop } from '@/lib/ipc-status-tauri';
@@ -521,11 +522,20 @@ function ScopePanel({
   const projectKey = CONTAINER_KEYS.project.key;
   const workspaceId = selected[workspaceKey]?.[0] ?? '';
 
-  const toggle = (kind: TicketContainerKind, id: string) => {
+  const toggle = (kind: TicketContainerKind, id: string, checked?: boolean) => {
     const { key, many } = CONTAINER_KEYS[kind];
     setSelected((prev) => {
       const current = prev[key] ?? [];
-      const next = { ...prev, [key]: many ? (current.includes(id) ? current.filter((x) => x !== id) : [...current, id]) : [id] };
+      const selected = current.includes(id);
+      const include = checked ?? !selected;
+      const next = {
+        ...prev,
+        [key]: many
+          ? include
+            ? (selected ? current : [...current, id])
+            : current.filter((x) => x !== id)
+          : [id],
+      };
       if (kind === 'workspace' && listed) {
         // A project belongs to one workspace, so changing workspace drops projects outside it.
         const inWorkspace = new Set(listed.filter((c) => c.kind === 'project' && c.parentId === id).map((c) => c.id));
@@ -603,7 +613,7 @@ function ScopePanel({
               ) : (
                 [...items, ...orphans].map((c) => (
                   <label key={c.id} style={checkLabel}>
-                    <input type="checkbox" checked={chosen.includes(c.id)} onChange={() => toggle(kind, c.id)} />
+                    <Checkbox ariaLabel={c.name} checked={chosen.includes(c.id)} onChange={(checked) => toggle(kind, c.id, checked)} />
                     <span>{c.name}</span>
                     {c.key ? <code style={chipStyle}>{c.key}</code> : null}
                   </label>
