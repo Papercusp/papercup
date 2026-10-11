@@ -5,7 +5,7 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import type { TutorialVoiceAdmission } from '../endpoint-route/routes/hosted-tutorial-progress';
-import { PostgresTutorialVoiceReservationStore, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
+import { PostgresTutorialVoiceReservationStore, validateTutorialVoiceIdentityForUpdate, type TutorialVoiceQuotaAuthority } from './tutorial-voice-reservation-store';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import { PostgresHostedIdentityDirectory } from '../auth/hosted-identity-binding';
@@ -214,6 +214,45 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     await db.adminSql.begin(async tx => {
       expect(await new HostedSessionStore(tx).resolveForUpdate(session.id)).toBeNull();
     });
+  });
+
+  it('binds verified upstream subject to locked local session, user and membership', async () => {
+    const [user] = await db.adminSql`INSERT INTO papercusp_auth.hosted_users DEFAULT VALUES RETURNING id`;
+    const subject = randomUUID();
+    await db.adminSql`INSERT INTO papercusp_auth.external_identities (hosted_user_id, provider, subject)
+      VALUES (${user.id}, 'workos', ${subject})`;
+    const [organization] = await db.adminSql`INSERT INTO papercusp_auth.organizations
+      (identity_provider, external_organization_id, display_name)
+      VALUES ('workos', ${randomUUID()}, 'Voice identity fixture') RETURNING id`;
+    await db.adminSql`INSERT INTO papercusp_auth.organization_memberships
+      (organization_id, user_id, role, status, authority, created_via)
+      VALUES (${organization.id}, ${user.id}, 'owner', 'active', 'papercusp', 'organization_bootstrap')`;
+    const member = await new PostgresHostedMembershipAuthority(db.adminSql).resolveActive({ userId: user.id, organizationId: organization.id });
+    const session = await new HostedSessionStore(db.adminSql).create({ userId: user.id, organizationId: organization.id,
+      permissionVersion: member!.permissionVersion, upstreamProvider: 'workos', upstreamSessionId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000) });
+    const input = admission({ userId: user.id, organizationId: organization.id, sessionId: session.id, sessionVersion: member!.permissionVersion });
+    let externalUserId = subject; let verified = true; let externalSessionId = session.upstreamSessionId;
+    const provider = { providerId: 'workos', validateSession: async () => ({ ok: true as const, value: {
+      externalSessionId, identity: { externalUserId, primaryEmail: 'not-authority@example.test', emailVerified: verified as true },
+      issuedAtMs: Date.now(), authenticatedAtMs: Date.now(), expiresAtMs: Date.now() + 60_000,
+      authenticationMethods: [], mfaVerified: false,
+    } }) };
+    await expect(validateTutorialVoiceIdentityForUpdate(db.adminSql, input, provider)).rejects.toThrow('hosted_session_lock_requires_transaction');
+    await run(async tx => {
+      expect(await validateTutorialVoiceIdentityForUpdate(tx, input, provider)).toBe(true);
+      externalUserId = randomUUID();
+      expect(await validateTutorialVoiceIdentityForUpdate(tx, input, provider)).toBe(false);
+      externalUserId = subject; verified = false;
+      expect(await validateTutorialVoiceIdentityForUpdate(tx, input, provider)).toBe(false);
+      verified = true; externalSessionId = randomUUID();
+      expect(await validateTutorialVoiceIdentityForUpdate(tx, input, provider)).toBe(false);
+      externalSessionId = session.upstreamSessionId;
+      expect(await validateTutorialVoiceIdentityForUpdate(tx, { ...input, userId: randomUUID() }, provider)).toBe(false);
+      expect(await validateTutorialVoiceIdentityForUpdate(tx, { ...input, sessionVersion: input.sessionVersion + 1 }, provider)).toBe(false);
+    });
+    await db.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'deactivated', deactivated_at = now() WHERE id = ${user.id}`;
+    expect(await run(tx => validateTutorialVoiceIdentityForUpdate(tx, input, provider))).toBe(false);
   });
 
   it('checks session expiry after the persisted authority read and refuses a stale version', async () => {
