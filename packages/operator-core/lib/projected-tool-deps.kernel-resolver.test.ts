@@ -267,6 +267,25 @@ describe('control-anchor kernel resolver (D-030)', () => {
     });
   });
 
+  it('records successful control-anchor SQL and identity-grant evaluation timings', async () => {
+    db.rows.push([anchorRow({ activation: appliedActivation() })]);
+
+    const verdict = await controlAnchorKernelResolver(request());
+
+    expect(verdict).toMatchObject({
+      decision: 'allow',
+      serverAudit: {
+        authorityTimings: {
+          schemaVersion: 1,
+          controlAnchorSql: { calls: 1, totalMs: expect.any(Number) },
+          identityGrantEvaluation: { calls: 1, totalMs: expect.any(Number) },
+        },
+      },
+    });
+    const timings = verdict.serverAudit?.authorityTimings as Record<string, unknown>;
+    expect(JSON.stringify(timings)).not.toMatch(/ws-a|SELECT|launch_spec/i);
+  });
+
   it('selects the verified native caller row instead of a newer re-armed predecessor', async () => {
     db.rows.push([
       anchorRow({ activation: appliedActivation() }, {
