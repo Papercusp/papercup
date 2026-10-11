@@ -109,7 +109,7 @@ describe('<ScheduledCalendarTab> occurrence read recovery', () => {
     H.occurrenceError = new Error('read denied');
     H.nuqs.calPlan = 'plan-a';
     const view = render(<ScheduledCalendarTab />);
-    fireEvent.click(screen.getByRole('button', { name: 'Try again', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(H.invalidateOccurrences).toHaveBeenCalledTimes(1);
     H.occurrenceError = null;
     H.occurrences = [occ()];
@@ -123,7 +123,7 @@ describe('<ScheduledCalendarTab> occurrence read recovery', () => {
     render(<ScheduledCalendarTab />);
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByLabelText('Calendar occurrence summary').textContent).toContain('0 in view');
-    expect(screen.queryByRole('button', { name: 'Try again', exact: true })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 });
 
