@@ -69,6 +69,18 @@ const ids = (s: SelectedResponder[]) => s.map((x) => x.candidate.ownerId);
 const vias = (s: SelectedResponder[]) => s.map((x) => x.via);
 
 describe('problem-specific expertise qualification', () => {
+  it('nominates competing primary actions without matching their operational boilerplate', () => {
+    const contracts = [
+      { name: 'db:migrate', description: 'Apply a SQL migration.' },
+      { name: 'accounts:pin', description: 'Pin a billing account. Inference model migration endpoint routing.' },
+      { name: 'dev:cache_stats', description: 'Read cache statistics. Inference model migration endpoint routing.' },
+      { name: 'fleet:status', description: 'Read fleet status. Inference model migration endpoint routing.' },
+      { name: 'gateway:owner_report', description: 'Report inference model migration endpoint routing outcomes.' },
+    ];
+    expect(subjectContrasts('db:migrate', 'inference model migration endpoint routing', contracts).map(c => c.name))
+      .toEqual(['gateway:owner_report']);
+  });
+
   it('compares the registered primary action without unrelated operational notes', () => {
     expect(subjectEvidenceQuery('db:migrate',
       'Apply a SQL migration file, coordinated. DRY RUN unless confirm:true; drain before applying.'))
