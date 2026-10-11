@@ -862,6 +862,21 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     }
   });
 
+  // git-sync-turn-scoped-commit-hold-2026-10-11 (acceptance bar R-5): the turn hold
+  // ships ON and its flag is the kill-switch. The git-sync action test mocks getFlag,
+  // so it cannot see the real default; this pins it at the source.
+  it("GIT_SYNC_TURN_HOLD ships default-ON and is never dark (git-sync turn hold R-5)", () => {
+    const key = FLAGS.GIT_SYNC_TURN_HOLD;
+    expect(
+      FLAG_DEFAULTS[key],
+      `${key} must default ON: git-sync holds a live session's mid-turn edits by default`,
+    ).toBe(true);
+    expect(
+      DARK_FLAGS.has(key),
+      `${key} must not be registered as a dark flag — it is a kill-switch, not a parked feature`,
+    ).toBe(false);
+  });
+
   it("P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark", () => {
     // p2p-work-distribution-2026-07-02 P-005 / FS-D5 (plan decision D-019): the P2P
     // work-sharing surface follows the landed GITHUB_BRIDGE pattern — the flag is the

@@ -40,7 +40,9 @@ const NULL_TS = 'su-turn-null-turn-ts';
 const ENDED = 'su-turn-ended';
 const RESPAWN = 'su-turn-respawned';
 const NO_SESSION = 'su-turn-no-session';
-const OWNERS = [LIVE, LAG, NULL_TS, ENDED, RESPAWN, NO_SESSION];
+const NEVER_JOURNALED = 'su-turn-never-journaled';
+const OLD_JOURNAL = 'su-turn-old-journal';
+const OWNERS = [LIVE, LAG, NULL_TS, ENDED, RESPAWN, NO_SESSION, NEVER_JOURNALED, OLD_JOURNAL];
 
 let org: OrgTestDb;
 let sql: postgres.Sql;
@@ -115,11 +117,24 @@ beforeAll(async () => {
   // RESPAWN: a carry-respawn leaves an ended row and an open successor row.
   await session(RESPAWN, ago(30));
   await session(RESPAWN, null);
+  await turnEnd(RESPAWN, ago(40), ago(40));
   await edit(RESPAWN, REPO, 'respawned.ts', ago(5));
 
-  // NO_SESSION: no session row and no journal — held, but only within the max age.
+  // NO_SESSION: no session row, but a journaled earlier turn — held, only within the max age.
+  await turnEnd(NO_SESSION, ago(60), ago(60));
   await edit(NO_SESSION, REPO, 'recent.ts', ago(10));
   await edit(NO_SESSION, REPO, 'stale.ts', ago(70));
+
+  // NEVER_JOURNALED: a live session whose host never journals turn ends (a stale
+  // Codex home, WI-6554700010008402). Nothing could release it early, so it is not held.
+  await session(NEVER_JOURNALED, null);
+  await edit(NEVER_JOURNALED, REPO, 'unjournaled.ts', ago(2));
+
+  // OLD_JOURNAL: its only journal row is days old, far outside the turn-end window.
+  // Journaling capability is not windowed, so its current long turn is still held.
+  await session(OLD_JOURNAL, null);
+  await turnEnd(OLD_JOURNAL, ago(3 * 24 * 60), ago(3 * 24 * 60));
+  await edit(OLD_JOURNAL, REPO, 'long-turn.ts', ago(3));
 });
 
 afterAll(async () => {
@@ -141,8 +156,16 @@ describe('readTurnHoldings (real Postgres)', () => {
       `${LIVE} mid-turn.ts`,
       `${NO_SESSION} recent.ts`,
       `${NULL_TS} null-ts-after.ts`,
+      `${OLD_JOURNAL} long-turn.ts`,
       `${RESPAWN} respawned.ts`,
     ]);
+  });
+
+  it('does not hold an editor whose host has never journaled a turn end (WI-6554700010008402)', async () => {
+    const held = await heldPaths();
+    expect(held.some((p) => p.startsWith(`${NEVER_JOURNALED} `))).toBe(false);
+    // Positive control: the same query does hold a journaling owner's equally recent edit.
+    expect(held).toContain(`${OLD_JOURNAL} long-turn.ts`);
   });
 
   it('keeps one holding per path, stamped with the turn-hold intent and the newest edit time', async () => {
@@ -165,6 +188,7 @@ describe('readTurnHoldings (real Postgres)', () => {
       `${LAG} next-turn.ts`,
       `${LIVE} mid-turn.ts`,
       `${NULL_TS} null-ts-after.ts`,
+      `${OLD_JOURNAL} long-turn.ts`,
       `${RESPAWN} respawned.ts`,
     ]);
   });
@@ -209,6 +233,8 @@ describe('git-sync with the turn hold (real Postgres + real git)', () => {
     git(root, 'clone', origin, repo);
     configUser(repo);
     await session(E2E, null);
+    // An earlier journaled turn: only owners whose host journals turn ends are held.
+    await turnEnd(E2E, ago(30), ago(30));
   });
 
   afterEach(async () => {
