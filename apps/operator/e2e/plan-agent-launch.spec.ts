@@ -27,7 +27,7 @@
  *   8. /admin/plans page renders without 500 (smoke).
  */
 import { test, expect, type APIRequestContext } from './_egress';
-import { seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
+import { assertFixtureApiSuccess, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
 let harnessSlug = 'main';
 
 const baseURL =
@@ -72,6 +72,7 @@ async function adminPost(
   const text = await res.text();
   let json: unknown = text;
   try { json = JSON.parse(text); } catch { /* leave as text */ }
+  if (verb === 'new' || verb === 'set-content') assertFixtureApiSuccess(verb, json);
   return { status: res.status(), json };
 }
 

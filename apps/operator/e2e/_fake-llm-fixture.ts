@@ -2,6 +2,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 
+export function assertFixtureApiSuccess(verb: string, data: unknown): asserts data is { ok: true; [key: string]: unknown } {
+  const result = data as { ok?: unknown; error?: unknown } | null;
+  if (result?.ok !== true || result.error != null) {
+    throw new Error(`Fixture API ${verb} refused: ${JSON.stringify(data)}`);
+  }
+}
+
 export function fixtureChildFailure(error: unknown): Error {
   const child = error as { message?: string; code?: unknown; signal?: unknown; killed?: boolean; stdout?: string; stderr?: string };
   return new Error(`Isolated fixture child failed: ${JSON.stringify({

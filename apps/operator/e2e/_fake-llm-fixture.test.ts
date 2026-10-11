@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fixtureChildFailure, fixtureChildWasGateRefusal, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
+import { assertFixtureApiSuccess, fixtureChildFailure, fixtureChildWasGateRefusal, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
 
 const childCalls = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', () => ({
@@ -12,6 +12,13 @@ vi.mock('node:child_process', () => ({
 afterEach(() => vi.unstubAllEnvs());
 
 describe('isolated chat fixture write boundary', () => {
+  it('rejects HTTP-success domain refusals before continuing fixture setup', () => {
+    expect(() => assertFixtureApiSuccess('set-content', { error: 'lint_failed', slug: 'fixture' })).toThrow('lint_failed');
+    expect(() => assertFixtureApiSuccess('set-content', {})).toThrow('refused');
+    expect(() => assertFixtureApiSuccess('set-content', { ok: false })).toThrow('refused');
+    expect(() => assertFixtureApiSuccess('set-content', { ok: true, error: 'stale' })).toThrow('stale');
+    expect(() => assertFixtureApiSuccess('set-content', { ok: true, contentHash: 'new' })).not.toThrow();
+  });
   it('runs both fixtures from the frozen plain-node bundle with the original deadline', async () => {
     vi.stubEnv('VERIFY_TAURI_ISOLATED_DB', '1');
     vi.stubEnv('OPERATOR_SOURCE_ROOT', '/frozen-source');
