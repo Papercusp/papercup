@@ -593,8 +593,19 @@ function buildOperatorProcessBundle(): string {
   const bundlePath = path.join(bundleDir, 'operator-process.mjs');
   const entry = path.join(REPO_ROOT, 'packages', 'operator-core', 'lib', 'pui-e2e', 'operator-process.mts');
   const script = path.join(REPO_ROOT, 'apps', 'operator', 'bin', 'bundle-host.sh');
+  // Reuse the bundler's existing VITEST-only census seam, just like
+  // bundle-host-fallback.test.ts. This private fixture has no restricted
+  // holdings; its build must not open the protected live org-admin database.
+  // The production census still runs normally outside a test process.
+  const censusPath = path.join(bundleDir, 'restricted-hold-census.json');
+  writeFileSync(censusPath, '[]\n');
   const result = spawnSync('bash', [script, entry, bundlePath, 'development'], {
     cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0',
+      PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: censusPath,
+    },
     encoding: 'utf8',
     timeout: 300_000,
     maxBuffer: 32 * 1024 * 1024,
@@ -613,7 +624,7 @@ function buildOperatorProcessBundle(): string {
     entry: path.relative(REPO_ROOT, entry), bundlePath,
     bundleSha256: createHash('sha256').update(readFileSync(bundlePath)).digest('hex'),
     buildMs: Math.round(performance.now() - startedAt), runner: 'bundle-host.sh',
-    runtime: 'plain-node', tsxLoader: false,
+    runtime: 'plain-node', tsxLoader: false, censusSource: 'private-test-fixture',
   }));
   return bundlePath;
 }
@@ -1740,7 +1751,7 @@ async function stopEngines(): Promise<void> {
 
 beforeAll(async () => {
   vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
-  if (scriptedEngine.real) operatorProcessBundlePath = buildOperatorProcessBundle();
+  operatorProcessBundlePath = buildOperatorProcessBundle();
   bin = ensurePuiBinary();
   binarySha256 = createHash('sha256').update(readFileSync(bin)).digest('hex');
   home = mkdtempSync(path.join(tmpdir(), 'pui-agent-chat-e2e-'));

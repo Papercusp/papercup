@@ -196,7 +196,14 @@
       "taskId": "0mv44noa4xkyul619i5",
       "logPath": ".papercusp/scratch/bash-22f1a53d-149.log",
       "deadline": "2026-10-11T18:14:10.304Z",
-      "state": "running; process identity/cgroup liveness and advancing runner output verified; terminal result not yet adopted",
+      "state": "failed before either cold control executed; authoritative JOB END adopted",
+      "testRunId": 21099325,
+      "exitCode": 1,
+      "terminalAt": "2026-10-11T18:03:11.352Z",
+      "frameworkResult": "1 failed file / 94 skipped tests; beforeAll fixture build failed; no cold timing or native evidence",
+      "buildFailure": "The maintained bundle restricted-hold gate correctly refused a live org-admin database read inherited from the integration process. The fixture builder had not supplied the existing VITEST-only census fixture.",
+      "recurrenceRepair": "Reuse PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE exactly as bundle-host-fallback.test.ts does: an explicit private fixture census, scoped only to the builder subprocess. Production fail-closed census and strict cold timing controls stay unchanged. Source edit and fresh verification are pending.",
+      "fixtureWorkItem": "EI-25707128043245334",
       "limitations": "Both cold controls only; no native launch, approval, restart or immutable full-candidate verdict."
     },
     "repairSourceSha256": {
