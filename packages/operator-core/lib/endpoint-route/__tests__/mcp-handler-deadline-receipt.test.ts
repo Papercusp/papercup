@@ -559,7 +559,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         );
         expect(persistedSettlement).toBeDefined();
       });
-      expect(persistedSettlement?.params.slice(1)).toEqual(['ws-test', 'deadlinetest:slow', traceId]);
+      expect(persistedSettlement?.params.slice(1)).toEqual(['ws-test', 'deadlinetest:slow', traceId, 900]);
       const settlementMetadata = JSON.parse(String(persistedSettlement?.params[0])).mcpRequestSettlement;
       expect(settlementMetadata).toEqual(expect.objectContaining({
         traceId,
@@ -770,6 +770,29 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const traceId = '879b64d8-741b-4e8a-a111-39dd7b35c05f';
     let responsePromise: Promise<McpCallResult> | undefined;
+    let releasePendingBackfill!: () => void;
+    const pendingBackfillGate = new Promise<void>((resolve) => { releasePendingBackfill = resolve; });
+    let signalPendingBackfillStarted!: () => void;
+    const pendingBackfillStarted = new Promise<void>((resolve) => { signalPendingBackfillStarted = resolve; });
+    const backfillOrder: string[] = [];
+    const originalUnsafe = h.fakeTx.unsafe;
+    h.fakeTx.unsafe = async (...args: unknown[]) => {
+      const [sql, params] = args;
+      if (typeof sql === 'string' && sql.includes('UPDATE harness_shared.tool_invocations') && Array.isArray(params)) {
+        let metadata: Record<string, unknown> = {};
+        try { metadata = JSON.parse(String(params[2])) as Record<string, unknown>; } catch { /* not a result-door update */ }
+        if (metadata.spillTimeoutCount === 1) {
+          backfillOrder.push('timeout-start');
+          signalPendingBackfillStarted();
+          await pendingBackfillGate;
+          const result = await originalUnsafe(...args);
+          backfillOrder.push('timeout-finished');
+          return result;
+        }
+        if (typeof metadata.spillSettlementStatus === 'string') backfillOrder.push('settlement-start');
+      }
+      return originalUnsafe(...args);
+    };
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       responsePromise = callTool('deadlinetest:spill', {},
@@ -778,6 +801,11 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       await enteredWrite;
       // Keep the real scratch write blocked until applyResultDoorAsync's 30s bounded wait expires.
       await vi.advanceTimersByTimeAsync(30_001);
+      await pendingBackfillStarted;
+      expect(backfillOrder).toEqual(['timeout-start']);
+
+      vi.useRealTimers();
+      releasePendingBackfill();
       const response = await responsePromise;
       expect(response.isError).toBe(true);
       expect(textOf(response)).toContain('request_timeout');
@@ -785,13 +813,6 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(
         '[bounded-timeout] result-door scratch spill write exceeded 30000ms',
       ));
-      const beforeLateWrite = traceEvents(info.mock.calls);
-      expect(beforeLateWrite.some((event) =>
-        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true);
-      expect(beforeLateWrite.some((event) =>
-        event.traceId === traceId && event.stage === 'scratch_write_settled')).toBe(false);
-      expect(h.spillPaths).toHaveLength(1);
-      expect(existsSync(h.spillPaths[0])).toBe(false);
       const initialInvocation = h.invocations.find((candidate) =>
         Boolean(candidate && typeof candidate === 'object' &&
           (candidate as Record<string, unknown>).toolName === 'deadlinetest:spill')) as
@@ -806,8 +827,28 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect((initialInvocation?.ctx as { requestOrigin?: { mcpRequestTraceId?: string } } | undefined)
         ?.requestOrigin?.mcpRequestTraceId).toBe(traceId);
 
-      vi.useRealTimers();
+      const timeoutBackfill = h.unsafeCalls.find((call) => {
+        if (!call.sql.includes('UPDATE harness_shared.tool_invocations') || call.params[8] !== traceId) return false;
+        try { return JSON.parse(String(call.params[2])).spillTimeoutCount === 1; } catch { return false; }
+      });
+      expect(timeoutBackfill).toBeDefined();
+      const timeoutMetadata = JSON.parse(String(timeoutBackfill?.params[2])) as Record<string, unknown>;
+      expect(timeoutMetadata).toEqual(expect.objectContaining({
+        spillPending: true,
+        spillErrorCode: 'ETIMEDOUT',
+        spillTimeoutCount: 1,
+        spillTimeoutMs: 30_000,
+        spillTimeoutAt: expect.any(String),
+      }));
+      expect(backfillOrder).toEqual(['timeout-start', 'timeout-finished']);
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true));
+
+      // The timeout count is now in the invocation row. Release the blocked writer and
+      // verify its late settlement follows that durable timeout update.
+      expect(h.spillPaths).toHaveLength(1);
       releaseWrite();
+      await vi.waitFor(() => expect(existsSync(h.spillPaths[0])).toBe(true));
       await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
         event.traceId === traceId && event.stage === 'scratch_write_settled')).toBe(true));
       const settled = traceEvents(info.mock.calls).find((event) =>
@@ -861,11 +902,17 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         spillSettlementStatus: 'persisted',
         spillSettledAt: expect.any(String),
       }));
+      expect(settlementMetadata).not.toHaveProperty('spillTimeoutCount');
+      await vi.waitFor(() => expect(backfillOrder).toEqual([
+        'timeout-start', 'timeout-finished', 'settlement-start',
+      ]));
       expect(warn.mock.calls.some(([message]) =>
         String(message).includes('backfillResultDoorOutputRef failed'))).toBe(false);
     } finally {
       vi.useRealTimers();
+      releasePendingBackfill();
       releaseWrite();
+      h.fakeTx.unsafe = originalUnsafe;
       if (responsePromise) await responsePromise.catch(() => undefined);
       await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
         event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(true), { timeout: 3_000 });
