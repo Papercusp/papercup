@@ -255,6 +255,45 @@ export function fuseByPosition<T>(lists: ReadonlyArray<PositionedList<T>>): Arra
   return rrfCombine(inputs).map(fused => ({ ...fused.row, score: fused.score }));
 }
 
+/**
+ * The largest AND-match set for which a source runs its EXACT list beside the BM25
+ * list (plan bm25-lexical-search-evoke-adoption-2026-10-10, R-13, D-016).
+ *
+ * Why an exact list exists at all: BM25 (pg_textsearch 1.5.1: `to_bm25query` only, no
+ * AND, phrase or proximity operator) ranks a verbatim fragment of a long document far
+ * down when the fragment's terms are individually common. Measured 2026-10-11 on
+ * work_items for the five R-13 fragment losses: BM25 lexical rank 11, 60, 286, 402 and
+ * >500, where `plainto_tsquery` AND + `ts_rank_cd` (cover density rewards adjacent
+ * terms) ranks the same targets 1, 1, 2, 2, 1. A BM25 top-K rerank cannot repair it
+ * affordably: a top-1000 index scan alone costs 124-232 ms against R-2's 50 ms p95.
+ *
+ * Why a cap: ranking the AND set reads every match's tsvector. The five losses had
+ * AND sets of 8, 9, 35, 609 and 1,656 rows; 2,000 admits all of them, and a capped
+ * GIN probe plus the ranking measured 5-66 ms warm. A larger AND set is a
+ * non-selective query, where cover density adds little and BM25 + cosine carry it.
+ */
+export const EXACT_LIST_MAX_AND_ROWS = 2000;
+
+/**
+ * Merge a source's EXACT list (legacy AND + `ts_rank_cd`) with its BM25 list for the
+ * SAME corpus by reciprocal-rank fusion, keyed by row identity so a row both lists
+ * found is counted once with both contributions. Ties keep the exact list's order
+ * (it is passed first), and each returned row's `rank` is its fused score, so the
+ * caller's best-first order and its scores agree. Returns at most `limit` rows.
+ */
+export function mergeExactAndBm25<T extends { rank: number }>(
+  exact: readonly T[],
+  bm25: readonly T[],
+  key: (row: T) => string,
+  limit: number,
+): T[] {
+  const fused = rrfCombine([
+    { name: 'exact', list: exact.map(row => ({ key: key(row), score: row.rank, row })) },
+    { name: 'bm25', list: bm25.map(row => ({ key: key(row), score: row.rank, row })) },
+  ]);
+  return fused.slice(0, Math.max(0, limit)).map(f => ({ ...f.row, rank: f.score }));
+}
+
 export type Bm25HealthStatus = 'ok' | 'degraded' | 'off';
 
 /** R-2's p95 budget for a lexical query on the work-item corpus. */
