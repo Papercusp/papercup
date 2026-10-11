@@ -68,6 +68,12 @@ async function apiRequest<T>(url: string, method = 'GET', body?: unknown): Promi
 export interface TicketIntegrationsState {
   overview: TicketIntegrationsOverview | null;
   loadError: string | null;
+  /**
+   * Re-read the overview now. A page that just wrote calls this so it sees its own write without
+   * waiting on the server's push: the sync bus drops a repeat of the same invalidation inside its
+   * dedupe window, so a second save within it would otherwise never refresh the page.
+   */
+  refresh: () => void;
 }
 
 /** The signed-in user's ticket providers and sources, live. */
@@ -95,7 +101,7 @@ export function useTicketIntegrations(): TicketIntegrationsState {
     args: { userId },
     enabled: Boolean(userId),
   });
-  return { overview: live.data?.[0] ?? initial?.overview ?? null, loadError };
+  return { overview: live.data?.[0] ?? initial?.overview ?? null, loadError, refresh: live.invalidate };
 }
 
 /** How a missing config key reads in "Needs … before it can sync". */

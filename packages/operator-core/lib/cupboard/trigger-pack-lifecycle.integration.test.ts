@@ -38,8 +38,10 @@ import { installPluginFromCupboardCore, type InstallPluginCoreDeps } from './ins
 import {
   armTriggerPack,
   buildTriggerPackReview,
+  configureTriggerPack,
   exportTriggerPack,
   listTriggerPackInstallations,
+  listTriggerPackSettings,
   TriggerPackLifecycleError,
   uninstallTriggerPack,
 } from './trigger-pack-lifecycle';
@@ -198,6 +200,54 @@ describe('trigger-pack lifecycle (P-013)', () => {
     const reconfigured = await materialize('1.1.0', { tone: 'formal' });
     expect(reconfigured).toMatchObject({ armed: false, review: { reviewed: false } });
     expect((await live()).every((binding) => !binding.armed)).toBe(true);
+  });
+
+  it('configureTriggerPack stores new settings, a picked value included, and Settings reads them back (P-005)', async () => {
+    // The Settings → Integrations Save path: PUT …/inputs → configureTriggerPack, fed from the
+    // stored manifest and the installed plugin directory. The schema mirrors the P-005 fixture
+    // pack: a provider picker (`x-options`) and a field with a default, under additionalProperties:false.
+    await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
+    const base = manifest();
+    const pickerManifest = {
+      ...base,
+      triggerPack: {
+        ...base.triggerPack,
+        inputs: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['tone'],
+          properties: {
+            tone: { type: 'string' },
+            channel: { type: 'string', title: 'Channel to watch', 'x-options': { capability: 'chat.channels' } },
+            note: { type: 'string', default: 'Fixture run.', maxLength: 200 },
+          },
+        },
+      },
+    };
+    const pluginsDir = join(scratch, 'global-plugins');
+    const pluginDir = join(pluginsDir, PLUGIN);
+    await writePackDir(pluginDir, pickerManifest);
+    const installed = await materializeTriggerPack(
+      sql,
+      WS,
+      { manifest: pickerManifest as never, pluginDir, harnessSlug: HARNESS, inputs: { tone: 'warm' }, sourceMappings: {} },
+      { registry: fakeRegistry },
+    );
+    const [before] = (await listTriggerPackSettings(sql, WS)).filter((pack) => pack.installationId === installed.id);
+    expect(before!.inputs).toEqual({ tone: 'warm' });
+
+    const saved = await configureTriggerPack(
+      sql,
+      WS,
+      { installationId: installed.id, inputs: { tone: 'warm', channel: 'C-bugs' }, configuredBy: 'owner-1' },
+      { pluginsDir, materialize: (s, ws, input) => materializeTriggerPack(s, ws, input, { registry: fakeRegistry }) },
+    );
+    expect(saved.id).toBe(installed.id);
+    expect(saved.review.fingerprint).not.toBe(installed.review.fingerprint);
+
+    const [after] = (await listTriggerPackSettings(sql, WS)).filter((pack) => pack.installationId === installed.id);
+    expect(after!.inputs).toEqual({ tone: 'warm', channel: 'C-bugs' });
+    expect(after!.state.fingerprint).toBe(saved.review.fingerprint);
   });
 
   it('refuses to arm a pack that still needs configuration', async () => {

@@ -67,7 +67,13 @@ export function unmetText(unmet: TriggerPackUnmet): string {
 
 const sameValues = (a: Values, b: Values): boolean => JSON.stringify(a) === JSON.stringify(b);
 
-export function TriggerPackSection({ pack }: { pack: TriggerPackSettings }) {
+/**
+ * `onChanged` re-reads the page after this section's own successful save or arm. The page must not
+ * wait on the server's push to see its own write: the sync bus drops a repeat of the same
+ * invalidation inside its dedupe window (90s by default), so a save shortly after another
+ * integrations write would leave the form dirty and its Save button enabled.
+ */
+export function TriggerPackSection({ pack, onChanged }: { pack: TriggerPackSettings; onChanged?: () => void }) {
   const fields = useMemo(() => inputFields(pack.inputsSchema), [pack.inputsSchema]);
   const savedKey = JSON.stringify(pack.inputs);
   const [draft, setDraft] = useState<Values>(pack.inputs);
@@ -88,6 +94,7 @@ export function TriggerPackSection({ pack }: { pack: TriggerPackSettings }) {
       setSaving(true);
       try {
         const result = await saveTriggerPackInputs(pack.installationId, draft);
+        onChanged?.();
         toast.success(
           result.unmet.length > 0
             ? `${pack.pluginName} settings saved. It still needs ${result.unmet.length} thing${result.unmet.length === 1 ? '' : 's'} before it can be armed.`
@@ -99,13 +106,14 @@ export function TriggerPackSection({ pack }: { pack: TriggerPackSettings }) {
         setSaving(false);
       }
     },
-    [draft, pack.installationId, pack.pluginName],
+    [draft, onChanged, pack.installationId, pack.pluginName],
   );
 
   const arm = useCallback(async () => {
     setArming(true);
     try {
       const result = await armTriggerPackRequest(pack.installationId, state.fingerprint);
+      onChanged?.();
       toast.success(`${pack.pluginName} armed: ${result.armedBindingIds.length} trigger${result.armedBindingIds.length === 1 ? '' : 's'} on.`);
     } catch (err) {
       if (err instanceof IntegrationRequestError && err.code === 'trigger_pack_review_stale') {
@@ -116,7 +124,7 @@ export function TriggerPackSection({ pack }: { pack: TriggerPackSettings }) {
     } finally {
       setArming(false);
     }
-  }, [pack.installationId, pack.pluginName, state.fingerprint]);
+  }, [onChanged, pack.installationId, pack.pluginName, state.fingerprint]);
 
   const status = armedAll
     ? `Armed · ${state.armedBindingCount} of ${state.bindingCount} triggers on`

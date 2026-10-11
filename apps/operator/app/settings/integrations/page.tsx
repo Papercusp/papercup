@@ -146,7 +146,7 @@ function harnessOptions(harnesses: string[], current: string): SelectOption[] {
 // ── page ──────────────────────────────────────────────────────────────────────────────────────
 
 export default function IntegrationsSettingsPage() {
-  const { overview, loadError } = useTicketIntegrations();
+  const { overview, loadError, refresh } = useTicketIntegrations();
 
   const harnessQuery = useSyncQuery<{ slug?: string }>({ queryName: 'harnessProjects.lite', args: {}, staleTime: 60_000 });
   const harnesses = useMemo(
@@ -205,7 +205,7 @@ export default function IntegrationsSettingsPage() {
         <>
           <h2 style={groupTitle}>Workflows</h2>
           {overview.triggerPacks.map((pack) => (
-            <TriggerPackSection key={pack.installationId} pack={pack} />
+            <TriggerPackSection key={pack.installationId} pack={pack} onChanged={refresh} />
           ))}
         </>
       )}
