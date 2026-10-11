@@ -3,7 +3,7 @@
 import { collectStateCensus, backupCacheCensusDeclarations } from '../packages/backup/src/state-census';
 import { installedRootCensusProducers, postgresStorageDeclaration, gitStorageDeclaration, peerStorageDeclaration, portalReleaseStorageDeclaration, restoredCloneCensusDeclarations, mergeNestedCensusRoots, virtualenvCacheDeclaration } from '../packages/operator-core/lib/backup/state-census-producers';
 import { readdir, lstat, readFile } from 'node:fs/promises';
-import { join, relative, dirname, basename } from 'node:path';
+import { join, relative, dirname, basename, sep, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 const { releaseConfig } = createRequire(import.meta.url)('../apps/operator/lib/release/release-config.ts');
 import { workspacesRoot, readRegistry } from '../packages/operator-core/lib/workspace-registry';
@@ -14,19 +14,27 @@ import { physicalDatabaseCensusEntries, integrationBaselineCensusDeclarations, t
 import type { CensusEntry } from '../packages/backup/src/state-census';
 import { configuredOperatorDatabaseCensusDeclarations, unitDatabaseCensusDeclarations, affectedTestCacheCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
 import { migrationProducerTables, migrationDatabaseCensusDeclarations } from '../packages/operator-core/lib/backup/state-census-producers';
+import { accountCredentialCensusProducer, runtimeSidefileCensusProducer, cliSetupHomeCensusProducer, templateStoreCensusProducer, planTemplateStoreCensusProducer } from '../packages/operator-core/lib/backup/state-census-producers';
+import { loadAccountPool } from '../packages/operator-core/lib/deployment/account-pool-store';
+import { buildExpected } from './templates-mirror-sync.mjs';
 
 const installed = installedRootCensusProducers();
 const affectedCache = await affectedTestCacheCensusProducer();
+const sidefiles = await runtimeSidefileCensusProducer();
+const setupHomes = await cliSetupHomeCensusProducer();
+const templateStore = await templateStoreCensusProducer(undefined, (await buildExpected()).expected);
+const planTemplateStore = await planTemplateStoreCensusProducer();
+const hostCatalogs = process.argv.includes('--host-catalogs');
+const credentials = await accountCredentialCensusProducer(hostCatalogs ? (await loadAccountPool()).accounts : []);
 const checkpointLogDir = releaseConfig().checkpointLogDir;
-const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots,
-  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, {
+const producers = mergeNestedCensusRoots({ roots: [...installed.roots, ...affectedCache.roots, ...credentials.roots, ...sidefiles.roots, ...setupHomes.roots, ...templateStore.roots, ...planTemplateStore.roots,
+  { id: 'checkpoint-logs-parent', path: dirname(checkpointLogDir) }], declarations: [...installed.declarations, ...affectedCache.declarations, ...credentials.declarations, ...sidefiles.declarations, ...setupHomes.declarations, ...templateStore.declarations, ...planTemplateStore.declarations, {
   kind: 'path', root: 'checkpoint-logs-parent', name: basename(checkpointLogDir), classification: 'state',
   producer: 'green-checkpoint-log-writer', descendants: true,
   retainedSubtree: { evidenceRef: 'release-config:checkpointLogDir' },
 }] });
 const declarations = [...producers.declarations,
   ...producers.roots.flatMap(root => backupCacheCensusDeclarations(root.id))];
-const hostCatalogs = process.argv.includes('--host-catalogs');
 const catalogEntries: CensusEntry[] = [];
 const migrationSources: Array<{ producer: string; tables: string[] }> = [];
 if (process.argv.includes('--restore-events') || hostCatalogs) {
@@ -49,10 +57,10 @@ if (process.argv.includes('--restore-events') || hostCatalogs) {
       declarations.push(...unitDeclarations, ...await unitDatabaseCensusDeclarations(unitDeclarations, databases, getHarnessAdminUrl(), producers.roots.map(root => root.path)));
       // Catalog only declared secret paths that exist; never read their values.
       // Unknown secret locations still appear as filesystem residue.
-      const secretPaths = installed.declarations.filter(entry => entry.classification === 'secret');
+      const secretPaths = producers.declarations.filter(entry => entry.classification === 'secret');
       for (const declaration of secretPaths.filter((entry, index) => secretPaths.findIndex(other =>
         other.root === entry.root && other.name === entry.name) === index)) {
-        const root = installed.roots.find(entry => entry.id === declaration.root)!;
+        const root = producers.roots.find(entry => entry.id === declaration.root)!;
         try { await lstat(join(root.path, declaration.name)); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
         const entry: CensusEntry = { kind: 'secret', root: declaration.root, name: declaration.name };
@@ -80,26 +88,14 @@ for (const root of producers.roots) {
       declarations.push(await virtualenvCacheDeclaration(root, name));
     }
   }
-  const repositoryNames = topLevel.filter(entry => entry.isDirectory()).map(entry => entry.name);
-  // Follow the clone writer's container, never arbitrary nested directory names.
-  const clonePrefix = relative(root.path, defaultClonesDir());
-  if (clonePrefix && clonePrefix !== '..' && !clonePrefix.startsWith('../') && !clonePrefix.startsWith('/')) {
-    let clones;
-    try { clones = await readdir(defaultClonesDir(), { withFileTypes: true }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    if (clones) {
-      declarations.push({ kind: 'path', root: root.id, name: clonePrefix, classification: 'state', producer: 'clone-github-container' });
-      repositoryNames.push(...clones.filter(entry => entry.isDirectory()).map(entry => `${clonePrefix}/${entry.name}`));
-    }
-  }
-  for (const repositoryName of repositoryNames) {
+  for (const directory of topLevel.filter(entry => entry.isDirectory())) {
     let metadata;
-    try { metadata = await lstat(join(root.path, repositoryName, '.git')); }
+    try { metadata = await lstat(join(root.path, directory.name, '.git')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
     // External worktree pointers do not own their referenced Git metadata.
     // Leave them visible for cross-root qualification rather than following.
     if (!metadata.isDirectory()) continue;
-    declarations.push(await gitStorageDeclaration(root, repositoryName, true));
+    declarations.push(await gitStorageDeclaration(root, directory.name, true));
   }
   // Only the producer's exact per-workspace layout; scoped stores stay distinct.
   const workspacePrefix = relative(root.path, workspacesRoot());
@@ -198,15 +194,21 @@ for (const root of producers.roots) {
       }
     }
   }
+  // Derive the container from the clone writer, including relocated workspace roots.
+  const clonePath = defaultClonesDir();
+  const clonePrefix = relative(root.path, clonePath).split(sep).join('/');
   let clones;
-  try { clones = await readdir(join(root.path, 'clones'), { withFileTypes: true }); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  if (clonePrefix && clonePrefix !== '..' && !clonePrefix.startsWith('../') && !isAbsolute(clonePrefix)) {
+    try { clones = await readdir(clonePath, { withFileTypes: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (clones) declarations.push({ kind: 'path', root: root.id, name: clonePrefix, classification: 'state', producer: 'clone-github-container' });
+  }
   for (const clone of clones ?? []) {
     if (!clone.isDirectory()) continue;
-    try { await lstat(join(root.path, 'clones', clone.name, '.git')); }
+    try { await lstat(join(clonePath, clone.name, '.git')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
     // Entire worktree is carried, including untracked files and linked pointers.
-    declarations.push(await gitStorageDeclaration(root, `clones/${clone.name}`, true));
+    declarations.push(await gitStorageDeclaration(root, `${clonePrefix}/${clone.name}`, true));
   }
   let children;
   try { children = await readdir(join(root.path, '.shared'), { withFileTypes: true }); }
