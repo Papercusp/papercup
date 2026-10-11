@@ -12,6 +12,7 @@ const rubricsMocks = vi.hoisted(() => ({
 }));
 
 const reviewMocks = vi.hoisted(() => ({ openAcceptanceBarAmendmentReview: vi.fn() }));
+const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn() }));
 const receiptDb = vi.hoisted(() => {
   type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null };
   const rows = new Map<string, Row>();
@@ -62,6 +63,7 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../consult/acceptance-bar-amendment-review', () => ({
   openAcceptanceBarAmendmentReview: reviewMocks.openAcceptanceBarAmendmentReview,
 }));
+vi.mock('../../work-items', () => ({ commentWorkItem: workItemMocks.commentWorkItem }));
 vi.mock('../../rubrics', () => ({
   AMENDABLE_CRITERION_FIELDS: ['title', 'model', 'method', 'driftMarkers', 'replication'],
   amendRubric: rubricsMocks.amendRubric,
@@ -512,6 +514,102 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(call).toHaveProperty('launchCtx');
     expect(call.launchCtx).toEqual({});
     expect(Object.keys(call.patch)).toEqual(['criterion']);
+  });
+
+  // P-004 (plan-verification-friction-reduction-2026-10-11), AUTO-BAR-R-4 marker 1.
+  it('a requestReview dry run posts the preview approval JSON server-side and returns its post id with the routed review handle', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    workItemMocks.commentWorkItem.mockResolvedValue({ id: 77 });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementation(async (input: { previewPostRef: string }) => ({
+      state: 'routed',
+      conversationId: 'conv-review-2',
+      responderId: 'outside-expert',
+      screenedOut: [],
+      previewPostRef: input.previewPostRef,
+      next: "events:await { event:'consult:reply:conv-review-2' }",
+    }));
+
+    const result = await body({ ...patchArgs, requestReview: { workItemId: 'WI-9', harness: 'papercusp' } });
+
+    expect(workItemMocks.commentWorkItem).toHaveBeenCalledTimes(1);
+    const [workItemId, postedBody, authorId, opts] = workItemMocks.commentWorkItem.mock.calls[0]!;
+    expect(workItemId).toBe('WI-9');
+    expect(authorId).toBe('amend-test');
+    expect(opts).toMatchObject({ workspaceId: 'ws-amend-test', harness: 'papercusp' });
+    expect(opts).not.toHaveProperty('writerOwnerId');
+    // The post IS the preview's approval JSON, byte for byte, not an echo of the request.
+    expect(postedBody).toBe(JSON.stringify(approvalRequired.approval));
+    expect(JSON.parse(postedBody as string)).toEqual(approvalRequired.approval);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview.mock.calls[0]![0]).toMatchObject({
+      previewPostRef: 'thread-post:77',
+      preview: approvalRequired,
+      patch: { criterion: patchArgs.criterion },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      dryRun: true,
+      review: { state: 'routed', conversationId: 'conv-review-2', previewPostRef: 'thread-post:77' },
+    });
+
+    // A preview that needs no outside approval posts nothing and opens no review.
+    vi.clearAllMocks();
+    receiptDb.rows.clear();
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ ...approvalRequired, approvalRequired: false });
+    const quiet = await body({ ...patchArgs, requestReview: { workItemId: 'WI-9' } });
+    expect(quiet).toMatchObject({ ok: true, dryRun: true });
+    expect(quiet.review).toBeUndefined();
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+    // A dry-run-only lever that excludes a caller-posted preview.
+    expect(rubricsAmendArgs.safeParse({ ...patchArgs, dryRun: false, requestReview: { workItemId: 'WI-9' } }).success).toBe(false);
+    expect(
+      rubricsAmendArgs.safeParse({ ...patchArgs, reviewPreviewPost: 'thread-post:42', requestReview: { workItemId: 'WI-9' } }).success,
+    ).toBe(false);
+  });
+
+  // P-004, AUTO-BAR-R-4 marker 2: a slow requestReview answers with a receipt, and a retry never re-posts.
+  it('an amend still running at the response deadline returns a pending receipt pollable through rubrics:amend-status', async () => {
+    process.env.PAPERCUSP_RUBRICS_AMEND_FOREGROUND_MS = '20';
+    try {
+      rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+      workItemMocks.commentWorkItem.mockResolvedValue({ id: 78 });
+      let release: (() => void) | undefined;
+      reviewMocks.openAcceptanceBarAmendmentReview.mockImplementation(
+        (input: { previewPostRef: string }) =>
+          new Promise((resolve) => {
+            release = () =>
+              resolve({ state: 'routed', conversationId: 'conv-review-3', previewPostRef: input.previewPostRef, next: 'await' });
+          }),
+      );
+      const args = { ...patchArgs, requestReview: { workItemId: 'WI-9' } };
+
+      const answered = await body(args);
+      expect(answered).toMatchObject({
+        ok: true,
+        dryRun: true,
+        pending: true,
+        receipt: { rubricRef: 'acceptance-demo', poll: { tool: 'rubrics:amend-status' } },
+      });
+      const poll = answered.receipt.poll.args;
+      const status = async () =>
+        ((await amendStatusTool.handler(poll as never, {} as never)) as { data: Record<string, unknown> }).data;
+      expect(await status()).toMatchObject({ state: 'running', source: 'receipt' });
+
+      // A retry while it runs replays the same receipt: the preview is posted exactly once.
+      expect((await body(args)).pending).toBe(true);
+      expect(workItemMocks.commentWorkItem).toHaveBeenCalledTimes(1);
+
+      await vi.waitFor(() => expect(release).toBeDefined());
+      release!();
+      await vi.waitFor(async () => {
+        expect(await status()).toMatchObject({
+          source: 'receipt',
+          result: { ok: true, dryRun: true, review: { previewPostRef: 'thread-post:78' } },
+        });
+      });
+    } finally {
+      delete process.env.PAPERCUSP_RUBRICS_AMEND_FOREGROUND_MS;
+    }
   });
 
   it('deduplicates concurrent retries of the same normalized review request', async () => {

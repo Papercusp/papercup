@@ -34,7 +34,7 @@ import { openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-a
 
 /** P-006: the requirement this dry run still owes when nobody has opened its review. */
 const REVIEW_NOT_REQUESTED_NEXT =
-  "Post preview.approval once as a work_items:comment, then repeat this dry run with reviewPreviewPost:'thread-post:<that post id>'. The relevance router picks and screens the outside-lineage reviewer; do not pick or message one yourself.";
+  "Repeat this dry run with requestReview:{ workItemId } (the server posts preview.approval on that work-item and opens the review), or post it yourself and pass reviewPreviewPost:'thread-post:<that post id>'. The relevance router picks and screens the outside-lineage reviewer; do not pick or message one yourself.";
 
 const NO_LIVE_DISCHARGE_MAPPING_CODE = 'acceptance_bar_amendment_no_live_discharge_mapping';
 const NO_LIVE_DISCHARGE_MAPPING_NEXT =
@@ -42,7 +42,7 @@ const NO_LIVE_DISCHARGE_MAPPING_NEXT =
 
 const ACCEPTANCE_BAR_APPROVAL_REQUIRED_CODE = 'acceptance_bar_approval_required';
 const ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT =
-  "Run rubrics:amend with dryRun:true, post preview.approval as a work_items:comment, repeat the dry run with reviewPreviewPost:'thread-post:<preview-id>', follow review.next, and apply only with approvalRef:'thread-post:<reviewer-answer-id>'.";
+  "Run rubrics:amend with dryRun:true and requestReview:{ workItemId } (or post preview.approval yourself and pass reviewPreviewPost:'thread-post:<preview-id>'), follow review.next, and apply only with approvalRef:'thread-post:<reviewer-answer-id>'.";
 
 const REVIEWER_MODEL_NOT_ALLOWED_CODE = 'reviewer_model_not_allowed';
 const REVIEWER_MODEL_NOT_ALLOWED_NEXT =
@@ -125,19 +125,49 @@ function amendmentPatch(args: z.infer<typeof rubricsAmendArgs>): Record<string, 
 function reviewReceiptKey(
   args: z.infer<typeof rubricsAmendArgs>,
   identity: ReturnType<typeof resolveAgentIdentity>,
+  previewSource: string,
 ): string {
   const request = {
     schemaVersion: 1,
     workspaceId: identity.workspaceId ?? null,
     requesterId: identity.ownerId,
     rubricRef: args.rubricRef,
-    previewPostRef: args.reviewPreviewPost,
+    // A caller post keeps its historical key; requestReview keys on its target
+    // work-item, so a retry replays the receipt instead of posting again.
+    previewPostRef: previewSource,
     reason: args.reason ?? null,
     patch: amendmentPatch(args),
     reviewerModel: args.reviewerModel ?? null,
   };
   const digest = createHash('sha256').update(canonicalJson(request), 'utf8').digest('hex');
   return `review-${digest}`;
+}
+
+/**
+ * P-004 (plan-verification-friction-reduction-2026-10-11): post preview.approval
+ * on the named work-item so the routed review opens in the same call. The body is
+ * the approval JSON exactly, which is what the apply resolver parses. No
+ * writerOwnerId: this is server-templated, and a sealed stub would fail that parse.
+ */
+async function postPreviewApproval(
+  target: { workItemId: string; harness?: string },
+  approval: unknown,
+  identity: ReturnType<typeof resolveAgentIdentity>,
+): Promise<{ ref: string } | { ok: false; code: string; error: string; next: string }> {
+  const { commentWorkItem } = await import('../../work-items');
+  const post = await commentWorkItem(target.workItemId, JSON.stringify(approval), identity.ownerId, {
+    ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
+    ...(target.harness ? { harness: target.harness } : {}),
+  });
+  if (!post) {
+    return {
+      ok: false,
+      code: 'review_work_item_not_found',
+      error: `no work-item '${target.workItemId}' to post the preview approval on`,
+      next: 'Pass requestReview.workItemId (plus harness when it is not the default) of a work-item whose thread the reviewer can answer on.',
+    };
+  }
+  return { ref: `thread-post:${post.id}` };
 }
 
 const AMEND_REVIEW_PRESERVE_PATHS = [
@@ -196,6 +226,16 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .optional()
       .describe(
         "dryRun only: thread-post:<id> containing this preview's approval JSON; opens the routed review when required and returns its state/next.",
+      ),
+    requestReview: z
+      .object({
+        workItemId: z.string().trim().min(1).max(64),
+        harness: z.string().trim().min(1).max(120).optional(),
+      })
+      .strict()
+      .optional()
+      .describe(
+        'dryRun only: the server posts preview.approval on this work-item and opens the routed review in the same call.',
       ),
     reviewerModel: z.object({
       agent: z.enum(['claude', 'codex', 'omp']),
@@ -359,9 +399,23 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
         message: 'reviewPreviewPost opens the review for a preview, so it requires dryRun:true',
       });
     }
-    if (args.reviewerModel && !args.reviewPreviewPost) {
+    if (args.requestReview !== undefined && args.dryRun !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requestReview'],
+        message: 'requestReview opens the review for a preview, so it requires dryRun:true',
+      });
+    }
+    if (args.requestReview !== undefined && args.reviewPreviewPost !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requestReview'],
+        message: 'pass requestReview (the server posts the preview) or reviewPreviewPost (your own post), not both',
+      });
+    }
+    if (args.reviewerModel && !args.reviewPreviewPost && !args.requestReview) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewerModel'],
-        message: 'reviewerModel requires dryRun:true and reviewPreviewPost' });
+        message: 'reviewerModel requires dryRun:true and reviewPreviewPost or requestReview' });
     }
   },
 );
@@ -470,8 +524,13 @@ export default defineTool({
       actorId: identity.ownerId,
     };
     if (args.dryRun) {
-      const receiptKey = args.reviewPreviewPost
-        ? reviewReceiptKey(args, identity)
+      const previewSource =
+        args.reviewPreviewPost ??
+        (args.requestReview
+          ? `request:${args.requestReview.harness ?? ''}:${args.requestReview.workItemId}`
+          : undefined);
+      const receiptKey = previewSource
+        ? reviewReceiptKey(args, identity, previewSource)
         : 'preview-' + randomUUID();
       const run = trackAmendRun(receiptKey, args.rubricRef, async (): Promise<Record<string, unknown>> => {
         let preview: Awaited<ReturnType<typeof previewAcceptanceBarAmendment>>;
@@ -491,7 +550,9 @@ export default defineTool({
             rubricRef: args.rubricRef,
           };
         }
-        if (!args.reviewPreviewPost) {
+        // requestReview on a preview that needs no outside approval posts nothing.
+        const wantsReview = Boolean(args.reviewPreviewPost) || (Boolean(args.requestReview) && preview.approvalRequired);
+        if (!wantsReview) {
           return {
             ok: true,
             dryRun: true,
@@ -502,11 +563,17 @@ export default defineTool({
         if (!identity.workspaceId) {
           throw new Error('acceptance_bar_amendment_review_unscoped: a routed review needs a concrete workspace identity');
         }
+        let previewPostRef = args.reviewPreviewPost;
+        if (!previewPostRef && args.requestReview) {
+          const posted = await postPreviewApproval(args.requestReview, preview.approval, identity);
+          if (!('ref' in posted)) return { ...posted, dryRun: true, preview };
+          previewPostRef = posted.ref;
+        }
         let review: Awaited<ReturnType<typeof openAcceptanceBarAmendmentReview>>;
         try {
           review = await openAcceptanceBarAmendmentReview({
             rubricRef: args.rubricRef,
-            previewPostRef: args.reviewPreviewPost,
+            previewPostRef: previewPostRef!,
             preview,
             ...(args.reason ? { reason: args.reason } : {}),
             patch: amendmentPatch(args),
