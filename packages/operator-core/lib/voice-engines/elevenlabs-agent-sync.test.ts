@@ -16,10 +16,66 @@ import {
   readElevenLabsImmutableProfile,
   readElevenLabsRestrictedCredential,
   captureElevenLabsCredentialReceipt,
+  provisionElevenLabsRestrictedCredential,
   type ElevenLabsAgentSyncDeps,
 } from './elevenlabs-agent-sync';
 
 const KEY = 'sk_test_secret_key_value_1234';
+
+describe('authenticated restricted credential provisioning', () => {
+  const metadata = { key_id: 'created-key', service_account_user_id: 'service-account',
+    is_disabled: false, disable_reason: null, permissions: ['convai_read'], character_limit: 1000, character_count: 0 };
+  const options = () => ({ secretRef: 'integration:TUTORIAL_KEY', serviceAccountUserId: 'service-account',
+    name: 'Tutorial', metadataApiKey: 'metadata-secret', allowedPermissions: ['convai_read'], maximumCredits: 1000,
+    signal: new AbortController().signal, persist: vi.fn(async () => {}),
+    fetch: vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ 'xi-api-key': KEY, key_id: 'created-key' }))
+      .mockResolvedValueOnce(Response.json({ 'api-keys': [metadata] })) });
+  it('authenticates creation, verifies restrictions and persists before returning only the id', async () => {
+    const opts = options();
+    expect(await provisionElevenLabsRestrictedCredential(opts)).toEqual({ keyId: 'created-key' });
+    expect(opts.fetch.mock.calls[0]).toEqual(['https://api.elevenlabs.io/v1/service-accounts/service-account/api-keys',
+      expect.objectContaining({ method: 'POST', redirect: 'error', headers: {
+        'xi-api-key': 'metadata-secret', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Tutorial', permissions: ['convai_read'], character_limit: 1000 }) })]);
+    expect(opts.persist).toHaveBeenCalledWith(expect.objectContaining({ apiKey: KEY,
+      receipt: expect.objectContaining({ keyId: 'created-key', secretRef: opts.secretRef }) }));
+  });
+  it('does not persist rejected creation, list metadata, broadened permissions or transport errors', async () => {
+    for (const response of [new Response(KEY, { status: 401 }), Response.json(metadata),
+      Response.json({ 'xi-api-key': KEY, key_id: 'created-key' })]) {
+      const opts = options();
+      opts.fetch.mockReset().mockResolvedValueOnce(response).mockResolvedValueOnce(Response.json({
+        'api-keys': [{ ...metadata, permissions: ['convai_read', 'convai_write'] }] }));
+      expect(await provisionElevenLabsRestrictedCredential(opts)).toBeNull();
+      expect(opts.persist).not.toHaveBeenCalled();
+    }
+    const opts = options(); opts.fetch.mockReset().mockRejectedValue(new Error(KEY));
+    expect(await provisionElevenLabsRestrictedCredential(opts)).toBeNull();
+    expect(opts.persist).not.toHaveBeenCalled();
+  });
+  it('refuses invalid policy before POST and snapshots policy during creation', async () => {
+    const opts = options();
+    expect(await provisionElevenLabsRestrictedCredential({ ...opts, allowedPermissions: ['all'] })).toBeNull();
+    expect(opts.fetch).not.toHaveBeenCalled();
+    opts.fetch.mockImplementationOnce(async () => {
+      opts.allowedPermissions.push('convai_write'); opts.maximumCredits = 5000;
+      return Response.json({ 'xi-api-key': KEY, key_id: 'created-key' });
+    });
+    expect(await provisionElevenLabsRestrictedCredential(opts)).toEqual({ keyId: 'created-key' });
+    expect(opts.persist).toHaveBeenCalledTimes(1);
+  });
+  it('refuses cancellation before persistence and hides persistence errors without retrying creation', async () => {
+    const opts = options(); const controller = new AbortController();
+    opts.signal = controller.signal;
+    opts.fetch.mockImplementationOnce(async () => { controller.abort();
+      return Response.json({ 'xi-api-key': KEY, key_id: 'created-key' }); });
+    expect(await provisionElevenLabsRestrictedCredential(opts)).toBeNull();
+    expect(opts.persist).not.toHaveBeenCalled();
+    const failure = options(); failure.persist.mockRejectedValueOnce(new Error(KEY));
+    expect(await provisionElevenLabsRestrictedCredential(failure)).toBeNull();
+    expect(failure.fetch).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('server provisioning receipt capture', () => {
   const capture = (createResponse: unknown, secretRef = 'integration:TUTORIAL_KEY') =>

@@ -356,6 +356,54 @@ export async function readElevenLabsRestrictedCredential(options: {
   } catch { return null; }
 }
 
+/** Server-only provisioning boundary. No supplied response is accepted: the
+ * secret/id pair comes from an authenticated, non-redirected provider POST.
+ * Permissions are reviewed host policy, never browser input. Creation alone
+ * does not authorize issuance; verify current restrictions before persistence.
+ * https://elevenlabs.io/docs/api-reference/service-accounts/api-keys/create
+ */
+export async function provisionElevenLabsRestrictedCredential(options: {
+  secretRef: string;
+  serviceAccountUserId: string;
+  name: string;
+  metadataApiKey: string;
+  allowedPermissions: readonly string[];
+  maximumCredits: number;
+  fetch: typeof fetch;
+  signal: AbortSignal;
+  persist: (pair: { apiKey: string; receipt: ElevenLabsCredentialReceipt }) => Promise<void>;
+}): Promise<{ keyId: string } | null> {
+  const policy = { ...options, allowedPermissions: [...options.allowedPermissions] };
+  const identifier = (value: string) => typeof value === 'string' && value.length > 0
+    && value.length <= 1_024 && !/[\s\x00-\x1f\x7f]/.test(value);
+  if (policy.signal.aborted || !identifier(policy.secretRef) || !identifier(policy.serviceAccountUserId)
+    || !identifier(policy.metadataApiKey) || !policy.name.trim() || policy.name.length > 200
+    || !Number.isSafeInteger(policy.maximumCredits) || policy.maximumCredits <= 0
+    || !policy.allowedPermissions.length || new Set(policy.allowedPermissions).size !== policy.allowedPermissions.length
+    || policy.allowedPermissions.some(permission => !/^[a-z][a-z_]+$/.test(permission) || permission === 'all')) return null;
+  try {
+    const response = await policy.fetch(
+      `https://api.elevenlabs.io/v1/service-accounts/${encodeURIComponent(policy.serviceAccountUserId)}/api-keys`, {
+        method: 'POST', redirect: 'error', signal: policy.signal,
+        headers: { 'xi-api-key': policy.metadataApiKey, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: policy.name, permissions: policy.allowedPermissions,
+          character_limit: policy.maximumCredits }),
+      });
+    if (!response.ok || policy.signal.aborted) return null;
+    const pair = captureElevenLabsCredentialReceipt({ secretRef: policy.secretRef,
+      serviceAccountUserId: policy.serviceAccountUserId, createResponse: await response.json() });
+    if (!pair || policy.signal.aborted) return null;
+    const restriction = await readElevenLabsRestrictedCredential({ ...policy, ...pair });
+    if (!restriction || policy.signal.aborted) return null;
+    await policy.persist(pair);
+    return { keyId: restriction.keyId };
+  } catch {
+    // Never relay provider bodies, secrets or persistence exception messages.
+    // An unsuccessful result may leave a remote key: no automatic POST retry.
+    return null;
+  }
+}
+
 export class ElevenLabsAgentSyncError extends Error {
   constructor(readonly step: string, readonly status: number, detail: string) {
     super(`ElevenLabs agent sync failed at ${step} (HTTP ${status}): ${detail.slice(0, 300)}`);
