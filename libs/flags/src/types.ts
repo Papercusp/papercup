@@ -334,6 +334,10 @@ export const FLAGS = {
   // allows the FIRST account unconditionally (fresh-install bootstrap); once
   // any active user exists, further signups require this flag.
   OPEN_SIGNUP: "papercusp-open-signup",
+  // WI-10006884 / voice-two-tier-elevenlabs-agent-2026-10-06 P-011:
+  // DEFAULT OFF — security/spend authority for the shared tutorial credential.
+  // Explicit persisted approval is required; owner directive #1489 holds release.
+  TUTORIAL_VOICE_ISSUANCE: "papercusp-tutorial-voice-issuance",
   // hive-from-github-url-2026-06-11 (P-011/P-012): gates the picker's GitHub-URL
   // entry — paste a repo URL → create a Hive from it (clone → blueprint detect →
   // hive home + member → visibility-gated auto-publish), join the existing hive
@@ -3252,6 +3256,10 @@ export const DARK_FLAGS: ReadonlyMap<
   // MUG_WARM_SESSION graduated 2026-07-02 (owner flip directive): default ON —
   // queen wakes prefer the wake-executor warm resume with deterministic rebirth.
   // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
+  [FLAGS.TUTORIAL_VOICE_ISSUANCE, {
+    case: "owner-authority",
+    reason: "SECURITY/SPEND: WI-10006884 P-011 enables server minting against Papercusp's shared ElevenLabs tutorial credential. Directive #1489 holds voice release. Remain OFF until provider restrictions, admission, finality and reconciliation are verified and release is authorized; review on the existing DARK_FLAGS_OWNER_REVIEW_BY lane.",
+  }],
   [
     FLAGS.OPEN_SIGNUP,
     {
