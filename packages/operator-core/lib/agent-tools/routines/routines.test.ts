@@ -1976,6 +1976,8 @@ describe('routines:list', () => {
         },
       },
     }));
+    // Before the bound, routines:list passed this nested health object through unchanged.
+    expect(JSON.stringify(routines[0]!.health).length).toBeGreaterThan(4_800);
     const trimmed = listTool.shape!.trimmed!({ count: routines.length, routines }, { args: {} } as never) as {
       count: number;
       routines: Array<Record<string, unknown>>;
