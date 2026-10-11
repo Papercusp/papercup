@@ -21,6 +21,15 @@ const DROPIN =
   join(REPO_ROOT, "apps/operator/scripts/systemd/papercup-staging-api.service.d/95-bundled-entry.conf");
 const SYNC = join(REPO_ROOT, "apps/operator/bin/release/sync-staging-checkout.sh");
 
+// A HANG guard for the synchronous helper runs, not a performance budget. spawnSync
+// blocks the worker, so vitest's own timeout cannot fire and this is the only cap.
+// At 10 s it killed a healthy helper under gate load (status null, measured
+// 2026-10-11 at b14fa43c with host load ~200; WI-6554700010008342).
+const SPAWN_TIMEOUT_MS = 60_000;
+// The reuse case must observe its holder STILL holding the lock after the helper
+// returns, so the holder outlives every allowed helper run; the finally kills it.
+const REUSE_HOLDER_HOLD_S = 90;
+
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
@@ -29,7 +38,7 @@ function shell(command: string, env: NodeJS.ProcessEnv = {}) {
   return spawnSync("/usr/bin/bash", ["-c", command], {
     env: { ...process.env, ...env },
     encoding: "utf8",
-    timeout: 10_000,
+    timeout: SPAWN_TIMEOUT_MS,
   });
 }
 
@@ -135,7 +144,7 @@ describe("staging lock attribution", () => {
       const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", join(dir, "sync.lock"), fixture.bundle], {
         cwd: fixture.operator,
         env: { ...process.env, PAPERCUSP_BUNDLE_REUSE_FRESH: "1", PAPERCUSP_INSTALL_MUTEX_HELD: "0" },
-        encoding: "utf8", timeout: 10_000,
+        encoding: "utf8", timeout: SPAWN_TIMEOUT_MS,
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).toContain("NPM_INSTALL_SAFE guarding reader");
@@ -149,11 +158,12 @@ describe("staging lock attribution", () => {
     let holder: ReturnType<typeof spawn> | undefined;
     let holderExit: Promise<void> | undefined;
     try {
+      expect(SPAWN_TIMEOUT_MS).toBeLessThan(REUSE_HOLDER_HOLD_S * 1000);
       const fixture = completeGenerationFixture(dir);
       const lock = join(dir, "sync.lock");
       const ready = join(dir, "holder-ready");
       holder = spawn("/usr/bin/flock", ["--exclusive", "--no-fork", lock,
-        "/usr/bin/bash", "-c", 'touch "$1"; exec /usr/bin/sleep 4', "holder", ready], { stdio: "ignore" });
+        "/usr/bin/bash", "-c", 'touch "$1"; exec /usr/bin/sleep "$2"', "holder", ready, String(REUSE_HOLDER_HOLD_S)], { stdio: "ignore" });
       holderExit = new Promise((done) => holder?.once("exit", () => done()));
       for (let i = 0; i < 300 && !existsSync(ready); i += 1) {
         await new Promise((done) => setTimeout(done, 10));
@@ -162,7 +172,7 @@ describe("staging lock attribution", () => {
       const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", lock, fixture.bundle], {
         cwd: fixture.operator,
         env: { ...process.env, PATH: fixture.binDir + ":" + process.env.PATH, PAPERCUSP_BUNDLE_REUSE_FRESH: "1" },
-        encoding: "utf8", timeout: 10_000,
+        encoding: "utf8", timeout: SPAWN_TIMEOUT_MS,
       });
       expect(result.status).toBe(0);
       expect(existsSync(fixture.rebuilt)).toBe(false);
@@ -193,7 +203,7 @@ describe("staging lock attribution", () => {
         const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", join(dir, "sync.lock"), fixture.bundle], {
           cwd: fixture.operator,
           env: { ...process.env, PATH: fixture.binDir + ":" + process.env.PATH, PAPERCUSP_BUNDLE_REUSE_FRESH: "1" },
-          encoding: "utf8", timeout: 10_000,
+          encoding: "utf8", timeout: SPAWN_TIMEOUT_MS,
         });
         expect(result.status).toBe(0);
         expect(existsSync(fixture.rebuilt)).toBe(true);
@@ -315,7 +325,7 @@ describe("staging lock attribution", () => {
             INVOCATION_ID: "test-start-pre-attempt-42",
           },
           encoding: "utf8",
-          timeout: 10_000,
+          timeout: SPAWN_TIMEOUT_MS,
         },
       );
       expect(result.status).toBe(0);
@@ -403,7 +413,7 @@ describe("staging lock attribution", () => {
       expect(match).not.toBeNull();
       const result = spawnSync("/usr/bin/bash", ["-c", match![1]], {
         encoding: "utf8",
-        timeout: 10_000,
+        timeout: SPAWN_TIMEOUT_MS,
       });
       expect(result.status).toBe(0);
       expect(readFileSync(marker, "utf8").trim()).toBe("ran");
