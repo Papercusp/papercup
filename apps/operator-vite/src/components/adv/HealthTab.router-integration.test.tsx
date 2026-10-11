@@ -35,10 +35,10 @@ it.each([['harnesses', 'work'], ['plans', 'create'], ['calendar', 'scheduled']])
     } };
     const mount = () => render(<NuqsAdapter><HealthTab /></NuqsAdapter>);
     const view = mount();
-    fireEvent.click(screen.getByRole('button', { name: 'Private health panel', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Private health panel' }));
     await waitFor(() => expect(new URLSearchParams(window.location.search).get('healthPanel')).toBe('plans'));
     expect(screen.getByRole('button', { name: 'Private health panel' }).getAttribute('aria-expanded')).toBe('true');
-    fireEvent.click(screen.getByRole('link', { name: 'Open Private destination', exact: true }));
+    fireEvent.click(screen.getByRole('link', { name: 'Open Private destination' }));
     await waitFor(() => expect(new URLSearchParams(window.location.search).get('app')).toBe(app));
     const params = new URLSearchParams(window.location.search);
     expect(params.get('tab')).toBeNull();
