@@ -161,8 +161,11 @@ export async function writePlanIndexRows(
   // without the jsonb. With both copies written here, no caller can produce that
   // disagreement. The arrays are stringified exactly as every caller writes them.
   // The IS DISTINCT FROM guard therefore makes the usual case (caller already wrote
-  // the same arrays) a no-op. That avoids a row update, which would fire the
-  // updated_at and federation-stamp triggers.
+  // the same arrays) a no-op: no new row version is written. Without it, every
+  // call would rewrite the row, and emit_change_notify_trg (AFTER UPDATE, no WHEN
+  // clause) would send a harness_plans.changed sync notification each time.
+  // updated_at cannot show this: set_harness_plans_updated_at does not compare
+  // items/decisions. The test observes the row's xmin instead.
   const itemsJson = JSON.stringify(idx.items ?? []);
   const decisionsJson = JSON.stringify(idx.decisions ?? []);
   await tx`
