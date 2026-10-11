@@ -35,14 +35,14 @@ let db: FreshPgDb;
 
 async function seedItem(
   id: string,
-  opts: { kind?: string; status?: string; workspaceId?: string; harness?: string } = {},
+  opts: { kind?: string; status?: string; takenBy?: string | null; workspaceId?: string; harness?: string } = {},
 ): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (workspace_id, harness_slug, feature_id, title, status, item_kind, created_ts, updated_ts, payload)
+      (workspace_id, harness_slug, feature_id, title, status, taken_by, item_kind, created_ts, updated_ts, payload)
     VALUES
       (${opts.workspaceId ?? ITEM_WS}, ${opts.harness ?? H}, ${id}, ${`item ${id}`},
-       ${opts.status ?? 'open'}, ${opts.kind ?? 'task'}, 0, 0, '{}'::jsonb)`;
+       ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${opts.kind ?? 'task'}, 0, 0, '{}'::jsonb)`;
 }
 
 async function storedEdges(): Promise<
@@ -338,6 +338,33 @@ describe('canonical dependency batch admission', () => {
 
     await removeMirroredWorkItemBlockingEdge(issue('EI-A'), issue('EI-B'), writerOpts());
     expect(await storedEdges()).toEqual([]);
+  });
+
+  it('allows the active dependant holder to add an unresolved blocker and refuses a non-holder', async () => {
+    await seedItem('EI-dependent-same-holder', { takenBy: 'su-holder' });
+    await seedItem('EI-dependent-other-author', { takenBy: 'su-holder' });
+    await seedItem('EI-blocker');
+
+    await mirrorWorkItemBlockingEdge(issue('EI-blocker'), issue('EI-dependent-same-holder'), {
+      ...writerOpts(),
+      createdBy: 'su-holder',
+    });
+
+    const refusal = await admissionError(
+      mirrorWorkItemBlockingEdge(issue('EI-blocker'), issue('EI-dependent-other-author'), {
+        ...writerOpts(),
+        createdBy: 'su-other',
+      }),
+    );
+
+    expect(refusal.findings.map((finding) => finding.policy.code)).toContain('active-dependant-unreconciled');
+    expect(
+      await db.sql<{ blocked_ref: string; created_by: string | null }[]>`
+        SELECT blocked_ref, created_by
+          FROM harness_shared.work_item_deps
+         WHERE workspace_id = ${EDGE_WS} AND dep_type = 'blocks'
+         ORDER BY blocked_ref`,
+    ).toEqual([{ blocked_ref: 'EI-dependent-same-holder', created_by: 'su-holder' }]);
   });
 
   it('routes sync/replace through canonical admission and preserves the prior set on rejection', async () => {
