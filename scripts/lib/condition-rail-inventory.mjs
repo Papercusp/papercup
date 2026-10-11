@@ -1,7 +1,7 @@
 /**
  * condition-rail-inventory.mjs — the MEASURING inventory of failure/degradation signals that
  * bypass the condition rail. Plan `degradation-signals-on-condition-rail-2026-10-11`, P-001
- * (BAR R-4); the P-006 lint (BAR R-6) is built on this same scanner.
+ * (BAR R-4), hardened by P-017 (R-4, R-5); the P-006 lint (BAR R-6) is built on this scanner.
  *
  * ── WHAT "THE RAIL" IS ───────────────────────────────────────────────────────────────────────
  * A signal is ON the rail when it raises a durable, keyed condition that the condition bridge
@@ -14,32 +14,52 @@
  *
  * ── THE FIVE CLASSES (R-4) ───────────────────────────────────────────────────────────────────
  *   owner-only-alarm          notifyAttention / notifyAttentionOnce / escalateAlarm call with no
- *                             conditionKey or severe-event broadcast beside it. Neither API takes
- *                             a conditionKey, so such a call can only page the owner.
+ *                             rail call in its own function. Neither API took a conditionKey
+ *                             before P-007, so such a call can only page the owner.
  *   log-only-fallback         a log call whose message says the code is falling back / failing
- *                             open / degrading, with no rail call beside it.
+ *                             open / degrading, with no rail call in its own function.
  *   health-flag-no-condition  an alarm-shaped health field (alarm, alert, degraded, unhealthy,
- *                             breached, …) set to a VALUE in a health/watchdog/alarm/monitor file
- *                             that never raises a condition.
- *   bespoke-watchdog          a watchdog module (or a `managedSetInterval('…watchdog…')`) that
- *                             never raises a condition.
+ *                             breached, …) set to a VALUE in a health/watchdog/alarm/monitor file,
+ *                             with no rail call in its own function.
+ *   bespoke-watchdog          a watchdog module that never calls the rail, or a
+ *                             `managedSetInterval('…watchdog…')` with no rail call in its function.
  *   signal-waiver             a `waiver:` on a signal-actor-registry entry — an accepted-risk
- *                             signal with no acting consumer.
+ *                             signal with no acting consumer. Never on the rail by definition.
  *
  * ── HOW IT MEASURES ──────────────────────────────────────────────────────────────────────────
- * Every token is matched in LIVE CODE only: the source is passed through
- * `stripCommentsAndStrings` (length-preserving), so a pattern quoted in a comment, a doc string
- * or a test fixture literal is not a site. Message wording (class 2) and interval names
+ * SITES are found by token: every token is matched in LIVE CODE only — the source is passed
+ * through `stripCommentsAndStrings` (length-preserving), so a pattern quoted in a comment, a doc
+ * string or a test fixture literal is not a site. Message wording (class 2) and interval names
  * (class 4) live INSIDE strings by nature, so those are read from the raw text — but only at a
- * call whose anchor is live code. "Beside it" means within RAIL_WINDOW_LINES lines of the site,
- * matched in live code.
+ * call whose anchor is live code.
  *
- * Rows are grouped into dispositions by `class|file` (see condition-rail-dispositions.mjs): a
- * site's disposition is the most specific entry among `class|file|symbol` and `class|file`.
+ * WHETHER A SITE IS ON THE RAIL is decided on the TypeScript AST (P-017, D-006), site by site:
+ *   - a RAIL CALL is a call expression whose callee is the identifier or member name
+ *     `broadcastSevereEvent`, `broadcastSevereEventResolved` or `observeFallback` (optional
+ *     chaining included), or an alarm call (`notifyAttention…` / `escalateAlarm`) whose own
+ *     argument object carries a `conditionKey` property (the P-007 shape);
+ *   - a site is on the rail when a rail call lies inside the span of the site's INNERMOST
+ *     enclosing function (closures nested in that function included); a module-level site — and a
+ *     watchdog MODULE, which is a site by its file name — uses the whole file.
+ * Only CALL POSITIONS count. A rail function merely referenced (an injected alias, a re-export),
+ * a variable named `conditionKey`, or a rail call in a sibling function does not put a site on
+ * the rail. Before P-017 a rail token anywhere within 40 lines — or anywhere in the file, for
+ * classes 3 and 4 — did.
+ *
+ * ── IDENTITY ─────────────────────────────────────────────────────────────────────────────────
+ * Each site has a stable id `class|file|enclosing|ordinal`: `enclosing` is the nearest NAMED
+ * enclosing function (declaration, method, const-bound function, property-bound function) or
+ * `<module>`; `ordinal` counts 1-based among the sites sharing class|file|enclosing, in source
+ * order, on-rail sites included so that migrating one site does not renumber its siblings. The
+ * seed manifest (docs/evidence/condition-rail-inventory-seed-2026-10-11.json) is keyed by it.
+ *
+ * Bypass rows are dispositioned by `class|file` (see condition-rail-dispositions.mjs): a row's
+ * disposition is the most specific entry among `class|file|symbol` and `class|file`.
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { stripCommentsAndStrings } from './strip-comments-and-strings.mjs';
 
 export const CLASSES = Object.freeze([
@@ -50,8 +70,14 @@ export const CLASSES = Object.freeze([
   'signal-waiver',
 ]);
 
-/** Lines on either side of a site searched for a rail call. */
-export const RAIL_WINDOW_LINES = 40;
+/** Callee names whose CALL puts the enclosing function on the condition rail. */
+export const RAIL_FUNCTIONS = Object.freeze(['broadcastSevereEvent', 'broadcastSevereEventResolved', 'observeFallback']);
+
+/** Owner-alarm APIs: a call to one is a class-1 site, and on the rail when it passes a conditionKey. */
+export const ALARM_FUNCTIONS = Object.freeze(['notifyAttention', 'notifyAttentionOnce', 'escalateAlarm']);
+
+/** The enclosing-symbol value of a site that sits outside every function. */
+export const MODULE_SCOPE = '<module>';
 
 /** Directories scanned. Generated bundles, tests and retired code are excluded by isScannable. */
 export const SCAN_ROOTS = Object.freeze(['packages/', 'apps/', 'orchestrator/', 'bin/', 'scripts/', 'libs/']);
@@ -72,23 +98,26 @@ export function isScannable(file) {
 }
 
 // ── Live-code token patterns (matched against the MASKED text) ────────────────────────────────
-// The rail functions match as IDENTIFIERS, not only as calls: a module that injects the rail
-// (`const broadcast = deps.broadcast ?? broadcastSevereEvent`) raises conditions through the alias.
-const RAIL_RE = /\bconditionKeys?\b|\bbroadcastSevereEvent(?:Resolved)?\b|\bobserveFallback\b/;
-const ALARM_CALL_RE = /\b(notifyAttention|notifyAttentionOnce|escalateAlarm)\s*\(/g;
-const LOG_CALL_RE = /\b(?:console\.(?:warn|error|log|info)|(?:log|logger|LOG)\.(?:warn|error|info))\s*\(/g;
-const FALLBACK_WORDING_RE = /fall(?:ing|s)?[ -]?back|fail(?:ing|s)?[ -]?open|fail(?:ed|ing)? open|degrad(?:ed|ing) to/i;
-const HEALTH_FIELD_RE = /\b(alarm|alarming|alert|alerting|degraded|unhealthy|breached)\s*:\s*([^,;\n}]+)/g;
-const HEALTH_PATH_RE = /(health|watchdog|alarm|monitor)/i;
-const TYPE_ONLY_VALUE_RE = /^(?:boolean|string|number|null|undefined|unknown|true\s*\|\s*false|[A-Z]\w*(?:\[\])?)\s*$/;
-const INTERVAL_RE = /\bmanagedSetInterval\s*\(/g;
-const DEFINE_SIGNAL_RE = /\bdefineSignal\s*\(/;
-const WAIVER_RE = /\bwaiver\s*:\s*\{/g;
+// Exported so the census test (condition-rail-census.test.ts) greps the tree for the SAME anchors.
+export const ALARM_CALL_RE = /\b(notifyAttention|notifyAttentionOnce|escalateAlarm)\s*\(/g;
+export const LOG_CALL_RE = /\b(?:console\.(?:warn|error|log|info)|(?:log|logger|LOG)\.(?:warn|error|info))\s*\(/g;
+export const FALLBACK_WORDING_RE = /fall(?:ing|s)?[ -]?back|fail(?:ing|s)?[ -]?open|fail(?:ed|ing)? open|degrad(?:ed|ing) to/i;
+export const HEALTH_FIELD_RE = /\b(alarm|alarming|alert|alerting|degraded|unhealthy|breached)\s*:\s*([^,;\n}]+)/g;
+export const HEALTH_PATH_RE = /(health|watchdog|alarm|monitor)/i;
+export const TYPE_ONLY_VALUE_RE = /^(?:boolean|string|number|null|undefined|unknown|true\s*\|\s*false|[A-Z]\w*(?:\[\])?)\s*$/;
+export const INTERVAL_RE = /\bmanagedSetInterval\s*\(/g;
+export const DEFINE_SIGNAL_RE = /\bdefineSignal\s*\(/;
+export const WAIVER_RE = /\bwaiver\s*:\s*\{/g;
 const SIGNAL_ID_RE = /\bid\s*:\s*['"`]([^'"`]+)['"`]/g;
 
 /** Cheap raw pre-filter: a file with none of these tokens cannot hold a site. */
 const PREFILTER_RE =
   /notifyAttention|escalateAlarm|fall(?:ing|s)?[ -]?back|fail(?:ing|s|ed)?[ -]?open|degrad|alarm|alert|unhealthy|breached|watchdog|waiver/i;
+
+/** Does this file's BASENAME make it a watchdog module (a class-4 site by name alone)? */
+export function isWatchdogModule(file) {
+  return /watchdog/i.test(file.slice(file.lastIndexOf('/') + 1));
+}
 
 function lineStarts(text) {
   const starts = [0];
@@ -107,25 +136,18 @@ function lineOf(starts, index) {
   return lo + 1; // 1-based
 }
 
-function windowText(masked, starts, line, radius) {
-  const from = starts[Math.max(0, line - 1 - radius)] ?? 0;
-  const toLine = Math.min(starts.length - 1, line - 1 + radius + 1);
-  const to = toLine >= starts.length - 1 ? masked.length : starts[toLine];
-  return masked.slice(from, to);
-}
-
-/** The raw argument text of a call starting at `openParen`, bounded to `max` chars. */
-function callArgsRaw(raw, openParen, max = 400) {
+/** Read a complete call span using live-code parentheses; literal parentheses cannot end it. */
+function callArgsRaw(raw, openParen, masked) {
   let depth = 0;
-  for (let i = openParen; i < raw.length && i < openParen + max; i++) {
-    const ch = raw[i];
+  for (let i = openParen; i < raw.length; i++) {
+    const ch = masked[i];
     if (ch === '(') depth++;
     else if (ch === ')') {
       depth--;
       if (depth === 0) return raw.slice(openParen + 1, i);
     }
   }
-  return raw.slice(openParen + 1, Math.min(raw.length, openParen + max));
+  return raw.slice(openParen + 1);
 }
 
 function nearestSignalId(raw, masked, index) {
@@ -139,49 +161,160 @@ function nearestSignalId(raw, masked, index) {
   return id;
 }
 
+// ── The AST half: function spans and rail-call positions ──────────────────────────────────────
+
+function scriptKindFor(file) {
+  if (file.endsWith('.tsx')) return ts.ScriptKind.TSX;
+  if (/\.[cm]?ts$/.test(file)) return ts.ScriptKind.TS;
+  if (file.endsWith('.jsx')) return ts.ScriptKind.JSX;
+  return ts.ScriptKind.JS;
+}
+
+function propertyNameText(name) {
+  if (!name) return null;
+  if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return null;
+}
+
+function isFunctionLike(node) {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  );
+}
+
+/** The name a function-like node is known by, or null for an anonymous callback. */
+function functionName(node) {
+  if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) && node.name) return node.name.text;
+  if (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
+    return propertyNameText(node.name);
+  }
+  if (ts.isConstructorDeclaration(node)) return 'constructor';
+  const parent = node.parent;
+  if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+  if (parent && (ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent))) return propertyNameText(parent.name);
+  return null;
+}
+
+function calleeName(expr) {
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (ts.isPropertyAccessExpression(expr)) return expr.name.text; // `a.b(…)` and `a?.b(…)`
+  return null;
+}
+
+function hasConditionKeyProperty(arg) {
+  return (
+    !!arg &&
+    ts.isObjectLiteralExpression(arg) &&
+    arg.properties.some(
+      (p) => (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && propertyNameText(p.name) === 'conditionKey',
+    )
+  );
+}
+
+const RAIL_FUNCTION_SET = new Set(RAIL_FUNCTIONS);
+const ALARM_FUNCTION_SET = new Set(ALARM_FUNCTIONS);
+
 /**
- * Scan ONE source text. Pure: (raw, file) → rows. `file` is the repo-relative path; it selects
- * the parser kind and drives the path-scoped classes (health fields, watchdog modules).
+ * Parse one source text into the structure the rail predicate needs: every function-like node's
+ * span and name chain, and the start offset of every rail call. Pure.
+ */
+export function railStructure(raw, file) {
+  const sf = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true, scriptKindFor(file));
+  const functions = []; // { start, end, name, parentIndex }
+  const railCalls = []; // start offsets
+  const visit = (node, parentIndex) => {
+    let here = parentIndex;
+    if (isFunctionLike(node)) {
+      functions.push({ start: node.getStart(sf), end: node.end, name: functionName(node), parentIndex });
+      here = functions.length - 1;
+    }
+    if (ts.isCallExpression(node)) {
+      const name = calleeName(node.expression);
+      if (name && RAIL_FUNCTION_SET.has(name)) railCalls.push(node.getStart(sf));
+      else if (name && ALARM_FUNCTION_SET.has(name) && hasConditionKeyProperty(node.arguments[0])) {
+        railCalls.push(node.getStart(sf));
+      }
+    }
+    ts.forEachChild(node, (child) => visit(child, here));
+  };
+  visit(sf, -1);
+  return { functions, railCalls, length: raw.length };
+}
+
+/** Index of the innermost function containing `offset`, or -1 at module scope. */
+function innermostFunction(structure, offset) {
+  let best = -1;
+  for (let i = 0; i < structure.functions.length; i++) {
+    const f = structure.functions[i];
+    if (f.start <= offset && offset < f.end && (best === -1 || f.start >= structure.functions[best].start)) best = i;
+  }
+  return best;
+}
+
+/** The nearest NAMED function at or above function `index`, else MODULE_SCOPE. */
+function enclosingName(structure, index) {
+  for (let i = index; i !== -1; i = structure.functions[i].parentIndex) {
+    const name = structure.functions[i].name;
+    if (name) return name;
+  }
+  return MODULE_SCOPE;
+}
+
+/**
+ * Locate one site in the AST: its enclosing symbol and whether a rail call lies in its own
+ * function's span (the whole file for a module-level site). Pure.
+ */
+export function locateSite(structure, offset, { moduleLevel = false } = {}) {
+  const fn = moduleLevel ? -1 : innermostFunction(structure, offset);
+  const span = fn === -1 ? { start: 0, end: structure.length + 1 } : structure.functions[fn];
+  const onRail = structure.railCalls.some((p) => p >= span.start && p < span.end);
+  return { enclosing: moduleLevel ? MODULE_SCOPE : enclosingName(structure, fn), onRail };
+}
+
+/**
+ * Find every candidate SITE in one source text, on the rail or not. Pure: (raw, file) → sites.
+ * `file` is the repo-relative path; it selects the parser kind and drives the path-scoped classes
+ * (health fields, watchdog modules).
  *
  * @param {string} raw
  * @param {string} file
- * @returns {Array<{ class: string, file: string, line: number, symbol: string, key: string }>}
+ * @returns {Array<{ id: string, class: string, file: string, line: number, symbol: string, key: string, enclosing: string, ordinal: number, onRail: boolean }>}
  */
-export function scanSource(raw, file) {
+export function scanSites(raw, file) {
+  const watchdogModule = isWatchdogModule(file);
   // A watchdog MODULE is a site by its name alone, so the content pre-filter cannot skip it.
-  if (!PREFILTER_RE.test(raw) && !/watchdog/i.test(file.slice(file.lastIndexOf('/') + 1))) return [];
+  if (!PREFILTER_RE.test(raw) && !watchdogModule) return [];
   const masked = stripCommentsAndStrings(raw, file);
   const starts = lineStarts(masked);
-  const fileOnRail = RAIL_RE.test(masked);
-  const rows = [];
-  const push = (cls, index, symbol) => {
-    const line = lineOf(starts, index);
-    rows.push({ class: cls, file, line, symbol, key: `${cls}|${file}` });
-  };
-  const railNear = (index) => RAIL_RE.test(windowText(masked, starts, lineOf(starts, index), RAIL_WINDOW_LINES));
+  const found = []; // { class, index, symbol, moduleLevel, railExempt }
+  const add = (cls, index, symbol, opts = {}) => found.push({ class: cls, index, symbol, ...opts });
 
-  // 1. owner-only alarms
+  // 1. owner alarms
   ALARM_CALL_RE.lastIndex = 0;
   for (let m; (m = ALARM_CALL_RE.exec(masked)); ) {
     const before = masked.slice(Math.max(0, m.index - 24), m.index);
     if (/\bfunction\s*\*?\s*$/.test(before)) continue; // the declaration, not a call
-    if (railNear(m.index)) continue;
-    push('owner-only-alarm', m.index, m[1]);
+    add('owner-only-alarm', m.index, m[1]);
   }
 
-  // 2. log-only fallback decisions
+  // 2. fallback decisions announced in a log line
   LOG_CALL_RE.lastIndex = 0;
   for (let m; (m = LOG_CALL_RE.exec(masked)); ) {
-    const open = m.index + m[0].length - 1;
-    const args = callArgsRaw(raw, open);
+    const args = callArgsRaw(raw, m.index + m[0].length - 1, masked);
     if (!FALLBACK_WORDING_RE.test(args)) continue;
-    if (railNear(m.index)) continue;
-    const word = args.match(FALLBACK_WORDING_RE)[0].toLowerCase().replace(/\s+/g, '-');
-    push('log-only-fallback', m.index, word);
+    add('log-only-fallback', m.index, args.match(FALLBACK_WORDING_RE)[0].toLowerCase().replace(/\s+/g, '-'));
   }
 
-  // 3. health fields carrying alarm flags with no condition
-  if (HEALTH_PATH_RE.test(file) && !fileOnRail) {
+  // 3. health fields carrying alarm flags
+  if (HEALTH_PATH_RE.test(file)) {
     HEALTH_FIELD_RE.lastIndex = 0;
     for (let m; (m = HEALTH_FIELD_RE.exec(masked)); ) {
       const prev = masked[m.index - 1];
@@ -189,32 +322,61 @@ export function scanSource(raw, file) {
       if (masked.slice(m.index + m[1].length).match(/^\s*\?\s*:/)) continue; // optional type member
       const value = m[2].trim();
       if (!value || TYPE_ONLY_VALUE_RE.test(value)) continue; // interface member / type annotation
-      push('health-flag-no-condition', m.index, m[1]);
+      add('health-flag-no-condition', m.index, m[1]);
     }
   }
 
-  // 4. bespoke watchdogs
-  const base = file.slice(file.lastIndexOf('/') + 1);
-  if (/watchdog/i.test(base) && !fileOnRail) {
-    push('bespoke-watchdog', 0, base.replace(CODE_EXT_RE, ''));
-  } else if (!fileOnRail) {
+  // 4. bespoke watchdogs: the module by name, else each named watchdog interval
+  if (watchdogModule) {
+    add('bespoke-watchdog', 0, file.slice(file.lastIndexOf('/') + 1).replace(CODE_EXT_RE, ''), { moduleLevel: true });
+  } else {
     INTERVAL_RE.lastIndex = 0;
     for (let m; (m = INTERVAL_RE.exec(masked)); ) {
-      const args = callArgsRaw(raw, m.index + m[0].length - 1, 200);
-      const name = args.match(/^\s*['"`]([^'"`]*watchdog[^'"`]*)['"`]/i);
-      if (name) push('bespoke-watchdog', m.index, name[1]);
+      const name = callArgsRaw(raw, m.index + m[0].length - 1, masked).match(/^\s*['"`]([^'"`]*watchdog[^'"`]*)['"`]/i);
+      if (name) add('bespoke-watchdog', m.index, name[1]);
     }
   }
 
-  // 5. signal-actor-registry waivers
+  // 5. signal-actor-registry waivers — a waiver is an accepted-risk bypass whatever surrounds it
   if (DEFINE_SIGNAL_RE.test(masked)) {
     WAIVER_RE.lastIndex = 0;
     for (let m; (m = WAIVER_RE.exec(masked)); ) {
-      push('signal-waiver', m.index, nearestSignalId(raw, masked, m.index) ?? 'unknown-signal');
+      add('signal-waiver', m.index, nearestSignalId(raw, masked, m.index) ?? 'unknown-signal', { railExempt: true });
     }
   }
 
-  return rows;
+  if (found.length === 0) return [];
+  const structure = railStructure(raw, file);
+  found.sort((a, b) => a.index - b.index);
+  const ordinals = new Map();
+  return found.map((f) => {
+    const { enclosing, onRail } = locateSite(structure, f.index, { moduleLevel: !!f.moduleLevel });
+    const group = `${f.class}|${file}|${enclosing}`;
+    const ordinal = (ordinals.get(group) ?? 0) + 1;
+    ordinals.set(group, ordinal);
+    return {
+      id: `${group}|${ordinal}`,
+      class: f.class,
+      file,
+      line: lineOf(starts, f.index),
+      symbol: f.symbol,
+      key: `${f.class}|${file}`,
+      enclosing,
+      ordinal,
+      onRail: f.railExempt ? false : onRail,
+    };
+  });
+}
+
+/**
+ * Scan ONE source text for the sites that BYPASS the rail. Pure: (raw, file) → rows.
+ *
+ * @param {string} raw
+ * @param {string} file
+ * @returns {Array<{ id: string, class: string, file: string, line: number, symbol: string, key: string, enclosing: string, ordinal: number, onRail: boolean }>}
+ */
+export function scanSource(raw, file) {
+  return scanSites(raw, file).filter((s) => !s.onRail);
 }
 
 /**
@@ -237,11 +399,13 @@ export function dispositionProblem(d) {
 
 /**
  * Inventory a set of repo-relative files under `root`. `readFile` is injectable for tests.
- * Returns every row with its resolved disposition, plus coverage counters.
+ * Returns every bypass row with its resolved disposition, every site (on the rail or not), and
+ * coverage counters.
  */
 export function inventory({ root, files, dispositions = {}, readFile }) {
   const read = readFile ?? ((f) => readFileSync(join(root, f), 'utf8'));
   const rows = [];
+  const sites = [];
   let scanned = 0;
   let unreadable = 0;
   for (const f of files) {
@@ -254,16 +418,106 @@ export function inventory({ root, files, dispositions = {}, readFile }) {
       continue;
     }
     scanned++;
-    for (const row of scanSource(text, f)) {
-      const d = dispositionFor(row, dispositions);
-      rows.push({ ...row, disposition: d, problem: dispositionProblem(d) });
+    for (const site of scanSites(text, f)) {
+      sites.push(site);
+      if (site.onRail) continue;
+      const d = dispositionFor(site, dispositions);
+      rows.push({ ...site, disposition: d, problem: dispositionProblem(d) });
     }
   }
-  rows.sort((a, b) => a.class.localeCompare(b.class) || a.file.localeCompare(b.file) || a.line - b.line);
+  const order = (a, b) => a.class.localeCompare(b.class) || a.file.localeCompare(b.file) || a.line - b.line;
+  rows.sort(order);
+  sites.sort(order);
   const byClass = Object.fromEntries(CLASSES.map((c) => [c, rows.filter((r) => r.class === c).length]));
   const undispositioned = rows.filter((r) => r.problem).length;
-  // A disposition key that no longer matches any site is dead weight (fixed or renamed): report it.
+  // A disposition key that no longer matches any bypass row is dead weight (fixed or renamed):
+  // report it, and --check fails on it (D-006) so a migrated cluster cannot keep its entry.
   const liveKeys = new Set(rows.flatMap((r) => [r.key, `${r.key}|${r.symbol}`]));
   const staleDispositions = Object.keys(dispositions).filter((k) => !liveKeys.has(k));
-  return { rows, scanned, unreadable, byClass, undispositioned, staleDispositions };
+  return { rows, sites, scanned, unreadable, byClass, undispositioned, staleDispositions };
+}
+
+/**
+ * Validate the immutable audit against live sites. In-progress migrate rows must retain their
+ * original disposition; completed rows must be on the rail. The final acceptance run passes
+ * requireAllMigrated:true. Only a reviewed amendment may remove or re-disposition a seed row.
+ * @param {any} manifest
+ * @param {any} live
+ * @param {{ completedItems?: string[], requireAllMigrated?: boolean }} [options]
+ */
+export function manifestProblems(manifest, live, options = {}) {
+  const { completedItems = [], requireAllMigrated = false } = options;
+  const problems = [];
+  const ids = new Set();
+  const sites = new Map(live.sites.map((site) => [site.id, site]));
+  const bypasses = new Map(live.rows.map((row) => [row.id, row]));
+  const amendments = new Map();
+  for (const amendment of manifest.amendments ?? []) {
+    if (!amendment.rowId || !amendment.reason?.trim() || !amendment.author?.trim() ||
+        !amendment.reviewerRef?.trim() || amendment.reviewerRef === amendment.author ||
+        !amendment.change || !['removed', 'migrate', 'not-applicable'].includes(amendment.change.disposition)) {
+      problems.push(`invalid amendment: ${amendment.rowId ?? '<missing row ID>'}`);
+      continue;
+    }
+    if (amendments.has(amendment.rowId)) problems.push(`duplicate amendment: ${amendment.rowId}`);
+    amendments.set(amendment.rowId, amendment);
+  }
+  for (const row of manifest.rows) {
+    if (ids.has(row.id)) problems.push(`duplicate seed ID: ${row.id}`);
+    ids.add(row.id);
+    const amendment = amendments.get(row.id);
+    const effective = amendment ? { ...row, ...amendment.change } : row;
+    if (effective.disposition === 'removed') continue;
+    const problem = dispositionProblem(effective);
+    if (problem) problems.push(`${row.id}: ${problem}`);
+    if (!['condition', 'observation'].includes(effective.route)) problems.push(`${row.id}: missing route`);
+    const site = sites.get(row.id);
+    if (!site) { problems.push(`${row.id}: seed site absent without removal amendment`); continue; }
+    if (effective.disposition === 'migrate') {
+      const mustBeMigrated = requireAllMigrated || completedItems.includes(effective.item);
+      if (mustBeMigrated && !site.onRail) problems.push(`${row.id}: completed migration still bypasses rail`);
+      if (!site.onRail) {
+        const disposition = bypasses.get(row.id)?.disposition;
+        if (disposition?.disposition !== 'migrate' || disposition.item !== effective.item) {
+          problems.push(`${row.id}: migrate disposition changed without amendment`);
+        }
+      }
+    } else if (!site.onRail && bypasses.get(row.id)?.disposition?.reason?.trim() !== effective.reason?.trim()) {
+      problems.push(`${row.id}: not-applicable reason changed without amendment`);
+    }
+  }
+  for (const id of amendments.keys()) if (!ids.has(id)) problems.push(`amendment names unknown seed ID: ${id}`);
+  return problems;
+}
+
+/** Generate the immutable row-ID -> executable test-case matrix; missing completed rows fail. */
+export function migrationCoverageProblems(manifest, cases, completedItems, registeredMechanisms) {
+  const problems = [];
+  const byRow = new Map();
+  for (const testCase of cases) {
+    if (typeof testCase.run !== 'function') problems.push(`${testCase.id}: no executable case`);
+    for (const id of testCase.rowIds) {
+      if (byRow.has(id)) problems.push(`${id}: duplicate coverage`);
+      byRow.set(id, testCase);
+    }
+  }
+  const seeds = new Set(manifest.rows.map((row) => row.id));
+  for (const id of byRow.keys()) if (!seeds.has(id)) problems.push(`${id}: coverage names unknown row`);
+  for (const row of manifest.rows) {
+    const amendment = (manifest.amendments ?? []).find((a) => a.rowId === row.id);
+    const effective = amendment ? { ...row, ...amendment.change } : row;
+    if (effective.disposition === 'removed') continue;
+    if (!['condition', 'observation'].includes(effective.route)) problems.push(`${row.id}: missing route`);
+    if (effective.disposition !== 'migrate') continue;
+    const testCase = byRow.get(row.id);
+    if (!testCase) {
+      if (completedItems.includes(effective.item)) problems.push(`${row.id}: completed migration has no case`);
+      continue;
+    }
+    if (testCase.item !== effective.item || testCase.route !== effective.route) problems.push(`${row.id}: case route/item mismatch`);
+    if (testCase.route === 'observation' && !registeredMechanisms.includes(testCase.mechanism)) {
+      problems.push(`${row.id}: unregistered observation mechanism`);
+    }
+  }
+  return problems;
 }

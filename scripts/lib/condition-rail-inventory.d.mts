@@ -112,6 +112,20 @@ export function inventory({ root, files, dispositions, readFile }: {
     undispositioned: number;
     staleDispositions: string[];
 };
+/**
+ * Validate the immutable audit against live sites. In-progress migrate rows must retain their
+ * original disposition; completed rows must be on the rail. The final acceptance run passes
+ * requireAllMigrated:true. Only a reviewed amendment may remove or re-disposition a seed row.
+ * @param {any} manifest
+ * @param {any} live
+ * @param {{ completedItems?: string[], requireAllMigrated?: boolean }} [options]
+ */
+export function manifestProblems(manifest: any, live: any, options?: {
+    completedItems?: string[];
+    requireAllMigrated?: boolean;
+}): string[];
+/** Generate the immutable row-ID -> executable test-case matrix; missing completed rows fail. */
+export function migrationCoverageProblems(manifest: any, cases: any, completedItems: any, registeredMechanisms: any): string[];
 export const CLASSES: readonly string[];
 /** Callee names whose CALL puts the enclosing function on the condition rail. */
 export const RAIL_FUNCTIONS: readonly string[];

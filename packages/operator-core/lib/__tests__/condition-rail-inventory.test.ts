@@ -14,6 +14,7 @@ import {
   dispositionProblem,
   inventory,
   isScannable,
+  scanSites,
   scanSource,
 } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 
@@ -36,15 +37,93 @@ describe('condition-rail inventory — class 1: owner-only alarms', () => {
     expect(classesOf(quoted, 'packages/x/lib/quoted.ts')).toEqual([]);
   });
 
-  it('treats a rail injected as a dependency as on the rail, but not a rail named only in a comment', () => {
+  it('requires the rail in call position, including for injected dependencies', () => {
     const injected = `async function guard(deps) {\n  const broadcast = deps.broadcast ?? broadcastSevereEvent;\n  await notifyAttention(input);\n  await broadcast(ev);\n}\n`;
-    expect(classesOf(injected, 'packages/x/lib/injected.ts')).toEqual([]);
+    expect(classesOf(injected, 'packages/x/lib/injected.ts')).toEqual(['owner-only-alarm']);
+    const called = `async function guard(deps) { await notifyAttention(input); await deps.broadcastSevereEvent(ev); }`;
+    expect(classesOf(called, 'packages/x/lib/injected.ts')).toEqual([]);
     const commentOnly = `async function guard() {\n  // TODO: broadcastSevereEvent here\n  await notifyAttention(input);\n}\n`;
     expect(classesOf(commentOnly, 'packages/x/lib/comment-only.ts')).toEqual(['owner-only-alarm']);
   });
 });
 
+describe('condition-rail inventory — site identity and rail-call mutations (P-017)', () => {
+  const file = 'packages/x/lib/system-health/check.ts';
+
+  it.each([
+    'broadcastSevereEvent({ conditionKey: "degraded:x:y" })',
+    'broadcastSevereEventResolved("degraded:x:y")',
+    'observeFallback("x", { eligible: 1, applied: 0, reason: "y" })',
+    'deps.broadcastSevereEvent({ conditionKey: "degraded:x:y" })',
+    'deps?.broadcastSevereEvent?.({ conditionKey: "degraded:x:y" })',
+    'notifyAttention({ conditionKey: "degraded:x:y", title: "alarm" })',
+    'notifyAttentionOnce({ conditionKey: "degraded:x:y", title: "alarm" })',
+    'escalateAlarm({ conditionKey: "degraded:x:y", title: "alarm" })',
+  ])('recognises %s as a call and catches its removal', (railCall) => {
+    const source = `function check() { console.warn('falling back'); ${railCall}; }`;
+    expect(scanSource(source, file).filter((r) => r.class === 'log-only-fallback')).toEqual([]);
+    expect(scanSource(source.replace(railCall, 'void 0'), file).map((r) => r.class)).toEqual(['log-only-fallback']);
+  });
+
+  it('does not let a sibling function or variable named conditionKey hide a bypass', () => {
+    const source = `
+      function migrated() { notifyAttention(input); broadcastSevereEvent(event); }
+      function untouched() { const conditionKey = 'degraded:x:y'; notifyAttention(input); }
+    `;
+    const sites = scanSites(source, file);
+    expect(sites.map((r) => [r.enclosing, r.onRail])).toEqual([['migrated', true], ['untouched', false]]);
+    expect(scanSource(source, file).map((r) => r.enclosing)).toEqual(['untouched']);
+  });
+
+  it('keeps health fields scoped to their own function', () => {
+    const source = `
+      function a() { broadcastSevereEvent(event); return { degraded: n > 5 }; }
+      function b() { return { degraded: n > 5 }; }
+    `;
+    expect(scanSource(source, file).map((r) => [r.class, r.enclosing])).toEqual([['health-flag-no-condition', 'b']]);
+  });
+
+  it('does not use an outer function rail call to cover a nested callback', () => {
+    const source = `function outer() { broadcastSevereEvent(event); run(() => { notifyAttention(input); }); }`;
+    expect(scanSource(source, file).map((r) => [r.enclosing, r.onRail])).toEqual([['outer', false]]);
+  });
+
+  it('uses named declarations, arrows, properties and methods for stable identities', () => {
+    const source = `
+      function declared() { notifyAttention(input); }
+      const arrow = () => { notifyAttention(input); };
+      const obj = { property: function () { notifyAttention(input); }, method() { notifyAttention(input); } };
+      class Alarm { check() { notifyAttention(input); } }
+    `;
+    expect(scanSites(source, file).map((r) => r.enclosing)).toEqual(['declared', 'arrow', 'property', 'method', 'check']);
+  });
+
+  it('counts on-rail siblings when assigning ordinals, so migration does not renumber rows', () => {
+    const source = `function check() { notifyAttention(input); notifyAttention(input); }`;
+    const before = scanSites(source, file);
+    const after = scanSites(source.replace('notifyAttention(input)', 'notifyAttention({ conditionKey: key })'), file);
+    expect(before.map((r) => r.id)).toEqual(after.map((r) => r.id));
+    expect(before.map((r) => r.ordinal)).toEqual([1, 2]);
+  });
+
+  it('keeps a watchdog interval scoped to its function and waivers unconditionally off-rail', () => {
+    const intervals = `function a() { broadcastSevereEvent(event); } function b() { managedSetInterval('x-watchdog', 10, () => work()); }`;
+    expect(scanSource(intervals, 'packages/x/lib/boot.ts').map((r) => [r.class, r.enclosing])).toEqual([['bespoke-watchdog', 'b']]);
+    const waiver = `broadcastSevereEvent(event); defineSignal({ id: 'x', waiver: { reason: 'accepted' } });`;
+    expect(scanSource(waiver, file).map((r) => r.class)).toEqual(['signal-waiver']);
+  });
+});
+
 describe('condition-rail inventory — class 2: log-only fallback decisions', () => {
+  it('reads long arguments and ignores literal closing parentheses when locating the call end', () => {
+    const long = `console.warn('${'x'.repeat(500)} falling back');`;
+    const parens = `console.warn('connection (peer) closed: falling back');`;
+    const nested = `console.warn(format('connection (peer)'), 'falling back');`;
+    for (const source of [long, parens, nested]) {
+      expect(classesOf(source, 'packages/x/lib/gate.ts')).toEqual(['log-only-fallback']);
+      expect(classesOf(`function check() { ${source} observeFallback('gate', decision); }`, 'packages/x/lib/gate.ts')).toEqual([]);
+    }
+  });
   it('reports a log line that announces a fallback or fail-open with no rail call beside it', () => {
     const src = `try { go(); } catch (e) {\n  console.warn('[gate] proofs unavailable, falling back to full suite', e);\n}\n`;
     expect(classesOf(src, 'packages/x/lib/gate.ts')).toEqual(['log-only-fallback']);

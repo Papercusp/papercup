@@ -80,8 +80,9 @@ describe('ledger-derived mutation catches (R-7)', () => {
     expect(rating(row).rating).toBe('unknown');
   });
 
-  it('rates a contradicting binder outcome unknown', () => {
-    const row = proof('mutation'); (row.details.adequacy as Record<string, unknown>).outcome = 'survived';
+  it.each(['survived', 'failed', 'pass', 'passed', 'success', 'succeeded'])
+    ('rates a contradicting binder outcome %s unknown', outcome => {
+    const row = proof('mutation'); (row.details.adequacy as Record<string, unknown>).outcome = outcome;
     expect(rating(row).rating).toBe('unknown');
   });
 
@@ -90,6 +91,8 @@ describe('ledger-derived mutation catches (R-7)', () => {
     delete row.testRunProvenance!.mutationBaseline;
     expect(rating(row).rating).toBe('pass');
     expect(rating(row).evidence).toContain('mutationLinkage=unverified-legacy');
+    expect(rating(row).evidence).toContain('mutationLeg="mutant"');
+    expect(rating(row).evidence).toContain(failedCase);
   });
 });
 

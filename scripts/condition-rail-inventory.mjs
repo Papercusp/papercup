@@ -6,7 +6,8 @@
  *
  *   node scripts/condition-rail-inventory.mjs            # per-class / per-file summary
  *   node scripts/condition-rail-inventory.mjs --json     # every row with its disposition
- *   node scripts/condition-rail-inventory.mjs --check    # exit 1 if any site is undispositioned
+ *   node scripts/condition-rail-inventory.mjs --check    # exit 1 if any bypass row is undispositioned
+ *                                                        # or any disposition key is stale (D-006)
  *
  * The scanner lives in scripts/lib/condition-rail-inventory.mjs; dispositions in
  * scripts/lib/condition-rail-dispositions.mjs.
@@ -30,7 +31,10 @@ function main() {
   if (args.includes('--json')) {
     process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
   } else {
-    console.log(`condition-rail inventory: ${res.rows.length} site(s) in ${res.scanned} scanned file(s)`);
+    const onRail = res.sites.length - res.rows.length;
+    console.log(
+      `condition-rail inventory: ${res.rows.length} bypass row(s) of ${res.sites.length} site(s) (${onRail} on the rail) in ${res.scanned} scanned file(s)`,
+    );
     for (const c of CLASSES) console.log(`  ${c.padEnd(26)} ${res.byClass[c]}`);
     const clusters = new Map();
     for (const r of res.rows) {
@@ -48,7 +52,7 @@ function main() {
     if (res.staleDispositions.length) console.log(`\nstale disposition keys (no live site): ${res.staleDispositions.join(', ')}`);
     console.log(`\nundispositioned sites: ${res.undispositioned}; unreadable files: ${res.unreadable}`);
   }
-  if (args.includes('--check') && res.undispositioned > 0) process.exit(1);
+  if (args.includes('--check') && (res.undispositioned > 0 || res.staleDispositions.length > 0)) process.exit(1);
 }
 
 if (isCliEntry(import.meta.url)) main();
