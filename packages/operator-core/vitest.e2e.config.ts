@@ -34,7 +34,7 @@ export async function prepareRuntimeReader(
     const { url } = resolveExecutedMapPgUrl();
     const sql = pg(url, { max: 1, connect_timeout: 1, onnotice: () => {} });
     try {
-      const rows = await listRuntimeVintage(undefined, sql, units);
+      const rows = await listRuntimeVintage(process.env.PAPERCUSP_TEST_RUN_WORKSPACE || undefined, sql, units);
       const fingerprint = measureRuntimeVintageEnvironment(rows, units);
       return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
     } finally {

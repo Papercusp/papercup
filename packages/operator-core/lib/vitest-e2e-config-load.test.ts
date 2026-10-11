@@ -52,10 +52,13 @@ describe('operator e2e config loading', () => {
       'docs/evidence/app-agent-tasks-durable-execution-2026-10-06/live-e2e-profile-20261007.json');
     vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://ledger.test:5432/papercusp');
     vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://embedded.test:24680/papercusp');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'shared-ledger-workspace');
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'verify-tauri-isolated-fixture');
     const sql = { end: vi.fn(async () => {}) };
     const pg = vi.fn(() => sql);
     const rows = [{ unit: 'actual-live-runtime' }];
-    const listRuntimeVintage = vi.fn(async (_workspace, client) => {
+    const listRuntimeVintage = vi.fn(async (workspace, client) => {
+      expect(workspace).toBe('shared-ledger-workspace');
       expect(client).toBe(sql);
       return rows;
     });
@@ -66,7 +69,7 @@ describe('operator e2e config loading', () => {
       }), async () => pg as any);
       expect(await reader!()).toMatchObject({ fingerprint: 'b'.repeat(64) });
       expect(pg).toHaveBeenCalledWith('postgresql://ledger.test:5432/papercusp', expect.any(Object));
-      expect(listRuntimeVintage).toHaveBeenCalledWith(undefined, sql, expect.any(Array));
+      expect(listRuntimeVintage).toHaveBeenCalledWith('shared-ledger-workspace', sql, expect.any(Array));
       expect(measureRuntimeVintageEnvironment).toHaveBeenCalledWith(rows, expect.any(Array));
       expect(sql.end).toHaveBeenCalledWith({ timeout: 0 });
     } finally { vi.unstubAllEnvs(); }
