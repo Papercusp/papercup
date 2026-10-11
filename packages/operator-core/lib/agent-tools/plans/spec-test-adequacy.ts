@@ -3281,6 +3281,17 @@ export function evaluateSpecTestAdequacy(input: {
   const bodyRefs =
     rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
   const cardEvidence = scorecardBindingEvidence(ratings, exactEvidence);
+  const cardBody = `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.`;
+  // emit caps body at 8,000 characters. Keep the full shared proof in an existing
+  // uncapped criterion evidence field when it cannot fit, with an explicit pointer
+  // for every B reference. This changes presentation only, never evaluator ratings.
+  const tableInBody = cardBody.length + cardEvidence.table.length <= 8_000;
+  if (!tableInBody) {
+    cardEvidence.ratings.traceability = {
+      ...cardEvidence.ratings.traceability,
+      evidence: cardEvidence.ratings.traceability.evidence + cardEvidence.table,
+    };
+  }
   return {
     planSlug: clause.planSlug,
     specId: clause.specId,
@@ -3299,7 +3310,9 @@ export function evaluateSpecTestAdequacy(input: {
       rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
       subject: { kind: 'plan', ref: subjectRef },
       title: `${clause.specId}@${clause.revision} test adequacy`,
-      body: `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.${cardEvidence.table}`,
+      body: tableInBody
+        ? cardBody + cardEvidence.table
+        : cardBody + '\n\nShared binding evidence (B1, B2, ...) resolves in the traceability criterion evidence.',
       ratings: cardEvidence.ratings,
       rerunRecipe,
       terminal: true,
