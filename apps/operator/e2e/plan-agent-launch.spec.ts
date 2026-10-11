@@ -27,7 +27,7 @@
  *   8. /admin/plans page renders without 500 (smoke).
  */
 import { test, expect, type APIRequestContext } from './_egress';
-import { assertFixtureApiSuccess, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
+import { assertFixtureApiSuccess, assertFixturePlanReadback, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
 let harnessSlug = 'main';
 
 const baseURL =
@@ -216,6 +216,10 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
     });
     expect(edit2.status).toBe(200);
     expect((edit2.json as { ok?: boolean }).ok ?? false, JSON.stringify(edit2.json)).toBe(true);
+
+    const persisted = await adminGet(request, 'get', { slug, mode: 'full', includeRaw: true });
+    expect(persisted.status).toBe(200);
+    assertFixturePlanReadback(persisted.json, (edit2.json as { contentHash?: string }).contentHash, edit2Body);
 
     // ── 4. plans:revisions — expect 3 entries (origin + 2 edits)
     //      newest-first, with rationales intact.

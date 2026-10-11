@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assertFixtureApiSuccess, fixtureChildFailure, fixtureChildWasGateRefusal, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
+import { assertFixtureApiSuccess, assertFixturePlanReadback, fixtureChildFailure, fixtureChildWasGateRefusal, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
 
 const childCalls = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', () => ({
@@ -12,6 +12,18 @@ vi.mock('node:child_process', () => ({
 afterEach(() => vi.unstubAllEnvs());
 
 describe('isolated chat fixture write boundary', () => {
+  it('verifies exact persisted raw bytes and the CAS revision before migration', () => {
+    const authored = '\n## Requirements\n\n**R-1 — Actual gate.**\n';
+    expect(() => assertFixturePlanReadback({ ok: true, contentHash: 'saved', raw: authored }, 'saved', authored)).not.toThrow();
+    // The real default sections response has no raw document. Neither its
+    // section index nor a legacy content field proves an exact round trip.
+    expect(() => assertFixturePlanReadback({ ok: true, contentHash: 'saved', sectionIndex: [{ heading: 'Requirements' }] }, 'saved', authored)).toThrow('hasRaw');
+    expect(() => assertFixturePlanReadback({ ok: true, contentHash: 'saved', content: authored }, 'saved', authored)).toThrow('mismatch');
+    expect(() => assertFixturePlanReadback({ ok: true, contentHash: 'old', raw: authored }, 'saved', authored)).toThrow('mismatch');
+    expect(() => assertFixturePlanReadback({ ok: true, contentHash: 'saved', raw: authored.trim() }, 'saved', authored)).toThrow('mismatch');
+    expect(() => assertFixturePlanReadback({ ok: true, raw: authored }, undefined, authored)).toThrow('mismatch');
+    expect(() => assertFixturePlanReadback({ error: 'not_found' }, 'saved', authored)).toThrow('refused');
+  });
   it('rejects HTTP-success domain refusals before continuing fixture setup', () => {
     expect(() => assertFixtureApiSuccess('set-content', { error: 'lint_failed', slug: 'fixture' })).toThrow('lint_failed');
     expect(() => assertFixtureApiSuccess('set-content', {})).toThrow('refused');

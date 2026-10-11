@@ -9,6 +9,18 @@ export function assertFixtureApiSuccess(verb: string, data: unknown): asserts da
   }
 }
 
+// plans:get defaults to structured sections. Exact document readback must
+// request mode=full and compare raw, the same bytes used by set-content CAS.
+export function assertFixturePlanReadback(data: unknown, expectedHash: unknown, authoredContent: string): void {
+  assertFixtureApiSuccess('get', data);
+  if (typeof expectedHash !== 'string' || !expectedHash || data.contentHash !== expectedHash || data.raw !== authoredContent) {
+    throw new Error(`Fixture plan readback mismatch: ${JSON.stringify({
+      expectedHash, actualHash: data.contentHash, hasRaw: typeof data.raw === 'string',
+      exactContent: data.raw === authoredContent,
+    })}`);
+  }
+}
+
 export function fixtureChildFailure(error: unknown): Error {
   const child = error as { message?: string; code?: unknown; signal?: unknown; killed?: boolean; stdout?: string; stderr?: string };
   return new Error(`Isolated fixture child failed: ${JSON.stringify({
