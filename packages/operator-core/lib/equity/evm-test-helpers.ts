@@ -6,9 +6,15 @@ import { createAccount, createAddressFromPrivateKey, createAddressFromString, he
 import { createVM, runTx } from '@ethereumjs/vm';
 import { encodeDeployData, encodeFunctionData, decodeFunctionResult, decodeErrorResult, keccak256, stringToHex, getAddress, type Abi, type Address, type Hex } from 'viem';
 import { readFileSync } from 'node:fs';
-import type { EquityArtifacts, EquityContractName } from './compile';
+import { compileEquityContracts, type EquityArtifacts, type EquityContractName } from './compile';
 
-export const artifacts = JSON.parse(readFileSync(new URL('./artifacts.json', import.meta.url), 'utf8')) as EquityArtifacts;
+// The suites run the committed, reproducible artifacts. PAPERCUSP_EQUITY_COMPILE_FROM_SOURCE=1 compiles
+// the .sol sources in memory instead (never writing artifacts.json), so scripts/mutation-probe.sh can show
+// a mutated contract to the EVM tests: its overlay bind-mounts the mutant over the source path, and a
+// test that read only artifacts.json would never see it and every contract probe would falsely survive.
+export const artifacts: EquityArtifacts = process.env.PAPERCUSP_EQUITY_COMPILE_FROM_SOURCE === '1'
+  ? compileEquityContracts()
+  : JSON.parse(readFileSync(new URL('./artifacts.json', import.meta.url), 'utf8')) as EquityArtifacts;
 export const digest = (s: string) => keccak256(stringToHex(s));
 export const TERMS = digest('Fixture issuer signed ownership-register documents');
 export type Contract = { address: Address; abi: Abi };

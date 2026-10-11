@@ -85,7 +85,8 @@ export async function inspectEquity(reader: EquityChainReader, input: { chainId:
   const addresses = { PapercuspEquity: address(input.equity), EquityGovernor: address(input.governor), EquityTimelock: address(input.timelock) };
   const code = await Promise.all(Object.values(addresses).map(addr => reader.getCode({ address: addr, blockNumber })));
   if (code.some(v => !v || v === '0x')) throw new Error('One or more equity contracts are not deployed');
-  const read = (contract: EquityContractName, functionName: string, args?: unknown[]) => reader.readContract({ address: addresses[contract], abi: equityArtifacts.contracts[contract].abi, functionName, args, blockNumber });
+  // inspectEquity reads the v1 trio only (V2 inspection is P-011); narrow to the keys `addresses` actually has.
+  const read = (contract: keyof typeof addresses, functionName: string, args?: unknown[]) => reader.readContract({ address: addresses[contract], abi: equityArtifacts.contracts[contract].abi, functionName, args, blockNumber });
   const [issuerCommitment, legalRegisterURI, genesisActivated, supply, reserved, cap, authority, boundEquity, boundLock, boundGovernor, delay] = await Promise.all([
     read('PapercuspEquity', 'issuerCommitment'), read('PapercuspEquity', 'legalRegisterURI'), read('PapercuspEquity', 'genesisActivated'),
     read('PapercuspEquity', 'totalSupply'), read('PapercuspEquity', 'reservedSupply'), read('PapercuspEquity', 'supplyCap'), read('PapercuspEquity', 'authority'),

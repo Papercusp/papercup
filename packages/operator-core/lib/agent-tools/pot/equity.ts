@@ -2,8 +2,9 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { equityArtifacts, equityArtifactPage, prepareEquityTransaction, transactionPage, inspectEquity, type EquityChainReader } from '../../equity/runtime';
+import { EQUITY_CONTRACT_NAMES } from '../../equity/compile';
 
-const contract = z.enum(['PapercuspEquity', 'EquityGovernor', 'EquityTimelock']);
+const contract = z.enum(EQUITY_CONTRACT_NAMES);
 const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
 const page = { offset: z.number().int().min(0).default(0), limit: z.number().int().min(2).max(2048).default(2048) };
 export default defineTool({
