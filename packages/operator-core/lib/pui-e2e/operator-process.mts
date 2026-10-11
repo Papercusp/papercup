@@ -52,11 +52,12 @@ async function profileCommand(method: string): Promise<unknown> {
     else resolve(result);
   }));
 }
-if (timingInspector) {
+const timingProfileReady = (async () => {
+  if (!timingInspector) return;
   timingInspector.connect();
   await profileCommand('Profiler.enable');
   await profileCommand('Profiler.start');
-}
+})();
 async function finishTimingProfile(): Promise<void> {
   if (!timingInspector || !timingDirectory) return;
   const { profile } = await profileCommand('Profiler.stop') as { profile: unknown };
@@ -304,15 +305,19 @@ server.on('connection', (socket) => {
     }] });
   });
 });
-await new Promise<void>((resolve, reject) => {
-  server.once('error', reject);
-  server.listen(Number(process.env.PUI_OPERATOR_FIXTURE_PORT ?? 0), '127.0.0.1', resolve);
-});
-const port = (server.address() as AddressInfo).port;
-process.env.PAPERCUSP_HONO_PORT = String(port);
-process.env.PAPERCUSP_OPERATOR_URL = `http://127.0.0.1:${port}`;
-process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${port}`;
-send({ type: 'ready', pid: process.pid, instanceId, port });
+async function startFixture(): Promise<void> {
+  await timingProfileReady;
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(Number(process.env.PUI_OPERATOR_FIXTURE_PORT ?? 0), '127.0.0.1', resolve);
+  });
+  const port = (server.address() as AddressInfo).port;
+  process.env.PAPERCUSP_HONO_PORT = String(port);
+  process.env.PAPERCUSP_OPERATOR_URL = `http://127.0.0.1:${port}`;
+  process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${port}`;
+  send({ type: 'ready', pid: process.pid, instanceId, port });
+}
+void startFixture();
 
 let stopping = false;
 async function stop({ endSessions = true }: { endSessions?: boolean } = {}): Promise<void> {
