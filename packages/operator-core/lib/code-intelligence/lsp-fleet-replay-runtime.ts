@@ -352,7 +352,17 @@ export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
     for (let directory = dirname(file);; directory = dirname(directory)) {
       const metadata = join(directory, 'package.json');
       if (existsSync(metadata)) {
-        const declared: unknown = JSON.parse(readFileSync(metadata, 'utf8')).libc;
+        const packageJson = JSON.parse(readFileSync(metadata, 'utf8'));
+        // Maintained addon loaders select prebuilds by platform/architecture.
+        // Android can share Linux's ELF machine and OSABI, so those headers
+        // alone do not make its dependency graph loadable by this host.
+        const prebuild = /^prebuilds\/(aix|android|darwin|freebsd|haiku|ios|linux|openbsd|sunos|win32)-(arm|arm64|ia32|loong64|mips|mipsel|ppc|ppc64|riscv64|s390|s390x|x64)(?:-musl)?\//
+          .exec(relative(directory, file));
+        const hasPrebuildLoader = ['require-addon', 'bare-addon', 'node-gyp-build', 'node-gyp-build-optional-packages']
+          .some(loader => typeof packageJson.dependencies?.[loader] === 'string' ||
+            typeof packageJson.optionalDependencies?.[loader] === 'string');
+        if (prebuild && hasPrebuildLoader && prebuild[2] === process.arch && prebuild[1] !== process.platform) return [];
+        const declared: unknown = packageJson.libc;
         const selectors = typeof declared === 'string' ? [declared] : declared;
         if (Array.isArray(selectors) && selectors.length > 0 && selectors.every(selector =>
           typeof selector === 'string' && ['glibc', 'musl', '!glibc', '!musl', 'any'].includes(selector))) {
