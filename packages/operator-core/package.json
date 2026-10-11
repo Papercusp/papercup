@@ -38,7 +38,7 @@
     "test:packaged-runner-unit": "npm --prefix ../../tools/perf-test/wdio run test:unit",
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
     "gen:prompt-projections": "node ../../scripts/check-prompt-projections.mjs --write",
-    "lint:prompt-projections": "node ../../scripts/check-prompt-projections.mjs",
+    "gen:prompt-projections:check": "node ../../scripts/check-prompt-projections.mjs",
     "lint:su-splice-markers": "tsx ../../scripts/check-su-splice-markers.ts",
     "lint:launch-prose-budget": "tsx ../../scripts/check-launch-prose-budget.ts",
     "lint:federation-assert-nounset": "vitest run lib/federation-asserts-merge-probe-nounset.test.ts",

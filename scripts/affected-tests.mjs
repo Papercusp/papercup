@@ -4588,8 +4588,13 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // whenever either projection, its source, a writer, or the guard's wiring changes.
     // No hostSuiteRatchet: the operator-core test only probes router selection and
     // falsifiability fixtures; it does not execute the real projection comparison.
+    // Named `gen:prompt-projections:check` (root pair `gen:prompt-projections` /
+    // `gen:prompt-projections:check`) so the green-checkpoint P-005 gen:*:check self-heal
+    // can regenerate a drifted projection on the frozen repair lineage. As `lint:*` the
+    // leg could not heal, and a desktop-submodule projection fix is not admissible by an
+    // agent at all (WI-10006055: it froze repairHead 382606c4 for a full round).
     workspace: "@papercusp/operator-core",
-    script: "lint:prompt-projections",
+    script: "gen:prompt-projections:check",
     appliesTo: (f) => PROMPT_PROJECTION_TRIGGER_PATHS.has(f),
   },
   {

@@ -260,7 +260,7 @@ export const COVERAGE_ATTRIBUTION_UNRELATED_PATH = 'packages/operator-core/lib/w
  * without a hostSuiteRatchet: this exact-byte check is a repo-root artifact
  * comparison, not something operator-core's ordinary Vitest suite executes.
  */
-export const PROMPT_PROJECTION_SCRIPT = 'lint:prompt-projections';
+export const PROMPT_PROJECTION_SCRIPT = 'gen:prompt-projections:check';
 export const PROMPT_PROJECTION_TASK = HOST_WORKSPACE + ' :: ' + PROMPT_PROJECTION_SCRIPT;
 export const PROMPT_CANONICAL_PATH = 'libs/papercusp/packages/harness/blueprints/base/prompts/su.md';
 export const PROMPT_DESKTOP_PROJECTION_PATH =
