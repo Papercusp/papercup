@@ -52,11 +52,16 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     const r = (row ?? {}) as Record<string, unknown>;
     const claims = Array.isArray(r.claims) ? r.claims : [];
     const schedulerClaim = r.schedulerClaimState as
-      | { activeClaims?: unknown; heldIds?: unknown }
+      | { activeClaims?: unknown; heldIds?: unknown; blockerParkedIds?: unknown }
       | null
       | undefined;
     const schedulerHeldIds = Array.isArray(schedulerClaim?.heldIds)
       ? schedulerClaim.heldIds.map(String)
+      : [];
+    // P-010 (plan D-010): holds parked on a typed external blocker are held but NOT counted in
+    // activeClaims. Carried at every tier, capped like heldIds, so the shaped view never hides them.
+    const schedulerBlockerParkedIds = Array.isArray(schedulerClaim?.blockerParkedIds)
+      ? schedulerClaim.blockerParkedIds.map(String)
       : [];
     const schedulerClaimState =
       schedulerClaim && typeof schedulerClaim.activeClaims === "number"
@@ -64,6 +69,8 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
             activeClaims: schedulerClaim.activeClaims,
             heldIds: schedulerHeldIds.slice(0, 8),
             heldIdsOmitted: Math.max(0, schedulerHeldIds.length - 8),
+            blockerParkedIds: schedulerBlockerParkedIds.slice(0, 8),
+            blockerParkedIdsOmitted: Math.max(0, schedulerBlockerParkedIds.length - 8),
           }
         : null;
     const base = {
