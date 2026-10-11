@@ -469,10 +469,38 @@ describe('expandTestRunBinding: harness attribution', () => {
     return { d, calls };
   }
 
-  it('adopts a harness-NULL local run into the caller scope', async () => {
-    const { d, calls } = deps(run({ harness_slug: null, workspace_id: null }));
-    expect(await expandTestRunBinding(input(), SCOPE, d)).toMatchObject({ ok: true, attribution: 'adopted-caller-harness' });
+  it.each(['object', 'json'])('adopts a harness-NULL local %s run and retains its isolated runtime receipts', async (encoding) => {
+    const receipts = [
+      { runId: '20261008T164557Z-3031268', resultSha256: 'a'.repeat(64),
+        sourceSha256: 'b'.repeat(64), lifecycleSha256: 'c'.repeat(64) },
+      { runId: '20261008T164439Z-3031268', resultSha256: 'd'.repeat(64),
+        sourceSha256: 'e'.repeat(64), lifecycleSha256: 'f'.repeat(64) },
+    ];
+    const completedRuntime = { kind: 'isolated-integration', runIds: receipts.map(receipt => receipt.runId).sort() };
+    const execution = {
+      schemaVersion: 1, root, filePath: TEST, runGroupId: null, workspaceId: 'ws-1', harnessSlug: null,
+      testNamePattern: null, testLayer: 'integration', passed: 2, failed: 0, skipped: 0,
+      collectionFailed: false, mutationPhase: null, commitSha: 'abcdef0123456789', worktreeDirty: false,
+      isolatedRuntimeReceipts: receipts,
+    };
+    const { d, calls } = deps(run({
+      harness_slug: null,
+      workspace_id: null,
+      execution_details: encoding === 'json' ? JSON.stringify(execution) : execution,
+    }));
+
+    const out = await expandTestRunBinding(input({ completedRuntime }), SCOPE, d);
+
+    expect(out).toMatchObject({
+      ok: true,
+      attribution: 'adopted-caller-harness',
+      binding: { measurement: {
+        runtimeUnits: receipts.map(receipt => `isolated-integration:${receipt.runId}`),
+        completedRuntime,
+      } },
+    });
     expect(calls.adopt).toBe(1);
+    expect(execution.harnessSlug).toBeNull();
   });
 
   it('uses the recorded nested workspace before a same-named root file and derives its actual imports', async () => {

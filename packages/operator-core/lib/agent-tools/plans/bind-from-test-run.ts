@@ -1068,7 +1068,7 @@ export async function expandTestRunBinding(
   deps: TestRunBindingDeps = defaultTestRunBindingDeps,
 ): Promise<TestRunExpansion> {
   const testRunId = input.fromTestRun;
-  const row = await deps.loadRun(scope, testRunId);
+  let row = await deps.loadRun(scope, testRunId);
   if (!row) {
     return { ok: false, error: 'test_run_not_found', testRunId, message: `no test_runs row has id ${testRunId}.` };
   }
@@ -1100,6 +1100,10 @@ export async function expandTestRunBinding(
         message: `test-run ${testRunId} was attributed elsewhere while this call tried to adopt it into '${scope.harnessSlug}'.`,
       };
     }
+    // `loadRun` returned the pre-adoption snapshot. Mirror the successful guarded
+    // UPDATE for downstream scope checks, while leaving execution_details intact:
+    // those receipts describe the original run and are the runtime witness.
+    row = { ...row, harness_slug: scope.harnessSlug, workspace_id: scope.workspaceId };
     attribution = 'adopted-caller-harness';
   } else if (row.harness_slug !== scope.harnessSlug) {
     return {
