@@ -93,12 +93,28 @@ export function string(value: unknown): string {
  */
 export async function resolveCanonicalDocument(
   sql: Db,
-  params: { workspaceId: string; userId: string; source: string; externalId: string; sourceId?: string | null },
+  params: {
+    workspaceId: string;
+    userId: string;
+    /** The vault source (e.g. `mail`). Optional when `datatypeId` names the document instead. */
+    source?: string;
+    externalId: string;
+    sourceId?: string | null;
+    /**
+     * Match on the canonical datatype stamped at ingest instead of the vault
+     * source. Provider-package records are stored under `source = <provider id>`
+     * (connector-runtime admitConnectorRecord), so a provider-neutral verb such as
+     * `chat:reply` names the datatype, never a provider.
+     */
+    datatypeId?: string | null;
+  },
 ): Promise<CanonicalDocument> {
   const source = string(params.source);
+  const datatypeId = string(params.datatypeId);
   const externalId = string(params.externalId);
   const sourceId = string(params.sourceId);
-  if (!source) throw new Error('canonical_source_required');
+  if (!source && !datatypeId) throw new Error('canonical_source_required');
+  const label = source || datatypeId;
   if (!externalId) throw new Error('canonical_external_id_required');
   const rows = await sql<
     Array<{
@@ -131,14 +147,15 @@ export async function resolveCanonicalDocument(
       FROM harness_shared.documents d
      WHERE d.workspace_id = ${params.workspaceId}
        AND d.user_id = ${params.userId}::uuid
-       AND d.source = ${source}
+       AND (${source || null}::text IS NULL OR d.source = ${source || null})
+       AND (${datatypeId || null}::text IS NULL OR d.datatype_id = ${datatypeId || null})
        AND d.external_id = ${externalId}
        AND (${sourceId || null}::text IS NULL OR d.source_id = ${sourceId || null}::uuid)
      ORDER BY d.id
      LIMIT 2`;
-  if (rows.length > 1) throw new Error(`canonical_document_ambiguous:${source}:${externalId}`);
+  if (rows.length > 1) throw new Error(`canonical_document_ambiguous:${label}:${externalId}`);
   const row = rows[0];
-  if (!row) throw new Error(`canonical_document_not_found:${source}:${externalId}`);
+  if (!row) throw new Error(`canonical_document_not_found:${label}:${externalId}`);
   return {
     id: row.id,
     source: row.source,

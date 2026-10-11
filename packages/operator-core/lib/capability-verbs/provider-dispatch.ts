@@ -32,7 +32,7 @@ import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
 
 /** Canonical datatypes the shared outbound verbs write. */
-export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket';
+export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message';
 
 /**
  * The outbound capability vocabulary (D-014.2). Each is passed to `invoke` as
@@ -40,11 +40,14 @@ export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket';
  *  - `mail.draft`: operation `create` | `update` | `read`
  *  - `mail.send`: operation `message` | `draft`
  *  - `calendar.write`: operation `create` | `update`
+ *  - `chat.reply`: `{ channelId, threadId, text }` → `{ channelId, threadId, messageTs }`
+ *    (cupboard-distributable-integrations-2026-10-10 P-008, D-018)
  */
 export const OUTBOUND_CAPABILITIES = {
   mailDraft: 'mail.draft',
   mailSend: 'mail.send',
   calendarWrite: 'calendar.write',
+  chatReply: 'chat.reply',
 } as const;
 
 /**
