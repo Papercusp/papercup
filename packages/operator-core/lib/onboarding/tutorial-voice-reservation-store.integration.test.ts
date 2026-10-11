@@ -285,9 +285,11 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
       expiresAt: new Date(Date.now() + 60_000) });
     const input = admission({ userId: user.id, organizationId: organization.id, sessionId: session.id, sessionVersion: member!.permissionVersion });
     let externalUserId = subject; let verified = true; let externalSessionId = session.upstreamSessionId;
+    let validationCount = 0; let expireOnRevalidation = false;
     const provider = { providerId: 'workos', validateSession: async () => ({ ok: true as const, value: {
       externalSessionId, identity: { externalUserId, primaryEmail: 'not-authority@example.test', emailVerified: verified as true },
-      issuedAtMs: Date.now(), authenticatedAtMs: Date.now(), expiresAtMs: Date.now() + 60_000,
+      issuedAtMs: Date.now(), authenticatedAtMs: Date.now(),
+      expiresAtMs: expireOnRevalidation && ++validationCount > 1 ? Date.now() - 1 : Date.now() + 60_000,
       authenticationMethods: [], mfaVerified: false,
     } }) };
     await expect(validateTutorialVoiceIdentityForUpdate(db.adminSql, input, provider)).rejects.toThrow('hosted_session_lock_requires_transaction');
@@ -308,6 +310,12 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
           WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid`;
       })).rejects.toMatchObject({ code: '55P03' });
     });
+    // A provider session valid before the lesson read must still be valid
+    // afterward; a cached first validation would incorrectly authorize here.
+    expireOnRevalidation = true;
+    expect(await run(tx => validateTutorialVoiceLessonForUpdate(tx, input, provider))).toBe(false);
+    expect(validationCount).toBe(2);
+    expireOnRevalidation = false;
     await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences
       SET profile = jsonb_set(profile, '{productTutorial,3,disposition}', '"paused"'::jsonb)
       WHERE organization_id = ${organization.id}::uuid AND user_id = ${user.id}::uuid`;
