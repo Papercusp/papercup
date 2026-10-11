@@ -13,6 +13,11 @@ import graphQuery from '../agent-tools/gitnexus/query';
 import lspQuery from '../agent-tools/lsp/query';
 import codePack from '../agent-tools/lsp/pack';
 import codeStructural from '../agent-tools/lsp/astgrep';
+import { buildTaskBrief } from './task-brief';
+import { DEFAULT_PACKER_EFFECTS, packerFacade } from './packer-facade';
+import { firstPartyCallersOffthread } from './first-party-callers-offthread';
+import { LSP_VENDOR_DIR } from './lsp-adapter';
+import { readWorkItemResume } from '../agent-tools/work_items/resume';
 import { runLspDaemonServer } from './lsp-daemon-server';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import type { CodeIntelAnswer } from './contracts';
@@ -24,6 +29,43 @@ import { produceSnapshotFromSource, writeSnapshotAtomic } from '../../../../scri
 import { computeGraphSuggestions, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
 import { refreshDependencySnapshot } from '../harness/routines/gitnexus-reindex-action';
 import { createHash } from 'node:crypto';
+
+describe('native P012 required BAR scoped claim and canonical resume integration', () => {
+  it('uses the real safe packer/compiler and replaces stale excerpts without widening task scope', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'native-task-brief-')));
+    const item = { id: 'WI-native-private-brief', harness: 'private-brief', state: 'open',
+      payload: { paths: ['target.ts', 'consumer.ts', 'target.test.ts', 'guide.md'] } };
+    const source = async () => ({ taskBrief: await buildTaskBrief({ workspaceId: 'private-workspace', workItem: item }, {
+      root: async (workspace, harness) => workspace === 'private-workspace' && harness === 'private-brief' ? root : null,
+      effects: DEFAULT_PACKER_EFFECTS, pack: packerFacade,
+      graph: (repo, name, filePath, paths, budgetMs) => firstPartyCallersOffthread({ root: repo, name, filePath,
+        paths, op: 'callers', limit: 8, vendorDir: LSP_VENDOR_DIR }, { budgetMs }),
+    }) });
+    const deps = { checkpoint: async () => ({ checkpoint: null, updatedAtMs: null }),
+      freshness: async () => undefined, evidence: async () => [], taskBrief: source };
+    try {
+      writeFileSync(join(root, 'target.ts'), 'export function nativeBriefTarget() { return "BEFORE_NATIVE_EDIT"; }\n');
+      writeFileSync(join(root, 'consumer.ts'), 'import { nativeBriefTarget } from "./target";\nexport const used = nativeBriefTarget();\n');
+      writeFileSync(join(root, 'target.test.ts'), 'import { nativeBriefTarget } from "./target";\nexport const checked = nativeBriefTarget();\n');
+      writeFileSync(join(root, 'guide.md'), 'Source-linked target.ts usage.\n');
+      writeFileSync(join(root, 'unrelated.ts'), 'OUTSIDE_TASK_SCOPE_MUST_NOT_APPEAR');
+      writeFileSync(join(root, '.env'), 'PRIVATE_SECRET_MUST_NOT_APPEAR');
+      const before = await source();
+      expect(before.taskBrief.status, JSON.stringify(before.taskBrief)).toBe('current');
+      expect(before.taskBrief.graph.consumers).toContain('consumer.ts:2');
+      expect(before.taskBrief.files).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: 'guide.md', kind: 'doc' }), expect.objectContaining({ path: 'target.test.ts', kind: 'test' })]));
+      expect(before.taskBrief.recover).toHaveProperty('args.rootPath', root);
+      expect(JSON.stringify(before.taskBrief)).toContain('BEFORE_NATIVE_EDIT');
+      writeFileSync(join(root, 'target.ts'), 'export function nativeBriefTarget() { return "AFTER_NATIVE_EDIT"; }\n');
+      const resumed = await readWorkItemResume(item, deps);
+      expect(resumed.taskBrief?.status, JSON.stringify(resumed.taskBrief)).toBe('current');
+      expect(resumed.taskBrief).not.toHaveProperty('sourceFingerprint', before.taskBrief.sourceFingerprint);
+      expect(JSON.stringify(resumed.taskBrief)).toContain('AFTER_NATIVE_EDIT');
+      expect(JSON.stringify(resumed)).not.toMatch(/BEFORE_NATIVE_EDIT|OUTSIDE_TASK_SCOPE|PRIVATE_SECRET/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 60_000);
+});
 import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-tools/plans/code-dependency-evidence';
 import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot } from '../agent-tools/plans/spec-evidence-store';
 import { evaluateServingRuntime } from '../serving-runtimes';

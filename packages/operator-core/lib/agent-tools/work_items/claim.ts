@@ -712,6 +712,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       planItemLanded,
       siblingPathOverlapResult,
       sourceCitationResult,
+      taskBriefResult,
     ] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
@@ -864,6 +865,9 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             : null;
         })
         .catch(() => null),
+      import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
+        workItem, harness: workItem.harness ?? it.harness, workspaceId: identity.workspaceId,
+      })).catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     // A named assignee means the warning is being read by the dispatching caller, not the
@@ -967,6 +971,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(pathHintsResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
           ...(sourceCitationResult ?? {}),
+          ...(taskBriefResult ?? {}),
         }
       : {
           ok: true,
@@ -1016,6 +1021,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(pathHintsResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
           ...(sourceCitationResult ?? {}),
+          ...(taskBriefResult ?? {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.

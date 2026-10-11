@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildTaskBrief, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
-import { unmeasuredSourceEvidence, type CodeIntelAnswer } from './contracts';
+import type { CodeIntelAnswer } from './contracts';
 
 const dirs: string[] = [];
 const fixture = () => { const dir = mkdtempSync(join(tmpdir(), 'task-brief-')); dirs.push(dir); return dir; };
@@ -11,8 +11,7 @@ afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, for
 const answer = (paths: string[]): CodeIntelAnswer => ({ backend: 'repomix', intent: 'pack', query: 'fixture',
   sites: paths.map(path => ({ path, line1: null, kind: 'file', detail: null })),
   truncation: { truncated: false, totalAvailable: null, continuation: null },
-  freshness: { health: 'healthy', indexedAt: null, staleVsHead: null }, cost: { wallMs: 0, execution: 'ran' }, error: null,
-  evidence: unmeasuredSourceEvidence({ paths }) });
+  freshness: { health: 'healthy', indexedAt: null, staleVsDisk: null, indexedCommit: null }, latencyMs: 0, error: null });
 function depsFor(root: string): TaskBriefDeps {
   return { root: vi.fn(async () => root), effects: { exec: vi.fn(async () => ({ stdout: '' })),
     now: () => new Date(), writeArtifact: vi.fn(async () => '') },
@@ -20,7 +19,7 @@ function depsFor(root: string): TaskBriefDeps {
     pack: vi.fn(async (_op, args) => {
       const { readFileSync } = await import('node:fs');
       const path = join(root, 'pack.xml');
-      writeFileSync(path, args.include.map(p => `<file path="${p}">${readFileSync(join(root, p), 'utf8')}</file>`).join('\n'));
+      writeFileSync(path, args.include.map((p: string) => `<file path="${p}">${readFileSync(join(root, p), 'utf8')}</file>`).join('\n'));
       return { answer: answer([...args.include]), artifact: { path, preview: '', provenance: { commit: 'fixture-pin' } as never } };
     }),
   };
@@ -69,5 +68,47 @@ describe('P012 bounded scoped task briefs', () => {
     const brief = await buildTaskBrief({ workItem: { id: 'WI-task', harness: 'h', payload: { paths: ['target.ts'] } } }, deps);
     expect(vi.mocked(deps.effects.exec).mock.calls[0]![2]!.timeoutMs).toBeLessThanOrEqual(6_000);
     expect(brief.status).toBe('unknown'); expect(brief.recover.tool).toBe('code:pack'); expect(brief.excerpts).toEqual([]);
+  });
+  it('recovers the registered repository rather than a payload root and cites canonical cross-plan authority', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    const deps = depsFor(root);
+    deps.decisions = vi.fn(async () => ({ planSlug: 'task-plan', totalDecisions: 2,
+      totalLocalDecisions: 1, totalAffectedDecisions: 1, affectedDecisions: 1, authorityReadFailed: false,
+      decisions: [{ id: 'D-003', title: 'local', snippet: 'body' },
+        { id: 'D-004', title: 'inbound', snippet: 'body', sourcePlanSlug: 'governing-plan' }] }));
+    const brief = await buildTaskBrief({ workspaceId: 'task-workspace', workItem: { id: 'WI-task', harness: 'h',
+      sourcePlanSlug: 'task-plan', payload: { rootPath: '/untrusted', paths: ['target.ts'] } } }, deps);
+    expect(brief.repository).toEqual({ workspaceId: 'task-workspace', rootPath: root });
+    expect(brief.recover).toEqual({ tool: 'code:pack', args: { op: 'pack', include: ['target.ts'], rootPath: root } });
+    expect(brief.decisions).toEqual({ status: 'measured', refs: [{ plan: 'task-plan', id: 'D-003' },
+      { plan: 'governing-plan', id: 'D-004' }], recover: { tool: 'plans:get', args: { slug: 'task-plan', harness: 'h', heading: 'Decisions' } } });
+    expect(JSON.stringify(brief)).not.toContain('/untrusted');
+  });
+  it('keeps a failed governing-authority read explicitly unknown while preserving current scoped source', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    const deps = depsFor(root); deps.decisions = vi.fn(async () => { throw new Error('authority unavailable'); });
+    const brief = await buildTaskBrief({ workItem: { id: 'WI-task', harness: 'h', sourcePlanSlug: 'task-plan',
+      payload: { paths: ['target.ts'] } } }, deps);
+    expect(brief.status).toBe('current'); expect(brief.decisions?.status).toBe('unknown');
+    expect(brief.decisions?.refs).toEqual([]); expect(brief.decisions?.recover.args.slug).toBe('task-plan');
+  });
+  it('preserves scoped recovery and at least one source card when deep task paths and decisions fill the inline budget', async () => {
+    const root = fixture(), prefix = 'packages/operator-core/lib/code-intelligence';
+    mkdirSync(join(root, prefix), { recursive: true });
+    const paths = ['task-brief.ts', 'task-brief.test.ts', 'task-brief.integration.test.ts',
+      'native-ecosystem.integration.test.ts', 'native-ecosystem.e2e.test.ts'].map(name => `${prefix}/${name}`);
+    for (const path of paths) writeFileSync(join(root, path), 'export function target() { return "SCOPED_SOURCE"; }');
+    const plan = 'native-code-intelligence-ecosystem-and-dream-2026-10-09';
+    const deps = depsFor(root);
+    deps.decisions = async () => ({ planSlug: plan, totalDecisions: 8, totalLocalDecisions: 8,
+      totalAffectedDecisions: 0, affectedDecisions: 0, authorityReadFailed: false,
+      decisions: Array.from({ length: 8 }, (_, i) => ({ id: `D-00${i + 1}`, title: 'authority', snippet: 'body' })) });
+    const brief = await buildTaskBrief({ workspaceId: 'papercusp-workspace', workItem: { id: 'WI-native-task', harness: 'papercusp',
+      sourcePlanSlug: plan, payload: { paths } } }, deps);
+    expect(brief.status).toBe('current');
+    expect(brief.files.length).toBeGreaterThan(0);
+    expect(brief.recover).toMatchObject({ tool: 'code:pack', args: { rootPath: root, include: paths.slice().sort() } });
+    expect(JSON.stringify(brief).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+    expect(brief.exclusions.join(' ')).toMatch(/omitted/);
   });
 });

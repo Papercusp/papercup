@@ -700,6 +700,10 @@ export default defineTool({
         return null;
       }
     };
+    const taskBriefFor = async (workItem: ReturnType<typeof wiOf>) => {
+      const m = await import('../../code-intelligence/task-brief');
+      return m.getClaimTimeTaskBrief({ workItem, harness: args.harness, workspaceId: ident.workspaceId });
+    };
 
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
@@ -728,6 +732,7 @@ export default defineTool({
         planItemLandedResult,
         siblingPathOverlapResult,
         sourceCitationResult,
+        taskBriefResult,
       ] = await Promise.all([
         planDecisionsFor(wiOf(claimed)),
         priorAttemptsFor(wiOf(claimed)),
@@ -740,6 +745,7 @@ export default defineTool({
         planItemLandedFor(wiOf(claimed)),
         siblingPathOverlapFor(wiOf(claimed)),
         sourceCitationFor(wiOf(claimed)),
+        taskBriefFor(wiOf(claimed)),
       ]);
       return {
         content: [
@@ -761,6 +767,7 @@ export default defineTool({
               ...(planItemLandedResult ?? {}),
               ...(siblingPathOverlapResult ?? {}),
               ...(sourceCitationResult ?? {}),
+              ...(taskBriefResult ?? {}),
             }),
           },
         ],
@@ -804,6 +811,7 @@ export default defineTool({
           planItemLandedResult,
           siblingPathOverlapResult,
           sourceCitationResult,
+          taskBriefResult,
         ] = await Promise.all([
           planDecisionsFor(wiOf(c)),
           priorAttemptsFor(wiOf(c)),
@@ -816,6 +824,7 @@ export default defineTool({
           planItemLandedFor(wiOf(c)),
           siblingPathOverlapFor(wiOf(c)),
           sourceCitationFor(wiOf(c)),
+          taskBriefFor(wiOf(c)),
         ]);
         return {
           ...c,
@@ -832,6 +841,7 @@ export default defineTool({
           ...(planItemLandedResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
           ...(sourceCitationResult ?? {}),
+          ...(taskBriefResult ?? {}),
         };
       }),
     );

@@ -1065,6 +1065,7 @@ export function assembleSchedulerClaimResult(legs: {
    */
   sourceCitation?: unknown;
   sourceCitationWarning?: unknown;
+  taskBrief?: unknown;
   planDecisions?: readonly unknown[] | null;
   planDecisionsNote?: string | null;
   priorAttemptBrief?: unknown;
@@ -1180,6 +1181,7 @@ export function assembleSchedulerClaimResult(legs: {
         }
       : {}),
     ...(legs.premises ? { premises: legs.premises, premisesNote: legs.premisesNote } : {}),
+    ...(legs.taskBrief ? { taskBrief: legs.taskBrief } : {}),
   };
 }
 
@@ -2427,6 +2429,7 @@ export default defineTool({
       sourceCitation: unknown;
       sourceCitationWarning: string;
     } | null;
+    let taskBriefHint = null as { taskBrief: unknown } | null;
     // EI-22344661292350991: explicit, report-only independence enrichment. The claim is
     // already committed; this advisory must never reject/release it or make the self-pull
     // path depend on a successful lineage lookup.
@@ -2542,6 +2545,7 @@ export default defineTool({
           planItemLandedHint,
           siblingPathOverlapHint,
           sourceCitationHint,
+          taskBriefHint,
           independenceHint,
           sourceGenerationSignal,
         ] = await Promise.all([
@@ -2677,6 +2681,9 @@ export default defineTool({
                 })
                 .catch(() => null)
             : Promise.resolve(null),
+          import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
+            workItem: wi, harness: wi?.harness ?? args.harness, workspaceId: ident.workspaceId,
+          })).catch(() => null),
           // EI-22344661292350991: preserve an explicit independence marker on the
           // successful claim response and add a warning only when the claimant is
           // actually in the recorded contributor lineage (including descendants /
@@ -2884,6 +2891,7 @@ export default defineTool({
           siblingPathOverlapWarning: siblingPathOverlapHint?.siblingPathOverlapWarning,
           sourceCitation: sourceCitationHint?.sourceCitation,
           sourceCitationWarning: sourceCitationHint?.sourceCitationWarning,
+          taskBrief: taskBriefHint?.taskBrief,
           behaviorContract: behaviorContractHint?.behaviorContract,
           behaviorContractNote: behaviorContractHint?.behaviorContractNote,
           pathHints: pathHintsHint?.pathHints,

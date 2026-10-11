@@ -53,6 +53,7 @@ const LEG_IMPLEMENTATION: Record<ClaimTimeEnrichmentLeg, string> = {
   planItemLanded: 'getClaimTimePlanItemLanded',
   siblingPathOverlap: 'getClaimTimeSiblingPathOverlap',
   sourceCitation: 'getClaimTimeSourceCitation',
+  taskBrief: 'getClaimTimeTaskBrief',
 };
 
 /** Every surface that hands an agent a claimed item and is therefore obliged to warn it. */

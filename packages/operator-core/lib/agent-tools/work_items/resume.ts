@@ -2,6 +2,7 @@
 import { parseCarryNote, shortCarryHash } from '../../carry-note';
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness, type WorkItemCheckpointWithMeta } from '../../work-item-checkpoint';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, listSpecEvidence } from '../plans/spec-evidence-store';
+import { getClaimTimeTaskBrief, type TaskBrief } from '../../code-intelligence/task-brief';
 
 export const RESUME_PACKET_BUDGET = 5_000;
 const EVIDENCE_READ_LIMIT = 9;
@@ -12,6 +13,7 @@ type ResumeDeps = {
   checkpoint: typeof getWorkItemCheckpointWithMeta;
   freshness: typeof getWorkItemCheckpointFreshness;
   evidence: typeof listSpecEvidence;
+  taskBrief?: typeof getClaimTimeTaskBrief;
 };
 
 function planOf(item: ResumeItem): { slug: string; item: string | null } | null {
@@ -24,7 +26,7 @@ function planOf(item: ResumeItem): { slug: string; item: string | null } | null 
 
 /** Omit whole records to fit; never turn a partial next action into an instruction. */
 export function buildWorkItemResume(input: {
-  item: ResumeItem; checkpoint: Checkpoint; freshness: unknown; evidence: Evidence | null;
+  item: ResumeItem; checkpoint: Checkpoint; freshness: unknown; evidence: Evidence | null; taskBrief?: TaskBrief;
 }) {
   const { item, checkpoint } = input;
   const plan = planOf(item);
@@ -38,6 +40,7 @@ export function buildWorkItemResume(input: {
   const next = ambiguous ? null : latestNext ?? checkpointNext;
   const resume = {
     schemaVersion: 'work-item-resume-v1',
+    taskBrief: undefined as TaskBrief | { status: 'omitted'; recover: TaskBrief['recover'] } | undefined,
     claim: { id: item.id, assignee: item.assignee ?? null, state: item.state ?? null },
     plan,
     nextAction: {
@@ -84,6 +87,13 @@ export function buildWorkItemResume(input: {
   for (const wall of fields.walls ?? []) {
     if (append(resume.walls.rows, wall)) resume.walls.omitted -= 1;
   }
+  if (input.taskBrief) {
+    resume.taskBrief = input.taskBrief;
+    if (JSON.stringify(resume).length > RESUME_PACKET_BUDGET) {
+      resume.taskBrief = { status: 'omitted', recover: input.taskBrief.recover };
+      if (JSON.stringify(resume).length > RESUME_PACKET_BUDGET) resume.taskBrief = undefined;
+    }
+  }
   for (const row of (input.evidence ?? []).slice(0, EVIDENCE_READ_LIMIT - 1)) {
     const details = row.details as { adequacy?: { outcome?: unknown; causalPairIds?: unknown } };
     const proof = {
@@ -105,15 +115,17 @@ export async function readWorkItemResume(item: ResumeItem, deps: ResumeDeps = {
   checkpoint: getWorkItemCheckpointWithMeta,
   freshness: getWorkItemCheckpointFreshness,
   evidence: listSpecEvidence,
+  taskBrief: getClaimTimeTaskBrief,
 }) {
   const ref = { harness: item.harness ?? null, workItemId: item.id };
-  const [checkpoint, freshness, evidence] = await Promise.all([
+  const [checkpoint, freshness, evidence, source] = await Promise.all([
     deps.checkpoint(ref).catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true })),
     deps.freshness(ref).catch(() => ({ verdict: 'unknown', reason: 'dependency read failed' })),
     deps.evidence({ harnessSlug: item.harness ?? undefined,
       planSlugs: [planOf(item)?.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE],
       workItemIds: [item.id], limit: EVIDENCE_READ_LIMIT,
     }).catch(() => null),
+    deps.taskBrief?.({ workItem: item }).catch(() => null),
   ]);
-  return buildWorkItemResume({ item, checkpoint, freshness, evidence });
+  return buildWorkItemResume({ item, checkpoint, freshness, evidence, taskBrief: source?.taskBrief });
 }
