@@ -372,10 +372,11 @@ describe('EI-23790900634867970 — coord:send section inputs stay typed', () => 
     >();
   });
 
-  it('states the distinct authored shapes on the short callable description', () => {
+  it('distinguishes ref-string premises from the forYouBecause object on the short callable description', () => {
     const description = String((sendTool as { description?: unknown }).description ?? '');
 
     expect(description).toMatch(/body\[\]\.premises` are ref strings/i);
+    expect(description).toContain('body[].forYouBecause: { relation, ref?, note? }');
     expect(description).toMatch(/body\[\]\.youMayNotKnow` uses \{ref, provenance\} objects/i);
   });
 });

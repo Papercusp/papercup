@@ -228,7 +228,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     // Codex reports the same local lookup miss in several phrasings; it is not a
     // server defect because the target MCP handler never ran.
     class: 'caller',
-    errorCodes: ['wrapper-unavailable', 'client_wrapper_unavailable'],
+    errorCodes: ['wrapper-unavailable', 'client_wrapper_unavailable', 'client-wrapper-unavailable'],
     statuses: ['wrapper-unavailable'],
     messagePattern:
       'The normalized direct wrapper [A-Za-z0-9_.]+ was undefined, so attempting it raised a local TypeError before MCP dispatch|' +

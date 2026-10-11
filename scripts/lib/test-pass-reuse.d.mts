@@ -8,7 +8,22 @@
  * @param {string | null | undefined} nodeIdentity
  * @returns {string | null} null when the node probe produced nothing (reuse then switches off)
  */
-export function reuseRunnerIdentity(nodeIdentity: string | null | undefined): string | null;
+export function reuseRunnerIdentity(nodeIdentity: string | null | undefined, proofFormat?: string): string | null;
+/**
+ * WI-6554700010008589: the proof format the JUDGED tree records, read from its own recorder source.
+ *
+ * The selector runs from the gate's code (the staging tree), but the tests run in the judged checkout,
+ * whose recorder writes proofs and whose consumer validates the skip list under ITS format. On a frozen
+ * repair lineage older than a format bump, comparing against this module's REUSE_PROOF_FORMAT rejected
+ * every proof as `otherRunner` (run 762a13a6: 0 of 7,689 reused) — and a skip list labelled with the newer
+ * format would be refused by the judged consumer anyway. Null when the file is missing or unparseable, in
+ * which case callers keep REUSE_PROOF_FORMAT (the pre-fix behaviour).
+ *
+ * @param {string} root the judged checkout
+ * @param {(file: string) => string} [readFile]
+ * @returns {string | null}
+ */
+export function judgedTreeProofFormat(root: string, readFile?: (file: string) => string): string | null;
 /** @param {Record<string, string | undefined>} [env] */
 export function testReuseEnabled(env?: Record<string, string | undefined>): boolean;
 /** @param {Record<string, string | undefined>} [env] */
@@ -220,12 +235,15 @@ export function tsconfigUnreadByToolchain(rel: string, toolchainTsconfigs: Reado
  *        proof, so that drift path does not invalidate it (summary.schemaNarrowed). Any other
  *        result, or a throw, keeps the whole-file rule. Omitted = nothing is narrowed. Implemented
  *        over git by gitSchemaDriftJudge (scripts/lib/schema-symbol-drift.mjs).
+ * @param {string} [o.proofFormat] WI-6554700010008589: the format the JUDGED tree records
+ *        (judgedTreeProofFormat). Older than REUSE_PROOF_FORMAT = legacy: a proof is then reused only
+ *        when every drift path is another test file (summary.legacyFormatDrift otherwise).
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
  *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
  */
-export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, testConfigMainProcess, toolchainTsconfigs, schemaDriftJudge, }: {
+export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, testConfigMainProcess, toolchainTsconfigs, schemaDriftJudge, proofFormat, }: {
     candidates: string[];
     proofs: Map<string, ReuseProof>;
     judgedSha: string;
@@ -239,6 +257,7 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
     testConfigMainProcess?: ReadonlySet<string> | null | undefined;
     toolchainTsconfigs?: ReadonlySet<string> | null | undefined;
     schemaDriftJudge?: ((proof: ReuseProof) => boolean) | null | undefined;
+    proofFormat?: string | undefined;
 }): {
     skip: string[];
     summary: Record<string, number>;
@@ -429,6 +448,13 @@ export const REUSE_PROOF_FORMAT: "proof-v3";
  * PINNED equal to libs/test-config/src/vitest-config.ts EXECUTED_SOURCE_MAP_IMPORT_LIMIT.
  */
 export const EXECUTED_SOURCE_MAP_IMPORT_LIMIT: 1000000;
+/** Where the judged tree's RECORDER declares the proof format it writes (and its skip-list consumer accepts). */
+export const RECORDER_PROOF_FORMAT_FILE: "libs/test-config/src/test-pass-reuse-skip.ts";
+/**
+ * A test file: a leaf no other test imports. An older-format (legacy) proof may omit modules its test
+ * loaded dynamically (EI-25597096188717078), so it is only reusable when every drift path is one of these.
+ */
+export const LEGACY_PROOF_SAFE_DRIFT_RE: RegExp;
 /** Schema of the skip-list file; libs/test-config/src/test-pass-reuse-skip.ts refuses any other. */
 export const REUSE_SKIP_LIST_SCHEMA: 1;
 export type ReuseProof = {

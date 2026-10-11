@@ -29,8 +29,9 @@ export async function seedPrivateLearning(workspace: string, evidence: string): 
     const foreign = row.id === seed.foreign.id;
     const payload = { data: row.text, user_id: 'hive:' + seed.hive + (foreign ? '-foreign' : ''),
       workspace_id: workspace + (foreign ? '-foreign' : ''), kind: 'learning', created_by: 'private-test' };
-    await sql`INSERT INTO harness_shared.memory_canonical (id, payload, row_kind)
-      VALUES (${row.id}::uuid, ${JSON.stringify(payload)}::jsonb, 'memory')`;
+    // row_kind is GENERATED from payload (migration 757); writers set base columns only.
+    await sql`INSERT INTO harness_shared.memory_canonical (id, payload)
+      VALUES (${row.id}::uuid, ${JSON.stringify(payload)}::jsonb)`;
   }
   writeFileSync(join(evidence, 'portal-learning-seed.json'), JSON.stringify(seed, null, 2));
   return seed;

@@ -23,7 +23,13 @@ export function resolveWorkspacePackage(root: string, workspace: string): {
  * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
  * Also used by pure-lane-proof-capture.mjs, which records proofs under the same identity.
  */
-export function defaultRunnerIdentity(root: any, env: any): string | null;
+/**
+ * @param {string} root
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string} [proofFormat] the JUDGED tree's recorder format (judgedTreeProofFormat)
+ * @returns {string | null}
+ */
+export function defaultRunnerIdentity(root: string, env: NodeJS.ProcessEnv, proofFormat?: string): string | null;
 /**
  * Arm pass reuse and proof recording for ONE unit vitest task about to run at `expectedSha` in the
  * clean checkout `root`. Returns a NEW env (the input is not mutated) plus the log lines that say
@@ -59,6 +65,7 @@ export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env
     deps?: Partial<{
         git: typeof defaultGit;
         runnerIdentity: typeof defaultRunnerIdentity;
+        proofFormat: (root: any) => string | null;
         connect: (env: any) => Promise<import("pg").Client>;
         loadProofs: typeof loadReuseProofs;
         changedBetween: (root: any) => import("./related-tests.mjs").ChangedBetween;
