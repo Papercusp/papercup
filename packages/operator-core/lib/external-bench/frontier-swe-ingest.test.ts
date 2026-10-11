@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   FrontierSweIngestError,
+  gitTaskHistory,
+  type FrontierSweTaskHistory,
   frontierSweArtifactsOf,
   frontierSweExternalNeeds,
   parseFrontierSweReadmeCategories,
@@ -176,6 +181,76 @@ describe('ingestFrontierSweCorpus (P-002 / FSWE-P002-MANIFEST)', () => {
     const { manifest } = await ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT }, fs);
     expect(manifest.licenseStatus).toBe('present');
     expect(manifest.licenseFile).toBe('LICENSE');
+  });
+
+  // D-007 / WI-6554700010008413: the contamination policy needs each task's creation date.
+  it("records each task's history-derived creation date, and none without a history seam", async () => {
+    const fs = memFs({ [t('dated', 'task.toml')]: v2TaskToml('dated'), [t('undated', 'task.toml')]: v2TaskToml('undated') });
+    const asked: Array<[string, string]> = [];
+    const history: FrontierSweTaskHistory = {
+      async firstAddedAt(relPath, commitSha) {
+        asked.push([relPath, commitSha]);
+        return relPath === 'tasks/dated/task.toml' ? '2026-09-03T12:00:00+00:00' : null;
+      },
+    };
+    const withHistory = await ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT, history }, fs);
+    expect(asked).toEqual([['tasks/dated/task.toml', COMMIT], ['tasks/undated/task.toml', COMMIT]]);
+    expect(Object.fromEntries(withHistory.rows.map((r) => [r.instanceId, r.taskCreatedAt]))).toEqual({
+      dated: '2026-09-03T12:00:00+00:00', undated: undefined,
+    });
+    const without = await ingestFrontierSweCorpus({ root: ROOT, commitSha: COMMIT }, fs);
+    expect(without.rows.every((r) => !('taskCreatedAt' in r))).toBe(true);
+  });
+});
+
+describe('gitTaskHistory (real git)', () => {
+  function repoWithTwoTasks(): { dir: string; head: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'fswe-history-'));
+    const g = (args: string[], date?: string) => execFileSync('git', ['-C', dir, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    }).trim();
+    g(['init', '-q', '-b', 'main']);
+    g(['config', 'user.email', 'test@example.invalid']);
+    g(['config', 'user.name', 'test']);
+    const add = (task: string, date: string) => {
+      mkdirSync(join(dir, 'tasks', task), { recursive: true });
+      writeFileSync(join(dir, 'tasks', task, 'task.toml'), `name = "${task}"\n`);
+      g(['add', '-A']);
+      g(['commit', '-q', '-m', `add ${task}`], date);
+    };
+    add('old-task', '2025-01-15T10:00:00+00:00');
+    add('new-task', '2026-09-03T12:00:00+00:00');
+    writeFileSync(join(dir, 'tasks', 'old-task', 'task.toml'), 'name = "old-task"\nedited = true\n');
+    g(['commit', '-q', '-am', 'edit old-task'], '2026-09-19T08:00:00+00:00');
+    return { dir, head: g(['rev-parse', 'HEAD']) };
+  }
+
+  it('dates each task by the commit that first added it, not by a later edit or the pin', async () => {
+    const { dir, head } = repoWithTwoTasks();
+    try {
+      const h = gitTaskHistory(dir);
+      expect(await h.firstAddedAt('tasks/old-task/task.toml', head)).toBe('2025-01-15T10:00:00+00:00');
+      expect(await h.firstAddedAt('tasks/new-task/task.toml', head)).toBe('2026-09-03T12:00:00+00:00');
+      expect(await h.firstAddedAt('tasks/never-added/task.toml', head)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a shallow clone instead of dating every task at the truncation point', async () => {
+    const { dir, head } = repoWithTwoTasks();
+    const shallow = mkdtempSync(join(tmpdir(), 'fswe-shallow-'));
+    try {
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${dir}`, shallow], { env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+      // Calibration: the shallow clone really does expose old-task with the pin's date, which is the trap.
+      expect(execFileSync('git', ['-C', shallow, 'log', '--format=%cI', '--', 'tasks/old-task/task.toml'], { encoding: 'utf8' }).trim())
+        .toBe('2026-09-19T08:00:00+00:00');
+      expect(await gitTaskHistory(shallow).firstAddedAt('tasks/old-task/task.toml', head)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(shallow, { recursive: true, force: true });
+    }
   });
 });
 

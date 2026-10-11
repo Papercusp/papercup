@@ -167,7 +167,7 @@ vi.mock('../../issue-blocks-merge', async (orig) => {
     overlayIssueBlocksForPlan: M.overlayIssueBlocksForPlan,
   };
 });
-// The linkedFeatures / planItemTests decorations query PG via withWorkspace; in the
+// The lifecycle / linkedFeatures decorations query PG via withWorkspace; in the
 // unit test there's no DB, so make it throw — both reads are wrapped in a non-fatal
 // try/catch and degrade to empty, which is exactly the path we want to exercise.
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -318,7 +318,9 @@ describe('plans:get — cache wiring', () => {
     expect(M.overlayIssueBlocksForPlan).toHaveBeenCalledOnce();
     expect(M.getAcceptanceRubricForPlan).toHaveBeenCalledOnce();
     expect(M.getLatestPlanAudit).toHaveBeenCalledOnce();
-    expect(withWorkspace).toHaveBeenCalledTimes(3);
+    // Lifecycle + linkedFeatures; the planItemTests read is retired with inline VAL-*
+    // (verification-system-improvements-2026-10-10 P-003).
+    expect(withWorkspace).toHaveBeenCalledTimes(2);
   });
 
   it('still honors explicit history requests when the UI default omits incidental history', async () => {

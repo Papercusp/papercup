@@ -26,7 +26,6 @@ import { resolveEffectiveStatus } from './effective-status';
 import { reconcileStartStatus } from './plan-start-state';
 import { hashPlanContent } from './content-hash';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
-import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
 import { planItemProvenanceFromRow } from '../../plan-item-provenance';
 import { linkedWorkItemFields, type LinkedWorkItemCandidate } from '../../plan-item-linked-work-item';
@@ -60,7 +59,7 @@ import { getBuildInfo } from '../../build-info';
  * trigger-covered, so any plan write auto-invalidates the entry via the cache-ECA;
  * this short soft TTL only bounds staleness for the un-triggered DECORATIONS the
  * per-slug read folds in (issue-block overlay via coord_links, linkedFeatures via
- * harness_features_consolidated, planItemTests via harness_plan_assertions/tests).
+ * harness_features_consolidated).
  * The read is PURE + non-principal-scoped (depends only on workspace+harness+slug+mode).
  */
 const PLANS_GET_SOFT_TTL_MS = 45_000;
@@ -516,7 +515,6 @@ interface NarrowDecisionItemPayload {
     missing: string[];
   };
   linkedFeatures: Record<string, unknown>;
-  planItemTests: Record<string, unknown>;
   blockingIssues: Record<string, unknown>;
 }
 
@@ -599,7 +597,6 @@ export function narrowDecisionPayload<T extends { id: string }>(
     out.items = itemPayload.items;
     out.itemSelection = itemPayload.itemSelection;
     out.linkedFeatures = itemPayload.linkedFeatures;
-    out.planItemTests = itemPayload.planItemTests;
     out.blockingIssues = itemPayload.blockingIssues;
   }
   // Page AFTER the complete narrow envelope is built, so the budget is measured
@@ -926,7 +923,7 @@ export default defineTool({
             const harnessSlug = resolveEffectiveHarnessSlug(sctx);
             // scope-unique-identifiers P-003: the enrichment reads below are scoped to the
             // PLAN's workspace. They were pinned to DEFAULT_WORKSPACE_ID ('default'), so in
-            // any other workspace linkedFeatures and planItemTests were always empty
+            // any other workspace linkedFeatures was always empty
             // (measured 2026-10-11: linkedFeatures {} on a plan whose 13 items all had a
             // linked work-item in papercusp-workspace).
             const planWorkspaceId = row.workspaceId ?? DEFAULT_WORKSPACE_ID;
@@ -1042,76 +1039,9 @@ export default defineTool({
                   linkedWorkItemUpdatedAt: null,
                   linkedWorkItems: {} as Record<string, LinkedWorkItemCandidate[]>,
                 });
-            // P-083: per-plan-item test coverage (the plan↔test rollup, through the
-            // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
-            // side by decoratePlanItemTestBadges. Skips the tests query when the plan
-            // has no inline-VAL assertions. Non-fatal.
-            const testCoverageRead = includeEnrichments
-              ? timeStage('testCoverage', async () => {
-                  let planItemTests: Record<string, PlanItemTestStatus> = {};
-                  try {
-                    const acquisitionStarted = performance.now();
-                    let beganAt: number | null = null;
-                    let callbackEndedAt: number | null = null;
-                    planItemTests = await withWorkspace(
-                      planWorkspaceId,
-                      async (tx) => {
-                        try {
-                          const assertions = await timeDetail(
-                            'testCoverage.assertionsQuery',
-                            () => tx<
-                              {
-                                val_id: string;
-                                item_id: string;
-                                requires_test: boolean;
-                              }[]
-                            >`
-                SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
-                 WHERE workspace_id = ${planWorkspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
-              `,
-                          );
-                          if (assertions.length === 0) return {};
-                          const testRows = await timeDetail(
-                            'testCoverage.testsQuery',
-                            () => tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
-                SELECT status, payload FROM harness_shared.harness_tests
-                 WHERE workspace_id = ${planWorkspaceId} AND harness_slug = ${harnessSlug}
-              `,
-                          );
-                          return computePlanItemTestStatus(
-                            assertions,
-                            testRows.map((r) => ({
-                              status: r.status,
-                              coversVALs: Array.isArray(r.payload?.coversVALs)
-                                ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
-                                : [],
-                            })),
-                          );
-                        } finally {
-                          callbackEndedAt = performance.now();
-                        }
-                      },
-                      {
-                        onAcquisitionPhase: (phase) => {
-                          const at = performance.now();
-                          if (phase === 'begin') {
-                            beganAt = at;
-                            detailMs['testCoverage.waitForBegin'] = Math.max(0, at - acquisitionStarted);
-                          } else {
-                            detailMs['testCoverage.workspaceSetup'] = Math.max(0, at - (beganAt ?? acquisitionStarted));
-                          }
-                        },
-                      },
-                    );
-                    if (callbackEndedAt !== null) {
-                      detailMs['testCoverage.finishTransaction'] = Math.max(0, performance.now() - callbackEndedAt);
-                    }
-                  } catch {
-                    // Non-fatal — UI degrades to no coverage badges.
-                  }
-                  return planItemTests;
-                })
-              : Promise.resolve({});
+            // The P-083 per-item test-coverage stage (planItemTests) is retired with
+            // inline VAL-* assertions (verification-system-improvements-2026-10-10
+            // P-003); per-item verification now lives in the requirement contract.
             const sections = splitSections(parsed.prose);
             // WI-1442 fix (a): read-time liveness decoration — annotate any
             // su-* agent-id mention in the ## Now prose with its CURRENT
@@ -1122,10 +1052,9 @@ export default defineTool({
             const [
               { items: resolvedItems, blockingIssues },
               { linkedFeatures, linkedWorkItemUpdatedAt, linkedWorkItems },
-              planItemTests,
               decoratedNow,
               [acceptanceRubric, latestAudit],
-            ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, testCoverageRead, nowRead, rubricAndAuditRead]);
+            ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, nowRead, rubricAndAuditRead]);
             stageStarted = performance.now();
             // P-003: every item carries the workspace-unique work-item id it resolves
             // through (null when unlinked or several qualify; workItemIds then names them).
@@ -1324,7 +1253,6 @@ export default defineTool({
                           mode === 'full' ? responseItems : responseItems.map(({ rawLine: _rawLine, ...rest }) => rest),
                         itemSelection,
                         linkedFeatures: selectItemMap(linkedFeatures),
-                        planItemTests: selectItemMap(planItemTests),
                         blockingIssues: selectItemMap(blockingIssues),
                       }
                     : undefined,
@@ -1395,7 +1323,6 @@ export default defineTool({
               missingRefs: resolved.missingRefs,
               cycleMembers: resolved.cycleMembers,
               linkedFeatures: selectItemMap(linkedFeatures),
-              planItemTests: selectItemMap(planItemTests),
               blockingIssues: selectItemMap(blockingIssues),
             };
             const payload =

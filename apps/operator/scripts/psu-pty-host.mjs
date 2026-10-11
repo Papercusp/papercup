@@ -5596,6 +5596,12 @@ export const QUOTA_CORROBORATE_TTL_MS = 15_000;
  *  seconds early. */
 export const QUOTA_RESET_GRACE_MS = 60_000;
 
+/** D-014: first probe of a latched codex wall, doubling per failed probe up to
+ *  the max. A failed probe is one ~3s errored turn, so even a multi-day wall
+ *  costs a few probes a day. */
+export const QUOTA_PROBE_BASE_MS = 30 * 60_000;
+export const QUOTA_PROBE_MAX_MS = 4 * 60 * 60_000;
+
 const QUOTA_RESET_MONTHS = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
   jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11,
@@ -5778,8 +5784,19 @@ export function makeQuotaBlockDetector({
   corroborateTtlMs = QUOTA_CORROBORATE_TTL_MS,
   onDismiss = /** @type {null | ((dismissed: { matched: boolean, pattern: string | null, excerpt: string | null, blockedSinceMs: number | null }) => unknown)} */ (null),
   resetGraceMs = QUOTA_RESET_GRACE_MS,
-  onExpire = /** @type {null | ((expired: { matched: boolean, pattern: string | null, excerpt: string | null, blockedSinceMs: number | null, resetAtMs: number }) => unknown)} */ (null),
+  probeBaseMs = QUOTA_PROBE_BASE_MS,
+  probeMaxMs = QUOTA_PROBE_MAX_MS,
+  onExpire = /** @type {null | ((expired: { matched: boolean, pattern: string | null, excerpt: string | null, blockedSinceMs: number | null, resetAtMs: number | null, reason: 'stated-reset' | 'probe', probe: number | null }) => unknown)} */ (null),
 } = {}) {
+  /** D-014: credits can return before the stated reset (2026-10-11: stated
+   *  Oct 14, back by 04:25Z Oct 11), and nothing else tells a walled codex host.
+   *  So a codex latch also releases on a backed-off probe: one deferred wake goes
+   *  through; a wall still in place repaints and re-latches. Claude is exempt:
+   *  its TUI auto-continues at the reset and has the transcript corroborator. */
+  const probing = String(agent ?? '').trim().toLowerCase() === 'codex';
+  let probes = 0;
+  /** @type {number | null} */
+  let lastExpiryAtMs = null;
   let buffer = '';
   let blocked = false;
   let awaitingSubmit = deferUntilSubmit;
@@ -5806,8 +5823,22 @@ export function makeQuotaBlockDetector({
     // Expire at the provider's stated reset. Drop the stale window too, so the
     // same static bytes cannot re-latch it; a wall that is still up repaints a
     // fresh banner on the next turn and latches again with its new reset.
-    if (blocked && resetAtMs != null && now() >= resetAtMs + resetGraceMs) {
-      const expired = { ...lastMatch, blockedSinceMs, resetAtMs };
+    const expiryAt = blocked ? now() : 0;
+    const dueReset = blocked && resetAtMs != null && expiryAt >= resetAtMs + resetGraceMs;
+    // A non-finite base disables probing (the cap must not re-enable it).
+    const probeMs = Number.isFinite(probeBaseMs) ? Math.min(probeBaseMs * 2 ** probes, probeMaxMs) : Infinity;
+    const dueProbe = blocked && !dueReset && probing && blockedSinceMs != null &&
+      Number.isFinite(probeMs) && expiryAt >= blockedSinceMs + probeMs;
+    if (dueReset || dueProbe) {
+      const expired = {
+        ...lastMatch,
+        blockedSinceMs,
+        resetAtMs,
+        reason: /** @type {'stated-reset' | 'probe'} */ (dueReset ? 'stated-reset' : 'probe'),
+        probe: dueProbe ? probes + 1 : null,
+      };
+      probes = dueProbe ? probes + 1 : 0;
+      lastExpiryAtMs = expiryAt;
       buffer = '';
       blocked = false;
       blockedSinceMs = null;
@@ -5870,6 +5901,9 @@ export function makeQuotaBlockDetector({
       blocked = hit.matched;
       blockedSinceMs = blocked ? now() : null;
       if (!blocked) resetAtMs = null;
+      // A wall that returns right after a probe is that probe failing: keep backing
+      // off. One that returns long after is a new episode and starts over.
+      if (blocked && (lastExpiryAtMs == null || now() - lastExpiryAtMs > probeMaxMs)) probes = 0;
       verdict = null;
       return blocked ? 'detected' : 'cleared';
     },
@@ -5900,6 +5934,8 @@ export function makeQuotaBlockDetector({
       awaitingSubmit = deferUntilSubmit;
       blockedSinceMs = null;
       resetAtMs = null;
+      probes = 0;
+      lastExpiryAtMs = null;
       verdict = null;
       lastMatch = { matched: false, pattern: null, excerpt: null };
     },
@@ -9895,11 +9931,12 @@ export function hostThroughPty(o) {
     // WI-6554700010008412: the provider's stated reset passed; the next
     // deferred wake is let through and re-latches if the wall is still up.
     onExpire: (expired) =>
-      appendHostEvent(ownerId, 'quota-block-expired-at-reset', {
+      appendHostEvent(ownerId, expired.reason === 'probe' ? 'quota-block-probe-released' : 'quota-block-expired-at-reset', {
         agent: String(env.PAPERCUSP_AGENT ?? '') || null,
         matchedPattern: expired.pattern,
         blockedSinceMs: expired.blockedSinceMs,
         resetAtMs: expired.resetAtMs,
+        probe: expired.probe,
       }),
   });
   // P-004: codex auth-failure twin. Same resume/fork replay deferral as quota:

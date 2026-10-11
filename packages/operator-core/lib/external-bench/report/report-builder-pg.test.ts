@@ -138,6 +138,48 @@ describe('buildBundleFromPg', () => {
     expect(b.arms.find((a) => a.arm === 'hive')!.resolved).toBe(1); // rollups still computed
   });
 
+  // D-007 / WI-6554700010008413: the PG path resolves task creation dates through the run's task set.
+  describe('task creation dates (contamination policy)', () => {
+    const dated = (over: Partial<PgReportReaders> = {}) => {
+      const base = fakeReaders();
+      return fakeReaders({
+        getRollout: async (id) => ({ ...(await base.getRollout(id))!, modelId: 'claude-opus-5-5' }),
+        getBenchRunDetail: async () => ({ taskSetId: 'swe-bench-verified' }),
+        getTaskCreatedAt: async () => ({ t1: '2026-08-14T09:00:00Z', t2: '2024-03-02T00:00:00Z' }),
+        ...over,
+      });
+    };
+
+    it('labels each arm from dated rows instead of reading unknown', async () => {
+      const seen: Array<[string, readonly string[]]> = [];
+      const b = (await buildBundleFromPg('r1', { readers: dated({
+        getTaskCreatedAt: async (taskSetId, ids) => { seen.push([taskSetId, ids]); return { t1: '2026-08-14T09:00:00Z', t2: '2026-09-02T00:00:00Z' }; },
+      }) }))!;
+      expect(seen).toEqual([['swe-bench-verified', ['t1', 't2']]]);
+      expect(b.arms.map((a) => a.contamination?.label)).toEqual(['post-cutoff', 'post-cutoff']);
+    });
+
+    it('splits the assigned population into post-cutoff and exposed subsets', async () => {
+      const b = (await buildBundleFromPg('r1', { readers: dated() }))!;
+      for (const a of b.arms) {
+        expect(a.contamination).toMatchObject({
+          label: 'contamination-exposed', modelId: 'claude-opus-5-5',
+          postCutoff: { taskIds: ['t1'] }, exposed: { taskIds: ['t2'] }, unknown: { taskIds: [] },
+        });
+      }
+    });
+
+    it('reads unknown when the run records no task set, and when the corpus cannot be read', async () => {
+      const noSet = (await buildBundleFromPg('r1', { readers: dated({ getBenchRunDetail: async () => ({}) }) }))!;
+      const broken = (await buildBundleFromPg('r1', { readers: dated({
+        getTaskCreatedAt: async () => { throw new Error('corpus missing'); },
+      }) }))!;
+      for (const b of [noSet, broken]) {
+        expect(b.arms.map((a) => a.contamination?.label)).toEqual(['contamination-unknown', 'contamination-unknown']);
+      }
+    });
+  });
+
   it('attaches an injected call-log (the defineTool replay-grade audit)', async () => {
     const b = (await buildBundleFromPg('r1', {
       readers: fakeReaders(),

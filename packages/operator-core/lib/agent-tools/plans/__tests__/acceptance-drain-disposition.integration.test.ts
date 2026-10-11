@@ -19,6 +19,8 @@ import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from '
 import { runWithWorkspace } from '../../../workspace-als';
 
 const HARNESS = `zzz-stale-acc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+/** A second harness the D-029 case treats as excluded by the work-scope policy. */
+const OUT_HARNESS = `${HARNESS}-out`;
 const PLAN = (suffix: string) => `zzz-stale-plan-${suffix}-${Math.random().toString(36).slice(2, 8)}`;
 const NOW = new Date('2026-10-10T12:00:00.000Z');
 const DAY = 86_400_000;
@@ -36,12 +38,17 @@ function body(slug: string): string {
 }
 
 /** A plan in `awaiting-acceptance` whose last recorded write was `idleDays` before NOW. */
-async function seedAwaiting(slug: string, idleDays: number, status = 'awaiting-acceptance'): Promise<void> {
-  await seedPlan(admin, workspaceId, HARNESS, slug, body(slug));
+async function seedAwaiting(
+  slug: string,
+  idleDays: number,
+  status = 'awaiting-acceptance',
+  harness: string = HARNESS,
+): Promise<void> {
+  await seedPlan(admin, workspaceId, harness, slug, body(slug));
   await admin`
     UPDATE harness_shared.harness_plans
        SET status = ${status}, updated = ${isoDay(idleDays)}
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harness} AND plan_slug = ${slug}
   `;
 }
 
@@ -91,6 +98,7 @@ afterEach(async () => {
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS}
   `;
   await cleanupPlans(admin, workspaceId, HARNESS);
+  await cleanupPlans(admin, workspaceId, OUT_HARNESS);
 });
 
 afterAll(async () => {
@@ -233,5 +241,48 @@ describe('P-005 measureStaleAcceptance', () => {
     expect(m.staleAcceptanceUndispositioned).toBe(0);
     // An empty scope must be distinguishable from a clean one (D-019).
     expect(m.acceptancePlansConsidered).toBe(0);
+    expect(m.staleAcceptanceScopeExcluded).toBe(0);
+  });
+
+  it('D-029: counts stale plans in an out-of-scope harness as scope-excluded, never as stalls', async () => {
+    const inScopeStale = PLAN('in-stale');
+    const outStale = PLAN('out-stale');
+    const outYoung = PLAN('out-young');
+    await seedAwaiting(inScopeStale, ACCEPTANCE_NEVER_SURFACED_AFTER_DAYS + 1);
+    await seedAwaiting(outStale, ACCEPTANCE_NEVER_SURFACED_AFTER_DAYS + 1, 'awaiting-acceptance', OUT_HARNESS);
+    await seedAwaiting(outYoung, 10, 'awaiting-acceptance', OUT_HARNESS);
+    // The same predicate the sweep applies (isHarnessInScope), injected: OUT_HARNESS is
+    // outside the policy, everything else inside.
+    const inScope = (slug: string) => slug !== OUT_HARNESS;
+
+    // The excluded harness alone: its stale plan is reported, not counted as a stall, and
+    // the D-019 denominator is 0, so the health cell reads the stale metric as unmeasured
+    // rather than a passing 0 (D-029 point 3).
+    const outOnly = await measureStaleAcceptance(admin, { workspaceId, harnessSlug: OUT_HARNESS, now: NOW, inScope });
+    expect(outOnly).toMatchObject({
+      staleAcceptanceSurfaced: 0,
+      staleAcceptanceNeverSurfaced: 0,
+      staleAcceptanceUndispositioned: 0,
+      staleAcceptanceScopeExcluded: 1,
+      acceptancePlansConsidered: 0,
+    });
+
+    const inOnly = await measureStaleAcceptance(admin, { workspaceId, harnessSlug: HARNESS, now: NOW, inScope });
+    expect(inOnly).toMatchObject({
+      staleAcceptanceNeverSurfaced: 1,
+      staleAcceptanceUndispositioned: 1,
+      staleAcceptanceScopeExcluded: 0,
+      acceptancePlansConsidered: 1,
+    });
+
+    // Workspace-wide: the per-harness grouping routes OUT_HARNESS to the excluded count
+    // (other harnesses in the fixture workspace are in scope, so only it can land there).
+    const all = await measureStaleAcceptance(admin, { workspaceId, now: NOW, inScope });
+    expect(all.staleAcceptanceScopeExcluded).toBe(1);
+    expect(all.staleAcceptanceUndispositioned).toBeGreaterThanOrEqual(1);
+
+    // Without an injected predicate and with no stored policy, nothing is excluded.
+    const unscoped = await measureStaleAcceptance(admin, { workspaceId, harnessSlug: OUT_HARNESS, now: NOW });
+    expect(unscoped).toMatchObject({ staleAcceptanceUndispositioned: 1, staleAcceptanceScopeExcluded: 0, acceptancePlansConsidered: 2 });
   });
 });

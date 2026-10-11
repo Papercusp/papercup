@@ -1053,6 +1053,19 @@ export interface BindSpecEvidenceInput extends EvidenceFingerprints {
   actorId: string;
 }
 
+/**
+ * P-008 (D-005) bind-time refusals at plans:bind-spec-evidence. Named on its own so the
+ * verification-system map can register exactly these contract refusals
+ * (CONTRACT_GATE_CODE_TYPES) without the result union's non-refusal statuses. The
+ * union below uses Extract<> over this alias, so a member renamed in one place and
+ * not the other fails the typecheck.
+ */
+export type IndependentVerificationRefusalStatus =
+  | 'verified_binding_required'
+  | 'verified_binding_not_allowed'
+  | 'verified_binding_not_found'
+  | 'independent_fingerprint_mismatch';
+
 export type BindSpecEvidenceResult =
   | {
       status: 'created' | 'unchanged';
@@ -1070,10 +1083,10 @@ export type BindSpecEvidenceResult =
   | { status: 'spec_revision_not_found'; specId: string; specRevision: number }
   | { status: 'coverage_evidence_not_found'; coverageEvidenceRef: number }
   // P-008 (D-005): independent-verification refusals.
-  | { status: 'verified_binding_required' | 'verified_binding_not_allowed'; message: string }
-  | { status: 'verified_binding_not_found'; verifiesBindingId: number; message: string }
+  | { status: Extract<IndependentVerificationRefusalStatus, 'verified_binding_required' | 'verified_binding_not_allowed'>; message: string }
+  | { status: Extract<IndependentVerificationRefusalStatus, 'verified_binding_not_found'>; verifiesBindingId: number; message: string }
   | {
-      status: 'independent_fingerprint_mismatch';
+      status: Extract<IndependentVerificationRefusalStatus, 'independent_fingerprint_mismatch'>;
       verifiesBindingId: number;
       mismatched: Array<'source' | 'environment'>;
       message: string;

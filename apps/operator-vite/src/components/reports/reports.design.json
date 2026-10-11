@@ -460,7 +460,7 @@
     },
     {
       "id": "subject",
-      "registry": "overlay.popover"
+      "registry": "control.combobox-menu"
     },
     {
       "id": "since",

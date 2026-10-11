@@ -14,6 +14,7 @@
  * whose images can float is not a reproducible benchmark (spec FSWE-P002-MANIFEST).
  */
 import TOML from '@iarna/toml';
+import { execFile } from 'node:child_process';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +35,41 @@ export interface FrontierSweIngestFs {
   exists(path: string): Promise<boolean>;
   /** Immediate child FILE names of `dir` — used to detect a LICENSE file at the checkout root. */
   listFiles(dir: string): Promise<string[]>;
+}
+
+/**
+ * The git-history seam (D-007): when a task first appeared upstream. Kept apart from {@link FrontierSweIngestFs}
+ * because it reads commit history, not files. Tests inject a fake; production uses {@link gitTaskHistory}.
+ */
+export interface FrontierSweTaskHistory {
+  /**
+   * ISO-8601 committer date of the earliest commit reachable from `commitSha` that added `relPath`, or null when
+   * that cannot be known (shallow checkout, no git, the path was never added). Null is the honest answer: a date
+   * read from truncated history would be the truncation point, which makes every task look newer than it is.
+   */
+  firstAddedAt(relPath: string, commitSha: string): Promise<string | null>;
+}
+
+function git(root: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile('git', ['-C', root, ...args], { timeout: 30_000, maxBuffer: 1 << 20 }, (err, stdout) => {
+      resolve(err ? null : String(stdout));
+    });
+  });
+}
+
+/** Production {@link FrontierSweTaskHistory} over a git checkout. Refuses (null for every path) on a shallow clone. */
+export function gitTaskHistory(root: string): FrontierSweTaskHistory {
+  let shallow: Promise<boolean> | null = null;
+  return {
+    async firstAddedAt(relPath, commitSha) {
+      shallow ??= git(root, ['rev-parse', '--is-shallow-repository']).then((out) => out?.trim() !== 'false');
+      if (await shallow) return null;
+      const out = await git(root, ['log', '--diff-filter=A', '--format=%cI', '--reverse', commitSha, '--', relPath]);
+      const first = out?.split('\n').find((line) => line.trim() !== '')?.trim();
+      return first && !Number.isNaN(Date.parse(first)) ? first : null;
+    },
+  };
 }
 
 export interface FrontierSweManifestTask {
@@ -187,7 +223,14 @@ function verifierEnvOf(v: unknown): Record<string, string> {
  * full SHA, a task.toml does not parse, or any task's agent/verifier image is not digest-pinned.
  */
 export async function ingestFrontierSweCorpus(
-  input: { root: string; commitSha: string; upstreamRepo?: string; now?: Date },
+  input: {
+    root: string;
+    commitSha: string;
+    upstreamRepo?: string;
+    now?: Date;
+    /** Supplies each row's `taskCreatedAt` (D-007). Omitted ⇒ no row carries one ⇒ reports read 'contamination-unknown'. */
+    history?: FrontierSweTaskHistory;
+  },
   fs: FrontierSweIngestFs,
 ): Promise<FrontierSweIngestResult> {
   const problems: string[] = [];
@@ -255,7 +298,11 @@ export async function ingestFrontierSweCorpus(
       problems.push(`${name}: missing from the README task table (no suite category)`);
     }
     const verifierEnvironmentMode = str(verifier.environment_mode) === 'separate' ? 'separate' : 'shared';
+    const taskCreatedAt = input.history
+      ? await input.history.firstAddedAt(`tasks/${name}/task.toml`, input.commitSha)
+      : null;
     rows.push({
+      ...(taskCreatedAt ? { taskCreatedAt } : {}),
       instanceId: name,
       category,
       tier: frontierSweBucket(category, tags),

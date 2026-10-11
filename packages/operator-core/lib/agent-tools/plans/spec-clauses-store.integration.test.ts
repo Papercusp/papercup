@@ -282,7 +282,7 @@ describe('first-class plan spec clauses', () => {
     expect(await getPlanRevisionSnapshot('reconnect-plan', 7, { harnessSlug: HARNESS })).toMatchObject({ contentSnapshot: body });
   });
 
-  it('exposes create/current/history through the structured tools and preserves a legacy VAL verdict', async () => {
+  it('exposes create/current/history through the structured tools and never writes the retired VAL store (P-003)', async () => {
     await db.sql`
       INSERT INTO harness_shared.harness_plan_assertions (
         workspace_id, harness_slug, val_id, plan_slug, item_id,
@@ -331,9 +331,10 @@ describe('first-class plan spec clauses', () => {
     const legacy = await db.sql<{ status: string; verify_text: string }[]>`
       SELECT status, verify_text FROM harness_shared.harness_plan_assertions
        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND val_id = 'VAL-003-01'`;
+    // The retired store is neither mirrored nor overwritten: the legacy row is untouched.
     expect(legacy[0]).toEqual({
       status: 'passed',
-      verify_text: 'Acknowledged event 42 is not replayed after reconnect.',
+      verify_text: 'old behavior',
     });
   });
 

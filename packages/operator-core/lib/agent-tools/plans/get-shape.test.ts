@@ -39,7 +39,6 @@ function envelope() {
           body: `body ${i} ${"z".repeat(800)}`,
         })),
         linkedFeatures: { "P-001": { featureId: "F-1", status: "todo", harnessSlug: "h" } },
-        planItemTests: { "P-001": { covered: 1 } },
         blockingIssues: { "P-002": ["EI-9"] },
       },
       { ok: false, slug: "missing", error: "not_found" },
@@ -102,11 +101,10 @@ describe("shapePlansGet trimmed", () => {
     expect(r.decisionsTruncated).toMatchObject({ total: 12, shown: 8 });
   });
 
-  it("drops UI decoration maps loudly, keeps blockingIssues", () => {
+  it("drops the UI decoration map loudly, keeps blockingIssues", () => {
     expect(r.linkedFeatures).toBeUndefined();
-    expect(r.planItemTests).toBeUndefined();
     expect(r.trimmedOmitted).toMatchObject({
-      fields: ["linkedFeatures", "planItemTests"],
+      fields: ["linkedFeatures"],
     });
     expect(r.blockingIssues).toEqual({ "P-002": ["EI-9"] });
   });

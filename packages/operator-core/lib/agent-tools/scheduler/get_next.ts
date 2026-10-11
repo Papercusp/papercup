@@ -2959,7 +2959,13 @@ export default defineTool({
               : "Run the task's payload.verification.check against payload.verification.subject, then complete the task with the result.",
         }
       : null;
-    const lanePayload = verification ? { ...basePayload, verification } : basePayload;
+    // D-011 B: an adopted content revision is REPORT revision, not implementation — say so in
+    // the response the member acts on, with the brief's own next steps (D-008 ruling 5).
+    const lanePayload = verification
+      ? { ...basePayload, verification }
+      : res?.revisionAdoption
+        ? { ...basePayload, revisionAdoption: res.revisionAdoption }
+        : basePayload;
     const payload = retiredSoloPlanSpec ? { ...lanePayload, retiredSoloPlanSpec } : lanePayload;
     // P-003: `tool_invocations` has no inline result JSON. Stamp the one fact a
     // later launch verifier needs — claimed vs diagnosed no-claim — onto the

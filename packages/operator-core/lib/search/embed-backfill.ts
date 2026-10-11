@@ -787,7 +787,7 @@ export const TARGETS: SweepTarget[] = [
     recencyColKind: 'timestamptz',
     readers: [{
       file: 'packages/operator-core/lib/datatype-registry-store.ts',
-      evidence: ['FROM harness_shared.datatype_registry', '+ 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END'],
+      evidence: ['FROM harness_shared.datatype_registry', 'sql`1 - (embedding <=> ${embeddingLiteral}::vector)`'],
     }],
   },
   // WI-39840 — the two columns migration 847 widened to the 768 prose contract.

@@ -238,26 +238,25 @@ describe("plans:get — lifecycle signals are scoped to the plan row's workspace
         return [{ feature_id: "WI-1", status: "wip", source_plan_slug: "overlap",
           source_plan_item_ids: ["P-001"], harness_slug: "papercup", updated_ts: "2026-09-24T12:00:00Z" }];
       }
-      if (sql.includes("harness_plan_assertions")) {
-        started.push("coverage");
-        await gate;
-        return [];
-      }
+      // No harness_plan_assertions branch: the coverage read is retired with inline
+      // VAL-* (verification-system-improvements-2026-10-10 P-003), so it must throw.
       throw new Error(`Unexpected query: ${sql}`);
     }));
     const pending = run({ slug: "overlap", includeHistory: false });
     try {
       // Every independent read must start before issue blocks are released.
       await vi.waitFor(() => expect(started).toEqual(expect.arrayContaining([
-        "issues", "features", "coverage", "rubric", "audit",
+        "issues", "features", "rubric", "audit",
       ])));
+      expect(started).not.toContain("coverage");
       expect(M.derivePlanLifecycleForRead).not.toHaveBeenCalled();
     } finally {
       release();
     }
     const result = (await pending).results[0];
     expect(result).toMatchObject({ slug: "overlap", blockingIssues: { "P-001": ["EI-1"] },
-      linkedFeatures: { "P-001": { featureId: "WI-1", status: "wip", harnessSlug: "papercup" } }, planItemTests: {} });
+      linkedFeatures: { "P-001": { featureId: "WI-1", status: "wip", harnessSlug: "papercup" } } });
+    expect(result).not.toHaveProperty("planItemTests");
     expect(signalsOfLastCall()).toMatchObject({ linkedWorkItemUpdatedAt: "2026-09-24T12:00:00.000Z" });
   });
 
@@ -267,7 +266,7 @@ describe("plans:get — lifecycle signals are scoped to the plan row's workspace
     }));
     const result = await run({ slug: "failed-badges", includeHistory: false });
     expect(result.results[0]).toMatchObject({ slug: "failed-badges", blockingIssues: { "P-001": ["EI-1"] },
-      linkedFeatures: {}, planItemTests: {} });
+      linkedFeatures: {} });
     expect(signalsOfLastCall()).toMatchObject({ linkedWorkItemUpdatedAt: null });
   });
 
@@ -349,7 +348,9 @@ describe("plans:get — lifecycle signals are scoped to the plan row's workspace
       linkedFeatures: Record<string, { featureId: string }>;
     };
 
-    expect(scopes.map((s) => s.table).sort()).toEqual(["assertions", "features"]);
+    // The coverage (harness_plan_assertions) read is retired with inline VAL-*
+    // (verification-system-improvements-2026-10-10 P-003): only the badge read remains.
+    expect(scopes.map((s) => s.table)).toEqual(["features"]);
     expect(scopes.every((s) => s.workspace === "ws-lifecycle-scope")).toBe(true);
 
     const byId = new Map(result.items.map((item) => [item.id, item]));

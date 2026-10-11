@@ -97,9 +97,28 @@ function literalText(n: ts.Node): string | null {
   return null;
 }
 
+/**
+ * A leg combinator runs the `embedding` member of the SearchSource object literal it is
+ * called with under withIterativeScan (knowledge-sources.ts `boundedSource`), so an ordered
+ * query inside that member IS capped although no withIterativeScan call encloses it
+ * lexically. Only that member counts: the lexical leg runs unwrapped. Pinned by
+ * 'a leg combinator still runs the embedding leg under withIterativeScan' below.
+ */
+const LEG_COMBINATOR = /(^|\.)boundedSource$/;
+const LEG_COMBINATOR_HOME = 'packages/operator-core/lib/agent-tools/search/knowledge-sources.ts';
+
+function isCombinatorEmbeddingLeg(p: ts.Node, sf: ts.SourceFile): boolean {
+  if (!(ts.isMethodDeclaration(p) || ts.isPropertyAssignment(p)) || p.name.getText(sf) !== 'embedding') return false;
+  const obj = p.parent;
+  const call = obj?.parent;
+  return ts.isObjectLiteralExpression(obj) && !!call && ts.isCallExpression(call)
+    && call.arguments[0] === obj && LEG_COMBINATOR.test(call.expression.getText(sf));
+}
+
 function insideWrapper(n: ts.Node, sf: ts.SourceFile): boolean {
   for (let p = n.parent; p; p = p.parent) {
     if (ts.isCallExpression(p) && WRAPPER.test(p.expression.getText(sf))) return true;
+    if (isCombinatorEmbeddingLeg(p, sf)) return true;
   }
   return false;
 }
@@ -307,6 +326,14 @@ describe('ordered vector queries run under withIterativeScan (WI-10004138)', () 
       );
       expect(wrapped.builderCalls.map((c) => c.wrapped)).toEqual([true]);
     });
+
+    it('counts only the embedding leg of a boundedSource(...) source as wrapped', () => {
+      const src =
+        'const s = boundedSource({ async lexical(p) { return p.sql`SELECT 1 ORDER BY e <=> ${v}::vector`; },\n' +
+        '  async embedding(p) { return p.sql`SELECT 1 ORDER BY e <=> ${v}::vector`; } });\n' +
+        'const t = other({ async embedding(p) { return p.sql`SELECT 1 ORDER BY e <=> ${v}::vector`; } });';
+      expect(scanSource('s.ts', src).sites.map((s) => [s.line, s.wrapped])).toEqual([[1, false], [2, true], [3, false]]);
+    });
   });
 
   describe('the tree', () => {
@@ -316,6 +343,15 @@ describe('ordered vector queries run under withIterativeScan (WI-10004138)', () 
       expect(files.length).toBeGreaterThan(1000);
       expect(files).toContain('libs/generic/search/src/chunks/vector-leg.ts');
       expect(sites.some((s) => s.file === 'libs/generic/search/src/chunks/vector-leg.ts')).toBe(true);
+    });
+
+    it('a leg combinator still runs the embedding leg under withIterativeScan', () => {
+      const src = readFileSync(resolve(REPO_ROOT, LEG_COMBINATOR_HOME), 'utf8');
+      const start = src.indexOf('export function boundedSource(');
+      expect(start, `boundedSource moved out of ${LEG_COMBINATOR_HOME}`).toBeGreaterThanOrEqual(0);
+      const fn = src.slice(start, src.indexOf('\n}\n', start));
+      expect(fn).toMatch(/vector\s*\?\s*withIterativeScan\(/);
+      expect(fn).toMatch(/embedding:[^\n]*run\(source\.embedding!?, p, true\)/);
     });
 
     it('still detects every site WI-10004138 wrapped', () => {

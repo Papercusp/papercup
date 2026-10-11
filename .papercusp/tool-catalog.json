@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 959,
+  "count": 960,
   "tools": [
     {
       "name": "ablation:report",
@@ -21941,6 +21941,36 @@
       }
     },
     {
+      "name": "plans:acceptance-disposition",
+      "http": {
+        "path": "/api/agent-tools/plans/acceptance-disposition",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Record the typed disposition a stale awaiting-acceptance plan owes: kind regrade | repair | accept-risk | drop, plus an evidenceRef and a reason, written onto the plan's acceptance-drain filing (clears dispositionRequired). Refuses with acceptance_disposition_kind_invalid / _evidence_missing / _reason_missing / _no_filing. Returns the harness's stale-acceptance counts after the write.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "A plan sits in awaiting-acceptance past 14 days and its drain filing says 'Disposition stale plan' — decide what happens to it.",
+        "notWhen": "Grading or shipping the plan itself (scorecards:emit, plans:set-plan-status). Dropping individual items (plans:set-status). The decision does not move the plan; carry it out separately.",
+        "chaining": "work_items:list { q: \"Disposition stale plan\" } → read the plan → plans:acceptance-disposition { slug, kind, evidenceRef, reason } → then act on the kind (regrade: request grading; repair: fix the refusal; drop: plans:set-plan-status)."
+      }
+    },
+    {
       "name": "plans:add-decision",
       "http": {
         "path": "/api/agent-tools/plans/add-decision",
@@ -23698,7 +23728,7 @@
           "POST"
         ]
       },
-      "description": "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks its from_items done. A wave declaring `spawn_child` is routed into a NEWLY-SPAWNED child harness instead (scaffold → auto-synthesized seed plan → import → start; preview reports the would-be child). Emits `plan_event` kind=promoted.",
+      "description": "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and reports whether retired inline VAL-* blocks would refuse the apply. Apply POSTs features to /features/import (server allocates F-AUTO-*) and marks its from_items done; acceptance lives in the plan's requirement contract, not VAL-* blocks. A wave declaring `spawn_child` is routed into a NEWLY-SPAWNED child harness instead (scaffold → auto-synthesized seed plan → import → start; preview reports the would-be child). Emits `plan_event` kind=promoted.",
       "capabilities": [
         "coord:write"
       ],

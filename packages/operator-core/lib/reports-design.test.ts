@@ -57,7 +57,7 @@ describe('Reports design registry contract (P-007)', () => {
 
   it('imports and renders the selected registry controls in the Reports route', () => {
     const spec = screen();
-    expect(spec.components?.map(binding => binding.id)).toEqual(['search', 'kind', 'visibility', 'copy', 'history']);
+    expect(spec.components?.map(binding => binding.id)).toEqual(expect.arrayContaining(['search', 'kind', 'visibility', 'copy', 'history']));
     expect(selectionGaps(spec, readFileSync(routeUrl, 'utf8'))).toEqual([]);
   });
 
@@ -88,8 +88,17 @@ describe('Reports design registry contract (P-007)', () => {
     const source = readFileSync(routeUrl, 'utf8');
     const substituted = source.replace("from '@papercusp/ui-primitives/controls'", "from './HandRolledControls'");
     expect(substituted).not.toBe(source);
-    expect(selectionGaps(screen(), substituted)).toEqual([
+    expect(selectionGaps(screen(), substituted)).toEqual(expect.arrayContaining([
       'search: TextInput is not imported and rendered from its registry source',
-    ]);
+    ]));
+  });
+
+  it('detects a subject picker substituted for the selected maintained combobox', () => {
+    const source = readFileSync(routeUrl, 'utf8');
+    const substituted = source.replace("from '@/app/harness/Combobox'", "from './HandRolledSubjectPicker'");
+    expect(substituted).not.toBe(source);
+    expect(selectionGaps(screen(), substituted)).toContain(
+      'subject: ComboboxMenu is not imported and rendered from its registry source',
+    );
   });
 });

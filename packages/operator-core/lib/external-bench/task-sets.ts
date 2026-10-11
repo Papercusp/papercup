@@ -247,6 +247,7 @@ export function verifiedRowToBenchTask(r: VerifiedTaskRow): BenchTask {
     repo: `${reposRoot()}/${shortName(r.instance_id)}`,
     baseCommit: r.base_commit ?? '',
     ...(r.tier ? { tier: r.tier } : {}),
+    ...(r.created_at ? { createdAt: r.created_at } : {}),
     graderMeta: {
       // The official swebench harness keys (the grader reads these; the arm never does).
       image_name: verifiedImageName(r.instance_id),
@@ -579,6 +580,13 @@ export interface FrontierSweTaskRow {
   /** The upstream commit the row was ingested from (full 40-hex SHA); absent on the legacy v1 corpus. */
   upstreamCommit?: string;
   /**
+   * When the task dir first appeared upstream: the committer date (ISO-8601) of the earliest commit, reachable
+   * from {@link upstreamCommit}, that added `tasks/<instanceId>/task.toml`. Derived by the ingest from full git
+   * history, never hand-typed; absent when the checkout is shallow or the history is unreadable (D-007: an
+   * absent date reads as 'contamination-unknown').
+   */
+  taskCreatedAt?: string;
+  /**
    * v1 history rows only: true when this exact v1 instanceId does not exist in the pinned v2 corpus. A renamed
    * v2 successor is a DIFFERENT task for aggregation, so a rename counts as retired here. Always false on v2 rows.
    */
@@ -647,6 +655,7 @@ export function frontierSweRowToBenchTask(r: FrontierSweTaskRow): BenchTask {
     benchmark: 'frontier-swe',
     instanceId: r.instanceId,
     problemStatement: r.prompt,
+    ...(r.taskCreatedAt ? { createdAt: r.taskCreatedAt } : {}),
     graderMeta: {
       corpusVersion: frontierSweCorpusVersionOf(r),
       upstreamCommit: r.upstreamCommit ?? null,

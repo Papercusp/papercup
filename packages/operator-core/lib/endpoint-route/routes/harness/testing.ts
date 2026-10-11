@@ -43,7 +43,7 @@ import { harnessTestingRegistry, HARNESS_TESTING_TIER_LABELS, ACCEPTANCE_DOMAIN_
 import { type TestDomain, type ChipStatus, type FileStatusEntry } from '../../../testing-domains';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { computePlanItemTestStatus } from '../../../harness-test-rollup';
+import { valRetirementRefusal, type ValRetirementRefusalCode } from '../../../agent-tools/plans/val-retirement';
 import { runGovernedOperation } from '../../../resource-governor/execution';
 import { startRun, getRunAsync, cancelRunAsync } from '../../../testing-run-store';
 
@@ -509,44 +509,24 @@ const fileHistory = defineTool({
   },
 });
 
-// ── Assertions (VALs) — the Acceptance tab's data (P-062 / P-063) ──────────
-// harness_plan_assertions is keyed by (workspace, harness_slug), not phase.
+// ── Assertions (VALs) + the plan↔test rollup — RETIRED ──────────────────────
+// verification-system-improvements-2026-10-10 P-003 (SPEC-P-003-VAL-READERS /
+// SPEC-P-003-VAL-WRITERS). Inline VAL-* assertions are retired in favour of the
+// requirement contract (spec clauses + bound evidence, read via plans:get). The
+// routes stay so an old caller gets a typed 410 naming the successor instead of a
+// bare 404 it would read as "no assertions"; none of them reads or writes the store.
 
-interface AssertionListRow {
-  val_id: string;
-  plan_slug: string;
-  item_id: string;
-  verify_text: string;
-  status: string;
-  requires_test: boolean;
+function retiredValRoute(code: ValRetirementRefusalCode, detail?: string): Response {
+  const refusal = valRetirementRefusal(code, detail);
+  return Response.json(refusal, { status: refusal.httpStatus });
 }
 
 const listAssertions = defineTool({
   method: 'GET',
   path: '/harness/:slug/testing/assertions',
   auth: 'public',
-  async handler(req, ctx) {
-    const slug = ctx.params.slug as string;
-    const planSlug = new URL(req.url).searchParams.get('plan');
-    try {
-      const { sql } = getOrgPg();
-      const ws = activeWorkspaceId();
-      const rows = planSlug
-        ? await sql<AssertionListRow[]>`
-            SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
-              FROM harness_shared.harness_plan_assertions
-             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND plan_slug = ${planSlug}
-             ORDER BY val_id`
-        : await sql<AssertionListRow[]>`
-            SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
-              FROM harness_shared.harness_plan_assertions
-             WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-             ORDER BY val_id`;
-      return Response.json({ assertions: rows });
-    } catch {
-      // Table absent / PG unreachable — empty is a valid "no assertions yet".
-      return Response.json({ assertions: [] });
-    }
+  async handler() {
+    return retiredValRoute('val-read-retired');
   },
 });
 
@@ -554,66 +534,18 @@ const patchAssertion = defineTool({
   method: 'POST',
   path: '/harness/:slug/testing/assertions/:valId',
   auth: 'loopback',
-  async handler(req, ctx) {
-    const slug = ctx.params.slug as string;
-    const valId = ctx.params.valId as string;
-    const body = (await req.json().catch(() => ({}))) as { requires_test?: unknown };
-    if (typeof body.requires_test !== 'boolean') {
-      return Response.json({ error: 'requires_test (boolean) required' }, { status: 400 });
-    }
-    const { sql } = getOrgPg();
-    const ws = activeWorkspaceId();
-    const rows = await sql<{ val_id: string; requires_test: boolean }[]>`
-      UPDATE harness_shared.harness_plan_assertions
-         SET requires_test = ${body.requires_test}
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND val_id = ${valId}
-       RETURNING val_id, requires_test`;
-    if (rows.length === 0) return Response.json({ error: 'assertion_not_found' }, { status: 404 });
-    try {
-      const { notifySyncInvalidate } = await import('../../../sync-sse');
-      await notifySyncInvalidate('testing.assertionsByHarness', { harnessSlug: slug, workspaceId: ws });
-    } catch { /* table bridge remains the fallback */ }
-    return Response.json({ ok: true, val_id: rows[0].val_id, requires_test: rows[0].requires_test });
+  async handler(_req, ctx) {
+    const valId = typeof ctx.params.valId === 'string' ? ctx.params.valId : undefined;
+    return retiredValRoute('val-write-retired', valId ? `requested ${valId}` : undefined);
   },
 });
-
-// ── Plan↔test rollup (P-082) ───────────────────────────────────────────────
-// Per-plan-item test coverage, joined from harness_plan_assertions ⋈
-// harness_tests through the VAL. Mirrors plans-central's feature-status badge
-// but for tests; consumed by the Plans-tab coverage badge (P-083).
 
 const planItemsTestStatus = defineTool({
   method: 'GET',
   path: '/harness/:slug/plan-items-test-status',
   auth: 'public',
-  async handler(req, ctx) {
-    const slug = ctx.params.slug as string;
-    const planSlug = new URL(req.url).searchParams.get('plan');
-    try {
-      const { sql } = getOrgPg();
-      const ws = activeWorkspaceId();
-      const assertions = planSlug
-        ? await sql<{ val_id: string; item_id: string; requires_test: boolean }[]>`
-            SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
-             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND plan_slug = ${planSlug}`
-        : await sql<{ val_id: string; item_id: string; requires_test: boolean }[]>`
-            SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
-             WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
-      const testRows = await sql<{ status: string; payload: { coversVALs?: unknown } }[]>`
-        SELECT status, payload FROM harness_shared.harness_tests
-         WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
-      const tests = testRows.map((r) => ({
-        status: r.status,
-        coversVALs: Array.isArray(r.payload?.coversVALs)
-          ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
-          : [],
-      }));
-      const byItem = computePlanItemTestStatus(assertions, tests);
-      return Response.json({ items: Object.values(byItem) });
-    } catch {
-      // Table/PG absent — empty is a valid "no coverage data".
-      return Response.json({ items: [] });
-    }
+  async handler() {
+    return retiredValRoute('val-read-retired', 'per-item test coverage joined through VAL-* ids');
   },
 });
 

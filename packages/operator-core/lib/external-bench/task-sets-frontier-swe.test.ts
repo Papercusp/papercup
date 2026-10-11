@@ -163,6 +163,14 @@ describe('frontierSweRowToBenchTask', () => {
   });
 });
 
+describe('task creation date (D-007, WI-6554700010008413)', () => {
+  it('maps the ingest taskCreatedAt to BenchTask.createdAt and omits it on an undated row', () => {
+    const dated = frontierSweRowToBenchTask(v2Row({ instanceId: 'd', suiteCategories: ['Implementation'], taskCreatedAt: '2026-09-03T12:00:00+00:00' }));
+    expect(dated.createdAt).toBe('2026-09-03T12:00:00+00:00');
+    expect('createdAt' in frontierSweRowToBenchTask(v2Row({ instanceId: 'u', suiteCategories: ['Implementation'] }))).toBe(false);
+  });
+});
+
 describe('verifier GPUs (WI-6554700010008334)', () => {
   it('a GPU-free agent with a GPU verifier is NOT CPU-runnable; a GPU-free pair is', () => {
     expect(frontierSweCpuRunnable({ gpus: 0, verifierGpus: 1, externalNeeds: [] })).toBe(false);

@@ -2128,7 +2128,7 @@ export function claudeQuotaTranscriptVerdict(rows: any): "unknown" | "walled" | 
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit, corroborate, corroborateTtlMs, onDismiss, resetGraceMs, onExpire, }?: {
+export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit, corroborate, corroborateTtlMs, onDismiss, resetGraceMs, probeBaseMs, probeMaxMs, onExpire, }?: {
     capBytes?: number | undefined;
     agent?: string | undefined;
     now?: (() => number) | undefined;
@@ -2146,12 +2146,16 @@ export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit,
         blockedSinceMs: number | null;
     }) => unknown) | null | undefined;
     resetGraceMs?: number | undefined;
+    probeBaseMs?: number | undefined;
+    probeMaxMs?: number | undefined;
     onExpire?: ((expired: {
         matched: boolean;
         pattern: string | null;
         excerpt: string | null;
         blockedSinceMs: number | null;
-        resetAtMs: number;
+        resetAtMs: number | null;
+        reason: "stated-reset" | "probe";
+        probe: number | null;
     }) => unknown) | null | undefined;
 }): {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
@@ -4776,6 +4780,11 @@ export const QUOTA_CORROBORATE_TTL_MS: 15000;
  *  held before it expires, so a reset rendered to the minute is not probed
  *  seconds early. */
 export const QUOTA_RESET_GRACE_MS: 60000;
+/** D-014: first probe of a latched codex wall, doubling per failed probe up to
+ *  the max. A failed probe is one ~3s errored turn, so even a multi-day wall
+ *  costs a few probes a day. */
+export const QUOTA_PROBE_BASE_MS: number;
+export const QUOTA_PROBE_MAX_MS: number;
 /** How often the discovery file's activity fields are refreshed. Coarse on
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */

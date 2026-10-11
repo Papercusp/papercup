@@ -16,6 +16,7 @@ documents:
   - "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts"
   - "packages/operator-core/lib/agent-tools/plans/start.ts"
   - "packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts"
+  - "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts"
 plans:
   - "verification-system-improvements-2026-10-10"
 ---
@@ -31,7 +32,7 @@ Five tools refuse when the contract is not met. Every other tool on this page pr
 | door | what it guards | refuses when |
 | --- | --- | --- |
 | `plans:start` | Turning plan items into work-items. | The inputs, activation audit, spec quality, spec coverage or bar critique are not ready. |
-| `plans:bind-spec-evidence` | Recording evidence for a spec clause. | The measuring instrument has no provenance, or a derived binding or mutation target is invalid. |
+| `plans:bind-spec-evidence` | Recording evidence for a spec clause. | The measuring instrument has no provenance, a derived binding or mutation target is invalid, or an independent-verification row cites no valid implementer binding or re-observes a different source or environment. |
 | `plans:set-plan-status` with `status:'shipped'` | Shipping the plan. | Items are unfinished, code truth is unaudited, the acceptance-bar contract is incomplete, grading is missing or self-graded, the implementer has not accepted, or a live/deployed bar lacks independent verification. |
 | `plans:acceptance-disposition` | Deciding a plan stuck in `awaiting-acceptance`. | The disposition is not a typed kind with evidence and a reason. |
 | `plans:promote` | Promoting plan content. | The plan still carries a retired VAL-* assertion block. |
@@ -125,6 +126,15 @@ From `BindSpecEvidenceRefusalCode` (`packages/operator-core/lib/agent-tools/plan
 | --- | --- |
 | `derived_binding_invalid` | A binding derived from a test run is not valid for the clause. |
 | `mutation_target_rejected` | The mutation target named for the binding was rejected. |
+
+From `IndependentVerificationRefusalStatus` (`packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts`), returned as the result `status` (P-008, D-005):
+
+| code | meaning |
+| --- | --- |
+| `verified_binding_required` | An `independent-verification` binding cites no implementer binding (`verifiesBindingId`). |
+| `verified_binding_not_allowed` | A binding of any other evidence kind carries `verifiesBindingId`. |
+| `verified_binding_not_found` | The cited binding does not exist, or is itself an independent-verification row. |
+| `independent_fingerprint_mismatch` | The re-observation's source or environment fingerprint differs from the cited binding's. |
 
 ### `plans:set-plan-status`
 

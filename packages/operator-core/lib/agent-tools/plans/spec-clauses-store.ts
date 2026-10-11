@@ -697,25 +697,9 @@ export async function setSpecClause(
       });
     }
 
-    const sourceValId = identity?.source_val_id ?? input.sourceValId ?? null;
-    if (sourceValId) {
-      await tx`
-        INSERT INTO harness_shared.harness_plan_assertions (
-          workspace_id, harness_slug, val_id, plan_slug, item_id,
-          verify_text, evidence_text, status, requires_test
-        ) VALUES (
-          ${scope.workspaceId}, ${scope.harnessSlug}, ${sourceValId}, ${planSlug},
-          ${normalized.planItemId}, ${normalized.behavior}, ${normalized.requiredEvidence.join('; ')},
-          'todo', ${normalized.requiredTestLayers.length > 0}
-        )
-        ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
-          plan_slug = EXCLUDED.plan_slug,
-          item_id = EXCLUDED.item_id,
-          verify_text = EXCLUDED.verify_text,
-          evidence_text = EXCLUDED.evidence_text,
-          requires_test = EXCLUDED.requires_test,
-          updated_at = now()`;
-    }
+    // P-003 (verification-system-improvements-2026-10-10): the VAL-* assertion store is
+    // retired. A clause keeps its source_val_id lineage on plan_spec_clauses; it is no
+    // longer mirrored into the retired store.
 
     return {
       status: actualRevision === 0 ? 'created' : 'revised',

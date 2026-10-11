@@ -67,6 +67,8 @@ interface RolloutRow {
   createdAt?: string;
 }
 interface RunDetail {
+  /** The task set the bench run drew from — resolves each task's creation date (D-007). */
+  taskSetId?: string | null;
   coordEvents?: Array<{ ts?: number; kind?: string; agent?: string; taskId?: string | null; detail?: string }>;
   perTask?: Array<{ instanceId: string; cupId?: string; stopReason?: string; costUsd?: number }>;
 }
@@ -76,6 +78,21 @@ export interface PgReportReaders {
   listRunResults: (opts: { runId: string }) => Promise<TaskRunResultRow[]>;
   getRollout: (rolloutId: string) => Promise<RolloutRow | null>;
   getBenchRunDetail?: (id: string) => Promise<RunDetail | null>;
+  /**
+   * Task creation dates (ISO-8601) by task id, from the corpus the run drew from (plan
+   * benchmark-coverage-frontierswe-v2-2026-10-10 D-007). A task the corpus does not date maps to null,
+   * and the contamination policy reads it as unknown.
+   */
+  getTaskCreatedAt?: (taskSetId: string, taskIds: readonly string[]) => Promise<Record<string, string | null>>;
+}
+
+/** Default {@link PgReportReaders.getTaskCreatedAt}: the run's task set, loaded the same way the launcher loads it. */
+async function taskCreatedAtFromTaskSet(taskSetId: string, taskIds: readonly string[]): Promise<Record<string, string | null>> {
+  const { loadBenchTaskSet } = await import('../task-sets');
+  const tasks = await loadBenchTaskSet(taskSetId, [...taskIds]);
+  const out: Record<string, string | null> = {};
+  for (const t of tasks) out[t.instanceId] = t.createdAt ?? null;
+  return out;
 }
 
 /** Default readers — the real store functions (lazy-imported so a pure-fake test never loads PG). */
@@ -87,6 +104,7 @@ async function defaultReaders(scope: { workspace?: string } = {}): Promise<PgRep
     listRunResults: (opts) => store.listRunResults({ ...opts, ...ws }) as unknown as Promise<TaskRunResultRow[]>,
     getRollout: (id) => store.getRollout(id, ws) as unknown as Promise<RolloutRow | null>,
     getBenchRunDetail: (id) => runStore.getBenchRunDetail(id, ws) as unknown as Promise<RunDetail | null>,
+    getTaskCreatedAt: taskCreatedAtFromTaskSet,
   };
 }
 
@@ -142,7 +160,15 @@ export async function buildBundleFromPg(
   for (const ro of rolloutList) if (!models[ro.arm]) models[ro.arm] = ro.modelId;
   for (const rr of runResults) if (!models[rr.arm] && rr.modelId) models[rr.arm] = rr.modelId;
 
+  // D-007: an undatable corpus (no reader, no task set, a load failure) leaves taskCreatedAt undefined, which the
+  // contamination policy reports as 'contamination-unknown' — the honest reading, never a silent 'post-cutoff'.
+  const taskIds = [...new Set([...(assignment.assignedTaskIds ?? []), ...runResults.map((r) => r.taskId)])];
+  const taskCreatedAt = detail?.taskSetId && readers.getTaskCreatedAt && taskIds.length
+    ? await readers.getTaskCreatedAt(detail.taskSetId, taskIds).catch(() => undefined)
+    : undefined;
+
   return bundleFromRollouts({
+    taskCreatedAt,
     runId,
     suite: assignment.suite ?? runResults[0].suite,
     createdAt: rolloutList[0]?.createdAt ?? runResults[0]?.createdAt ?? prereg?.createdAt ?? new Date().toISOString(),

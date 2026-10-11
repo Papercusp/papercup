@@ -103,6 +103,14 @@ export interface BenchTask {
   tier?: 'easy' | 'medium' | 'hard';
 
   /**
+   * When the task became public, as ISO-8601 (plan benchmark-coverage-frontierswe-v2-2026-10-10 D-007).
+   * The contamination policy compares it with the evaluated model's training cutoff. Set only from a
+   * corpus field that records it (SWE-bench `created_at`, the FrontierSWE ingest's git-derived
+   * `taskCreatedAt`); omitted otherwise, and an omitted date reads as 'contamination-unknown', never clean.
+   */
+  createdAt?: string;
+
+  /**
    * $-payout for value-weighted families (SWE-Lancer, the L3 value-capture layer): a RESOLVED task
    * "captures" this value. The Hive's $-aware placement (P-022) reads it; the value-captured-under-budget
    * metric (P-025) sums it over resolved rows under a fixed budget. Omitted by non-value benchmarks.

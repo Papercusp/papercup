@@ -185,11 +185,11 @@ function shapeResult(res: unknown, tier: TierName): unknown {
     }
   }
 
-  // trimmed only: the UI decoration maps (feature badges, test-coverage badges)
-  // are per-item objects an agent placing work rarely needs — drop them LOUDLY.
+  // trimmed only: the UI decoration map (feature badges) is a per-item object
+  // an agent placing work rarely needs — drop it LOUDLY.
   if (tier === "trimmed") {
     const omitted: string[] = [];
-    for (const key of ["linkedFeatures", "planItemTests"] as const) {
+    for (const key of ["linkedFeatures"] as const) {
       const v = r[key];
       if (v && typeof v === "object" && Object.keys(v as object).length > 0) {
         delete out[key];
