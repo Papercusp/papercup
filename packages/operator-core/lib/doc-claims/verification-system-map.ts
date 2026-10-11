@@ -70,6 +70,8 @@ export const CONTRACT_GATE_CODE_TYPES: readonly ContractGateCodeType[] = [
   { door: 'plans:start', module: 'agent-tools/plans/start.ts', type: 'PlanStartDoorRefusalCode' },
   { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/instrument-provenance.ts', type: 'InstrumentRefusalCode' },
   { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/bind-spec-evidence.ts', type: 'BindSpecEvidenceRefusalCode' },
+  // P-008: independent-verification refusals, returned as BindSpecEvidenceResult.status.
+  { door: 'plans:bind-spec-evidence', module: 'agent-tools/plans/spec-evidence-store.ts', type: 'IndependentVerificationRefusalStatus' },
   { door: 'plans:acceptance-disposition', module: 'agent-tools/plans/acceptance-drain-disposition.ts', type: 'AcceptanceDispositionRefusalCode' },
   // P-003: the VAL-* retirement. plans:promote returns 'val-block-retired'; the other two
   // members are returned by the retired VAL write/read paths.
@@ -189,7 +191,11 @@ export function testAssertsOnCode(testText: string, code: string): boolean {
         if (ch === '(') depth += 1;
         else if (ch === ')') depth -= 1;
       }
-      if (depth <= 0 && /[;)]\s*$/.test(line.trimEnd())) break;
+      // A balanced line ending in `)` still continues when the next line chains a
+      // matcher (`expect(x)\n  .toMatchObject({ … })`), so look ahead before stopping.
+      if (depth <= 0 && /[;)]\s*$/.test(line.trimEnd()) && !/^\s*\./.test(lines[j + 1] ?? '')) {
+        break;
+      }
     }
   }
   return false;

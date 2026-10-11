@@ -126,6 +126,16 @@ describe('testAssertsOnCode', () => {
     expect(testAssertsOnCode(t, 'zz_alpha_refused')).toBe(false);
   });
 
+  it('CALIBRATION: follows a matcher chained on the next line after a balanced expect(...)', () => {
+    const t = "expect(await store({ id: 1 }))\n  .toMatchObject({ status: 'zz_alpha_refused' });";
+    expect(testAssertsOnCode(t, 'zz_alpha_refused')).toBe(true);
+  });
+
+  it('CONTROL: a statement after a chained matcher has finished does not count', () => {
+    const t = "expect(await f())\n  .toBe(true);\nconst fixture = { status: 'zz_alpha_refused' };";
+    expect(testAssertsOnCode(t, 'zz_alpha_refused')).toBe(false);
+  });
+
   it('CALIBRATION: counts a literal passed to an expect*/assert* helper (EI-25652573114035984)', () => {
     expect(testAssertsOnCode("expectRefused(result, 'zz_alpha_refused');", 'zz_alpha_refused')).toBe(true);
     expect(testAssertsOnCode("assertRefusal(\n  result,\n  'zz_alpha_refused',\n);", 'zz_alpha_refused')).toBe(true);
