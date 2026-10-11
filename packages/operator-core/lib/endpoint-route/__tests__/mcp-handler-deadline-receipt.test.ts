@@ -69,7 +69,11 @@ const h = vi.hoisted(() => {
     commitFailure: null as Error | null,
     txEvents: [] as string[],
     replayStores: [] as Array<{ idempotencyKey: string; result: unknown }>,
-    storedReplay: null as { content: Array<Record<string, unknown>>; _meta?: Record<string, unknown> } | null,
+    storedReplay: null as {
+      content: Array<Record<string, unknown>>;
+      structuredContent?: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+    } | null,
     invocations: [] as unknown[],
     resultDoorDelayMs: 0,
     resultDoorCalls: 0,
@@ -280,6 +284,7 @@ function sleep(ms: number): Promise<void> {
 const SLOW_TOOL_MS = 500; // five multiples of TEST_DEADLINE_MS
 const REAL_OUTCOME_TEXT = 'deadlinetest-real-outcome-not-a-timeout';
 let slowCalls = 0;
+let syntheticAbortCalls = 0;
 
 registerProjectedTool({
   pluginName: 'mcp-deadline-receipt-test',
@@ -306,6 +311,42 @@ registerProjectedTool({
   fn: async () => ({ content: [{ type: 'text' as const, text: JSON.stringify({
     ok: true, results: [{ id: 'EI-mcp-spill-test', checkpoint: SPILL_CHECKPOINT }],
   }) }] }),
+});
+
+const SYNTHETIC_COORD_SEND_ABORT = {
+  ok: false,
+  partial: true,
+  results: [{ ok: false, to: ['synthetic-recipient-fixture'], error: 'request_aborted' }],
+  counts: { ok: 0, failed: 1 },
+  deliveryFailureWarning: 'coord:send completed the batch with a failed delivery: request_aborted',
+};
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only synthetic coord:send pre-persist abort result for MCP same-key replay coverage',
+  inputSchema: { type: 'object', additionalProperties: false },
+  outputJsonSchema: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      partial: { type: 'boolean' },
+      results: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      counts: { type: 'object', additionalProperties: true },
+      deliveryFailureWarning: { type: 'string' },
+    },
+    required: ['ok', 'partial', 'results', 'counts', 'deliveryFailureWarning'],
+    additionalProperties: true,
+  },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'deadlinetest:coord-send-abort' } },
+  fn: async () => {
+    syntheticAbortCalls += 1;
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(SYNTHETIC_COORD_SEND_ABORT) }],
+      structuredContent: SYNTHETIC_COORD_SEND_ABORT,
+      _meta: { format: 'json' },
+    };
+  },
 });
 
 afterAll(() => {
@@ -363,6 +404,7 @@ function traceEvents(calls: readonly unknown[][]): Array<Record<string, unknown>
 beforeEach(() => {
   vi.resetAllMocks();
   slowCalls = 0;
+  syntheticAbortCalls = 0;
   h.withWorkspaceCalls.length = 0;
   h.withWorkspaceDelayMs = 0;
   h.commitFailure = null;
@@ -986,5 +1028,31 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     await sleep(SLOW_TOOL_MS + 100);
     expect(slowCalls).toBe(1);
     expect(h.replayStores).toEqual([]);
+  });
+
+  it('stores a coord:send-shaped pre-persist abort and replays the structured result for the same transport key', async () => {
+    const key = 'idem-coord-send-pre-persist-abort';
+    const extra = scoped('ws-test');
+
+    const initial = await callTool('deadlinetest:coord-send-abort', {}, extra, { idempotencyKey: key });
+
+    expect(syntheticAbortCalls).toBe(1);
+    expect(initial.structuredContent).toEqual(SYNTHETIC_COORD_SEND_ABORT);
+    expect(textOf(initial)).toContain(JSON.stringify(SYNTHETIC_COORD_SEND_ABORT));
+    expect(h.replayStores).toHaveLength(1);
+    expect(h.replayStores[0]!.idempotencyKey).toBe(key);
+
+    const stored = h.replayStores[0]!.result as CallResult;
+    expect(stored.structuredContent).toEqual(SYNTHETIC_COORD_SEND_ABORT);
+    expect(textOf(stored)).toContain(JSON.stringify(SYNTHETIC_COORD_SEND_ABORT));
+    h.storedReplay = stored as typeof h.storedReplay;
+
+    const retry = await callTool('deadlinetest:coord-send-abort', {}, extra, { idempotencyKey: key });
+
+    expect(retry._meta).toMatchObject({ replayed: true });
+    expect(retry.structuredContent).toEqual(initial.structuredContent);
+    expect(textOf(retry)).toContain(JSON.stringify(SYNTHETIC_COORD_SEND_ABORT));
+    expect(syntheticAbortCalls).toBe(1);
+    expect(h.replayStores).toHaveLength(1);
   });
 });
