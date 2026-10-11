@@ -1,10 +1,17 @@
 /** P-005 real-Postgres coverage for exact spec evidence edges, tools, and currentness. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { once } from 'node:events';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { SpecClauseWrite } from './spec-clauses-store';
 import { carryUnchangedBarEvidenceBindings } from '../../acceptance-bar-amendment';
@@ -1888,6 +1895,135 @@ describe('recorded retraction is the one sanctioned repair for a malformed bindi
     expect(row.n).toBe(1);
   });
 
+  it('routes a private retraction through MCP and a refused fresh connection never dispatches', async () => {
+    // getOrgPg is mocked to this disposable database for this suite. The MCP server below
+    // calls the maintained handler imported from the current checkout; it never contacts
+    // the shared :3170 operator or its workspace data.
+    expect(h.sql).toBe(db.sql);
+    const retractedId = await bindOne();
+    const protectedExternal = await seedExternalEvidence();
+    const protectedBinding = await evidenceStore.bindSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'coverage-census',
+      evidenceRef: 'surface:private-control',
+      sourceFingerprint: 'git:private-control',
+      coverageEvidenceRef: protectedExternal.coverageEvidenceRef,
+      testRunId: protectedExternal.testRunId,
+      actorId: 'su-test',
+    });
+    expect(protectedBinding.status).toBe('created');
+    const protectedId = Number((protectedBinding as { id: number }).id);
+    expect(protectedId).not.toBe(retractedId);
+    expect(await visibleIds()).toEqual(expect.arrayContaining([retractedId, protectedId]));
+
+    const hosts: Array<{ host: McpServer; transport: StreamableHTTPServerTransport }> = [];
+    const toolDispatches: string[] = [];
+    const serverErrors: unknown[] = [];
+    const http = createHttpServer(async (request, response) => {
+      if (request.headers.authorization !== 'Bearer private-spec-evidence-fixture') {
+        response.writeHead(401).end();
+        return;
+      }
+      const host = new McpServer(
+        { name: 'private-spec-evidence-retraction', version: '1' },
+        { capabilities: { tools: {} } },
+      );
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      hosts.push({ host, transport });
+      host.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+        tools: [{
+          name: bindTool.name,
+          description: 'Private isolated retraction fixture',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              harness: { type: 'string' },
+              slug: { type: 'string' },
+              retract: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: { bindingId: { type: 'number' }, reason: { type: 'string' } },
+                  required: ['bindingId', 'reason'],
+                },
+              },
+            },
+            required: ['harness', 'retract'],
+          },
+        }],
+      }));
+      host.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+        if (request.params.name !== bindTool.name) throw new Error('unexpected_fixture_tool');
+        toolDispatches.push(request.params.name);
+        const result = await bindTool.handler!(request.params.arguments as never, CTX);
+        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      });
+      try {
+        await host.connect(transport);
+        await transport.handleRequest(request, response);
+      } catch (error) {
+        serverErrors.push(error);
+        if (!response.headersSent) response.writeHead(500);
+        response.end();
+      }
+    });
+    http.listen(0, '127.0.0.1');
+    await once(http, 'listening');
+    const address = http.address();
+    if (!address || typeof address === 'string') throw new Error('missing_private_mcp_port');
+    const url = new URL('/api/mcp', `http://127.0.0.1:${address.port}`);
+    const closeHttp = async () => {
+      await Promise.allSettled(hosts.map(async ({ host, transport }) => {
+        await host.close();
+        await transport.close();
+      }));
+      http.closeAllConnections();
+      if (http.listening) {
+        await new Promise<void>((resolve, reject) => http.close((error) => error ? reject(error) : resolve()));
+      }
+    };
+    const client = new Client({ name: 'private-spec-evidence-retraction', version: '1.0.0' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { Authorization: 'Bearer private-spec-evidence-fixture' } },
+      }));
+      const result = await client.callTool({
+        name: bindTool.name,
+        arguments: {
+          harness: HARNESS,
+          slug: 'reconnect-plan',
+          retract: [{ bindingId: retractedId, reason: 'private MCP transport fixture retraction' }],
+        },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(toolDispatches).toEqual([bindTool.name]);
+      expect(await visibleIds()).not.toContain(retractedId);
+      expect(await visibleIds()).toContain(protectedId);
+    } finally {
+      await Promise.allSettled([client.close()]);
+      await closeHttp();
+    }
+
+    const refusedClient = new Client({ name: 'private-spec-evidence-refused-client', version: '1.0.0' });
+    try {
+      await expect(refusedClient.connect(new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { Authorization: 'Bearer private-spec-evidence-fixture' } },
+      }))).rejects.toThrow();
+    } finally {
+      await Promise.allSettled([refusedClient.close()]);
+    }
+    expect(toolDispatches).toEqual([bindTool.name]);
+    expect(await visibleIds()).toContain(protectedId);
+    expect(await visibleIds(true)).toContain(retractedId);
+    expect(serverErrors).toEqual([]);
+  }, 30_000);
+
   it('refuses a second retraction, so the recorded author and reason are final', async () => {
     const id = await bindOne();
     await evidenceStore.retractSpecEvidence({
@@ -2809,6 +2945,62 @@ describe('a lifecycle-only revision carries proof forward (WI-10002889)', () => 
        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND work_item_id = 'WI-101'
          AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01' AND spec_revision = 2`;
     expect(edge?.spec_fingerprint).toBe((promoted as { contentHash: string }).contentHash);
+  });
+
+  it.each(['accepted', 'active'] as const)('carries manual proof when an exempt clause becomes %s and clears required lifecycle metadata', async (lifecycleStatus) => {
+    const exemption = { justification: 'Manually inspect the final signed package.', provenance: 'D-003' };
+    const manual = clause({
+      lifecycleStatus: 'exempt', behaviorClass: 'non-automated', requiredTestLayers: [],
+      mutationRequired: false, requiredEvidence: ['deployed'], exemption,
+    });
+    await specs.setSpecClause(manual);
+    const external = await seedExternalEvidence();
+    expect(await evidenceStore.bindSpecEvidence({
+      harnessSlug: HARNESS, planSlug: 'reconnect-plan', workItemId: 'WI-101',
+      specId: 'SPEC-003-01', evidenceKind: 'manual', evidenceRef: 'package:final-signed',
+      sourceFingerprint: 'git:abc123', testRunId: external.testRunId, actorId: 'su-test',
+    })).toMatchObject({ status: 'created' });
+
+    const promoted = await specs.setSpecClause({
+      ...manual, expectedRevision: 1, lifecycleStatus, exemption: null,
+    });
+    expect(promoted).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: 1 });
+    expect(await liveRefsAt(2)).toEqual(['package:final-signed']);
+    const [current] = await specs.listSpecClauses({
+      harnessSlug: HARNESS, planSlug: 'reconnect-plan', specIds: ['SPEC-003-01'],
+    });
+    expect(current).toMatchObject({ lifecycleStatus, exemption: null, behaviorClass: 'non-automated' });
+    const [prior] = await specs.listSpecClauses({
+      harnessSlug: HARNESS, planSlug: 'reconnect-plan', specIds: ['SPEC-003-01'], revision: 1,
+    });
+    expect(prior).toMatchObject({ lifecycleStatus: 'exempt', exemption });
+    const [carried] = await db.sql<{ test_run_id: string | number; evidence_kind: string }[]>`
+      SELECT test_run_id, evidence_kind FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01' AND spec_revision = 2`;
+    expect(Number(carried?.test_run_id)).toBe(external.testRunId);
+    expect(carried?.evidence_kind).toBe('manual');
+  });
+
+  it('does not treat changed manual proof obligations as exemption-only provenance', () => {
+    const exemption = { justification: 'Manual signed package inspection.', provenance: 'D-003' };
+    const manual = clause({
+      lifecycleStatus: 'exempt', behaviorClass: 'non-automated', requiredTestLayers: [],
+      mutationRequired: false, requiredEvidence: ['deployed'], exemption,
+    });
+    const prior = { lifecycleStatus: 'exempt' as const, acceptanceRef: 'D-003', exemption };
+    const hash = specs.specClauseContentHash(manual);
+    const promoted = { ...manual, lifecycleStatus: 'active' as const, exemption: null };
+    expect(specs.differsOnlyInAcceptanceProvenance(promoted, prior, null, hash)).toBe(true);
+    for (const changed of [
+      { ...promoted, behavior: 'A different package outcome.' },
+      { ...promoted, requiredEvidence: ['live'] },
+      { ...promoted, requiredTestLayers: ['unit'] },
+      { ...promoted, mutationRequired: true },
+      { ...promoted, behaviorClass: 'happy-path' },
+    ] as typeof promoted[]) {
+      expect(specs.differsOnlyInAcceptanceProvenance(changed, prior, null, hash)).toBe(false);
+    }
   });
 
   it('does NOT carry proof across a substantive edit, even one that also changes lifecycle', async () => {

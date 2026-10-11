@@ -51,7 +51,7 @@
  *                  "worker":"opus:xhigh","validator":"opus:xhigh","reviewer":"opus:xhigh",
  *                  "documenter":"opus:xhigh","bee":"opus:xhigh"}'
  * plus `AGENT_CMD="claude -p"` (the `opus` alias). The opus model pin is the CALLER's responsibility
- * (it must reach every spawned role). VERIFY `agent_usage_samples.model = claude-opus-4-8` on a 1-task
+ * (it must reach every spawned role). VERIFY `agent_usage_samples.model` = the run's pinned evaluated model on a 1-task
  * probe before any big spend. Same clone/diff/grader as every arm — the only independent variable across
  * arms is the orchestration layer.
  *
@@ -680,7 +680,7 @@ export function suIndependentBacklogOps(opts: SuIndependentBacklogOpts): SuIndep
                 tasks: [featureId],
                 harness: memberSlug,
                 brief,
-                tier: process.env.XBENCH_TIER || 'max', // default 'max' (opus:xhigh); XBENCH_TIER pins a specific model tier (e.g. 'opus46' for a fair same-model comparison)
+                tier: process.env.XBENCH_TIER || 'max', // default 'max' (opus:xhigh); XBENCH_TIER pins a specific model tier (e.g. the 'bench-pin' tier _xbench_set_tier.ts adds, for a fair same-model comparison)
                 min_inject_affinity: 100, // never warm-inject — the independent arm needs a FRESH isolated spawn
                 workspace: ws,
                 dry_run: false,

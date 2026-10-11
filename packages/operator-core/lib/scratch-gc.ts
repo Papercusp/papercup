@@ -167,16 +167,25 @@ async function writeSharedScratchQuotaState(
   workspaceId: string,
   bytes: number,
   measuredAt: number,
-): Promise<void> {
+): Promise<number> {
   const path = sharedScratchQuotaStatePath(workspaceId);
   const parent = dirname(path);
   await mkdirAsync(parent, { recursive: true, mode: 0o700 });
+  const existing = await readSharedScratchQuotaState(workspaceId);
+  const entry = usageState.byWorkspace.get(workspaceId);
+  // updatedAt is also the shared-state revision fence. Advance it monotonically so two
+  // writes in the same millisecond cannot make a remote mutation look like our own snapshot.
+  const updatedAt = Math.max(
+    Date.now(),
+    (existing?.updatedAt ?? 0) + 1,
+    (entry?.sharedUpdatedAt ?? 0) + 1,
+  );
   const record: SharedScratchQuotaState = {
     version: SHARED_SCRATCH_QUOTA_STATE_VERSION,
     workspaceRoot: resolve(scratchRootForWorkspace(workspaceId)),
     bytes: Math.max(0, Math.trunc(bytes)),
     measuredAt,
-    updatedAt: Date.now(),
+    updatedAt,
   };
   const temporary = path + '.' + process.pid + '.' + randomUUID() + '.tmp';
   await writeFileAsync(temporary, JSON.stringify(record) + '\n', { mode: 0o600 });
@@ -186,10 +195,14 @@ async function writeSharedScratchQuotaState(
     await rmAsync(temporary, { force: true }).catch(() => {});
     throw error;
   }
+  if (entry) entry.sharedUpdatedAt = updatedAt;
+  return updatedAt;
 }
 
 async function removeSharedScratchQuotaState(workspaceId: string): Promise<void> {
   await rmAsync(sharedScratchQuotaStatePath(workspaceId), { force: true });
+  const entry = usageState.byWorkspace.get(workspaceId);
+  if (entry) entry.sharedUpdatedAt = null;
 }
 
 function invalidateLocalScratchUsage(workspaceId: string): void {
@@ -207,13 +220,19 @@ async function measureAndAdoptSharedScratchUsage(
   bytes: number;
   measuredAt: number;
   measured: boolean;
+  updatedAt: number;
 }> {
   const existing = cachedState === undefined
     ? await readSharedScratchQuotaState(workspaceId)
     : cachedState;
   const now = Date.now();
   if (existing && now - existing.updatedAt <= USAGE_REFRESH_MS) {
-    return { bytes: existing.bytes, measuredAt: existing.measuredAt, measured: false };
+    return {
+      bytes: existing.bytes,
+      measuredAt: existing.measuredAt,
+      measured: false,
+      updatedAt: existing.updatedAt,
+    };
   }
 
   const diagnostics = newScratchQuotaRecoveryDiagnostics();
@@ -223,20 +242,33 @@ async function measureAndAdoptSharedScratchUsage(
     throw incompleteScratchQuotaMeasurementError(workspaceId, diagnostics);
   }
   const measuredAt = Date.now();
-  await writeSharedScratchQuotaState(workspaceId, bytes, measuredAt);
-  return { bytes, measuredAt, measured: true };
+  const updatedAt = await writeSharedScratchQuotaState(workspaceId, bytes, measuredAt);
+  return { bytes, measuredAt, measured: true, updatedAt };
 }
 
 function adoptSharedScratchUsage(
   workspaceId: string,
   bytes: number,
+  updatedAt: number,
+  allowLocalIndexReuse: boolean,
 ): ScratchUsageEntry {
   const entry = usageEntry(workspaceId);
+  // A complete local run index is reusable only for the exact shared revision this process
+  // last wrote. A changed remote revision needs a full reconciliation; matching revisions let
+  // request-time recovery re-list runs and remeasure FIFO candidates without walking the tree.
+  const preserveRunIndex = allowLocalIndexReuse
+    && entry.runBytesValid
+    && !entry.refreshDeferred
+    && entry.bytes === bytes
+    && entry.sharedUpdatedAt === updatedAt;
   entry.bytes = bytes;
   entry.measuredAt = Date.now();
   entry.refreshDeferred = false;
-  entry.runBytesByPath.clear();
-  entry.runBytesValid = false;
+  entry.sharedUpdatedAt = updatedAt;
+  if (!preserveRunIndex) {
+    entry.runBytesByPath.clear();
+    entry.runBytesValid = false;
+  }
   return entry;
 }
 
@@ -636,6 +668,8 @@ interface ScratchUsageEntry {
   runBytesByPath: Map<string, number>;
   /** False when the per-run index does not cover a stable, complete workspace measurement. */
   runBytesValid: boolean;
+  /** Last observed/persisted shared-state revision; gates reuse of this process's run index. */
+  sharedUpdatedAt: number | null;
 }
 
 /** Per-process cached usage per workspace (WI-10004513). Pinned so a split module record can't
@@ -653,6 +687,7 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
       bytes: 0, measuredAt: 0, refreshing: null, refreshDiagnostics: null,
       recovering: null, writes: new Map(),
       writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(), runBytesValid: false,
+      sharedUpdatedAt: null,
     };
     usageState.byWorkspace.set(workspaceId, entry);
   } else {
@@ -664,6 +699,7 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     entry.refreshDeferred ??= false;
     entry.runBytesByPath ??= new Map();
     entry.runBytesValid ??= false;
+    entry.sharedUpdatedAt ??= null;
   }
   return entry;
 }
@@ -1167,13 +1203,15 @@ export function _setScratchUsageForTests(
   entry.measuredAt = measuredAt;
   const path = sharedScratchQuotaStatePath(workspaceId);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const updatedAt = Math.max(Date.now(), (entry.sharedUpdatedAt ?? 0) + 1);
   writeFileSync(path, JSON.stringify({
     version: SHARED_SCRATCH_QUOTA_STATE_VERSION,
     workspaceRoot: resolve(scratchRootForWorkspace(workspaceId)),
     bytes: Math.max(0, Math.trunc(bytes)),
     measuredAt,
-    updatedAt: Date.now(),
+    updatedAt,
   }) + '\n', { mode: 0o600 });
+  entry.sharedUpdatedAt = updatedAt;
   if (!preserveRunBytes) {
     entry.runBytesByPath.clear();
     entry.runBytesValid = false;
@@ -1544,13 +1582,14 @@ export async function writeWithScratchQuota(
   scheduleLockWaitProgress();
   try {
     await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
-      let shared: { bytes: number; measuredAt: number; measured: boolean } | undefined;
+      let shared: { bytes: number; measuredAt: number; measured: boolean; updatedAt: number } | undefined;
       const cachedState = await readSharedScratchQuotaState(opts.workspaceId);
       if (cachedState && Date.now() - cachedState.updatedAt <= USAGE_REFRESH_MS) {
         shared = {
           bytes: cachedState.bytes,
           measuredAt: cachedState.measuredAt,
           measured: false,
+          updatedAt: cachedState.updatedAt,
         };
       } else {
         await timed('refreshWaitMs', async () => {
@@ -1559,7 +1598,7 @@ export async function writeWithScratchQuota(
       }
       if (!shared) throw new Error('Shared scratch quota state was not loaded');
       sharedMeasuredAt = shared.measuredAt;
-      adoptSharedScratchUsage(opts.workspaceId, shared.bytes);
+      adoptSharedScratchUsage(opts.workspaceId, shared.bytes, shared.updatedAt, !shared.measured);
 
       // A first reference write can create the workspace marker in addition to its payload. Count
       // that known file size in the reservation when this is a workspace/tool/run path.

@@ -2038,6 +2038,19 @@ export async function diagnoseFleetScopeTerminalExhaustion(args: {
   }
 }
 
+/**
+ * P-008 (parked-agent-census-resumption-and-root-cause-2026-10-09): every miss response that tells a
+ * member to "release remaining lane resources" and call loop:end must not be read as "drop the
+ * blocked item you still hold". A held blocked item stays held. Its wake is NOT restated here:
+ * loop:end refuses a claim holder with no bounded wake source and returns the exact bounded await
+ * (keyed to the item's recorded blocker) in recovery.steps. Naming that await's tool here would sit
+ * beside this response's own `watch:create` work-item:claimable instruction and invite the
+ * conflation EI-15185 guards against (fleet-scope-admission.test.ts asserts no events:await).
+ */
+const HELD_BLOCKED_ITEM_STAYS_HELD =
+  '(a blocked item you still hold stays held: record work_items:set_blocker on it first — loop:end then refuses ' +
+  'the stop and returns the bounded wake to register in recovery.steps)';
+
 export function fleetScopedMiss(
   scope: FleetScopeContext,
   quarantinedIds: string[] = [],
@@ -2690,10 +2703,10 @@ export function fleetScopedMiss(
             'read, and is the ONLY case where standing down on this lane is correct. Do NOT re-author the claim spec: your spec is ' +
             'fine, and widening it would only pull the same blocked rows in under a different filter.'
           : planComplete
-          ? 'PLAN COMPLETE (EI-20260781488788952): every plan named by the claim spec is terminal. Checkpoint any final progress, release remaining lane resources (a blocked item you still hold stays held: record work_items:set_blocker plus a bounded events:await on its unblocking event first — loop:end refuses a claim holder without one), call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful completed-plan wind-down. Do NOT escalate, widen, or re-author the claim spec.'
+          ? 'PLAN COMPLETE (EI-20260781488788952): every plan named by the claim spec is terminal. Checkpoint any final progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful completed-plan wind-down. Do NOT escalate, widen, or re-author the claim spec.'
           : specExhausted
           ? 'LANE COMPLETE: the status-floor-free check found only terminal rows for this spec (reason: "spec_exhausted"). ' +
-            'Checkpoint any final progress, release remaining lane resources (a blocked item you still hold stays held: record work_items:set_blocker plus a bounded events:await on its unblocking event first — loop:end refuses a claim holder without one), call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful drain to your ' +
+            'Checkpoint any final progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful drain to your ' +
             'fleet leader. ' +
             (claimablePayloadFilter
               ? 'If new work later enters your scope, park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn — do not pass targetKind with wake:true; the watch remains armed after a re-miss, the wake is a HINT, and scheduler:get_next remains authoritative.'
@@ -2706,7 +2719,7 @@ export function fleetScopedMiss(
           : nonIssueSpecEmpty
           ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
             'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +
-            'not a sign the spec is broken. Checkpoint any atomic progress, release remaining lane resources (a blocked item you still hold stays held: record work_items:set_blocker plus a bounded events:await on its unblocking event first — loop:end refuses a claim holder without one), and call ' +
+            'not a sign the spec is broken. Checkpoint any atomic progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', and call ' +
             'loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } if AUTO (or another autonomy-implying mode) remains active without ' +
             'a deliberate independent event await — otherwise the wake-less stop will be refused. Quote `reason: "ordinary_drain"` ' +
             'if you report it. If you have reason to believe real work should exist, verify ' +
@@ -2730,7 +2743,7 @@ export function fleetScopedMiss(
               ? 'You may still park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` in case a floor lifts (a claim-hold or owner-action gate clears) and end your turn — do not pass targetKind with wake:true; its wake is a HINT and the watch remains armed.'
               : 'Do NOT park an UNSCOPED work-item:claimable await — it would fire on every system-wide release for nothing (EI-15185).')
           : claimablePayloadFilter
-            ? 'Checkpoint any atomic progress, release remaining lane resources (a blocked item you still hold stays held: record work_items:set_blocker plus a bounded events:await on its unblocking event first — loop:end refuses a claim holder without one), and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. To wake on payload candidates matching your claim spec (and the caller harness when present), rather than every system-wide release (EI-15185), park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn. This is a CANDIDATE HINT, not a full admission predicate: claim floors, rig availability, and lifecycle races may still reject a matching wake, so scheduler:get_next stays the authoritative claim; do not pass targetKind with wake:true, and a re-miss does not require re-registering the watch.'
-            : 'Checkpoint any atomic progress, release remaining lane resources (a blocked item you still hold stays held: record work_items:set_blocker plus a bounded events:await on its unblocking event first — loop:end refuses a claim holder without one), call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
+            ? 'Checkpoint any atomic progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. To wake on payload candidates matching your claim spec (and the caller harness when present), rather than every system-wide release (EI-15185), park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn. This is a CANDIDATE HINT, not a full admission predicate: claim floors, rig availability, and lifecycle races may still reject a matching wake, so scheduler:get_next stays the authoritative claim; do not pass targetKind with wake:true, and a re-miss does not require re-registering the watch.'
+            : 'Checkpoint any atomic progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
   };
 }

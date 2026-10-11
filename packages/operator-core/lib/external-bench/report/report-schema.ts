@@ -168,7 +168,7 @@ export interface BenchReportBundle {
     label?: string;
     createdAt: string;
     arms: string[];
-    /** arm/role → exact model id (e.g. 'claude-opus-4-8[1m]'). */
+    /** arm/role → exact model id, as resolved from the run's pinned model-registry snapshot. */
     models: Record<string, string>;
     prereg?: { hash: string; config?: Record<string, unknown>; gitCommitSha?: string | null };
     harnessGitSha?: string | null;

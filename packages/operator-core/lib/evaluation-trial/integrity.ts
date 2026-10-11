@@ -47,7 +47,7 @@
 
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '../external-bench/reproducibility/canonical-json';
-import { sealEvidence, type EvidenceManifest, type PreservedEvidence } from './evidence';
+import { sealEvidence, type EvidenceManifest, type PreservedEvidence, type TrajectoryStep } from './evidence';
 import { computeTrialIdentity, type TrialIdentity } from './identity';
 import {
   DEFAULT_JUDGE_VIEW_POLICY,
@@ -142,6 +142,9 @@ export interface VerifyEvidenceInput {
   completionRequirements?: WorkloadCompletionRequirements;
   /** Required for workload completion: actual bytes read from each artifact ref. */
   resolvedArtifactContents?: Array<{ id: string; ref?: string | null; content: Uint8Array }>;
+  /** Independently projected observations read from the receipt authority.
+   * Candidate trajectory metadata is a claim, never its own receipt proof. */
+  resolvedWorkloadObservations?: TrajectoryStep[];
 }
 
 const textPresent = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -180,8 +183,14 @@ function verifyWorkloadCompletion(input: VerifyEvidenceInput, findings: Integrit
     return requirementsHash;
   }
   // Bind observations to this exact run as well as its comparable configuration.
-  const observed = (metadata: Record<string, unknown> | null | undefined) =>
-    metadata?.trialBindingHash === input.expectedIdentity!.bindingHash && metadata.runId === input.trial!.lineage.runId && textPresent(metadata.receiptRef);
+  const observed = (step: TrajectoryStep) => {
+    const metadata = step.metadata;
+    if (metadata?.trialBindingHash !== input.expectedIdentity!.bindingHash ||
+        metadata.runId !== input.trial!.lineage.runId || !textPresent(metadata.receiptRef)) return false;
+    const resolved = input.resolvedWorkloadObservations?.filter(value =>
+      value.index === step.index && value.metadata?.receiptRef === metadata.receiptRef) ?? [];
+    return resolved.length === 1 && canonicalJson(resolved[0]) === canonicalJson(step);
+  };
   for (const required of requirements.artifacts) {
     const matches = input.evidence.artifacts.filter(artifact => artifact.id === required.id);
     const artifact = matches[0];
@@ -195,7 +204,7 @@ function verifyWorkloadCompletion(input: VerifyEvidenceInput, findings: Integrit
     }
   }
   const transitionReceipts = new Map(requirements.transitions.map(required => [required.id, input.evidence.trajectory.filter(step => {
-    if (step.kind !== 'tool-result' || !observed(step.metadata)) return false;
+    if (step.kind !== 'tool-result') return false;
     const transition = step.metadata?.durableTransition as Record<string, unknown> | undefined;
     return transition?.id === required.id && transition.subjectRef === required.subjectRef && transition.from === required.from && transition.to === required.to;
   })]));
@@ -203,9 +212,10 @@ function verifyWorkloadCompletion(input: VerifyEvidenceInput, findings: Integrit
   let latestRequiredInput = -1;
   for (const required of requirements.context) {
     const matches = input.evidence.trajectory.filter(step => step.kind === 'input' && step.role === required.consumer &&
-      step.metadata?.contextId === required.id && observed(step.metadata) && sha256(step.content) === required.sha256);
+      step.metadata?.contextId === required.id && sha256(step.content) === required.sha256);
     const producer = required.afterTransitionId === undefined ? undefined : transitionReceipts.get(required.afterTransitionId);
-    if (matches.length !== 1 || producer !== undefined && (producer.length !== 1 || matches[0].index <= producer[0].index)) {
+    if (matches.length !== 1 || !observed(matches[0]) ||
+        producer !== undefined && (producer.length !== 1 || !observed(producer[0]) || matches[0].index <= producer[0].index)) {
       findings.push({ kind: 'context-delivery-mismatch', part: required.id, detail: 'Required context bytes lack a unique sealed input for the declared consumer and run after their producing transition.' });
     } else {
       contextIndices.set(required.id, matches[0].index);
@@ -217,18 +227,18 @@ function verifyWorkloadCompletion(input: VerifyEvidenceInput, findings: Integrit
   for (const required of requirements.transitions) {
     const matches = transitionReceipts.get(required.id)!;
     const inputs = contextPrerequisites(required);
-    if (matches.length !== 1 || priorTransitionMissing || matches[0].index <= latestRequiredTransition ||
+    if (matches.length !== 1 || !observed(matches[0]) || priorTransitionMissing || matches[0].index <= latestRequiredTransition ||
         inputs.some(id => !contextIndices.has(id) || matches[0].index <= contextIndices.get(id)!)) {
       findings.push({ kind: 'durable-transition-missing', part: required.id, detail: 'Required durable transition lacks a unique run-bound receipt after its prerequisite inputs and preceding transitions.' });
       priorTransitionMissing = true;
     } else latestRequiredTransition = matches[0].index;
   }
   const results = input.evidence.trajectory.filter(step => {
-    if (step.kind !== 'tool-result' || !observed(step.metadata) || step.index <= Math.max(latestRequiredInput, latestRequiredTransition)) return false;
+    if (step.kind !== 'tool-result' || step.index <= Math.max(latestRequiredInput, latestRequiredTransition)) return false;
     const outcome = step.metadata?.workloadOutcome as Record<string, unknown> | undefined;
     return outcome?.id === requirements.downstream.id && outcome.value === requirements.downstream.value && outcome.graderRef === requirements.downstream.graderRef;
   });
-  if (results.length !== 1) findings.push({ kind: 'downstream-outcome-missing', part: requirements.downstream.id,
+  if (results.length !== 1 || !observed(results[0])) findings.push({ kind: 'downstream-outcome-missing', part: requirements.downstream.id,
     detail: 'Required downstream graded outcome lacks a unique run-bound receipt after the required context and transitions.' });
   return requirementsHash;
 }
@@ -417,6 +427,7 @@ export function replayTrialEvidence(input: {
   unresolvedRefs?: string[];
   completionRequirements?: WorkloadCompletionRequirements;
   resolvedArtifactContents?: VerifyEvidenceInput['resolvedArtifactContents'];
+  resolvedWorkloadObservations?: VerifyEvidenceInput['resolvedWorkloadObservations'];
   storedJudgeView?: CompactJudgeView;
   policy?: JudgeViewPolicy;
 }): ReplayReport {
@@ -428,6 +439,7 @@ export function replayTrialEvidence(input: {
     envelope: input.envelope,
     completionRequirements: input.completionRequirements,
     resolvedArtifactContents: input.resolvedArtifactContents,
+    resolvedWorkloadObservations: input.resolvedWorkloadObservations,
     trial: input.trial,
     expectedIdentity: input.expectedIdentity,
     unresolvedRefs: input.unresolvedRefs,
@@ -449,4 +461,55 @@ export function replayTrialEvidence(input: {
     derivedJudgeView,
     judgeViewReproduced,
   };
+}
+
+/** Host-owned readers must enforce the frozen private workload's reference
+ * allowlist and project the actual native/ledger receipt into TrajectorySteps.
+ * Readers receive the expected binding, never candidate observations to echo. */
+export interface WorkloadEvidenceResolver {
+  readArtifact(ref: string, binding: Readonly<{ runId: string; trialBindingHash: string }>): Promise<Uint8Array | null>;
+  readObservations(ref: string, binding: Readonly<{ runId: string; trialBindingHash: string }>): Promise<readonly TrajectoryStep[] | null>;
+}
+
+/** Resolve private workload evidence through its host authority, then reuse the
+ * existing replay verifier. Missing/failed reads remain explicit failures. This
+ * verifies preserved observations; it neither executes nor grades a workload. */
+export async function replayResolvedWorkloadEvidence(
+  input: Omit<Parameters<typeof replayTrialEvidence>[0], 'resolvedArtifactContents' | 'resolvedWorkloadObservations'>,
+  resolver: WorkloadEvidenceResolver,
+): Promise<ReplayReport> {
+  const frozen = structuredClone(input);
+  const expected = frozen.expectedIdentity;
+  if (!frozen.completionRequirements || !expected?.bindingComplete ||
+      computeTrialIdentity(frozen.trial).bindingHash !== expected.bindingHash) return replayTrialEvidence(frozen);
+  const io = { ...resolver };
+  const binding = Object.freeze({ runId: frozen.trial.lineage.runId, trialBindingHash: expected.bindingHash });
+  const unresolvedRefs = [...(frozen.unresolvedRefs ?? [])];
+  const requiredArtifacts = new Set(frozen.completionRequirements.artifacts.map(row => row.id));
+  const requiredContexts = new Set(frozen.completionRequirements.context.map(row => row.id));
+  const requiredTransitions = new Set(frozen.completionRequirements.transitions.map(row => row.id));
+  const receiptRefs = new Set<string>();
+  for (const step of frozen.evidence.trajectory) {
+    const metadata = step.metadata;
+    const transition = metadata?.durableTransition as { id?: string } | undefined;
+    const outcome = metadata?.workloadOutcome as { id?: string } | undefined;
+    if (textPresent(metadata?.receiptRef) && (requiredContexts.has(String(metadata.contextId)) ||
+        requiredTransitions.has(String(transition?.id)) || outcome?.id === frozen.completionRequirements.downstream.id))
+      receiptRefs.add(metadata.receiptRef);
+  }
+  const [artifacts, observations] = await Promise.all([
+    Promise.all(frozen.evidence.artifacts.filter(row => requiredArtifacts.has(row.id)).map(async row => {
+      if (!textPresent(row.ref)) return null;
+      const bytes = await io.readArtifact(row.ref, binding).catch(() => null);
+      if (!(bytes instanceof Uint8Array)) { unresolvedRefs.push(row.ref); return null; }
+      return { id: row.id, ref: row.ref, content: new Uint8Array(bytes) };
+    })),
+    Promise.all([...receiptRefs].map(async ref => {
+      const rows = await io.readObservations(ref, binding).catch(() => null);
+      if (!Array.isArray(rows)) { unresolvedRefs.push(ref); return []; }
+      return structuredClone(rows);
+    })),
+  ]);
+  return replayTrialEvidence({ ...frozen, unresolvedRefs: [...new Set(unresolvedRefs)].sort(),
+    resolvedArtifactContents: artifacts.filter(row => row !== null), resolvedWorkloadObservations: observations.flat() });
 }

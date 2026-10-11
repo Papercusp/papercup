@@ -119,7 +119,7 @@ function backendOfConcreteId(modelId: string): RegistryBackend | null {
 
 /**
  * Resolve the model a run evaluates against a pinned snapshot. `selector` is a menu alias (`opus`,
- * `opus[1m]:xhigh`, `sol`) or a concrete id (`claude-opus-5-5`, `anthropic/claude-opus-5-5`). Throws rather
+ * `opus[1m]:xhigh`, `sol`) or a concrete priced id, bare or vendor-prefixed (`anthropic/<id>`). Throws rather
  * than guessing: an alias only the Claude CLI can resolve, an unpriced model, or an id the registry does not
  * know would each produce a result that cannot be traced or costed.
  */

@@ -840,6 +840,23 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
       workOutcome: "O".repeat(7_000),
       verifiedHow: "V".repeat(7_000),
     };
+    const checkpointChecks = {
+      count: 12,
+      cap: 12,
+      remaining: 0,
+      rows: Array.from({ length: 12 }, (_, check) => ({
+        id: `check-${check + 1}`,
+        claim: `check ${check + 1}: ${"C".repeat(90)}`,
+      })),
+    };
+    const lifecycle = {
+      coverage: { note: "C".repeat(300) },
+      flags: { note: "F".repeat(50) },
+      events: Array.from({ length: 8 }, (_, event) => ({
+        event: `event-${event + 1}`,
+        detail: "L".repeat(500),
+      })),
+    };
     const rows = ids.map((id, index) =>
       row({
         id,
@@ -847,11 +864,52 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
         workItem: {
           id,
           kind: "bug",
-          state: "open",
+          family: "issue",
+          harness: "papercusp",
+          state: index === 3 ? "done" : "open",
           title: `candidate ${index + 1}`,
+          severity: "major",
+          origin: "local",
+          assignee: "su-1",
+          ...(index === 3
+            ? { completionAuthority: "committed", terminalCompletionEvidence: completion }
+            : {}),
+          takenAt: "2026-10-10T20:00:00.000Z",
+          lastProgressAt: "2026-10-10T20:01:00.000Z",
+          parent: null,
+          createdAt: "2026-10-10T19:00:00.000Z",
+          updatedAt: "2026-10-10T20:01:00.000Z",
+          closedAt: null,
+          summary: "S".repeat(1_000),
+          payload: { description: "P".repeat(2_000) },
         },
         completion,
         checkpoint: "C".repeat(8_000),
+        checkpointChecks: index === 3 ? checkpointChecks : { count: 0, cap: 12, remaining: 12, rows: [] },
+        checkpointBody: { chars: 31_999, cap: 32_000, remaining: 1 },
+        checkpointContentHash: "h".repeat(64),
+        checkpointSubjectFingerprint: "f".repeat(64),
+        lifecycle,
+        ...(index === 3
+          ? {
+              checkpointStale: { status: "stale", reason: "R".repeat(300) },
+              holder: { goalRef: "goal:compact-read", stale: false, agreement: "held", competing: [] },
+            }
+          : {}),
+        ...(index === 4
+          ? {
+              deploymentPosition: {
+                paths: Array.from({ length: 8 }, (_, path) => ({
+                  path: `packages/record-${path}.ts`,
+                  deployed: false,
+                  reason: "D".repeat(60),
+                })),
+                unknownPaths: [],
+                totalPaths: 8,
+                truncated: false,
+              },
+            }
+          : {}),
         priorAttempts: {
           schemaVersion: "prior-attempts-v1",
           authority: Array.from({ length: 8 }, (_, attempt) => ({
@@ -872,42 +930,65 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
         },
       }),
     );
-    const out = shapeWorkItemsGet(
-      {
-        ...envelope(rows),
-        read: {
-          schemaVersion: "work-items-get-read-v1",
-          mode: "complete",
-          requested: ids.length,
-          available: ids.length,
-          absent: 0,
-          unavailable: 0,
+    for (const tier of ["standard", "trimmed"] as const) {
+      const out = shapeWorkItemsGet(
+        {
+          ...envelope(rows),
+          read: {
+            schemaVersion: "work-items-get-read-v1",
+            mode: "complete",
+            requested: ids.length,
+            available: ids.length,
+            absent: 0,
+            unavailable: 0,
+          },
         },
-      },
-      "standard",
-    ) as Envelope;
+        tier,
+      ) as Envelope;
 
-    expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
-    expect(out.results.map((result) => result.id)).toEqual(ids);
-    expect(out.results.every((result) => result._stub !== true)).toBe(true);
-    expect(out.results.map((result) => (result.workItem as Record<string, unknown>).title)).toEqual([
-      "candidate 1",
-      "candidate 2",
-      "candidate 3",
-      "candidate 4",
-      "candidate 5",
-    ]);
-    expect(out.results.map((result) => (result.workItem as Record<string, unknown>).state)).toEqual([
-      "open",
-      "open",
-      "open",
-      "open",
-      "open",
-    ]);
-    expect(out._shapeNote?.dropped).toContain("completion");
-    expect(out._shapeNote?.dropped).toContain("priorAttempts");
-    expect(out._shapeNote?.dropped).toContain("priorAttemptRefResolution");
-    expect(out.results.every((result) => result.priorAttempts === undefined)).toBe(true);
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+      expect(out.results.map((result) => result.id)).toEqual(ids);
+      expect(out.results.every((result) => result._stub !== true)).toBe(true);
+      expect(out.results.map((result) => (result.workItem as Record<string, unknown>).title)).toEqual([
+        "candidate 1",
+        "candidate 2",
+        "candidate 3",
+        "candidate 4",
+        "candidate 5",
+      ]);
+      expect(out.results.map((result) => (result.workItem as Record<string, unknown>).state)).toEqual([
+        "open",
+        "open",
+        "open",
+        "done",
+        "open",
+      ]);
+      expect(out.results.every((result) => result.hasCompletionEvidence === true)).toBe(true);
+      expect(out.results[3]).toMatchObject({
+        completion: null,
+        hasCompletionEvidence: true,
+        workItem: { completionAuthority: "committed" },
+      });
+      expect(Object.keys(out.results[0].workItem as Record<string, unknown>).sort()).toEqual([
+        "assignee",
+        "family",
+        "harness",
+        "id",
+        "kind",
+        "origin",
+        "severity",
+        "state",
+        "title",
+      ]);
+      expect(out.results[0].lifecycle).toBeUndefined();
+      expect(out.results[4].deploymentPosition).toBeUndefined();
+      expect(out.read).toMatchObject({ requested: 5, available: 5, detailRows: 5, stubbedRows: 0 });
+      expect(out._shapeNote?.dropped).toContain("completion");
+      expect(out._shapeNote?.dropped).toContain("priorAttempts");
+      expect(out._shapeNote?.dropped).toContain("priorAttemptRefResolution");
+      expect(out._shapeNote?.dropped).toContain("deploymentPosition");
+      expect(out.results.every((result) => result.priorAttempts === undefined)).toBe(true);
+    }
   });
 
   it("tries all five compact identities before the trimmed three-row stub rung", () => {

@@ -83,6 +83,7 @@ export {
 
 export {
   replayTrialEvidence,
+  replayResolvedWorkloadEvidence,
   verifyEvidence,
   type IntegrityFailureKind,
   type IntegrityFinding,
@@ -90,6 +91,7 @@ export {
   type ReplayReport,
   type VerifyEvidenceInput,
   type WorkloadCompletionRequirements,
+  type WorkloadEvidenceResolver,
 } from './integrity';
 
 export {

@@ -86,6 +86,13 @@ describe('evaluateFixPrecheck (P-006 / R6)', () => {
     expect(v).toMatchObject({ ok: true, ran: false, reason: 'nothing-to-run' });
   });
 
+  it('refuses unavailable measurement without inventing failed assertions or imported reds', () => {
+    const v = evaluateFixPrecheck(pop, ran([
+      ['lib/red.test.ts', 'unmeasured'], ['lib/red2.test.ts', 'unmeasured'], ['lib/new.test.ts', 'unmeasured'],
+    ]));
+    expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', failing: [], importedRed: [], alsoImportsRed: false });
+  });
+
   it('passes when at least one signature test file passes and nothing admitted is red', () => {
     const v = evaluateFixPrecheck(pop, ran([['lib/red.test.ts', 'pass'], ['lib/red2.test.ts', 'fail'], ['lib/new.test.ts', 'pass']]));
     expect(v.ok).toBe(true);
@@ -95,13 +102,12 @@ describe('evaluateFixPrecheck (P-006 / R6)', () => {
     expect(v.commit).toBe(C);
   });
 
-  it('refuses admission-does-not-fix when no signature test file passes — an unmeasured file never counts as passing', () => {
+  it('refuses unavailable when a signature file is unmeasured rather than claiming none can pass', () => {
     const v = evaluateFixPrecheck(pop, ran([['lib/red.test.ts', 'fail'], ['lib/new.test.ts', 'pass']]));
-    expect(v).toMatchObject({ ok: false, code: 'admission-does-not-fix', alsoImportsRed: false, importedRed: [] });
+    expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', alsoImportsRed: false, importedRed: [] });
     if (v.ok || !v.ran) throw new Error('expected a measured refusal');
     expect(v.unmeasured).toEqual(['lib/red2.test.ts']);
-    expect(v.detail).toContain('unmeasured');
-    expect(v.detail).toContain(C.slice(0, 12));
+    expect(v.detail).toContain('not measured');
   });
 
   it('refuses admission-imports-red when an admitted test file outside the signature fails', () => {
@@ -146,9 +152,10 @@ describe('evaluateFixPrecheck (P-006 / R6)', () => {
 
 describe('classifyTestFileRun', () => {
   const r = (over: Partial<ExecResult>): ExecResult => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1, ...over });
-  it('exit 0 is pass; nonzero is fail; route errors, matched=0, timeouts and signals are unmeasured', () => {
+  it('requires measured failure evidence; route errors, matched=0, timeouts and signals are unmeasured', () => {
     expect(classifyTestFileRun(r({})).status).toBe('pass');
-    expect(classifyTestFileRun(r({ exitCode: 1 })).status).toBe('fail');
+    expect(classifyTestFileRun(r({ exitCode: 1, output: 'Tests 1 failed (1)' })).status).toBe('fail');
+    expect(classifyTestFileRun(r({ exitCode: 1, output: 'native copy EACCES' })).status).toBe('unmeasured');
     expect(classifyTestFileRun(r({ exitCode: 0, output: 'TEST_FILE_ROUTE_ERROR path=x' })).status).toBe('unmeasured');
     expect(classifyTestFileRun(r({ exitCode: 0, output: 'router matched=0 files' })).status).toBe('unmeasured');
     expect(classifyTestFileRun(r({ exitCode: 1, timedOut: true })).status).toBe('unmeasured');
@@ -163,7 +170,7 @@ describe('classifyTestFileRun', () => {
   it('classifies every contract exit code by whether the router MEASURED it (WI-10003617)', () => {
     // Only a measured run may be pass or fail; everything else is unmeasured — never a red.
     for (const code of [TEST_FILE_EXIT_PASSED, TEST_FILE_EXIT_FAILED, TEST_FILE_EXIT_NOT_MEASURED, TEST_FILE_EXIT_TEMPFAIL] as number[]) {
-      const status = classifyTestFileRun(r({ exitCode: code })).status;
+      const status = classifyTestFileRun(r({ exitCode: code, output: 'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed' })).status;
       if (testFileRunWasMeasured(code)) expect(status, `exit ${code}`).not.toBe('unmeasured');
       else expect(status, `exit ${code}`).toBe('unmeasured');
     }
@@ -181,7 +188,7 @@ describe('classifyTestFileRun', () => {
 
     const pop = precheckPopulation({ signature: [sig('lint', 'lint-leg')], admittedPaths: ['pkg/skipped.test.ts'] });
     const v = evaluateFixPrecheck(pop, ran([['pkg/skipped.test.ts', c.status]]));
-    expect(v.ok).toBe(true);
+    expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', importedRed: [] });
     expect(v.ran && v.unmeasured).toEqual(['pkg/skipped.test.ts']);
   });
 });
@@ -314,6 +321,42 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
   // beside-checkpoint placement whatever PAPERCUSP_DEPENDENCY_GENERATION_ROOT says.
   const base = { integrationRoot: '/repo', checkpointRoot: '/ckpt', resolveGenerationRoot: () => null };
 
+  it('a registered npm pretest failure remains unavailable and never becomes an assertion red', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'precheck-pretest-error-'));
+    const checkpointRoot = join(root, 'checkpoint');
+    const precheckRoot = `${checkpointRoot}-admission-precheck`;
+    const fixturePackage = {
+      name: 'pretest-error-fixture', version: '1.0.0', private: true,
+      scripts: {
+        pretest: 'node -e "throw new Error(\'native copy EACCES\')"',
+        test: 'node -e "console.log(\'ASSERTIONS_STARTED\')"',
+      },
+    };
+    const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      if (argv.includes('/operator/apps/operator/bin/release/setup-release-checkout.sh')) {
+        mkdirSync(precheckRoot);
+        writeFileSync(join(precheckRoot, 'package.json'), JSON.stringify(fixturePackage));
+        return { exitCode: 0, signal: null, timedOut: false, output: 'fixture prepared', durationMs: 1 };
+      }
+      const result = await defaultExec(argv, opts);
+      expect(result.output).toContain('native copy EACCES');
+      expect(result.output).not.toContain('ASSERTIONS_STARTED');
+      return result;
+    };
+    try {
+      const runner = createCheckpointTreeFixPrecheckRunner({
+        ...base, integrationRoot: '/app', toolingRoot: '/operator', checkpointRoot,
+        testCommand: ['npm', 'test'], exec, runLockHeld: () => ({ held: false, elapsedSec: null }),
+      });
+      const result = await runner({ commit: C, files: ['lib/red.test.ts'] });
+      expect(result).toMatchObject({ ran: true, results: [{ status: 'unmeasured', exitCode: 1 }] });
+      const population = precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: [] });
+      expect(evaluateFixPrecheck(population, result)).toMatchObject({
+        ok: false, code: 'admission-precheck-unavailable', failing: [], importedRed: [],
+      });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('materializes a foreign app with operator tooling and runs its registered suite in the pinned app checkout', async () => {
     const exec = vi.fn(async (_argv: readonly string[], _opts: ExecOptions) => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult));
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, integrationRoot: '/app', toolingRoot: '/operator',
@@ -362,7 +405,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
       }
       const file = argv[2];
       events.push(`test:${file}`);
-      return { exitCode: file === 'lib/red.test.ts' ? 0 : 1, signal: null, timedOut: false, output: '', durationMs: 3 } as ExecResult;
+      return { exitCode: file === 'lib/red.test.ts' ? 0 : 1, signal: null, timedOut: false, output: 'Tests 1 failed (1)', durationMs: 3 } as ExecResult;
     });
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
     const out = await runner({

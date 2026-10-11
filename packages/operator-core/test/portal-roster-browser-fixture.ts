@@ -465,7 +465,12 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
       let body = '';
       request.on('data', chunk => { body += chunk; });
       request.on('end', () => {
-        writes.push({ surface: pathname.split('/').at(-1)!, body: JSON.parse(body) });
+        const surface = pathname.split('/').at(-1)!;
+        const parsed = JSON.parse(body);
+        writes.push({ surface, body: parsed });
+        if (surface === 'brainstorm-mindmap') savedRow.mindmap = parsed.tree;
+        if (surface === 'brainstorm-canvas') savedRow.canvas = parsed.scene;
+        if (surface === 'brainstorm') savedRow.content = parsed.content;
         response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"ok":true}');
       });
     } else if (input.harnesses && pathname === '/api/zero-harness/rest-query') {
@@ -540,6 +545,16 @@ export async function verifyPrivateWorkspaceBrowserMount(input: Parameters<typeo
         if (write.surface === 'brainstorm-canvas') assert.ok(write.body.scene.elements.some((element: { id: string }) => element.id === savedShape),
           'first writable canvas must retain the saved scene');
       }
+      // Match the PG journey's observed initial-save barrier. Normal editor
+      // mount measurements must settle before strict field-isolation checks.
+      const hydrated = JSON.parse(JSON.stringify(savedRow));
+      const textWrite = page.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname.endsWith('/brainstorm'));
+      await page.locator('.h-brainstorm-write [contenteditable="true"]').first().fill('preflight-edited-text');
+      assert.equal((await textWrite).status(), 200);
+      assert.ok(savedRow.content.includes('preflight-edited-text'));
+      assert.deepEqual(savedRow.mindmap, hydrated.mindmap, 'settled text save must preserve the saved map');
+      assert.deepEqual(savedRow.canvas, hydrated.canvas, 'settled text save must preserve the saved canvas');
     }
     if (input.markdownPreflight) {
       try { await page.getByRole('heading', { name: input.markdownPreflight.heading, exact: true }).waitFor({ timeout: 15_000 }); }
@@ -719,9 +734,15 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       url.searchParams.set('docpath', input.docs.neighborDoc);
     }
     if (input.brainstormHarnesses) url.searchParams.set('slug', input.brainstormHarnesses.selected);
+    // Observe before navigation; a fast mount can save before its caller
+    // starts waiting. The response proves the API applied the initial scene.
+    const initialBrainstormSaves = input.brainstormHarnesses ? Promise.all(['brainstorm-mindmap', 'brainstorm-canvas']
+      .map(surface => page!.waitForResponse(response => response.request().method() === 'PUT'
+        && new URL(response.url()).pathname === `/api/harness/${input.brainstormHarnesses!.selected}/${surface}`))) : undefined;
+    void initialBrainstormSaves?.catch(() => {}); // journey awaits and reports this failure
     await page.goto(url.href);
     if (input.brainstormHarnesses) {
-      const receipt = await runPrivateBrainstormPage(page, context, input, syncReads, syncReadCaptures);
+      const receipt = await runPrivateBrainstormPage(page, context, input, syncReads, syncReadCaptures, initialBrainstormSaves!);
       assert.deepEqual(pageErrors, [], 'actual Brainstorm editors must complete without browser errors');
       const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
       writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
@@ -933,7 +954,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
 /** Actual editor events and native HTTP/PG persistence. Shell dimensions are
  * supplied; hosted tenant authorization and provider calls are separate. */
 async function runPrivateBrainstormPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput,
-  reads: Array<Record<string, unknown>>, captures: Set<Promise<void>>) {
+  reads: Array<Record<string, unknown>>, captures: Set<Promise<void>>,
+  initialSaves: Promise<Awaited<ReturnType<Page['waitForResponse']>>[]>) {
   const scope = input.brainstormHarnesses!;
   const states: Array<Record<string, unknown>> = [];
   const writes: Array<Record<string, unknown>> = [];
@@ -953,6 +975,13 @@ async function runPrivateBrainstormPage(page: Page, context: BrowserContext, inp
   await editor.getByText('private-brainstorm-selected-text', { exact: true }).waitFor();
   await page.locator('.rf-mind-label').getByText('private-brainstorm-selected-map', { exact: true }).waitFor({ state: 'attached' });
   await page.locator('.excalidraw').waitFor({ state: 'attached' });
+  for (const response of await initialSaves) {
+    assert.equal(response.status(), 200, 'initial editor save must finish before the isolation baseline');
+    const body = response.request().postDataJSON();
+    if (new URL(response.url()).pathname.endsWith('/brainstorm-mindmap'))
+      assert.equal(body.tree.nodes[0].data.text, 'private-brainstorm-selected-map');
+    else assert.deepEqual(body.scene.elements, [], 'initial canvas must retain the selected saved scene');
+  }
   const initial = await snapshot('initial-editors-hydrated');
   assert.equal(initial.length, 3, 'foreign exclusion requires an actual foreign row');
   const untouched = initial.filter(row => row.harness_slug !== scope.selected);

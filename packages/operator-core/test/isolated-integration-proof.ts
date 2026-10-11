@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import { linuxPpidFromProcStat, readProcessIdentity } from '../lib/process-identity';
+import { readCommittedFiles } from '../lib/agent-tools/plans/committed-tree-reader';
 import { it } from 'vitest';
 // @ts-ignore -- reuse the maintained JS router's deadline contract.
 import { testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
@@ -249,6 +250,17 @@ function processPin(pid: number) {
   return { pid, identity, parentPid };
 }
 
+/** Preserve the superproject's pinned submodule identity, rather than its checkout HEAD. */
+export async function isolatedIntegrationSourceFiles(root: string, commit: string, paths: string[]) {
+  const files = paths.map(path => {
+    assert.ok(path && !path.startsWith('/') && !path.split('/').some(p => p === '..' || p === '.'));
+    return { path, sha256: hash(readFileSync(join(root, path))) };
+  });
+  // Uncommitted local tests remain usable, but missing Git identity cannot certify live proof.
+  const committed = await readCommittedFiles(root, commit, paths).catch(() => new Map());
+  return files.map(file => ({ ...file, gitSha256: committed.get(file.path)?.sha256 ?? null }));
+}
+
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
   execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
@@ -268,14 +280,7 @@ export async function recordIsolatedIntegrationProof(options: {
     runPhase: async ctx => {
       if (ctx.phase === 'prepare') {
         const commit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-        const files = paths.map(path => {
-          assert.ok(path && !path.startsWith('/') && !path.split('/').some(p => p === '..' || p === '.'));
-          const bytes = readFileSync(join(root, path));
-          let gitSha256: string | null = null;
-          try { gitSha256 = hash(execFileSync('git', ['-C', root, 'show', `${commit}:${path}`],
-            { maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* uncommitted local test remains usable, not live proof */ }
-          return { path, sha256: hash(bytes), gitSha256 };
-        });
+        const files = await isolatedIntegrationSourceFiles(root, commit, paths);
         source = { schemaVersion: 1, runId: ctx.runId, sourceCommit: commit, repoRoot: root, filePath,
           runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
           workspaceId: resolveTestRunWorkspaceId(),

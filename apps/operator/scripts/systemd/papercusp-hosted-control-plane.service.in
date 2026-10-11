@@ -29,6 +29,14 @@ Environment=BUNDLE_HOST_OPERATOR_DIR=@OPERATOR_ROOT@
 Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1
 ExecStartPre=/usr/bin/bash @OPERATOR_ROOT@/scripts/systemd/papercusp-script-snapshot.sh @OPERATOR_ROOT@/bin/bundle-host.sh bin/serve.ts dist-hosted-control-plane/serve.mjs
 Environment=PAPERCUSP_INTEGRATION_ROOT=@REPO_ROOT@
+# In-app brains use the maintained inference gateway's account pool. Without
+# these existing route selectors, isolated Codex/Claude children inherit the
+# service user's local login and cannot fail over across configured accounts.
+# This bearer is the gateway's non-secret client sentinel, not a provider key.
+Environment=PAPERCUSP_CODEX_GATEWAY=1
+Environment=ANTHROPIC_BASE_URL=http://127.0.0.1:8788
+Environment=ANTHROPIC_AUTH_TOKEN=papercusp-gateway
+Environment=PAPERCUSP_ACCOUNT_ROUTING_MODE=auto
 Environment=PATH=@NODE_DIR@:%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
 # Source order matters: the operator's .env.local (database URLs) first, then the
 # hosted env file, then the profile pins exported LAST so a stale port/profile

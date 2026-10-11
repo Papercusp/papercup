@@ -39,12 +39,12 @@
  *
  * OPUS: the bee role-model floor is haiku and the queen floor is sonnet (orchestrator/role-models.ts),
  * so `AGENT_MODELS='{"bee":"opus:xhigh","queen":"opus:xhigh"}'` (both the placed bees AND the Queen) +
- * the `opus` CLI alias (claude v2.1.177 silently runs opus-4-7 for `--model claude-opus-4-8`) are
+ * the `opus` CLI alias (an older claude CLI silently ran an older model for a concrete `--model` id) are
  * required. CRITICAL (D-020): a spawn's `--model`/backend is resolved at spawn-BUILD time from the
  * SPAWNING process's `process.env.AGENT_MODELS`/`AGENT_CMD` — and the Queen's `cup:spawn` is serviced by
  * the long-running :3170 host (`fireLaunchBlueprint('hive')` → loopback invoke), NOT this launcher. So for
  * the real-Queen arm the opus pin + `AGENT_CMD=claude -p` MUST be on the :3170 host env (apps/operator/
- * .env.local), not just the launcher. VERIFY `agent_usage_samples.model = claude-opus-4-8 role=bee`
+ * .env.local), not just the launcher. VERIFY `agent_usage_samples.model` = the pinned evaluated model for `role=bee`
  * (NOT haiku floor, NOT a no-usage omp/self fall-through) on a 1-task probe before any big spend.
  *
  * CONCURRENCY (D-019): the bee cap is the global `maxSimultaneousAgents` (`spawnConcurrencyCeiling()`) —

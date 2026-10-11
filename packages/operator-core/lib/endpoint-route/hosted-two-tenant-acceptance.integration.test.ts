@@ -10,6 +10,8 @@
 import { EventEmitter, once } from 'node:events';
 import type { Sql } from 'postgres';
 import { serve } from '@hono/node-server';
+import { Hono } from 'hono';
+import { WebSocket } from 'ws';
 import { WORKSPACE_HOST_CANARY_TAG_KEYS } from '@papercusp/deployment-driver';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -40,6 +42,7 @@ import {
 import {
   authenticateHostedConnectorSocket,
 } from './routes/hosted-workspace-connector';
+import { createHostedHandler } from '../../../../apps/operator/bin/hosted-handler';
 
 const ORIGIN = 'https://app.papercusp.com';
 const CONTROL = 'p030-control-plane';
@@ -675,6 +678,137 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
       await expect(authenticateHostedConnectorSocket(gateway, freshUpgrade)).resolves.toBeNull();
     }
   });
+
+  it.each(['disconnect', 'rotation'] as const)('keeps native WebSocket relay tenant-bound through %s with persisted credentials', async (ending) => {
+    // Compose the actual HTTP upgrade handler with the migrated two-tenant
+    // runtime. Provider classification is synthetic; auth, ticket consumption,
+    // relay frames and close handshakes cross real PostgreSQL and loopback TCP.
+    const hosted = createHostedHandler(plane, new Hono(), {
+      controlPlaneWorkspaceId: CONTROL,
+      resolveWorkspaceHosting: async () => 'papercusp',
+      resolveCustomerWorkspaceHosting: async () => 'papercusp',
+    });
+    const server = serve({ fetch: hosted.handler, hostname: '127.0.0.1', port: 0 });
+    const upgradeErrors: unknown[] = [];
+    server.on('upgrade', (request, socket, head) => {
+      void hosted.upgrade(request, socket, head).then((handled) => {
+        if (!handled) socket.destroy();
+      }).catch((error) => { upgradeErrors.push(error); socket.destroy(); });
+    });
+    const peers: Array<{ socket: WebSocket; frames: Record<string, unknown>[]; close: { code: number; reason: string } | null }> = [];
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private hosted WebSocket address unavailable');
+      const base = `http://127.0.0.1:${address.port}`;
+      const socketUrl = `ws://127.0.0.1:${address.port}/api/hosted/connectors/socket`;
+      const post = async (path: string, session: HostedSession | undefined, body?: unknown) => {
+        const response = await fetch(`${base}/api${path}`, {
+          method: 'POST',
+          headers: { origin: ORIGIN, 'content-type': 'application/json', ...(session ? { cookie: cookie(plane, session) } : {}) },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+        expect(response.status, await response.clone().text()).toBe(200);
+        return response.json();
+      };
+      const dial = async (url: string, routeLabel: string, bearer?: string) => {
+        const socket = new WebSocket(url, {
+          headers: { host: `${routeLabel}.workspaces.papercusp.com`, ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
+        });
+        const peer: typeof peers[number] = { socket, frames: [], close: null };
+        peers.push(peer);
+        socket.on('message', (data) => peer.frames.push(JSON.parse(data.toString())));
+        socket.on('close', (code, reason) => { peer.close = { code, reason: reason.toString() }; });
+        // The open wait sees connection errors; retain later transport errors as
+        // assertions instead of letting them become unhandled process errors.
+        socket.on('error', (error) => upgradeErrors.push(error));
+        await once(socket, 'open');
+        return peer;
+      };
+      const tenants = [
+        { session: sessionA, workspaceId: WORKSPACE_A, hostId: HOST_A, routeLabel: `network-a-${ending}` },
+        { session: sessionB, workspaceId: WORKSPACE_B, hostId: HOST_B, routeLabel: `network-b-${ending}` },
+      ];
+      const connections = [];
+      for (const tenant of tenants) {
+        const binding = { hostId: tenant.hostId, routeLabel: tenant.routeLabel, transport: 'websocket' };
+        const enrollment = await post(`/hosted/workspaces/${tenant.workspaceId}/connectors/enroll`, tenant.session, binding) as { ticket: string };
+        const credential = await post(`/hosted/connectors/register?ticket=${enrollment.ticket}`, undefined) as { bearer: string };
+        const host = await dial(socketUrl, tenant.routeLabel, credential.bearer);
+        await vi.waitFor(() => expect(host.frames).toContainEqual(expect.objectContaining({
+          type: 'bound', role: 'connector', binding: expect.objectContaining({
+            organizationId: tenant.session.organizationId, customerWorkspaceId: tenant.workspaceId, hostId: tenant.hostId,
+          }),
+        })));
+        const issueTicket = async () => (await post(`/hosted/workspaces/${tenant.workspaceId}/connectors/session-ticket`, tenant.session,
+          { ...binding, audience: 'workspace-operator' }) as { ticket: string }).ticket;
+        const ticket = await issueTicket();
+        const browser = await dial(`${socketUrl}?ticket=${ticket}`, tenant.routeLabel);
+        await vi.waitFor(() => expect(browser.frames).toContainEqual(expect.objectContaining({
+          type: 'session.bound', binding: expect.objectContaining({
+            organizationId: tenant.session.organizationId, customerWorkspaceId: tenant.workspaceId, hostedSessionId: tenant.session.id,
+          }),
+        })));
+        const channelId = browser.frames.find((frame) => frame.type === 'session.bound')!.channelId as string;
+        await vi.waitFor(() => expect(host.frames).toContainEqual(expect.objectContaining({ type: 'relay.open', channelId })));
+        connections.push({ tenant, host, browser, channelId, ticket, credential, issueTicket });
+      }
+      const [a, b] = connections;
+      const replay = new WebSocket(`${socketUrl}?ticket=${a.ticket}`, { headers: { host: `${a.tenant.routeLabel}.workspaces.papercusp.com` } });
+      const replayResult = new Promise<number>((resolve, reject) => {
+        replay.once('unexpected-response', (_request, response) => {
+          response.resume();
+          response.once('end', () => { replay.terminate(); resolve(response.statusCode!); });
+        });
+        replay.once('open', () => { replay.terminate(); reject(new Error('replayed browser ticket upgraded')); });
+        replay.on('error', () => {});
+      });
+      try { expect(await replayResult).toBe(401); } finally { replay.terminate(); }
+
+      const input = { type: 'pty.input', data: 'dGVuYW50LWE=' };
+      a.browser.socket.send(JSON.stringify(input));
+      await vi.waitFor(() => expect(a.host.frames).toContainEqual({ type: 'relay', channelId: a.channelId, payload: input }));
+      const outputA = { type: 'pty.output', data: 'cmVzcG9uc2UtYQ==' };
+      a.host.socket.send(JSON.stringify({ type: 'relay', channelId: a.channelId, payload: outputA }));
+      await vi.waitFor(() => expect(a.browser.frames).toContainEqual(outputA));
+
+      // A same-socket valid response is a processing barrier for the preceding
+      // forged cross-tenant channel id, so absence is not a timing-only check.
+      const foreignOutput = { type: 'pty.output', data: 'Zm9yZWlnbi1zZWNyZXQ=' };
+      b.host.socket.send(JSON.stringify({ type: 'relay', channelId: a.channelId, payload: foreignOutput }));
+      const outputB = { type: 'pty.output', data: 'cmVzcG9uc2UtYg==' };
+      b.host.socket.send(JSON.stringify({ type: 'relay', channelId: b.channelId, payload: outputB }));
+      await vi.waitFor(() => expect(b.browser.frames).toContainEqual(outputB));
+      expect(a.browser.frames).not.toContainEqual(foreignOutput);
+      expect(b.host.frames).not.toContainEqual({ type: 'relay', channelId: a.channelId, payload: input });
+
+      if (ending === 'disconnect') {
+        a.browser.socket.close();
+        await vi.waitFor(() => expect(a.host.frames).toContainEqual(expect.objectContaining({ type: 'relay.close', channelId: a.channelId })));
+        const reconnected = await dial(`${socketUrl}?ticket=${await a.issueTicket()}`, a.tenant.routeLabel);
+        await vi.waitFor(() => expect(reconnected.frames).toContainEqual(expect.objectContaining({ type: 'session.bound', role: 'controller' })));
+        a.host.socket.close();
+        await vi.waitFor(() => expect(reconnected.close).toEqual({ code: 4412, reason: 'connector_disconnected' }));
+      } else {
+        await post(`/hosted/workspaces/${WORKSPACE_A}/connectors/rotate`, sessionA,
+          { hostId: HOST_A, routeLabel: `network-a-${ending}-next`, transport: 'websocket' });
+        await vi.waitFor(() => {
+          expect(a.browser.close).toEqual({ code: 4001, reason: 'connector_rotated' });
+          expect(a.host.close).toEqual({ code: 4001, reason: 'connector_rotated' });
+        });
+      }
+      const survivor = { type: 'pty.output', data: 'c3Vydml2b3I=' };
+      b.host.socket.send(JSON.stringify({ type: 'relay', channelId: b.channelId, payload: survivor }));
+      await vi.waitFor(() => expect(b.browser.frames).toContainEqual(survivor));
+      expect(b.browser.socket.readyState).toBe(WebSocket.OPEN);
+      expect(b.host.socket.readyState).toBe(WebSocket.OPEN);
+      expect(upgradeErrors).toEqual([]);
+    } finally {
+      hosted.relay.dispose();
+      for (const peer of peers) peer.socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 30_000);
 
   it('binds WS/PTY/file/MCP relay tickets to one tenant and rejects replay and rotation residue', async () => {
     const crossTenantEnroll = await request(

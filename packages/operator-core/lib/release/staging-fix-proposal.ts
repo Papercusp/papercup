@@ -252,7 +252,11 @@ export async function proposeStagingFixes(
       continue;
     }
     if (!verdict.ok) {
-      notSurfaced.push({ ...common, reason: 'precheck-failed', detail: `${verdict.code}: ${verdict.detail}` });
+      notSurfaced.push({
+        ...common,
+        reason: verdict.code === 'admission-precheck-unavailable' ? 'precheck-unmeasured' : 'precheck-failed',
+        detail: `${verdict.code}: ${verdict.detail}`,
+      });
       continue;
     }
     if (verdict.unmeasured.length > 0) {

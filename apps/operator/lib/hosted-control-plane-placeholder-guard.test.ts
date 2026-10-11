@@ -32,6 +32,22 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 describe('hosted control plane bundled boot', () => {
+  it('gives isolated chat children the existing unpinned account-pool route', () => {
+    const unit = readFileSync(resolve(__dirname, '../scripts/systemd/papercusp-hosted-control-plane.service.in'), 'utf8');
+    const environment = unit.split('\n').filter(line => line.startsWith('Environment='))
+      .map(line => line.slice('Environment='.length));
+    const values = Object.fromEntries(environment.map(line => {
+      const equals = line.indexOf('=');
+      return [line.slice(0, equals), line.slice(equals + 1)];
+    }));
+    expect(values.PAPERCUSP_CODEX_GATEWAY).toBe('1');
+    expect(values.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    expect(new URL(values.ANTHROPIC_BASE_URL).hostname).toBe('127.0.0.1');
+    expect(values.ANTHROPIC_AUTH_TOKEN).toBe('papercusp-gateway');
+    expect(values.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+    expect(values.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
   it('prebuilds the exact named entry and starts that bundle with stale fallback', () => {
     const unit = readFileSync(resolve(__dirname, '../scripts/systemd/papercusp-hosted-control-plane.service.in'), 'utf8');
     expect(unit).toContain('Environment=BUNDLE_HOST_OPERATOR_DIR=@OPERATOR_ROOT@');

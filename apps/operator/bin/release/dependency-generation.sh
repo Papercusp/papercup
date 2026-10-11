@@ -1822,30 +1822,40 @@ dependency_generation_quarantine_unretained_locked() {
 }
 
 dependency_generation_delete_prune_quarantines() {
-  local quarantine
+  local quarantine rc=0 delete_rc
   for quarantine in "${DEPENDENCY_GENERATION_PRUNE_QUARANTINES[@]:-}"; do
     [ -d "$quarantine" ] || continue
     # Checkouts may hardlink generation FILES. Changing their modes here would
     # mutate the retained checkout inode too; directory write permission alone
     # is sufficient for unlinking.
     find "$quarantine" -type d -exec chmod u+rwx {} + 2>/dev/null || true
-    rm -rf -- "$quarantine"
+    if rm -rf -- "$quarantine"; then
+      dependency_generation_log "deleted prune quarantine $quarantine"
+    else
+      delete_rc=$?
+      [ "$rc" -ne 0 ] || rc="$delete_rc"
+      dependency_generation_log "failed prune quarantine deletion $quarantine (rc=$delete_rc)"
+    fi
   done
   DEPENDENCY_GENERATION_PRUNE_QUARANTINES=()
+  return "$rc"
 }
 
 dependency_generation_apply_retention() {
-  local generation_root="$1" integration_root="$2" retain_count="${3:-}" skip_recorded_stores="${4:-}" rc=0
+  local generation_root="$1" integration_root="$2" retain_count="${3:-}" skip_recorded_stores="${4:-}" rc=0 delete_rc=0
   dependency_generation_acquire_publish_lock "$generation_root" || return $?
   dependency_generation_refresh_retention_state_locked "$generation_root" "$integration_root" || rc=$?
   if [ "$rc" -eq 0 ]; then
     dependency_generation_quarantine_unretained_locked "$generation_root" "$retain_count" || rc=$?
   fi
   dependency_generation_release_publish_lock
-  dependency_generation_delete_prune_quarantines
+  dependency_generation_delete_prune_quarantines || delete_rc=$?
+  [ "$rc" -ne 0 ] || rc="$delete_rc"
   if [ "$rc" -eq 0 ]; then
-    dependency_generation_sweep_legacy_store "$generation_root" "$integration_root"
-    [ -n "$retain_count$skip_recorded_stores" ] || dependency_generation_sweep_recorded_stores "$generation_root" "$integration_root"
+    dependency_generation_sweep_legacy_store "$generation_root" "$integration_root" || rc=$?
+    if [ "$rc" -eq 0 ] && [ -z "$retain_count$skip_recorded_stores" ]; then
+      dependency_generation_sweep_recorded_stores "$generation_root" "$integration_root" || rc=$?
+    fi
   fi
   return "$rc"
 }
@@ -1949,10 +1959,10 @@ dependency_generation_sweep_legacy_store() {
     dependency_generation_quarantine_unretained_locked "$legacy_real" 0 || rc=$?
   fi
   dependency_generation_release_publish_lock
-  dependency_generation_delete_prune_quarantines
+  dependency_generation_delete_prune_quarantines || rc=$?
   [ "$rc" -eq 0 ] \
     || dependency_generation_log "WARNING: legacy generation store sweep of $legacy_real failed (rc=$rc); retained"
-  return 0
+  return "$rc"
 }
 
 # WI-10004849: a changed root tree is one ~16-18 GB physical copy (ext4 has no

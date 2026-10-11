@@ -249,7 +249,7 @@
       "properties": {
         "inputs": {
           "type": "object",
-          "description": "Workflow-level declared input JSON Schema. Credential/channel install fields retain their per-field share semantics in configSchema."
+          "description": "Workflow-level declared input JSON Schema. A string (or array-of-strings) property may declare `x-options: { capability, args? }` so settings forms list its choices from a connected provider that declares that `<domain>.<verb>` capability. Credential/channel install fields retain their per-field share semantics in configSchema."
         },
         "defaultStormPolicy": {
           "type": "object",

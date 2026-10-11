@@ -1,19 +1,53 @@
 /** Cheap guard for the context API used by the expensive private-worker fixture. */
 import { expect, it, vi } from 'vitest';
-import { ChildProcess, fork, spawn } from 'node:child_process';
+import { ChildProcess, execFileSync, fork, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
-import { captureIsolatedWorker, isolatedIntegrationCases, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
 import { portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot } from '../test/private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt } from '../test/private-coord-receipt';
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
 import { workspaceContextMiddleware } from './workspace-context-middleware';
 import { retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport } from '../test/portal-roster-browser-fixture';
+
+it('records submodule source at the original superproject pin even after its checkout moves', async () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'isolated-source-gitlink-'));
+  const root = join(fixture, 'main'), origin = join(fixture, 'origin');
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd,
+    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args],
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  try {
+    mkdirSync(root); mkdirSync(origin);
+    git(origin, 'init', '-q');
+    writeFileSync(join(origin, 'source.ts'), 'original pinned source\n');
+    git(origin, 'add', 'source.ts'); git(origin, 'commit', '-qm', 'original source');
+    git(root, 'init', '-q');
+    git(root, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', origin, 'modules/child');
+    writeFileSync(join(root, 'root.ts'), 'parent source\n');
+    git(root, 'add', '.gitmodules', 'modules/child', 'root.ts'); git(root, 'commit', '-qm', 'pin child');
+    const commit = git(root, 'rev-parse', 'HEAD');
+    const path = 'modules/child/source.ts';
+    expect(await isolatedIntegrationSourceFiles(root, commit, ['root.ts', path])).toEqual([
+      { path: 'root.ts', sha256: digest('parent source\n'), gitSha256: digest('parent source\n') },
+      { path, sha256: digest('original pinned source\n'), gitSha256: digest('original pinned source\n') },
+    ]);
+    writeFileSync(join(root, path), 'new child checkout source\n');
+    git(join(root, 'modules/child'), 'add', 'source.ts');
+    git(join(root, 'modules/child'), 'commit', '-qm', 'move child checkout');
+    writeFileSync(join(root, 'untracked.ts'), 'local only\n');
+    expect(await isolatedIntegrationSourceFiles(root, commit, [path, 'untracked.ts'])).toEqual([
+      { path, sha256: digest('new child checkout source\n'), gitSha256: digest('original pinned source\n') },
+      { path: 'untracked.ts', sha256: digest('local only\n'), gitSha256: null },
+    ]);
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
 
 it('delivers the intended denial Host on the wire before trusting a private browser falsifier', async () => {
   const measured = await verifyPrivateHostHeaderTransport();

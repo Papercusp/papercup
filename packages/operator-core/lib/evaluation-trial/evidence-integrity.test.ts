@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { sealEvidence, type PreservedEvidence } from './evidence';
-import { replayTrialEvidence, verifyEvidence, type WorkloadCompletionRequirements } from './integrity';
+import { replayTrialEvidence, replayResolvedWorkloadEvidence, verifyEvidence, type WorkloadCompletionRequirements } from './integrity';
 import { createHash } from 'node:crypto';
 import { deriveJudgeView } from './judge-view';
 import { EVALUATION_TRIAL_CONTRACT_VERSION, computeTrialIdentity } from './identity';
@@ -134,13 +134,17 @@ describe('declared workload completion integrity', () => {
       } },
     ] };
     const contents = [{ id: 'answer.txt', ref: 'fixture:answer', content: Buffer.from('answer') }];
-    const verify = (value = preserved, completion = requirements(), resolvedArtifactContents = contents) => {
+    // Authority observations are captured separately from the candidate evidence.
+    const observations = structuredClone(preserved.trajectory);
+    const verify = (value = preserved, completion = requirements(), resolvedArtifactContents = contents,
+      resolvedWorkloadObservations = observations) => {
       // Re-sealing mutations isolates completion semantics from generic corruption.
       const sealed = sealEvidence(value);
-      return verifyEvidence({ trial: t, expectedIdentity: identity, evidence: value, manifest: sealed.manifest,
-        envelope: sealed.envelope, completionRequirements: completion, resolvedArtifactContents });
+      const input = { trial: t, expectedIdentity: identity, evidence: value, manifest: sealed.manifest,
+        envelope: sealed.envelope, completionRequirements: completion, resolvedArtifactContents, resolvedWorkloadObservations };
+      return verifyEvidence(input);
     };
-    return { preserved, verify, contents };
+    return { preserved, verify, contents, observations };
   }
 
   it('checks artifacts, actual input bytes, durable transitions and downstream outcome together', () => {
@@ -175,11 +179,100 @@ describe('declared workload completion integrity', () => {
     });
 
   it('forwards resolved workload artifact bytes through replay', () => {
-    const { preserved, contents } = fixture(); const t = trial(); const sealed = sealEvidence(preserved);
+    const { preserved, contents, observations } = fixture(); const t = trial(); const sealed = sealEvidence(preserved);
     const input = { trial: t, expectedIdentity: computeTrialIdentity(t), evidence: preserved,
-      manifest: sealed.manifest, envelope: sealed.envelope, completionRequirements: requirements() };
+      manifest: sealed.manifest, envelope: sealed.envelope, completionRequirements: requirements(),
+      resolvedWorkloadObservations: observations };
     expect(replayTrialEvidence({ ...input, resolvedArtifactContents: contents }).ok).toBe(true);
     expect(replayTrialEvidence(input).integrity.findings.map(f => f.kind)).toContain('completion-artifact-missing');
+  });
+
+  it.each(['absent', 'duplicate', 'foreign-run', 'foreign-binding', 'foreign-ref', 'context-bytes', 'transition', 'outcome'])
+    ('requires independently resolved authority observations: %s', defect => {
+      const { verify, observations } = fixture();
+      const resolved = structuredClone(observations);
+      if (defect === 'absent') resolved.length = 0;
+      if (defect === 'duplicate') resolved.push(structuredClone(resolved[1]));
+      if (defect === 'foreign-run') resolved[1].metadata!.runId = 'another-run';
+      if (defect === 'foreign-binding') resolved[1].metadata!.trialBindingHash = 'another-binding';
+      if (defect === 'foreign-ref') resolved[1].metadata!.receiptRef = 'authority:another-receipt';
+      if (defect === 'context-bytes') resolved[0].content += 'not actually delivered';
+      if (defect === 'transition') resolved[1].metadata!.durableTransition = { ...requirements().transitions[0], to: 'blocked' };
+      if (defect === 'outcome') resolved[2].metadata!.workloadOutcome = { ...requirements().downstream, value: false };
+      // Candidate evidence, its seal and frozen criteria remain unchanged.
+      expect(verify(undefined, undefined, undefined, resolved).ok).toBe(false);
+    });
+
+  it('preserves the resolved receipt population through replay', () => {
+    const { preserved, contents, observations } = fixture(); const t = trial(); const sealed = sealEvidence(preserved);
+    const input = { trial: t, expectedIdentity: computeTrialIdentity(t), evidence: preserved,
+      manifest: sealed.manifest, envelope: sealed.envelope, completionRequirements: requirements(),
+      resolvedArtifactContents: contents, resolvedWorkloadObservations: observations };
+    expect(replayTrialEvidence(input).ok).toBe(true);
+    expect(replayTrialEvidence({ ...input, resolvedWorkloadObservations: [] }).ok).toBe(false);
+  });
+
+  it.each([1, 2])('does not hide a duplicate candidate observation lacking authority: step %s', ordinal => {
+    const { preserved, verify } = fixture();
+    preserved.trajectory.push({ ...structuredClone(preserved.trajectory[ordinal]), index: 3 });
+    expect(verify().ok).toBe(false);
+  });
+
+  function resolutionFixture() {
+    const { preserved, contents, observations } = fixture(); const t = trial(); const sealed = sealEvidence(preserved);
+    const input = { trial: t, expectedIdentity: computeTrialIdentity(t), evidence: preserved,
+      manifest: sealed.manifest, envelope: sealed.envelope, completionRequirements: requirements() };
+    const reads: string[] = [];
+    const resolver = {
+      async readArtifact(ref: string, binding: { runId: string; trialBindingHash: string }) {
+        expect(binding).toEqual({ runId: t.lineage.runId, trialBindingHash: input.expectedIdentity.bindingHash });
+        reads.push(ref); return ref === contents[0].ref ? contents[0].content : null;
+      },
+      async readObservations(ref: string, binding: { runId: string; trialBindingHash: string }) {
+        expect(binding).toEqual({ runId: t.lineage.runId, trialBindingHash: input.expectedIdentity.bindingHash });
+        reads.push(ref); return observations.filter(row => row.metadata?.receiptRef === ref);
+      },
+    };
+    return { input, resolver, reads, observations };
+  }
+
+  it('resolves the bound artifact and authority receipt once through the existing replay checks', async () => {
+    const { input, resolver, reads } = resolutionFixture();
+    expect(await replayResolvedWorkloadEvidence(input, resolver)).toMatchObject({ ok: true, integrity: { findings: [] } });
+    expect(reads.sort()).toEqual(['fixture:answer', 'fixture:resolved-ledger-receipt']);
+  });
+
+  it.each(['missing', 'throws', 'foreign', 'context', 'outcome'])
+    ('fails closed when the actual authority reader returns %s', async defect => {
+      const { input, resolver, observations } = resolutionFixture();
+      if (defect === 'foreign') observations[1].metadata!.runId = 'another-run';
+      if (defect === 'context') observations[0].content = 'retrieved but not delivered';
+      if (defect === 'outcome') observations[2].metadata!.workloadOutcome = { ...requirements().downstream, value: false };
+      const reader = { ...resolver, readObservations: async (ref: string, binding: { runId: string; trialBindingHash: string }) => {
+        if (defect === 'missing') return null;
+        if (defect === 'throws') throw new Error('authority unavailable');
+        return resolver.readObservations(ref, binding);
+      } };
+      const report = await replayResolvedWorkloadEvidence(input, reader);
+      expect(report.ok).toBe(false);
+      if (defect === 'missing' || defect === 'throws') expect(report.integrity.findings.map(row => row.kind)).toContain('artifact-missing');
+    });
+
+  it('captures candidate evidence before awaiting its independent reader', async () => {
+    const { input, resolver, observations } = resolutionFixture();
+    const reader = { ...resolver, readArtifact: async (ref: string, binding: { runId: string; trialBindingHash: string }) => {
+      input.evidence.trajectory[0].content = 'candidate mutated during read';
+      return resolver.readArtifact(ref, binding);
+    } };
+    expect((await replayResolvedWorkloadEvidence(input, reader)).ok).toBe(true);
+    expect(observations[0].content).toBe(context);
+  });
+
+  it('does not read private references for a different expected trial binding', async () => {
+    const { input, resolver, reads } = resolutionFixture();
+    input.expectedIdentity.bindingHash = '0'.repeat(64);
+    expect((await replayResolvedWorkloadEvidence(input, resolver)).ok).toBe(false);
+    expect(reads).toEqual([]);
   });
 
   it.each(['wrong-bytes', 'retrieved-only', 'wrong-consumer', 'foreign-run', 'foreign-binding', 'missing-receipt', 'duplicate-input'])
@@ -252,8 +345,8 @@ describe('declared workload completion integrity', () => {
   }
 
   it('accepts dependency completion followed by consumed result context and dependent completion', () => {
-    const { verify, completion } = dependencyFixture();
-    expect(verify(undefined, completion)).toMatchObject({ ok: true, findings: [] });
+    const { verify, completion, preserved } = dependencyFixture();
+    expect(verify(undefined, completion, undefined, structuredClone(preserved.trajectory))).toMatchObject({ ok: true, findings: [] });
   });
 
   it('refuses declared transitions observed in reverse order', () => {

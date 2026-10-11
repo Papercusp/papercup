@@ -1424,6 +1424,54 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
   });
 
+  it('invalidates the local run index when another process advances the shared quota revision', async () => {
+    const oldest = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 10_000);
+    const otherRuns = Array.from({ length: 12 }, (_, i) =>
+      makeSparseRun('ws-Q', '00000000-0000-4000-8000-' + (i + 2).toString().padStart(12, '0'), 1024));
+    await refreshScratchUsage('ws-Q');
+    const measuredBytes = scratchUsageBytes('ws-Q');
+    const externalRunBytes = 4 * 1024 ** 3;
+    const externalRun = makeSparseRun('ws-Q', UUID(20), externalRunBytes, 5_000);
+    const sharedBytes = measuredBytes + externalRunBytes;
+
+    // A second process updates only the shared file. The parent keeps its old local revision,
+    // so quota recovery must discard the otherwise-complete run index and reconcile the tree.
+    const script = [
+      'const { _setScratchUsageForTests } = await import(process.env.PC_SCRATCH_GC_MODULE);',
+      'await new Promise((resolve) => setTimeout(resolve, 5));',
+      "_setScratchUsageForTests(process.env.PC_WORKSPACE_ID, Number(process.env.PC_BYTES), Date.now(), true);",
+      "process.stdout.write(JSON.stringify({ ok: true }));",
+    ].join('\n');
+    const child = startScratchChild(script, {
+      PC_SCRATCH_GC_MODULE: new URL('./scratch-gc.ts', import.meta.url).href,
+      PC_WORKSPACE_ID: 'ws-Q',
+      PC_BYTES: String(sharedBytes),
+    });
+    const childResult = await child.finished;
+    expect(childResult.code, childResult.stderr || childResult.spawnError).toBe(0);
+    expect(JSON.parse(childResult.stdout)).toMatchObject({ ok: true });
+
+    vi.mocked(readdirAsync).mockClear();
+    const timings: ScratchWriteTimings[] = [];
+    const writePath = join(otherRuns[0], 'recovery.bin');
+    await writeWithScratchQuota({
+      workspaceId: 'ws-Q', filePath: writePath, bytes: 64,
+      onTiming: (row) => timings.push(row),
+    }, async () => {
+      await writeFile(writePath, Buffer.alloc(64));
+      expect(existsSync(oldest)).toBe(false);
+      expect(existsSync(externalRun)).toBe(true);
+      expect(otherRuns.every((run) => existsSync(run))).toBe(true);
+    });
+
+    expect(timings[0]?.quotaRecoveryDiagnostics?.sizeWalkMs).toBeGreaterThan(0);
+    const sizeWalkDirectories = vi.mocked(readdirAsync).mock.calls
+      .filter(([, options]) => options != null && typeof options === 'object' && 'withFileTypes' in options)
+      .map(([path]) => String(path));
+    expect(sizeWalkDirectories).toContain(scratchRootForWorkspace('ws-Q'));
+    await refreshScratchUsage('ws-Q');
+  });
+
   it('corrects cached usage when another process already removed an indexed FIFO run', async () => {
     const removedRunBytes = 300 * 1024 ** 2;
     const removedRun = makeSparseRun('ws-Q', UUID(1), removedRunBytes, 10_000);

@@ -1429,6 +1429,21 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
     });
 
+    it('P-008: "release remaining lane resources" keeps a held blocked item held and defers its wake to loop:end', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2 },
+      });
+
+      // The release instruction must not read as "drop the blocked item you still hold".
+      expect(miss.advice).toMatch(/release remaining lane resources \(a blocked item you still hold stays held/);
+      expect(miss.advice).toMatch(/work_items:set_blocker/);
+      expect(miss.advice).toMatch(/recovery\.steps/);
+      // The wake is NOT restated as an events:await: this advice also prescribes a work-item:claimable
+      // watch:create, and naming events:await beside it is the EI-15185 conflation.
+      expect(miss.advice).not.toMatch(/events:await/);
+    });
+
     it('EI-20260781488788952: reports a completed bound plan as a successful plan wind-down', () => {
       const completedPlanScope = {
         ...issueScope,

@@ -13,7 +13,8 @@
  *                                 workspace-task, post-suite-leg, seed) a test run cannot prove
  *                                 "fixes nothing", so only imports-red applies.
  *
- * Unmeasured files (route error, matched=0, runner crash) NEVER count as passing.
+ * Unmeasured files (route error, matched=0, runner crash) refuse as unavailable; they never
+ * establish a failed assertion or prove that an admission fixes nothing.
  *
  * The pre-check uses its own checkout beside the gate's checkpoint tree. A gate run that is
  * already active still reports `checkpoint-tree-busy` and the door ACCEPTS the admission with a
@@ -32,6 +33,8 @@ import path from 'node:path';
 import { resolveDependencyGenerationRoot } from './dependency-generation-prebuild';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
+// Reuse the focused runner's maintained assertion-summary parser.
+import { testsExecutedFrom } from '../../../../scripts/lib/vitest-summary.mjs';
 
 export const ADMISSION_PRECHECK_REFUSALS = Object.freeze([
   'admission-does-not-fix',
@@ -188,8 +191,8 @@ export type FixPrecheckVerdict =
     };
 
 /**
- * Pure verdict. `admission-does-not-fix` is checked first (the admission's stated purpose), then
- * `admission-imports-red`; when both hold, `code` is does-not-fix and `alsoImportsRed:true`.
+ * Pure verdict. Missing measurements refuse as unavailable before drawing a code conclusion.
+ * With complete measurements, does-not-fix precedes imports-red and retains both findings.
  */
 export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixPrecheckRunResult): FixPrecheckVerdict {
   if (population.files.length === 0) return { ok: true, ran: false, reason: 'nothing-to-run', population };
@@ -219,6 +222,17 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
   const doesNotFix = population.canProveDoesNotFix && fixes.length === 0;
   const importsRed = importedRed.length > 0;
   const base = { ran: true as const, commit: run.commit, population, results, passing, failing, unmeasured };
+  if (unmeasured.length > 0) {
+    return {
+      ok: false,
+      ...base,
+      code: 'admission-precheck-unavailable',
+      detail: `${unmeasured.length} admission pre-check file(s) were not measured: ${unmeasured.join(', ')}; ` +
+        'missing assertion evidence cannot establish that an admission fixes nothing or has no imported reds',
+      importedRed,
+      alsoImportsRed: importsRed,
+    };
+  }
   if (doesNotFix) {
     const unmeasuredNote = unmeasured.length
       ? ` (${unmeasured.length} unmeasured — an unmeasured file never counts as passing)`
@@ -594,6 +608,13 @@ export function classifyTestFileRun(r: ExecResult): { status: FixPrecheckFileSta
       status: 'unmeasured',
       detail: `the router measured nothing (exit ${r.exitCode}${reason ? `, reason=${reason}` : ''})`,
     };
+  }
+  // Foreign app commands include npm's pretest lifecycle. Its build/copy errors use exit 1
+  // too, but do not execute assertions. Reuse the router's summary parser/terminal contract.
+  const assertionsExecuted = testsExecutedFrom(r.output);
+  const routerMeasuredFailure = /^TEST_FILE_RESULT\b[^\n]*\bstatus=failed\b/m.test(r.output);
+  if (!(assertionsExecuted !== null && assertionsExecuted > 0) && !routerMeasuredFailure) {
+    return { status: 'unmeasured', detail: `runner failed without readable assertion results (exit ${r.exitCode})` };
   }
   return { status: 'fail', detail: `exit ${r.exitCode}` };
 }

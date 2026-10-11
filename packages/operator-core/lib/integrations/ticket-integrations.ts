@@ -189,7 +189,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * has registered its providers. A request-only host discovers plugins on first need, so reading the
  * registry bare could list no providers at all (WI-10006703); not-ready answers 503, never an empty list.
  */
-async function requestRegistry(deps: { registry?: ProviderRegistry }): Promise<ProviderRegistry> {
+export async function requestRegistry(deps: { registry?: ProviderRegistry }): Promise<ProviderRegistry> {
   if (deps.registry) return deps.registry;
   try {
     return await readyProviderRegistry();
@@ -348,7 +348,7 @@ async function ownedTicketSource(
   return { id: row.id, kind: row.kind, config: isPlainObject(row.config) ? row.config : {}, provider };
 }
 
-function defaultHostFetchFor(
+export function defaultHostFetchFor(
   sql: postgres.Sql,
   input: { workspaceId: string; providerId: string; sourceId: string; harness: string },
 ): HostFetch {

@@ -2390,6 +2390,33 @@ exec /bin/cp "$@"
     });
     expect(reused.status, reused.stderr).toBe(0);
     expect(existsSync(orphan)).toBe(false);
+    expect(reused.stderr).toContain(`deleted prune quarantine ${orphan}`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('reports a failed quarantine deletion even when a later deletion succeeds', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const failed = join(generationRoot, '.prune-a-refused');
+    const removed = join(generationRoot, '.prune-z-removable');
+    mkdirSync(failed, { recursive: true });
+    mkdirSync(removed, { recursive: true });
+    writeFileSync(join(failed, 'payload'), 'preserved after refused unlink\n');
+    const result = spawnSync('bash', ['-c', [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      'rm() { if [ "${@: -1}" = "$FAILED" ]; then return 23; fi; command rm "$@"; }',
+      'dependency_generation_main --integration "$INTEGRATION" --generation-root "$DG_ROOT" --prune-only --no-recorded-store-cascade',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, INTEGRATION: integration, DG_ROOT: generationRoot, FAILED: failed },
+    });
+    expect(result.status, result.stderr).toBe(23);
+    expect(readFileSync(join(failed, 'payload'), 'utf8')).toBe('preserved after refused unlink\n');
+    expect(existsSync(removed)).toBe(false);
+    expect(result.stderr).toContain(`failed prune quarantine deletion ${failed} (rc=23)`);
+    expect(result.stderr).toContain(`deleted prune quarantine ${removed}`);
+    expect(result.stderr).not.toContain(`deleted prune quarantine ${failed}`);
+    expect(existsSync(join(generationRoot, '.publish-lock'))).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('removes input selectors before pruning the generation they reference (WI-2144343)', () => {

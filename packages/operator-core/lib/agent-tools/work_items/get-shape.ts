@@ -1166,6 +1166,75 @@ function projectRow(
   };
 }
 
+const COMPACT_IDENTITY_ROW_FIELDS = new Set([
+  "ok",
+  "id",
+  "availability",
+  "workItem",
+  "completion",
+  "hasCompletionEvidence",
+]);
+
+const COMPACT_IDENTITY_WORK_ITEM_FIELDS = new Set([
+  "id",
+  "kind",
+  "family",
+  "harness",
+  "state",
+  "title",
+  "severity",
+  "origin",
+  "completionAuthority",
+  "assignee",
+]);
+
+/**
+ * Keep a multi-row overflow rung useful as a candidate index. The ordinary
+ * projector deliberately retains checkpoint qualifiers and read-side details;
+ * repeated across rows, those fields can exhaust the door before downstream
+ * overflow recovery can preserve the requested item identities. Details remain
+ * recoverable with an exact single-item read, while terminal authority and the
+ * completion-presence bit stay in band.
+ */
+function compactIdentityRow(sourceRow: Row, row: Row, dropped: Set<string>): Row {
+  if (row.ok === false || row._stub === true || row.reportAttachments !== undefined) return row;
+
+  for (const key of Object.keys(row)) {
+    if (!COMPACT_IDENTITY_ROW_FIELDS.has(key)) dropped.add(key);
+  }
+
+  const rawWorkItem = row.workItem;
+  let workItem: unknown = rawWorkItem;
+  if (rawWorkItem && typeof rawWorkItem === "object" && !Array.isArray(rawWorkItem)) {
+    const source = rawWorkItem as Row;
+    for (const key of Object.keys(source)) {
+      if (!COMPACT_IDENTITY_WORK_ITEM_FIELDS.has(key)) dropped.add(`workItem.${key}`);
+    }
+    workItem = Object.fromEntries(
+      Object.entries(source).filter(([key]) => COMPACT_IDENTITY_WORK_ITEM_FIELDS.has(key)),
+    );
+  }
+
+  const sourceWorkItem = sourceRow.workItem as Row | undefined;
+  const state = typeof sourceWorkItem?.state === "string" ? sourceWorkItem.state.toLowerCase() : "";
+  const hasEvidence =
+    hasCompletionEvidence(sourceRow.completion !== undefined
+      ? sourceRow.completion
+      : sourceWorkItem?.terminalCompletionEvidence) ||
+    hasCompletionEvidence(sourceWorkItem?.terminalCompletionEvidence);
+  const completionRelevant = hasEvidence || ANY_FAMILY_TERMINAL_STATES.includes(state);
+
+  return {
+    ok: row.ok ?? true,
+    id: row.id ?? null,
+    ...(row.availability !== undefined ? { availability: row.availability } : {}),
+    ...(row.workItem !== undefined ? { workItem } : {}),
+    ...(completionRelevant
+      ? { completion: null, hasCompletionEvidence: hasEvidence }
+      : {}),
+  };
+}
+
 function jsonLen(v: unknown): number {
   try {
     return JSON.stringify(v)?.length ?? 0;
@@ -1380,23 +1449,32 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
 
     const singleItemFloor = rows.length === 1 && fullRows === 0;
     const stubCompletionEvidenceIds: unknown[] = [];
-    const projected = rows.map((r, i) =>
-      i < fullRows
-        ? projectRow(
-            r,
-            caps,
-            checkpointChars,
-            summaryChars,
-            lifecycleChars,
-            operationalBriefChars,
-            dropped,
-            !compactIdentity,
-            compactIdentity === true,
-          )
-        : singleItemFloor
-          ? compactSingleRow(r, caps, tier, dropped)
-          : stubRow(r, dropped, stubCompletionEvidenceIds),
-    );
+    const projected = rows.map((r, i) => {
+      if (i < fullRows) {
+        const shaped = projectRow(
+          r,
+          caps,
+          checkpointChars,
+          summaryChars,
+          lifecycleChars,
+          operationalBriefChars,
+          dropped,
+          !compactIdentity,
+          compactIdentity === true,
+        );
+        if (compactIdentity && rows.length > 1 && !briefRequested) {
+          const identity = shaped.workItem as Row | null | undefined;
+          const hasCandidateLabel = typeof identity?.title === "string" && identity.title.trim().length > 0;
+          return hasCandidateLabel
+            ? compactIdentityRow(r, shaped, dropped)
+            : stubRow(r, dropped, stubCompletionEvidenceIds);
+        }
+        return shaped;
+      }
+      return singleItemFloor
+        ? compactSingleRow(r, caps, tier, dropped)
+        : stubRow(r, dropped, stubCompletionEvidenceIds);
+    });
     const stubbedCount = singleItemFloor ? 0 : Math.max(0, rows.length - fullRows);
     if (stubbedCount > 0) dropped.add(`rows(${stubbedCount} stubbed)`);
     const stubCompletionEvidence =
