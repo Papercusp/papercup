@@ -941,6 +941,12 @@ async function checkRestrictedHoldBeforeRestart(
 
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+  // The dispatcher derives invocation status from ToolResult.isError. These
+  // business-level refusals are still normal handler returns, so carry that
+  // bit explicitly or tool_invocations records an ok:false refusal as status=ok.
+  ...(payload !== null && typeof payload === 'object' && 'ok' in payload && payload.ok === false
+    ? { isError: true as const }
+    : {}),
 });
 
 const holderJson = (

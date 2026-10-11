@@ -312,7 +312,7 @@ const {
   gatewayListenerBelongsToService,
 } = restartModule;
 
-type Out = { content: { text: string }[] };
+type Out = { content: { text: string }[]; isError?: boolean };
 type Fence = Pick<FenceToken, 'assertCurrent' | 'seq'>;
 type FreshnessSnapshot = {
   bundleMtimeMs: number | null;
@@ -603,13 +603,15 @@ describe('dev:restart dry run', () => {
   });
 
   it('defaults target to dev and reports the dev unit', async () => {
-    const b = body(await call({}));
+    const result = await call({});
+    const b = body(result);
     expect(b).toMatchObject({
       ok: true,
       dry_run: true,
       target: 'dev',
       would_run: 'systemctl --user daemon-reload && systemctl --user restart papercusp-dev-api.service',
     });
+    expect(result.isError).toBeUndefined();
     expect(b.note).not.toMatch(/coalesced/);
     expect(acquireM).not.toHaveBeenCalled();
   });
@@ -1571,13 +1573,15 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
   it('releases an acquired barrier when the target drain never grants', async () => {
     guardM.mockResolvedValue({ acquired: false, reason: 'drain_timeout', holders: [] } as never);
 
-    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+    const result = await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' });
+    const b = body(result);
 
     expect(b).toMatchObject({
       ok: false,
       target: 'dev',
       reason: 'resource_drain_timeout',
     });
+    expect(result.isError).toBe(true);
     expect(gitSyncBarrierM).toHaveBeenCalledTimes(1);
     expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
     expect(spawnM).not.toHaveBeenCalled();
