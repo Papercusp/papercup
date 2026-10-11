@@ -200,6 +200,47 @@ export function parseCsv(text: string): (string | null)[][] {
   return rows;
 }
 
+/**
+ * Counts the records `parseCsv` would return, over a stream of byte chunks, without
+ * materialising the text. A corpus export can exceed V8's maximum string length
+ * (~512 MiB — the documents corpus is 572 MB), which `parseCsv(readFileSync(...))`
+ * cannot represent. Same record rules as `parseCsv`: CR, LF and CRLF end a record only
+ * outside quotes; `""` toggles the quote state twice; a final unterminated record counts.
+ * Byte-level scanning is UTF-8 safe because `"`, CR and LF never occur inside a
+ * multi-byte sequence (continuation bytes are >= 0x80).
+ */
+export function countCsvRecords(chunks: Iterable<Uint8Array>): number {
+  let records = 0;
+  let inQuotes = false;
+  let prevCr = false;
+  let sawByte = false;
+  let endedOnTerminator = false;
+  for (const chunk of chunks) {
+    for (let i = 0; i < chunk.length; i++) {
+      const b = chunk[i]!;
+      sawByte = true;
+      if (b === 0x22) {
+        inQuotes = !inQuotes;
+      } else if (!inQuotes && b === 0x0d) {
+        records++;
+        prevCr = true;
+        endedOnTerminator = true;
+        continue;
+      } else if (!inQuotes && b === 0x0a) {
+        if (!prevCr) records++;
+        prevCr = false;
+        endedOnTerminator = true;
+        continue;
+      }
+      prevCr = false;
+      endedOnTerminator = false;
+    }
+  }
+  if (inQuotes) throw new Error('countCsvRecords: unterminated quoted field');
+  if (sawByte && !endedOnTerminator) records++;
+  return records;
+}
+
 export interface EvalRow {
   method: string;
   variant: BakeoffVariant;

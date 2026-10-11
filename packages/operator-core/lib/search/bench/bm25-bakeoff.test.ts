@@ -7,6 +7,7 @@ import {
   BM25_BAKEOFF_ENGINES,
   resolveBakeoffCorpus,
   comparePaired,
+  countCsvRecords,
   createDatabaseSql,
   decideCap,
   parseCsv,
@@ -52,6 +53,40 @@ describe('parseCsv (Postgres COPY csv)', () => {
 
   it('refuses an unterminated quote instead of returning a short row', () => {
     expect(() => parseCsv('"open,1')).toThrow(/unterminated/);
+  });
+});
+
+describe('countCsvRecords (streamed corpus row count)', () => {
+  const FIXTURES = [
+    '',
+    'a,b\n',
+    'a,b',
+    'a,,"",b\n',
+    '"x,y","say ""hi""","line1\nline2"\r\nz,1,2',
+    'one\r\ntwo\rthree\nfour',
+    'a\n\nb\n',
+    '"crlf\r\ninside",1\r\n"é ü 漢字 ""q""",2\n',
+    '""\n""',
+  ];
+  /** Every split of the bytes into `size`-byte chunks — exercises CRLF and `""` straddling a boundary. */
+  const chunked = (bytes: Uint8Array, size: number): Uint8Array[] => {
+    const out: Uint8Array[] = [];
+    for (let i = 0; i < bytes.length; i += size) out.push(bytes.subarray(i, i + size));
+    return out;
+  };
+
+  it('agrees with parseCsv on every fixture at every chunk size', () => {
+    for (const text of FIXTURES) {
+      const bytes = new TextEncoder().encode(text);
+      const expected = parseCsv(text).length;
+      for (const size of [1, 2, 3, 5, 64]) {
+        expect(countCsvRecords(chunked(bytes, size)), `${JSON.stringify(text)} @${size}`).toBe(expected);
+      }
+    }
+  });
+
+  it('rejects an unterminated quoted field like parseCsv does', () => {
+    expect(() => countCsvRecords([new TextEncoder().encode('"open,1')])).toThrow(/unterminated/);
   });
 });
 

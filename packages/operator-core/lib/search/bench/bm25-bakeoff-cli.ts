@@ -39,6 +39,7 @@ import {
   BM25_BAKEOFF_ENGINES,
   bakeoffDatabases,
   comparePaired,
+  countCsvRecords,
   createDatabaseSql,
   decideCap,
   INHERITED_EXTENSIONS_SQL,
@@ -58,6 +59,21 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HARNESS = path.join(HERE, 'bm25-bakeoff');
+
+/** Yields a file's bytes in fixed-size chunks (each chunk is a fresh copy). */
+function* readFileChunks(filePath: string, chunkBytes = 1 << 20): Generator<Uint8Array> {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(chunkBytes);
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, chunkBytes, null);
+      if (n === 0) return;
+      yield buf.subarray(0, n);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 
 const SERVER_SETTINGS = [
@@ -166,6 +182,11 @@ async function main(): Promise<number> {
   if (args.methods && !engines.some(e => e.method === BASELINE_METHOD)) {
     engines.unshift(BM25_BAKEOFF_ENGINES.find(e => e.method === BASELINE_METHOD)!);
   }
+  // Fail before the (multi-minute) corpus export/copy, not at `docker run`, which would
+  // otherwise try to pull a local-only tag from Docker Hub.
+  if (args.skipBuild && spawnSync('docker', ['image', 'inspect', args.image], { stdio: 'ignore' }).status !== 0) {
+    throw new Error(`--skip-build: image ${args.image} is not present locally — drop --skip-build to build it, or pass --image <existing tag>`);
+  }
   const loadStart = os.loadavg();
   const commit = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', cwd: HERE }).stdout.trim() || null;
 
@@ -184,7 +205,8 @@ async function main(): Promise<number> {
     }
   }
   fs.chmodSync(corpusPath, 0o644);
-  const corpusRows = parseCsv(fs.readFileSync(corpusPath, 'utf8')).length;
+  // Streamed: the documents export (572 MB) exceeds V8's max string length.
+  const corpusRows = countCsvRecords(readFileChunks(corpusPath));
   log(`corpus: ${corpusRows} rows`);
 
   if (!args.skipBuild) {
