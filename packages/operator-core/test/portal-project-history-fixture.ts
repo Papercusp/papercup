@@ -5,6 +5,15 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrowserContext, Page } from 'playwright-core';
 import { getOrgPg } from '@papercusp/db-org';
+import { PLAN_STATUSES, type PlanStatus } from '@papercusp/plan-parser';
+
+const PROJECT_HISTORY_SEED_STATUS: PlanStatus = 'active';
+
+/** Run before private allocation: work-item terminal states are not plan states. */
+export function verifyPrivateProjectHistorySeedStatus(status: string = PROJECT_HISTORY_SEED_STATUS) {
+  assert.ok((PLAN_STATUSES as readonly string[]).includes(status), `Invalid private History plan status: ${status}`);
+  return status;
+}
 
 export interface PrivateProjectHistorySeed {
   workspace: string;
@@ -21,6 +30,7 @@ export interface PrivateProjectHistorySeed {
 
 export async function seedPrivateProjectHistory(workspace: string, evidence: string, readonlyRepo: string): Promise<PrivateProjectHistorySeed> {
   assert.match(workspace, /^test-runtime-/);
+  const status = verifyPrivateProjectHistorySeedStatus();
   const { mutateHarnessRegistry } = await import('../lib/harness-registry');
   const { createWorkItem } = await import('../lib/work-items');
   const { sql } = getOrgPg();
@@ -38,10 +48,10 @@ export async function seedPrivateProjectHistory(workspace: string, evidence: str
     const scope = slug === foreignPlan ? workspace + '-foreign' : workspace;
     const harness = slug === neighborPlan ? neighbor : selected;
     const updated = new Date(Date.now() - index * 1_000).toISOString();
-    const content = `---\nslug: ${slug}\ntitle: ${slug}\nstatus: done\nupdated: ${updated}\n---\n\n## Now\nPrivate History archive canary.\n`;
+    const content = `---\nslug: ${slug}\ntitle: ${slug}\nstatus: ${status}\nupdated: ${updated}\n---\n\n## Now\nPrivate History archive canary.\n`;
     await sql`INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, updated, updated_at)
-      VALUES (${scope}, ${harness}, ${slug}, ${slug}, 'done', ${content},
+      VALUES (${scope}, ${harness}, ${slug}, ${slug}, ${status}, ${content},
         ${createHash('sha256').update(content).digest('hex')}, ${updated}, ${updated})`;
   }
   const selectedTitle = stem + '-selected-live';

@@ -62,6 +62,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readlinkSync,
   realpathSync,
   readFileSync,
   renameSync,
@@ -336,8 +337,10 @@ function removePackageLocalRepairTargets({ repoRoot, findings, deps = {} }) {
  * current declaration is satisfied by a hoisted package.
  *
  * Only delete an exact entry whose locked version still matches the invalid
- * installed version the detector observed. A newer/different lock entry may be
- * a concurrent repair and must not be removed. The write is atomic so an
+ * installed version, or whose link target matches a detector-confirmed dangling
+ * symlink still on disk. Inspect links before removing them: npm can recreate an
+ * obsolete workspace link from its lock entry even after its declaration changes.
+ * A newer/different lock entry or healthy link must not be removed. The write is atomic so an
  * interrupted repair cannot leave the shared lockfile half-written.
  *
  * @param {{
@@ -400,13 +403,21 @@ export function removePackageLocalRepairLockEntries({
     });
     const key = relative(root, target).split(sep).join("/");
     const entry = lock.packages[key];
-    if (
-      typeof finding.installed !== "string" ||
-      typeof entry?.version !== "string" ||
-      entry.version !== finding.installed
-    ) {
-      continue;
+    const staleVersion =
+      typeof finding.installed === "string" &&
+      typeof entry?.version === "string" &&
+      entry.version === finding.installed;
+    let staleLink = false;
+    if (entry?.link === true && typeof entry.resolved === "string") {
+      try {
+        staleLink = lstatSync(target).isSymbolicLink() &&
+          !existsSync(target) &&
+          resolve(root, entry.resolved) === resolve(dirname(target), readlinkSync(target));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
     }
+    if (!staleVersion && !staleLink) continue;
     delete lock.packages[key];
     removed.push(key);
   }
@@ -698,14 +709,15 @@ export async function verifyDepsExtracted({
   for (const target of binTargets) {
     if (lstatSync(target).isSymbolicLink() && !existsSync(target)) unlinkSync(target);
   }
+  // Compare the locked link with the observed symlink before deleting the node.
+  const removedLockEntries = removePackageLocalRepairLockEntries({
+    repoRoot,
+    findings: [...first.incomplete, ...first.invalidVersions],
+    deps,
+  });
   const removedTargets = removePackageLocalRepairTargets({
     repoRoot,
     findings: [...first.incomplete, ...first.invalidVersions, ...binPackageFindings],
-    deps,
-  });
-  const removedLockEntries = removePackageLocalRepairLockEntries({
-    repoRoot,
-    findings: first.invalidVersions,
     deps,
   });
   if (removedTargets.length > 0) {

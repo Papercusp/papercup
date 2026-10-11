@@ -780,6 +780,92 @@ describe('collection child identity evidence (WI-10007991)', () => {
 });
 
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
+  it.each(['available', 'unavailable', 'default', 'disabled'] as const)(
+    'retains bounded worker-termination evidence before exit with a %s reader (EI-25678025879775952)', async (mode) => {
+      const child = Object.assign(new EventEmitter(), {
+        pid: process.pid, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+      });
+      const snapshot = { status: 'partial', rootPid: child.pid,
+        processes: [{ pid: child.pid, name: 'node', state: 'S', waitChannel: null }] };
+      const reader = vi.fn(() => {
+        if (mode === 'unavailable') throw new Error('EACCES');
+        return snapshot;
+      });
+      const progress: string[] = [];
+      const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+        cwd: '/repo', files: ['a.test.ts'], env: { PATH: '/usr/bin' },
+        systemdRunPath: null, setsidPath: null,
+        spawnImpl: () => child,
+        ...(mode === 'default' ? {} : { readProcessDiagnosticImpl: mode === 'disabled' ? null : reader }),
+        onProgress: (line: string) => progress.push(line),
+        governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+          run(undefined, undefined, { inherited: true }),
+      });
+      child.stdout.write(' ❯ a.test.ts (1 test | 1 failed) 1ms\n');
+      child.stderr.write('[vitest-pool]: Timeout term');
+      expect(reader).not.toHaveBeenCalled();
+      child.stderr.write('inating forks worker for test files a.test.ts.\n');
+      child.stderr.write('[vitest-pool]: Failed to terminate forks worker for test files a.test.ts.\n');
+      const diagnostics = progress.filter((line) => line.startsWith('TEST_FILE_CHILD_DIAGNOSTIC '));
+      expect(diagnostics).toHaveLength(mode === 'disabled' ? 0 : 1);
+      expect(child.kill).not.toHaveBeenCalled();
+      child.emit('close', 1, null);
+      const result = await pending;
+      expect(result).toMatchObject({ status: 1, signal: null, timedOut: false });
+      expect(result.stderr).toContain('Timeout terminating forks worker');
+      if (mode === 'disabled') expect(result.processDiagnostic).toBeNull();
+      else {
+        expect(diagnostics[0]).toContain('"trigger":"worker-termination"');
+        expect(result.processDiagnostic).toEqual(mode === 'unavailable'
+          ? { status: 'unavailable', reason: 'reader-error', processes: [], truncated: false }
+          : mode === 'default' ? expect.objectContaining({ rootPid: child.pid }) : snapshot);
+      }
+      if (mode === 'available' || mode === 'unavailable') expect(reader).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('settles a real assertion-failing worker after file completion without a teardown timeout (EI-25678025879775952)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vitest-failure-stop-'));
+    const file = 'controlled.test.mjs';
+    const config = join(dir, 'vitest.config.mjs');
+    const progress: string[] = [];
+    const completed = vi.fn();
+    try {
+      writeFileSync(config, `export default ${JSON.stringify({
+        root: dir,
+        test: { include: [file], environment: 'node', pool: 'forks', maxWorkers: 1 },
+      })};`);
+      writeFileSync(join(dir, file),
+        `import { test, expect } from ${JSON.stringify(resolve(REPO_ROOT, 'node_modules/vitest/dist/index.js'))};\n` +
+        `test('controlled assertion failure', () => expect('actual').toBe('expected'));\n`);
+      const result = await runCapturedTestProcess(process.execPath, [
+        resolve(REPO_ROOT, 'node_modules/vitest/vitest.mjs'),
+        'run', '--config', config, '--reporter=default',
+      ], {
+        cwd: dir,
+        env: { ...process.env, NODE_OPTIONS: '', FORCE_COLOR: '0', NO_COLOR: '1' },
+        files: [file],
+        timeoutMs: 30_000,
+        watchdogMaxMs: 30_000,
+        onProgress: (line: string) => progress.push(line),
+        onAllFilesComplete: completed,
+        governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+          run(undefined, undefined, { inherited: true }),
+      });
+      const output = result.stdout + result.stderr;
+      expect(output).toContain('controlled assertion failure');
+      expect(output).toMatch(/Tests\s+1 failed/);
+      expect(result, output).toMatchObject({ status: 1, signal: null, timedOut: false, error: null });
+      expect(completed).toHaveBeenCalledTimes(1);
+      expect(progress.find((line) => line.includes('state=file-completed'))).toContain('pendingFiles=[]');
+      expect(progress.at(-1)).toContain('state=finished');
+      expect(output).not.toMatch(/Timeout terminating .* worker|Failed to terminate .* worker/);
+      expect(vitestRunFailed({ status: result.status, output })).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 45_000);
+
   it('prefers a detached systemd user scope while keeping the owned process-group watchdog', async () => {
     vi.useFakeTimers();
     try {

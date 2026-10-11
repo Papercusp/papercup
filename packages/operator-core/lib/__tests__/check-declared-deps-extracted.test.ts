@@ -1007,6 +1007,80 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     );
   });
 
+  it('repairs an orphaned dangling workspace link without npm recreating its old target', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: { 'apps/operator': {}, 'libs/maintained/widget': {} },
+      extracted: {},
+    });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({
+      name: 'dangling-workspace-fixture', private: true,
+      workspaces: ['apps/operator', 'libs/maintained/widget'],
+    }));
+    writeFileSync(join(root, 'apps/operator/package.json'), JSON.stringify({
+      name: '@fixture/operator', version: '1.0.0',
+      dependencies: { '@fixture/widget': 'file:../../libs/maintained/widget' },
+    }));
+    writeFileSync(join(root, 'libs/maintained/widget/package.json'), JSON.stringify({
+      name: '@fixture/widget', version: '1.0.0',
+    }));
+    const install = () => execFileSync('npm', [
+      'install', '--legacy-peer-deps', '--ignore-scripts', '--no-audit', '--no-fund', '--offline',
+    ], { cwd: root, timeout: 30_000, env: {
+      ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: '1',
+      npm_config_prefix: undefined, NPM_CONFIG_PREFIX: undefined,
+      npm_config_package_lock_only: undefined, NPM_CONFIG_PACKAGE_LOCK_ONLY: undefined,
+    } });
+    install();
+    const staleKey = 'apps/operator/node_modules/@fixture/widget';
+    const target = join(root, staleKey);
+    const lockPath = join(root, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages[staleKey] = { resolved: 'libs/obsolete/widget', link: true };
+    lock.packages['libs/obsolete/widget'] = {};
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const hiddenLockPath = join(root, 'node_modules/.package-lock.json');
+    const hiddenLock = JSON.parse(readFileSync(hiddenLockPath, 'utf8'));
+    hiddenLock.packages[staleKey] = lock.packages[staleKey];
+    hiddenLock.packages['libs/obsolete/widget'] = {};
+    writeFileSync(hiddenLockPath, JSON.stringify(hiddenLock));
+    mkdirSync(join(root, 'apps/operator/node_modules/@fixture'), { recursive: true });
+    symlinkSync('../../../../libs/obsolete/widget', target);
+    expect(findIncompleteWorkspacePackages({ repoRoot: root })).toEqual([
+      { package: '@fixture/widget', workspace: 'apps/operator' },
+    ]);
+    let repairs = 0;
+    const status = await verifyDepsExtracted({
+      repoRoot: root, probeSpecifiers: [], deps: { sleep: async () => {} },
+      runNpm: () => { repairs++; install(); return 0; },
+    });
+    expect(repairs).toBe(1);
+    expect(status).toBe(0);
+    expect(findIncompleteWorkspacePackages({ repoRoot: root })).toEqual([]);
+    const repaired = JSON.parse(readFileSync(lockPath, 'utf8'));
+    expect(repaired.packages[staleKey]).toBeUndefined();
+    expect(repaired.packages['node_modules/@fixture/widget']).toEqual({
+      resolved: 'libs/maintained/widget', link: true,
+    });
+  }, 60_000);
+
+  it.each([
+    { name: 'healthy link', dangling: false, lockedTarget: 'libs/maintained/widget' },
+    { name: 'changed lock target', dangling: true, lockedTarget: 'libs/maintained/widget' },
+  ])('preserves a $name while cleaning a detector finding', ({ dangling, lockedTarget }) => {
+    const root = fixture({ packages: { 'apps/operator': {}, 'libs/maintained/widget': {} }, extracted: {} });
+    const key = 'apps/operator/node_modules/@fixture/widget';
+    mkdirSync(join(root, 'apps/operator/node_modules/@fixture'), { recursive: true });
+    symlinkSync(`../../../../libs/${dangling ? 'obsolete' : 'maintained'}/widget`, join(root, key));
+    const lockPath = join(root, 'package-lock.json');
+    const original = JSON.stringify({ lockfileVersion: 3, packages: { [key]: { resolved: lockedTarget, link: true } } });
+    writeFileSync(lockPath, original);
+    expect(removePackageLocalRepairLockEntries({
+      repoRoot: root, findings: [{ workspace: 'apps/operator', package: '@fixture/widget' }],
+    })).toEqual([]);
+    expect(readFileSync(lockPath, 'utf8')).toBe(original);
+  });
+
   it('fails immediately when the bounded repair exits nonzero, even if later spot probes could pass', async () => {
     silenceConsole();
     const root = fixture({

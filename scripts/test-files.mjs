@@ -2462,7 +2462,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     spawnImpl = spawn,
     killProcessImpl = defaultKillOwnedProcess,
     stopScopeImpl = stopTestScope,
-    readProcessDiagnosticImpl = null,
+    readProcessDiagnosticImpl = readTestChildDiagnostic,
     onProgress = (line) => console.error(line),
     onAllFilesComplete = () => null,
     // Tests may replace this narrow governance seam; production callers leave
@@ -2573,21 +2573,25 @@ export function runCapturedTestProcess(command, args, options = {}) {
         );
       }
     };
+    const captureProcessDiagnostic = (trigger) => {
+      if (processDiagnostic !== null || !readProcessDiagnosticImpl) return;
+      try {
+        processDiagnostic = readProcessDiagnosticImpl(child.pid) ??
+          { status: 'unavailable', reason: 'empty-reader-result', processes: [], truncated: false };
+      } catch {
+        processDiagnostic = { status: 'unavailable', reason: 'reader-error', processes: [], truncated: false };
+      }
+      // Capture while the owned tree still exists, and retain the same snapshot
+      // in the result. A worker warning can precede exit by less than the router's
+      // watchdog budget, so waiting for that watchdog loses the evidence.
+      onProgress(`TEST_FILE_CHILD_DIAGNOSTIC ${JSON.stringify({ scope: scopeUnit, ...processDiagnostic, trigger })}`);
+    };
     const terminate = (state) => {
       if (terminationStarted || settled) return;
       terminationStarted = true;
       if (state === 'timeout') timedOut = true;
       emitProgress(state);
-      if (state === 'timeout' && readProcessDiagnosticImpl) {
-        try {
-          processDiagnostic = readProcessDiagnosticImpl(child.pid);
-        } catch {
-          processDiagnostic = { status: 'unavailable', reason: 'reader-error', processes: [], truncated: false };
-        }
-        // Emit before SIGTERM as well as retaining it in the terminal result:
-        // a child that never closes its pipes must not erase this snapshot.
-        onProgress(`TEST_FILE_CHILD_DIAGNOSTIC ${JSON.stringify({ scope: scopeUnit, ...processDiagnostic })}`);
-      }
+      if (state === 'timeout') captureProcessDiagnostic('watchdog-timeout');
       killOwned('SIGTERM');
       forceTimer = setTimeout(() => {
         if (settled) return;
@@ -2631,6 +2635,9 @@ export function runCapturedTestProcess(command, args, options = {}) {
       }
       const completeLines = combined.slice(0, lastNewline + 1);
       progressRemainders[channel] = combined.slice(lastNewline + 1);
+      if (/\[vitest-pool\]: (?:Timeout terminating|Failed to terminate) \S+ worker\b/.test(completeLines)) {
+        captureProcessDiagnostic('worker-termination');
+      }
       const before = completedFiles.size;
       const progress = parseBatchProgress(completeLines, { totalFiles: requestedFiles.length });
       for (const file of progress.completedFilePaths) completedFiles.add(normalized(file));

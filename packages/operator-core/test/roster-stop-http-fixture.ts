@@ -10,6 +10,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
 import { createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
+import { seedPrivateProjectHistory, preflightPrivateProjectHistory } from './portal-project-history-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
@@ -315,6 +316,9 @@ async function coordCanary(health: unknown) {
       writeFileSync(join(evidence, 'portal-docs-seed.json'), JSON.stringify({ ...docs, workspace,
         readonlyRepo: root, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() }, null, 2));
     }
+    const projectHistorySeed = process.env.ROSTER_PROJECT_HISTORY_BROWSER_PROOF === '1'
+      ? await seedPrivateProjectHistory(workspace, evidence, root) : undefined;
+    if (projectHistorySeed) await preflightPrivateProjectHistory(projectHistorySeed, base, cookie(ownSession.token), evidence);
     let plans: { selectedSlug: string; neighborSlug: string; selectedTitle: string; neighborTitle: string; harness: string } | undefined;
     let overviewPlans: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string } | undefined;
     if (process.env.ROSTER_OVERVIEW_BROWSER_PROOF === '1') {
@@ -399,6 +403,7 @@ async function coordCanary(health: unknown) {
       ...(process.env.ROSTER_HUD_BROWSER_PROOF === '1' ? { hud: true } : {}),
       ...(process.env.ROSTER_HEALTH_BROWSER_PROOF === '1' ? { health: true } : {}),
       ...(overviewPlans ? { overview: true, overviewPlans } : {}),
+      ...(projectHistorySeed ? { projectHistory: true, projectHistorySeed } : {}),
       ...(insightsHarnesses ? { insights: true, insightsHarnesses } : {}),
       ...(testingHarnesses ? { testing: true, testingHarnesses } : {}),
       ...(brainstormHarnesses ? { brainstorm: true, brainstormHarnesses } : {}),

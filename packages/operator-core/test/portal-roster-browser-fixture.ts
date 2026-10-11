@@ -16,6 +16,7 @@ import { portalBrowserPackagesPlugin, portalBrowserSurfaceBuild } from './privat
 import type { PrRowData } from '../lib/pr-host/pr-row-data';
 import type { PrViewerDetails } from '../lib/pr-host/pr-viewer';
 import type { InsightsTabProps, TokensDashboardSnapshot } from '../lib/harness-insights/card-types';
+import { runPrivateProjectHistoryPage, type PrivateProjectHistorySeed } from './portal-project-history-fixture';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
@@ -120,6 +121,8 @@ type PortalRosterBrowserInput = {
   settings?: boolean;
   prompts?: boolean;
   overview?: boolean;
+  projectHistory?: boolean;
+  projectHistorySeed?: PrivateProjectHistorySeed;
   overviewPlans?: { selectedSlug: string; neighborSlug: string; foreignSlug: string; harness: string };
   hud?: boolean;
   health?: boolean;
@@ -147,7 +150,7 @@ type PortalRosterBrowserInput = {
 
 /** Compile the actual component graph without a browser, API or private PG. */
 export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserInput,
-  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
+  'portalSourceRoot' | 'selected' | 'neighbor' | 'history' | 'stop' | 'shortcuts' | 'settings' | 'prompts' | 'overview' | 'projectHistory' | 'hud' | 'health' | 'brainstorm' | 'prs' | 'insights' | 'testing' | 'harnesses' | 'inbox' | 'plans' | 'docs' | 'markdownPreflight'>) {
   const { selected, neighbor } = input;
   const portal = realpathSync(input.portalSourceRoot);
   const rows = [selected, neighbor].map(ownerId => ({ ownerId, label: ownerId, agent: 'codex', role: 'worker',
@@ -159,7 +162,20 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.health ? `
+  const entry = input.projectHistory ? `
+    import * as React from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { NuqsAdapter } from 'nuqs/adapters/react';
+    import { SyncProvider } from '@papercusp/sync';
+    import { RouterProvider, createRouter, createRootRoute } from '@tanstack/react-router';
+    import { AdvScopeProvider } from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvShell.tsx'))};
+    import AdvHistoryTab from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHistoryTab.tsx'))};
+    const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
+      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' },
+        React.createElement(AdvScopeProvider, null, React.createElement(AdvHistoryTab)))) });
+    const router = createRouter({ routeTree });
+    createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
+  ` : input.health ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -399,7 +415,14 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   }
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
-  assert.ok([...originals.keys()].some(path => path.endsWith(input.health
+  if (input.projectHistory) {
+    for (const suffix of ['/apps/operator-vite/src/components/adv/AdvShell.tsx',
+      '/libs/generic/ui-primitives/src/ProjectHistoryView.tsx', '/libs/generic/ui-primitives/src/ActivityTimelineView.tsx']) {
+      assert.ok([...originals.keys()].some(path => path.endsWith(suffix)), `History browser graph requires ${suffix}`);
+    }
+  }
+  assert.ok([...originals.keys()].some(path => path.endsWith(input.projectHistory
+    ? '/apps/operator-vite/src/components/adv/AdvHistoryTab.tsx' : input.health
     ? '/apps/operator-vite/src/components/adv/HealthTab.tsx' : input.overview
     ? '/apps/operator-vite/src/components/adv/AdvOverviewTab.tsx' : input.hud
     ? '/apps/operator/app/adv/hud/HudView.tsx' : input.harnesses
@@ -1110,7 +1133,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       syncReadCaptures.add(capture);
       void capture.finally(() => syncReadCaptures.delete(capture));
     });
-    const url = new URL(input.overview ? '/?app=overview&q=retained-shell-search'
+    const url = new URL(input.projectHistory ? '/?app=history&q=retained-shell-search'
+      : input.overview ? '/?app=overview&q=retained-shell-search'
       : input.health ? '/?app=health&q=retained-shell-search' : input.hud ? '/?app=hud&hudtab=sessions&hudall=true&q=retained-shell-search'
       : input.testing ? '/?app=testing&q=retained-shell-search'
       : input.harnesses ? '/?app=work&scope=all&q=retained-shell-search'
@@ -1131,6 +1155,14 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
       const receipt = await runPrivateTestingPage(page, context, input, url);
       assert.deepEqual(pageErrors, [], 'actual Testing registry and domain controls must stay browser-safe');
       return receipt;
+    }
+    if (input.projectHistorySeed) {
+      url.searchParams.set('slug', input.projectHistorySeed.selected);
+      const receipt = await runPrivateProjectHistoryPage(page, context, input.projectHistorySeed, url, evidence);
+      assert.deepEqual(pageErrors, [], 'actual History archive/live must stay browser-safe');
+      const retained = { ...receipt, browserBundleSha256: sourceIdentity.bundleSha256, originalSourceCount: originals.size };
+      writeFileSync(join(evidence, 'portal-browser-receipt.json'), JSON.stringify(retained, null, 2));
+      return retained;
     }
     if (input.insights) {
       const receipt = await runPrivateInsightsPage(page, context, input, url);
