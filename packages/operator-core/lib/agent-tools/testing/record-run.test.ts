@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
+  MAX_RECORDED_PASSED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseTestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
@@ -484,14 +485,16 @@ describe('testing:record-run', () => {
 
     const capped = operationalExecution({
       ...ARTIFACT,
-      assertions: Array.from({ length: 65 }, (_, index) => ({
+      assertions: Array.from({ length: MAX_RECORDED_PASSED_CASES + 1 }, (_, index) => ({
         id: 'passed check ' + index,
         passed: true,
         evidence: 'measured pass',
       })),
     });
-    expect(capped).toMatchObject({ passed: 65, failed: 0, passedCaseTitlesTruncated: true });
-    expect(capped.passedCaseTitles).toHaveLength(64);
+    expect(capped).toMatchObject({
+      passed: MAX_RECORDED_PASSED_CASES + 1, failed: 0, passedCaseTitlesTruncated: true,
+    });
+    expect(capped.passedCaseTitles).toHaveLength(MAX_RECORDED_PASSED_CASES);
   });
 
   it('is idempotent when the artifact hash already has a scoped row', async () => {

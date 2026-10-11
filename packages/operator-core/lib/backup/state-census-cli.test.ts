@@ -1,13 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join, delimiter } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { runRootCensus } from '../../../../scripts/state-census-roots.mts';
+
+// Some credential writers resolve their home at module load. Isolate before
+// collection, so the in-process census cannot enumerate the developer's home.
+const fixtureHome = vi.hoisted(() => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'root-census-cli-'));
+  for (const [key, value] of Object.entries({ HOME: directory, PAPERCUSP_HOME: directory,
+    XDG_CONFIG_HOME: path.join(directory, '.config'), PAPERCUSP_WORKSPACES_ROOT: path.join(directory, 'registry'),
+    PAPERCUSP_SCRATCH_ROOT: path.join(directory, 'spills'), PAPERCUSP_STRIP_CACHE_DIR: path.join(directory, 'analysis-cache'),
+    PAPERCUSP_DB_ENCRYPTION_KEY_FILE: path.join(directory, 'db-key') })) vi.stubEnv(key, value as string);
+  return directory;
+});
+afterAll(() => { vi.unstubAllEnvs(); rmSync(fixtureHome, { recursive: true, force: true }); });
 
 describe('unit census executable exit contract', () => {
-  it('root diagnostic explicitly reports partial scope and fails unknown filesystem ownership', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'root-census-cli-'));
+  it('root diagnostic explicitly reports partial scope and fails unknown filesystem ownership', async () => {
+    const directory = fixtureHome;
     try {
       mkdirSync(join(directory, 'registry'));
       mkdirSync(join(directory, 'spills'));
@@ -71,6 +86,18 @@ describe('unit census executable exit contract', () => {
       expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/clones/owned/uncommitted-state')).toBe(false);
       expect(report.residue.some((entry: { name: string }) => entry.name === 'registry/clones/unowned')).toBe(true);
       expect(report.representedUnknown.some((entry: { name: string }) => entry.name === 'registry/clones/unowned')).toBe(true);
+      // Exercise the same entry inside the Vitest worker so loaded source is
+      // observable, rather than treating the child CLI as source identity proof.
+      for (const [key, value] of Object.entries({ HOME: directory, PAPERCUSP_HOME: directory,
+        XDG_CONFIG_HOME: join(directory, '.config'), PAPERCUSP_WORKSPACES_ROOT: join(directory, 'registry'),
+        PAPERCUSP_SCRATCH_ROOT: join(directory, 'spills'), PAPERCUSP_STRIP_CACHE_DIR: join(directory, 'analysis-cache'),
+        PAPERCUSP_DB_ENCRYPTION_KEY_FILE: join(directory, 'db-key') })) vi.stubEnv(key, value);
+      const inProcess = await runRootCensus({ checkpointLogDir: join(directory, 'checkpoint-history') });
+      expect(inProcess.wholeInstallVerified).toBe(false);
+      expect(inProcess.ok).toBe(false);
+      expect(inProcess.scope).toBe(report.scope);
+      expect(inProcess.residue.map(entry => `${entry.kind}:${entry.root}:${entry.name}`).sort())
+        .toEqual(report.residue.map((entry: { kind: string; root: string; name: string }) => `${entry.kind}:${entry.root}:${entry.name}`).sort());
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
   it.runIf(process.platform === 'linux')('returns drift exit1 for an unknown installed unit', () => {

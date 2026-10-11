@@ -338,7 +338,7 @@ async function coordCanary(health: unknown) {
       url.searchParams.set('args', JSON.stringify({ includeFinished: false, includeArchived: true, includeLegacy: true }));
       const response = await fetch(url, { headers: { cookie: cookie(ownSession.token) }, signal: AbortSignal.timeout(25_000) });
       const body = await response.json() as { rows?: Array<{ slug: string; status: string; startStatus: string | null; updated: string | null }> };
-      writeFileSync(join(evidence, 'portal-overview-preflight.json'), JSON.stringify({ status: response.status(), body,
+      writeFileSync(join(evidence, 'portal-overview-preflight.json'), JSON.stringify({ status: response.status, body,
         expectation: 'selected and neighbor must be among six started-priority rows before the browser; foreign excluded' }, null, 2));
       assert.equal(response.status, 200);
       assert.ok(Array.isArray(body.rows), 'Overview preflight requires actual plan rows');

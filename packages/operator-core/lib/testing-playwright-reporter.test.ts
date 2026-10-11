@@ -16,7 +16,10 @@ vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
 }));
 import Reporter, { prepareNativeRuntimeReader } from '@papercusp/operator-core/lib/testing-playwright-reporter';
 import OperatorReporter from '../../../apps/operator/test/reporters/admin-test-runs-reporter-playwright';
-import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import {
+  MAX_RECORDED_PASSED_CASES,
+  parseTestRunExecutionDetails,
+} from '@papercusp/test-config/execution-details';
 
 afterEach(() => { vi.unstubAllEnvs(); source.root = '/portal'; });
 
@@ -113,7 +116,7 @@ describe('portable Playwright ledger reporter', () => {
       reporter.onBegin({ rootDir: '/portal/e2e' });
       const cases = [
         ['new account', 'passed'] as const,
-        ...Array.from({ length: 64 }, (_, index) => ['passed case ' + index, 'passed'] as const),
+        ...Array.from({ length: MAX_RECORDED_PASSED_CASES }, (_, index) => ['passed case ' + index, 'passed'] as const),
         ['stale curriculum', 'failed'] as const,
       ];
       for (const [title, status] of cases) {
@@ -135,11 +138,12 @@ describe('portable Playwright ledger reporter', () => {
       expect(details).toMatchObject({
         root: '/portal', testLayer: 'e2e', harnessSlug: 'portal',
         workspaceId: 'papercusp-workspace', runGroupId: 'portal-e2e-proof',
-        passed: 65, failed: 1, skipped: 0, worktreeDirty: false,
+        passed: MAX_RECORDED_PASSED_CASES + 1, failed: 1, skipped: 0, worktreeDirty: false,
         passedCaseTitlesTruncated: true,
         failedCaseTitles: ['account-first > stale curriculum'],
       });
-      expect((details as { passedCaseTitles: string[] }).passedCaseTitles).toHaveLength(64);
+      expect((details as { passedCaseTitles: string[] }).passedCaseTitles)
+        .toHaveLength(MAX_RECORDED_PASSED_CASES);
       expect((details as { passedCaseTitles: string[] }).passedCaseTitles[0])
         .toBe('account-first > new account');
       expect(parseTestRunExecutionDetails(details)).toEqual(details);
