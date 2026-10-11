@@ -127,7 +127,7 @@ describe('source-preview export — R-1 selection parity with the installer cut'
 });
 
 describe('EI-25303741091409100 — pinned verifier source identity', () => {
-  it('transports a complete list beyond the argv/env limit and retains merged hashes and gitlinks', () => {
+  it('transports a complete list beyond the argv/env limit through file and piped stdout receipts', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-large-list-fixture'));
     const paths = Array.from({ length: 2000 }, (_, i) =>
       `apps/operator/acceptance/${String(i).padStart(4, '0')}-${'x'.repeat(70)}.ts`);
@@ -154,7 +154,31 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(receipt.testedInputs).toEqual([...paths, tooling].sort().map((path) => ({ path,
       sha256: createHash('sha256').update(readFileSync(join(fixture.repo, path))).digest('hex') })));
     expect(statSync(receiptFile).mode & 0o777).toBe(0o600);
+    const expected = await validateVerifierInputs({ repo: fixture.repo, ref: sha,
+      inputs: [tooling], inputsFile });
+    const checked = spawnSync(process.execPath, [join(__dirname, '../../../scripts/source-preview.mjs'),
+      'verifier-inputs-check', '--repo', fixture.repo, '--ref', sha,
+      '--inputs', tooling, '--inputs-file', inputsFile],
+    { encoding: 'utf8', env: childEnv(), timeout: 60_000, maxBuffer: 1024 * 1024 });
+    expect(checked.status, checked.stderr).toBe(0);
+    const expectedText = `${JSON.stringify(expected)}\n`;
+    expect(Buffer.byteLength(checked.stdout)).toBe(Buffer.byteLength(expectedText));
+    expect(JSON.parse(checked.stdout)).toEqual(expected);
   }, 120_000);
+
+  it('flushes a large CLI rejection to piped stderr before preserving exit code 2', () => {
+    const inputsFile = join(tmp, 'verifier-large-invalid-inputs.json');
+    const invalid = `../${'x'.repeat(200_000)}`;
+    writeFileSync(inputsFile, JSON.stringify([invalid]));
+    const result = spawnSync(process.execPath, [join(__dirname, '../../../scripts/source-preview.mjs'),
+      'verifier-inputs-check', '--repo', fx.repo, '--ref', fx.commit, '--inputs-file', inputsFile],
+    { encoding: 'utf8', env: childEnv(), timeout: 60_000, maxBuffer: 1024 * 1024 });
+    expect(result.status).toBe(2);
+    const expected = `ERROR: invalid tested input: ${invalid}\n`;
+    expect(Buffer.byteLength(result.stderr)).toBe(Buffer.byteLength(expected));
+    expect(createHash('sha256').update(result.stderr).digest('hex'))
+      .toBe(createHash('sha256').update(expected).digest('hex'));
+  });
 
   it.each(['', '{bad', '{}', '[]', '[null]', '["../outside"]', '[""]'])
     ('refuses malformed or empty input files before exporting (%s)', async (body) => {
