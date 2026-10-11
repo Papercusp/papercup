@@ -6637,7 +6637,193 @@
      "summary": "plan lane iphone-public-release-2026-08-11#P-013 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "iphoneP013EvidenceQualification": {
+    "status": "retained-current-public-shipment-requirement",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004740",
+    "auditProofs": [
+     "WI-10005820#comment:1174295",
+     "WI-10005820#comment:1174308"
+    ],
+    "sourceAuthority": {
+     "plan": "iphone-public-release-2026-08-11",
+     "item": "P-013",
+     "version": 86,
+     "contentHash": "6192e3634380dddea809f42953af4bd80f7ca4deec86fcbafae52bf09ce6069c",
+     "planState": "active",
+     "storedStatus": "todo",
+     "effectiveStatus": "blocked",
+     "unresolvedBlockers": [
+      "P-010",
+      "P-011",
+      "P-012",
+      "P-016"
+     ],
+     "subjectState": "blocked",
+     "subjectAssignee": null,
+     "subjectCompletionAuthority": null,
+     "subjectFingerprint": "a1ce288be19575c8d934d259f6a96668458ad6e8d7872213b8e7e873129d3188",
+     "decisions": [
+      "D-012",
+      "D-013",
+      "D-017",
+      "D-019",
+      "D-021",
+      "D-023",
+      "D-024",
+      "D-025"
+     ],
+     "dependencyQualification": "Original version52 and its three dependencies are historical provenance. The current revision86 P-013 read also requires P-016; all four current blockers remain unresolved.",
+     "milestoneQualification": "D-024 and D-025 separate initial registered-device manual download from final store delivery. They preserve Apple approval, public App Store installation and independent acceptance requirements. D-021 supersedes future Actions execution; D-023 reuses the existing exact-source signed candidate manifest.",
+     "rightsQualification": "D-017 supplies Apple-input, distribution and device authority. Authority does not establish executed signing, Apple approval or public installation."
+    },
+    "specs": [
+     {
+      "id": "AUTO-BAR-R-7-P-013",
+      "revision": 2,
+      "contentHash": "f7f8e57b087cd25068b29eb1000b9df4e208d8415d698ee4438bfee3d9509c64",
+      "lifecycle": "draft",
+      "requiredEvidence": [
+       "live"
+      ],
+      "requiredTestLayers": [
+       "independent-acceptance",
+       "public-install"
+      ]
+     },
+     {
+      "id": "AUTO-REQ-M-001-P-013",
+      "revision": 2,
+      "contentHash": "7b5ab246d7672db6e72b5b1c23ffd537e9c2f85962a6e3b67fb189d0e109be5e",
+      "lifecycle": "active",
+      "requiredEvidence": [
+       "current source and executed result receipts",
+       "source-bound outcome comparison"
+      ],
+      "requiredTestLayers": [
+       "live"
+      ]
+     },
+     {
+      "id": "AUTO-REQ-M-002-P-013",
+      "revision": 2,
+      "contentHash": "71e86335a967534654fed08a9884f7b8ad398aef45ce881a816a4e303986df8f",
+      "lifecycle": "active",
+      "requiredEvidence": [
+       "current independent acceptance scorecard",
+       "public App Store install receipt"
+      ],
+      "requiredTestLayers": [
+       "live"
+      ]
+     }
+    ],
+    "bindingQualification": {
+     "scope": "Current exact R-7/M-001/M-002 clause query for this plan, without a work-item filter; prior work-item-filter query on the saved preparation.",
+     "evidenceCount": 0,
+     "limit": 100,
+     "truncatedByLimit": false,
+     "qualification": "Only the returned registered binding plane was observed. Empty bindings do not establish universal artifact absence, execution failure or acceptance."
+    },
+    "acceptanceQualification": {
+     "rubric": "acceptance-iphone-public-release-2026-08-11",
+     "revision": 3,
+     "criteriaHash": "b8054b53b1821d7a9af7af9e25ad91dbcf8f9f52b72be7d07f60801a3220c763",
+     "bar": "R-7",
+     "barHash": "cef32e71c5a868364f51856f2137f63ecbbab2674ce1c2a136c6946aad45a253",
+     "evidencePlane": "live",
+     "mandatory": true,
+     "passRatings": [
+      "healthy"
+     ],
+     "vettingStatus": "unvetted",
+     "vettingSatisfied": false,
+     "vettingReason": "rejected-attestation",
+     "pendingAudit": "EI-24782775335411324",
+     "qualification": "Current returned rubric requires exact final-candidate Apple approval, independently resolved public listing/install/core journey, beta-defect dispositions, code-truth audit and independent feature-ship acceptance. Historical checkpoint vetted/pass narration does not settle the current pending grading audit."
+    },
+    "sourceInspection": {
+     "scope": "Complete store listing and App Review packet, BUILD.md lines270-398, shipped-handler entrypoint and selected acceptance-gate sections; source review only.",
+     "storeQualification": "Listing/reviewer documents prepare desktop-companion copy, exact screenshots and durable clean-install reviewer access. BUILD separates unsigned CI and registered-device Ad Hoc export from TestFlight and public App Store delivery.",
+     "shipmentGuardQualification": "shouldEvaluateAcceptanceGate at set-plan-status.ts314 selects new shipped transitions. Handler725-771 invokes evaluatePlanAcceptanceGate before lifecycle mutation and returns on an unsatisfied verdict. Successful changed shipment stamps a same-transaction gate receipt877-894. The wrapper at plan-acceptance-gate.ts2012-2033 reaches the evaluator691+; selected1240-1312 checks independent verification, blind review and current design proof;1720-1770 refuses nonpassing mandatory outcome ratings.",
+     "runtimeLimit": "This is generic static source reachability, not an executed M-002 counterexample or live phone-specific shipment proof. Flags, force and exemption branches exist. No gate evaluation, live release probe or shipment transition was performed.",
+     "files": [
+      {
+       "harness": "papercup-rust-mobile",
+       "path": "store/LISTING.md",
+       "bytes": 4696,
+       "sha256": "3e842cc0f3cba2d0fa5ee1541dc94237e4a95c426d58b73535ebd17e432a7bc4"
+      },
+      {
+       "harness": "papercup-rust-mobile",
+       "path": "store/APP-STORE-REVIEW.md",
+       "bytes": 5624,
+       "sha256": "084d7e3555e28514d56a6c5142f40a06893c6314bdc658956571e8d5c95898c0"
+      },
+      {
+       "harness": "papercup-rust-mobile",
+       "path": "docs/BUILD.md",
+       "bytes": 25157,
+       "sha256": "b48dbd987ce0559114824f0c839c4674b1dabc1fcedf4c26062b6a7d644ed770"
+      },
+      {
+       "harness": "papercusp",
+       "path": "packages/operator-core/lib/agent-tools/plans/set-plan-status.ts",
+       "bytes": 54344,
+       "sha256": "333ba731d57d56ed69dfce6d9e949b832ca363badac8af98dfd340b12cafce6b"
+      },
+      {
+       "harness": "papercusp",
+       "path": "packages/operator-core/lib/plan-acceptance-gate.ts",
+       "bytes": 114512,
+       "sha256": "a96fc6d3e5784cc19076900b715fddda536512d574dfc489166f84fda76c2c32"
+      }
+     ]
+    },
+    "nativeReceiptQualification": {
+     "scope": "All three canonical Oct1 receipt JSON files were read completely. Their retained assertions are historical evidence; remote Actions, archive contents, artifact expiry and screenshots were not freshly revalidated.",
+     "observedCoverage": "Each receipt records an unsigned version1.0.0/build1 candidate, current-SDK CI,39 Swift unit tests and one clean-install UI smoke. Later receipts also record screenshot/privacy-manifest inventory;44e0670 records85 normal Rust tests,six runner guards and one ignored live Rust case.",
+     "acceptanceLimit": "The receipts explicitly exclude actual paired native journeys, physical iPhone/production APNs, signed Apple delivery and Apple approval/public App Store installation. They do not satisfy final R-7/M-001/M-002 acceptance.",
+     "files": [
+      {
+       "harness": "papercusp",
+       "path": "docs/evidence/iphone-native-candidate-043c02a-2026-10-01.json",
+       "bytes": 3304,
+       "sha256": "4c7845dbef624c5d2cf7b5d9e8c63a8b6f28eb58e12052dac8233346b8f9685f",
+       "sourceSha": "043c02a8851706cf35ff45b5d0645741f035a49d",
+       "workflowRunId": 36848652819,
+       "signed": false
+      },
+      {
+       "harness": "papercusp",
+       "path": "docs/evidence/iphone-native-candidate-44e0670-2026-10-01.json",
+       "bytes": 6119,
+       "sha256": "39e3b5d83290178f9c75668b4561b7a7e636b333f956ca2092d80b24f49f838f",
+       "sourceSha": "44e0670c9d94f29c39c84eba68c4f167fdf0bf3f",
+       "workflowRunId": 36876295484,
+       "signed": false
+      },
+      {
+       "harness": "papercusp",
+       "path": "docs/evidence/iphone-native-candidate-f961aff-2026-10-01.json",
+       "bytes": 4513,
+       "sha256": "d17da3708d5ae78537a9109ff953829a0629e55b6675c7ff4221e499bf1a547a",
+       "sourceSha": "f961aff81938c4402fa813f97843175b843d106a",
+       "workflowRunId": 36862989187,
+       "signed": false
+      }
+     ]
+    },
+    "auditBoundary": {
+     "historicalFields": "All172 prior rows, original version52 fields, prior qualifications, population and exclusions are preserved.",
+     "actualAcceptance": "Exact final-candidate Apple approval, public listing/install/core journey, beta fixes and independent code-truth/feature-ship acceptance are not established by this finite audit. Retain the current requirement; no duplicate, obsolete, superseded or accepted disposition.",
+     "historicalPhone9Reference": "Phone9/R68/WI-10005203#comment:1156678 remains separately unresolved; carry echoes are not evidence.",
+     "queueReconciliation": "Whole PERSONAL audit and200-versus172 reconciliation remain open.",
+     "ownerWalls": "Existing residue-authority and private-preview questions were already asked; their last saved answers remain open/null and were not re-read for this addition.",
+     "actions": "Only this additive evidence qualification; no child claims/state/holds, native/Actions/provider execution, LIVE_GATE_OPS, killed-goal revival, release acceptance or shipment."
+    }
+   }
   },
   {
    "id": "WI-10004757",
