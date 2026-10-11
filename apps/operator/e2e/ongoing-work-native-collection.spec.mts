@@ -18,6 +18,7 @@ function nativeCliArgs(command: string, pid: string, args: string[], windowId?: 
   // PID selects the bridge. document.title can differ from the OS window title.
   if (command === 'screenshot' && !windowId) throw new Error('Screenshots require an owned native window id');
   return [command, '--pid', pid,
+    ...(command === 'eval' ? ['--json'] : []),
     ...(command === 'screenshot' ? ['--selector', 'html', '--window-id', windowId!] : []), ...args];
 }
 
@@ -90,6 +91,43 @@ test('native CLI JSON boundary preserves scalar and JSON-looking string values',
   expect(decodeNativeBridgeJson('{"value":1}')).toEqual({ value: 1 });
   expect(decodeNativeBridgeJson('[1,"hud"]')).toEqual([1, 'hud']);
   expect(() => decodeNativeBridgeJson('not JSON')).toThrow();
+});
+
+test('native eval transport preserves empty and JSON-looking strings through the installed formatter', async () => {
+  const run = promisify(execFile);
+  const executable = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools';
+  const cliPath = await realpath(executable.includes('/') ? executable : (await run('which', [executable])).stdout.trim());
+  const source = (await readFile(`${dirname(cliPath)}/commands/eval.js`, 'utf8'))
+    .replace(/^import .*;$/gm, '').replace('export function registerEval', 'function registerEval');
+  let action!: (expression: string, opts: { json: boolean }) => Promise<void>;
+  class Command {
+    description() { return this; }
+    argument() { return this; }
+    option() { return this; }
+    addHelpText() { return this; }
+    action(callback: typeof action) { action = callback; return this; }
+  }
+  let value: unknown;
+  const output: string[] = [];
+  runInNewContext(`${source}\nregisterEval({ addCommand() {} });`, {
+    Command, addBridgeOptions() {}, resolveBridge: async () => ({}),
+    evaluateExpression: async () => ({ value }),
+    console: { log: (text: string) => output.push(text) },
+  });
+  const args = nativeCliArgs('eval', '123', ['fixture expression']);
+  for (const expected of ['', 'false', '0', '{"value":1}', 'null', 'hud', false, 0, null, [1, 'hud'], { value: 1 }]) {
+    value = expected;
+    output.length = 0;
+    await action('fixture expression', { json: args.includes('--json') });
+    expect(decodeNativeBridgeJson(output.join('\n'), 'eval')).toEqual(expected);
+  }
+});
+
+test('native eval transport rejects absent or malformed result envelopes', () => {
+  for (const stdout of ['', '{}', '[]', 'null', '{"value":1}', 'not JSON']) {
+    expect(() => decodeNativeBridgeJson(stdout, 'eval')).toThrow();
+  }
+  expect(decodeNativeBridgeJson('{"result":null}', 'eval')).toBeNull();
 });
 import { insertNativeCollectionGoal, insertNativeCollectionPlan, nativeCollectionDeclaration, setNativeCollectionPlanArchived,
   recordNativeCollectionJourney } from './_ongoing-work-native-fixture';
@@ -229,10 +267,12 @@ test('real Work on Everything goal exposes its saved picks in the native progres
   const run = promisify(execFile), bridge = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!;
   const native = async (command: string, ...args: string[]) => {
     await run('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 10_000 });
-    const result = await run(bridge, [command, '--pid', process.env.VERIFY_TAURI_PID!, ...args], { timeout: 20_000 });
-    return decodeNativeBridgeJson(result.stdout);
+    const invocation = await nativeCliInvocation(command, process.env.VERIFY_TAURI_PID!, args);
+    const result = await run(bridge, invocation.args, { timeout: 20_000, env: invocation.env });
+    if (command === 'screenshot') return result.stdout.trim();
+    return decodeNativeBridgeJson(result.stdout, command);
   };
-  const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
+  const measure = (expression: string) => native('eval', expression);
   const ready = (expression: string) => expect.poll(() => measure(expression), {
     timeout: 90_000, intervals: [500, 1000],
   }).toBe(true);
@@ -346,9 +386,9 @@ test('Work on Everything Design C cockpit and priority editor stay readable in t
     const invocation = await nativeCliInvocation(command, process.env.VERIFY_TAURI_PID!, args);
     const result = await run(bridge, invocation.args, { timeout: 20_000, env: invocation.env });
     if (command === 'screenshot') return result.stdout.trim();
-    return decodeNativeBridgeJson(result.stdout);
+    return decodeNativeBridgeJson(result.stdout, command);
   }
-  const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
+  const measure = (expression: string) => native('eval', expression);
   let readyFailureCount = 0;
   const ready = async (expression: string) => {
     try {
@@ -631,10 +671,10 @@ test(`native declared collections persist controls and reject a barrier-controll
       const invocation = await nativeCliInvocation(command, process.env.VERIFY_TAURI_PID!, args);
       const result = await run(bridge, invocation.args, { timeout: 15_000, env: invocation.env });
       if (command === 'screenshot') return result.stdout.trim();
-      return decodeNativeBridgeJson(result.stdout);
+      return decodeNativeBridgeJson(result.stdout, command);
     });
   }
-  const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
+  const measure = (expression: string) => native('eval', expression);
   const editor = '[data-testid="goal-data"]';
   async function ready(expression: string) {
     await expect.poll(() => measure(expression), { timeout: 30_000, intervals: [200, 500, 1000] }).toBe(true);
