@@ -110,12 +110,22 @@ describe('journal native placement seam', () => {
     h.turn.mockResolvedValueOnce({ text: '## Findings\nUnpublished report.', ts: new Date('2026-10-01T00:00:00.000Z') });
     h.extract.mockReturnValueOnce({ note: 'journal note', source: 'agent', flagged: false });
     h.observeReport.mockImplementationOnce(() => new Promise<boolean>(() => {}));
-    const result = await tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never);
-    expect(result).toMatchObject({ data: { ok: true, unpublishedReportObservationScheduled: true } });
-    expect(result.data).not.toHaveProperty('unpublishedReportObserved');
-    expect(h.observeReport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      ownerId: 'holder', workspaceId: 'workspace', assistantText: '## Findings\nUnpublished report.',
-    }));
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([
+        tool.handler({ owner: 'holder', session_id: 'native', source_kind: 'codex' }, {} as never),
+        new Promise<{ data: { error: string } }>(resolve => {
+          deadline = setTimeout(() => resolve({ data: { error: 'pending report detector delayed the journal response' } }), 250);
+        }),
+      ]);
+      expect(result).toMatchObject({ data: { ok: true, unpublishedReportObservationScheduled: true } });
+      expect(result.data).not.toHaveProperty('unpublishedReportObserved');
+      expect(h.observeReport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        ownerId: 'holder', workspaceId: 'workspace', assistantText: '## Findings\nUnpublished report.',
+      }));
+    } finally {
+      clearTimeout(deadline);
+    }
   }, 1000);
   it("does not persist the operator '*' auto-scope as report observation harness attribution", async () => {
     h.turn.mockResolvedValueOnce({ text: 'Unpublished report.', ts: new Date('2026-10-01T00:00:00.000Z') });
