@@ -41,6 +41,7 @@ const {
   operationBindingM,
   operationMatchM,
   getWorkItemM,
+  readScorecardEvidenceM,
 } = vi.hoisted(() => ({
   publishReportM: vi.fn(),
   getReportM: vi.fn(),
@@ -55,6 +56,7 @@ const {
   operationBindingM: vi.fn(),
   operationMatchM: vi.fn(),
   getWorkItemM: vi.fn(),
+  readScorecardEvidenceM: vi.fn(),
 }));
 
 // Partial mock: the real enums + the real error CLASS are kept, because the tool
@@ -89,6 +91,7 @@ vi.mock('../../blueprint/operation-worker-binding', () => ({
   matchOperationWorkerClaim: operationMatchM,
 }));
 vi.mock('../../work-items', () => ({ getWorkItem: getWorkItemM }));
+vi.mock('../../scorecards', () => ({ readScorecardEvidence: readScorecardEvidenceM }));
 
 const publishTool = (await import('./publish')).default;
 const getTool = (await import('./get')).default;
@@ -171,6 +174,7 @@ beforeEach(() => {
   emitAwaitedEventM.mockResolvedValue(undefined);
   operationBindingM.mockResolvedValue({ status: 'none' });
   operationMatchM.mockReturnValue({ allowed: true });
+  readScorecardEvidenceM.mockResolvedValue({ kind: 'not_found' });
 });
 
 // ── R-2: origin is stamped, never accepted ───────────────────────────────────
@@ -400,6 +404,8 @@ describe('visibility matrix (R-7) — every read passes a viewer', () => {
   it('SPEC-P-003-read-visibility-enforced: get / list / search all hand the store a viewer', async () => {
     await getTool.handler({ id: 'rpt_1' } as never, CTX as never);
     expect(getReportM.mock.calls[0][3]).toEqual(expectedViewer);
+    expect(getReportM.mock.calls[0][4]).toBeUndefined();
+    expect(readScorecardEvidenceM).not.toHaveBeenCalled();
 
     await listTool.handler({} as never, CTX as never);
     expect(listReportsM.mock.calls[0][1].viewer).toEqual(expectedViewer);
@@ -431,6 +437,70 @@ describe('visibility matrix (R-7) — every read passes a viewer', () => {
     getReportM.mockResolvedValue(null);
     const out = body(await getTool.handler({ id: 'rpt_secret' } as never, CTX as never) as Out);
     expect(out.results[0]).toMatchObject({ ok: false, id: 'rpt_secret', error: 'not_found' });
+  });
+});
+
+describe('reports:get — judge-only scorecard citation scope', () => {
+  const judgeCtx = { ...CTX, role: 'judge' };
+  const judgeExpectedViewer = { isOwner: false, ownerId: 'su-author', potSlug: 'papercusp' };
+
+  it('reads an owner report only after the exact citation is found in the named scorecard', async () => {
+    readScorecardEvidenceM.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        criteria: [{ key: 'evidence', rating: 'pass', evidence: 'Audited report:rpt_private.' }],
+      },
+    });
+    getReportM.mockResolvedValue(record({ reportId: 'rpt_private' }));
+
+    const out = body(await getTool.handler({
+      id: 'rpt_private',
+      scorecardIssueId: 'EI-123',
+    } as never, judgeCtx as never) as Out);
+
+    expect(readScorecardEvidenceM).toHaveBeenCalledWith('EI-123');
+    expect(getReportM).toHaveBeenCalledWith(
+      expect.anything(),
+      'ws1',
+      'rpt_private',
+      judgeExpectedViewer,
+      { kind: 'scorecard-citation', reportId: 'rpt_private' },
+    );
+    expect(out.results[0]).toMatchObject({ ok: true, id: 'rpt_private' });
+  });
+
+  it('does not grant the scoped path to other roles or similarly prefixed ids', async () => {
+    readScorecardEvidenceM.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        criteria: [{ key: 'evidence', rating: 'pass', evidence: 'report:rpt_private-extra' }],
+      },
+    });
+
+    const nonJudge = body(await getTool.handler({
+      id: 'rpt_private',
+      scorecardIssueId: 'EI-123',
+    } as never, { ...CTX, role: 'reviewer' } as never) as Out);
+    expect(nonJudge.results[0]).toMatchObject({ ok: false, id: 'rpt_private', error: 'not_found' });
+    expect(readScorecardEvidenceM).not.toHaveBeenCalled();
+    expect(getReportM).not.toHaveBeenCalled();
+
+    const uncited = body(await getTool.handler({
+      id: 'rpt_private',
+      scorecardIssueId: 'EI-123',
+    } as never, judgeCtx as never) as Out);
+    expect(uncited.results[0]).toMatchObject({ ok: false, id: 'rpt_private', error: 'not_found' });
+    expect(getReportM).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['bulk reads', { ids: ['rpt_private'], scorecardIssueId: 'EI-123' }],
+    ['lineage reads', { id: 'rpt_private', scorecardIssueId: 'EI-123', lineage: true }],
+  ])('rejects %s from the scoped path', async (_label, args) => {
+    const out = body(await getTool.handler(args as never, judgeCtx as never) as Out);
+    expect(out.results[0]).toMatchObject({ ok: false, error: 'invalid_evidence_scope' });
+    expect(readScorecardEvidenceM).not.toHaveBeenCalled();
+    expect(getReportM).not.toHaveBeenCalled();
   });
 });
 

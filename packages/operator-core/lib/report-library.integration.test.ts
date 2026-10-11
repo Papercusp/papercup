@@ -746,6 +746,28 @@ describe('report_library store (real PG)', () => {
       .not.toBeNull();
   });
 
+  it('REPORT-CITED-READ-SCOPE-P001: a citation scope opens one exact private report only', async () => {
+    const workspaceId = nextWs();
+    const cited = await publishReport(
+      db.adminSql,
+      { workspaceId, title: 'Cited private report', visibility: 'owner' },
+      { harnessSlug: 'private-pot', authorOwnerId: 'report-author' },
+    );
+    const unrelated = await publishReport(
+      db.adminSql,
+      { workspaceId, title: 'Unrelated private report', visibility: 'owner' },
+      { harnessSlug: 'private-pot', authorOwnerId: 'report-author' },
+    );
+    const judge: ReportViewer = { ownerId: 'judge-agent', potSlug: 'judge-pot' };
+    const scope = { kind: 'scorecard-citation' as const, reportId: cited.reportId };
+
+    expect(await getReport(db.adminSql, workspaceId, cited.reportId, judge)).toBeNull();
+    expect(await getReport(db.adminSql, workspaceId, cited.reportId, judge, scope))
+      .toMatchObject({ reportId: cited.reportId, visibility: 'owner' });
+    expect(await getReport(db.adminSql, workspaceId, unrelated.reportId, judge, scope)).toBeNull();
+    expect(await listReports(db.adminSql, { workspaceId, viewer: judge })).toEqual([]);
+  });
+
   it('lists by subject, kind, origin and tags — the three axes filter independently', async () => {
     const workspaceId = nextWs();
     const about = { kind: 'plan' as const, ref: 'reports-library-2026-09-15' };
