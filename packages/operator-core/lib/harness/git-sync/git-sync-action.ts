@@ -55,7 +55,13 @@ import { describeStaleHolderVerdict, reclaimDeadExclusiveHolders } from '../../a
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import type { liveLockHoldingsStrict } from '../../agent-tools/locks/live-lock-paths';
 // P-014: the commit-gate census is live locks ∪ restricted-disclosure holds.
-import { isRestrictedHoldIntent, readGitSyncCensusStrict } from '../../personal-vault/git-sync-hold';
+import {
+  GIT_SYNC_CENSUS_LEGS,
+  isCensusHoldIntent,
+  readGitSyncCensusStrict,
+  readTurnHoldings,
+  type GitSyncCensusLeg,
+} from '../../personal-vault/git-sync-hold';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { describeFetchError, loopbackFetch } from '../../loopback-fetch';
@@ -3114,8 +3120,9 @@ async function notifySkippedLockedPaths(
     if (!('owner' in skipped)) continue;
     // P-014: a restricted-disclosure hold is not an edit lock. Its holder cannot lift it
     // with locks:release (only releasing the disclosure does), so telling them to on every
-    // tick is noise. The routine metadata still records the skipped path and its intent.
-    if (isRestrictedHoldIntent(skipped.intent)) continue;
+    // tick is noise. The same holds for a turn-scoped hold, which lifts when the holder's
+    // turn ends. The routine metadata still records the skipped path and its intent.
+    if (isCensusHoldIntent(skipped.intent)) continue;
     const holder = skipped.owner.trim();
     if (!holder) continue;
     const rows = byHolder.get(holder);
@@ -3911,11 +3918,15 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // WI-38594: diff-derived commit subjects (default ON) — subject = the staged diff,
     // intent line demoted to the body. OFF = pre-WI-38594 subjects, no deploy needed.
     const diffSubjectsOn = await guarded('read-diff-subjects-flag', () => getFlag(FLAGS.GIT_SYNC_DIFF_SUBJECTS, slug));
+    // git-sync-turn-scoped-commit-hold-2026-10-11 P-004 kill-switch (default ON): hold every
+    // path a live session edited during its current turn until that turn ends. OFF = the
+    // census has no turn-holds leg, i.e. git-sync sweeps exactly as before the plan.
+    const turnHoldOn = await guarded('read-turn-hold-flag', () => getFlag(FLAGS.GIT_SYNC_TURN_HOLD, slug));
     // File locks are the automatic edit-plane authority. Keep git-sync's broad
     // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
     // maps these superproject-root-relative paths into each submodule before add.
     let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
-    type CensusLeg = 'live-locks' | 'restricted-holds' | 'working-tree-window';
+    type CensusLeg = GitSyncCensusLeg;
     type CensusLegState = {
       status: 'not-started' | 'running' | 'complete' | 'failed';
       startedAtMs?: number;
@@ -3932,7 +3943,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         }
         return `${leg}=${state.status}${state.elapsedMs == null ? '' : `:${state.elapsedMs}ms`}`;
       };
-      return `${phase} [${detail('live-locks')}, ${detail('restricted-holds')}, ${detail('working-tree-window')}` +
+      return `${phase} [${GIT_SYNC_CENSUS_LEGS.map(detail).join(', ')}` +
         `${censusGitCommand ? `; git=${censusGitCommand}` : ''}]`;
     };
     const observeCensusLeg = (leg: CensusLeg, status: 'started' | 'completed' | 'failed'): void => {
@@ -3959,10 +3970,12 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         'live-locks': { status: 'not-started' },
         'restricted-holds': { status: 'not-started' },
         'working-tree-window': { status: 'not-started' },
+        'turn-holds': { status: 'not-started' },
       };
       censusGitCommand = null;
       return readGitSyncCensusStrict({
         onLeg: observeCensusLeg,
+        ...(turnHoldOn ? { turn: () => readTurnHoldings() } : {}),
         ...(repoPath
           ? {
               window: {
