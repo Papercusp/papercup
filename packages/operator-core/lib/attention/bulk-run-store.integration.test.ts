@@ -708,6 +708,37 @@ describe('attention bulk-run store (real PG)', () => {
     expect((await getRun(run.runId))!.automationPolicy).not.toHaveProperty('riskLevels');
   });
 
+  // EI-25573324094056113: the release is one-shot. A recommendation made by a run
+  // whose own receipt already permitted automatic action has had its auto-accept
+  // pass; re-releasing it every fire re-consulted the same assignee ~40 times.
+  it('holds a recommendation its own run already adjudicated under the same automatic policy', async () => {
+    const riskLevels = { low: 'automatic', medium: 'automatic', high: 'automatic' } as const;
+    const standing = { level: 'L2', minConfidence: 'medium', riskLevels } as const;
+
+    const before = await createRun({ items: seed('once-before'), automationPolicy: { mode: 'review-all', level: 'L0', minConfidence: 'high' } });
+    await reportOutcomes({ runId: before.runId, outcomes: [
+      { itemId: 'coord-escalation:once-before-1', outcome: 'recommended', disposition: 'routed', recommendationKind: 'routed', rationale: 'routed to the assignee', confidenceLevel: 'high' },
+    ] });
+    await unsafeSetRunPhaseForFixtures({ runId: before.runId, phase: 'review' });
+
+    const under = await createRun({ items: seed('once-under'), automationPolicy: { mode: 'safe-high', ...standing } });
+    await reportOutcomes({ runId: under.runId, outcomes: [
+      { itemId: 'coord-escalation:once-under-1', outcome: 'recommended', disposition: 'routed', recommendationKind: 'routed', rationale: 'routed to the assignee', confidenceLevel: 'high' },
+    ] });
+    await unsafeSetRunPhaseForFixtures({ runId: under.runId, phase: 'review' });
+    expect((await getRun(under.runId))!.automationPolicy).toMatchObject({ level: 'L2', riskLevels });
+
+    // Only the reported rows; seed()'s unreported siblings stay `pending` and are held either way.
+    const reported = (ids: Set<string>) => [...ids].filter((id) => id.startsWith('coord-escalation:once-'));
+    const held = reported(await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve', standing));
+    // The pre-autonomy recommendation gets its one fresh adjudication; the one
+    // already made under this policy stays held for the owner.
+    expect(held).toEqual(['coord-escalation:once-under-1']);
+    // Without a standing automatic policy both are held, as before.
+    const reviewOnly = reported(await getItemIdsAwaitingOwnerReview(h.ws, 'inbox-resolve'));
+    expect(reviewOnly.sort()).toEqual(['coord-escalation:once-before-1', 'coord-escalation:once-under-1']);
+  });
+
   it('admits owner acceptance only in review and never rewrites an executing or handled row', async () => {
     const run = await createRun({ items: seed('owner-accept-rail') });
     await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-resolver' });

@@ -1089,8 +1089,9 @@ export async function getItemIdsAwaitingOwnerReview(
 ): Promise<Set<string>> {
   const { sql } = getOrgPg();
   const ws = workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ item_id: string; outcome: BulkItemOutcome; item_kind: string | null; ref_kind: string | null; confidence_level: BulkConfidence | null; confidence: 'low' | 'high' | null }[]>`
-    SELECT DISTINCT i.item_id, i.outcome, i.item_kind, i.item_ref->>'kind' AS ref_kind, i.confidence_level, i.confidence
+  const rows = await sql<{ item_id: string; outcome: BulkItemOutcome; item_kind: string | null; ref_kind: string | null; confidence_level: BulkConfidence | null; confidence: 'low' | 'high' | null; run_policy: unknown }[]>`
+    SELECT DISTINCT i.item_id, i.outcome, i.item_kind, i.item_ref->>'kind' AS ref_kind, i.confidence_level, i.confidence,
+           r.automation_policy AS run_policy
       FROM harness_shared.attention_bulk_run_items i
       JOIN harness_shared.attention_bulk_runs r
         ON r.workspace_id = i.workspace_id AND r.run_id = i.run_id
@@ -1098,10 +1099,63 @@ export async function getItemIdsAwaitingOwnerReview(
        AND (${kind ?? null}::text IS NULL OR r.run_kind = ${kind ?? null})
        AND i.outcome <> 'auto_resolved'
   `;
-  return new Set(rows.filter((row) => row.outcome !== 'recommended' || !automaticPolicy || !standingAutomationEligibility(
-    automaticPolicy, row.ref_kind ?? row.item_kind ?? '',
-    row.confidence_level ?? (row.confidence === 'high' ? 'high' : row.confidence === 'low' ? 'low' : null),
-  ).allowed).map((row) => row.item_id));
+  return new Set(rows.filter((row) => !automaticPolicy || !releasedForAutonomousReadjudication({
+    outcome: row.outcome,
+    kind: row.ref_kind ?? row.item_kind ?? '',
+    confidence: row.confidence_level ?? (row.confidence === 'high' ? 'high' : row.confidence === 'low' ? 'low' : null),
+    runPolicy: runStandingPolicy(row.run_policy),
+  }, automaticPolicy)).map((row) => row.item_id));
+}
+
+/**
+ * The standing-policy view of a run's immutable automation receipt, or null when
+ * the run carries none. A legacy receipt has only `mode`; it is read the same
+ * way normalizeBulkAutomationPolicy reads it, so `review-all` means L0.
+ */
+export function runStandingPolicy(raw: unknown): StandingBulkAutomationPolicy | null {
+  const obj = asObject(raw);
+  if (Object.keys(obj).length === 0) return null;
+  const policy = normalizeBulkAutomationPolicy(obj as Partial<BulkAutomationPolicy>);
+  return {
+    level: policy.level ?? (policy.mode === 'review-all' ? 'L0' : 'L1'),
+    minConfidence: policy.minConfidence,
+    ...(policy.riskLevels ? { riskLevels: { ...policy.riskLevels } } : {}),
+  };
+}
+
+/**
+ * PURE: should a held review row be released so the scheduled seeder puts it in
+ * front of a resolver again?
+ *
+ * The release exists for one transition: the owner grants automatic autonomy,
+ * and recommendations that were held for review under the old policy get one
+ * fresh live adjudication so report auto-accept can perform them. It must be
+ * one-shot. If the run that produced the recommendation was already launched
+ * under a policy that permitted automatic action on it, auto-accept already had
+ * its chance and declined. That happens because the recommendation carried no
+ * terminal action, or because the action was refused. Re-asking about an
+ * unchanged item gets the same answer.
+ *
+ * Without this check the release had no memory. With every risk level set to
+ * automatic, each 15-minute fire re-seeded every high-confidence routed or
+ * investigate recommendation, and each resolver re-consulted the same assignee.
+ * WI-10007929 was consulted about 40 times between 2026-10-09 and 2026-10-11 and
+ * got the same "retain" answer each time (EI-25573324094056113).
+ */
+export function releasedForAutonomousReadjudication(
+  row: {
+    outcome: BulkItemOutcome;
+    kind: string;
+    confidence: BulkConfidence | null;
+    /** The producing run's automation receipt (runStandingPolicy), or null. */
+    runPolicy: StandingBulkAutomationPolicy | null;
+  },
+  automaticPolicy: StandingBulkAutomationPolicy,
+): boolean {
+  if (row.outcome !== 'recommended') return false;
+  if (!standingAutomationEligibility(automaticPolicy, row.kind, row.confidence).allowed) return false;
+  if (row.runPolicy && standingAutomationEligibility(row.runPolicy, row.kind, row.confidence).allowed) return false;
+  return true;
 }
 
 /**
