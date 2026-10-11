@@ -5,6 +5,7 @@
  * (memory/bench/ab-live-recall-cli.ts over memory_canonical) would have produced.
  */
 import { describe, expect, it } from 'vitest';
+import { captureCallWindow, startWaitSampler, statementSnapshot } from './bm25-hybrid-recall-cli';
 import {
   COLD_LATENCY_P95_CEILING_MS,
   LATENCY_P95_CEILING_MS,
@@ -27,6 +28,7 @@ import {
   rankOf,
   redactPairsForArtifact,
   sampleFingerprint,
+  selectReplayPairs,
   splitDisjointSamples,
   statementDeltas,
   steadyPassProblems,
@@ -56,6 +58,22 @@ function pair(i: number, legacyRank: number | null, bm25Rank: number | null, sou
 function sample(n: number, legacyHits: number, bm25Hits: number, source = 'work_item'): PairResult[] {
   return Array.from({ length: n }, (_, i) => pair(i, i < legacyHits ? 1 : null, i < bm25Hits ? 2 : null, source));
 }
+
+describe('saved tail replay selection', () => {
+  it('selects original per-source indices and drops the saved observations', () => {
+    const saved = [...sample(4, 4, 4), ...sample(4, 4, 4, 'session_turn')];
+    expect(selectReplayPairs(saved, ['work_item'], [3, 1])).toEqual([
+      { ...saved[3], arms: {} }, { ...saved[1], arms: {} },
+    ]);
+  });
+  it('refuses invalid indices and missing or redacted queries instead of changing the sample', () => {
+    const saved = sample(2, 2, 2);
+    for (const indices of [[], [-1], [1, 1], [0.5], [2]])
+      expect(() => selectReplayPairs(saved, ['work_item'], indices)).toThrow();
+    saved[0]!.query = '[redacted identity]';
+    expect(() => selectReplayPairs(saved, ['work_item'], [0])).toThrow('redacted');
+  });
+});
 
 describe('summarizeArm', () => {
   it('counts recall@K, MRR and zero-hits over the observed pairs', () => {
@@ -517,7 +535,7 @@ describe('R-18 steady pass: reported data only, it judges nothing (D-026, D-027)
 
 describe('statementDeltas (pg_stat_statements read-time attribution, D-024)', () => {
   const stat = (queryid: string, calls: number, totalExecMs: number, read: number, readMs: number): StatementStat => ({
-    queryid, calls, totalExecMs, sharedBlksHit: calls * 100, sharedBlksRead: read, sharedBlkReadMs: readMs, query: `q${queryid}`,
+    userid: '1', dbid: '2', toplevel: true, queryid, calls, totalExecMs, sharedBlksHit: calls * 100, sharedBlksRead: read, sharedBlkReadMs: readMs, query: `q${queryid}`,
   });
 
   it('subtracts the before snapshot, keeps statements with calls in the window, slowest first', () => {
@@ -537,11 +555,21 @@ describe('statementDeltas (pg_stat_statements read-time attribution, D-024)', ()
   it('reports no read share for a zero-time statement', () => {
     expect(statementDeltas([], [stat('9', 2, 0, 0, 0)])[0]!.readTimeShare).toBeNull();
   });
+
+  it('never subtracts a different user, database or nesting entry sharing queryid', () => {
+    const a = stat('same', 10, 1000, 0, 0);
+    const b = { ...a, userid: '9', calls: 2, totalExecMs: 1322 };
+    const c = { ...a, dbid: '9', calls: 3, totalExecMs: 500 };
+    const d = { ...a, toplevel: false, calls: 7, totalExecMs: 400 };
+    expect(statementDeltas([a, b, c, d], [d, c, b, { ...a, calls: 11, totalExecMs: 1010 }]))
+      .toMatchObject([{ userid: '1', dbid: '2', toplevel: true, queryid: 'same', calls: 1, totalExecMs: 10 }]);
+    expect(statementDeltas([a, b], [b, a])).toEqual([]);
+  });
 });
 
 describe('per-call attribution (D-026)', () => {
   const stat = (queryid: string, calls: number, totalExecMs: number, read: number, readMs: number): StatementStat => ({
-    queryid, calls, totalExecMs, sharedBlksHit: 0, sharedBlksRead: read, sharedBlkReadMs: readMs, query: '',
+    userid: '1', dbid: '2', toplevel: true, queryid, calls, totalExecMs, sharedBlksHit: 0, sharedBlksRead: read, sharedBlkReadMs: readMs, query: '',
   });
 
   it('sums the lexical statements that ran during one call', () => {
@@ -551,16 +579,109 @@ describe('per-call attribution (D-026)', () => {
     expect(callAttribution(after, after)).toEqual({ pgExecMs: 0, pgReadMs: 0, pgBlksRead: 0, pgCalls: 0 });
   });
 
-  it('reports the lexical leg time spent outside statement execution', () => {
+  it('does not label shared counters as the call time outside statement execution', () => {
     const o = (lex: number, exec: number): ArmObservation => ({
       ...obs(1, 'bm25', lex + 20),
       legMs: { 'lexical:lexical': lex },
       attrib: { pgExecMs: exec, pgReadMs: exec / 2, pgBlksRead: 1, pgCalls: 3 },
     });
     expect(summarizeAttribution([o(400, 100), o(600, 400), obs(1, 'bm25', 9000)])).toEqual({
-      calls: 2, wallMs: 1040, lexicalMs: 1000, pgExecMs: 500, pgReadMs: 250, outsideExecShare: 0.5,
+      calls: 2, wallMs: 1040, lexicalMs: 1000, pgExecMs: 500, pgReadMs: 250, outsideExecShare: null,
     });
     expect(summarizeAttribution([]).outsideExecShare).toBeNull();
+    expect(summarizeAttribution([o(100, 1322)]).outsideExecShare).toBeNull();
+  });
+});
+
+describe('R-18 diagnostic lifecycle (EI-25719286080174688)', () => {
+  it('selects the actual work_item issue view and scopes fast statement snapshots to this database', async () => {
+    const texts: string[] = [];
+    const pg = (async (chunks: TemplateStringsArray) => {
+      texts.push(chunks.join(''));
+      return [{ userid: '1', dbid: '2', toplevel: true, queryid: '3', calls: '4', total: 5,
+        hit: '6', read: '7', readMs: 8, query: '' }];
+    }) as unknown as Parameters<typeof statementSnapshot>[0];
+    expect(await statementSnapshot(pg)).toMatchObject([{ userid: '1', dbid: '2', toplevel: true, queryid: '3' }]);
+    await statementSnapshot(pg, ['3']);
+    expect(texts[0]).toContain('harness_shared.engineer_issues');
+    expect(texts[1]).toContain('WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())');
+  });
+
+  it('freezes the scheduler window before slow cleanup and backend discovery', async () => {
+    let clock = 0;
+    let counter = 0;
+    const measured = await captureCallWindow(async () => { clock += 30; counter += 20; return 'search-result'; }, {
+      now: () => clock,
+      readBefore: () => { clock += 2; return counter; },
+      readAfter: () => { clock += 3; return counter; },
+      start: () => () => ({ settled: Promise.resolve().then(() => { clock += 800; counter += 500; }) }),
+      end: () => {},
+    });
+    expect(measured).toEqual({ result: 'search-result', latencyMs: 30, before: 0, after: 20,
+      beforeSkewMs: 2, afterSkewMs: 3, windowMs: 35, setupMs: 0, cleanupMs: 800 });
+    expect(clock).toBe(835);
+  });
+
+  it('excludes slow instrumentation setup from both search latency and scheduler counters', async () => {
+    let clock = 0;
+    let counter = 0;
+    const measured = await captureCallWindow(async () => { clock += 30; counter += 20; return 'ok'; }, {
+      now: () => clock, readBefore: () => counter, readAfter: () => counter, end: () => {},
+      start: () => { clock += 1000; counter += 500; return () => ({ settled: Promise.resolve() }); },
+    });
+    expect(measured).toMatchObject({ latencyMs: 30, before: 500, after: 520, setupMs: 1000, windowMs: 30 });
+  });
+
+  it('freezes counters and settles the sampler when the search rejects', async () => {
+    const order: string[] = [];
+    await expect(captureCallWindow(async () => { throw new Error('search failed'); }, {
+      readBefore: () => 0, readAfter: () => { order.push('snapshot'); return 0; }, end: () => { order.push('end'); },
+      start: () => () => { order.push('stop'); return { settled: Promise.resolve().then(() => { order.push('settled'); }) }; },
+    })).rejects.toThrow('search failed');
+    expect(order).toEqual(['end', 'stop', 'snapshot', 'settled']);
+  });
+
+  it('excludes an in-flight poll and cannot acquire a late baseline after call end', async () => {
+    let resolve!: (rows: Array<{ pid: number; t: string | null; e: string | null }>) => void;
+    const stop = startWaitSampler(() => new Promise((r) => { resolve = r; }), 20, new Set(),
+      () => ({ cpuNs: 999, runqNs: 999 }), () => 10);
+    const frozen = stop(0, 15);
+    expect(frozen).toMatchObject({ waits: undefined, excluded: 1, failed: false });
+    resolve([{ pid: 42, t: 'IO', e: 'DataFileRead' }]);
+    await frozen.settled;
+    expect(frozen.firstSight.size).toBe(0);
+  });
+
+  it('includes only completed polls and cancels the interval timer on stop', async () => {
+    let now = 10;
+    const stop = startWaitSampler(async () => [{ pid: 42, t: null, e: null }], 60_000, new Set(),
+      () => ({ cpuNs: 20, runqNs: 10 }), () => now);
+    await Promise.resolve();
+    now = 30;
+    const frozen = stop(0, now);
+    await frozen.settled; // must not wait for the 60-second timer
+    expect(frozen.waits).toMatchObject({ polls: 1, activeSamples: 1, byEvent: { CPU: 1 } });
+    expect(frozen).toMatchObject({ startGapMs: 10, endGapMs: 20 });
+    expect(frozen.firstSight.get(42)).toEqual({ cpuNs: 20, runqNs: 10 });
+  });
+
+  it('marks sampler failure as unavailable, never as a zero-wait profile', async () => {
+    const stop = startWaitSampler(async () => { throw new Error('sampler unavailable'); }, 20, new Set());
+    await Promise.resolve();
+    const frozen = stop(0, Infinity);
+    await frozen.settled;
+    expect(frozen).toMatchObject({ failed: true, waits: undefined });
+  });
+
+  it('excludes a poll and its late baseline when the request started before the call', async () => {
+    let now = 5;
+    const stop = startWaitSampler(async () => { now = 12; return [{ pid: 42, t: null, e: null }]; }, 60_000,
+      new Set(), () => ({ cpuNs: 20, runqNs: 10 }), () => now);
+    await Promise.resolve();
+    const frozen = stop(10, 20);
+    await frozen.settled;
+    expect(frozen).toMatchObject({ waits: undefined, excluded: 1 });
+    expect(frozen.firstSight.size).toBe(0);
   });
 });
 

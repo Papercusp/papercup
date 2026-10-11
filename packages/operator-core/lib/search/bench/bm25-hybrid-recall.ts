@@ -25,6 +25,21 @@ import { redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-pa
 export type Arm = 'legacy' | 'bm25';
 export const ARMS: readonly Arm[] = ['legacy', 'bm25'];
 
+/** Select saved warm-pass indices for diagnosis; never carry prior observations into a replay. */
+export function selectReplayPairs(saved: readonly PairResult[], sources: readonly string[], indices: readonly number[]): PairResult[] {
+  if (!indices.length || indices.some((i) => !Number.isInteger(i) || i < 0) || new Set(indices).size !== indices.length)
+    throw new Error('replay indices must be distinct non-negative integers');
+  return sources.flatMap((source) => {
+    const rows = saved.filter((p) => p.source === source);
+    return indices.map((i) => {
+      const p = rows[i];
+      if (!p || typeof p.query !== 'string' || !p.query.trim() || p.query.includes('[redacted'))
+        throw new Error(`saved replay query ${source}[${i}] is missing or redacted`);
+      return { ...p, arms: {} };
+    });
+  });
+}
+
 /** Recall cut-off: the target must be in the top K of the fused list. */
 export const RECALL_K = 10;
 
@@ -77,7 +92,7 @@ export function dumpOverlapOf(pairs: readonly PairResult[]): boolean | null | un
 
 /** Per-call attribution of an R-18 observation (D-026). See {@link callAttribution}. */
 export interface CallAttribution {
-  /** Execution time of the lexical statements that ran during the call (pg_stat_statements). */
+  /** Shared lexical-statement execution counters; includes other sessions, not own-call time. */
   pgExecMs: number;
   /** Of which: time reading blocks not in shared buffers. Can exceed pgExecMs under parallel query. */
   pgReadMs: number;
@@ -86,7 +101,7 @@ export interface CallAttribution {
   pgCalls: number;
   /** User + system CPU time of the bench process over the call. */
   clientCpuMs?: number;
-  /** Largest event-loop delay sampled during the call: the bench process waiting for a CPU. */
+  /** Largest sampled event-loop delay; does not distinguish scheduling from synchronous work. */
   loopDelayMaxMs?: number;
   /** `/proc/pressure/io` some avg10 at call start. */
   psiIoAvg10?: number;
@@ -99,7 +114,7 @@ export interface CallAttribution {
   /** D-030: run-queue wait of the bench process's main thread over the call. */
   clientRunqMs?: number;
   /**
-   * D-032: backends of this process in the after-call pid list but not the before-call one.
+   * D-032: backends seen by an in-call sampler poll but not the before-call pid list.
    * Why a pid is missing from the before list is not known (run 12: such pids were long-lived,
    * not born in the call), so none is counted from zero. Replaces D-031's `pgBackendsBorn`,
    * which did count them from zero and is retracted.
@@ -115,6 +130,18 @@ export interface CallAttribution {
    * which one backend cannot do. Non-zero means a pid's baseline was not its state at window start.
    */
   pgPidsImplausible?: number;
+  /** Observable skew around non-atomic /proc reads; counters span this wider bounded window. */
+  schedBeforeSkewMs?: number;
+  schedAfterSkewMs?: number;
+  diagnosticSetupMs?: number;
+  diagnosticCleanupMs?: number;
+  pgPidsMeasured?: number;
+  /** Sampler queries crossing a call boundary, excluded from the wait profile. */
+  waitPollsExcluded?: number;
+  waitSamplerFailed?: boolean;
+  /** Unobserved time before/after accepted sampler polls; null means no in-call poll. */
+  waitStartGapMs?: number | null;
+  waitEndGapMs?: number | null;
 }
 
 /** One pg_stat_activity row of an active bench backend, sampled during a timed call (D-030). */
@@ -257,8 +284,8 @@ export interface AttributionSummary {
   lexicalMs: number;
   pgExecMs: number;
   pgReadMs: number;
-  /** 1 - pgExecMs / lexicalMs: the lexical leg's time spent outside statement execution. */
-  outsideExecShare: number | null;
+  /** Shared statement counters cannot decompose one call; retained as null for old readers. */
+  outsideExecShare: null;
   /** D-030: summed over the calls that recorded them; absent when none did (an artifact before D-030). */
   pgCpuMs?: number;
   pgRunqMs?: number;
@@ -282,7 +309,7 @@ export function summarizeAttribution(observations: readonly ArmObservation[]): A
     lexicalMs,
     pgExecMs,
     pgReadMs: round1(with_.reduce((s, o) => s + o.attrib!.pgReadMs, 0)),
-    outsideExecShare: lexicalMs > 0 ? Math.round((1 - pgExecMs / lexicalMs) * 1000) / 1000 : null,
+    outsideExecShare: null,
     ...Object.fromEntries(Object.entries(sched).filter(([, v]) => v !== undefined)),
     ...(waits.length ? { waits: mergeWaitProfiles(waits) } : {}),
   };
@@ -652,6 +679,10 @@ export function judgeLatency(
 
 /** One normalized statement's cumulative counters from `pg_stat_statements`. */
 export interface StatementStat {
+  /** pg_stat_statements row identity is the full tuple, never queryid alone. */
+  userid: string;
+  dbid: string;
+  toplevel: boolean;
   queryid: string;
   calls: number;
   totalExecMs: number;
@@ -677,16 +708,21 @@ export interface StatementDelta extends StatementStat {
  * sessions; compare `calls` with the calls the bench made.
  */
 export function statementDeltas(before: readonly StatementStat[], after: readonly StatementStat[]): StatementDelta[] {
-  const prior = new Map(before.map((s) => [s.queryid, s]));
+  // Same identity contract as hot-seq-scan-detector.sampleKey, without importing its DB runtime.
+  const key = (s: StatementStat) => `${s.userid}:${s.dbid}:${s.queryid}:${s.toplevel}`;
+  const prior = new Map(before.map((s) => [key(s), s]));
   const out: StatementDelta[] = [];
   for (const a of after) {
-    const b0 = prior.get(a.queryid);
+    const b0 = prior.get(key(a));
     const b = b0 && b0.calls <= a.calls && b0.totalExecMs <= a.totalExecMs ? b0 : null;
     const calls = a.calls - (b?.calls ?? 0);
     if (calls <= 0) continue;
     const totalExecMs = round1(a.totalExecMs - (b?.totalExecMs ?? 0));
     const sharedBlkReadMs = round1(a.sharedBlkReadMs - (b?.sharedBlkReadMs ?? 0));
     out.push({
+      userid: a.userid,
+      dbid: a.dbid,
+      toplevel: a.toplevel,
       queryid: a.queryid,
       calls,
       totalExecMs,

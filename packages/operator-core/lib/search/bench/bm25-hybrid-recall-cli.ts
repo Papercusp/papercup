@@ -31,7 +31,8 @@
  * pg_stat_statements deltas around the timed passes say how much of each lexical statement's
  * time was block reads. D-030: on every attributed call a reserved connection samples this
  * process's active backends' wait events every --wait-sample-ms (default 20; 0 = off), and
- * /proc/<pid>/schedstat deltas split their time into on-CPU and run-queue wait;
+ * /proc/<pid>/schedstat deltas bracket the call before asynchronous sampler cleanup; recorded
+ * boundary skew bounds the non-atomic snapshots. They split on-CPU and run-queue wait;
  * attribution[source].pairedBm25Tail lists the calls the cold p95 rests on.
  *
  * READ-ONLY against PG. Writes the JSON artifact and a Markdown summary beside it.
@@ -40,6 +41,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import type { Sql } from 'postgres';
 
@@ -64,6 +66,7 @@ import {
   rankOf,
   redactPairsForArtifact,
   sampleFingerprint,
+  selectReplayPairs,
   splitDisjointSamples,
   statementDeltas,
   summarizeSource,
@@ -167,43 +170,112 @@ function readSchedstats(pids: readonly (number | 'self')[]): Map<number, Schedst
  * returned stop function is called. Each poll awaits the previous one, so a slow poll delays the
  * next instead of stacking; a stalled sampler shows as a large `maxPollGapMs`.
  */
-function startWaitSampler(
-  conn: Sql,
+export function startWaitSampler(
+  poll: () => Promise<Array<{ pid: number; t: string | null; e: string | null }>>,
   intervalMs: number,
   knownPids: ReadonlySet<number>,
-): () => Promise<{ waits: WaitProfile | undefined; firstSight: Map<number, Schedstat> }> {
+  readPid: (pid: number) => Schedstat | null = (pid) => parseSchedstat(firstLine(`/proc/${pid}/schedstat`)),
+  now: () => number = () => performance.now(),
+): (startMs: number, endMs: number) => {
+  waits: WaitProfile | undefined;
+  firstSight: Map<number, Schedstat>;
+  excluded: number;
+  failed: boolean;
+  startGapMs: number | null;
+  endGapMs: number | null;
+  settled: Promise<void>;
+} {
   let stopped = false;
   let failed = false;
-  const polls: WaitPoll[] = [];
+  const polls: Array<WaitPoll & { endMs: number }> = [];
   // D-032: an active backend missing from the before-call pid list is baselined here, at first
   // sighting, instead of being counted from zero (run 12: such pids were long-lived).
-  const firstSight = new Map<number, Schedstat>();
-  const pattern = ownBackendPattern();
+  const firstSight = new Map<number, { sched: Schedstat; atMs: number; pollAtMs: number }>();
+  let pending = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let wake: (() => void) | undefined;
   const loop = (async () => {
     while (!stopped) {
-      const atMs = performance.now();
+      const atMs = now();
       try {
-        const rows = await conn<{ pid: number; t: string | null; e: string | null }[]>`
-          SELECT pid, wait_event_type AS t, wait_event AS e FROM pg_stat_activity
-           WHERE application_name LIKE ${pattern} AND state = 'active' AND pid <> pg_backend_pid()`;
+        pending = true;
+        const rows = await poll();
+        pending = false;
+        // A query that resolves after stop cannot update the frozen call evidence.
+        if (stopped) return;
         for (const r of rows) {
           if (knownPids.has(r.pid) || firstSight.has(r.pid)) continue;
-          const s = parseSchedstat(firstLine(`/proc/${r.pid}/schedstat`));
-          if (s) firstSight.set(r.pid, s);
+          const s = readPid(r.pid);
+          if (s) firstSight.set(r.pid, { sched: s, atMs: now(), pollAtMs: atMs });
         }
-        polls.push({ atMs, samples: rows.map((r) => ({ waitEventType: r.t, waitEvent: r.e })) });
+        polls.push({ atMs, endMs: now(), samples: rows.map((r) => ({ waitEventType: r.t, waitEvent: r.e })) });
       } catch {
+        pending = false;
         failed = true;
         return;
       }
-      if (!stopped) await new Promise((r) => setTimeout(r, intervalMs));
+      if (!stopped) await new Promise<void>((r) => { wake = r; timer = setTimeout(r, intervalMs); });
     }
   })();
-  return async () => {
+  return (startMs, endMs) => {
     stopped = true;
-    await loop;
-    return { waits: failed || polls.length === 0 ? undefined : summarizeWaitSamples(polls), firstSight };
+    if (timer) clearTimeout(timer);
+    wake?.();
+    const inside = polls.filter((p) => p.atMs >= startMs && p.endMs <= endMs);
+    return {
+      waits: failed || inside.length === 0 ? undefined : summarizeWaitSamples(inside),
+      firstSight: new Map([...firstSight].filter(([, b]) => b.pollAtMs >= startMs && b.atMs <= endMs).map(([pid, b]) => [pid, b.sched])),
+      excluded: polls.length - inside.length + Number(pending),
+      failed,
+      startGapMs: inside.length ? inside[0]!.atMs - startMs : null,
+      endGapMs: inside.length ? endMs - inside[inside.length - 1]!.endMs : null,
+      settled: loop,
+    };
   };
+}
+
+/** Bracket only the awaited call; freeze evidence before any asynchronous diagnostic cleanup. */
+export async function captureCallWindow<T, S>(
+  run: () => Promise<T>,
+  hooks: {
+    readBefore: () => S;
+    readAfter: () => S;
+    start: () => (startMs: number, endMs: number) => { settled: Promise<void> };
+    end: () => void;
+    now?: () => number;
+  },
+): Promise<{ result: T; latencyMs: number; before: S; after: S; beforeSkewMs: number; afterSkewMs: number; windowMs: number; setupMs: number; cleanupMs: number }> {
+  const now = hooks.now ?? (() => performance.now());
+  // Preparing the sampler/CPU monitor is not the search. It can itself block; capture it
+  // separately, then read the baseline immediately before invoking the search.
+  const setupStart = now();
+  const stop = hooks.start();
+  const snapshotStart = now();
+  const before = hooks.readBefore();
+  const startMs = now();
+  let after!: S;
+  let endMs = startMs;
+  let snapshotEnd = startMs;
+  let cleanupEnd = startMs;
+  let result: T;
+  try {
+    result = await run();
+  } finally {
+    endMs = now();
+    hooks.end();
+    const frozen = stop(startMs, endMs);
+    try {
+      after = hooks.readAfter();
+      snapshotEnd = now();
+    } finally {
+      await frozen.settled;
+      cleanupEnd = now();
+    }
+  }
+  return { result, latencyMs: endMs - startMs, before, after,
+    beforeSkewMs: startMs - snapshotStart, afterSkewMs: snapshotEnd - endMs,
+    windowMs: snapshotEnd - snapshotStart, setupMs: snapshotStart - setupStart,
+    cleanupMs: cleanupEnd - snapshotEnd };
 }
 
 async function hostSnapshot(pg: Sql): Promise<HostSnapshot> {
@@ -231,26 +303,31 @@ async function hostSnapshot(pg: Sql): Promise<HostSnapshot> {
  * corpora (the BM25 top-k, the D-016 exact list, the GIN gate), or an error string. The
  * snapshot query names the same tables, so it excludes itself.
  */
-async function statementSnapshot(pg: Sql, ids?: readonly string[]): Promise<StatementStat[] | string> {
+export async function statementSnapshot(pg: Sql, ids?: readonly string[]): Promise<StatementStat[] | string> {
   try {
-    type Row = { queryid: string; calls: string; total: number; hit: string; read: string; readMs: number; query: string };
+    type Row = { userid: string; dbid: string; toplevel: boolean; queryid: string; calls: string; total: number; hit: string; read: string; readMs: number; query: string };
     // `[[:space:]]`, not a backslash class: inside a tagged template '\s' cooks to 's' (D-026).
     const rows = ids
       ? await pg<Row[]>`
-          SELECT queryid::text AS queryid, calls::text AS calls, total_exec_time AS total,
+          SELECT userid::text AS userid, dbid::text AS dbid, toplevel, queryid::text AS queryid, calls::text AS calls, total_exec_time AS total,
                  shared_blks_hit::text AS hit, shared_blks_read::text AS read, shared_blk_read_time AS "readMs", '' AS query
             FROM pg_stat_statements(false)
-           WHERE queryid = ANY(${ids as string[]}::bigint[])`
+           WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+             AND queryid = ANY(${ids as string[]}::bigint[])`
       : await pg<Row[]>`
-          SELECT queryid::text AS queryid, calls::text AS calls, total_exec_time AS total,
+          SELECT userid::text AS userid, dbid::text AS dbid, toplevel, queryid::text AS queryid, calls::text AS calls, total_exec_time AS total,
                  shared_blks_hit::text AS hit, shared_blks_read::text AS read, shared_blk_read_time AS "readMs",
                  left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 200) AS query
             FROM pg_stat_statements
            WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-             AND (query LIKE '%harness_shared.session_turns%' OR query LIKE '%harness_shared.work_items%')
+             AND (query LIKE '%harness_shared.session_turns%' OR query LIKE '%harness_shared.work_items%'
+                  OR query LIKE '%harness_shared.engineer_issues%')
              AND (query LIKE '%<@>%' OR query LIKE '%bm25%' OR query LIKE '%ts_rank_cd%' OR query LIKE '%count(*)::int AS n%')
              AND query NOT LIKE '%pg_stat_statements%'`;
     return rows.map((r) => ({
+      userid: r.userid,
+      dbid: r.dbid,
+      toplevel: r.toplevel,
       queryid: r.queryid,
       calls: Number(r.calls),
       totalExecMs: Number(r.total),
@@ -299,6 +376,9 @@ async function sampleCandidates(sql: Sql, source: SourceName, workspaceId: strin
 async function main(): Promise<number> {
   const perSource = Number(argValue('--pairs') ?? '60');
   const seed = argValue('--seed') ?? 'r13-20261011';
+  const replayFrom = argValue('--replay-from');
+  const replayIndices = (argValue('--replay-indices') ?? '').split(',').filter(Boolean).map(Number);
+  const replayReps = Number(argValue('--replay-reps') ?? '3');
   const waitSampleMs = Number(argValue('--wait-sample-ms') ?? String(WAIT_SAMPLE_MS));
   const out = argValue('--out') ?? `docs/evidence/bm25-hybrid-recall-${new Date().toISOString().slice(0, 10)}.json`;
   const sourceNames = (argValue('--sources') ?? 'work_item,session_turn')
@@ -307,6 +387,8 @@ async function main(): Promise<number> {
     .filter((s): s is SourceName => s in SOURCE_TABLES);
   if (!Number.isInteger(perSource) || perSource < 1) throw new Error('--pairs must be a positive integer');
   if (sourceNames.length === 0) throw new Error(`--sources must name one of ${Object.keys(SOURCE_TABLES).join(', ')}`);
+  if (replayFrom && (!Number.isInteger(replayReps) || replayReps < 1 || replayReps > 10))
+    throw new Error('--replay-reps must be an integer from 1 to 10');
 
   const { SEARCH_SEMANTIC_DEFER_HIGHLIGHT } = await import('../../agent-tools/search/semantic-engine-options');
   const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { activeWorkspaceId }, { getOrgPg }, flags, rank, canary] =
@@ -379,7 +461,11 @@ async function main(): Promise<number> {
   const pairs: PairResult[] = [];
   const warmupPairs: PairResult[] = [];
   const steadyPairs: PairResult[] = [];
-  for (const source of sourceNames) {
+  if (replayFrom) {
+    const saved = JSON.parse(fs.readFileSync(replayFrom, 'utf8')) as { warmPairs: PairResult[] };
+    if (!Array.isArray(saved.warmPairs)) throw new Error('--replay-from must contain a saved warmPairs array');
+    pairs.push(...selectReplayPairs(saved.warmPairs, sourceNames, replayIndices));
+  } else for (const source of sourceNames) {
     const candidates = await sampleCandidates(pg, source, workspaceId, perSource * 3, seed);
     const derived: PairResult[] = [];
     for (const [i, c] of candidates.entries()) {
@@ -442,14 +528,11 @@ async function main(): Promise<number> {
     // D-030: this process's backends (pool connections persist across calls) and their
     // schedstat, read outside the timed window; then the wait sampler runs over the call.
     const backendPids = track && sampler ? await ownBackendPids(sampler).catch(() => [] as number[]) : [];
-    const schedT0 = performance.now();
-    const schedBefore = track ? readSchedstats([...backendPids, 'self']) : null;
-    const stopSampler = track && sampler ? startWaitSampler(sampler, waitSampleMs, new Set(backendPids)) : null;
     const loop = track ? monitorEventLoopDelay({ resolution: 10 }) : null;
-    loop?.enable();
-    const cpu0 = process.cpuUsage();
-    const t0 = performance.now();
-    const { results, legs } = await runHybridSearch([source], {
+    let cpu0 = process.cpuUsage();
+    let cpu = { user: 0, system: 0 };
+    let sampled: ReturnType<ReturnType<typeof startWaitSampler>> | undefined;
+    const measured = await captureCallWindow(() => runHybridSearch([source], {
       caller: 'bench:bm25-hybrid-recall',
       sql,
       query: p.query,
@@ -462,25 +545,35 @@ async function main(): Promise<number> {
       // Mirrors search:semantic (SEARCH_SEMANTIC_DEFER_HIGHLIGHT), so R-18 times the
       // tool's path; it includes the final-page highlight hydration.
       deferHighlight: SEARCH_SEMANTIC_DEFER_HIGHLIGHT,
+    }), {
+      readBefore: () => track ? readSchedstats([...backendPids, 'self']) : null,
+      readAfter: () => track ? readSchedstats([...backendPids, ...(sampled?.firstSight.keys() ?? []), 'self']) : null,
+      start: () => {
+        loop?.enable();
+        cpu0 = process.cpuUsage();
+        const stop = track && sampler ? startWaitSampler(async () => {
+          const pattern = ownBackendPattern();
+          return sampler<{ pid: number; t: string | null; e: string | null }[]>`
+            SELECT pid, wait_event_type AS t, wait_event AS e FROM pg_stat_activity
+             WHERE application_name LIKE ${pattern} AND state = 'active' AND pid <> pg_backend_pid()`;
+        }, waitSampleMs, new Set(backendPids)) : null;
+        return (startMs, endMs) => {
+          sampled = stop?.(startMs, endMs);
+          return sampled ?? { settled: Promise.resolve() };
+        };
+      },
+      end: () => { cpu = process.cpuUsage(cpu0); loop?.disable(); },
     });
-    const latencyMs = Math.round((performance.now() - t0) * 10) / 10;
-    const cpu = process.cpuUsage(cpu0);
-    loop?.disable();
-    const sampled = stopSampler ? await stopSampler() : undefined;
+    const { results, legs } = measured.result;
+    const latencyMs = Math.round(measured.latencyMs * 10) / 10;
+    const schedBefore = measured.before;
     const waits = sampled?.waits;
-    let sched: Pick<
-      CallAttribution,
-      'pgCpuMs' | 'pgRunqMs' | 'clientRunqMs' | 'pgBackendsUnseen' | 'pgBackendsLateBaselined' | 'pgPidsImplausible'
-    > = {};
+    let sched: Partial<CallAttribution> = {};
     if (schedBefore) {
-      // D-032: a pid in the after-list but not the before-list is NOT counted from zero (run 12:
-      // such pids were long-lived; why they were missing is not known). It counts from the wait
-      // sampler's first sighting when the sampler saw it, and is left out otherwise. Any per-pid
-      // CPU delta above the schedstat window's wall time is dropped as implausible.
-      const pidsAfter = sampler ? await ownBackendPids(sampler).catch(() => backendPids) : backendPids;
-      const unseen = pidsAfter.filter((pid) => !backendPids.includes(pid));
-      const schedAfter = readSchedstats([...backendPids, ...unseen, 'self']);
-      const windowMs = performance.now() - schedT0;
+      // Only pids known before the call or seen by a completed in-call poll are eligible.
+      // No after-call discovery SQL belongs in this window; missing pids remain unmeasured.
+      const unseen = [...(sampled?.firstSight.keys() ?? [])].filter((pid) => !backendPids.includes(pid));
+      const schedAfter = measured.after!;
       const self = new Map([...schedBefore].filter(([pid]) => pid === process.pid));
       const backends = new Map([...schedBefore].filter(([pid]) => pid !== process.pid));
       let lateBaselined = 0;
@@ -490,9 +583,14 @@ async function main(): Promise<number> {
         backends.set(pid, b);
         lateBaselined += 1;
       }
-      const pgDelta = schedstatDeltaMs(backends, schedAfter, windowMs + 5);
+      const pgDelta = schedstatDeltaMs(backends, schedAfter, measured.windowMs + 5);
       const selfDelta = schedstatDeltaMs(self, schedAfter);
       sched = {
+        schedBeforeSkewMs: Math.round(measured.beforeSkewMs * 10) / 10,
+        schedAfterSkewMs: Math.round(measured.afterSkewMs * 10) / 10,
+        diagnosticSetupMs: Math.round(measured.setupMs * 10) / 10,
+        diagnosticCleanupMs: Math.round(measured.cleanupMs * 10) / 10,
+        pgPidsMeasured: pgDelta.pids,
         ...(pgDelta.pids > 0 ? { pgCpuMs: pgDelta.cpuMs, pgRunqMs: pgDelta.runqMs } : {}),
         ...(selfDelta.pids > 0 ? { clientRunqMs: selfDelta.runqMs } : {}),
         ...(sampler
@@ -518,6 +616,8 @@ async function main(): Promise<number> {
           ...(psi !== undefined ? { psiIoAvg10: psi } : {}),
           ...sched,
           ...(waits ? { waits } : {}),
+          ...(sampled ? { waitPollsExcluded: sampled.excluded, waitSamplerFailed: sampled.failed,
+            waitStartGapMs: sampled.startGapMs, waitEndGapMs: sampled.endGapMs } : {}),
         };
       }
     }
@@ -531,6 +631,35 @@ async function main(): Promise<number> {
       dumpActive: dump,
     };
   };
+
+  // Diagnostic mode reuses the exact measurement path, with an alternating uninstrumented
+  // control. It deliberately emits no R-13/R-18 judgment and never counts as a judged seed.
+  if (replayFrom) {
+    const rows: Array<{ rep: number; source: string; index: number; targetId: string; attributed: boolean; observation: ArmObservation }> = [];
+    const startedAt = new Date().toISOString();
+    setLexicalIds(await statementSnapshot(pg));
+    try {
+      for (let rep = 0; rep < replayReps; rep++) {
+        for (const [i, p] of pairs.entries()) {
+          await measure(p, 'bm25', false);
+          for (const attributed of (i + rep) % 2 ? [true, false] : [false, true]) {
+            rows.push({ rep, source: p.source, index: replayIndices[i % replayIndices.length]!, targetId: p.targetId,
+              attributed, observation: await measure(p, 'bm25', attributed) });
+          }
+        }
+      }
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, `${JSON.stringify({ kind: 'bm25-hybrid-recall-diagnostic-replay', plan: PLAN,
+        startedAt, generatedAt: new Date().toISOString(), replayFrom, replayIndices, replayReps,
+        sampleFingerprint: fingerprint, embeddingsPrecomputed: true, judged: false, rows }, null, 2)}\n`);
+      console.log(`[r18] diagnostic replay: ${rows.length} calls, never a judged run -> ${out}`);
+      return 0;
+    } finally {
+      sampler?.release();
+      if (envBefore === undefined) delete process.env[envVar]; else process.env[envVar] = envBefore;
+      await pg.end({ timeout: 5 });
+    }
+  }
 
   // ---- Paired pass over P: both arms per pair, alternating which goes first ----
   const startedAt = new Date().toISOString();
@@ -668,7 +797,7 @@ async function main(): Promise<number> {
       steady: steadyStatements,
     },
     // D-026: per-call attribution sums (pairs[].arms[].attrib and steadyPairs[].arms.bm25.attrib
-    // hold each call). outsideExecShare = the lexical leg's time outside statement execution.
+    // hold each call). Shared pgss counters cannot decompose own-call execution time.
     attribution: Object.fromEntries(sourceNames.map((s) => [s, {
       pairedBm25: summarizeAttribution(pairs.filter((p) => p.source === s).flatMap((p) => (p.arms.bm25 ? [p.arms.bm25] : []))),
       // D-030: the calls the cold p95 rests on, with their waits and schedstat deltas.
@@ -808,7 +937,7 @@ function renderMarkdown(a: {
   ].join('\n');
 }
 
-main().then(
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main().then(
   (code) => process.exit(code),
   (e) => {
     console.error(e);
