@@ -758,6 +758,14 @@ describe("EI-22616267024724225 — frozen verifier hosts exclude the tsx runtime
     expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
       '[ -s "$OPERATOR_HOST_BUNDLE" ]',
     );
+    expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
+      'bash "$bundle_script" e2e/_fake-llm-fixture-child.ts "$fixture_bundle"',
+    );
+    expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
+      '[ -s "$fixture_bundle" ]',
+    );
+    expect(readFileSync(resolve(__dirname, '../../../scripts/source-preview.mjs'), 'utf8'))
+      .toContain("'apps/operator/e2e/_fake-llm-fixture-child.ts'");
   });
 
   it("hands the private plain-node entry to the existing dev-operator launcher", () => {

@@ -1,9 +1,48 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fixtureChildFailure, seedFakeLlmHarness } from './_fake-llm-fixture';
+import { fixtureChildFailure, fixtureChildWasGateRefusal, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
+
+const childCalls = vi.hoisted(() => vi.fn());
+vi.mock('node:child_process', () => ({
+  execFile: (file: string, args: string[], options: unknown, callback: (error: null, stdout: string, stderr: string) => void) => {
+    childCalls(file, args, options);
+    callback(null, '', '');
+  },
+}));
 
 afterEach(() => vi.unstubAllEnvs());
 
 describe('isolated chat fixture write boundary', () => {
+  it('runs both fixtures from the frozen plain-node bundle with the original deadline', async () => {
+    vi.stubEnv('VERIFY_TAURI_ISOLATED_DB', '1');
+    vi.stubEnv('OPERATOR_SOURCE_ROOT', '/frozen-source');
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'verify-tauri-isolated-test');
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgres://localhost:23456/fixture');
+    childCalls.mockClear();
+    expect(await seedFakeLlmHarness({ hive: true })).toBe('e2e-fake-plan');
+    await seedFakeLlmPlanAcceptance('e2e-fake-plan', 'authored-plan');
+    expect(childCalls.mock.calls.map(call => call.slice(0, 2))).toEqual([
+      [process.execPath, ['/frozen-source/apps/operator/dist-verify/fake-llm-fixture-child.mjs', 'harness', 'e2e-fake-plan']],
+      [process.execPath, ['/frozen-source/apps/operator/dist-verify/fake-llm-fixture-child.mjs', 'plan', 'e2e-fake-plan', 'authored-plan']],
+    ]);
+    for (const [, , options] of childCalls.mock.calls) {
+      expect(options).toMatchObject({ cwd: '/frozen-source', timeout: 30_000, env: { DATABASE_URL: 'postgres://localhost:23456/fixture' } });
+    }
+  });
+  it('does not mistake gate text echoed in the command for a real child refusal', () => {
+    const timeout = fixtureChildFailure({
+      message: "Command failed: node -e throw new Error('Plan fixture launch precondition failed:')",
+      code: null, signal: 'SIGTERM', killed: true,
+      stdout: '', stderr: 'plan-fixture stage=migration-import:start\n',
+    });
+    expect(fixtureChildWasGateRefusal(timeout)).toBe(false);
+    expect(fixtureChildWasGateRefusal(fixtureChildFailure({
+      code: 1, stderr: 'Error: Plan fixture launch precondition failed: missing BAR\n    at fixture',
+    }))).toBe(true);
+    expect(fixtureChildWasGateRefusal(fixtureChildFailure({
+      code: 1, message: 'Plan fixture launch precondition failed:', stderr: 'Error: unrelated failure',
+    }))).toBe(false);
+    expect(fixtureChildWasGateRefusal(null)).toBe(false);
+  });
   it('retains child stderr and distinguishes a timeout from a gate refusal', () => {
     const timeout = fixtureChildFailure({ message: 'Command failed', killed: true, signal: 'SIGTERM', stdout: 'stage: import' });
     const refusal = fixtureChildFailure({ message: 'Command failed', code: 1, stderr: 'Plan fixture launch precondition failed: missing BAR' });

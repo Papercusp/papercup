@@ -1528,6 +1528,15 @@ build_verifier_operator_host() {
     return 1
   }
   log "frozen plain-node operator host ready at $OPERATOR_HOST_BUNDLE"
+  local fixture_bundle="$OPERATOR_SOURCE_ROOT/apps/operator/dist-verify/fake-llm-fixture-child.mjs"
+  bash "$bundle_script" e2e/_fake-llm-fixture-child.ts "$fixture_bundle" || {
+    echo "FATAL: could not build frozen isolated fixture child" >&2
+    return 1
+  }
+  [ -s "$fixture_bundle" ] || {
+    echo "FATAL: isolated fixture child bundle is empty" >&2
+    return 1
+  }
 }
 
 smoke_verifier_operator_host() {

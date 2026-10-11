@@ -10,6 +10,16 @@ export function fixtureChildFailure(error: unknown): Error {
   })}`, { cause: error });
 }
 
+// execFile's message echoes the command, including its error strings. Only
+// the child's actual stderr and exit disposition can prove a gate refusal.
+export function fixtureChildWasGateRefusal(error: unknown): boolean {
+  const child = (error as { cause?: unknown } | null)?.cause as
+    { code?: unknown; signal?: unknown; killed?: boolean; stderr?: unknown } | undefined;
+  return child?.code === 1 && child.signal == null && child.killed !== true &&
+    typeof child.stderr === 'string' &&
+    /^(?:Error: )?Plan fixture launch precondition failed:/m.test(child.stderr);
+}
+
 // Register a real harness only in the maintained disposable rig. The chat
 // tools resolve their project before entering the fake model seam.
 export async function seedFakeLlmHarness(options: { hive?: boolean } = {}): Promise<string> {
@@ -21,26 +31,7 @@ export async function seedFakeLlmHarness(options: { hive?: boolean } = {}): Prom
   const database = new URL(admin);
   const slug = options.hive ? 'e2e-fake-plan' : 'e2e-fake-chat';
   if (!['127.0.0.1', 'localhost'].includes(database.hostname) || !database.port || database.port === '5432') throw new Error('Refusing shared chat fixture database');
-  await promisify(execFile)(process.execPath, [
-    '--import', resolve(root, 'scripts/lib/committed-source-loader.mjs'),
-    '--import', 'tsx', '--input-type=module', '-e',
-    `const { loadHarnessRegistry } = await import('./packages/operator-core/lib/harness-registry.ts');
-     const ws = process.env.PAPERCUSP_WORKSPACE_ID;
-     const reg = await loadHarnessRegistry(ws);
-     const { getOrgPg } = await import('@papercusp/db-org');
-     const { sql } = getOrgPg();
-     try {
-       // Fixture writes use the existing registry storage contract and its PG
-       // invalidation trigger. The product save path also imports the live
-       // notification graph, which took 42s in a fresh isolated child.
-       const slug = ${JSON.stringify(slug)};
-       const project = { slug, path: process.cwd(), ...${JSON.stringify(options.hive ? { harness_kind: 'hive', self_repo: true } : {})} };
-       const payload = { ...reg, projects: [...reg.projects.filter(p => p.slug !== slug), project] };
-       await sql.unsafe('INSERT INTO harness_shared.harness_registry (workspace_id, payload, updated_at) VALUES ($1, $2::jsonb, $3) ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at', [ws, JSON.stringify(payload), Date.now()]);
-       const rows = await sql.unsafe('SELECT payload FROM harness_shared.harness_registry WHERE workspace_id = $1', [ws]);
-       if (!rows[0]?.payload?.projects?.some(p => p.slug === slug && p.path === process.cwd() && (!${Boolean(options.hive)} || p.harness_kind === 'hive'))) throw new Error('Chat fixture registry write was not retained');
-     } finally { await sql.end(); }`,
-  ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 }).catch(error => { throw fixtureChildFailure(error); });
+  await runFixtureChild(root, admin, ['harness', slug]);
   return slug;
 }
 
@@ -55,25 +46,12 @@ export async function seedFakeLlmPlanAcceptance(harnessSlug: string, planSlug: s
   if (!root || !workspace?.startsWith('verify-tauri-isolated-') || !admin) throw new Error('Missing isolated plan fixture context');
   const database = new URL(admin);
   if (!['127.0.0.1', 'localhost'].includes(database.hostname) || !database.port || database.port === '5432') throw new Error('Refusing shared plan fixture database');
+  await runFixtureChild(root, admin, ['plan', harnessSlug, planSlug]);
+}
+
+async function runFixtureChild(root: string, admin: string, args: string[]): Promise<void> {
   await promisify(execFile)(process.execPath, [
-    '--import', resolve(root, 'scripts/lib/committed-source-loader.mjs'),
-    '--import', 'tsx', '--input-type=module', '-e',
-    `console.error('plan-fixture stage=migration-import:start');
-     const { runAcceptanceBarMigrationInDatabase } = await import('./packages/operator-core/lib/acceptance-bar-migration.ts');
-     console.error('plan-fixture stage=migration-import:done gate-import:start');
-     const { checkPlanStartable } = await import('./packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts');
-     console.error('plan-fixture stage=gate-import:done db-import:start');
-     const { getOrgPg } = await import('@papercusp/db-org');
-     const { sql } = getOrgPg();
-     try {
-       const harnessSlug = ${JSON.stringify(harnessSlug)};
-       const planSlug = ${JSON.stringify(planSlug)};
-       console.error('plan-fixture stage=migration:start');
-       const result = await runAcceptanceBarMigrationInDatabase({ workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, harnessSlug, planSlug, actorId: 'e2e-plan-fixture', dryRun: false });
-       console.error('plan-fixture stage=migration:done gate:start');
-       const gate = await checkPlanStartable(planSlug, { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, harnessSlug }, null, 'start');
-       console.error('plan-fixture stage=gate:done');
-       if (!gate.ok) throw new Error('Plan fixture launch precondition failed: ' + JSON.stringify({ result, gate }));
-     } finally { await sql.end(); }`,
-  ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 }).catch(error => { throw fixtureChildFailure(error); });
+    resolve(root, 'apps/operator/dist-verify/fake-llm-fixture-child.mjs'), ...args,
+  ], { cwd: root, env: { ...process.env, DATABASE_URL: admin }, timeout: 30_000 })
+    .catch(error => { throw fixtureChildFailure(error); });
 }
