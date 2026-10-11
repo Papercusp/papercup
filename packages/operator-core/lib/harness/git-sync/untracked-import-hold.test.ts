@@ -216,3 +216,69 @@ describe('WI-10006734: importers of untracked modules absent from the commit', (
     expect(status).toContain('lib/importer.ts');
   });
 });
+
+describe('EI-25671755634126843: an ignored untracked dependency never holds its importer', () => {
+  // The measured shape: a peer edited gitignored node_modules/postgres files, which made them
+  // protected holdings, and every staged importer of 'postgres' was held back. An ignored,
+  // untracked path is in no commit and never in HEAD, so holding its importer protects nothing.
+  const IGNORED_HOLDINGS = ['node_modules/pg-lite/src/index.js', 'node_modules/pg-lite/cjs/src/index.js'];
+
+  function guardWith(dependencies: string[]) {
+    // Production passes a protected holding both as an exclusion and as always-infectious.
+    return guardStagedIndexBeforeCommit({
+      runGit,
+      repoPath: repo,
+      scope: 'test',
+      readText,
+      log,
+      excludedDependencies: dependencies,
+      alwaysInfectiousDependencies: dependencies,
+    });
+  }
+
+  it('commits a staged importer of a package whose gitignored node_modules file is a protected holding', async () => {
+    write(repo, '.gitignore', 'lib/generated/\nnode_modules/\n');
+    write(
+      repo,
+      'node_modules/pg-lite/package.json',
+      JSON.stringify({ name: 'pg-lite', exports: { '.': { import: './src/index.js', require: './cjs/src/index.js' } } }),
+    );
+    write(repo, 'node_modules/pg-lite/src/index.js', 'export default function sql() {}\n');
+    write(repo, 'node_modules/pg-lite/cjs/src/index.js', 'module.exports = function sql() {};\n');
+    write(repo, 'lib/with-lock.ts', "import sql from 'pg-lite';\nexport const s = sql;\n");
+    await git(repo, 'add', '--', 'lib/with-lock.ts');
+
+    const result = await guardWith(IGNORED_HOLDINGS);
+
+    expect(result).toEqual({ ok: true, lateLockedHoldings: [], drifted: [], unstaged: [] });
+    expect(await stagedPaths(repo)).toEqual(['lib/with-lock.ts']);
+    expect(logs.join('\n')).not.toContain('EXCLUDED from this commit');
+  });
+
+  it('still holds an importer of a TRACKED protected module (control)', async () => {
+    write(repo, 'lib/base.ts', 'export const base = 1;\nexport const extra = 2;\n');
+    write(repo, 'lib/user.ts', "import { extra } from './base';\nexport const u = extra;\n");
+    await git(repo, 'add', '--', 'lib/user.ts');
+
+    const result = await guardWith(['lib/base.ts']);
+
+    expect(result).toEqual({ ok: true, lateLockedHoldings: [], drifted: [], unstaged: ['lib/user.ts'] });
+    expect(await stagedPaths(repo)).toEqual([]);
+  });
+
+  it('still holds an importer of a tracked module that an ignore rule also covers', async () => {
+    // check-ignore without --no-index does not report tracked paths, so this stays infectious.
+    write(repo, 'vendor/lib.ts', 'export const v = 0;\n');
+    await git(repo, 'add', '--', 'vendor/lib.ts');
+    await git(repo, 'commit', '-q', '-m', 'vendor');
+    write(repo, '.gitignore', 'lib/generated/\nvendor/\n');
+    write(repo, 'vendor/lib.ts', 'export const v = 1;\nexport const w = 2;\n');
+    write(repo, 'lib/v.ts', "import { w } from '../vendor/lib';\nexport const x = w;\n");
+    await git(repo, 'add', '--', 'lib/v.ts');
+
+    const result = await guardWith(['vendor/lib.ts']);
+
+    expect(result).toEqual({ ok: true, lateLockedHoldings: [], drifted: [], unstaged: ['lib/v.ts'] });
+    expect(await stagedPaths(repo)).toEqual([]);
+  });
+});
