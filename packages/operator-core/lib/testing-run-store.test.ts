@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
 
 /**
  * Map a captured `INSERT INTO … (col, …) VALUES (${…}, …)` call onto its column names.
@@ -394,7 +395,7 @@ describe('task lifecycle handlers', () => {
               startTime: 1_700_000_000_000,
               endTime: 1_700_000_000_025,
               assertionResults: [
-                ...Array.from({ length: 65 }, (_, index) => ({
+                ...Array.from({ length: MAX_RECORDED_PASSED_CASES + 1 }, (_, index) => ({
                   status: 'passed',
                   fullName: 'suite > passed case ' + index,
                 })),
@@ -474,7 +475,7 @@ describe('task lifecycle handlers', () => {
         workspaceId: 'papercusp-workspace',
         harnessSlug: 'papercusp',
         testNamePattern: 'suite > works',
-        passed: 65,
+        passed: MAX_RECORDED_PASSED_CASES + 1,
         failed: 1,
         skipped: 0,
         collectionFailed: false,
@@ -482,7 +483,8 @@ describe('task lifecycle handlers', () => {
         commitSha: 'detached-sha',
         worktreeDirty: false,
       });
-      expect((executionDetails as { passedCaseTitles: string[] }).passedCaseTitles).toHaveLength(64);
+      expect((executionDetails as { passedCaseTitles: string[] }).passedCaseTitles)
+        .toHaveLength(MAX_RECORDED_PASSED_CASES);
       expect((executionDetails as { passedCaseTitles: string[] }).passedCaseTitles[0])
         .toBe('suite > passed case 0');
       // P-011: the row records the configuration the MEASURED child ran under, as an object.
