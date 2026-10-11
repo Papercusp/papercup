@@ -29,6 +29,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { resolveAcceptanceGraderEligibility } from './grader-eligibility';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
+import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 
 export const scorecardRatingEntrySchema = z
   .object({
@@ -117,6 +118,13 @@ export const scorecardEvaluateArgs = z
     }).strict().optional().describe('Exact subject/window for registered platform-computed instruments.'),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     testedSha: scorecardTestedShaSchema.optional(),
+    current: z
+      .array(evidenceCurrentInputSchema)
+      .max(2000)
+      .optional()
+      .describe(
+        'Fresh evidence fingerprints for acceptance BAR preflight, identical to scorecards:emit current. Omitted comparisons remain unknown.',
+      ),
   })
   .strict();
 
@@ -260,6 +268,7 @@ export async function evaluateScorecard(
     const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
       expectedApplicable: true,
       harnessSlug: rubric.subjectHarnessSlug,
+      ...(args.current ? { current: args.current } : {}),
     });
     if (!lifecycle.satisfied) {
       return {
