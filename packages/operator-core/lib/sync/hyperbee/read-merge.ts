@@ -794,12 +794,53 @@ function loadSnapshotApplyMark(
  * it summarizes exactly the prefix a crossing cursor already folded op by op, so the
  * excluded tables are already in that cursor's state. Applying it anyway re-applied
  * every row of the set (~968k on the tower) for each cut.
+ *
+ * WI-6554700010008538: an UNMARKED filtered set produced before
+ * `LEGACY_UNMARKED_FILTERED_SET_CUTOFF_MS` is eligible too when it sits at its own
+ * anchor; see `isLegacyOwnPrefixFilteredSet`. `ts` is the chunk op's producer stamp.
  */
-function isSkipEligibleSnapshot(payload: SnapshotPayload | undefined, pos: number): boolean {
+function isSkipEligibleSnapshot(payload: SnapshotPayload | undefined, pos: number, ts: number | undefined): boolean {
   if (!payload) return false;
   const c = payload.coversUpTo;
   if (typeof c !== 'number' || !Number.isFinite(c) || c <= 0 || c > pos) return false;
-  return !payload.excludeTables?.length || payload.ownPrefix === true;
+  if (!payload.excludeTables?.length || payload.ownPrefix === true) return true;
+  return isLegacyOwnPrefixFilteredSet(payload, pos, ts);
+}
+
+/**
+ * WI-6554700010008538: the producer-stamp cutoff for the legacy rule below. Every
+ * release-cut head snapshot written before the `ownPrefix` marker (WI-10005425, swept
+ * 2026-10-02) is filtered and unmarked. Without this rule a reader re-folding a log
+ * re-applies each of them in full: measured 2026-10-11 on the papercusp own log, sets
+ * of ~1.4M rows taking ~5 min apiece, one every ~2-4K ops.
+ *
+ * Fixed, not "now": after it the marker stays required, because
+ * `produceFilteredSnapshotIntoLog` may legitimately append to a NON-empty synthetic core
+ * (log-snapshot.ts, the dual-purpose `coversUpTo` note), and such a set would sit at
+ * its own anchor with `coversUpTo > 0` while summarizing ANOTHER log.
+ */
+export const LEGACY_UNMARKED_FILTERED_SET_CUTOFF_MS = Date.parse('2026-10-11T00:00:00.000Z');
+
+/**
+ * WI-6554700010008538: whether an unmarked filtered set provably summarizes the prefix
+ * of the log that carries it. Two facts make this sound for a set produced before the
+ * cutoff:
+ *  - The only producer of a set summarizing ANOTHER log, `produceFilteredSnapshotIntoLog`,
+ *    has minted into a fresh mkdtemp Corestore since its first caller (2026-08-11,
+ *    seed-provider-corestore.ts). Its `coversUpTo` is the target's length, so 0, which
+ *    `isSkipEligibleSnapshot` already rejects.
+ *  - `produceLogSnapshot` (the own-log producer) anchors every set at `coversUpTo`:
+ *    chunk `i` sits at `coversUpTo + i` (`assertSnapshotAnchorHeld`). A chunk that is not
+ *    at its anchor is unexplained, so it keeps the apply path.
+ */
+function isLegacyOwnPrefixFilteredSet(payload: SnapshotPayload, pos: number, ts: number | undefined): boolean {
+  if (typeof ts !== 'number' || !Number.isFinite(ts) || ts >= LEGACY_UNMARKED_FILTERED_SET_CUTOFF_MS) return false;
+  const idx = payload.chunkIdx ?? 0;
+  if (!Number.isInteger(idx) || idx < 0) return false;
+  if (payload.chunkCount !== undefined && (!Number.isInteger(payload.chunkCount) || idx >= payload.chunkCount)) {
+    return false;
+  }
+  return pos - idx === payload.coversUpTo;
 }
 
 /**
@@ -814,8 +855,9 @@ function snapshotSetDisposition(
   keyHex: string,
   payload: SnapshotPayload | undefined,
   pos: number,
+  ts: number | undefined,
 ): 'apply-seeded' | 'apply-hole' | 'apply-ineligible' | 'skip' {
-  if (!payload || !isSkipEligibleSnapshot(payload, pos)) return 'apply-ineligible';
+  if (!payload || !isSkipEligibleSnapshot(payload, pos, ts)) return 'apply-ineligible';
   const c = payload.coversUpTo;
   if (c <= (cursor.snapshotApplyThrough?.get(keyHex) ?? NO_SNAPSHOT_APPLY)) return 'apply-seeded';
   if (cursor.snapshotHole?.has(keyHex)) {
@@ -837,8 +879,9 @@ function skippedSetSpan(
   keyHex: string,
   payload: SnapshotPayload | undefined,
   pos: number,
+  ts: number | undefined,
 ): { start: number; end: number } | null {
-  if (!payload || !isSkipEligibleSnapshot(payload, pos)) return null;
+  if (!payload || !isSkipEligibleSnapshot(payload, pos, ts)) return null;
   if (payload.coversUpTo <= (cursor.snapshotApplyThrough?.get(keyHex) ?? NO_SNAPSHOT_APPLY)) return null;
   if (cursor.snapshotHole?.has(keyHex)) return null;
   const { chunkIdx: idx, chunkCount: count } = payload;
@@ -1005,7 +1048,7 @@ function openPassRange(
 ): PassRange {
   const span =
     first && isSnapshotOp(first)
-      ? skippedSetSpan(cursor, log.keyHex, first.value as SnapshotPayload | undefined, pos)
+      ? skippedSetSpan(cursor, log.keyHex, first.value as SnapshotPayload | undefined, pos, first.ts)
       : null;
   return prefetchRange(log, span ? span.end : pos, upper);
 }
@@ -3688,7 +3731,7 @@ async function peekAndSeedStoredOrder(args: {
   const inSkippedSpan = (i: number): boolean => skippedSpans.some((s) => i >= s.from && i < s.to);
   const noteSkippedSpan = (op: PeerLogOp | null, i: number): void => {
     if (!op || !isSnapshotOp(op)) return;
-    const span = skippedSetSpan(cursor, log.keyHex, op.value as SnapshotPayload | undefined, i);
+    const span = skippedSetSpan(cursor, log.keyHex, op.value as SnapshotPayload | undefined, i, op.ts);
     if (!span) return;
     const from = Math.max(span.start, start) + 1;
     const to = Math.min(span.end - 1, end);
@@ -4468,7 +4511,7 @@ async function mergeIncrementalPass(
       chunk: PeerLogOp,
       payload: SnapshotPayload | undefined,
     ): Promise<{ kind: 'jumped'; last: SnapshotPayload | null } | { kind: 'read' } | { kind: 'stalled' }> => {
-      const span = skippedSetSpan(cursor, log.keyHex, payload, pos);
+      const span = skippedSetSpan(cursor, log.keyHex, payload, pos, chunk.ts);
       if (!span || span.end - 1 <= pos || span.end > log.length) return { kind: 'read' };
       if (jumpRefusedFor === payload!.coversUpTo) return { kind: 'read' };
       const got = await readOpBoundedDetailed(log, span.end - 1, getTimeoutMs);
@@ -4712,7 +4755,7 @@ async function mergeIncrementalPass(
         // restart the in-memory winners are empty, so none of them are deduped
         // (measured: 1.24M rows at ~25 rows/s on the P-203 VM).
         const payload = op.value as SnapshotPayload | undefined;
-        const disposition = snapshotSetDisposition(cursor, log.keyHex, payload, pos);
+        const disposition = snapshotSetDisposition(cursor, log.keyHex, payload, pos, op.ts);
         const rows = snapshotRows(op);
         noteSnapshotCrossing(payload, disposition, rows.length);
         if (disposition === 'skip') {
