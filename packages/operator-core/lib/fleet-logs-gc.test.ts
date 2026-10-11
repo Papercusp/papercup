@@ -348,8 +348,16 @@ describe('runLintWorkRootGc', () => {
     const artifact = join(sandbox, 'release-artifact');
     mkdirSync(artifact);
     const dependent = makeRoot('dependent', 1000, { retainedFor: [{ path: artifact, sha: 'a'.repeat(40) }] });
-    const result = await runLintWorkRootGc({ root: sandbox, now, dryRun: false, scanOpenPaths });
+    const receipts: string[] = [];
+    const result = await runLintWorkRootGc({ root: sandbox, now, dryRun: false, scanOpenPaths,
+      log: (message) => receipts.push(message),
+    });
     expect(result.removed).toEqual([{ name: 'papercusp-lint-as-committed-expired', reason: 'keep-expired' }]);
+    expect(receipts).toHaveLength(1);
+    expect(JSON.parse(receipts[0].slice('[lint-work-root-gc] removal '.length))).toEqual({
+      schemaVersion: 1, policy: 'dependent-artifact', path: expired,
+      sourceSha: 'a'.repeat(40), reason: 'keep-expired',
+    });
     expect(existsSync(expired)).toBe(false);
     expect(existsSync(young)).toBe(true);
     expect(existsSync(dependent)).toBe(true);
@@ -399,9 +407,13 @@ describe('runLintWorkRootGc', () => {
 
   it('previews expiry without deleting source', async () => {
     const path = makeRoot('expired', 7);
-    const result = await runLintWorkRootGc({ root: sandbox, now, scanOpenPaths });
+    const receipts: string[] = [];
+    const result = await runLintWorkRootGc({ root: sandbox, now, scanOpenPaths,
+      log: (message) => receipts.push(message),
+    });
     expect(result.removed).toEqual([]);
     expect(result.wouldRemove).toHaveLength(1);
+    expect(receipts).toEqual([]);
     expect(existsSync(path)).toBe(true);
   });
 

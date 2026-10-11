@@ -95,6 +95,7 @@ export interface LintWorkRootGcOptions {
   now?: number;
   dryRun?: boolean;
   scanOpenPaths?: (paths: string[]) => Promise<OpenWriterScan>;
+  log?: (message: string) => void;
 }
 
 /** EI-25532904902420844: use the CLI's existing expiry/artifact/cap policy on
@@ -137,6 +138,21 @@ export async function runLintWorkRootGc(opts: LintWorkRootGcOptions = {}): Promi
     remove: (path: string) => { if (!dryRun) rmSync(path, { recursive: true, force: true }); },
   }) as { removed: Array<{ name: string; reason: string }>; kept: Array<{ name: string; reason: string }> };
   if (dryRun) wouldRemove.push(...result.removed.splice(0));
+  // Aggregate counts cannot identify which retained source disappeared. Emit
+  // only completed removals, using the custody snapshot validated before unlink.
+  for (const entry of result.removed) {
+    const path = join(root, entry.name);
+    let sourceSha: string | null = null;
+    try {
+      const marker = JSON.parse(identities.get(path)?.marker ?? 'null');
+      if (typeof marker?.sha === 'string') sourceSha = marker.sha;
+    } catch { /* An unreadable custody marker remains explicit in the receipt. */ }
+    try {
+      (opts.log ?? console.info)(`[lint-work-root-gc] removal ${JSON.stringify({
+        schemaVersion: 1, policy: 'dependent-artifact', path, sourceSha, reason: entry.reason,
+      })}`);
+    } catch { /* Logging failure must not change a completed removal's result. */ }
+  }
   return { root, dryRun, scanComplete: scan.complete, ...(scanError ? { scanError } : {}), ...result, wouldRemove };
 }
 
