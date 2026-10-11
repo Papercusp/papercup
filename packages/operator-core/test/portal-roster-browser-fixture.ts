@@ -235,11 +235,12 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     import { Toaster } from 'sonner';
     import AdvHarnessPanelPage from ${JSON.stringify(resolve(operatorRoot, '../operator-vite/src/components/adv/AdvHarnessPanelPage.tsx'))};
     import { MarkdownPreview } from ${JSON.stringify(join(operatorRoot, 'app/_components/MarkdownEditor.tsx'))};
+    const panel = React.createElement(React.Fragment, null,
+      React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.brainstorm ? 'brainstorm' : 'docs')} }),
+      ${input.brainstorm ? 'React.createElement(Toaster)' : 'null'},
+      ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'});
     const routeTree = createRootRoute({ component: () => React.createElement(NuqsAdapter, null,
-      React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, React.createElement(React.Fragment, null,
-        React.createElement(AdvHarnessPanelPage, { panel: ${JSON.stringify(input.brainstorm ? 'brainstorm' : 'docs')} }),
-        React.createElement(Toaster),
-        ${input.markdownPreflight ? `React.createElement(MarkdownPreview, { value: ${JSON.stringify(input.markdownPreflight.value)} })` : 'null'}))) });
+      ${input.brainstorm ? "React.createElement(SyncProvider, { syncType: 'POLLING', restEndpoint: '/api/zero-harness' }, panel)" : 'panel'}) });
     const router = createRouter({ routeTree });
     createRoot(document.getElementById('root')).render(React.createElement(RouterProvider, { router }));
   ` : input.plans ? `
@@ -346,7 +347,8 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     stdin: { contents: entry, loader: 'ts', resolveDir: portal, sourcefile: 'private-roster-browser-entry.ts' },
     alias: { react: resolve(portal, 'node_modules/react'), 'react-dom': resolve(portal, 'node_modules/react-dom') },
     tsconfigRaw: { compilerOptions: { baseUrl: resolve(import.meta.dirname, '../../..'), paths: { '@/*': ['apps/operator/*'] }, jsx: 'react-jsx' } },
-    loader: { '.css': 'empty', '.module.css': 'local-css' },
+    loader: { '.css': input.brainstorm ? 'css' : 'empty', '.module.css': 'local-css',
+      '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
     ...(boundary ? { define: boundary.define } : {}),
     // Browser packages may export CSS only under development/production (e.g.
     // Excalidraw). Use the real production export instead of a fixture alias.
@@ -358,7 +360,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       builder.onLoad({ filter: /\.css$/ }, ({ path }) => {
         const contents = readFileSync(path);
         originals.set(path, { sha256: digest(contents), bytes: contents.length });
-        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : 'empty' };
+        return { contents, loader: path.endsWith('.module.css') ? 'local-css' : input.brainstorm ? 'css' : 'empty' };
       });
       builder.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, ({ path }) => {
         const contents = readFileSync(path);
@@ -370,6 +372,11 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   });
   const bundle = result.outputFiles.find(file => file.path.endsWith('.js'))!.contents;
   const css = result.outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '';
+  if (input.brainstorm) {
+    for (const selector of ['.excalidraw__canvas', '.react-flow__renderer', '.bn-editor']) {
+      assert.ok(css.includes(selector), `Brainstorm editor preflight requires the actual ${selector} stylesheet`);
+    }
+  }
   for (const [path, identity] of originals) assert.equal(digest(readFileSync(path)), identity.sha256,
     `Browser input changed during build: ${path}`);
   assert.ok([...originals.keys()].some(path => path.endsWith(input.health
@@ -851,6 +858,156 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
     await context.close(); await browser.close();
     await Promise.allSettled([...syncReadCaptures]);
   }
+}
+
+/** Actual editor events and native HTTP/PG persistence. Shell dimensions are
+ * supplied; hosted tenant authorization and provider calls are separate. */
+async function runPrivateBrainstormPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput,
+  reads: Array<Record<string, unknown>>, captures: Set<Promise<void>>) {
+  const scope = input.brainstormHarnesses!;
+  const states: Array<Record<string, unknown>> = [];
+  const writes: Array<Record<string, unknown>> = [];
+  const snapshot = async (label: string) => {
+    const rows = await getOrgPg().sql`SELECT workspace_id, harness_slug, phase, content, canvas, mindmap
+      FROM harness_shared.harness_brainstorm WHERE harness_slug IN (${scope.selected}, ${scope.neighbor}, ${scope.foreign})
+      ORDER BY harness_slug, phase`;
+    states.push({ label, rows });
+    writeFileSync(join(input.evidence, 'portal-brainstorm-states.json'), JSON.stringify(states, null, 2));
+    return rows;
+  };
+  const selectedRow = (rows: Awaited<ReturnType<typeof snapshot>>) => {
+    const row = rows.find(row => row.harness_slug === scope.selected && row.phase === 'staging');
+    assert.ok(row, 'selected brainstorm staging row must exist'); return row;
+  };
+  const editor = page.locator('.h-brainstorm-write [contenteditable="true"]').first();
+  await editor.getByText('private-brainstorm-selected-text', { exact: true }).waitFor();
+  await page.locator('.rf-mind-label').getByText('private-brainstorm-selected-map', { exact: true }).waitFor({ state: 'attached' });
+  await page.locator('.excalidraw').waitFor({ state: 'attached' });
+  const initial = await snapshot('initial-editors-hydrated');
+  assert.equal(initial.length, 3, 'foreign exclusion requires an actual foreign row');
+  const untouched = initial.filter(row => row.harness_slug !== scope.selected);
+  assert.equal(untouched.length, 2);
+  const endpoint = (surface: string) => input.base + `/api/harness/${scope.selected}/${surface}`;
+  const matchingWrite = (surface: string, marker: string) => page.waitForResponse(response =>
+    new URL(response.url()).pathname === `/api/harness/${scope.selected}/${surface}`
+    && response.request().method() === 'PUT' && (response.request().postData() ?? '').includes(marker));
+  const recordWrite = async (response: Awaited<ReturnType<Page['waitForResponse']>>) => {
+    const receipt = { url: response.url(), status: response.status(), request: response.request().postDataJSON(), body: await response.json() };
+    writes.push(receipt);
+    writeFileSync(join(input.evidence, 'portal-brainstorm-writes.json'), JSON.stringify(writes, null, 2));
+    return receipt;
+  };
+  const deny = async (surface: string, marker: string) => {
+    await context.route(`**/api/harness/${scope.selected}/${surface}`, async route => {
+      if (route.request().method() !== 'PUT' || !(route.request().postData() ?? '').includes(marker)) return route.continue();
+      const response = await route.fetch({ headers: { ...route.request().headers(), origin: 'https://foreign-brainstorm.invalid' } });
+      assert.equal(response.status(), 403, 'denial must come from the actual private host');
+      await route.fulfill({ response });
+    });
+  };
+  const allow = (surface: string) => context.unroute(`**/api/harness/${scope.selected}/${surface}`);
+  const deniedText = `private-brainstorm-denied-text-${process.pid}`;
+  await deny('brainstorm', deniedText);
+  let response = matchingWrite('brainstorm', deniedText);
+  await editor.fill(deniedText);
+  assert.equal((await recordWrite(await response)).status, 403);
+  await page.locator('.h-brainstorm-savehint').getByText('save failed', { exact: true }).waitFor();
+  assert.equal(selectedRow(await snapshot('text-denied')).content, selectedRow(initial).content);
+  await allow('brainstorm');
+  const savedText = `private-brainstorm-saved-text-${process.pid}`;
+  response = matchingWrite('brainstorm', savedText);
+  await editor.fill(savedText);
+  assert.equal((await recordWrite(await response)).status, 200);
+  const textSaved = selectedRow(await snapshot('text-saved'));
+  assert.ok(textSaved.content.includes(savedText));
+  assert.deepEqual(textSaved.mindmap, selectedRow(initial).mindmap, 'text save must preserve the map');
+
+  const mapTab = page.getByRole('tab', { name: 'map', exact: true });
+  await mapTab.focus(); await page.keyboard.press('Enter');
+  assert.equal(await mapTab.getAttribute('aria-selected'), 'true');
+  assert.equal(new URL(page.url()).searchParams.get('brainstormTab'), 'map');
+  const deniedMap = `private-brainstorm-denied-map-${process.pid}`;
+  await deny('brainstorm-mindmap', deniedMap);
+  response = matchingWrite('brainstorm-mindmap', deniedMap);
+  await page.locator('.rf-mind-label').getByText('private-brainstorm-selected-map', { exact: true }).dblclick();
+  await page.locator('.rf-mind-input').fill(deniedMap); await page.locator('.rf-mind-input').press('Enter');
+  assert.equal((await recordWrite(await response)).status, 403);
+  await page.getByText(/Mindmap save failed:/).waitFor();
+  assert.deepEqual(selectedRow(await snapshot('map-denied')).mindmap, textSaved.mindmap);
+  await allow('brainstorm-mindmap');
+  const savedMap = `private-brainstorm-saved-map-${process.pid}`;
+  response = matchingWrite('brainstorm-mindmap', savedMap);
+  await page.locator('.rf-mind-label').getByText(deniedMap, { exact: true }).dblclick();
+  await page.locator('.rf-mind-input').fill(savedMap); await page.locator('.rf-mind-input').press('Enter');
+  assert.equal((await recordWrite(await response)).status, 200);
+  const mapSaved = selectedRow(await snapshot('map-saved'));
+  assert.equal(mapSaved.mindmap.nodes[0].data.text, savedMap);
+  assert.equal(mapSaved.content, textSaved.content);
+  const mapUrl = page.url(); await page.reload();
+  await page.locator('.rf-mind-label').getByText(savedMap, { exact: true }).waitFor();
+  assert.equal(page.url(), mapUrl);
+
+  const canvasTab = page.getByRole('tab', { name: 'canvas', exact: true });
+  await canvasTab.focus(); await page.keyboard.press('Space');
+  assert.equal(await canvasTab.getAttribute('aria-selected'), 'true');
+  assert.equal(new URL(page.url()).searchParams.get('brainstormTab'), 'canvas');
+  const drawRectangle = async (offset: number) => {
+    const canvas = page.locator('.excalidraw__canvas.interactive');
+    await canvas.waitFor(); const box = await canvas.boundingBox();
+    assert.ok(box && box.width > 300 && box.height > 250, 'actual canvas needs usable shell dimensions');
+    await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+    await page.keyboard.press('r');
+    await page.mouse.move(box.x + box.width / 2 + offset, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + offset + 90, box.y + box.height / 2 + 60, { steps: 4 });
+    await page.mouse.up();
+  };
+  await deny('brainstorm-canvas', '"type":"rectangle"');
+  response = matchingWrite('brainstorm-canvas', '"type":"rectangle"');
+  await drawRectangle(-120);
+  assert.equal((await recordWrite(await response)).status, 403);
+  await page.getByText(/Canvas save failed:/).waitFor();
+  assert.equal(selectedRow(await snapshot('canvas-denied')).canvas.elements.length, 0);
+  await allow('brainstorm-canvas');
+  response = matchingWrite('brainstorm-canvas', '"type":"rectangle"');
+  await drawRectangle(10);
+  assert.equal((await recordWrite(await response)).status, 200);
+  const canvasSaved = selectedRow(await snapshot('canvas-saved'));
+  assert.equal(canvasSaved.canvas.elements.filter((element: { type: string }) => element.type === 'rectangle').length, 2);
+  assert.equal(canvasSaved.content, textSaved.content);
+  assert.deepEqual(canvasSaved.mindmap, mapSaved.mindmap);
+  const canvasUrl = page.url(); await page.reload();
+  await page.locator('.excalidraw__canvas.interactive').waitFor();
+  assert.equal(page.url(), canvasUrl);
+  assert.equal(await canvasTab.getAttribute('aria-selected'), 'true');
+  const writeTab = page.getByRole('tab', { name: 'write', exact: true });
+  await writeTab.focus(); await page.keyboard.press('Enter');
+  await editor.getByText(savedText, { exact: true }).waitFor();
+  assert.equal(new URL(page.url()).searchParams.get('q'), 'retained-shell-search');
+  assert.equal(new URL(page.url()).searchParams.get('slug'), scope.selected);
+  assert.equal(new URL(page.url()).searchParams.get('ws'), input.workspace);
+  await Promise.all([...captures]);
+  const read = reads.find(read => read.status === 200 && JSON.parse(read.args as string).harnessSlug === scope.selected);
+  assert.ok(read, 'editors must hydrate through the actual private Sync query');
+  const syncRows = (read.body as { rows: Array<{ harnessSlug: string }> }).rows;
+  assert.ok(syncRows.some(row => row.harnessSlug === scope.selected));
+  assert.equal(syncRows.some(row => row.harnessSlug === scope.neighbor || row.harnessSlug === scope.foreign), false);
+  for (const [surface, field, wrapper] of [['brainstorm', 'content', 'content'], ['brainstorm-canvas', 'canvas', 'scene'],
+    ['brainstorm-mindmap', 'mindmap', 'tree']]) {
+    const fetched = await context.request.get(endpoint(surface)); assert.equal(fetched.status(), 200);
+    assert.deepEqual((await fetched.json())[wrapper], canvasSaved[field], `actual ${surface} GET must agree with PG`);
+    const hostDenied = await context.request.put(endpoint(surface), { headers: { host: 'foreign-brainstorm.invalid' },
+      data: wrapper === 'content' ? { content: 'host-denied' } : { [wrapper]: { marker: 'host-denied' } } });
+    verifyPrivateHudHostDenial(hostDenied.status(), await hostDenied.text());
+  }
+  const final = await snapshot('final-host-denials');
+  assert.deepEqual(final.filter(row => row.harness_slug !== scope.selected), untouched);
+  assert.deepEqual(selectedRow(final), canvasSaved, 'denied Host writes must leave the selected row unchanged');
+  return { workspace: input.workspace, authMethod: 'private-loopback-brainstorm-with-cookie',
+    textSaved: true, mapSaved: true, canvasSaved: true, deniedTextNoWrite: true, deniedMapNoWrite: true,
+    deniedCanvasNoWrite: true, denialRetry: true, keyboardLayers: true, mapReload: true, canvasReload: true,
+    textReload: true, shellQueryPreserved: true, neighborUnchanged: true, foreignUnchanged: true,
+    selectedSyncRead: true, apiPgAgreement: true, hostDenials: 3, providerUsed: false };
 }
 
 async function runPrivateHarnessesPage(page: Page, context: BrowserContext, input: PortalRosterBrowserInput,
