@@ -57,7 +57,8 @@ export function runtimeRetainedCensusProducer() {
 
 /** task-reconcile-action archives under OS home, independently of papercuspRoot().
  * Directory shape proves containers only; tails need a ledger identity or writer receipt. */
-export async function reapArchiveCensusProducer(home = homedir(), retainedTaskIds: readonly string[] = []) {
+export async function reapArchiveCensusProducer(home = homedir(), retainedTaskIds: readonly string[] = [],
+  lookupRetained?: (taskIds: string[]) => Promise<readonly string[]>) {
   const root: CensusRoot = { id: 'reap-archive-home', path: join(home, '.papercusp') };
   const declarations: CensusDeclaration[] = [];
   const archive = join(root.path, 'reap-archive');
@@ -72,7 +73,17 @@ export async function reapArchiveCensusProducer(home = homedir(), retainedTaskId
     const date = new Date(`${entry.name}T00:00:00Z`);
     if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== entry.name) continue;
     add(`reap-archive/${entry.name}`);
-    for (const tail of await readdir(join(archive, entry.name), { withFileTypes: true })) {
+    const tails = await readdir(join(archive, entry.name), { withFileTypes: true });
+    const candidates = tails.filter(tail => tail.isFile() && tail.name.endsWith('.tail.log'))
+      .map(tail => tail.name.slice(0, -'.tail.log'.length));
+    if (lookupRetained) {
+      for (let offset = 0; offset < candidates.length; offset += 1000) {
+        const batch = candidates.slice(offset, offset + 1000);
+        const requested = new Set(batch);
+        for (const id of await lookupRetained(batch)) if (requested.has(id)) identities.add(id);
+      }
+    }
+    for (const tail of tails) {
       if (!tail.isFile() || !tail.name.endsWith('.tail.log')) continue;
       const name = `reap-archive/${entry.name}/${tail.name}`;
       const metadata = await lstat(join(root.path, name));

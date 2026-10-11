@@ -27,6 +27,21 @@ import { reapArchiveCensusProducer } from './state-census-producers';
 import { archiveReapTail, REAP_TAIL_MAX_BYTES } from '../task-manager/reap-archive';
 
 describe('reaper archive writer census', () => {
+  it('looks up old archive identities in bounded exact batches and rejects unrelated returned ids', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'reap-lookup-'));
+    try {
+      const archive = join(home, '.papercusp', 'reap-archive', '2026-10-11');
+      await mkdir(archive, { recursive: true });
+      await Promise.all(Array.from({ length: 1001 }, (_, n) => writeFile(join(archive, `old-${n}.tail.log`), 'tail')));
+      const lookup = vi.fn(async (ids: string[]) => ids.includes('old-0') ? ['old-0', 'unrequested'] : []);
+      const result = await reapArchiveCensusProducer(home, [], lookup);
+      expect(lookup.mock.calls.map(([ids]) => ids.length)).toEqual([1000, 1]);
+      expect(new Set(lookup.mock.calls.flatMap(([ids]) => ids)).size).toBe(1001);
+      const tails = result.declarations.filter(row => row.name.endsWith('.tail.log')).map(row => row.name);
+      expect(tails).toEqual(['reap-archive/2026-10-11/old-0.tail.log']);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('verifies writer receipts after ledger GC and exposes corrupt, mismatched and linked receipts', async () => {
     const home = await mkdtemp(join(tmpdir(), 'reap-receipt-'));
     try {

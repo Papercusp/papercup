@@ -26,15 +26,16 @@ import { listTasks } from '../packages/operator-core/lib/task-manager/store';
 export async function runRootCensus(options: { args?: string[]; checkpointLogDir?: string } = {}) {
 const args = options.args ?? [];
 const installed = installedRootCensusProducers();
-// The existing reader is bounded to 2000 rows per workspace. Missing/GCed
-// identities remain residue; this read never establishes whole-install coverage.
-const retainedTaskIds: string[] = [];
-if (args.includes('--host-catalogs')) {
-  for (const workspace of readRegistry().workspaces) {
-    retainedTaskIds.push(...(await listTasks({ workspaceId: workspace.id, includeEnded: true, limit: 2000 })).map(task => task.taskId));
-  }
-}
-const reapArchive = await reapArchiveCensusProducer(undefined, retainedTaskIds);
+// Query exact archive identities BEFORE the ledger limit; a batch is smaller
+// than the cap. Missing/GCed rows remain residue, never inferred from filenames.
+const reapArchive = await reapArchiveCensusProducer(undefined, [], args.includes('--host-catalogs')
+  ? async taskIds => {
+    const retained: string[] = [];
+    for (const workspace of readRegistry().workspaces) {
+      retained.push(...(await listTasks({ workspaceId: workspace.id, includeEnded: true, taskIds, limit: 2000 })).map(task => task.taskId));
+    }
+    return retained;
+  } : undefined);
 const affectedCache = await affectedTestCacheCensusProducer();
 const sidefiles = await runtimeSidefileCensusProducer();
 const setupHomes = await cliSetupHomeCensusProducer();
