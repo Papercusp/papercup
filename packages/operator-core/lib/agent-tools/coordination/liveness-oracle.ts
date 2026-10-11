@@ -41,6 +41,14 @@
  *      (`psuHostAuthority: true`) because findLiveHost cannot distinguish "never
  *      pty-hosted here" from "host dead" — enable it only for cohorts known to be
  *      psu-pty-hosted (leader-brief's desktop fleet members).
+ *   7. host condition (parked-agent-census P-011(a), D-011) — a live psu host
+ *      whose child CANNOT take a turn (dead provider auth, quota/403, an unbound
+ *      respawn successor, deliveries stuck pending) is `suspect` with a `wedged`
+ *      reason, never `parked`/`recorded`. The live process is not evidence the
+ *      session can think. Same judge as the pickup sweep and the stalled-loops
+ *      guard (turn-proof.ts judgeHostTail, D-007). On by default wherever
+ *      `psuHostPositiveAuthority` trusts the host; opt in elsewhere with
+ *      `hostCondition: true`.
  *
  * Callers with only ownerIds (the send/handoff MISS path) can set
  * `hydratePerId: true` to fill heartbeat/stale/host/pid/source from each
@@ -83,7 +91,14 @@ import {
   recordedLiveOwnerIds,
   type AdvSessionRow,
 } from '../../adv-sessions';
-import { findLiveHost, findLiveHostAsync } from '../../events/await/psu-pty-discovery';
+import { findLiveHost, findLiveHostAsync, readHostEventTailAsync } from '../../events/await/psu-pty-discovery';
+import {
+  hostRecoverableCondition,
+  pickupHostView,
+  type HostTailEvent,
+  type PickupHostRecord,
+  type PickupRecoverable,
+} from '../../events/await/turn-proof';
 
 /** The per-owner inputs a caller supplies. Everything beyond `ownerId` is
  *  optional — a missing leg degrades exactly like the legacy call sites did
@@ -155,6 +170,13 @@ export interface LivenessVerdict {
    * declare one dead — the ceiling that does declare is ACTIVITY_DEAD_MS.
    */
   warmIdle?: boolean;
+  /**
+   * P-011(a): the host condition that stops this session taking a turn, when the
+   * host-condition leg ran and found one. Present only with `sessionState:
+   * 'suspect'`. Absent means "not wedged OR not checked", never "checked healthy";
+   * a supervisor that needs the distinction must have enabled the leg.
+   */
+  wedged?: PickupRecoverable;
   /** WI-4400: draining/suspect verdicts need a fresh required wake before a
    *  coordinator assumes the owner is dead or alive. */
   confirmLiveness: boolean | null;
@@ -219,6 +241,18 @@ export interface ResolveSessionStatesOpts {
    * noticing a stranded member is precisely their job.
    */
   selfWake?: boolean;
+  /**
+   * P-011(a) / D-011: judge each live psu host's condition and report a session
+   * that cannot take a turn as `suspect` + `wedged`. Defaults to
+   * `psuHostPositiveAuthority`: a caller that trusts a live host as proof of life
+   * must also hear when that host's child cannot think, or the positive rescue
+   * hands a dead-auth codex the same `parked` as a healthy one. Costs one 64 KB
+   * async tail read per candidate (a non-cup subject with a live host whose
+   * verdict is parked / draining / recorded), 16 at a time.
+   */
+  hostCondition?: boolean;
+  /** DI seam for the host-condition leg's lifecycle-tail read. */
+  readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
   // ── DI seams (unit tests / bounded callers) ──
   fetchWakeabilityFn?: (ids: string[]) => Promise<Map<string, WakeabilitySignals>>;
   fetchSelfWakeFn?: (ids: string[]) => Promise<Map<string, SelfWakeSignals>>;
@@ -493,6 +527,34 @@ export function unknownVerdict(subject: LivenessSubject, nowMs: number): Livenes
   };
 }
 
+/**
+ * States the host-condition leg may move to `suspect`. `live` is excluded: a
+ * live turn is direct proof the session is taking turns, and a host flag that
+ * contradicts it is stale. `suspect`/`ended` are already non-actionable, and
+ * `null` is the in-band unknown, which a host reading must not invent.
+ */
+const WEDGE_ELIGIBLE: ReadonlySet<SessionState> = new Set<SessionState>(['parked', 'draining', 'recorded']);
+
+/**
+ * PURE (P-011(a), D-011): apply a host condition to an already-derived verdict.
+ * A session whose host reports it cannot take a turn is `suspect` and names the
+ * condition in `wedged`; every other verdict is returned unchanged.
+ */
+export function applyHostCondition(
+  verdict: LivenessVerdict,
+  condition: PickupRecoverable | null,
+): LivenessVerdict {
+  if (condition == null || verdict.sessionState == null || !WEDGE_ELIGIBLE.has(verdict.sessionState)) {
+    return verdict;
+  }
+  return {
+    ...verdict,
+    sessionState: 'suspect',
+    wedged: condition,
+    confirmLiveness: needsLivenessConfirmation('suspect'),
+  };
+}
+
 /** A bare owner id has no presence-derived liveness evidence to feed the
  *  state machine. In particular, `fetchWakeability` deliberately emits a
  *  `wakeable:false/liveTurn:false` row for every requested id, so that
@@ -729,6 +791,41 @@ export async function resolveSessionStates(
         recordedEnded,
       ),
     );
+  }
+
+  // P-011(a) / D-011: a live host is not proof the session can think. Judge the
+  // host's condition for every candidate the positive rescue (or the plain
+  // derivation) left looking actionable, with the SAME judge the pickup sweep and
+  // the stalled-loops guard use, and report a wedged one as `suspect`.
+  if (opts.hostCondition ?? opts.psuHostPositiveAuthority === true) {
+    const readTail = opts.readHostTailFn ?? ((ownerId: string) => readHostEventTailAsync(ownerId));
+    const candidates = hydrated.filter((s) => {
+      const v = out.get(s.ownerId);
+      return (
+        s.agentRole != null &&
+        s.agentRole !== 'cup' &&
+        v?.sessionState != null &&
+        WEDGE_ELIGIBLE.has(v.sessionState)
+      );
+    });
+    for (let i = 0; i < candidates.length; i += 16) {
+      await Promise.all(
+        candidates.slice(i, i + 16).map(async (s) => {
+          let host = findHostFn(s.ownerId);
+          if (host == null && !explicitFindHostFn) {
+            host = await findHostAsyncFn(s.ownerId).catch(() => null);
+          }
+          if (host == null || typeof host !== 'object') return;
+          // Best-effort like the pickup sweep: an unreadable tail is "no tail
+          // reading", which can still surface the record's own auth/quota flags
+          // but never invents an unbound or stuck verdict.
+          const tail = await readTail(s.ownerId).catch(() => [] as HostTailEvent[]);
+          const condition = hostRecoverableCondition(pickupHostView(host as PickupHostRecord, tail, nowMs));
+          const v = out.get(s.ownerId);
+          if (v) out.set(s.ownerId, applyHostCondition(v, condition));
+        }),
+      );
+    }
   }
   return out;
 }
