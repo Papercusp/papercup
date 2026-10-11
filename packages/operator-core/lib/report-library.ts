@@ -30,11 +30,10 @@
  * resolves by id, it just leaves the default list.
  *
  * ## One visibility predicate, one implementation
- * {@link visibleTo} returns a SQL fragment and is the ONLY expression of the
- * visibility rule (R-7). There is deliberately no JavaScript twin that evaluates
- * the same matrix in memory: two implementations of one security rule drift, and
- * the drift is silent in the permissive direction. Every read path composes this
- * fragment instead.
+ * {@link visibleTo} returns the SQL fragment for the visibility rule (R-7).
+ * Ordinary reads compose it directly. The judge-only scorecard-evidence path can
+ * add one exact report ID after canonical scorecard proof; it never changes the
+ * visibility predicate or widens list, search, or lineage reads.
  *
  * Transport-agnostic: every function TAKES the `sql` handle, so the same code
  * serves the live `getOrgPg()` connection and the integration test's testcontainer
@@ -147,6 +146,11 @@ export interface ReportViewer {
   ownerId?: string | null;
   /** The viewing agent's pot; matches `origin_harness_slug` for `pot`-visibility reports. */
   potSlug?: string | null;
+}
+
+export interface ReportCitationReadScope {
+  kind: 'scorecard-citation';
+  reportId: string;
 }
 
 /** Raised when a body exceeds {@link REPORT_BODY_MAX_BYTES}; carries the overage. */
@@ -400,15 +404,25 @@ export async function publishReport(
 /**
  * Resolve one report by id. Deliberately does NOT filter retired rows: retirement
  * is a soft state and a citation to a report id must keep resolving (R-3).
- * Pass `viewer` to gate the read; omit it only on server-internal paths.
+ * Pass `viewer` to gate the read; omit it only on server-internal paths. A citation
+ * scope is valid only for its exact report ID and is constructed by reports:get
+ * after it verifies the corresponding scorecard citation.
  */
 export async function getReport(
   sql: postgres.Sql,
   workspaceId: string,
   reportId: string,
   viewer?: ReportViewer,
+  citationScope?: ReportCitationReadScope,
 ): Promise<ReportRecord | null> {
-  const gate = viewer ? visibleTo(sql, viewer) : sql`TRUE`;
+  const visibleGate = viewer ? visibleTo(sql, viewer) : sql`TRUE`;
+  const citationGate =
+    viewer &&
+    citationScope?.kind === 'scorecard-citation' &&
+    citationScope.reportId === reportId
+      ? sql`report_id = ${citationScope.reportId}`
+      : sql`FALSE`;
+  const gate = sql`(${visibleGate}) OR (${citationGate})`;
   const [row] = await sql<DbRow[]>`
     SELECT ${sql.unsafe(SELECT_COLS)}
       FROM harness_shared.report_library
