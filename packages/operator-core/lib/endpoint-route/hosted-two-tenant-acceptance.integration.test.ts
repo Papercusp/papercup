@@ -423,6 +423,91 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     }
   });
 
+  it('redacts failed billing collectors over private HTTP and recovers without changing another tenant or duplicating receipts', async () => {
+    const now = Date.UTC(2026, 8, 2);
+    const provider = 'cloud-billing-recovery-fixture';
+    const records: HostedUsageRecord[] = [
+      { controlWorkspaceId: CONTROL, organizationId: ORG_A, customerWorkspaceId: WORKSPACE_A,
+        provider, recordId: 'billing-recovery-a-1', usageId: 'billing-recovery-a', revision: 1,
+        category: 'compute', payer: 'consumption', occurredAtMs: now - 1, observedAtMs: now,
+        quantity: 60, unit: 'seconds', costSource: 'provider-billed', costMicros: 21_007,
+        sourceRef: 'fixture:billing-recovery-a-1' },
+      { controlWorkspaceId: CONTROL, organizationId: ORG_B, customerWorkspaceId: WORKSPACE_B,
+        provider, recordId: 'billing-recovery-b-1', usageId: 'billing-recovery-b', revision: 1,
+        category: 'compute', payer: 'consumption', occurredAtMs: now - 1, observedAtMs: now,
+        quantity: 60, unit: 'seconds', costSource: 'provider-billed', costMicros: 81_011,
+        sourceRef: 'fixture:billing-recovery-b-1' },
+    ];
+    const usageStore = new PostgresHostedUsageStore(runService);
+    for (const record of records) expect(await usageStore.append(record)).toBe('recorded');
+    let failure: 'outage' | 'foreign' | null = 'outage';
+    const collectorRead = vi.fn(async (input: { scope: HostedUsageStatement['scope']; month: string }) => {
+      if (input.scope.organizationId === ORG_A && failure === 'outage') {
+        throw new Error('synthetic-provider-secret=redaction-canary; upstream account tenant-b');
+      }
+      return { scope: input.scope, month: input.month, complete: false, observedAtMs: now,
+        evidenceRef: 'fixture:billing-recovery-census',
+        records: records.filter(record => record.organizationId ===
+          (input.scope.organizationId === ORG_A && failure === 'foreign' ? ORG_B : input.scope.organizationId)) };
+    });
+    const billing = await createHostedBillingRuntime({ publicOrigin: ORIGIN,
+      stripeSecretKeyRef: null, stripeWebhookSecretRef: null, plans: [],
+    }, { runService, clock: () => new Date(now),
+      resolvePrincipal: createHostedPrincipalResolver({ ...plane.components, controlPlaneWorkspaceId: CONTROL }),
+      usageCollectors: [{ id: provider, provider, categories: ['compute'], read: collectorRead }],
+    });
+    const server = serve({ fetch: billing.app.fetch, hostname: '127.0.0.1', port: 0 });
+    const persisted = () => runService(tx => tx`SELECT record_id, revision, cost_micros
+      FROM papercusp_auth.hosted_usage_receipts WHERE control_workspace_id = ${CONTROL}
+        AND provider = ${provider} ORDER BY record_id`);
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private billing HTTP address unavailable');
+      const url = `http://127.0.0.1:${address.port}/api/hosted/billing/usage?month=2026-09`;
+      const read = (session: HostedSession) => fetch(url, { headers: { cookie: cookie(plane, session) } });
+      const statement = async (session: HostedSession) => {
+        const response = await read(session);
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        return (await response.json() as { statement: HostedUsageStatement }).statement;
+      };
+      const original = await persisted();
+      for (const state of ['outage', 'foreign'] as const) {
+        failure = state;
+        const response = await read(sessionA);
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({ ok: false,
+          error: { code: 'usage_unavailable', safeMessage: 'Usage could not be read.' } });
+        expect(await persisted()).toEqual(original);
+        const unaffected = await statement(sessionB);
+        expect(unaffected.scope.organizationId).toBe(ORG_B);
+        expect(unaffected.consumptionBilled.micros).toBe(81_011);
+        expect(unaffected.history.map(row => row.usageId)).toEqual(['billing-recovery-b']);
+      }
+      failure = null;
+      records[0] = { ...records[0]!, recordId: 'billing-recovery-a-2', revision: 2,
+        costMicros: 31_003, sourceRef: 'fixture:billing-recovery-a-2' };
+      for (let retry = 0; retry < 2; retry++) {
+        const recovered = await statement(sessionA);
+        expect(recovered.scope.organizationId).toBe(ORG_A);
+        expect(recovered.consumptionBilled.micros).toBe(31_003);
+        expect(recovered.history.map(row => row.usageId)).toEqual(['billing-recovery-a']);
+        expect(recovered.history[0]?.revisions.map(row => [row.recordId, row.revision, row.costMicros]))
+          .toEqual([['billing-recovery-a-1', 1, 21_007], ['billing-recovery-a-2', 2, 31_003]]);
+        expect(recovered.settlementEligible).toBe(false);
+        expect((await statement(sessionB)).consumptionBilled.micros).toBe(81_011);
+      }
+      expect((await persisted()).map(row => [row.record_id, row.revision]))
+        .toEqual([['billing-recovery-a-1', 1], ['billing-recovery-a-2', 2], ['billing-recovery-b-1', 1]]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+        if ('closeAllConnections' in server) server.closeAllConnections();
+      });
+    }
+  });
+
   it('denies anonymous and persistently revoked billing sessions before the collector while another tenant survives', async () => {
     const session = await createSession(plane, USER_A, ORG_A, WORKSPACE_A, 'billing-revocation');
     const now = Date.UTC(2026, 9, 2);
@@ -448,6 +533,106 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     expect(collectorRead).toHaveBeenCalledTimes(1);
     expect((await read(sessionB)).status).toBe(200);
     expect(collectorRead).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['role change', 401],
+    ['membership revocation', 403],
+  ] as const)('rejects retained billing cookies after persisted %s over HTTP before collection', async (ending, status) => {
+    // Keep the original cookie and session row alive. Only the authoritative
+    // membership changes; a cached session grant must not authorize billing.
+    const userId = randomUUID();
+    await sql`
+      INSERT INTO papercusp_auth.hosted_users (id, primary_email, display_name)
+      VALUES (${userId}::uuid, ${`${userId}@example.test`}, 'Billing authority probe')
+    `;
+    await sql`
+      INSERT INTO papercusp_auth.organization_memberships
+        (organization_id, user_id, role, status, authority, created_via)
+      VALUES (${ORG_A}::uuid, ${userId}::uuid, 'owner', 'active', 'papercusp', 'organization_bootstrap')
+    `;
+    const session = await createSession(plane, userId, ORG_A, WORKSPACE_A, `billing-${ending}`);
+    const retainedCookie = cookie(plane, session);
+    // Durable reads include all providers in a month, so independent cases
+    // need disjoint months as well as different receipt identifiers.
+    const month = ending === 'role change' ? '2026-08' : '2026-07';
+    const now = Date.UTC(2026, ending === 'role change' ? 7 : 6, 2);
+    const provider = ending === 'role change' ? 'billing-authority-role-fixture' : 'billing-authority-revocation-fixture';
+    const records: HostedUsageRecord[] = [
+      { controlWorkspaceId: CONTROL, organizationId: ORG_A, customerWorkspaceId: WORKSPACE_A,
+        provider, recordId: `${provider}-a-1`, usageId: `${provider}-a`, revision: 1,
+        category: 'compute', payer: 'consumption', occurredAtMs: now - 1, observedAtMs: now,
+        quantity: 60, unit: 'seconds', costSource: 'provider-billed', costMicros: 11_003,
+        sourceRef: 'fixture:billing-authority-a' },
+      { controlWorkspaceId: CONTROL, organizationId: ORG_B, customerWorkspaceId: WORKSPACE_B,
+        provider, recordId: `${provider}-b-1`, usageId: `${provider}-b`, revision: 1,
+        category: 'compute', payer: 'consumption', occurredAtMs: now - 1, observedAtMs: now,
+        quantity: 60, unit: 'seconds', costSource: 'provider-billed', costMicros: 77_009,
+        sourceRef: 'fixture:billing-authority-b' },
+    ];
+    const usageStore = new PostgresHostedUsageStore(runService);
+    for (const record of records) expect(await usageStore.append(record)).toBe('recorded');
+    const collectorRead = vi.fn(async (input: { scope: HostedUsageStatement['scope']; month: string }) => ({
+      scope: input.scope, month: input.month, complete: false, observedAtMs: now,
+      evidenceRef: 'fixture:billing-authority-census',
+      records: records.filter(record => record.organizationId === input.scope.organizationId),
+    }));
+    const billing = await createHostedBillingRuntime({ publicOrigin: ORIGIN,
+      stripeSecretKeyRef: null, stripeWebhookSecretRef: null, plans: [],
+    }, { runService, clock: () => new Date(now),
+      resolvePrincipal: createHostedPrincipalResolver({ ...plane.components, controlPlaneWorkspaceId: CONTROL }),
+      usageCollectors: [{ id: provider, provider, categories: ['compute'], read: collectorRead }],
+    });
+    const persisted = () => runService(tx => tx`SELECT record_id, revision, cost_micros
+      FROM papercusp_auth.hosted_usage_receipts WHERE control_workspace_id = ${CONTROL}
+        AND provider = ${provider} ORDER BY record_id`);
+    const server = serve({ fetch: billing.app.fetch, hostname: '127.0.0.1', port: 0 });
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private billing HTTP address unavailable');
+      const url = `http://127.0.0.1:${address.port}/api/hosted/billing/usage?month=${month}`;
+      const read = (value: string) => fetch(url, { headers: { cookie: value } });
+      const before = await read(retainedCookie);
+      expect(before.status, await before.clone().text()).toBe(200);
+      expect((await before.json() as { statement: HostedUsageStatement }).statement.consumptionBilled.micros).toBe(11_003);
+      expect(collectorRead).toHaveBeenCalledTimes(1);
+      const original = await persisted();
+      if (ending === 'role change') {
+        expect(await sql`UPDATE papercusp_auth.organization_memberships
+          SET role = 'member', updated_at = updated_at + interval '2 seconds'
+          WHERE organization_id = ${ORG_A}::uuid AND user_id = ${userId}::uuid RETURNING user_id`)
+          .toEqual([{ user_id: userId }]);
+      } else {
+        expect(await sql`UPDATE papercusp_auth.organization_memberships
+          SET status = 'revoked', revoked_at = now(), updated_at = updated_at + interval '2 seconds'
+          WHERE organization_id = ${ORG_A}::uuid AND user_id = ${userId}::uuid RETURNING user_id`)
+          .toEqual([{ user_id: userId }]);
+      }
+      expect(await plane.components.sessionStore.resolve(session.id)).toMatchObject({ id: session.id,
+        permissionVersion: session.permissionVersion, revokedAt: null });
+      const denied = await read(retainedCookie);
+      expect(denied.status).toBe(status);
+      const deniedBody = await denied.text();
+      for (const secret of [session.id, userId, retainedCookie, records[0]!.recordId, records[1]!.recordId]) {
+        expect(deniedBody).not.toContain(secret);
+      }
+      expect(collectorRead).toHaveBeenCalledTimes(1);
+      expect(await persisted()).toEqual(original);
+      const survivor = await read(cookie(plane, sessionB));
+      expect(survivor.status, await survivor.clone().text()).toBe(200);
+      const statement = (await survivor.json() as { statement: HostedUsageStatement }).statement;
+      expect(statement.scope.organizationId).toBe(ORG_B);
+      expect(statement.consumptionBilled.micros).toBe(77_009);
+      expect(statement.history.map(row => row.usageId)).toEqual([`${provider}-b`]);
+      expect(collectorRead).toHaveBeenCalledTimes(2);
+      expect(await persisted()).toEqual(original);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+        if ('closeAllConnections' in server) server.closeAllConnections();
+      });
+    }
   });
 
   it('serves the hosted tenant API on a private HTTP target and refuses unpaid provisioning attacks', async () => {
