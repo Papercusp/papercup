@@ -48,7 +48,6 @@ export const DISPOSITIONS = Object.freeze({
   // ── owner-only-alarm ──────────────────────────────────────────────────────────────────────
   'owner-only-alarm|apps/operator/bin/host-bootstrap.ts': migrate('P-009'),
   'owner-only-alarm|apps/operator/lib/release/green-checkpoint.ts': migrate('P-008'),
-  'owner-only-alarm|packages/operator-core/lib/agent-governor-observer.ts': migrate('P-007'),
   'owner-only-alarm|packages/operator-core/lib/agent-tools/operator/notify_owner.ts': na(
     'the notify_owner tool relays an agent-authored message to the owner; it reports no system condition',
   ),
@@ -64,7 +63,6 @@ export const DISPOSITIONS = Object.freeze({
   'owner-only-alarm|packages/operator-core/lib/agent-tools/work_items/release-force-guard.ts': na(
     'owner-authority audit notice of a deliberate forced release by an agent; an authorization trail, not a system failure',
   ),
-  'owner-only-alarm|packages/operator-core/lib/alarm-attention.ts': migrate('P-007'),
   'owner-only-alarm|packages/operator-core/lib/attention/bulk-run-owner-digest.ts': na(
     'owner digest of a finished bulk run’s results; a report, not a failure signal',
   ),
@@ -96,18 +94,12 @@ export const DISPOSITIONS = Object.freeze({
   'owner-only-alarm|packages/operator-core/lib/papercup/papercup-proactive-sweep-deps.ts': na(
     'the Papercup assistant’s proactive Sentinel message to its user; a product feature, not a system failure signal',
   ),
-  'owner-only-alarm|packages/operator-core/lib/poll-suspect-alarm.ts': migrate('P-007'),
   'owner-only-alarm|packages/operator-core/lib/release/idle-repair-queue-actuator.ts': migrate('P-008'),
   'owner-only-alarm|packages/operator-core/lib/release/lost-gate-run-alarm.ts': migrate('P-008'),
   'owner-only-alarm|packages/operator-core/lib/release/staging-fix-proposal-cli.ts': na(
     'a CLI proposing a staging fix for owner review at normal importance; a proposal, not a failure signal',
   ),
-  'owner-only-alarm|packages/operator-core/lib/storage/disk-space-alarm.ts': migrate('P-007'),
-  'owner-only-alarm|packages/operator-core/lib/storage/localstorage-wal-guard.ts': migrate('P-007'),
-  'owner-only-alarm|packages/operator-core/lib/storage/replication-slot-alarm.ts': migrate('P-007'),
-  'owner-only-alarm|packages/operator-core/lib/storage/storage-growth-alarm.ts': migrate('P-007'),
   'owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts': migrate('P-014'),
-  'owner-only-alarm|packages/operator-core/lib/system-health/gui-e2e-surface-scheduled-run.ts': migrate('P-007'),
 
   // ── log-only-fallback ─────────────────────────────────────────────────────────────────────
   'log-only-fallback|apps/operator/app/_components/voice/voice-mode.ts': na(
@@ -246,7 +238,6 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts': migrate('P-014'),
-  'health-flag-no-condition|packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts': migrate('P-005'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts': migrate('P-014'),
 
@@ -296,7 +287,6 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/installed-hook-drift-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/kernel-leak-watchdog.ts': migrate('P-014'),
-  'bespoke-watchdog|packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts': migrate('P-005'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/unservable-critical-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts': migrate('P-014'),
