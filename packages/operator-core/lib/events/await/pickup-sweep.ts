@@ -28,7 +28,7 @@ import {
   type ExpiredPickupRow,
   type SettleExpiredPickupResult,
 } from './store';
-import { BINDING_EVENTS, judgeExpiredPickup, type PickupHostView, type PickupRecoverable } from './turn-proof';
+import { judgeExpiredPickup, pickupHostView, type PickupHostView, type PickupRecoverable } from './turn-proof';
 
 /** The emitter the sweep reports through (engine.ts passes `emitAwaitedEvent`). */
 export type PickupEmit = (opts: { key: string; payload: unknown; summary: string; source: string }) => Promise<unknown>;
@@ -57,29 +57,13 @@ export const PICKUP_SWEEP_SOURCE = 'pickup-sweep';
 const DEFAULT_OBSERVE_LIMIT = 500;
 const DEFAULT_EXPIRED_LIMIT = 200;
 
-/** The psu host's view for the judge: discovery record plus the newest binding event in its tail. */
+/** The psu host's view for the judge: discovery record plus its lifecycle tail, judged once (D-007). */
 export async function readPickupHostView(subscriberId: string): Promise<PickupHostView | null> {
   const host = await findLiveHostAsync(subscriberId);
   if (!host) return null;
-  let latestBindingEvent: string | null = null;
-  try {
-    const tail = await readHostEventTailAsync(subscriberId);
-    for (let i = tail.length - 1; i >= 0; i--) {
-      const kind = tail[i]?.kind;
-      if (typeof kind === 'string' && BINDING_EVENTS.has(kind)) {
-        latestBindingEvent = kind;
-        break;
-      }
-    }
-  } catch {
-    // Best-effort: an unreadable tail is "no binding reading", never a recoverable verdict.
-  }
-  return {
-    execution: host.execution ?? null,
-    authBlocked: host.authBlocked,
-    quotaBlocked: host.quotaBlocked,
-    latestBindingEvent,
-  };
+  // Best-effort: an unreadable tail is "no tail reading", never a recoverable verdict.
+  const tail = await readHostEventTailAsync(subscriberId).catch(() => []);
+  return pickupHostView(host, tail, Date.now());
 }
 
 interface SubscriberReport {

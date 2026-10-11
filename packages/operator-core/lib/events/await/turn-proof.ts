@@ -102,40 +102,184 @@ export const PICKUP_ESCALATION_SOURCE = 'pickup-escalation';
  */
 const ESCALATABLE_CHANNELS: ReadonlySet<string> = new Set<string>(WAKE_TURN_CHANNELS);
 
+type HostExecutionView = { phase?: string; turnStartedAt?: number | null; lastProgressAt?: number | null };
+
 /** The slice of the psu host's discovery record and event tail the judge reads. */
 export interface PickupHostView {
-  execution?: { phase?: string; turnStartedAt?: number | null } | null;
+  execution?: HostExecutionView | null;
   authBlocked?: boolean;
   quotaBlocked?: boolean;
-  /** Newest binding event kind in the host's lifecycle tail, if any. */
-  latestBindingEvent?: string | null;
+  /** The current host process's child has no native identity, so the host refuses its turns (D-007 (b)). */
+  unboundSuccessor?: boolean;
+  /** Deliveries the host has held as pending past the pickup window with no turn since (D-007 (c)). */
+  stuckPending?: StuckPendingDeliveries | null;
 }
 
-/** Host lifecycle events that mean the current child has no confirmed native identity (P-005). */
-export const UNBOUND_BINDING_EVENTS: ReadonlySet<string> = new Set([
-  'respawn-binding-unconfirmed',
-  'respawn-carry-dropped',
-]);
+/** Deliveries a host ACKed but never turned into a turn (D-007 (c)). */
+export interface StuckPendingDeliveries {
+  /** `duplicate-delivery-id` re-polls the host answered `pending` since the oldest one. */
+  repolls: number;
+  /** When the host first answered `pending` for a still-unturned delivery. */
+  oldestAtMs: number;
+}
 
-/** Host lifecycle events that bracket a carry-respawn's binding outcome, newest wins. */
-export const BINDING_EVENTS: ReadonlySet<string> = new Set([
-  ...UNBOUND_BINDING_EVENTS,
+/**
+ * Host lifecycle events that settle the current child's binding verdict, newest wins (D-007 (b)).
+ * A delivered turn counts: the host refuses every turn to an unbindable child (P-005(c)), so a
+ * turn written after an unconfirmed binding proves the child was bindable after all.
+ */
+export const BINDING_VERDICT_EVENTS: ReadonlySet<string> = new Set([
+  'respawn-binding-unconfirmed',
   'respawn-binding-confirmed',
   'respawn-carry-delivered',
+  'successor-unbindable-refused',
+  'turn-delivered',
 ]);
 
-export type PickupRecoverable = 'auth-blocked' | 'quota-blocked' | 'unbound-successor';
+/**
+ * The one binding-failure reason psu-pty-host itself treats as an unbindable child (P-005 /
+ * D-003). Other `respawn-binding-unconfirmed` reasons (`superseded`,
+ * `successor-reanchor-unconfirmed`, ...) describe a binding WAIT that ended, not a child without
+ * an identity; measured 2026-10-10, hosts carrying them ran 95-245 tool calls an hour (D-007).
+ */
+export const UNBINDABLE_BINDING_REASON = 'successor-native-id-missing';
+
+/** One psu-pty-host lifecycle event as `appendHostEvent` writes it (`ts` is an ISO string). */
+export interface HostTailEvent {
+  kind?: unknown;
+  ts?: unknown;
+  [k: string]: unknown;
+}
+
+function hostEventMs(e: HostTailEvent): number | null {
+  if (typeof e.ts === 'number') return Number.isFinite(e.ts) ? e.ts : null;
+  if (typeof e.ts === 'string') {
+    const ms = Date.parse(e.ts);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return null;
+}
+
+export interface HostTailVerdict {
+  unboundSuccessor: boolean;
+  stuckPending: StuckPendingDeliveries | null;
+}
+
+/**
+ * Judge a psu host's lifecycle tail (D-007). The ONE reading both the pickup sweep (P-006) and
+ * the stalled-loops guard (P-007) use, so "this host is wedged" means one thing everywhere.
+ *
+ * The tail file is per OWNER and outlives a host process, so only events at or after the current
+ * host's `startedAt` describe its child: a predecessor's unconfirmed binding says nothing about a
+ * relaunched session. When the start is unknown every timed event counts.
+ *
+ * `stuckPending` needs persistence, not one sighting: a busy host answers `pending` for a wake
+ * that arrived mid-turn and delivers it at turn end (measured: 78 of 220 healthy hosts in 6h).
+ * It is reported only when the host has re-polled the same pending state at least twice, the
+ * oldest is past the pickup window, no turn was written since, and the host is not visibly
+ * busy: execution running with progress inside the window, or the child writing terminal output
+ * inside it. The output test covers bridged (interactive) hosts, which publish no execution
+ * observation; measured 2026-10-10, a bridged session inside one long turn made 100 tool calls
+ * in 10 minutes while its wakes pended, and its last output was 0 minutes old, against 42-148
+ * minutes for every genuinely stuck host.
+ */
+export function judgeHostTail(
+  events: readonly HostTailEvent[],
+  opts: {
+    hostStartedAtMs?: number | null;
+    nowMs: number;
+    pickupWindowMs: number;
+    execution?: HostExecutionView | null;
+    /** The host's `lastOutputAt`: when its child last wrote to the terminal. */
+    lastOutputAtMs?: number | null;
+  },
+): HostTailVerdict {
+  const start =
+    typeof opts.hostStartedAtMs === 'number' && Number.isFinite(opts.hostStartedAtMs) && opts.hostStartedAtMs > 0
+      ? opts.hostStartedAtMs
+      : null;
+  let binding: HostTailEvent | null = null;
+  let oldestPendingMs: number | null = null;
+  let repolls = 0;
+  for (const e of events) {
+    const at = hostEventMs(e);
+    if (at === null || (start !== null && at < start)) continue;
+    const kind = typeof e.kind === 'string' ? e.kind : '';
+    if (BINDING_VERDICT_EVENTS.has(kind)) binding = e;
+    if (kind === 'turn-delivered') {
+      oldestPendingMs = null;
+      repolls = 0;
+    } else if (kind === 'duplicate-delivery-id' && e.state === 'pending') {
+      oldestPendingMs ??= at;
+      repolls += 1;
+    }
+  }
+  const unboundSuccessor =
+    binding !== null &&
+    (binding.kind === 'successor-unbindable-refused' ||
+      (binding.kind === 'respawn-binding-unconfirmed' && binding.reason === UNBINDABLE_BINDING_REASON));
+
+  const within = (ms: number | null | undefined) =>
+    typeof ms === 'number' && Number.isFinite(ms) && opts.nowMs - ms < opts.pickupWindowMs;
+  const visiblyBusy =
+    (opts.execution?.phase === 'running' && within(opts.execution.lastProgressAt)) || within(opts.lastOutputAtMs);
+  const stuckPending =
+    oldestPendingMs !== null && repolls >= 2 && opts.nowMs - oldestPendingMs >= opts.pickupWindowMs && !visiblyBusy
+      ? { repolls, oldestAtMs: oldestPendingMs }
+      : null;
+  return { unboundSuccessor, stuckPending };
+}
+
+/** The discovery-record fields `pickupHostView` reads (a structural slice of `PsuPtyHost`). */
+export interface PickupHostRecord {
+  startedAt?: number | null;
+  lastOutputAt?: number | null;
+  execution?: HostExecutionView | null;
+  authBlocked?: boolean;
+  quotaBlocked?: boolean;
+}
+
+/** Build the judge's view of a live host from its discovery record and lifecycle tail (D-007 (a)). */
+export function pickupHostView(
+  host: PickupHostRecord,
+  events: readonly HostTailEvent[],
+  nowMs: number,
+  pickupWindowMs: number = pickupWindowSec() * 1000,
+): PickupHostView {
+  const execution = host.execution ?? null;
+  const verdict = judgeHostTail(events, {
+    hostStartedAtMs: host.startedAt ?? null,
+    nowMs,
+    pickupWindowMs,
+    execution,
+    lastOutputAtMs: host.lastOutputAt ?? null,
+  });
+  return {
+    execution,
+    authBlocked: host.authBlocked,
+    quotaBlocked: host.quotaBlocked,
+    unboundSuccessor: verdict.unboundSuccessor,
+    stuckPending: verdict.stuckPending,
+  };
+}
+
+export type PickupRecoverable = 'auth-blocked' | 'quota-blocked' | 'unbound-successor' | 'pending-turn-stuck';
 
 export type ExpiredPickupVerdict =
   | { proof: 'observed'; turnStartedAtMs: number; via: 'host-turn-start' }
   | { proof: 'not-picked-up'; escalate: boolean; reason: string; recoverable: PickupRecoverable | null };
 
-/** The P-004/P-005 condition the host reports, if any. Auth first: it is the one a turn cannot outlive. */
+/**
+ * The P-004/P-005/D-007 condition the host reports, if any. Auth first: it is the one a turn
+ * cannot outlive. A stuck pending pipeline is last: the conditions above it explain WHY turns
+ * pend, and naming the cause routes to the right recovery.
+ */
 export function hostRecoverableCondition(host: PickupHostView | null): PickupRecoverable | null {
   if (!host) return null;
   if (host.authBlocked === true) return 'auth-blocked';
   if (host.quotaBlocked === true) return 'quota-blocked';
-  if (host.latestBindingEvent && UNBOUND_BINDING_EVENTS.has(host.latestBindingEvent)) return 'unbound-successor';
+  if (host.unboundSuccessor === true) return 'unbound-successor';
+  if (host.stuckPending) return 'pending-turn-stuck';
   return null;
 }
 
@@ -183,6 +327,16 @@ export function judgeExpiredPickup(
       escalate: false,
       reason: 'host reports no recoverable condition (P-004/P-005)',
       recoverable: null,
+    };
+  }
+  if (recoverable === 'pending-turn-stuck') {
+    // D-007 (c): the host ACKs a re-queued wake into the same stalled pipeline, so the one
+    // re-queue would only add another pending delivery. Reported for relaunch (P-012).
+    return {
+      proof: 'not-picked-up',
+      escalate: false,
+      reason: 'host pending-turn-stuck: a re-queued wake would pend behind the stalled turn; reported only (P-012)',
+      recoverable,
     };
   }
   return { proof: 'not-picked-up', escalate: true, reason: `host ${recoverable}; one re-queue`, recoverable };

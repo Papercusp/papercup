@@ -14,7 +14,13 @@
  */
 
 import { hostIsAgentLaunched, hostSupports, type PsuPtyHost, type PtyHostEvent } from './psu-pty-discovery';
-import { hostRecoverableCondition, type PickupHostView, type PickupRecoverable } from './turn-proof';
+import {
+  hostRecoverableCondition,
+  pickupHostView,
+  pickupWindowSec,
+  type PickupHostView,
+  type PickupRecoverable,
+} from './turn-proof';
 
 /** The host fields the recovery gate reads. A live `PsuPtyHost` satisfies it. */
 export interface RecoveryHostView {
@@ -115,7 +121,12 @@ export function decideQuotaWakeRecovery(input: {
 
 /** The live host as the stalled-loops guard reads it: discovery record plus its event tail. */
 export interface StalledLoopHostReading {
-  host: (RecoveryHostView & Pick<PickupHostView, 'execution'>) | null;
+  /** `startedAt` scopes the tail to the current host process (D-007); unknown counts every event.
+   *  `lastOutputAt` exempts a visibly busy host from `pending-turn-stuck`. */
+  host:
+    | (RecoveryHostView &
+        Pick<PickupHostView, 'execution'> & { startedAt?: number | null; lastOutputAt?: number | null })
+    | null;
   /** The host's lifecycle event tail, oldest first. Empty when unreadable. */
   events: readonly PtyHostEvent[];
 }
@@ -129,22 +140,6 @@ export type StalledLoopHostClass =
   | { kind: 'recoverable-on-wake'; condition: PickupRecoverable; cause: 'auth' | 'quota' }
   /** A wake cannot clear it. More fires only feed an agent that cannot answer. */
   | { kind: 'needs-relaunch'; condition: PickupRecoverable; why: string; remedy: string };
-
-/** Newest binding event kind in the tail (respawn-binding-* / respawn-carry-*), if any. */
-function latestBindingEvent(events: readonly PtyHostEvent[]): string | null {
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const kind = (events[i] as unknown as { kind?: unknown })?.kind;
-    if (
-      kind === 'respawn-binding-unconfirmed' ||
-      kind === 'respawn-carry-dropped' ||
-      kind === 'respawn-binding-confirmed' ||
-      kind === 'respawn-carry-delivered'
-    ) {
-      return kind;
-    }
-  }
-  return null;
-}
 
 /**
  * Classify a turn-stalled loop's host (P-007).
@@ -167,15 +162,23 @@ export function classifyStalledLoopHost(
   reading: StalledLoopHostReading,
   ownerId: string,
   nowMs: number,
+  pickupWindowMs: number = pickupWindowSec() * 1000,
 ): StalledLoopHostClass {
   const host = reading.host;
   if (!host) return { kind: 'no-host' };
-  const condition = hostRecoverableCondition({
-    execution: host.execution ?? null,
-    authBlocked: host.authBlocked === true,
-    quotaBlocked: host.quotaBlocked === true,
-    latestBindingEvent: latestBindingEvent(reading.events),
-  });
+  const view = pickupHostView(
+    {
+      startedAt: host.startedAt ?? null,
+      lastOutputAt: host.lastOutputAt ?? null,
+      execution: host.execution ?? null,
+      authBlocked: host.authBlocked === true,
+      quotaBlocked: host.quotaBlocked === true,
+    },
+    reading.events,
+    nowMs,
+    pickupWindowMs,
+  );
+  const condition = hostRecoverableCondition(view);
   if (condition === null) return { kind: 'healthy' };
 
   if (condition === 'unbound-successor') {
@@ -185,6 +188,18 @@ export function classifyStalledLoopHost(
       why:
         'the current child never bound a native session id after its carry-respawn, and the host ' +
         'refuses every turn to it as deferred-successor-unbindable (P-005(c))',
+      remedy: 'relaunch the session through the identity-preserving successor route (P-012)',
+    };
+  }
+
+  if (condition === 'pending-turn-stuck' && view.stuckPending) {
+    const heldMin = Math.max(1, Math.round((nowMs - view.stuckPending.oldestAtMs) / 60_000));
+    return {
+      kind: 'needs-relaunch',
+      condition,
+      why:
+        `the host has answered pending-delivery-id ${view.stuckPending.repolls} times over ${heldMin}m with no ` +
+        'turn written since, so every further wake is ACKed into the same stalled pipeline (D-007)',
       remedy: 'relaunch the session through the identity-preserving successor route (P-012)',
     };
   }
