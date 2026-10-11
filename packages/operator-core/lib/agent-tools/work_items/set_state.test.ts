@@ -1025,7 +1025,7 @@ describe('work_items:set_state — non-terminal reason is recorded as a comment 
   });
 
   it('posts no comment when the state write did not land (no orphan comment)', async () => {
-    setM.mockResolvedValueOnce({ workItem: null, aliased: false, requestedState: 'wip', appliedState: null });
+    setM.mockResolvedValueOnce({ workItem: null, aliased: false, requestedState: 'wip', expectedState: 'wip', appliedState: null });
     const out = await body({ id: 'WI-404', state: 'wip', reason: REASON });
     expect(commentM).not.toHaveBeenCalled();
     expect(out.results[0].ok).toBe(false);
