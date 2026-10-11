@@ -91,7 +91,7 @@ function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color
       'fi',
       'echo "fixture Playwright stdout"',
       'echo "fixture Playwright stderr" >&2',
-      `node -e '(async()=>{const port=process.env.OPERATOR_E2E_PORT;const result={argv:process.argv.slice(2),cwd:process.cwd(),env:{ledger:process.env.PAPERCUSP_TEST_RUNS_DB_URL,admin:process.env.HARNESS_ADMIN_DATABASE_URL,group:process.env.PAPERCUSP_TEST_RUN_GROUP,port,api:process.env.PAPERCUSP_API_TARGET,disabled:process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER??null,ledgerWorkspace:process.env.PAPERCUSP_TEST_RUN_WORKSPACE??null,ledgerHarness:process.env.PAPERCUSP_TEST_RUN_HARNESS??null,appWorkspace:process.env.PAPERCUSP_WORKSPACE_ID??null,reuse:process.env.OPERATOR_E2E_REUSE_SERVER??null,baseUrl:process.env.OPERATOR_E2E_BASE_URL??null},viteStatus:null};if(port)result.viteStatus=(await fetch("http://127.0.0.1:"+port+"/")).status;require("node:fs").writeFileSync(process.argv[1],JSON.stringify(result))})().catch(error=>{console.error(error);process.exitCode=1})' '${record}' "$@"`,
+      `node -e '(async()=>{const port=process.env.OPERATOR_E2E_PORT;const result={argv:process.argv.slice(2),cwd:process.cwd(),env:{ledger:process.env.PAPERCUSP_TEST_RUNS_DB_URL,admin:process.env.HARNESS_ADMIN_DATABASE_URL,group:process.env.PAPERCUSP_TEST_RUN_GROUP,port,api:process.env.PAPERCUSP_API_TARGET,disabled:process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER??null,ledgerReceipt:process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE??null,acceptanceReceipt:process.env.PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE??null,isolatedSeed:process.env.VERIFY_TAURI_ISOLATED_SEED??null,ledgerWorkspace:process.env.PAPERCUSP_TEST_RUN_WORKSPACE??null,ledgerHarness:process.env.PAPERCUSP_TEST_RUN_HARNESS??null,appWorkspace:process.env.PAPERCUSP_WORKSPACE_ID??null,reuse:process.env.OPERATOR_E2E_REUSE_SERVER??null,baseUrl:process.env.OPERATOR_E2E_BASE_URL??null},viteStatus:null};if(port)result.viteStatus=(await fetch("http://127.0.0.1:"+port+"/")).status;require("node:fs").writeFileSync(process.argv[1],JSON.stringify(result))})().catch(error=>{console.error(error);process.exitCode=1})' '${record}' "$@"`,
       `exit ${playwrightExit}`,
     ].join('\n'),
   );
@@ -143,6 +143,9 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
     'OPERATOR_SOURCE_ROOT',
     'VH_PHASE_DIR',
     'PAPERCUSP_FAKE_LLM',
+    'VERIFY_TAURI_ISOLATED_SEED',
+    'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+    'PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE',
   ]) delete base[k];
   const res = spawnSync('bash', [RUNNER, ...args], {
     env: {
@@ -224,6 +227,45 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(result.out).toContain('invalid tested input: ../outside-source');
     expect(existsSync(marker)).toBe(false);
     expect(result.recorded).toBeNull();
+  });
+
+  it('preflights native Inbox seed and receipt inputs before starting the desktop', () => {
+    const cases: Array<{ label: string; seed?: string; receipt?: boolean; shared?: boolean; relative?: boolean; stale?: boolean; expected: string }> = [
+      { label: 'missing ready seed', seed: 'fresh', receipt: true, expected: 'requires VERIFY_TAURI_ISOLATED_SEED=ready' },
+      { label: 'missing acceptance receipt', seed: 'ready', expected: 'PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE' },
+      { label: 'relative acceptance receipt', seed: 'ready', receipt: true, relative: true, expected: 'must be absolute' },
+      { label: 'shared receipt path', seed: 'ready', receipt: true, shared: true, expected: 'receipts must use separate paths' },
+      { label: 'stale acceptance receipt', seed: 'ready', receipt: true, stale: true, expected: 'refusing to overwrite existing acceptance receipt' },
+    ];
+    for (const row of cases) {
+      const f = fixture(0);
+      const marker = join(f.dir, 'rig-started');
+      const acceptanceReceipt = join(f.dir, 'acceptance.json');
+      const reporterReceipt = row.shared ? acceptanceReceipt : join(f.dir, 'reporter.jsonl');
+      writeFileSync(f.rig, `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+      chmodSync(f.rig, 0o755);
+      if (row.stale) writeFileSync(acceptanceReceipt, 'previous evidence');
+      const env: Record<string, string> = { PAPERCUSP_TEST_RUN_RECEIPT_FILE: reporterReceipt };
+      if (row.seed) env.VERIFY_TAURI_ISOLATED_SEED = row.seed;
+      if (row.receipt) env.PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE = row.relative ? 'acceptance.json' : acceptanceReceipt;
+      const result = run(f, ['e2e/inbox-ack-persistence.native.spec.mts'], env);
+      expect(result.status, `${row.label}: ${result.out}`).toBe(2);
+      expect(result.out).toContain(row.expected);
+      expect(existsSync(marker), `${row.label} must fail before the rig starts`).toBe(false);
+    }
+
+    const f = fixture(0);
+    const acceptanceReceipt = join(f.dir, 'acceptance.json');
+    const reporterReceipt = join(f.dir, 'reporter.jsonl');
+    const result = run(f, ['e2e/inbox-ack-persistence.native.spec.mts'], {
+      VERIFY_TAURI_ISOLATED_SEED: 'ready',
+      PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE: acceptanceReceipt,
+      PAPERCUSP_TEST_RUN_RECEIPT_FILE: reporterReceipt,
+    });
+    expect(result.status, result.out).toBe(0);
+    expect(result.recorded.env.isolatedSeed).toBe('ready');
+    expect(result.recorded.env.acceptanceReceipt).toBe(acceptanceReceipt);
+    expect(result.recorded.env.ledgerReceipt).toBe(reporterReceipt);
   });
 
   it.each([['SIGINT', 130, false], ['SIGTERM', 143, false], ['SIGHUP', 129, false], ['SIGTERM', 143, true]] as const)(

@@ -43,6 +43,45 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 source "$ROOT/libs/generic/verification-harness/bin/vh.sh"
+
+# The native Inbox acknowledgement acceptance drives a post-onboarding route,
+# and writes a full JSON receipt separately from the reporter's JSONL ledger
+# receipts. Refuse a misconfigured or stale receipt before harness initialization
+# or the desktop boot.
+for arg in "$@"; do
+  case "$arg" in
+    *inbox-ack-persistence.native.spec.mts*)
+      if [ "${VERIFY_TAURI_ISOLATED_SEED:-}" != "ready" ]; then
+        echo "run-operator-e2e-isolated: inbox-ack-persistence.native.spec.mts requires VERIFY_TAURI_ISOLATED_SEED=ready" >&2
+        exit 2
+      fi
+      if [ -z "${PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE:-}" ]; then
+        echo "run-operator-e2e-isolated: set PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE to a fresh acceptance-receipt path" >&2
+        exit 2
+      fi
+      case "$PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE" in
+        /*) ;;
+        *)
+          echo "run-operator-e2e-isolated: PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE must be absolute" >&2
+          exit 2
+          ;;
+      esac
+      if [ -z "${PAPERCUSP_TEST_RUN_RECEIPT_FILE:-}" ]; then
+        echo "run-operator-e2e-isolated: set PAPERCUSP_TEST_RUN_RECEIPT_FILE for the test-run reporter" >&2
+        exit 2
+      fi
+      if [ "$PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE" = "$PAPERCUSP_TEST_RUN_RECEIPT_FILE" ]; then
+        echo "run-operator-e2e-isolated: acceptance and test-run reporter receipts must use separate paths" >&2
+        exit 2
+      fi
+      if [ -e "$PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE" ]; then
+        echo "run-operator-e2e-isolated: refusing to overwrite existing acceptance receipt: $PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE" >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
 vh_phase preflight ""
 vh_phase isolated-suite preflight
 vh_init operator-e2e-isolated "${OPERATOR_E2E_HARNESS_EVIDENCE_ROOT:-/tmp/pcv/operator-e2e-isolated}"
