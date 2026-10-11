@@ -168,6 +168,28 @@ test('ensemble (ensemble-solve) — N solvers + judge; judge pick is the graded 
   assert.deepEqual(row.armMeta, { ensembleSize: 3, solvers: 3, candidates: 3, pickIndex: 1, coordCalls: 8 });
 });
 
+test('P-022 / D-010: the row carries every agent run\'s trace pointer, the graded solver first, then the others, then the judge', async () => {
+  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('ensemble-solve').blueprint);
+  const { seam } = fakeSeam();
+  const { run } = fakeAgent();
+  let n = 0;
+  const tracing = async (input: RunAgentInput<FakeHandle>): Promise<AgentRunOutput> =>
+    ({ ...(await run(input)), traceRef: `traces/${input.role}-${n++}.jsonl` });
+  const res = await runTopology<FakeHandle>({
+    spec, backlog: [task('instance_e__e-1')], seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
+    runId: 'r3t', seed: 1, now: fakeClock(), runAgent: tracing, cap: 1, ensembleSize: 3,
+  });
+  // The judge picked solver index 1, so its trace leads.
+  assert.deepEqual(res.rows[0].traceRefs, ['traces/solver-1.jsonl', 'traces/solver-0.jsonl', 'traces/solver-2.jsonl', 'traces/judge-3.jsonl']);
+
+  // A runAgent that reports no pointer leaves the field absent (the bundle then reports the gap), never [] or invented.
+  const plain = await runTopology<FakeHandle>({
+    spec, backlog: [task('instance_e__e-2')], seam: fakeSeam().seam, budget: { maxModelCalls: 100 }, rowMeta: ROW_META,
+    runId: 'r3u', seed: 1, now: fakeClock(), runAgent: fakeAgent().run, cap: 1, ensembleSize: 3,
+  });
+  assert.equal('traceRefs' in plain.rows[0], false);
+});
+
 test('pair (pair) — driver + navigator on one clone, usage summed, one graded attempt', async () => {
   const spec = resolveCoordinationSpec(loadBuiltinBlueprint('pair').blueprint);
   assert.equal(spec.team, 'per-task');

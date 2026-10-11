@@ -199,6 +199,9 @@ export interface TaskRunResult {
    *  grader's raw report). OPAQUE to scoring; retained so a campaign bundle can hold each task's scorer
    *  output beside its trace. Absent when the grade step returned none. */
   graderDetail?: unknown;
+  /** Transcript pointers of every agent run that produced this attempt, the GRADED agent's first (a judge,
+   *  navigator or team lead follows). Absent when no run reported one — a campaign bundle then shows the gap. */
+  traceRefs?: string[];
 
   // ── reproducibility slice (P-010 — referenced here by id/hash/ref) ────────
   /** Exact model id, e.g. 'claude-opus-4-8[1m]'. */

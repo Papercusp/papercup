@@ -90,6 +90,18 @@ export interface AgentRunOutput extends AgentRunUsage {
    * central/no-coord arm legitimately reports 0. */
   coordCalls?: number;
   error?: string | null;
+  /**
+   * P-022 / D-010: pointer to THIS agent run's transcript (e.g. its session JSONL path), reported by the live
+   * runAgent. The driver collects every contributing run's pointer onto `TaskRunResult.traceRefs` (graded agent
+   * first) so a campaign bundle holds each task's trace. Absent = not captured: the bundle shows the gap, never
+   * an invented pointer.
+   */
+  traceRef?: string | null;
+}
+
+/** Keep only real trace pointers, in order (a run that captured none contributes nothing). */
+function traceList(refs: ReadonlyArray<string | null | undefined>): string[] {
+  return refs.filter((r): r is string => typeof r === 'string' && r.trim().length > 0);
 }
 
 /** The fixed, run-level row fields the driver stamps onto EVERY {@link TaskRunResult} (not per-task). */
@@ -196,6 +208,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     generationError?: string | null;
     wallClockMs: number;
     armMeta?: Record<string, unknown> | null;
+    /** Contributing agent runs' trace pointers, graded agent first (P-022 / D-010). */
+    traceRefs?: ReadonlyArray<string | null | undefined>;
   }): TaskRunResult => ({
     runId: deps.runId,
     suite: rowMeta.suite,
@@ -210,6 +224,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     score: args.grade.score ?? null,
     // P-022 / D-009: keep the seam's scorer output (e.g. the D-008 integrity verdict) for campaign bundles.
     ...(args.grade.detail !== undefined ? { graderDetail: args.grade.detail } : {}),
+    ...(traceList(args.traceRefs ?? []).length > 0 ? { traceRefs: traceList(args.traceRefs ?? []) } : {}),
     tokensIn: args.usage.tokensIn,
     tokensOut: args.usage.tokensOut,
     tokensTotal: args.usage.tokensIn + args.usage.tokensOut,
@@ -256,7 +271,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       });
       addUsage(out);
       const grade = out.status === 'completed' ? await seam.grade(task, handle) : infraGrade;
-      return buildRow({ task, usage: out, grade, status: out.status, capped: !!out.capped, generationError: out.error, wallClockMs: now() - unitStart, armMeta: { coordCalls: out.coordCalls ?? 0 } });
+      return buildRow({ task, usage: out, grade, status: out.status, capped: !!out.capped, generationError: out.error, wallClockMs: now() - unitStart, traceRefs: [out.traceRef], armMeta: { coordCalls: out.coordCalls ?? 0 } });
     } finally {
       await safeTeardown(handle);
     }
@@ -266,6 +281,8 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   async function runEnsemble(task: BenchTask, plan: TeamSpawnPlan, unitStart: number): Promise<TaskRunResult> {
     const handles: H[] = [];
     const candidates: Array<{ index: number; submission: unknown }> = [];
+    /** Solver trace pointers, indexed like `handles` (P-022 / D-010). */
+    const solverTraces: Array<string | null | undefined> = [];
     let usage = ZERO;
     let coordCalls = 0;
     try {
@@ -284,14 +301,16 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           attemptBudget: remaining(),
         });
         addUsage(out); usage = sumUsage(usage, out); coordCalls += out.coordCalls ?? 0;
+        solverTraces[handles.length - 1] = out.traceRef;
         if (out.status === 'completed') candidates.push({ index: handles.length - 1, submission: out.submission });
       }
 
       if (candidates.length === 0) {
-        return buildRow({ task, usage, grade: infraGrade, status: 'error', capped: false, generationError: 'ensemble: no solver produced a submission', wallClockMs: now() - unitStart, armMeta: { ensembleSize, solvers: handles.length, coordCalls } });
+        return buildRow({ task, usage, grade: infraGrade, status: 'error', capped: false, generationError: 'ensemble: no solver produced a submission', wallClockMs: now() - unitStart, traceRefs: solverTraces, armMeta: { ensembleSize, solvers: handles.length, coordCalls } });
       }
 
       let pickIndex = candidates[0].index;
+      let judgeTrace: string | null | undefined;
       if (candidates.length > 1 && !exhausted()) {
         const judge = await deps.runAgent({
           task, handle: handles[pickIndex], role: 'judge', arm: spec.arm, teamKey: plan.teamKey,
@@ -299,10 +318,13 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           attemptBudget: remaining(), candidates,
         });
         addUsage(judge); usage = sumUsage(usage, judge); coordCalls += judge.coordCalls ?? 0;
+        judgeTrace = judge.traceRef;
         if (judge.pickIndex != null && handles[judge.pickIndex] != null) pickIndex = judge.pickIndex;
       }
       const grade = await seam.grade(task, handles[pickIndex]);
-      return buildRow({ task, usage, grade, status: 'completed', capped: exhausted(), wallClockMs: now() - unitStart, armMeta: { ensembleSize, solvers: handles.length, candidates: candidates.length, pickIndex, coordCalls } });
+      // Graded solver first, then the other solvers in order, then the judge.
+      const traceRefs = [solverTraces[pickIndex], ...solverTraces.filter((_, i) => i !== pickIndex), judgeTrace];
+      return buildRow({ task, usage, grade, status: 'completed', capped: exhausted(), wallClockMs: now() - unitStart, traceRefs, armMeta: { ensembleSize, solvers: handles.length, candidates: candidates.length, pickIndex, coordCalls } });
     } finally {
       for (const h of handles) await safeTeardown(h);
     }
@@ -325,6 +347,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       addUsage(drv);
       let usage = drv as AgentRunUsage;
       let coordCalls = drv.coordCalls ?? 0;
+      let navTrace: string | null | undefined;
       if (drv.status === 'completed' && !exhausted()) {
         const nav = await deps.runAgent({
           task, handle, role: 'navigator', arm: spec.arm, teamKey: plan.teamKey,
@@ -332,9 +355,10 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
           attemptBudget: remaining(), candidates: [{ index: 0, submission: drv.submission }],
         });
         addUsage(nav); usage = sumUsage(usage, nav); coordCalls += nav.coordCalls ?? 0;
+        navTrace = nav.traceRef;
       }
       const grade = drv.status === 'completed' ? await seam.grade(task, handle) : infraGrade;
-      return buildRow({ task, usage, grade, status: drv.status, capped: !!drv.capped || exhausted(), generationError: drv.error, wallClockMs: now() - unitStart, armMeta: { pair: true, coordCalls } });
+      return buildRow({ task, usage, grade, status: drv.status, capped: !!drv.capped || exhausted(), generationError: drv.error, wallClockMs: now() - unitStart, traceRefs: [drv.traceRef, navTrace], armMeta: { pair: true, coordCalls } });
     } finally {
       await safeTeardown(handle);
     }
@@ -390,6 +414,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     // (the C4 evidence that the in-team coordinator actually coordinated).
     for (const plan of coordinationSpawnPlans(spec, deps.backlog)) {
       let leadCoordCalls = 0;
+      let leadTrace: string | null | undefined;
       if (!exhausted() && plan.tasks.length > 0) {
         let leadHandle: H | undefined;
         try { leadHandle = await seam.clone(plan.tasks[0]); } catch { leadHandle = undefined; }
@@ -403,14 +428,21 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
             });
             addUsage(lead);
             leadCoordCalls = lead.coordCalls ?? 0;
+            leadTrace = lead.traceRef;
           } finally {
             await safeTeardown(leadHandle);
           }
         }
       }
+      // The team lead's trace belongs to every row of its team, after the row's own agents (P-022 / D-010).
+      const leadRefs = traceList([leadTrace]);
       await drainUnits(
         plan.tasks.map((task) => ({ task, plan })),
-        (r) => ({ ...r, armMeta: { ...(r.armMeta ?? {}), leadCoordCalls } }),
+        (r) => ({
+          ...r,
+          armMeta: { ...(r.armMeta ?? {}), leadCoordCalls },
+          ...(leadRefs.length > 0 ? { traceRefs: [...(r.traceRefs ?? []), ...leadRefs] } : {}),
+        }),
       );
     }
   } else {

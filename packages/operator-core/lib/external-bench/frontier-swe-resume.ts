@@ -30,8 +30,9 @@ export interface FrontierSweResultRecord {
   ts?: number;
   /** The seam's structured scorer output (integrity verdict, reward source) — P-022 / D-009 item 2. */
   graderDetail?: unknown;
-  /** Pointer to the attempt's trace, when the driver captured one. Absent → a campaign bundle reports the gap. */
-  traceRef?: string | null;
+  /** The attempt's transcript pointers, graded agent first (TaskRunResult.traceRefs, D-010). Absent → a campaign
+   *  bundle reports the missing trace. */
+  traceRefs?: string[];
 }
 
 /** A scored (non-infra, integrity-clean) trial we never need to re-run. */
