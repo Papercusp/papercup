@@ -902,6 +902,17 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         spillFailed: false,
         spillSettlementStatus: 'persisted',
         spillSettledAt: expect.any(String),
+        scratchWriteTimings: expect.objectContaining({
+          count: 1,
+          quotaWaitMs: 0,
+          refreshWaitMs: expect.any(Number),
+          quotaRecoveryMs: expect.any(Number),
+          writeMs: expect.any(Number),
+          totalMs: expect.any(Number),
+          quotaRecoveryDiagnostics: expect.objectContaining({
+            sizeWalkDirectories: expect.any(Number),
+          }),
+        }),
       }));
       expect(settlementMetadata).not.toHaveProperty('spillTimeoutCount');
       await vi.waitFor(() => expect(backfillOrder).toEqual([
