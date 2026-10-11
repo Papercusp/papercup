@@ -82,6 +82,37 @@ describe('tutorial voice reservations (real hosted service Postgres)', () => {
     })).rejects.toMatchObject({ code: '42501' });
   });
 
+  it('retains tenant preference locks across scoped service role restoration', async () => {
+    const organizationId = randomUUID(); const userId = randomUUID();
+    await db.adminSql`INSERT INTO papercusp_auth.hosted_user_preferences (organization_id, user_id)
+      VALUES (${organizationId}::uuid, ${userId}::uuid)`;
+    await run(async tx => {
+      const [before] = await tx`SELECT current_user AS role,
+        current_setting('app.workspace_id', true) AS workspace`;
+      expect(before.role).toBe('hosted_service');
+      await tx`SELECT set_config('app.organization_id', ${organizationId}, true),
+        set_config('app.user_id', ${userId}, true)`;
+      await tx.unsafe('SET LOCAL ROLE hosted_app');
+      const rows = await tx`SELECT user_id FROM papercusp_auth.hosted_user_preferences
+        WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid FOR UPDATE`;
+      expect(rows).toHaveLength(1);
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      await tx`SELECT set_config('app.organization_id', '', true), set_config('app.user_id', '', true)`;
+      const [after] = await tx`SELECT current_user AS role,
+        current_setting('app.workspace_id', true) AS workspace,
+        current_setting('app.organization_id', true) AS organization,
+        current_setting('app.user_id', true) AS "user"`;
+      expect(after).toEqual({ ...before, organization: '', user: '' });
+      await expect(db.adminSql.begin(async writer => {
+        await writer.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await writer`UPDATE papercusp_auth.hosted_user_preferences SET profile = '{}'::jsonb
+          WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+    await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences SET profile = '{}'::jsonb
+      WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid`;
+  });
+
   it('reads global policy through the service-only bridge and retains its lock until admission commits', async () => {
     await expect(readTutorialVoiceGlobalFlagsForUpdate(db.appSql))
       .rejects.toThrow('flag_override_lock_requires_transaction');
