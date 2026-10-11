@@ -36,6 +36,7 @@ import {
   DEFAULT_RELEVANCE_FLOOR,
   SUBJECT_EVIDENCE_OWNER_LIMIT,
   SUBJECT_EVIDENCE_TIMEOUT_MS,
+  scoreSubjectEvidence,
   snapshotCandidateQualifies,
   type ConsultRouteDeps,
   type ExpertiseRoutingReceipt,
@@ -213,6 +214,29 @@ describe('bounded subject evidence against real transcript SQL', () => {
     expect(snapshotCandidateQualifies(result.snapshot, gate)).toBe(false);
     expect(snapshotCandidateQualifies(result.snapshot, { ...gate, subjectEvidence: undefined })).toBe(true);
     expect(result.snapshot.subjectValidation?.unmeasured).toBe(0);
+  });
+
+  it('leaves an overlapping-contract expert unmeasured while admitting a distinct absolute-floor win', async () => {
+    await passage('subject-tied', 'equal release gate checkpoint', 0);
+    await passage('subject-floor', 'distinct release gate checkpoint', 0.1);
+    const contracts = [
+      { name: 'computer:provision_desktop', description: 'Start a sandboxed GUI desktop.' },
+      { name: 'release:checkpoint-run', description: 'Run the release gate checkpoint suite.' },
+    ];
+    const result = await routeConsult({ ...baseParams, question }, deps(0, {
+      scoreSubjectEvidence: (subject, texts, deadline) => scoreSubjectEvidence(subject, texts, deadline, {
+        contracts,
+        scorer: async text => text.startsWith('distinct') ? [0.5, 0.1] : [0.8, 0.8],
+      }),
+    }));
+    const tied = result.snapshot.candidates.find(c => c.ownerId === 'subject-tied')!;
+    expect(tied.subjectEvidence).toMatchObject({ status: 'unmeasured', score: null });
+    expect(snapshotCandidateQualifies(result.snapshot, tied)).toBe(false);
+    const floor = result.snapshot.candidates.find(c => c.ownerId === 'subject-floor')!;
+    expect(floor.subjectEvidence).toMatchObject({ status: 'supported', score: 0.5 });
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['subject-floor']);
+    expect(result.snapshot.subjectValidation?.unmeasured).toBeGreaterThan(0);
+    expect(result.snapshot.degraded).toBe('evidence-unavailable');
   });
 
   it('distinguishes failed/malformed scores from a measured no-expert case', async () => {

@@ -530,3 +530,15 @@ export function migrationCoverageProblems(manifest, cases, completedItems, regis
   }
   return problems;
 }
+
+/** Final structural acceptance: every immutable migrate row needs rail placement AND a case. */
+export function acceptanceProblems(manifest, live, cases, registeredMechanisms) {
+  const items = [...new Set(manifest.rows.filter((row) => row.disposition === 'migrate').map((row) => row.item))];
+  return [
+    ...(live.unreadable > 0 ? [`${live.unreadable} unreadable source file(s)`] : []),
+    ...(live.undispositioned > 0 ? [`${live.undispositioned} undispositioned site(s)`] : []),
+    ...live.staleDispositions.map((key) => `stale disposition: ${key}`),
+    ...manifestProblems(manifest, live, { requireAllMigrated: true }),
+    ...migrationCoverageProblems(manifest, cases, items, registeredMechanisms),
+  ];
+}

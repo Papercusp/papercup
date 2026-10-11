@@ -10,6 +10,9 @@ import {
   resolveWorkspacePackage,
 } from '../../../../scripts/lib/targeted-task-reuse.mjs';
 import { decideReuseSkip, parseReuseSkipList } from '@papercusp/test-config/test-pass-reuse-skip';
+import { gateReuseObservations, recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
+import { summarizeFallbackWindow } from '../degradation/fallback-observations';
+import { judgeDegradation } from '../system-health/degradation-watchdog';
 
 /**
  * EI-24538088938561684: the green checkpoint's frozen-repair verification re-runs a failing
@@ -60,6 +63,7 @@ type Deps = NonNullable<Parameters<typeof armTargetedTaskReuse>[0]['deps']>;
 /** Seams for a clean checkout at HEAD with two proofs: a.test.ts reusable, b.test.ts input-changed. */
 function deps(over: Record<string, unknown> = {}): Deps {
   return {
+    recordReuse: async () => undefined,
     git: (_root: string, args: string[]) => (args[0] === 'rev-parse' ? `${HEAD}\n` : ''),
     runnerIdentity: () => RUNNER,
     connect: async () => ({ end: async () => void (ended += 1) }),
@@ -87,6 +91,62 @@ const baseEnv = (extra: Record<string, string> = {}): Record<string, string | un
   AFFECTED_TEST_REUSE_AUDIT_RATE: '0',
   PATH: process.env.PATH,
   ...extra,
+});
+
+describe('gate reuse on the degradation rail (P-004)', () => {
+  const TASK = `${WS}::${SCRIPT}`;
+
+  it('records the real repair selector mismatch and composes it into a degraded task key', async () => {
+    fixture();
+    const observations: ReturnType<typeof gateReuseObservations> = [];
+    const proofs = new Map(Array.from({ length: 25 }, (_, i) => {
+      const file = `packages/lane-ws/${i}.test.ts`;
+      return [file, { ...proof(HEAD, [file]), runnerIdentity: 'proof-v2 old-runner' }];
+    }));
+    const armed = await armTargetedTaskReuse({ root, workspace: WS, script: SCRIPT, expectedSha: HEAD,
+      env: baseEnv(), deps: deps({ loadProofs: async () => ({ proofs, rows: 25 }),
+        recordReuse: async (task: string, decision: Parameters<typeof gateReuseObservations>[1]) => observations.push(...gateReuseObservations(task, decision)) }) });
+    expect(armed.reused).toBe(0);
+    expect(observations).toEqual([{ eligible: 25, applied: 0, reason: 'otherRunner', scope: TASK }]);
+    const window = summarizeFallbackWindow('gate-pass-reuse', 60_000, observations.map((row) => ({ ...row, samples: 1 })));
+    expect(judgeDegradation(window, { mechanism: 'gate-pass-reuse', scope: TASK })).toMatchObject({ kind: 'collapsed', reason: 'otherRunner' });
+    armed.finish();
+  });
+
+  it.each(['dirty-checkout(2)', 'proofs-unavailable(timeout)', 'disabled-by-env', 'script-cannot-run-zero-files'])('keeps a positive denominator for %s', async (reason) => {
+    const decisions = gateReuseObservations(TASK, { offReason: reason, eligible: 0 });
+    expect(decisions).toEqual([{ eligible: 1, applied: 0, reason: reason.split('(')[0], scope: TASK }]);
+  });
+
+  it('records healthy primary decisions and excludes overlapping diagnostic counters', () => {
+    const decisions = gateReuseObservations(TASK, { summary: { candidates: 25, reused: 25, inertGlobal: 25, expiredClean: 25 } });
+    expect(decisions).toEqual([{ eligible: 25, applied: 25, reason: 'applied', scope: TASK }]);
+    const window = summarizeFallbackWindow('gate-pass-reuse', 60_000, decisions.map((row) => ({ ...row, samples: 1 })));
+    expect(judgeDegradation(window, { mechanism: 'gate-pass-reuse', scope: TASK }).kind).toBe('recovered');
+  });
+
+  it('uses the same primitive for both round types, flushes before exit, and never throws on telemetry failure', async () => {
+    const calls: Array<{ mechanism: string; eligible: number; applied: number }> = [];
+    let flushed = 0;
+    const writer = {
+      observeFallback: (mechanism: string, decision: { eligible: number; applied: number }) => calls.push({ mechanism, ...decision }),
+      flushFallbackObservations: async () => { flushed++; return { failed: 0 }; },
+    };
+    expect(await recordGateReuseDecision(TASK, { summary: { candidates: 20, otherRunner: 20, reused: 0 } }, writer)).toBe(true);
+    expect(await recordGateReuseDecision(TASK, { offReason: 'proofs-unavailable' }, writer)).toBe(true);
+    expect(calls.map((row) => row.mechanism)).toEqual(['gate-pass-reuse', 'gate-pass-reuse']);
+    expect(flushed).toBe(2);
+    expect(await recordGateReuseDecision(TASK, { offReason: 'dirty-checkout' }, { ...writer,
+      flushFallbackObservations: async () => { throw new Error('database offline'); } })).toBe(false);
+  });
+
+  it('does not let a throwing observation dependency change the repair skip decision', async () => {
+    fixture();
+    const armed = await armTargetedTaskReuse({ root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env: baseEnv(),
+      deps: deps({ recordReuse: async () => { throw new Error('telemetry unavailable'); } }) });
+    expect(armed.reused).toBe(1);
+    armed.finish();
+  });
 });
 
 beforeEach(() => {

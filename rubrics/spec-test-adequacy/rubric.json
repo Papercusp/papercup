@@ -47,7 +47,7 @@
       "key": "execution-integrity",
       "title": "The proof was collected, executed, and passed",
       "model": "Applicable tests/checks were collected, were not skipped, executed against the claimed environment, and produced a successful current outcome proven by canonical test_runs status and execution_details. Binder-authored adequacy booleans cannot produce a pass.",
-      "method": "Require a testRunId with valid test_runs.execution_details. Use its status and counts as the execution verdict: ordinary proof needs status=pass, passed>0, failed=0, skipped=0, collectionFailed=false; mutation proof needs a measured failed mutant run with a structured mutation failure. Missing or unrecognized run evidence is unknown, never pass.",
+      "method": "Require a testRunId with valid test_runs.execution_details. Use its status and counts as the execution verdict. For ordinary proof, require status=pass, passed>0, failed=0, and collectionFailed=false. When skipped=0, those counts establish an executed passing run. When skipped>0, the run passes only if every declared adequacy.testCases case has an exact or canonical-title match in the same run's passedCaseTitles; skipped cases outside that declared scope do not invalidate execution-integrity. Empty declarations, unmeasured or unmatched declared cases, failed outcomes, or incomplete execution metadata never pass. Mutation proof needs a measured failed mutant run with a structured mutation failure. Missing or unrecognized run evidence is unknown, never pass.",
       "driftMarkers": "Zero collected tests; skipped/quarantined proof; compile-only evidence; a stale ledger row mistaken for a fresh run."
     },
     {

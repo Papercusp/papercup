@@ -10,6 +10,7 @@
  *   - SPEC-P-003-F each saved change creates a new version and every earlier one stays readable.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { getAddress, type Hex } from 'viem';
 import type { OrgTestDb } from '../../test/_org-test-db';
@@ -21,6 +22,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 
 const {
+  DEFAULT_EQUITY_POLICY,
   EQUITY_V2_CEILINGS,
   EquityPolicyError,
   getCurrentEquityPolicy,
@@ -92,6 +94,10 @@ beforeAll(async () => {
   db = await createOrgTestDb();
   sql = db.adminSql;
   h.sql = sql;
+  // Exercise the reserved migration while it is still invisible to production
+  // auto-apply; after arming, the fixture already applies it and this is idempotent.
+  const migration = new URL('../../../../libs/papercusp/libs/db/sql/1461-dao-hr-policy-audit-snapshots.sql', import.meta.url);
+  await sql.unsafe(readFileSync(existsSync(migration) ? migration : new URL(migration.href + '.DRAFT'), 'utf8'));
   for (const id of [ADMIN, MEMBER]) await seedPerson(id);
 }, 180_000);
 
@@ -158,6 +164,38 @@ describe('SPEC-P-003-C — every policy change writes an audit row naming its ac
       [2, ADMIN, ['returnRateBps', 'returnIntervalDays']],
     ]);
     expect(await count('dao_hr_policy_audit', 'dao-audit')).toBe(await count('dao_hr_policy_versions', 'dao-audit'));
+  });
+});
+
+describe('SPEC-P-003-G — a policy change records the value before the change', () => {
+  it('stores the initial defaults and then the exact prior version, without rewriting either snapshot', async () => {
+    const key = await dao('dao-audit-before');
+    const first = await updateEquityPolicy({ ...key, actorPersonId: ADMIN, changes: { cliffDays: 100 } });
+    await updateEquityPolicy({ ...key, actorPersonId: ADMIN, changes: { returnRateBps: 600 } });
+    const audit = await listEquityPolicyAudit(key);
+    expect(audit.map(a => a.beforeSettings)).toEqual([DEFAULT_EQUITY_POLICY, first.settings]);
+    const stored = await sql<Array<{ before_settings: unknown }>>`
+      SELECT before_settings FROM harness_shared.dao_hr_policy_audit
+       WHERE workspace_id = ${WS} AND dao_slug = ${key.daoSlug} ORDER BY version`;
+    expect(stored.map(r => r.before_settings)).toEqual([DEFAULT_EQUITY_POLICY, first.settings]);
+    await updateEquityPolicy({ ...key, actorPersonId: ADMIN, changes: { cliffDays: 200 } });
+    expect((await listEquityPolicyAudit(key)).slice(0, 2).map(a => a.beforeSettings)).toEqual(audit.map(a => a.beforeSettings));
+  });
+});
+
+describe('SPEC-P-003-H — a policy change records the value after the change', () => {
+  it('stores each complete saved document and the append-only guard rejects a snapshot rewrite', async () => {
+    const key = await dao('dao-audit-after');
+    const first = await updateEquityPolicy({ ...key, actorPersonId: ADMIN, changes: { cliffDays: 100 } });
+    const second = await updateEquityPolicy({ ...key, actorPersonId: ADMIN, changes: { returnRateBps: 600 } });
+    expect((await listEquityPolicyAudit(key)).map(a => a.afterSettings)).toEqual([first.settings, second.settings]);
+    const stored = await sql<Array<{ after_settings: unknown }>>`
+      SELECT after_settings FROM harness_shared.dao_hr_policy_audit
+       WHERE workspace_id = ${WS} AND dao_slug = ${key.daoSlug} ORDER BY version`;
+    expect(stored.map(r => r.after_settings)).toEqual([first.settings, second.settings]);
+    await expect(sql`
+      UPDATE harness_shared.dao_hr_policy_audit SET after_settings = '{}'::jsonb
+       WHERE workspace_id = ${WS} AND dao_slug = ${key.daoSlug}`).rejects.toThrow(/append-only/);
   });
 });
 

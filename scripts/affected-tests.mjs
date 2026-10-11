@@ -112,6 +112,7 @@ import {
   reuseCandidates,
   reuseSoundnessAlarms,
   reuseRunnerIdentity,
+  recordGateReuseDecision,
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
@@ -5732,6 +5733,10 @@ if (dry) {
 // runner identity). Everything about reaching the proofs is fail-OPEN toward running MORE: kill
 // switch, dirty checkout, no HEAD, no database, a slow read — each yields no skip list.
 async function armTestPassReuse(taskList) {
+  const allUnitTasks = taskList.filter((t) => t.script === 'test' || LANE_SCRIPTS.includes(t.script));
+  for (const t of allUnitTasks.filter((task) => !scriptRunsZeroFilesAsPass(task.ws.scripts?.[task.script] ?? ''))) {
+    await recordGateReuseDecision(`${t.ws.name}::${t.script}`, { offReason: 'script-cannot-run-zero-files', eligible: t.relatedFiles?.length });
+  }
   const unitTasks = taskList.filter(
     (t) =>
       (t.script === "test" || LANE_SCRIPTS.includes(t.script)) &&
@@ -5740,7 +5745,10 @@ async function armTestPassReuse(taskList) {
       scriptRunsZeroFilesAsPass(t.ws.scripts?.[t.script] ?? ""),
   );
   if (unitTasks.length === 0) return;
-  const off = (reason) => outSync(`TEST_PASS_REUSE applied=false reason=${reason}`);
+  const off = async (reason) => {
+    outSync(`TEST_PASS_REUSE applied=false reason=${reason}`);
+    for (const t of unitTasks) await recordGateReuseDecision(`${t.ws.name}::${t.script}`, { offReason: reason, eligible: t.relatedFiles?.length });
+  };
   if (!testReuseEnabled()) return off("disabled-by-env");
   let judgedSha = null;
   try {
@@ -5875,6 +5883,7 @@ async function armTestPassReuse(taskList) {
       const label = `${t.ws.name}::${t.script}`;
       if (error) {
         outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=proofs-unavailable(${error})`);
+        await recordGateReuseDecision(label, { offReason: 'proofs-unavailable', eligible: t.relatedFiles?.length });
         continue;
       }
       const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
@@ -5919,13 +5928,21 @@ async function armTestPassReuse(taskList) {
         // Workspace-relative, for the EI-11132 guard: a run this list empties must keep its
         // script's --passWithNoTests (see reuseSkipCoversRun in scripts/lib/empty-suite-guard.mjs).
         t.reuseSkipped = skip.map((f) => f.slice(prefix.length));
-        t.reuseSkipList = writeReuseSkipList(RUN_LOG_ROOT, {
-          files: t.reuseSkipped,
-          runContext,
-          runnerIdentity,
-          judgedSha,
-        });
+        try {
+          t.reuseSkipList = writeReuseSkipList(RUN_LOG_ROOT, {
+            files: t.reuseSkipped,
+            runContext,
+            runnerIdentity,
+            judgedSha,
+          });
+        } catch (err) {
+          t.reuseSkipped = [];
+          outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=skip-list-unwritable`);
+          await recordGateReuseDecision(label, { offReason: 'skip-list-unwritable', eligible: summary.candidates });
+          continue;
+        }
       }
+      await recordGateReuseDecision(label, { summary });
       // P-013: what the skip saved, from the files' last CI pass durations (a lower bound). A
       // failed read leaves the reuse decision untouched and only makes the estimate "unknown".
       let savings = { savedMs: 0, measured: 0, unmeasured: 0 };

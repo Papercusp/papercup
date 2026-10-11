@@ -11,6 +11,7 @@ async function prepare(input: unknown): Promise<UnsignedEquityTransaction> {
     workspaceId: 'ws-dao-hr-payout',
     harnessSlug: 'papercusp',
   } as Parameters<typeof equityTool.handler>[1]);
+  if (!('data' in result)) throw new Error('Missing typed equity action result');
   const out = result.data as { ok: boolean; unsignedTransaction?: UnsignedEquityTransaction };
   expect(out.ok).toBe(true);
   expect(out.unsignedTransaction?.requiresWalletSignature).toBe(true);

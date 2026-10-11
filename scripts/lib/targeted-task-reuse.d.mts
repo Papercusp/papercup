@@ -63,6 +63,7 @@ export function armTargetedTaskReuse({ root, workspace, script, expectedSha, env
     env: Record<string, string | undefined>;
     scope?: string | undefined;
     deps?: Partial<{
+        recordReuse: typeof recordGateReuseDecision;
         git: typeof defaultGit;
         runnerIdentity: typeof defaultRunnerIdentity;
         proofFormat: (root: any) => string | null;
@@ -89,6 +90,7 @@ export const LANE_SCRIPTS: readonly string[];
 export const TARGETED_REUSE_LINE_PREFIX: "TARGETED_";
 /** How long the proof read may take before the task simply runs everything. */
 export const TARGETED_REUSE_PROOF_READ_TIMEOUT_MS: 15000;
+import { recordGateReuseDecision } from "./test-pass-reuse.mjs";
 declare function defaultGit(root: any, args: any): string | null;
 import { loadReuseProofs } from "./executed-source-map.mjs";
 export {};

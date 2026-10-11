@@ -419,14 +419,17 @@ export interface EquityPolicyAuditEntry {
   actorPersonId: string;
   changedFields: string[];
   chainCalls: EquityPolicyChainCall[];
+  /** NULL only for history written before audit snapshots were introduced. */
+  beforeSettings: EquityPolicySettings | null;
+  afterSettings: EquityPolicySettings | null;
   createdAt: Date;
 }
 
 /** The policy audit trail, oldest first. */
 export async function listEquityPolicyAudit(key: DaoKey, deps: EquityPolicyDeps = {}): Promise<EquityPolicyAuditEntry[]> {
   const dao = validDao(key);
-  const rows = await db(deps)<Array<{ id: string; version: number; actor_person_id: string; changed_fields: string[]; chain_calls: EquityPolicyChainCall[]; created_at: Date }>>`
-    SELECT id, version, actor_person_id, changed_fields, chain_calls, created_at FROM harness_shared.dao_hr_policy_audit
+  const rows = await db(deps)<Array<{ id: string; version: number; actor_person_id: string; changed_fields: string[]; chain_calls: EquityPolicyChainCall[]; before_settings: EquityPolicySettings | null; after_settings: EquityPolicySettings | null; created_at: Date }>>`
+    SELECT id, version, actor_person_id, changed_fields, chain_calls, before_settings, after_settings, created_at FROM harness_shared.dao_hr_policy_audit
      WHERE workspace_id = ${dao.workspaceId} AND dao_slug = ${dao.daoSlug}
      ORDER BY id`;
   return rows.map(r => ({
@@ -435,6 +438,8 @@ export async function listEquityPolicyAudit(key: DaoKey, deps: EquityPolicyDeps 
     actorPersonId: r.actor_person_id,
     changedFields: r.changed_fields,
     chainCalls: r.chain_calls,
+    beforeSettings: r.before_settings,
+    afterSettings: r.after_settings,
     createdAt: r.created_at,
   }));
 }
@@ -487,8 +492,8 @@ export async function updateEquityPolicy(input: UpdateEquityPolicyInput, deps: E
       INSERT INTO harness_shared.dao_hr_policy_versions (workspace_id, dao_slug, version, settings, created_by)
       VALUES (${dao.workspaceId}, ${dao.daoSlug}, ${version}, ${tx.json(next as never)}, ${person.id})`;
     await tx`
-      INSERT INTO harness_shared.dao_hr_policy_audit (workspace_id, dao_slug, version, actor_person_id, changed_fields, chain_calls)
-      VALUES (${dao.workspaceId}, ${dao.daoSlug}, ${version}, ${person.id}, ${changedFields}, ${tx.json(chainCalls as never)})`;
+      INSERT INTO harness_shared.dao_hr_policy_audit (workspace_id, dao_slug, version, actor_person_id, changed_fields, chain_calls, before_settings, after_settings)
+      VALUES (${dao.workspaceId}, ${dao.daoSlug}, ${version}, ${person.id}, ${changedFields}, ${tx.json(chainCalls as never)}, ${tx.json(current as never)}, ${tx.json(next as never)})`;
     return { version, settings: next, changedFields, chainCalls };
   });
 }

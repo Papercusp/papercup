@@ -345,6 +345,39 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }: {
     proofFiles: Iterable<string>;
 }): string[];
 /**
+ * P-004: exclusive decision buckets for the durable gate-pass-reuse observation.
+ * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
+ * @param {string} task
+ * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
+ * @returns {Array<{ eligible: number, applied: number, reason: string, scope: string }>}
+ */
+export function gateReuseObservations(task: string, decision: {
+    summary?: Record<string, number>;
+    offReason?: string;
+    eligible?: number;
+}): Array<{
+    eligible: number;
+    applied: number;
+    reason: string;
+    scope: string;
+}>;
+/**
+ * Both round types use the SAME durable primitive; tsImport supports plain-Node gate scripts.
+ * Flush before returning because their callers may terminate with process.exit(). Telemetry
+ * failures never change the selector's skip list or throw into its caller.
+ * @param {string} task
+ * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
+ * @param {{ observeFallback: Function, flushFallbackObservations: Function }} [writer]
+ */
+export function recordGateReuseDecision(task: string, decision: {
+    summary?: Record<string, number>;
+    offReason?: string;
+    eligible?: number;
+}, writer?: {
+    observeFallback: Function;
+    flushFallbackObservations: Function;
+}): Promise<boolean>;
+/**
  * The lane a unit task script runs, or `null` for a task that runs its workspace's whole unit
  * suite (`test`). Lane membership is a property of each file's CONTENTS
  * (libs/test-config/src/lane-split.ts), so the script name only says WHICH lane to keep.

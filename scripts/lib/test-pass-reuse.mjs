@@ -906,6 +906,63 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }) {
 }
 
 /**
+ * P-004: exclusive decision buckets for the durable gate-pass-reuse observation.
+ * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
+ * @param {string} task
+ * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
+ * @returns {Array<{ eligible: number, applied: number, reason: string, scope: string }>}
+ */
+export function gateReuseObservations(task, decision) {
+  const positiveCount = (n) => Number.isSafeInteger(n) && n > 0 ? n : 0;
+  if (decision.offReason) return [{
+    eligible: positiveCount(decision.eligible) || 1,
+    applied: 0,
+    reason: decision.offReason.split('(')[0].trim() || 'unavailable',
+    scope: task,
+  }];
+  const summary = decision.summary ?? {};
+  const eligible = positiveCount(summary.candidates);
+  if (!eligible) return [{ eligible: 1, applied: 0, reason: 'no-candidates', scope: task }];
+  const rows = [];
+  let remaining = eligible;
+  const reused = Math.min(remaining, positiveCount(summary.reused));
+  if (reused) { rows.push({ eligible: reused, applied: reused, reason: 'applied', scope: task }); remaining -= reused; }
+  for (const reason of ['noProof', 'otherContext', 'otherRunner', 'legacyFormatDrift', 'expired', 'notCaptured', 'opaque', 'unknownDrift', 'globalInput', 'inputChanged', 'audited']) {
+    const count = Math.min(remaining, positiveCount(summary[reason]));
+    if (count) { rows.push({ eligible: count, applied: 0, reason, scope: task }); remaining -= count; }
+  }
+  if (remaining) rows.push({ eligible: remaining, applied: 0, reason: 'unclassified', scope: task });
+  return rows;
+}
+
+let fallbackWriter;
+/**
+ * Both round types use the SAME durable primitive; tsImport supports plain-Node gate scripts.
+ * Flush before returning because their callers may terminate with process.exit(). Telemetry
+ * failures never change the selector's skip list or throw into its caller.
+ * @param {string} task
+ * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
+ * @param {{ observeFallback: Function, flushFallbackObservations: Function }} [writer]
+ */
+export async function recordGateReuseDecision(task, decision, writer) {
+  try {
+    if (!writer) {
+      if (!fallbackWriter) {
+        const { tsImport } = await import('tsx/esm/api');
+        fallbackWriter = tsImport('@papercusp/operator-core/lib/degradation/fallback-observations', import.meta.url);
+      }
+      writer = await fallbackWriter;
+    }
+    for (const row of gateReuseObservations(task, decision)) writer.observeFallback('gate-pass-reuse', row, { processTag: 'gate-reuse' });
+    const result = await writer.flushFallbackObservations();
+    return result.failed === 0;
+  } catch {
+    fallbackWriter = null;
+    return false;
+  }
+}
+
+/**
  * The lane a unit task script runs, or `null` for a task that runs its workspace's whole unit
  * suite (`test`). Lane membership is a property of each file's CONTENTS
  * (libs/test-config/src/lane-split.ts), so the script name only says WHICH lane to keep.

@@ -5,7 +5,7 @@
  * idempotent, the store maps rows → P-011's TaskRunResult, cost is DERIVED via
  * priceRun, and the emitFromAttempt infra-failure path nulls `resolved`.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { substrateSignalRates, type CoordEvent, type FleetRunSummary } from '@papercusp/bench-metrics';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { OrgSql } from './db';
+import { stopInvalidationListener } from '../../sync-sse';
 import { preregister, computePreregHash } from './prereg';
 import { emitRollout, emitFromAttempt, rolloutIdFor } from './emit';
 import { listRunResults, listSuites, getRollout, getPrereg, getRunReports } from './store';
@@ -21,6 +22,17 @@ import { exportRunBundle } from './export';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
 import { currentProtocolFixture } from './_protocol-test-fixture';
+
+// Keep the real invalidation bus and pg_notify adapter, but bind its host pool
+// to the same disposable database as the benchmark writes. The live-PG guard
+// remains enabled and catches any notifier that escapes this fixture.
+const notificationDb = vi.hoisted(() => ({ sql: null as unknown as OrgSql }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: notificationDb.sql }),
+}));
+
+const notifications: Array<{ name: string; args?: Record<string, unknown> }> = [];
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -95,6 +107,8 @@ function input(overrides: Partial<EmitRolloutInput> & { preregHash: string }): E
 beforeAll(async () => {
   db = await createFreshPgDb('benchrepro');
   sql = db.sql as unknown as OrgSql;
+  notificationDb.sql = sql;
+  await db.sql.listen('sync_invalidate', payload => notifications.push(JSON.parse(payload)));
   for (const m of MIGRATIONS) await db.sql.unsafe(migrationSql(m));
   // Superuser bypasses RLS, but disable it so the test is role-agnostic.
   await db.sql.unsafe(`
@@ -108,6 +122,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  await stopInvalidationListener();
   if (repoRoot) rmSync(repoRoot, { recursive: true, force: true });
   await db?.cleanup();
 });
@@ -167,6 +182,13 @@ describe('emitRollout', () => {
     const rollout = await getRollout(rolloutId, { sql, workspaceId: WS });
     expect(rollout?.rawGraderOutput).toBe('{"resolved": true}');
     expect(rollout?.submission).toBe('diff --git a/x b/x');
+    await vi.waitFor(() => {
+      expect(notifications).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'evals.runs', args: { runId: RUN } }),
+        expect.objectContaining({ name: 'evals.report', args: { runId: RUN } }),
+        expect.objectContaining({ name: 'evals.suites', args: {} }),
+      ]));
+    });
   });
 
   it('is idempotent on re-emit of the same (run, task, arm, seed)', async () => {

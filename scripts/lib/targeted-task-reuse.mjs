@@ -56,6 +56,7 @@ import {
   judgedTreeProofFormat,
   reuseCandidates,
   reuseRunnerIdentity,
+  recordGateReuseDecision,
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
@@ -166,6 +167,7 @@ export function defaultRunnerIdentity(root, env, proofFormat = REUSE_PROOF_FORMA
 }
 
 const defaultDeps = {
+  recordReuse: recordGateReuseDecision,
   git: defaultGit,
   runnerIdentity: defaultRunnerIdentity,
   proofFormat: (root) => judgedTreeProofFormat(root),
@@ -281,8 +283,12 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
     }
   }
   const result = (reused) => ({ env: out, lines, reused, recording, finish: finishWith(resultFile) });
-  const off = (reason) => {
+  const record = async (decision) => {
+    try { await d.recordReuse(label, decision); } catch { /* telemetry must not affect task execution */ }
+  };
+  const off = async (reason) => {
     lines.push(`${TARGETED_REUSE_LINE_PREFIX}TEST_PASS_REUSE ws=${label} scope=${scope} applied=false reason=${reason}`);
+    await record({ offReason: reason });
     return result(0);
   };
 
@@ -388,5 +394,6 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
           (proofFormat === REUSE_PROOF_FORMAT ? "" : ` proofFormat=${proofFormat}(legacy)`),
       ),
   );
+  await record({ summary });
   return result(reused);
 }

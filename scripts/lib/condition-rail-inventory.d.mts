@@ -160,6 +160,8 @@ export function manifestProblems(manifest: any, live: any, options?: {
 }): string[];
 /** Generate the immutable row-ID -> executable test-case matrix; missing completed rows fail. */
 export function migrationCoverageProblems(manifest: any, cases: any, completedItems: any, registeredMechanisms: any): string[];
+/** Final structural acceptance: every immutable migrate row needs rail placement AND a case. */
+export function acceptanceProblems(manifest: any, live: any, cases: any, registeredMechanisms: any): any[];
 export const CLASSES: readonly string[];
 /** Callee names whose CALL puts the enclosing function on the condition rail. */
 export const RAIL_FUNCTIONS: readonly string[];

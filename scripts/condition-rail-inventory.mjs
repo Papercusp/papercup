@@ -8,12 +8,15 @@
  *   node scripts/condition-rail-inventory.mjs --json     # every row with its disposition
  *   node scripts/condition-rail-inventory.mjs --check    # exit 1 if any bypass row is undispositioned
  *                                                        # or any disposition key is stale (D-006)
+ *   node scripts/condition-rail-inventory.mjs --acceptance # require every seed migration on-rail
+ *                                                        # AND bound to an executable case
  *
  * The scanner lives in scripts/lib/condition-rail-inventory.mjs; dispositions in
  * scripts/lib/condition-rail-dispositions.mjs.
  */
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { inventoryTree, CLASSES } from './lib/condition-rail-inventory.mjs';
+import { readFileSync } from 'node:fs';
+import { inventoryTree, CLASSES, acceptanceProblems } from './lib/condition-rail-inventory.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -21,7 +24,7 @@ export function runInventory() {
   return inventoryTree(ROOT);
 }
 
-function main() {
+async function main() {
   const res = runInventory();
   const args = process.argv.slice(2);
   if (args.includes('--json')) {
@@ -48,7 +51,19 @@ function main() {
     if (res.staleDispositions.length) console.log(`\nstale disposition keys (no live site): ${res.staleDispositions.join(', ')}`);
     console.log(`\nundispositioned sites: ${res.undispositioned}; unreadable files: ${res.unreadable}`);
   }
-  if (args.includes('--check') && (res.undispositioned > 0 || res.staleDispositions.length > 0)) process.exit(1);
+  if (args.includes('--acceptance')) {
+    const manifest = JSON.parse(readFileSync(new URL('../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url), 'utf8'));
+    const [{ RAIL_MIGRATION_CASES }, { listDegradationMechanisms }] = await Promise.all([
+      import('@papercusp/operator-core/lib/degradation/rail-migration-cases'),
+      import('@papercusp/operator-core/lib/system-health/degradation-watchdog'),
+    ]);
+    const problems = acceptanceProblems(manifest, res, RAIL_MIGRATION_CASES,
+      listDegradationMechanisms().map((mechanism) => mechanism.mechanism));
+    console.log(`condition-rail structural acceptance: ${problems.length} problem(s); executable cases run in condition-rail-coverage.test.ts`);
+    for (const problem of problems.slice(0, 20)) console.error(problem);
+    if (problems.length) process.exitCode = 1;
+  }
+  if (args.includes('--check') && (res.unreadable > 0 || res.undispositioned > 0 || res.staleDispositions.length > 0)) process.exitCode = 1;
 }
 
-if (isCliEntry(import.meta.url)) main();
+if (isCliEntry(import.meta.url)) await main();

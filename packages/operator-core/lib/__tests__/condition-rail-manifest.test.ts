@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { inventoryTree, manifestProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
+import { acceptanceProblems, inventoryTree, manifestProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url)), 'utf8'));
@@ -36,5 +36,19 @@ describe('condition-rail immutable audit manifest (P-017)', () => {
     for (const change of [{ reason: '' }, { reviewerRef: '' }, { reviewerRef: 'su-author' }, { rowId: 'unknown' }]) {
       expect(manifestProblems({ rows: [row], amendments: [{ ...amendment, ...change }] }, live).length).toBeGreaterThan(0);
     }
+  });
+
+  it('final acceptance cannot pass on an empty completion list or unreadable source', () => {
+    const current = { ...live, unreadable: 0, undispositioned: 0, staleDispositions: [] };
+    // Incremental guards permit work in progress; final acceptance always quantifies
+    // over all seed migrate rows, regardless of the completion registry's contents.
+    expect(manifestProblems(fixture, current, { completedItems: [] })).toEqual([]);
+    expect(acceptanceProblems(fixture, current, [], []).join()).toMatch(/still bypasses/);
+    const migrated = { ...current, sites: [{ id: row.id, onRail: true }], rows: [] };
+    expect(acceptanceProblems(fixture, migrated, [], []).join()).toMatch(/has no case/);
+    const testCase = { id: 'caller', item: row.item, route: row.route, rowIds: [row.id], run: () => ({}) };
+    expect(acceptanceProblems(fixture, migrated, [testCase], [])).toEqual([]);
+    expect(acceptanceProblems(fixture, { ...migrated, unreadable: 1 }, [testCase], []).join()).toMatch(/unreadable/);
+    expect(acceptanceProblems(fixture, { ...migrated, staleDispositions: ['dead'] }, [testCase], []).join()).toMatch(/stale disposition/);
   });
 });
