@@ -21,7 +21,7 @@ import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
 import { routingHealthFromRows, type RoutingHealthConsultRow } from './consult-routing-health';
@@ -88,20 +88,11 @@ const MIGRATION_1242 = fileURLToPath(
 const GEMMA_QUERY_PROFILE = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!;
 
 let rootSql: Sql;
+let fixtureDb: MigratedTestDb;
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `consultc_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-    await markManagedTestDatabase(admin, dbName);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'consultc' });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   // Minimal landing pad for the migration's coord_conversations kind-CHECK
   // widening (the real table is migration-132-owned). Keep the workspace key
@@ -194,7 +185,8 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  try { await rootSql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 // ── Fixture builders ─────────────────────────────────────────────────────
