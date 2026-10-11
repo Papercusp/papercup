@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
@@ -65,13 +65,16 @@ test('native Inbox acknowledgement removes only the selected message after refre
   const bridge = requiredEnv('VERIFY_TAURI_AGENT_TOOLS_BIN');
   const pid = requiredEnv('VERIFY_TAURI_PID');
   const runGroup = requiredEnv('PAPERCUSP_TEST_RUN_GROUP');
-  const receiptPath = requiredEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE');
+  const receiptPath = requiredEnv('PAPERCUSP_NATIVE_INBOX_ACK_RECEIPT_FILE');
+  const reporterReceiptPath = requiredEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE');
   const runWorkspace = requiredEnv('PAPERCUSP_TEST_RUN_WORKSPACE');
   const runHarness = requiredEnv('PAPERCUSP_TEST_RUN_HARNESS');
   const sourceRef = requiredEnv('VERIFY_TAURI_SOURCE_REF');
   const sourceInputs = requiredEnv('VERIFY_TAURI_SOURCE_INPUTS').split(/[\s,]+/).filter(Boolean);
   const sourceReceiptPath = requiredEnv('VERIFY_TAURI_SOURCE_RECEIPT');
 
+  expect(resolve(receiptPath), 'native acceptance evidence must use a separate file from reporter JSONL receipts')
+    .not.toBe(resolve(reporterReceiptPath));
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
   expect(process.env.VERIFY_TAURI_ISOLATED_SEED).toBe('ready');
   expect(runWorkspace).toBe('papercusp-workspace');
