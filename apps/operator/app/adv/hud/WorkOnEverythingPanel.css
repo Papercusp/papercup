@@ -77,11 +77,12 @@
 
 /* totals */
 .woe__kpis { display: grid; grid-template-columns: 1.6fr repeat(5, minmax(0, 1fr)); gap: 1px; background: var(--border); border-bottom: 1px solid var(--border); }
-.woe__kpi { display: flex; flex-direction: column; align-items: stretch; gap: 6px; text-align: left; padding: 14px 16px; background: var(--bg); border: 0; color: inherit; min-width: 0; }
+.woe__kpi { display: block; text-align: left; padding: 14px 16px; background: var(--bg); border: 0; color: inherit; min-width: 0; }
+.woe__kpi-content { display: flex; flex-direction: column; align-items: stretch; gap: 6px; text-align: left; }
 .woe__kpi:hover { background: var(--bg-raised); }
 .woe__kpi[aria-pressed=true] { background: var(--bg-raised); box-shadow: inset 0 -2px 0 var(--accent); }
 .woe__kpi-label { display: flex; align-items: center; gap: 7px; color: var(--fg-mute); font-size: 12px; }
-.woe__kpi-value { font-size: 21px; font-weight: 650; letter-spacing: -.01em; }
+.woe__kpi-value { font-size: 21px; font-weight: 650; letter-spacing: 0; }
 .woe__kpi-value small { font-size: 12px; font-weight: 500; color: var(--fg-mute); }
 .woe__kpi-sub { color: var(--fg-faint, var(--fg-mute)); font-size: 11px; line-height: 1.4; }
 
@@ -111,7 +112,7 @@
 .woe__seg-group button { background: none; border: 0; border-radius: 6px; padding: 5px 10px; color: var(--fg-mute); font-size: 12px; }
 .woe__seg-group button[aria-pressed=true] { background: var(--border); color: var(--fg); }
 .woe__toggle { display: flex; align-items: center; gap: 6px; color: var(--fg-mute); font-size: 12px; }
-.woe__toolbar select { font: inherit; font-size: 12px; color: var(--fg); background: var(--bg-raised); border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; }
+.woe__toolbar .woe__sort { display: inline-flex; align-items: center; justify-content: space-between; gap: 6px; font: inherit; font-size: 12px; color: var(--fg); background: var(--bg-raised); border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; }
 .woe__search { display: block; width: 240px; margin-left: auto; }
 .woe__search input { min-width: 0; font-size: 12px; }
 .woe__filter-note { display: flex; align-items: center; gap: 10px; margin: 0 20px 8px; font-size: 12px; color: var(--fg-mute); }
@@ -126,14 +127,16 @@
 .woe__table td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; min-width: 0; }
 .woe__table tr:last-child td { border-bottom: 0; }
 .woe__table tbody tr:hover { background: rgb(from var(--fg) r g b / .03); }
-.woe__row--out td.woe__plan, .woe__row--out td.woe__why { opacity: .72; }
+.woe__row--out .woe__plan, .woe__row--out .woe__why { opacity: .72; }
 .woe__row--changed td:first-child { box-shadow: inset 3px 0 var(--accent); }
 .woe__scope-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.woe__scope { display: inline-flex; align-items: center; gap: 4px; min-width: 52px; justify-content: center; padding: 4px 8px; font-size: 11.5px; border-radius: 6px; border: 1px dashed var(--border); background: none; color: var(--fg-mute); }
+.woe__scope { display: block; min-width: 52px; padding: 4px 8px; text-align: center; font-size: 11.5px; border-radius: 6px; border: 1px dashed var(--border); background: none; color: var(--fg-mute); }
+.woe__scope-content { display: inline-flex; align-items: center; gap: 4px; }
 .woe__scope:hover:not(:disabled) { border-style: solid; color: var(--fg); }
 .woe__scope--in { border: 1px solid rgb(from var(--accent) r g b / .45); color: var(--accent); background: rgb(from var(--accent) r g b / .08); font-variant-numeric: tabular-nums; }
 .woe__reorder { display: inline-flex; gap: 2px; }
-.woe__reorder button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 5px; background: none; color: var(--fg-mute); }
+.woe__reorder button { display: block; width: 22px; height: 22px; min-height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 5px; background: none; color: var(--fg-mute); }
+.woe__reorder-icon { display: grid; place-items: center; width: 100%; height: 100%; }
 .woe__change { flex-basis: 100%; font-size: 10px; color: var(--accent); }
 .woe__plan { overflow: hidden; }
 .woe__plan-link, .woe__plan strong { display: block; max-width: 100%; padding: 0; border: 0; background: none; color: var(--fg); font-size: 13px; font-weight: 550; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

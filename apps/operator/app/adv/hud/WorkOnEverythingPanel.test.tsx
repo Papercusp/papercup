@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 import type { GoalDetailInput } from './goal-detail-model';
 
@@ -153,16 +154,18 @@ describe('Work on everything: progress table (WI-10007603)', () => {
     expect(within(quality).queryByText('Improvement verified')).toBeNull();
   });
 
-  it('shows every plan with progress, keeps unpicked plans visible, and hides empty plans by default', () => {
+  it('shows every plan with progress, keeps unpicked plans visible, and hides empty plans by default', async () => {
     render(<WorkOnEverythingPanel data={fixture()} {...props()} />);
     openEditor();
     expect(rowLabels().map((t) => t?.split('h ·')[0])).toEqual(['Cloud setup', 'Search reliability', 'Mobile']);
+    expect(screen.getAllByTestId('ongoing-worklist-row').map(row => row.getAttribute('data-worklist-id')))
+      .toEqual(['plan:h/a', 'plan:h/b', 'plan:h/out']);
     const mobile = screen.getAllByTestId('ongoing-worklist-row')[2];
     expect(within(mobile).getByRole('button', { name: 'Add Mobile' })).toBeTruthy();
     expect(within(mobile).getByRole('img', { name: '6 of 10 items done' })).toBeTruthy();
     expect(within(mobile).getByText(/add it to the worklist/)).toBeTruthy();
     expect(screen.getByText(/1 with no items hidden/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('checkbox', { name: /Show plans with no items/ }));
+    await userEvent.setup().click(screen.getByRole('checkbox', { name: /Show plans with no items/ }));
     expect(screen.getAllByTestId('ongoing-worklist-row')).toHaveLength(4);
     expect(screen.getByRole('img', { name: '4 work items finished in the last 3 days' })).toBeTruthy();
   });
@@ -236,12 +239,14 @@ describe('Work on everything: progress table (WI-10007603)', () => {
     expect((screen.getByText('Review & apply') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('reorders in worklist order and opens a plan by its title', () => {
+  it('reorders in worklist order and opens a plan by its title', async () => {
     const open = vi.fn();
     render(<WorkOnEverythingPanel data={fixture()} {...props()} onOpenPlan={open} />);
     openEditor();
     expect(screen.queryByRole('button', { name: 'Move Search reliability up' })).toBeNull();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Sort plans' }), { target: { value: 'rank' } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Sort plans' }));
+    await user.click(screen.getByRole('option', { name: 'Worklist order' }));
     fireEvent.click(screen.getByRole('button', { name: 'Move Search reliability up' }));
     expect(rowLabels()[0]).toContain('Search reliability');
     expect(screen.getByText('Priority 2 → 1')).toBeTruthy();
