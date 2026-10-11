@@ -324,9 +324,12 @@ export async function ticketIntegrationsOverview(
 ): Promise<TicketIntegrationsOverview> {
   const registry = await requestRegistry(deps);
   const providers = integrationProviders(registry);
-  // Only ticket providers' accounts are sources this page manages; the rest get a card only.
+  // Every offered provider's connected accounts are listed (account, status, last error), so a
+  // credentials-only provider shows the source its saved credentials created (D-006). Only ticket
+  // providers' accounts carry the scope, counts and rules this page also manages.
   const byKind = new Map(ticketProviders(registry).map((entry) => [entry.descriptor.id, entry]));
-  const owned = (await listOwnedExternalTriggerSources(sql, scope.workspaceId, scope.ownerUserId)).filter((s) => byKind.has(s.kind));
+  const offered = new Set([...providers.map((entry) => entry.descriptor.id), ...byKind.keys()]);
+  const owned = (await listOwnedExternalTriggerSources(sql, scope.workspaceId, scope.ownerUserId)).filter((s) => offered.has(s.kind));
   const ids = owned.map((s) => s.id);
   const [syncRows, mirroredRows, admittedRows, rules] = ids.length === 0
     ? [[], [], [], []] as const
@@ -354,7 +357,8 @@ export async function ticketIntegrationsOverview(
   const sources = owned.map((source): TicketSourceSummary => {
     const s = sync.get(source.id);
     const config = isPlainObject(source.config) ? source.config : {};
-    const schema = configSchemaOf(byKind.get(source.kind)!.descriptor);
+    const ticket = byKind.get(source.kind);
+    const schema = ticket ? configSchemaOf(ticket.descriptor) : null;
     return {
       id: source.id,
       provider: source.kind,
@@ -365,8 +369,8 @@ export async function ticketIntegrationsOverview(
       lastSyncAt: isoOrNull(s?.sync_last_success_at),
       nextAttemptAt: isoOrNull(s?.sync_next_attempt_at),
       failureCount: s?.sync_failure_count ?? 0,
-      config: reportedConfig(schema, config),
-      missingConfig: missingTicketConfig(schema, config),
+      config: schema ? reportedConfig(schema, config) : {},
+      missingConfig: schema ? missingTicketConfig(schema, config) : [],
       mirrored: mirrored.get(source.id) ?? 0,
       admitted: admitted.get(source.id) ?? 0,
       rules: rules.filter((rule) => rule.dataSourceId === source.id),

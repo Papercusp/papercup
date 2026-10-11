@@ -288,7 +288,7 @@ function ProviderCard({
       <ProviderAppRegistration providerId={provider.id} displayName={provider.displayName} registration={provider.appRegistration} />
       <ProviderOAuthClientForm providerId={provider.id} displayName={provider.displayName} client={provider.oauthClient ?? null} />
       <ProviderCredentialsForm providerId={provider.id} displayName={provider.displayName} credentials={provider.credentials} />
-      {!provider.tracksTickets ? null : sources.length === 0 ? (
+      {sources.length === 0 ? (
         <p style={muteText}>No {provider.displayName} account connected.</p>
       ) : (
         sources.map((source) => (
@@ -332,7 +332,7 @@ function SourceRow({
   onReconnect: () => void;
   reconnecting: boolean;
 }) {
-  const label = source.accountLabel ?? source.providerAccountId ?? 'Unnamed account';
+  const label = sourceLabel(source);
   const needs = missingLabels(source.missingConfig);
   const enabledRules = source.rules.filter((rule) => rule.enabled).length;
   const panelId = `integration-panel-${source.id}`;
@@ -343,12 +343,14 @@ function SourceRow({
         <div style={{ flex: '1 1 auto', minWidth: 0 }}>
           <span style={{ fontWeight: 600, color: 'var(--fg)' }}>{label}</span>
           <StatusBadge status={source.status} />
-          <div style={metaText}>
-            {source.lastSyncAt ? `Last synced ${formatTime(source.lastSyncAt)}` : 'Not synced yet'}
-            {' · '}
-            {count(source.mirrored, 'ticket')} mirrored{' · '}
-            {source.admitted} admitted as work
-          </div>
+          {provider.tracksTickets && (
+            <div style={metaText}>
+              {source.lastSyncAt ? `Last synced ${formatTime(source.lastSyncAt)}` : 'Not synced yet'}
+              {' · '}
+              {count(source.mirrored, 'ticket')} mirrored{' · '}
+              {source.admitted} admitted as work
+            </div>
+          )}
           {needs.length > 0 && (
             <p role="status" style={warnText}>
               Needs {joinWords(needs)} before it can sync.
@@ -362,7 +364,7 @@ function SourceRow({
           )}
         </div>
         <div style={actionRow}>
-          {PANELS.map((p) => (
+          {(provider.tracksTickets ? PANELS : []).map((p) => (
             <Button
               key={p}
               size="sm"
@@ -374,14 +376,27 @@ function SourceRow({
               {p === 'rules' ? `Rules (${enabledRules})` : PANEL_TITLES[p]}
             </Button>
           ))}
-          <Button size="sm" variant="ghost" onClick={onReconnect} disabled={reconnecting}>
-            Reconnect
-          </Button>
+          {provider.connectHref && (
+            <Button size="sm" variant="ghost" onClick={onReconnect} disabled={reconnecting}>
+              Reconnect
+            </Button>
+          )}
         </div>
       </div>
-      {panel && <SourceDetail id={panelId} source={source} provider={provider} harnesses={harnesses} panel={panel} />}
+      {panel && provider.tracksTickets && <SourceDetail id={panelId} source={source} provider={provider} harnesses={harnesses} panel={panel} />}
     </div>
   );
+}
+
+/**
+ * The account name a source row shows. A source created from pasted credentials (D-006) is keyed
+ * `provider-setup:<providerId>`, a credential-store reference rather than an account, so it reads
+ * as "Saved credentials" until the provider reports an identity (accountLabel).
+ */
+function sourceLabel(source: Pick<TicketSourceSummary, 'accountLabel' | 'providerAccountId'>): string {
+  if (source.accountLabel) return source.accountLabel;
+  if (source.providerAccountId?.startsWith('provider-setup:')) return 'Saved credentials';
+  return source.providerAccountId ?? 'Unnamed account';
 }
 
 function StatusBadge({ status }: { status: string }) {

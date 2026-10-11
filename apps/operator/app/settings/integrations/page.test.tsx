@@ -565,7 +565,28 @@ describe('every installed integration and workflow (P-005)', () => {
     expect(card.getByRole('heading', { name: 'Chatter' })).toBeTruthy();
     expect(card.getByText('Needs 1 of 1 credential')).toBeTruthy();
     expect(card.queryByRole('button', { name: /^Connect/ })).toBeNull();
-    expect(card.queryByText(/account connected/)).toBeNull();
+    expect(card.getByText('No Chatter account connected.')).toBeTruthy();
+  });
+
+  it('lists the source saved credentials created (D-006) with its status, and none of the ticket controls', async () => {
+    serve({
+      providers: [CHAT],
+      sources: [source({ id: 'src-chat', provider: 'chatter', providerAccountId: 'provider-setup:chatter', accountLabel: null, config: {}, missingConfig: [] })],
+    });
+    render(<Page />);
+
+    const row = await waitFor(() => {
+      const found = document.querySelector('[data-provider="chatter"] [data-source="src-chat"]');
+      if (!found) throw new Error('chatter source row is not rendered');
+      return within(found as HTMLElement);
+    });
+    expect(row.getByText('Saved credentials')).toBeTruthy();
+    expect(row.getByText(/connected/)).toBeTruthy();
+    // Ticket-only metrics and panels, and an OAuth reconnect, have no meaning for this provider.
+    expect(row.queryByText(/mirrored/)).toBeNull();
+    expect(row.queryByRole('button', { name: 'What syncs' })).toBeNull();
+    expect(row.queryByRole('button', { name: /^Rules/ })).toBeNull();
+    expect(row.queryByRole('button', { name: 'Reconnect' })).toBeNull();
   });
 
   it('saves a workflow’s settings through the inputs route, and blocks arming until they are saved', async () => {
