@@ -623,6 +623,17 @@ export interface MergeCursor {
    */
   snapshotSkipUnsafe?: Set<string>;
   /**
+   * WI-6554700010008523: logs held out of the fold because the durable PG cursor
+   * could not be loaded yet. A held log has NO position, so the fold skips it, no
+   * save can write a position for it (a save writes only positioned keys), and the
+   * P-522 eviction re-fold reads it as not started. It is also `snapshotSkipUnsafe`
+   * while held. `createPgMergeCursorSeedCache` releases it on the first successful
+   * load (seeding it from PG) or, after `PG_CURSOR_SEED_HOLD_MAX_MS`, pins it at 0.
+   * Without the hold, one transient load failure re-folded every log from 0 and the
+   * re-fold's saves overwrote the progress the failed load could not read.
+   */
+  pgSeedPending?: Set<string>;
+  /**
    * p2p-join-catchup-speed P-008 (endgame D-060): keyHex → the highest
    * `coversUpTo` whose snapshot set this cursor OWES. A snapshot chunk is applied
    * row by row only when its `coversUpTo` is at or below this watermark: the set
@@ -1824,6 +1835,10 @@ export interface PgMergeCursorSeedCache {
    * the keys seeded that way are returned so the caller can owe whatever the
    * fallback binding did not apply (WI-10005575: a boot that resolves the memory
    * flag differently from the stamp otherwise re-folds every log from 0).
+   *
+   * A failed primary load throws. `PgMergeCursorSeedHeldError` means the admitted
+   * unpositioned logs are held out of the fold until a later `seed` loads; any other
+   * error means they were pinned at 0 (F4) and will fold from there.
    */
   seed(
     cursor: MergeCursor,
@@ -1873,18 +1888,81 @@ export function seedCursorFromPgCache(
  * which keeps the P-004 far-behind jump off it: that jump acts on positioned
  * cursors, so the pin at 0 alone would no longer protect the entry. Exported so
  * the boot F4 path can use the same helper instead of its own copy of the loop.
+ * A log held for its PG seed (`pgSeedPending`) is left alone: pinning it would
+ * fold it from 0, which is exactly what the hold exists to prevent.
  */
 export function pinUnknownDurableState(cursor: MergeCursor, keyHexes: Iterable<string>): void {
   for (const key of keyHexes) {
-    if (cursor.positions.has(key)) continue;
+    if (cursor.positions.has(key) || cursor.pgSeedPending?.has(key)) continue;
     cursor.positions.set(key, 0);
     (cursor.snapshotSkipUnsafe ??= new Set()).add(key);
   }
 }
 
-/** Create one seed cache per booted harness. A failed load is one-shot and
- * fail-open (the caller logs it; folds start at zero), matching the old latch. */
-export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
+/**
+ * WI-6554700010008523: how long a failing PG cursor load may hold unpositioned logs
+ * out of the fold before giving up and folding them from 0.
+ *
+ * Measured 2026-10-11: a ~40 s PG connection-timeout burst during a slow bg-host
+ * boot failed ONE load. The old one-shot latch then re-folded the papercusp own log
+ * from 0 (8.58M ops, main thread pegged ~2 h), and the re-fold's saves overwrote the
+ * durable position it never read. Holding is nearly free by comparison: the fold
+ * applies through PG too, so it cannot progress while PG is unreachable. The bound
+ * exists only for a load that fails while the rest of PG works (a broken query or
+ * a missing column), where folding from 0 is still the right fallback.
+ */
+export const PG_CURSOR_SEED_HOLD_MAX_MS = 10 * 60_000;
+
+/** WI-6554700010008523: how often a held PG seed reports that it is still held. */
+const PG_CURSOR_SEED_HOLD_LOG_MS = 60_000;
+
+export interface PgMergeCursorSeedCacheOptions {
+  /** Prefixes the cache's own log lines (e.g. `workspace/harness`). */
+  label?: string;
+  /** Hold bound (default `PG_CURSOR_SEED_HOLD_MAX_MS`); `<= 0` never holds. */
+  holdMaxMs?: number;
+  /** Clock seam for tests. */
+  now?: () => number;
+}
+
+/**
+ * Thrown by `PgMergeCursorSeedCache.seed` when the durable load failed and the
+ * admitted unpositioned logs are being HELD out of the fold (see `pgSeedPending`).
+ * The original error is the `cause`. Any other error from `seed` means the hold
+ * was not (or no longer) applied and those logs were pinned at 0 instead.
+ */
+export class PgMergeCursorSeedHeldError extends Error {
+  readonly held: number;
+  readonly heldForMs: number;
+  readonly holdMaxMs: number;
+  constructor(cause: unknown, held: number, heldForMs: number, holdMaxMs: number) {
+    super(
+      `durable cursor load failed; holding ${held} log(s) out of the fold ` +
+        `(${Math.round(heldForMs / 1000)}s of ${Math.round(holdMaxMs / 1000)}s): ` +
+        (cause instanceof Error ? cause.message : String(cause)),
+      { cause },
+    );
+    this.name = 'PgMergeCursorSeedHeldError';
+    this.held = held;
+    this.heldForMs = heldForMs;
+    this.holdMaxMs = holdMaxMs;
+  }
+}
+
+/**
+ * Create one seed cache per booted harness.
+ *
+ * WI-6554700010008523: a failed load no longer latches. Admitted logs that have no
+ * position are HELD out of the fold (`pgSeedPending`) and every later `seed` retries
+ * the load. The first successful load releases the held logs and seeds them from
+ * PG, exactly as if it had succeeded the first time. Only after `holdMaxMs` of
+ * consecutive failures does the cache give up and pin them at 0 (fail-open, the old
+ * behavior), and it still retries the load for logs admitted after that.
+ */
+export function createPgMergeCursorSeedCache(options: PgMergeCursorSeedCacheOptions = {}): PgMergeCursorSeedCache {
+  const holdMaxMs = options.holdMaxMs ?? PG_CURSOR_SEED_HOLD_MAX_MS;
+  const now = options.now ?? Date.now;
+  const prefix = `[read-merge]${options.label ? ` [${options.label}]` : ''} pg-cursor-seed`;
   let saved: ReadonlyMap<string, number> | undefined;
   let failures: ReadonlyMap<string, MergeApplyFailure> | undefined;
   let marks: ReadonlyMap<string, SnapshotApplyMark> | undefined;
@@ -1896,12 +1974,29 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
   let fallbackMarks: ReadonlyMap<string, SnapshotApplyMark> | undefined;
   let savedFallbackBinding: string | null | undefined;
   let invalidated = false;
+  /** The most recent primary load attempt failed: durable failure state is unknown. */
   let loadFailed = false;
+  /** When the current run of failed loads began (undefined while loads succeed). */
+  let failingSinceMs: number | undefined;
+  let holdLoggedAtMs = 0;
+  /** Release every held log: drop it from the hold so it can be seeded or pinned. */
+  const releaseHeld = (cursor: MergeCursor): string[] => {
+    const held = [...(cursor.pgSeedPending ?? [])];
+    for (const key of held) {
+      cursor.pgSeedPending!.delete(key);
+      cursor.snapshotSkipUnsafe?.delete(key);
+    }
+    return held;
+  };
   return {
     async seed(cursor, store, applyBinding, admittedKeyHexes, fallbackApplyBinding) {
       const admitted = [...admittedKeyHexes];
       if (invalidated) {
-        if (loadFailed) pinUnknownDurableState(cursor, admitted);
+        // A structural reset folds everything from 0 regardless, so a hold buys nothing.
+        if (loadFailed) {
+          releaseHeld(cursor);
+          pinUnknownDurableState(cursor, admitted);
+        }
         return NO_FALLBACK_SEEDS;
       }
       if (!saved || savedApplyBinding !== applyBinding) {
@@ -1913,12 +2008,58 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
           ]);
           savedApplyBinding = applyBinding;
         } catch (error) {
-          invalidated = true;
+          // Never reuse a cache loaded under another binding: it says nothing about this one.
+          saved = undefined;
+          failures = undefined;
+          marks = undefined;
+          savedApplyBinding = undefined;
           loadFailed = true;
+          const at = now();
+          failingSinceMs ??= at;
+          const failingForMs = at - failingSinceMs;
+          const message = error instanceof Error ? error.message : String(error);
+          if (holdMaxMs > 0 && failingForMs < holdMaxMs) {
+            const seedHolds = (cursor.pgSeedPending ??= new Set());
+            for (const key of admitted) {
+              if (cursor.positions.has(key)) continue;
+              seedHolds.add(key);
+              (cursor.snapshotSkipUnsafe ??= new Set()).add(key);
+            }
+            if (failingForMs === 0 || at - holdLoggedAtMs >= PG_CURSOR_SEED_HOLD_LOG_MS) {
+              holdLoggedAtMs = at;
+              console.warn(
+                `${prefix}: durable cursor load failed (${message}); holding ${seedHolds.size} log(s) ` +
+                  `out of the fold and retrying every pass (failing ${Math.round(failingForMs / 1000)}s, ` +
+                  `give-up after ${Math.round(holdMaxMs / 1000)}s).`,
+              );
+            }
+            throw new PgMergeCursorSeedHeldError(error, seedHolds.size, failingForMs, holdMaxMs);
+          }
+          const released = releaseHeld(cursor);
           pinUnknownDurableState(cursor, admitted);
+          if (released.length > 0 || failingForMs === 0 || at - holdLoggedAtMs >= PG_CURSOR_SEED_HOLD_LOG_MS) {
+            holdLoggedAtMs = at;
+            console.warn(
+              `${prefix}: durable cursor load still failing after ${Math.round(failingForMs / 1000)}s (${message}); ` +
+                `GAVE UP holding, folding unpositioned log(s) from 0` +
+                (released.length > 0 ? ` (released ${released.length} held).` : '.'),
+            );
+          }
           throw error;
         }
+        if (loadFailed) {
+          const releasedCount = cursor.pgSeedPending?.size ?? 0;
+          console.warn(
+            `${prefix}: durable cursor load recovered after ` +
+              `${Math.round((now() - (failingSinceMs ?? now())) / 1000)}s; ` +
+              `seeding ${releasedCount} held log(s) from PG instead of folding them from 0.`,
+          );
+        }
+        loadFailed = false;
+        failingSinceMs = undefined;
       }
+      // The durable state is known now: seed held logs as if the first load had worked.
+      releaseHeld(cursor);
       seedCursorFromPgCache(cursor, saved, admitted, failures, marks);
       if (fallbackApplyBinding === undefined || fallbackApplyBinding === applyBinding) {
         return NO_FALLBACK_SEEDS;
@@ -3920,7 +4061,11 @@ async function mergeIncrementalPass(
 
   for (const log of logs) {
     // P-522: a fresh log whose snapshot-seed scan has not concluded is not folded yet.
-    if (cursor.snapshotSeedPending?.has(log.keyHex) && !cursor.positions.has(log.keyHex)) {
+    // WI-6554700010008523: nor is a log whose durable PG cursor has not loaded yet.
+    if (
+      (cursor.snapshotSeedPending?.has(log.keyHex) || cursor.pgSeedPending?.has(log.keyHex)) &&
+      !cursor.positions.has(log.keyHex)
+    ) {
       if (log.length > 0) caughtUp = false;
       continue;
     }

@@ -69,6 +69,7 @@ import {
   createMergeCursor,
   createMergeProgressProbe,
   createPgMergeCursorSeedCache,
+  pinUnknownDurableState,
   describeMergeProgress,
   mergeAdmittedLogsIncremental,
   seedCursorFromSnapshots,
@@ -2398,7 +2399,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // in-memory cursor only, so this function stays PG-free and every merge
   // test is hermetic unless it opts in.
   const pgMergeCursorStore: MergeCursorStore | null = opts.mergeCursorStore ?? null;
-  const pgCursorSeedCache = pgMergeCursorStore ? createPgMergeCursorSeedCache() : null;
+  const pgCursorSeedCache = pgMergeCursorStore
+    ? createPgMergeCursorSeedCache({ label: `${opts.workspaceId}/${opts.harnessSlug}` })
+    : null;
 
   // EI-18773697830188393 — the COLD-BOOT counterpart of the rekey's `forceReFold`.
   // A persisted cursor position claims "every op below this index was APPLIED", but
@@ -4296,8 +4299,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // live cursor (where the log-removal invariant would mistake them for a
       // removal and reset the fold). Runs BEFORE snapshot seeding so a durable PG
       // resume position takes precedence; snapshot seeding fills only the rest.
-      // Isolated (WI-1544): a load failure means "start at 0" (slower, correct) —
-      // never aborts the pass via the outer catch.
+      // Isolated (WI-1544): a load failure never aborts the pass via the outer catch.
+      // WI-6554700010008523: nor does it fold from 0 any more. The cache holds the
+      // unpositioned logs out of this pass's fold and retries the load next pass
+      // (PgMergeCursorSeedHeldError); only after PG_CURSOR_SEED_HOLD_MAX_MS of
+      // failures does it pin them at 0, the old "slower but correct" fallback.
       if (pgMergeCursorStore && pgCursorSeedCache) {
         markMergeStage('pg-cursor-seed');
         try {
@@ -4322,10 +4328,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           }
         } catch (e) {
           // F4: an unreadable durable cursor may be holding an unapplied entry
-          // at zero. Snapshot skipping is unsafe until that state is known.
-          for (const key of logKeys) {
-            if (!mergeCursor.positions.has(key)) mergeCursor.positions.set(key, 0);
-          }
+          // at zero. Snapshot skipping is unsafe until that state is known. The
+          // cache has already applied this (hold or pin); the helper re-asserts it
+          // for any other failure and never pins a held log (pgSeedPending).
+          pinUnknownDurableState(mergeCursor, logKeys);
           recordBootEvent(
             opts.workspaceId,
             opts.harnessSlug,
