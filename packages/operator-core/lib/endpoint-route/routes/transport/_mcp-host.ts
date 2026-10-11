@@ -5211,7 +5211,8 @@ export function registerMcpHost(server: McpServer): void {
                     const total = raced.phaseTimingsMs.scratchWrites ??= {
                       count: 0, quotaWaitMs: 0, refreshWaitMs: 0,
                       quotaRecoveryMs: 0, quotaStateReadMs: 0, quotaStatePublishMs: 0,
-                      markerProbeMs: 0, writeMs: 0, totalMs: 0,
+                      markerProbeMs: 0, localMutexWaitMs: 0, fsMutexAdmissionMs: 0,
+                      writeMs: 0, totalMs: 0,
                     };
                     total.count += 1;
                     for (const phase of [
@@ -5221,6 +5222,8 @@ export function registerMcpHost(server: McpServer): void {
                       'quotaStateReadMs',
                       'quotaStatePublishMs',
                       'markerProbeMs',
+                      'localMutexWaitMs',
+                      'fsMutexAdmissionMs',
                       'writeMs',
                       'totalMs',
                     ] as const) {
