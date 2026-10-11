@@ -26,7 +26,7 @@ import {
   autoFixSqlCommentBacktick,
 } from './sql-comment-backtick';
 import {
-  findCommitBlockingSecrets,
+  findCommitBlockingSecretsSliced,
   describeCommitBlockingSecrets,
   cachedExemptionLoader,
   defaultExemptionLoader,
@@ -565,13 +565,17 @@ export const focusedTestDetector: ContentDetector = {
  * instances were a .test.ts, a .mjs hook and a test harness — no suffix filter
  * would have caught all three. `scanTextForSecrets` skips >4096-char lines, so
  * minified/one-line blobs cost nothing.
+ *
+ * The scan is TIME-SLICED (WI-6554700010008327): git-sync runs this detector over
+ * every dirty file on the host's main thread, and generated JSON in the tree reaches
+ * ~10 MB, so a synchronous per-file scan stalled bg-host's event loop for seconds.
  */
 export const secretsDetector: ContentDetector = {
   key: 'secrets',
   glob: '**/*',
   matches: (f) => !isExcludedPath(f),
   detect: async (file, text) => {
-    const findings = findCommitBlockingSecrets(file, text, await loadContentLintExemptions());
+    const findings = await findCommitBlockingSecretsSliced(file, text, await loadContentLintExemptions());
     if (findings.length === 0) return null;
     return describeCommitBlockingSecrets(file, findings);
   },

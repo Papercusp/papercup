@@ -1,4 +1,6 @@
-import { test, expect, type Page, type Locator } from './_egress';
+import {
+  test, expect, type Page, type Locator, waitVisibleRecoveringNetworkChange, watchNetworkChange,
+} from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { readTypedPropertyCollection, type OrderedSelectionPolicy } from '../../../packages/operator-core/lib/typed-properties';
 
@@ -30,12 +32,14 @@ function headerRows(name: string): readonly unknown[] | undefined {
 async function waitForHud(ready: Locator) {
   // Deep-linked goal dialogs hide the background HUD from accessibility queries.
   // Wait on the visible caller being exercised, with the same readiness deadline.
-  await ready.waitFor({ state: 'visible', timeout: 30_000 });
+  // A page blanked by host network churn is reloaded once (WI-6554700010008424).
+  await waitVisibleRecoveringNetworkChange(ready, 30_000);
 }
 
 async function openHud(page: Page, path: string, ready: Locator = page.getByRole('tablist', { name: 'HUD board' })) {
   // The caller's visible landmark is the acceptance boundary; unrelated
   // framed surfaces do not have to finish their whole-page load lifecycle.
+  watchNetworkChange(page);
   await page.goto(path, { waitUntil: 'domcontentloaded' });
   await waitForHud(ready);
 }

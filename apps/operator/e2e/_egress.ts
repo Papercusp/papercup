@@ -72,7 +72,7 @@
  * Loopback is never foreign and is not expressed that way — see LOCAL_HOSTNAMES
  * in egress-monitor.ts.
  */
-import { test as base, expect, type Page } from '@playwright/test';
+import { test as base, expect, type Locator, type Page } from '@playwright/test';
 import {
   classifyEgress,
   EGRESS_CONTROL_PARAM,
@@ -134,6 +134,53 @@ export function assertMounted(mounted: boolean, context: string): asserts mounte
 }
 
 /** What a spec may configure, via `test.use({ ... })`. */
+// ── Host network-change recovery (WI-6554700010008424) ──────────────────────
+// TEMPORARY MITIGATION because this dev box creates and removes network interfaces constantly
+// (fleet network namespaces, container veths), and Chromium answers every address change by
+// closing in-flight connections with net::ERR_NETWORK_CHANGED. A page whose module graph is
+// loading at that instant never mounts and stays blank (measured: 130-148 aborted module requests
+// in two ongoing-work-ui failures, run 20261011T042449Z-2447651). The page load failed, not the
+// app, so one reload is the recovery, and only for that error. Durable fix = keep the browser
+// from seeing host interface churn; tracked on WI-6554700010008424.
+const networkChangeSeen = new WeakMap<Page, { seen: boolean }>();
+
+/** Start recording net::ERR_NETWORK_CHANGED request failures for `page`. Idempotent. */
+export function watchNetworkChange(page: Page): void {
+  if (networkChangeSeen.has(page)) return;
+  const state = { seen: false };
+  networkChangeSeen.set(page, state);
+  page.on('requestfailed', (request) => {
+    if (request.failure()?.errorText === 'net::ERR_NETWORK_CHANGED') state.seen = true;
+  });
+}
+
+/**
+ * Wait for `ready` to be visible. When that times out AND the page logged
+ * net::ERR_NETWORK_CHANGED, reload once and wait again; any other timeout is rethrown unchanged.
+ * Call watchNetworkChange(page) before the navigation so failures during it are seen. A recovery
+ * is recorded as a `network-change-recovery` annotation, so it stays visible in the report.
+ */
+export async function waitVisibleRecoveringNetworkChange(ready: Locator, timeout: number): Promise<void> {
+  const page = ready.page();
+  watchNetworkChange(page);
+  const state = networkChangeSeen.get(page)!;
+  try {
+    await ready.waitFor({ state: 'visible', timeout });
+    state.seen = false;
+    return;
+  } catch (error) {
+    if (!state.seen) throw error;
+  }
+  state.seen = false;
+  test.info().annotations.push({
+    type: 'network-change-recovery',
+    description: 'reloaded once after net::ERR_NETWORK_CHANGED left the page blank (WI-6554700010008424)',
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await ready.waitFor({ state: 'visible', timeout });
+  state.seen = false;
+}
+
 export interface EgressFixtureOptions {
   /**
    * Non-local origins this spec is ALLOWED to reach, as exact origins

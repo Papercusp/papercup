@@ -10,8 +10,10 @@ import {
   resolveChildSessionOperatorBaseUrl,
   resolveInheritedOperatorBaseUrl,
   resolveLongLivedSessionMcpBaseUrl,
+  resolveResumedSessionOperatorBaseUrl,
   resolveSpawnHostOperatorBaseUrl,
 } from './mcp-base-url';
+import { readFileSync } from 'node:fs';
 
 const KEY = 'PAPERCUSP_MCP_PROXY_BASE';
 const TARGET_PORT_KEY = 'PAPERCUSP_MCP_PROXY_TARGET_PORT';
@@ -269,5 +271,55 @@ describe('resolveLongLivedSessionMcpBaseUrl', () => {
         PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9171/',
       }),
     ).toBe('http://127.0.0.1:9171');
+  });
+});
+
+describe('resolveResumedSessionOperatorBaseUrl (WI-6554700010008371)', () => {
+  const DEV_PORT_KEY = 'OPERATOR_DEV_PORT';
+  const originalDevPort = process.env[DEV_PORT_KEY];
+  beforeEach(() => {
+    delete process.env[DEV_PORT_KEY];
+  });
+  afterEach(() => {
+    if (originalDevPort === undefined) delete process.env[DEV_PORT_KEY];
+    else process.env[DEV_PORT_KEY] = originalDevPort;
+  });
+
+  it('routes a direct live :3070 base from a host without the proxy env to the long-lived endpoint', () => {
+    // The desktop-dev :3270 operator sourcing apps/operator/.env.local: this is the env that
+    // resumed su-d70c727a pinned direct to :3070 on 2026-10-11.
+    process.env[HONO_PORT_KEY] = '3270';
+    expect(resolveInheritedOperatorBaseUrl('http://localhost:3070/api/mcp')).toBe('http://localhost:3070');
+    expect(resolveResumedSessionOperatorBaseUrl('http://localhost:3070/api/mcp')).toBe('http://127.0.0.1:9071');
+    expect(resolveResumedSessionOperatorBaseUrl('http://127.0.0.1:3070')).toBe('http://127.0.0.1:9071');
+    expect(resolveResumedSessionOperatorBaseUrl('http://localhost:3070/')).toBe('http://127.0.0.1:9071');
+  });
+
+  it('matches a fresh long-lived launch on the same host', () => {
+    process.env[HONO_PORT_KEY] = '3270';
+    expect(resolveResumedSessionOperatorBaseUrl('http://localhost:3070/api/mcp')).toBe(
+      resolveLongLivedSessionMcpBaseUrl(),
+    );
+  });
+
+  it('leaves every other inherited base on the inherited answer', () => {
+    expect(resolveResumedSessionOperatorBaseUrl(undefined)).toBe(undefined);
+    expect(resolveResumedSessionOperatorBaseUrl('')).toBe('');
+    expect(resolveResumedSessionOperatorBaseUrl('http://localhost:3170/api/mcp')).toBe('http://localhost:3170');
+    expect(resolveResumedSessionOperatorBaseUrl('http://localhost:3271/api/mcp')).toBe('http://localhost:3271');
+    expect(resolveResumedSessionOperatorBaseUrl('http://localhost:3270')).toBe('http://localhost:3270');
+    expect(resolveResumedSessionOperatorBaseUrl('http://10.0.0.5:3070')).toBe('http://10.0.0.5:3070');
+    expect(resolveResumedSessionOperatorBaseUrl('http://127.0.0.1:9071')).toBe('http://127.0.0.1:9071');
+  });
+
+  it('keeps the desktop sidecar direct (OPERATOR_DEV_PORT set)', () => {
+    process.env[DEV_PORT_KEY] = '3070';
+    expect(resolveResumedSessionOperatorBaseUrl('http://localhost:3070/api/mcp')).toBe('http://localhost:3070');
+  });
+
+  it('is the resolver both wake-executor resume sites use', () => {
+    const src = readFileSync(new URL('./events/await/wake-executor.ts', import.meta.url), 'utf8');
+    expect(src.match(/resolveResumedSessionOperatorBaseUrl\(process\.env\.PAPERCUSP_OPERATOR_URL\)/g)).toHaveLength(2);
+    expect(src).not.toMatch(/resolveInheritedOperatorBaseUrl\(process\.env/);
   });
 });

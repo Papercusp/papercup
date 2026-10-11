@@ -150,6 +150,36 @@ export function resolveInheritedOperatorBaseUrl(raw: string | undefined): string
 }
 
 /**
+ * Resolve the operator base a RESUMED long-lived CLI session carries: the wake executor's resume
+ * env and its codex launch-spec repair (WI-6554700010008371).
+ *
+ * The wake workflow runs on whichever DBOS host claims it, so `PAPERCUSP_OPERATOR_URL` here is
+ * that HOST's value, not the session's. A host that sources `apps/operator/.env.local` without
+ * the proxy env (a desktop-dev `:3270` operator: `http://localhost:3070/api/mcp`, no
+ * `PAPERCUSP_MCP_PROXY_BASE`) resumed agents pinned direct to `:3070`, and each lost its MCP on
+ * the next `:3070` restart. A fresh launch of the same session class never pins direct `:3070`
+ * (launch-su.ts and spawn-config.ts use `resolveLongLivedSessionMcpBaseUrl`), so a resume routes
+ * that one base the same way. Every other inherited base (staging, bg-host, the desktop sidecar
+ * via `OPERATOR_DEV_PORT`, a hermetic host) keeps `resolveInheritedOperatorBaseUrl`'s answer.
+ */
+export function resolveResumedSessionOperatorBaseUrl(raw: string | undefined): string | undefined {
+  const inherited = resolveInheritedOperatorBaseUrl(raw);
+  if (!inherited || process.env.OPERATOR_DEV_PORT?.trim()) return inherited;
+  return isDirectLiveOperatorBase(inherited) ? resolveLongLivedSessionMcpBaseUrl() : inherited;
+}
+
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+function isDirectLiveOperatorBase(base: string): boolean {
+  try {
+    const url = new URL(base);
+    return url.protocol === 'http:' && url.port === '3070' && LOOPBACK_HOSTNAMES.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve THIS process's OWN operator base URL, for use as the callback/API-signing
  * env of a child THIS process spawns (a desktop terminal, an ad-hoc agent, a fleet
  * member, …) — WI-6154.
