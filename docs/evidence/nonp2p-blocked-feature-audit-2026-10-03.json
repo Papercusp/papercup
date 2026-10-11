@@ -8470,7 +8470,117 @@
      "summary": "plan lane android-public-release-2026-10-01#P-003 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "androidP003EvidenceQualification": {
+    "status": "retained-partial-debug-evidence-current-acceptance-unestablished",
+    "qualifiedAt": "2026-10-11",
+    "workItem": "WI-10004770",
+    "auditProofs": [
+     "WI-10005820#comment:1174735"
+    ],
+    "proofTimestampCorrection": "Progress comment1174735 has an incorrect 18:18Z heading. Its authoritative created_ts is 2026-10-11T18:14:39.329Z. Independent authoritative readback returned the exact6068-character SELF-authored body; the heading is not an observation time.",
+    "sourceAuthority": {
+     "plan": "android-public-release-2026-10-01",
+     "retainedReadVersion": 94,
+     "contentHash": "d4177567ac7433db054f39d74460b1175bd6ca6be78e870508a3c0b4074734e5",
+     "planState": "ready",
+     "item": "P-003",
+     "storedStatus": "todo",
+     "effectiveStatus": "todo",
+     "unresolvedBlockers": [],
+     "childRetainedRead": "OPEN/unassigned; historical source version21 and blocked row values below remain the frozen cohort record, not the later live state.",
+     "requirements": "Reconcile supported chat roles, plans, work-item and approval states, conversation semantics, fleet monitoring, pot/workspace selection and diagnostics. Qualify meaningful interactions, missing data, errors and state transitions; do not treat healthy or empty fallbacks as compatibility.",
+     "governingDecisionsRead": [
+      "D-022 replacement automatic CI route",
+      "D-023 direct download first",
+      "D-016 debug diagnostics"
+     ],
+     "clauses": [
+      {
+       "specId": "ANDROID-P-003-OUTCOME",
+       "revision": 1,
+       "contentHash": "d3e6778af77dca3e02e35d1beb2c1fe034460901b57ec50ad55fbcdce28753fe",
+       "lifecycle": "active",
+       "acceptedBy": "su-ed889d13-ba80-4ae6-abd9-46dbe7ab74c1",
+       "acceptedAt": "2026-10-01T09:26:00.657Z"
+      },
+      {
+       "specId": "AUTO-BAR-R-3-P-003",
+       "revision": 4,
+       "contentHash": "f3af5a5707bbcc44d958439eb1d83438dc83561ff77b631f0b9ddbb549d2997f",
+       "lifecycle": "active",
+       "acceptedBy": "su-c9cbdca9-7cd0-4b58-a69c-7645de562968",
+       "acceptedAt": "2026-10-06T20:07:06.855Z"
+      }
+     ],
+     "r3MethodQualification": "Complete R3 method read: first the exact candidate/current build, then the intended shipped counterpart; all six journeys need writer comparisons, missing/error states and matching candidate/runtime identities. A selected private debug journey cannot satisfy this complete contract."
+    },
+    "rubricVettingQualification": {
+     "rubricRef": "acceptance-android-public-release-2026-10-01",
+     "retainedReadRevision": 7,
+     "criteriaHash": "2fd1083a85896b1b4c127b5536bae4c87e1bdde9ac387eb2b83a3c4351d7df15",
+     "attestation": "EI-25266987060747297",
+     "gradingAudit": "EI-25267555132678714",
+     "readCoverage": "All six attestation criteria and all six grading-audit criteria were read in full. Attestation: five pass and prefer-structured-check weak. Audit: six pass; it discloses judge SQL access unavailable and a second static rubric-catalog instrument. Historical numerical comparisons were not rerun.",
+     "currentnessQualification": "Server reports the attestation current despite recorded revision5/hashbf0bf370 and live revision7/hash2fd1083a. The stored observation and live rubric both have meaningRevision5. Independently reviewed classifyRubricEvidenceCurrentness gives matching positive meaning revisions precedence over method/hash revisions. The current scorecards writer explains this as meaning-unchanged when hashes differ; the retained server receipt uses reason=current. Source review does not establish the loaded server writer bytes or supply an Android readiness grade.",
+     "earlierCard": "EI-24804279260890400 revision3 is server-reported stale; it is not reused as current acceptance."
+    },
+    "finiteBindingQualification": {
+     "population": "The complete retained work-item evidence table,15 rows, truncatedByLimit=false.",
+     "unknown": [
+      29936,
+      29937
+     ],
+     "remainingRows": "The other13 rows are server-reported stale in this retained read. This is a finite table qualification, not a global absence claim.",
+     "latestRows": "Both latest bindings are manual references to the same historical debug result. Their source/test dimensions are UNKNOWN because current fingerprints were not supplied; spec dimensions are current. They are not ledger-backed test-run measurements, populated acceptance or release proof."
+    },
+    "retainedNativeQualification": {
+     "path": "mobile:android/app/build/ci-evidence/p003-workspace-label-20261008T0134Z/result.json",
+     "bytes": 12274,
+     "sha256": "717f43bead4cedf2f72b19a609eb2f8dc8da42dc0cfe64c70011e3ef4f607088",
+     "runId": "6f71282b1ae44625b83d10cf661a25f2",
+     "mobileSourceCommit": "dc40dbbc837feacc406b3862a3460faa962becb9",
+     "mobileSourceDirty": false,
+     "selectedTest": "sixFeatureJourneysMatchOwnedOperatorState",
+     "observedScope": "Retained JUnit has one selected testcase with zero failures/errors/skips and the native log corroborates its pass. Exact historical smoke-test blob and oracle show chat/plans/pots/standingCandidates zero and fleet0available/0agents; JNI state comparisons, diagnostic heartbeat and Inbox alerts are scoped to the owned private workspace. Browser enrollment was stubbed.",
+     "apkHashesVerified": [
+      "894e5fd35ad7bbaa5c8c0d90c2d5fcde0b56aa07c7d4b8bb253fd9684578038d",
+      "3908fd99e58f17c586d1d5a8c67cd216a38432fe12f35b63db7117da5cc10edc"
+     ],
+     "pairingDiagnostics": {
+      "file": "pairing-stages.log",
+      "bytes": 409,
+      "sha256": "b24bbb41a41a52006232fcfc040dc73e6f45e9b3676f20b3ccab3dfa8404a1dd",
+      "declaredHashMatchesRetainedBytes": true
+     },
+     "counterpartReceipt": "The retained -runtime/result.json names private operator69c2699a10a02fd3fad0c39385f489cadb11d98a, health69c2699a10, loopback38739 and bundle4bce29a527523fb0ae158bb2fd26a2d77e1d4255ec0b69c1d30d5371f6daa392. Its executionStarted/exit0 and host/native cleanup flags were read. This corroborates receipt values, not independently recovered historical loaded bundle bytes or present runtime.",
+     "fileBoundary": "Immediate bundle listing has the result, native log, both debug APKs and pairing-stages log; no screenshot in that listing. Related retained JUnit was read separately. This is not an exhaustive directory or artifact census.",
+     "notEstablished": [
+      "Populated plans/fleet or full supported conversation behavior",
+      "Approval mutation and cross-workspace switching",
+      "Missing/error/state-transition compatibility census",
+      "Signed final candidate, physical phone or intended shipped counterpart",
+      "Direct public install, Play distribution or whole-plan acceptance"
+     ]
+    },
+    "maintainedProducerQualification": {
+     "receiptCohort": "All23 receipt source fingerprints were compared with current file bytes:20 match and3 differ. The exact historical runner and smoke-test Git blobs match their receipt pins. No whole-source currentness is inferred.",
+     "completeChangedSourceDiffRead": "Complete241-line diff from mobile dc40dbbc to the reviewed working files: smoke test requires two owned seeded user/assistant turns and UI readback; runner seeds explicit owned-workspace chat and authenticates a temporary paired-device readback, requires JNI expected-state witness, wraps writers in the maintained CI executor and records bounded ADB framework/failure diagnostics; build script verifies inherited executor and build storage before output mutation/compilation. No path was executed.",
+     "reviewedGuards": "Runner proof verifier requires owned attempt/workspace/device/source/APK/JUnit identities, selected flags and cleanup while permitting honest zero populations. Conventional run-android-checks-test.sh contains malformed/foreign/missing-witness and missing-flag controls. Complete CompanionFeedTest.kt distinguishes unavailable from measured zero, rejects malformed/count-inconsistent rows and exposes system alerts. These are source reviews, not fresh test passes.",
+     "sourcePins": {
+      "mobile:tools/run-android-checks.sh": "b1e3f4e6370ad50db75bf28570256094394f53a26b0abb341b6f8647129e08d5",
+      "mobile:tools/build-scripts/build-android.sh": "27a2a54f156b1f05e1fd08522ff859e78663fc93dd86625c16eee51e949e14fa",
+      "mobile:android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/PapercupAppSmokeTest.kt": "194c4eb10306360f1d65793242d6996e5eb327a209b89d6385259d033a56c590",
+      "mobile:android/app/src/test/kotlin/com/papercuspai/operator/mobile/CompanionFeedTest.kt": "fa81b3d1d02689b9883154a542c4ac8ab12ee3fbfc502477482089c5f8dcdbe1",
+      "mobile:tools/tests/run-android-checks-test.sh": "b3fc4fbcb7a47a0b70d1c41ded36fe0779a9ce52b37b17f27702010524078a24",
+      "packages/operator-core/lib/rubrics.ts": "72ac09fdad47ef91c0a73e25ba7fc821c8a3048351930080dfad95a37e15c80f",
+      "packages/operator-core/lib/scorecards.ts": "8e87c0d30c5c622294c388bbddf75579efa2a12cc2e8db0ab1c21bf8f49f222f",
+      "packages/operator-core/lib/scorecards.test.ts": "ec2cedb00a2085ef0f6d52c589b1f2adbfc5300396d60cd312dfa564b1b7d29b"
+     },
+     "pinBoundary": "Mobile pins resolve from the existing mobile harness root; operator pins resolve from canonical papercusp staging. Only selected source bodies/diffs were reviewed. The executor dependency, all application implementation and current runtime are not independently re-qualified by this addition."
+    },
+    "dispositionQualification": "Retain the compatibility and acceptance obligation. The later child/source snapshot differs from the frozen blocked row; preserve every original row value and population. This dated qualification does not claim, rebind, grade, complete or supersede the child. Whole PERSONAL audit, original200/frozen172 reconciliation and separate Phone9 foundation review remain open; both already-asked Avi walls remain pending. No product edit, test/native/provider/Actions/runtime/LIVE_GATE_OPS/killed-goal/shipment or delegation action was taken."
+   }
   },
   {
    "id": "WI-10004771",
