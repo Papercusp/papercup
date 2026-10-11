@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 33,
-    "repairedPeerFocused": 20,
-    "openUnknown": 71
+    "repairedPeerFocused": 22,
+    "openUnknown": 69
   },
   "classes": {
     "assertion": 55,
@@ -820,6 +820,20 @@
       ],
       "historicalQualification": {
         "observedAt": "2026-10-08T09:44:00Z",
+        "cleanFocusedReceipt": {
+          "id": 21103678,
+          "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+          "passed": 27,
+          "failed": 0,
+          "skipped": 0,
+          "worktreeDirty": false,
+          "isScratchConfig": false,
+          "testNamePattern": null,
+          "collectionFailed": false,
+          "caseCoverage": "Stored passedCaseTitles includes both original broad exclusion and exclusively-taken cases. Existing committed WI-10007061 retains the real-PG classification/bucket distinguishing control; its dirty20877271 remains dirty.",
+          "repositoryComparison": "Current named test SHA0cc78f59047961386469128fb0ee9ee1b2ad42bf60ddf9a4ba43d0011af009bf, _work-items-schema.ts and _pg-helpers.ts match this receipt commit. Whole get-next.ts differs: the complete diff changes optional holder-interest registration after getNextWorkItem commits a claim, outside aggregateIssueClaimExclusions. Do not claim whole production-byte equality.",
+          "limits": "Clean stored focused historical review candidate only; runtime captures are not-configured, complete loaded imports/config/schema/environment unknown. Row remains open-unknown and final D006 stays unarmed pending reviewed disposition."
+        },
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "failure": "The broad exclusion fixture expected matchedByFilter=10 and received8; the taken-row fixture expected1 and received0. Stored reproduction20877224 reports the same two assertions.",
         "repairItem": "WI-10007061",
@@ -1492,8 +1506,17 @@
     {
       "path": "packages/operator-core/lib/pot/pot-wake-pg.integration.test.ts",
       "class": "missing-schema",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-017",
+        "reviewRef": "WI-10006170#comment1175028",
+        "reviewedMapSha256": "0cb35fbba4d59c18d50f768a391b77530b36941bf23d35bce923b0afd3b60e06",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "EI-25190716965395634",
+        "recurrenceGuard": "Clean literal-file receipt21104144 passes all eight original cases, including the carry-note replacement/subscription case. Receipt20814421 remains DIRTY; composition controls are not a deps-specific negative control.",
+        "scope": "Reviewed historical diagnosis, accountable committed repair and focused original-scenario guard only. Supersedes this row's prior open-unknown classification; complete loaded imports/configuration/applied-schema/environment and final D006 readiness remain unknown."
+      },
       "historicalQualification": {
         "observedAt": "2026-10-11T21:15:00Z",
         "originalFailure": {
@@ -1535,7 +1558,7 @@
           "entrySourcesMatchCleanReceiptCommit": true,
           "scope": "Selected repository bytes only, not the complete transitive graph, actual loaded modules, applied schema or environment."
         },
-        "limits": "Historical source/terminal-record and clean focused receipt qualification only. Keep this row open-unknown and preserve124unique/33focused/20peer/71unknown, finalSweepReadiness:not-established, acceptance:false and shipment:false. Independent D006/P004 final TEST and D011/P003 source/native custody remain separate."
+        "limits": "Historical source/terminal-record and clean focused receipt qualification only. D-017 supersedes only the prior open-unknown historical disposition; the reviewed input census124unique/33focused/20peer/71unknown is preserved by reviewedMapSha256. finalSweepReadiness:not-established, acceptance:false and shipment:false remain. Independent D006/P004 final TEST and D011/P003 source/native custody remain separate."
       },
       "focusedCurrentObservation": {
         "canonicalTestRunId": 20823601,
@@ -1897,6 +1920,19 @@
       "class": "assertion",
       "state": "open-unknown",
       "item": "WI-10006170",
+      "historicalQualification": {
+        "originalFailure": "Immutable archive line13396 fails the replay case at test250: strict payload equality sees the local-close _completionEventIntentId added after the pre-close snapshot.",
+        "existingAccountableRepair": "WI-10006195 DONE/committed at fixture repair4fe82660159a65bb0f258ce9e68dea2e2c749732. Its conventional real-PG guard locates token creation at terminal UPDATE, then preserves exact post-close payload across concurrent/crash/later-actor replay. Clean20793753 records2PASS/0fail/0skip at54c6f7604a; no terminal repair or test was replayed.",
+        "laterFailures": {
+          "receipts": [21070372, 21104218],
+          "commits": ["04e43d75babc73d40051ae2c7b6144d56b4fd1f4", "f419975deb2dbad5228f3499e51db32238f3be5b"],
+          "scope": "Both are clean nonscratch local whole-file receipts with1PASS/1FAIL/0skip, no selector/collection failure. The exact original replay case fails; the provenance case passes. Before/after runtime captures are not-configured.",
+          "diagnosticGap": "Each output_tail is4000chars ending mid-payload. execution_details retains failedCaseTitles but no failed-case message/stack; the exact later assertion origin is not established. No cause is inferred from the original token failure.",
+          "ownerItem": "EI-25722406556193713"
+        },
+        "repositoryComparison": "Current named test SHA352e159835a12ff70dd6cc2bf09cdcdbb1362493568bf1842ea6709fcc529de9, dream-sink.ts SHAd385271cdc29cbd4fe3463ffacc2e8a6c93c5baa8ecbf54f318f7985225211a5 and _org-test-db.ts SHAb3ba720026222bed7399209d78bddb9025ddddee060c70894b72878448769746 all match54c6f7604a and both later failing receipt commits. This selected repository comparison does not identify all actual loaded imports/schema/config/environment.",
+        "limits": "Historical original repair is qualified but later clean failures prevent a repaired disposition. Keep row open-unknown, source admission1164395, strict whole-terminal-payload oracle, independent TEST/D006 STOP and all final readiness/acceptance/shipment limits. No source implementation or new focused attempt is admitted by this record."
+      },
       "lines": [
         13396
       ],
@@ -1910,7 +1946,7 @@
         "root": "/tmp/papercusp-lint-as-committed-54c6f7604a-I4I82x",
         "startedAt": "2026-10-06T00:16:39.062Z"
       },
-      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
+      "latestReceiptMeaning": "Inherited20793753 is a historical clean PASS, not the latest observed verdict: later clean21070372/21104218 FAIL the replay case. See historicalQualification and owned EI-25722406556193713; current cause and complete loaded source/import/environment assurance remain unknown."
     },
     {
       "path": "packages/operator-core/lib/goals/package-goal-e2e.integration.test.ts",
@@ -2445,8 +2481,17 @@
     {
       "path": "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
       "class": "missing-schema",
-      "state": "open-unknown",
+      "state": "repaired-peer-focused",
       "item": "WI-10006170",
+      "reviewedHistoricalDisposition": {
+        "decisionRef": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-017",
+        "reviewRef": "WI-10006170#comment1175028",
+        "reviewedMapSha256": "0cb35fbba4d59c18d50f768a391b77530b36941bf23d35bce923b0afd3b60e06",
+        "reviewer": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+        "repairItem": "WI-10006495",
+        "recurrenceGuard": "Clean original scenarios21104234 and real-cell controls21104095/21104202 retain DROP satisfaction -> actual readiness SQL42703 -> rollback/restoration, canonical schema/seed/RLS/CDC. WI-10005120 and EI-21064357831596389 are not disposed or substituted.",
+        "scope": "Reviewed historical diagnosis, accountable committed canonical-rig repair and focused causal guard only. Supersedes this row's prior open-unknown classification; complete loaded imports/configuration/applied-schema/environment and final D006 readiness remain unknown."
+      },
       "historicalQualification": {
         "observedAt": "2026-10-11T21:21:00Z",
         "originalCensus": "Immutable file-census records2collected/2executed/1failed/0skipped. Original clean receipt20746981 and dirty20766460 name column d.satisfaction does not exist in the kill-authority/readiness case.",
@@ -2499,7 +2544,7 @@
           "matchesCleanReceiptCommit": true,
           "scope": "Selected repository-byte equality only. Original/current actual loaded imports, full transitive graph, configuration, applied schema and environment are not inferred."
         },
-        "limits": "Historical source/terminal/clean focused control qualification only. Preserve this row open-unknown,124unique/33focused/20peer/71unknown and all final readiness/acceptance/shipment limits; independent D006/P004 final TEST and D011/P003 custody remain separate."
+        "limits": "Historical source/terminal/clean focused control qualification only. D-017 supersedes only the prior open-unknown historical disposition; the reviewed input census124unique/33focused/20peer/71unknown is preserved by reviewedMapSha256. All final readiness/acceptance/shipment limits remain; independent D006/P004 final TEST and D011/P003 custody remain separate."
       },
       "lines": [
         14420
@@ -2612,6 +2657,20 @@
       ],
       "historicalQualification": {
         "scope": "Read-only archive/source-history qualification under WI-10006170; no new test, source repair, admission, terminal-item replay or final acceptance. The original UNKNOWN disposition and inventory partition are retained.",
+        "cleanFocusedReceipt": {
+          "id": 21104226,
+          "commitSha": "f419975deb2dbad5228f3499e51db32238f3be5b",
+          "passed": 6,
+          "failed": 0,
+          "skipped": 0,
+          "worktreeDirty": false,
+          "isScratchConfig": false,
+          "testNamePattern": null,
+          "collectionFailed": false,
+          "caseCoverage": "All six stored passing titles include both original ON/OFF handler cases, direct affinity controls, unknown explicit assignee/no-claim and real persisted recall telemetry. Committed WI-10006532's original causal sequence and20834347/20834351 controls remain retained.",
+          "repositoryComparison": "Five selected current paths match the clean receipt commit: claim-next-co-location.integration.test.ts (SHA68e765387183c8319653cfb4b2532acc1a90b08676d311e09f9a62fd16d2d2c3), agent-tools/work_items/claim_next.ts, work-items.ts, test/_work-items-schema.ts and test/_pg-helpers.ts.",
+          "limits": "Clean stored focused historical review candidate only; runtime captures are not-configured, complete loaded imports/config/schema/environment unknown. Row remains open-unknown and final D006 stays unarmed pending reviewed disposition."
+        },
         "originalMeasured": "Immutable affected43cf lines12407/12426 record handler null instead of F-A1/F-B1. Census records4collected/4executed/2failed/0skipped. The original helper converted any non-ok handler payload into null, so the archive does not itself identify the refusal. The run-startd2a53e test blob6d0a9cd8 also occurs at clean October failure159fa07eba and canonical failure0d0655c790; repository equality alone does not bind loaded imports.",
         "existingRepair": "WI-10006532 is DONE/committed with stored causal verification: direct affinity cases pass; exposing the real handler response shows assignee_unknown when fixture caller agent requests a. Correcting the caller exposes missing fleet_assignment and memory_recall_stats. Existing applyClaimPathReadDeps was extended; maintained tests retain real handler/resolver/telemetry paths, visible refusal diagnostics, an unknown-assignee/no-claim control and persisted recall telemetry. Reuse this terminal repair; earlier WI-10005130's shared authority bootstrap and EI-8189/EI-527/EI-1532/WI-3200 historical closures do not independently prove the later archive is repaired.",
         "storedReceipts": {
@@ -3796,13 +3855,14 @@
       "status": "partially-repaired-focused",
       "stateCounts": {
         "repaired-focused": 5,
-        "open-unknown": 9
+        "repaired-peer-focused": 2,
+        "open-unknown": 7
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "Nine remaining entries unproved; preserve the five existing file-level focused repairs and their evidence limits.",
-      "next": "Inspect exact saved error/source for the nine open-unknown files, deduplicate accepted defect and focused guard before source edits. The five existing repaired-focused files retain their stored individual repair/receipt references; this class summary grants no additional current-source or final assurance."
+      "rootCause": "Seven remaining entries unproved; preserve five existing focused repairs and the two peer-focused historical dispositions independently reviewed in report-plan D-017. Their evidence limits remain.",
+      "next": "Inspect exact saved error/source for the seven open-unknown files, deduplicate accepted defect and focused guard before source edits. The two reviewed historical dispositions grant no complete loaded-source/environment or final assurance; all seven historical repairs retain their individual references and limits."
     },
     {
       "class": "blueprint-fixture",
