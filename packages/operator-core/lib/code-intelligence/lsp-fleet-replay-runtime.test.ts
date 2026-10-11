@@ -75,6 +75,44 @@ describe('prelaunch replay runtime dependency population', () => {
       writeFileSync(path, 'changed during dependency discovery'); return [];
     } })).toThrow('changed-during-replay-runtime-freeze');
   });
+  it.each([
+    { host: 'glibc', libc: ['musl'], excluded: true },
+    { host: 'musl', libc: 'glibc', excluded: true },
+    { host: 'glibc', libc: ['!glibc'], excluded: true },
+    { host: 'glibc', libc: ['glibc'], excluded: false },
+    { host: 'musl', libc: ['musl'], excluded: false },
+    { host: 'unknown', libc: ['musl'], excluded: false },
+    { host: 'glibc', libc: undefined, excluded: false },
+    { host: 'glibc', libc: ['unknown'], excluded: false },
+    { host: 'glibc', libc: ['any'], excluded: false },
+  ])('freezes optional package bytes and refuses missing selected dependencies: $host/$libc', ({ host, libc, excluded }) => {
+    const f = fixture();
+    const addon = join(f.pkg, 'optional.node');
+    const metadata = join(f.pkg, 'package.json');
+    writeFileSync(metadata, JSON.stringify({ libc }));
+    const header = Buffer.alloc(20);
+    header.set([0x7f, 0x45, 0x4c, 0x46]); header[5] = 1;
+    const machine: Partial<Record<typeof process.arch, number>> = { x64: 62, arm64: 183, ia32: 3, arm: 40 };
+    header.writeUInt16LE(machine[process.arch] ?? 0, 18); writeFileSync(addon, header);
+    const spy = vi.spyOn(childProcess, 'execFileSync').mockImplementation(((command: string, args: string[]) => {
+      expect(command).toBe('ldd');
+      if (args[0] === process.execPath) return host === 'glibc' ? 'libc.so.6 => /lib/libc.so.6 (0x1)' :
+        host === 'musl' ? '/lib/ld-musl-x86_64.so.1 (0x1)' : 'statically linked';
+      expect(args[0]).toBe(addon);
+      return 'libmissing.so => not found';
+    }) as typeof childProcess.execFileSync);
+    syncBuiltinESMExports();
+    try {
+      if (excluded) {
+        const files = freezeReplayRuntimeFiles([f.modules]);
+        expect(files[addon]).toBe(replayHash(header));
+        expect(files[metadata]).toBe(replayHash(readFileSync(metadata)));
+        expect(spy.mock.calls.some(([, args]) => args?.[0] === addon)).toBe(false);
+        writeFileSync(addon, 'changed foreign ABI bytes');
+        expect(replayFileMismatches(files)).toContain(`changed-file:${addon}`);
+      } else expect(() => freezeReplayRuntimeFiles([f.modules])).toThrow(`missing-replay-native-dependency:${addon}`);
+    } finally { spy.mockRestore(); syncBuiltinESMExports(); }
+  });
   it.runIf(process.platform === 'linux')('captures the actual Node ELF dependency graph with the default scanner', () => {
     const files = freezeReplayRuntimeFiles([process.execPath]);
     const libraries = [...execFileSync('ldd', [process.execPath], { encoding: 'utf8' })

@@ -332,6 +332,7 @@ export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
   const files: Record<string, string> = {};
   const directories = new Set<string>();
   const buffer = Buffer.allocUnsafe(64 * 1024);
+  let hostLibc: 'glibc' | 'musl' | null | undefined;
   const dependencies = options.nativeDependencies ?? ((file: string) => {
     if (!/(?:\.node|\.so(?:\.\d+)*|\/node)$/.test(file)) return [];
     const fd = openSync(file, 'r');
@@ -345,6 +346,30 @@ export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
     const hostMachines: Partial<Record<typeof process.arch, number>> = { x64: 62, arm64: 183, ia32: 3, arm: 40 };
     const hostMachine = hostMachines[process.arch];
     if (machine !== hostMachine) return [];
+    // npm can retain optional packages for both libc variants on the same CPU.
+    // Freeze both byte populations, but follow dependencies only for the ABI
+    // selected by this Node executable. Unknown selectors/ABI stay fail-closed.
+    for (let directory = dirname(file);; directory = dirname(directory)) {
+      const metadata = join(directory, 'package.json');
+      if (existsSync(metadata)) {
+        const declared: unknown = JSON.parse(readFileSync(metadata, 'utf8')).libc;
+        const selectors = typeof declared === 'string' ? [declared] : declared;
+        if (Array.isArray(selectors) && selectors.length > 0 && selectors.every(selector =>
+          typeof selector === 'string' && ['glibc', 'musl', '!glibc', '!musl', 'any'].includes(selector))) {
+          if (hostLibc === undefined) {
+            const host = execFileSync('ldd', [process.execPath], { encoding: 'utf8', timeout: 10_000 });
+            const glibc = /\blibc\.so\.6\b/.test(host);
+            const musl = /\b(?:libc\.musl-|ld-musl-)/.test(host);
+            hostLibc = glibc !== musl ? (glibc ? 'glibc' : 'musl') : null;
+          }
+          const allowed = selectors.filter(selector => !selector.startsWith('!'));
+          if (hostLibc && (selectors.includes(`!${hostLibc}`) ||
+              (allowed.length > 0 && !allowed.includes('any') && !allowed.includes(hostLibc)))) return [];
+        }
+        break;
+      }
+      if (dirname(directory) === directory) break;
+    }
     const output = execFileSync('ldd', [file], { encoding: 'utf8', timeout: 10_000 });
     if (/=>\s+not found/.test(output)) throw new Error(`missing-replay-native-dependency:${file}`);
     return [...output.matchAll(/(?:=>\s+|^\s*)(\/[^\s]+)\s+\(/gm)].map(match => match[1]);
