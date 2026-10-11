@@ -484,7 +484,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     rehomeWakeOnBackend: vi.fn(async () => ({ ok: false, detail: 'test default' })),
     resumePlanRun: vi.fn(async () => ({ ok: true as const })),
     // Hermetic by default: no live psu-pty host (don't read the real ~/.papercusp).
-    findPsuHost: vi.fn(() => null) as never,
+    findPsuHost: vi.fn(async () => null) as never,
     injectPsuHost: vi.fn(async () => true) as never,
     // Hermetic by default: the hive-fresh-wake fire is stubbed so a hive-labelled
     // session never reaches the real default (which lazy-imports + touches PG).

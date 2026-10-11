@@ -195,7 +195,7 @@ describe('probeWakeReachability — IO seam wiring (injected deps, fail-soft)', 
     const v = await probeWakeReachability('su-x', {
       captureHandle: async () => liveHandle,
       getSession: async () => ({ endedAt: null, pid: 4242 }) as any,
-      findPsuHost: () => null,
+      findPsuHost: async () => null,
       findPty: () => null,
       presence: async () => ({ stale: false, revoked: false }) as any,
       listAwaits: async () => [], // ← no standing await
@@ -209,7 +209,7 @@ describe('probeWakeReachability — IO seam wiring (injected deps, fail-soft)', 
     const v = await probeWakeReachability('su-x', {
       captureHandle: async () => liveHandle,
       getSession: async () => ({ endedAt: null, pid: 4242 }) as any,
-      findPsuHost: () => ({ sock: '/run/psu.sock' }) as any,
+      findPsuHost: async () => ({ sock: '/run/psu.sock' }) as any,
       findPty: () => null,
       presence: async () => ({ stale: false, revoked: false }) as any,
       listAwaits: async () => [{ id: 1 }] as any,
@@ -222,7 +222,7 @@ describe('probeWakeReachability — IO seam wiring (injected deps, fail-soft)', 
     const v = await probeWakeReachability('su-x', {
       captureHandle: async () => liveHandle,
       getSession: async () => ({ endedAt: '2026-06-23T00:00:00Z', pid: 4242 }) as any,
-      findPsuHost: () => null,
+      findPsuHost: async () => null,
       findPty: () => null,
       presence: async () => ({ stale: true, revoked: false }) as any,
       listAwaits: async () => [{ id: 1 }] as any,
@@ -239,7 +239,7 @@ describe('probeWakeReachability — IO seam wiring (injected deps, fail-soft)', 
       getSession: async () => {
         throw new Error('boom');
       },
-      findPsuHost: () => {
+      findPsuHost: async () => {
         throw new Error('boom');
       },
       findPty: () => {

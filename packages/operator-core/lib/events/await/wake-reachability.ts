@@ -32,7 +32,7 @@ import { listActiveAwaitsForKey } from './store';
 import { getAdvSession } from '../../adv-sessions';
 import { findPtyByPid } from '../../pty-bridge';
 import { getPresence } from '../../agent-tools/coordination/presence';
-import { findLiveHost } from './psu-pty-discovery';
+import { findLiveHostAsync } from './psu-pty-discovery';
 import { inboxWakeKey } from '../../agent-tools/coordination/inbox-wake';
 import type { WakeHandle } from './types';
 
@@ -259,7 +259,7 @@ function pidAliveDefault(pid: number | null): boolean {
 export interface ProbeWakeReachabilityDeps {
   captureHandle?: typeof captureWakeHandleForOwner;
   getSession?: typeof getAdvSession;
-  findPsuHost?: typeof findLiveHost;
+  findPsuHost?: typeof findLiveHostAsync;
   findPty?: typeof findPtyByPid;
   presence?: typeof getPresence;
   listAwaits?: typeof listActiveAwaitsForKey;
@@ -278,7 +278,7 @@ export async function probeWakeReachability(
 ): Promise<WakeReachabilityVerdict> {
   const captureHandle = deps.captureHandle ?? captureWakeHandleForOwner;
   const getSession = deps.getSession ?? getAdvSession;
-  const findPsuHost = deps.findPsuHost ?? findLiveHost;
+  const findPsuHost = deps.findPsuHost ?? findLiveHostAsync;
   const findPty = deps.findPty ?? findPtyByPid;
   const presence = deps.presence ?? getPresence;
   const listAwaits = deps.listAwaits ?? listActiveAwaitsForKey;
@@ -292,7 +292,7 @@ export async function probeWakeReachability(
 
   let hasPsuHost = false;
   try {
-    hasPsuHost = !!findPsuHost(ownerId);
+    hasPsuHost = !!(await findPsuHost(ownerId));
   } catch {
     hasPsuHost = false;
   }

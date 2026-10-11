@@ -124,7 +124,7 @@ import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
 import { prepareCellWakeFold } from './cell-wake-fold';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   hostIsAgentLaunched,
   hostSupports,
   injectIntoHost,
@@ -2677,7 +2677,7 @@ export interface ExecuteWakeDeps {
   /** turn-lifecycle-control Phase 3 (P-014): discover + inject into a live
    *  psu-hosted managed-pty session's control socket. The operator can't see it
    *  via findPty — the pty lives in the psu process (D-006). */
-  findPsuHost?: typeof findLiveHost;
+  findPsuHost?: typeof findLiveHostAsync;
   injectPsuHost?: typeof injectIntoHost;
   /** WI-6862: the confirmation-carrying transport used for a COLD context-reset, so the delivery
    *  ledger can distinguish a host ACK from the optimistic bare-close fallback. Defaults to the
@@ -3436,13 +3436,13 @@ async function injectPsuHostWake(
 async function injectPsuHostWakeWithReverify(
   d: DeliveryWork,
   warmText: EnrolledWakeText,
-  findPsuHost: (ownerId: string) => PsuInjectHostView | null,
+  findPsuHost: (ownerId: string) => Promise<PsuInjectHostView | null>,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
   capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
   accountRoute: WakeAccountRoute | null = null,
 ): Promise<WakeOutcome | null> {
-  let host = findPsuHost(d.subscriberId);
+  let host = await findPsuHost(d.subscriberId);
   for (let attempt = 0; host && attempt < 2; attempt += 1) {
     const outcome = await injectPsuHostWake(
       d,
@@ -3456,7 +3456,7 @@ async function injectPsuHostWakeWithReverify(
     if (outcome) return outcome;
     // Re-read the owner-scoped discovery record after a miss. Do not reuse the
     // first host object: a live psu host may have rebound its control socket.
-    host = findPsuHost(d.subscriberId);
+    host = await findPsuHost(d.subscriberId);
   }
   return null;
 }
@@ -3579,7 +3579,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const { ensureInboxWakeArmedForActiveSession: ensureArmed } = await import('./inbox-wake-arm');
     return ensureArmed(input);
   });
-  const findPsuHost = deps.findPsuHost ?? findLiveHost;
+  const findPsuHost = deps.findPsuHost ?? findLiveHostAsync;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
   const sendCoordMessage = deps.sendCoordMessage ?? sendMessage;
@@ -3713,7 +3713,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
       // A genuinely newer wake is not dropped, but recovery must provide a
       // managed host. A bare detached CLI would lose session:end/bench control.
-      if (!Number.isFinite(createdAtMs) || !findPsuHost(d.subscriberId)) {
+      if (!Number.isFinite(createdAtMs) || !(await findPsuHost(d.subscriberId))) {
         return { kind: 'park', reason: 'managed shutdown requires a managed psu host for a new wake; no hostless resume' };
       }
     }
@@ -4246,7 +4246,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // before either warm injection or cold/recycle startup. This does not
     // relax the independent agent-launch provenance/operation fences.
     if (handle.agent === 'codex' && liveAccountRoute?.mode === 'auto') {
-      const quotaHost = findPsuHost(d.subscriberId);
+      const quotaHost = await findPsuHost(d.subscriberId);
       if (quotaHost?.ownerId === d.subscriberId && quotaHost.bridgeTty === false && quotaHost.quotaBlocked === true) {
         const repair = await ensureCodexHomeForWake({
           advSessionId: handle.advSessionId,
@@ -4373,7 +4373,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // A parked delivery is retried; a second process on one session is not
     // recoverable (measured 2026-10-01: three wakes for su-9dfd3ffc went
     // resume-headless while its host was live and deferring them).
-    if (findPsuHost(d.subscriberId)) {
+    if (await findPsuHost(d.subscriberId)) {
       return {
         kind: 'park',
         reason:

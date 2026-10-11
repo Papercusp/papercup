@@ -1,7 +1,7 @@
 /** Expected execution recovery shares the existing routine, wake and
  * transition stores. No new scheduler or watchdog owns this state. */
 import type { Sql } from 'postgres';
-import { findLiveHost, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { fetchGatewayOwnerExecution } from '../../inference-gateway/observability';
 import { recordLoopTransition } from './loop-transition-log';
@@ -92,7 +92,7 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
 
 export interface ExecutionRecoveryDeps {
   now?: () => number;
-  findHost?: (owner: string) => PsuPtyHost | null;
+  findHost?: (owner: string) => Promise<PsuPtyHost | null>;
   inference?: typeof fetchGatewayOwnerExecution;
   arm?: typeof armInboxWake;
 }
@@ -103,8 +103,8 @@ export interface ExecutionRecoveryDeps {
 export async function recoverExpectedLoopExecution(input: {
   sql: Sql; routineId: string; ownerId: string; nowMs: number; dryRun?: boolean;
 }, deps: ExecutionRecoveryDeps = {}): Promise<{ handled: boolean; state?: ExecutionRecoveryState; rearmed?: boolean }> {
-  const getHost = deps.findHost ?? findLiveHost;
-  const host = getHost(input.ownerId);
+  const getHost = deps.findHost ?? findLiveHostAsync;
+  const host = await getHost(input.ownerId);
   // Exited sessions continue through the existing captured-handle resume path.
   // A parked child also uses that path; its transcript belongs to a predecessor.
   if (!host || host.parked) return { handled: false };
@@ -129,7 +129,7 @@ export async function recoverExpectedLoopExecution(input: {
     if (!row || !row.active || !row.parked || row.target_owner_id !== input.ownerId || row.fired_ms == null) {
       return { handled: false };
     }
-    const current = getHost(input.ownerId);
+    const current = await getHost(input.ownerId);
     if (!current || current.pid !== host.pid || current.parked) return { handled: true };
     const prior = row.metadata?.executionRecovery as ExecutionRecoveryState | undefined;
     // The HTTP read and row-lock wait happened after the sweep's clock. Sample
@@ -155,7 +155,7 @@ export async function recoverExpectedLoopExecution(input: {
         await (deps.arm ?? armInboxWake)({ ownerId: input.ownerId,
           note: `expected-activity recovery for ${input.routineId}`, workspaceId: row.workspace_id });
         // Revalidate after the external await repair before committing a wake.
-        const latest = getHost(input.ownerId);
+        const latest = await getHost(input.ownerId);
         if (!latest || latest.pid !== current.pid || latest.execution?.childGeneration !== decisionGeneration
           || latest.execution?.receivedAtMs !== decisionReceivedAt
           || latest.execution?.phase !== 'failed' || latest.execution?.ownerInputPending || latest.execution?.ownerStopRequested

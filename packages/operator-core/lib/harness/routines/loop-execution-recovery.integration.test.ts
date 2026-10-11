@@ -35,7 +35,7 @@ async function routine(id: string, active = true, parked = true) {
     execution: { ownerId: id, hostPid: 1, childPid: 2, childGeneration: 1, receivedAtMs: nowMs - 60_000,
       phase: 'failed', turnStartedAt: nowMs - 60_000, lastProgressAt: nowMs - 40_000, pendingTools: 0, observedAt: nowMs } };
   return { host, input: { sql, routineId: id, ownerId: id, nowMs },
-    deps: { now: () => nowMs, findHost: () => host, inference: async () => ({ active: 0, observedAt: nowMs }), arm: vi.fn(async () =>
+    deps: { now: () => nowMs, findHost: async () => host, inference: async () => ({ active: 0, observedAt: nowMs }), arm: vi.fn(async () =>
       ({ awaitId: 1, eventKey: 'fixture', handleNote: 'fixture', minSleepSec: 60 })) } };
 }
 
