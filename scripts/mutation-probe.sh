@@ -1378,6 +1378,111 @@ if [ "$IN_TREE" -eq 1 ]; then
   fi
 fi
 
+# MUTATION DESCRIPTOR (plan mutation-probe-evidence-value-2026-10-11, P-001; field
+# set D-003). Once per invocation the probe records WHAT it tested — subject path,
+# mode, the literal --mutate expression or the full historical commit, before/after
+# subject hashes, a bounded unified diff and a hash of the --test template — and
+# exports it to every guard leg as PAPERCUSP_MUTATION_DESCRIPTOR. The test-run
+# reporter completes it per row (leg, test-file hash) at execution_details.mutation,
+# so a bound proof can be audited and re-run, and a later catch can be linked to an
+# earlier survivor of the same unchanged test.
+#
+# Expand-then-contract (D-001, D-006): the deployed reader parses execution_details
+# strictly, so a row carrying a key it does not know reads as unproven. In `auto`
+# (the default) the export is therefore WITHHELD until the operator that serves
+# :3070 contains the descriptor parser — its /api/health sha → the libs/test-config
+# gitlink at that sha → src/mutation-descriptor.ts present in that submodule commit.
+# Any step that cannot be resolved withholds (fail closed, logged), so the export
+# turns on by itself the first time main deploys the parser.
+# PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=always|never overrides the check.
+MUTATION_DESCRIPTOR_JSON=""
+MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS=2000
+MUTATION_DESCRIPTOR_MAX_DIFF_CHARS=8000
+
+mutation_descriptor_reader_ready() {
+  local url sha repo link
+  case "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" in
+    always) MUTATION_DESCRIPTOR_GATE="forced on (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=always)"; return 0 ;;
+    never) MUTATION_DESCRIPTOR_GATE="forced off (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never)"; return 1 ;;
+    auto) ;;
+    *) die "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT must be auto, always or never (got: '${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT}')" ;;
+  esac
+  url="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL:-http://127.0.0.1:3070/api/health}"
+  sha="$(curl -s -m 3 "$url" 2>/dev/null | tr -d '\n' | sed -n 's/.*"sha":"\([0-9a-f]\{7,40\}\)".*/\1/p')"
+  if [ -z "$sha" ]; then
+    MUTATION_DESCRIPTOR_GATE="withheld: the deployed reader's build sha is unreadable at $url"
+    return 1
+  fi
+  repo="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel 2>/dev/null)}"
+  link="$(git -C "$repo" rev-parse --verify -q "$sha:libs/test-config" 2>/dev/null)"
+  if [ -z "$link" ]; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha has no resolvable libs/test-config gitlink in $repo"
+    return 1
+  fi
+  if ! git -C "$repo/libs/test-config" cat-file -e "$link:src/mutation-descriptor.ts" 2>/dev/null; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) predates the descriptor parser (D-001)"
+    return 1
+  fi
+  MUTATION_DESCRIPTOR_GATE="on: deployed reader $sha parses execution_details.mutation"
+  return 0
+}
+
+# build_mutation_descriptor <mode> <subject-path> <expression|''> <commit|''> <before> <after>
+build_mutation_descriptor() {
+  local mode="$1" subject="$2" expression="$3" commit="$4" before="$5" after="$6"
+  MUTATION_DESCRIPTOR_GATE=""
+  if ! mutation_descriptor_reader_ready; then
+    log "mutation descriptor $MUTATION_DESCRIPTOR_GATE — guard rows will carry no execution_details.mutation"
+    return 0
+  fi
+  if [ "${#expression}" -gt "$MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS" ]; then
+    log "mutation descriptor withheld: the --mutate expression is ${#expression} characters (limit $MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS) and is never recorded truncated"
+    return 0
+  fi
+  diff -u --label "a/$subject" --label "b/$subject" "$before" "$after" > "$SCRATCH/mutation-descriptor.diff" 2>/dev/null
+  MUTATION_DESCRIPTOR_JSON="$(
+    MPD_MODE="$mode" MPD_SUBJECT="$subject" MPD_EXPR="$expression" MPD_COMMIT="$commit" \
+    MPD_BEFORE="$before" MPD_AFTER="$after" MPD_DIFF="$SCRATCH/mutation-descriptor.diff" \
+    MPD_TEST="$TEST_CMD" MPD_MAX_DIFF="$MUTATION_DESCRIPTOR_MAX_DIFF_CHARS" node -e '
+      const fs = require("fs"), crypto = require("crypto"), e = process.env;
+      const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+      const max = Number(e.MPD_MAX_DIFF);
+      const full = fs.readFileSync(e.MPD_DIFF, "utf8");
+      process.stdout.write(JSON.stringify({
+        schemaVersion: 1,
+        probeInvocationId: crypto.randomUUID(),
+        mode: e.MPD_MODE,
+        subjectPath: e.MPD_SUBJECT,
+        mutateExpression: e.MPD_EXPR || null,
+        againstCommit: e.MPD_COMMIT || null,
+        subjectBeforeSha256: sha(fs.readFileSync(e.MPD_BEFORE)),
+        subjectAfterSha256: sha(fs.readFileSync(e.MPD_AFTER)),
+        mutantDiff: full.slice(0, max),
+        mutantDiffTruncated: full.length > max,
+        testCommandSha256: sha(e.MPD_TEST),
+      }));
+    ' 2>"$SCRATCH/mutation-descriptor.err"
+  )" || MUTATION_DESCRIPTOR_JSON=""
+  if [ -z "$MUTATION_DESCRIPTOR_JSON" ]; then
+    log "mutation descriptor could not be built ($(head -1 "$SCRATCH/mutation-descriptor.err" 2>/dev/null)) — guard rows will carry no execution_details.mutation"
+    return 0
+  fi
+  MUTATION_PROBE_INVOCATION_ID="$(printf '%s' "$MUTATION_DESCRIPTOR_JSON" | sed -n 's/.*"probeInvocationId":"\([^"]*\)".*/\1/p')"
+  log "mutation descriptor $MUTATION_DESCRIPTOR_GATE; probeInvocationId=$MUTATION_PROBE_INVOCATION_ID mode=$mode subject=$subject"
+}
+
+# Repository-relative subject path when the subject lies inside a Git worktree.
+mutation_descriptor_subject_path() {
+  local top physical
+  top="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true)"
+  # git reports the physical toplevel; compare against the physical subject path.
+  physical="$(cd "$(dirname "$FILE")" 2>/dev/null && pwd -P)/$(basename "$FILE")"
+  case "$physical" in
+    "$top"/*) [ -n "$top" ] && printf '%s' "${physical#"$top"/}" && return 0 ;;
+  esac
+  printf '%s' "$FILE"
+}
+
 # Run a guard in an interruptible child and preserve its output for the
 # machine-readable verdict below. The phase marker lets a guard's own test
 # fixture skip an intentionally slow baseline setup without weakening the
@@ -1398,6 +1503,13 @@ run_guard() {
       # the caller's environment.
       export PAPERCUSP_MUTATION_PROBE=1
       export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
+      # P-001: one descriptor per invocation, identical on every leg; a caller's
+      # stale value must never ride along when this invocation withheld its own.
+      if [ -n "$MUTATION_DESCRIPTOR_JSON" ]; then
+        export PAPERCUSP_MUTATION_DESCRIPTOR="$MUTATION_DESCRIPTOR_JSON"
+      else
+        unset PAPERCUSP_MUTATION_DESCRIPTOR
+      fi
       # WI-10004898: a copy-out guard records from the .git-less mirror, so the
       # test_runs reporter could never prove the run clean (every row landed
       # commit=NULL, worktree_dirty=true, which spec freshness rates unknown).
@@ -1696,6 +1808,7 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
 
   TARGET_MODE="historical:$HISTORICAL_SHA"
   readonly TARGET_MODE
+  build_mutation_descriptor historical "$REL_FILE" "" "$HISTORICAL_SHA" "$CURRENT_SNAPSHOT" "$HISTORICAL_SNAPSHOT"
   CURRENT_GUARD_LOG="$SCRATCH/current-guard.log"
   CALIBRATION_CURRENT_LOG="$SCRATCH/calibration-current.log"
   CALIBRATION_HISTORICAL_LOG="$SCRATCH/calibration-historical.log"
@@ -2134,6 +2247,8 @@ if ! perl -Mstrict -pe "$MUTATE" "$BASE" > "$SCRATCH/preflight-mutant" 2>"$SCRAT
       the replacement side too: s/match/\\\$name/. Special vars (\$1, \$&) are fine."
 fi
 verify_mutation_bytes "$SCRATCH/preflight-mutant"
+if [ "$IN_TREE" -eq 1 ]; then MUTATION_DESCRIPTOR_MODE=in-tree; else MUTATION_DESCRIPTOR_MODE=copy-out; fi
+build_mutation_descriptor "$MUTATION_DESCRIPTOR_MODE" "$(mutation_descriptor_subject_path)" "$MUTATE" "" "$BASE" "$SCRATCH/preflight-mutant"
 
 # A nonzero baseline means the command did not establish a runnable, healthy
 # guard before the mutation. Scoring the mutant's later nonzero exit as
