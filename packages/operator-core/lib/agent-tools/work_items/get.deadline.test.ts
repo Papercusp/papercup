@@ -145,6 +145,43 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     warnSpy.mockRestore();
   });
 
+  it('reports the pending enrichment leg and elapsed budget when enrichment times out', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-enrichment-timeout',
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercusp',
+      state: 'open',
+      title: 'enrichment timeout',
+    });
+    getWorkItemCheckpointWithMeta.mockImplementation(() => new Promise(() => {}));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const pending = get.handler({ id: 'WI-enrichment-timeout' } as never, ctx as never) as Promise<
+      Out & { data: { read: Record<string, unknown> } }
+    >;
+    await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
+
+    const out = await pending;
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-enrichment-timeout',
+      availability: 'unavailable',
+      error: 'timeout',
+    });
+    expect(out.data.read.enrichmentMaxMs).toBeGreaterThan(0);
+    expect(out.data.read.enrichmentDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'WI-enrichment-timeout',
+        stage: 'checkpoint',
+        status: 'pending',
+        elapsedMs: expect.any(Number),
+      }),
+    ]));
+
+    warnSpy.mockRestore();
+  });
+
   it('bounds resume enrichment when a checkpoint dependency never settles', async () => {
     getWorkItem.mockResolvedValue({
       id: 'WI-resume-timeout',
