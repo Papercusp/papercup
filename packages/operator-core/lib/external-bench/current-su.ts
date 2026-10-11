@@ -1,6 +1,7 @@
 /** Current native su execution over the existing benchmark lifecycle and task ledger. */
 import { createHash } from 'node:crypto';
-import { lstatSync, realpathSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import type launchAgentTool from '../agent-tools/capability/launch-agent';
 import { snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
@@ -664,6 +665,168 @@ export function currentBenchProviderAuthenticator(input: {
         validUntilMonotonicMs, validateAuthorization, ...(ceiling.evidence ? { inputEvidence: ceiling.evidence } : {}) };
     } catch { return null; }
   } };
+}
+
+export interface CurrentBenchProviderCaptureRecovery {
+  schemaVersion: 1; configurationSha256: string; rootIdentity: string; directoryIdentity: string;
+  captures: readonly { reservationId: string; receiptSha256: string }[];
+}
+
+/** Host-owned request capture over the existing gateway callback and artifact
+ * boundary. Recovery requires the host's retained hash pins, never receipt
+ * discovery alone. Exclusive allocation slots retain even interrupted attempts
+ * across restarts. A capture alone proves neither send nor billing. */
+export function currentBenchWorkloadProviderInputCapture(options: {
+  accountingBinding: CurrentBenchAccountingBinding; captureRoot: string; candidateCheckoutRoot: string;
+  model: string; effort: string; accountId: string; maxRequests: number; maxBytes: number;
+  recovery?: CurrentBenchProviderCaptureRecovery;
+  /** Terminal evidence inspection requires retained host pins and cannot allocate or send. */
+  readOnly?: boolean;
+}) {
+  const { recovery, readOnly = false, ...frozen } = structuredClone(options), binding = frozen.accountingBinding;
+  const present = (value: unknown): value is string => typeof value === 'string' && !!value.trim() && value.length <= 500;
+  const digest = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  const uuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+  if (!binding || ![binding.workspaceId, binding.loopId, binding.runId, binding.assignmentId,
+    frozen.model, frozen.effort, frozen.accountId, frozen.captureRoot, frozen.candidateCheckoutRoot].every(present) ||
+    !digest(binding.preregHash) || !binding.assignmentId.startsWith('bench-assignment:') ||
+    !Number.isSafeInteger(frozen.maxRequests) || frozen.maxRequests < 1 || frozen.maxRequests > 10_000 ||
+    !Number.isSafeInteger(frozen.maxBytes) || frozen.maxBytes < 1 || frozen.maxBytes > 16 * 1024 * 1024)
+    throw new Error('Provider input capture requires an exact private assignment and bounded allocation.');
+  resolveBenchWorkspace(binding.workspaceId);
+  if (readOnly && !recovery) throw new Error('Read-only provider capture requires retained host recovery pins.');
+  const root = lstatSync(frozen.captureRoot, { bigint: true });
+  // Generation removes the checkout after stopping its gateway. The retained
+  // allocation already pins its canonical path; reading host evidence must not
+  // depend on that unrelated directory still existing. Writable recovery keeps
+  // the original realpath requirement.
+  const candidate = readOnly ? resolve(frozen.candidateCheckoutRoot) : realpathSync(frozen.candidateCheckoutRoot);
+  const repo = realpathSync(REPO_ROOT);
+  if (!root.isDirectory() || (root.mode & 0o077n) !== 0n || realpathSync(frozen.captureRoot) !== frozen.captureRoot ||
+      readOnly && candidate !== frozen.candidateCheckoutRoot ||
+      frozen.captureRoot === candidate || frozen.captureRoot.startsWith(`${candidate}${sep}`) ||
+      frozen.captureRoot === repo || frozen.captureRoot.startsWith(`${repo}${sep}`))
+    throw new Error('Provider input capture requires a canonical private host root outside the candidate checkout.');
+  const namespace = `provider-input-${createHash('sha256').update(canonicalJson(binding)).digest('hex')}`;
+  const directory = join(frozen.captureRoot, namespace);
+  if (!recovery) mkdirSync(directory, { mode: 0o700 });
+  const allocated = lstatSync(directory, { bigint: true });
+  const configurationSha256 = createHash('sha256').update(canonicalJson(frozen)).digest('hex');
+  const identity = (stat: typeof root) => `${stat.dev}:${stat.ino}`;
+  const unchanged = () => {
+    const current = lstatSync(frozen.captureRoot, { bigint: true }), child = lstatSync(directory, { bigint: true });
+    return current.isDirectory() && current.dev === root.dev && current.ino === root.ino &&
+      child.isDirectory() && child.dev === allocated.dev && child.ino === allocated.ino &&
+      (current.mode & 0o077n) === 0n && (child.mode & 0o077n) === 0n &&
+      realpathSync(frozen.captureRoot) === frozen.captureRoot && realpathSync(directory) === directory;
+  };
+  if (!unchanged() || recovery && (recovery.schemaVersion !== 1 ||
+      recovery.configurationSha256 !== configurationSha256 || recovery.rootIdentity !== identity(root) ||
+      recovery.directoryIdentity !== identity(allocated) || !Array.isArray(recovery.captures) ||
+      recovery.captures.length > frozen.maxRequests ||
+      recovery.captures.some(pin => !pin || !uuid(pin.reservationId) || !digest(pin.receiptSha256)) ||
+      new Set(recovery.captures.map(pin => pin.reservationId)).size !== recovery.captures.length))
+    throw new Error('Provider input capture recovery differs from its private host allocation.');
+  type Capture = Readonly<{ schemaVersion: 1; accountingBinding: CurrentBenchAccountingBinding;
+    reservationId: string; bodyRef: string; bodyPath: string; bodySha256: string;
+    nativeSessionId: string; nativeTurnId: string; model: string; effort: string; accountId: string }>;
+  const published = new Map(recovery?.captures.map(pin => [pin.reservationId, pin.receiptSha256]) ?? []);
+  const paths = (id: string) => ({ body: `${namespace}/${id}/body.json`, receipt: `${namespace}/${id}/receipt.json` });
+  const allocationCensus = () => {
+    if (!unchanged()) throw new Error('Provider input capture allocation changed.');
+    const members = readdirSync(directory);
+    if (members.length > frozen.maxRequests * 2) throw new Error('Provider input capture allocation exceeds its bound.');
+    let slots = 0;
+    for (const name of members) {
+      const slot = /^allocation-(0|[1-9][0-9]*)$/.exec(name), file = join(directory, name), stat = lstatSync(file);
+      if (slot ? !stat.isFile() || Number(slot[1]) >= frozen.maxRequests || (stat.mode & 0o077) !== 0 :
+          !uuid(name) || !stat.isDirectory() || (stat.mode & 0o077) !== 0)
+        throw new Error('Provider input capture contains an invalid allocation member.');
+      if (slot) slots++;
+    }
+    if (!unchanged()) throw new Error('Provider input capture allocation changed.');
+    return slots;
+  };
+  allocationCensus();
+  const capture = {
+    async captureProviderInput(attempt: Readonly<GatewayCarryTrialAttempt>): Promise<void> {
+      if (readOnly) throw new Error('Read-only provider capture cannot allocate or forward a request.');
+      if (allocationCensus() >= frozen.maxRequests || attempt.signal.aborted ||
+          !uuid(attempt.attemptId) || !uuid(attempt.nativeSessionId) || !uuid(attempt.nativeTurnId) ||
+          attempt.manifestSha256 !== binding.preregHash || attempt.armId !== binding.assignmentId ||
+          attempt.accountId !== frozen.accountId || attempt.transport !== 'bearer-http' ||
+          attempt.target !== 'https://api.openai.com/v1/responses' || attempt.credentialHeader !== 'authorization' ||
+          !digest(attempt.credentialSha256) || typeof attempt.body !== 'string')
+        throw new Error('Provider input capture refused a foreign, cancelled or exhausted request.');
+      const bytes = Buffer.from(attempt.body), hash = createHash('sha256').update(bytes).digest('hex');
+      const body = JSON.parse(attempt.body), correlation = readGatewayNativeCorrelation(body);
+      if (!bytes.length || bytes.length > frozen.maxBytes || bytes.toString('utf8') !== attempt.body ||
+          hash !== attempt.bodySha256 || body.model !== frozen.model || body.reasoning?.effort !== frozen.effort ||
+          correlation.status !== 'observed' || correlation.turnId !== attempt.nativeTurnId ||
+          correlation.threadId !== attempt.nativeSessionId ||
+          (correlation.sessionId ?? correlation.threadId) !== attempt.nativeSessionId)
+        throw new Error('Provider input capture refused mismatched request bytes or native identity.');
+      const path = paths(attempt.attemptId);
+      const receipt: Capture = { schemaVersion: 1, accountingBinding: { ...binding }, reservationId: attempt.attemptId,
+        bodyRef: `${namespace}:${attempt.attemptId}#body`, bodyPath: path.body, bodySha256: hash,
+        nativeSessionId: attempt.nativeSessionId, nativeTurnId: attempt.nativeTurnId,
+        model: frozen.model, effort: frozen.effort, accountId: frozen.accountId };
+      const encoded = canonicalJson(receipt);
+      if (Buffer.byteLength(encoded) > 8192) throw new Error('Provider input capture receipt exceeds its bound.');
+      // Each slot is an exclusive, persistent budget claim. A failed write or
+      // a concurrent/recovered host never resets or exceeds this allocation.
+      let reserved = false;
+      for (let slot = 0; slot < frozen.maxRequests; slot++) {
+        try { writeFileSync(join(directory, `allocation-${slot}`), '', { flag: 'wx', mode: 0o600 }); reserved = true; break; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      }
+      if (!reserved || !unchanged()) throw new Error('Provider input capture allocation is exhausted or changed.');
+      // A partial capture cannot be overwritten or retried into a provider send.
+      mkdirSync(join(directory, attempt.attemptId), { mode: 0o700 });
+      writeFileSync(join(frozen.captureRoot, path.body), bytes, { flag: 'wx', mode: 0o600 });
+      if (!unchanged() || !readContainedBenchmarkFile(frozen.captureRoot, path.body, frozen.maxBytes).equals(bytes))
+        throw new Error('Provider input capture changed during publication.');
+      writeFileSync(join(frozen.captureRoot, path.receipt), encoded, { flag: 'wx', mode: 0o600 });
+      if (!unchanged() || readContainedBenchmarkFile(frozen.captureRoot, path.receipt, 8192).toString('utf8') !== encoded)
+        throw new Error('Provider input capture receipt changed during publication.');
+      published.set(attempt.attemptId, createHash('sha256').update(encoded).digest('hex'));
+    },
+    readCapture(reservationId: string): Capture | null {
+      try {
+        if (!uuid(reservationId) || !published.has(reservationId) || !unchanged()) return null;
+        const path = paths(reservationId), bytes = readContainedBenchmarkFile(frozen.captureRoot, path.receipt, 8192);
+        if (createHash('sha256').update(bytes).digest('hex') !== published.get(reservationId)) return null;
+        const receipt = JSON.parse(bytes.toString('utf8')) as Capture;
+        if (receipt.schemaVersion !== 1 || canonicalJson(receipt.accountingBinding) !== canonicalJson(binding) ||
+            receipt.reservationId !== reservationId || receipt.bodyPath !== path.body ||
+            receipt.bodyRef !== `${namespace}:${reservationId}#body` || !digest(receipt.bodySha256) ||
+            !uuid(receipt.nativeSessionId) || !uuid(receipt.nativeTurnId) || receipt.model !== frozen.model ||
+            receipt.effort !== frozen.effort || receipt.accountId !== frozen.accountId) return null;
+        const body = readContainedBenchmarkFile(frozen.captureRoot, path.body, frozen.maxBytes);
+        if (createHash('sha256').update(body).digest('hex') !== receipt.bodySha256 || !unchanged()) return null;
+        const request = JSON.parse(body.toString('utf8')), correlation = readGatewayNativeCorrelation(request);
+        if (request.model !== receipt.model || request.reasoning?.effort !== receipt.effort ||
+            correlation.status !== 'observed' || correlation.turnId !== receipt.nativeTurnId ||
+            correlation.threadId !== receipt.nativeSessionId ||
+            (correlation.sessionId ?? correlation.threadId) !== receipt.nativeSessionId) return null;
+        return Object.freeze({ ...receipt, accountingBinding: Object.freeze({ ...receipt.accountingBinding }) });
+      } catch { return null; }
+    },
+    /** Persist this credential-free snapshot through the existing host
+     * checkpoint before shutdown. It must never come from the candidate. */
+    recoveryState(): CurrentBenchProviderCaptureRecovery {
+      allocationCensus();
+      const captures = [...published].sort(([a], [b]) => a.localeCompare(b)).map(([reservationId, receiptSha256]) => {
+        if (!capture.readCapture(reservationId)) throw new Error('Provider input capture cannot retain altered evidence.');
+        return Object.freeze({ reservationId, receiptSha256 });
+      });
+      return Object.freeze({ schemaVersion: 1, configurationSha256, rootIdentity: identity(root),
+        directoryIdentity: identity(allocated), captures: Object.freeze(captures) });
+    },
+  };
+  if (recovery && [...published.keys()].some(id => !capture.readCapture(id)))
+    throw new Error('Provider input capture recovery contains altered or missing evidence.');
+  return capture;
 }
 
 export interface CurrentBenchHostGateway {
