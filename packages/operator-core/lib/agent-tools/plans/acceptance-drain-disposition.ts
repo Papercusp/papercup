@@ -164,6 +164,12 @@ export interface StaleAcceptanceMeasurement {
   staleAcceptanceNeverSurfaced: number;
   /** The sum — the R-5 probe value. */
   staleAcceptanceUndispositioned: number;
+  /**
+   * Non-archived, non-rubric plans in scope, ANY status (D-019 denominator). The
+   * verification-health cell reports the R-5 reading as null when this is 0, so a wrong
+   * workspace filter or an empty population cannot pass an `eq 0` probe.
+   */
+  acceptancePlansConsidered: number;
   thresholds: { surfaceAfterDays: number; graceDays: number; neverSurfacedAfterDays: number };
 }
 
@@ -213,16 +219,24 @@ export async function measureStaleAcceptance(
         WHERE f.surfaced_at IS NULL
           AND p.idle_since < ${now}::timestamptz - make_interval(days => ${ACCEPTANCE_NEVER_SURFACED_AFTER_DAYS})
           AND COALESCE(f.dispositioned, false) = false
-      )::int AS never_surfaced
+      )::int AS never_surfaced,
+      (SELECT count(*)
+         FROM harness_shared.harness_plans q
+        WHERE q.workspace_id = ${opts.workspaceId}
+          AND q.archived IS NOT TRUE
+          AND (q.template IS NULL OR q.template <> 'rubric')
+          AND (${harness}::text IS NULL OR q.harness_slug = ${harness}::text))::int AS considered
       FROM plans p
       LEFT JOIN filings f ON f.ref = p.ref
-  `) as Array<{ surfaced: number | null; never_surfaced: number | null }>;
-  const surfaced = Number(rows[0]?.surfaced ?? 0);
-  const neverSurfaced = Number(rows[0]?.never_surfaced ?? 0);
+  `) as Array<{ surfaced: number | null; never_surfaced: number | null; considered: number | null }>;
+  if (!rows[0]) throw new Error('measureStaleAcceptance: the measurement query returned no row');
+  const surfaced = Number(rows[0].surfaced ?? 0);
+  const neverSurfaced = Number(rows[0].never_surfaced ?? 0);
   return {
     staleAcceptanceSurfaced: surfaced,
     staleAcceptanceNeverSurfaced: neverSurfaced,
     staleAcceptanceUndispositioned: surfaced + neverSurfaced,
+    acceptancePlansConsidered: Number(rows[0].considered ?? 0),
     thresholds: {
       surfaceAfterDays: ACCEPTANCE_STALE_SURFACE_AFTER_DAYS,
       graceDays: ACCEPTANCE_STALE_GRACE_DAYS,
