@@ -733,3 +733,108 @@ export async function configureTriggerPack(
     createdBy: input.configuredBy ?? null,
   });
 }
+
+// ── set up a pack the Cupboard installed without a project (plan cupboard-distributable-
+//    integrations-2026-10-10 D-017) ─────────────────────────────────────────────────────────────
+// The Cupboard install registers a package globally and names no project, so its trigger pack has
+// no installation yet. Settings → Integrations lists such packs and sets one up in the project the
+// owner picks, with the same materializer the install runs when it is given a harness.
+
+/** An installed package whose trigger pack has not been set up in this workspace yet. */
+export interface AvailableTriggerPack {
+  pluginName: string;
+  pluginVersion: string;
+  description: string | null;
+  /** The pack's `triggerPack.inputs` JSON schema, or null when it takes no inputs. */
+  inputsSchema: Record<string, unknown> | null;
+}
+
+export interface SetUpTriggerPackDeps extends ConfigureTriggerPackDeps {
+  /** Whether `slug` is a registered project. Production: the harness registry. */
+  harnessExists?: (slug: string) => Promise<boolean>;
+}
+
+type InstalledPackage = Awaited<ReturnType<typeof import('../plugin-catalog').listPluginsIn>>[number];
+
+/** Every package in the installed plugins directory that carries a non-empty trigger pack. */
+async function installedTriggerPackPackages(deps: { pluginsDir?: string }): Promise<InstalledPackage[]> {
+  const catalog = await import('../plugin-catalog');
+  const pluginsDir = resolve(deps.pluginsDir ?? catalog.GLOBAL_PLUGINS_DIR());
+  const installed = await catalog.listPluginsIn(pluginsDir, 'global');
+  return installed.filter((entry) => Object.keys(asRecord(entry.triggerPack)).length > 0);
+}
+
+async function setUpHarnessOf(sql: Db, workspaceId: string, pluginName: string): Promise<string | null> {
+  const [row] = await sql<Array<{ harnessSlug: string }>>`
+    SELECT harness_slug AS "harnessSlug" FROM harness_shared.trigger_pack_installations
+     WHERE workspace_id = ${workspaceId} AND plugin_name = ${pluginName}
+     ORDER BY harness_slug LIMIT 1`;
+  return row?.harnessSlug ?? null;
+}
+
+/** Installed packages with a trigger pack that has no installation in this workspace (D-017). */
+export async function listAvailableTriggerPacks(
+  sql: Db,
+  workspaceId: string,
+  deps: Pick<ConfigureTriggerPackDeps, 'pluginsDir'> = {},
+): Promise<AvailableTriggerPack[]> {
+  const [packages, rows] = await Promise.all([
+    installedTriggerPackPackages(deps),
+    sql<Array<{ pluginName: string }>>`
+      SELECT DISTINCT plugin_name AS "pluginName" FROM harness_shared.trigger_pack_installations
+       WHERE workspace_id = ${workspaceId}`,
+  ]);
+  const setUp = new Set(rows.map((row) => row.pluginName));
+  return packages
+    .filter((entry) => !setUp.has(entry.name))
+    .map((entry) => {
+      const schema = asRecord(asRecord(entry.triggerPack).inputs);
+      return {
+        pluginName: entry.name,
+        pluginVersion: entry.version,
+        description: typeof entry.description === 'string' && entry.description.trim() ? entry.description.trim() : null,
+        inputsSchema: Object.keys(schema).length > 0 ? schema : null,
+      };
+    })
+    .sort((a, b) => a.pluginName.localeCompare(b.pluginName));
+}
+
+/**
+ * Set up an installed pack in the project the owner picked (D-017). The package is found by its
+ * manifest name among installed packages, never by a caller-built path, and its manifest is read
+ * from the installed directory. The result is the usual disarmed installation, reviewed and armed
+ * from its section like any other. Refusals carry a stable code and write nothing.
+ */
+export async function setUpTriggerPack(
+  sql: postgres.Sql,
+  workspaceId: string,
+  input: { pluginName: string; harnessSlug: string; inputs?: Record<string, unknown>; configuredBy?: string | null },
+  deps: SetUpTriggerPackDeps = {},
+): Promise<TriggerPackInstallation> {
+  const pluginName = input.pluginName.trim();
+  const harnessSlug = input.harnessSlug.trim();
+  if (!pluginName) throw new TriggerPackLifecycleError('bad_request', 'pluginName is required');
+  if (!harnessSlug) throw new TriggerPackLifecycleError('harness_required', 'choose the project the pack runs its plans in');
+  const installed = (await installedTriggerPackPackages(deps)).find((entry) => entry.name === pluginName);
+  if (!installed) {
+    throw new TriggerPackLifecycleError('not_found', `no installed package "${pluginName}" carries a trigger pack`);
+  }
+  const harnessExists =
+    deps.harnessExists ?? (async (slug: string) => (await (await import('../plugin-catalog')).resolveProjectPath(slug)) !== null);
+  if (!(await harnessExists(harnessSlug))) {
+    throw new TriggerPackLifecycleError('harness_not_found', `there is no project "${harnessSlug}"`, { harnessSlug });
+  }
+  const existing = await setUpHarnessOf(sql, workspaceId, pluginName);
+  if (existing) {
+    throw new TriggerPackLifecycleError('already_set_up', `${pluginName} is already set up in ${existing}`, { harnessSlug: existing });
+  }
+  const { path: pluginDir, source: _source, ...manifest } = installed;
+  const materialize = deps.materialize ?? (await import('./trigger-pack-materialize')).materializeTriggerPack;
+  return materialize(sql, workspaceId, {
+    manifest: manifest as unknown as TriggerPackManifest,
+    pluginDir,
+    harnessSlug,
+    inputs: input.inputs ?? {},
+    createdBy: input.configuredBy ?? null,
+  });
+}

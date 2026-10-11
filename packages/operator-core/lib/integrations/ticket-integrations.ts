@@ -34,7 +34,12 @@ import {
   type OAuthClientRegistrationStatus,
 } from './oauth-client-registration';
 import type { TokenStorage } from '../oauth/token';
-import { listTriggerPackSettings, type TriggerPackSettings } from '../cupboard/trigger-pack-lifecycle';
+import {
+  listAvailableTriggerPacks,
+  listTriggerPackSettings,
+  type AvailableTriggerPack,
+  type TriggerPackSettings,
+} from '../cupboard/trigger-pack-lifecycle';
 import {
   DEFAULT_SOURCE_TOKEN_HARNESS,
   listOwnedExternalTriggerSources,
@@ -175,6 +180,11 @@ export interface TicketIntegrationsOverview {
   sources: TicketSourceSummary[];
   /** Installed trigger packs: inputs form, review and arm (P-005). */
   triggerPacks: TriggerPackSettings[];
+  /**
+   * Packages installed from the Cupboard whose trigger pack is not set up in this workspace yet:
+   * the owner picks the project here (cupboard-distributable-integrations-2026-10-10 D-017).
+   */
+  availableTriggerPacks: AvailableTriggerPack[];
 }
 
 export interface TicketIntegrationsScope {
@@ -191,6 +201,8 @@ export interface TicketIntegrationsDeps {
     sql: postgres.Sql,
     input: { workspaceId: string; providerId: string; sourceId: string; harness: string },
   ) => HostFetch;
+  /** Where installed plugins live, for packs not set up yet (D-017). Production: GLOBAL_PLUGINS_DIR(). */
+  pluginsDir?: string;
 }
 
 /** A refusal the route maps to a 4xx: the caller asked for something it cannot have. */
@@ -320,7 +332,7 @@ function reportedConfig(schema: Record<string, unknown> | null, config: Record<s
 export async function ticketIntegrationsOverview(
   sql: postgres.Sql,
   scope: TicketIntegrationsScope,
-  deps: Pick<TicketIntegrationsDeps, 'registry' | 'credentialStorage'> = {},
+  deps: Pick<TicketIntegrationsDeps, 'registry' | 'credentialStorage' | 'pluginsDir'> = {},
 ): Promise<TicketIntegrationsOverview> {
   const registry = await requestRegistry(deps);
   const providers = integrationProviders(registry);
@@ -381,7 +393,7 @@ export async function ticketIntegrationsOverview(
   // host's oauth-apps.json, keyed the way the connect flow keys them.
   const registered = registry.list().map((entry) => entry.descriptor);
   const clientRefs = new Map(providers.map((entry) => [entry.descriptor.id, clientRegistrationRefOf(entry.descriptor, registered)]));
-  const [summaries, triggerPacks] = await Promise.all([
+  const [summaries, triggerPacks, availableTriggerPacks] = await Promise.all([
     oauthClientRegistrationStatuses([...new Set([...clientRefs.values()].filter((ref): ref is string => ref !== null))]).then((clients) =>
       Promise.all(
         providers.map(async (entry) => {
@@ -395,8 +407,9 @@ export async function ticketIntegrationsOverview(
       ),
     ),
     listTriggerPackSettings(sql, scope.workspaceId),
+    listAvailableTriggerPacks(sql, scope.workspaceId, { pluginsDir: deps.pluginsDir }),
   ]);
-  return { providers: summaries, sources, triggerPacks };
+  return { providers: summaries, sources, triggerPacks, availableTriggerPacks };
 }
 
 interface OwnedTicketSource {

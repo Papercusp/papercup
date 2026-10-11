@@ -40,8 +40,10 @@ import {
   buildTriggerPackReview,
   configureTriggerPack,
   exportTriggerPack,
+  listAvailableTriggerPacks,
   listTriggerPackInstallations,
   listTriggerPackSettings,
+  setUpTriggerPack,
   TriggerPackLifecycleError,
   uninstallTriggerPack,
 } from './trigger-pack-lifecycle';
@@ -248,6 +250,50 @@ describe('trigger-pack lifecycle (P-013)', () => {
     const [after] = (await listTriggerPackSettings(sql, WS)).filter((pack) => pack.installationId === installed.id);
     expect(after!.inputs).toEqual({ tone: 'warm', channel: 'C-bugs' });
     expect(after!.state.fingerprint).toBe(saved.review.fingerprint);
+  });
+
+  it('a pack the Cupboard installed without a project is listed, set up in the picked project, then read as installed (D-017)', async () => {
+    // The Cupboard page installs with no harness (WI-6554700010008548): the package lands in the
+    // plugins directory and nothing is materialized. Settings must still list it, and setting it
+    // up there must produce the normal disarmed installation.
+    await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
+    const deps = installDeps(packDir, WS);
+    const pluginsDir = deps.globalPluginsDir();
+    const installedPkg = await installPluginFromCupboardCore({ githubUrl: GITHUB, acceptCapabilities: true }, deps);
+    expect(installedPkg.triggerPackInstallation).toBeUndefined();
+    expect(await listTriggerPackSettings(sql, WS)).toEqual([]);
+
+    const available = await listAvailableTriggerPacks(sql, WS, { pluginsDir });
+    expect(available).toEqual([
+      expect.objectContaining({ pluginName: PLUGIN, pluginVersion: '1.0.0', inputsSchema: manifest().triggerPack.inputs }),
+    ]);
+
+    const materializeFake = (s: Sql, ws: string, input: Parameters<typeof materializeTriggerPack>[2]) =>
+      materializeTriggerPack(s, ws, input, { registry: fakeRegistry });
+    const harnessExists = async (slug: string) => slug === HARNESS;
+    await expect(
+      setUpTriggerPack(sql, WS, { pluginName: PLUGIN, harnessSlug: 'no-such-project', inputs: {} }, { pluginsDir, harnessExists, materialize: materializeFake }),
+    ).rejects.toMatchObject({ code: 'harness_not_found' });
+    await expect(
+      setUpTriggerPack(sql, WS, { pluginName: '@nobody/missing', harnessSlug: HARNESS }, { pluginsDir, harnessExists, materialize: materializeFake }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    expect(await listTriggerPackSettings(sql, WS)).toEqual([]);
+
+    const setUp = await setUpTriggerPack(
+      sql,
+      WS,
+      { pluginName: PLUGIN, harnessSlug: HARNESS, inputs: { tone: 'warm' }, configuredBy: 'owner-1' },
+      { pluginsDir, harnessExists, materialize: materializeFake },
+    );
+    expect(setUp.armed).toBe(false);
+    const [settings] = await listTriggerPackSettings(sql, WS);
+    expect(settings).toMatchObject({ installationId: setUp.id, harnessSlug: HARNESS, pluginName: PLUGIN, inputs: { tone: 'warm' } });
+    expect(settings!.state.armedBindingCount).toBe(0);
+    expect(await listAvailableTriggerPacks(sql, WS, { pluginsDir })).toEqual([]);
+
+    await expect(
+      setUpTriggerPack(sql, WS, { pluginName: PLUGIN, harnessSlug: HARNESS }, { pluginsDir, harnessExists, materialize: materializeFake }),
+    ).rejects.toMatchObject({ code: 'already_set_up' });
   });
 
   it('refuses to arm a pack that still needs configuration', async () => {

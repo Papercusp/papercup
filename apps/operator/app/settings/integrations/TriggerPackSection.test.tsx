@@ -8,17 +8,19 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { TriggerPackSettings } from '@papercusp/operator-core/lib/cupboard/trigger-pack-lifecycle';
+import type { AvailableTriggerPack, TriggerPackSettings } from '@papercusp/operator-core/lib/cupboard/trigger-pack-lifecycle';
 
 const H = vi.hoisted(() => ({
   save: vi.fn(),
   arm: vi.fn(),
+  setUp: vi.fn(),
 }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('./ticket-integrations-client', () => ({
   saveTriggerPackInputs: H.save,
   armTriggerPackRequest: H.arm,
+  setUpTriggerPackRequest: H.setUp,
   IntegrationRequestError: class IntegrationRequestError extends Error {
     constructor(
       readonly code: string,
@@ -29,7 +31,7 @@ vi.mock('./ticket-integrations-client', () => ({
   },
 }));
 
-import { TriggerPackSection } from './TriggerPackSection';
+import { TriggerPackSection, TriggerPackSetup } from './TriggerPackSection';
 
 function pack(overrides: Partial<TriggerPackSettings> = {}): TriggerPackSettings {
   return {
@@ -55,6 +57,7 @@ afterEach(() => {
   cleanup();
   H.save.mockReset();
   H.arm.mockReset();
+  H.setUp.mockReset();
 });
 
 describe('TriggerPackSection refreshes the page after its own write', () => {
@@ -92,5 +95,54 @@ describe('TriggerPackSection refreshes the page after its own write', () => {
 
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
     expect(H.arm).toHaveBeenCalledWith('inst-1', 'f'.repeat(64));
+  });
+});
+
+// A pack the Cupboard installed without a project (cupboard-distributable-integrations-2026-10-10
+// D-017, WI-6554700010008548): its section shows its declared settings and a project picker, and
+// Set up posts both.
+describe('TriggerPackSetup', () => {
+  const available: AvailableTriggerPack = {
+    pluginName: '@papercupai/bug-triage',
+    pluginVersion: '0.1.0',
+    description: 'Files bugs reported in chat.',
+    inputsSchema: { type: 'object', properties: { note: { type: 'string', title: 'Note' } } },
+  };
+
+  it('renders as the pack’s section with its settings, and sets it up in the only project', async () => {
+    H.setUp.mockResolvedValue({ installationId: 'inst-2', status: 'configured', unmet: [], armed: false });
+    const onChanged = vi.fn();
+    const { container } = render(<TriggerPackSetup pack={available} harnesses={['pack-home']} onChanged={onChanged} />);
+
+    const section = container.querySelector('[data-trigger-pack="@papercupai/bug-triage"]');
+    expect(section?.getAttribute('data-trigger-pack-state')).toBe('not-set-up');
+    expect(screen.getByText('Not set up')).toBeTruthy();
+    expect(screen.getByText('Files bugs reported in chat.')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set up @papercupai/bug-triage' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(H.setUp).toHaveBeenCalledWith('@papercupai/bug-triage', 'pack-home', { note: 'hello' });
+  });
+
+  it('cannot be set up until a project is picked when there is more than one', () => {
+    render(<TriggerPackSetup pack={available} harnesses={['alpha', 'beta']} />);
+    expect((screen.getByRole('button', { name: 'Set up @papercupai/bug-triage' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(H.setUp).not.toHaveBeenCalled();
+  });
+
+  it('a refused set-up does not re-read the page', async () => {
+    H.setUp.mockRejectedValue(new Error('harness_not_found'));
+    const onChanged = vi.fn();
+    render(<TriggerPackSetup pack={available} harnesses={['pack-home']} onChanged={onChanged} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set up @papercupai/bug-triage' }));
+
+    await waitFor(() => expect(H.setUp).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Set up @papercupai/bug-triage' }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(onChanged).not.toHaveBeenCalled();
   });
 });

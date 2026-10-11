@@ -9,16 +9,25 @@
  * `triggerPack.inputs` JSON schema (a field with `x-options` becomes a picker filled by an installed
  * provider, P-004), the review from cupboard/trigger-pack-lifecycle.ts. Arming sends the review
  * fingerprint on screen, so a review that changed underneath the owner is refused, not armed.
+ *
+ * A pack the Cupboard installed without a project renders as `TriggerPackSetup` instead: the same
+ * fields plus the project its plans run in, and a Set up button that materializes it (plan
+ * decision D-017). From then on it is an ordinary section.
  */
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
 import { toast } from 'sonner';
-import type { TriggerPackSettings } from '@papercusp/operator-core/lib/cupboard/trigger-pack-lifecycle';
+import type { AvailableTriggerPack, TriggerPackSettings } from '@papercusp/operator-core/lib/cupboard/trigger-pack-lifecycle';
 import type { TriggerPackUnmet } from '@papercusp/operator-core/lib/cupboard/trigger-pack-materialize';
 import { Button } from '../../harness/Button';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { ProviderOptionsSelect } from './ProviderOptionsSelect';
-import { armTriggerPackRequest, IntegrationRequestError, saveTriggerPackInputs } from './ticket-integrations-client';
+import {
+  armTriggerPackRequest,
+  IntegrationRequestError,
+  saveTriggerPackInputs,
+  setUpTriggerPackRequest,
+} from './ticket-integrations-client';
 
 type Values = Record<string, unknown>;
 
@@ -212,6 +221,110 @@ export function TriggerPackSection({ pack, onChanged }: { pack: TriggerPackSetti
         </Button>
         {dirty && <span style={{ ...hintText, marginLeft: 8 }}>Save your settings before arming.</span>}
       </div>
+    </section>
+  );
+}
+
+// ── a pack installed from the Cupboard, not set up yet (D-017) ──────────────────────────────────
+
+/** `@scope/name` is not a usable element id. */
+const domId = (name: string): string => name.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+
+/**
+ * The Cupboard installs a package without choosing a project, so its pack has no installation yet.
+ * The owner picks the project its plans run in, fills its settings, and sets it up; its triggers
+ * stay off until it is reviewed and armed in the section that replaces this one.
+ */
+export function TriggerPackSetup({
+  pack,
+  harnesses,
+  onChanged,
+}: {
+  pack: AvailableTriggerPack;
+  harnesses: string[];
+  onChanged?: () => void;
+}) {
+  const fields = useMemo(() => inputFields(pack.inputsSchema), [pack.inputsSchema]);
+  const [draft, setDraft] = useState<Values>({});
+  const [picked, setPicked] = useState('');
+  const [busy, setBusy] = useState(false);
+  // With exactly one project there is nothing to choose.
+  const harness = picked || (harnesses.length === 1 ? harnesses[0] : '');
+  const idBase = `pack-setup-${domId(pack.pluginName)}`;
+
+  const setUp = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault();
+      if (!harness) return;
+      setBusy(true);
+      try {
+        const result = await setUpTriggerPackRequest(pack.pluginName, harness, draft);
+        onChanged?.();
+        toast.success(
+          result.unmet.length > 0
+            ? `${pack.pluginName} is set up in ${harness}. It still needs ${result.unmet.length} thing${result.unmet.length === 1 ? '' : 's'} before it can be armed.`
+            : `${pack.pluginName} is set up in ${harness}. Check what it will do, then arm it.`,
+        );
+      } catch (err) {
+        toast.error(`Couldn’t set up ${pack.pluginName}: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [draft, harness, onChanged, pack.pluginName],
+  );
+
+  return (
+    <section
+      className="pc-settings-section"
+      aria-label={`${pack.pluginName} triggers`}
+      data-trigger-pack={pack.pluginName}
+      data-trigger-pack-state="not-set-up"
+      style={cardStyle}
+    >
+      <div style={cardHead}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={cardTitle}>{pack.pluginName}</h2>
+          <div style={metaText}>Version {pack.pluginVersion} · installed, not set up yet</div>
+        </div>
+        <span role="status" style={hintText}>
+          Not set up
+        </span>
+      </div>
+      {pack.description && <p style={bodyText}>{pack.description}</p>}
+      <form onSubmit={(event) => void setUp(event)} aria-label={`Set up ${pack.pluginName}`} style={formStyle}>
+        <div style={fieldStyle}>
+          <label htmlFor={`${idBase}-harness`} style={labelStyle}>
+            Run its plans in (required)
+          </label>
+          <Select
+            id={`${idBase}-harness`}
+            ariaLabel="Run its plans in"
+            value={harness}
+            onChange={(value) => setPicked(String(value))}
+            options={harnesses.map((slug) => ({ value: slug, label: slug }))}
+            placeholder={harnesses.length > 0 ? 'Choose a project…' : 'No projects yet'}
+            disabled={busy || harnesses.length === 0}
+            triggerStyle={inputStyle}
+          />
+          <div style={hintText}>The project whose plans this workflow runs. Its triggers stay off until you arm them.</div>
+        </div>
+        {fields.map((field) => (
+          <FieldInput
+            key={field.key}
+            id={`${idBase}-${field.key}`}
+            field={field}
+            value={draft[field.key]}
+            disabled={busy}
+            onChange={(value) => setDraft((prev) => ({ ...prev, [field.key]: value }))}
+          />
+        ))}
+        <div>
+          <Button type="submit" variant="primary" disabled={!harness || busy}>
+            {busy ? 'Setting up…' : `Set up ${pack.pluginName}`}
+          </Button>
+        </div>
+      </form>
     </section>
   );
 }

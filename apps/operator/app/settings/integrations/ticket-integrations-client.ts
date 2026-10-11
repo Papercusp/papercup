@@ -47,6 +47,18 @@ export function saveTriggerPackInputs(
   return apiRequest(`${TRIGGER_PACKS_API}/${encodeURIComponent(installationId)}/inputs`, 'PUT', { inputs });
 }
 
+/**
+ * Set up a pack the Cupboard installed without a project, in the project the owner picked
+ * (cupboard-distributable-integrations-2026-10-10 D-017).
+ */
+export function setUpTriggerPackRequest(
+  pluginName: string,
+  harnessSlug: string,
+  inputs: Record<string, unknown>,
+): Promise<{ installationId: string; status: string; unmet: unknown[]; armed: boolean }> {
+  return apiRequest(`${TRIGGER_PACKS_API}/set-up`, 'POST', { pluginName, harnessSlug, inputs });
+}
+
 /** Arm a trigger pack against the review fingerprint the owner is looking at. */
 export function armTriggerPackRequest(installationId: string, fingerprint: string): Promise<{ armedBindingIds: string[] }> {
   return apiRequest(`${TRIGGER_PACKS_API}/${encodeURIComponent(installationId)}/arm`, 'POST', { fingerprint });

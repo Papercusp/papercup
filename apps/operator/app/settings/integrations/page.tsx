@@ -47,7 +47,7 @@ import { SlackSetupCard } from './SlackSetupCard';
 import { ProviderAppRegistration } from './ProviderAppRegistration';
 import { ProviderCredentialsForm } from './ProviderCredentialsForm';
 import { ProviderOAuthClientForm } from './ProviderOAuthClientForm';
-import { TriggerPackSection } from './TriggerPackSection';
+import { TriggerPackSection, TriggerPackSetup } from './TriggerPackSection';
 
 export const PANELS = ['scope', 'mapping', 'rules'] as const;
 type Panel = (typeof PANELS)[number];
@@ -201,11 +201,14 @@ export default function IntegrationsSettingsPage() {
           onClose={closePanel}
         />
       ))}
-      {overview && overview.triggerPacks.length > 0 && (
+      {overview && overview.triggerPacks.length + (overview.availableTriggerPacks?.length ?? 0) > 0 && (
         <>
           <h2 style={groupTitle}>Workflows</h2>
           {overview.triggerPacks.map((pack) => (
             <TriggerPackSection key={pack.installationId} pack={pack} onChanged={refresh} />
+          ))}
+          {(overview.availableTriggerPacks ?? []).map((pack) => (
+            <TriggerPackSetup key={`setup:${pack.pluginName}`} pack={pack} harnesses={harnesses} onChanged={refresh} />
           ))}
         </>
       )}

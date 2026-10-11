@@ -132,6 +132,15 @@ export async function invalidatePluginHost(): Promise<void> {
   } catch {
     /* mount cache not initialized */
   }
+  // Settings → Integrations lists installed providers and packs not set up yet, so an open page
+  // re-reads after every install or uninstall (cupboard-distributable-integrations-2026-10-10 D-017).
+  // 'integrations.tickets' is that page's sync query (sync-resolver/index.ts).
+  try {
+    const { notifySyncInvalidate } = await import('../sync-sse');
+    void notifySyncInvalidate('integrations.tickets').catch(() => {});
+  } catch {
+    /* sync bus not initialized */
+  }
 }
 
 /** Resolve a Cupboard listing id → { githubUrl, listingRef } via the worker. */

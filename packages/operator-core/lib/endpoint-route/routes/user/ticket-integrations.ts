@@ -30,7 +30,12 @@ import {
   TicketIntegrationError,
 } from '../../../integrations/ticket-integrations';
 
-import { armTriggerPack, configureTriggerPack, TriggerPackLifecycleError } from '../../../cupboard/trigger-pack-lifecycle';
+import {
+  armTriggerPack,
+  configureTriggerPack,
+  setUpTriggerPack,
+  TriggerPackLifecycleError,
+} from '../../../cupboard/trigger-pack-lifecycle';
 import { TriggerPackMaterializeError } from '../../../cupboard/trigger-pack-materialize';
 
 export const TICKET_INTEGRATIONS_QUERY = 'integrations.tickets';
@@ -189,11 +194,17 @@ const ARM_REFUSAL_STATUS: Record<string, number> = {
   trigger_pack_review_stale: 409,
 };
 
+const PACK_REFUSAL_STATUS: Record<string, number> = {
+  not_found: 404,
+  bad_request: 400,
+  already_set_up: 409,
+};
+
 function packFailure(error: unknown): Response {
   if (error instanceof TriggerPackLifecycleError) {
     return Response.json(
       { ok: false, error: error.code, detail: error.message },
-      { status: error.code === 'not_found' ? 404 : 422 },
+      { status: PACK_REFUSAL_STATUS[error.code] ?? 422 },
     );
   }
   if (error instanceof TriggerPackMaterializeError) {
@@ -223,6 +234,50 @@ const setPackInputs = defineTool({
       const installed = await configureTriggerPack(getOrgPg().sql, s.workspaceId, {
         installationId: ctx.params.installationId ?? '',
         inputs: body.inputs,
+        configuredBy: s.ownerUserId,
+      });
+      invalidatePack(s.workspaceId);
+      return Response.json({
+        ok: true,
+        installationId: installed.id,
+        status: installed.status,
+        unmet: installed.unmet,
+        armed: installed.armed,
+        review: installed.review,
+      });
+    } catch (error) {
+      return packFailure(error);
+    }
+  },
+});
+
+// A pack the Cupboard installed without a project is set up here, in the project the owner picks
+// (cupboard-distributable-integrations-2026-10-10 D-017). Same answer shape as saving inputs.
+const setUpPack = defineTool({
+  method: 'POST',
+  path: '/user/integrations/trigger-packs/set-up',
+  auth: 'loopback',
+  async handler(req) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
+    const body = await jsonObject(req);
+    if (
+      !body ||
+      typeof body.pluginName !== 'string' ||
+      typeof body.harnessSlug !== 'string' ||
+      (body.inputs !== undefined && !isPlainObject(body.inputs))
+    ) {
+      return Response.json(
+        { ok: false, error: 'bad_request', detail: 'body must be { pluginName: string, harnessSlug: string, inputs?: object }' },
+        { status: 400 },
+      );
+    }
+    try {
+      const s = await scope(req);
+      const installed = await setUpTriggerPack(getOrgPg().sql, s.workspaceId, {
+        pluginName: body.pluginName,
+        harnessSlug: body.harnessSlug,
+        inputs: isPlainObject(body.inputs) ? body.inputs : {},
         configuredBy: s.ownerUserId,
       });
       invalidatePack(s.workspaceId);
@@ -270,4 +325,4 @@ const armPack = defineTool({
   },
 });
 
-export default [overview, containers, config, addRule, disableRule, setPackInputs, armPack];
+export default [overview, containers, config, addRule, disableRule, setPackInputs, setUpPack, armPack];
